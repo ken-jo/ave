@@ -53,10 +53,45 @@ describe("ToolApprovalContent remember scope", () => {
     expect(line).not.toContain("동일한 인자만");
   });
 
-  it("names the tool and path for a path scope", () => {
-    expect(scopeLine(request("write_file", {
+  it.each(["write_file", "edit_file", "multi_edit", "apply_patch"])("discloses the shared text-write tools for builtin %s path memory", (toolName) => {
+    const line = scopeLine(request(toolName, {
+      kind: "key", key: "file-write-path:k", scope: { kind: "path", path: "/workspace/project/notes.md" },
+    }));
+    expect(line).toContain("/workspace/project/notes.md에 대한 write_file, edit_file, multi_edit, apply_patch 작업을 다음 작업 경로에서 기억합니다: /workspace/project");
+    expect(line).toContain("내용이 다르면 먼저 위험도를 확인하고");
+  });
+
+  it.each(["plugin", "mcp"] as const)("keeps %s tool path memory specific to its tool", (source) => {
+    const line = scopeLine({ ...request("write_file", {
+      kind: "key", key: "file-write-path:k", scope: { kind: "path", path: "/workspace/project/notes.md" },
+    }), source });
+    expect(line).toContain("write_file 작업을");
+    expect(line).not.toContain("edit_file");
+  });
+
+  it("keeps other builtin path tools specific to their tool", () => {
+    const line = scopeLine(request("delete_file", {
       kind: "key", key: "k", scope: { kind: "path", path: "/workspace/project/notes.md" },
-    }))).toContain("/workspace/project/notes.md에 대한 write_file을(를) 다음 작업 경로에서 기억합니다: /workspace/project. 내용이 다르면 먼저 위험도를 확인하고");
+    }));
+    expect(line).toContain("delete_file 작업을");
+    expect(line).not.toContain("write_file");
+  });
+
+  it("does not advertise sharing for a non-shared memory identity", () => {
+    const line = scopeLine(request("write_file", {
+      kind: "key", key: "tool-specific:k", scope: { kind: "path", path: "/workspace/project/notes.md" },
+    }));
+    expect(line).toContain("write_file 작업을");
+    expect(line).not.toContain("edit_file");
+  });
+
+  it.each(["apply_patch:k", "file-write-path:k"])("keeps a multi-file patch scope specific to its tool for %s", (key) => {
+    const line = scopeLine(request("apply_patch", {
+      kind: "key", key, scope: { kind: "paths", paths: ["/workspace/project/a,b.md", "/workspace/project/b.md"] },
+    }));
+    expect(line).toContain('"/workspace/project/a,b.md", "/workspace/project/b.md"');
+    expect(line).toContain("apply_patch 작업을");
+    expect(line).not.toContain("write_file");
   });
 
   it("distinguishes a transfer with and without overwrite", () => {

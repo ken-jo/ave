@@ -261,7 +261,7 @@ describe("synthetic network-only asrt — per-category relaxation gating", () =>
     expect(verdict.level).toBe("medium");
   });
 
-  it("guard FIRES for a write-category rule-MEDIUM (no fs jail → LLM LOW cannot downgrade)", async () => {
+  it("allowed writes remain LOW without filesystem confinement regardless of depth", async () => {
     const classifier = new LlmRiskClassifier(llmProvider("low"), "gpt-4o-mini");
     const verdict = await classifier.classify(
       ctx({
@@ -269,13 +269,13 @@ describe("synthetic network-only asrt — per-category relaxation gating", () =>
         source: "builtin",
         category: "write",
         pathFields: ["path"],
-        // Deep inside an allowed dir → rule → MEDIUM ("write deep inside allowed").
+        // Path depth does not change the write verdict.
         finalInput: { path: "/Users/example/work/nested/dir/output.txt" },
         sandboxCapability: networkOnlyAsrt(),
         conversationContext: { recentUserMessage: "please write the output file for me" },
       }),
     );
-    expect(verdict.level).toBe("medium");
+    expect(verdict.level).toBe("low");
   });
 
   it("relaxation IS allowed for the network category — guard does NOT fire, max(rule, llm) applies (LLM escalation honoured)", async () => {
@@ -294,8 +294,8 @@ describe("synthetic network-only asrt — per-category relaxation gating", () =>
     expect(verdict.level).toBe("high");
   });
 
-  it("network-category relaxation does NOT bleed into a write call on the SAME network-only cap (guard still fires for write)", async () => {
-    // Same capability, escalate-only LLM is irrelevant here: an LLM LOW on a write-category call must NOT relax (filesystem is not jailed) even though the same cap WOULD relax the network category — proves the gate is keyed on the call's category, not the capability alone.
+  it("network confinement cannot lower an outside-directory write verdict", async () => {
+    // An outside-directory write is HIGH regardless of a network-only jail or a lower model verdict.
     const classifier = new LlmRiskClassifier(llmProvider("low"), "gpt-4o-mini");
     const verdict = await classifier.classify(
       ctx({
@@ -303,11 +303,11 @@ describe("synthetic network-only asrt — per-category relaxation gating", () =>
         source: "builtin",
         category: "write",
         pathFields: ["path"],
-        finalInput: { path: "/Users/example/work/nested/dir/output.txt" }, // rule → MEDIUM
+        finalInput: { path: "/outside/output.txt" }, // rule → HIGH
         sandboxCapability: networkOnlyAsrt(),
         conversationContext: { recentUserMessage: "please write the output file for me" },
       }),
     );
-    expect(verdict.level).toBe("medium");
+    expect(verdict.level).toBe("high");
   });
 });

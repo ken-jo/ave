@@ -61,6 +61,7 @@ interface DeferredSession {
   turns: Map<string, boolean>;
 }
 const turnContext = new AsyncLocalStorage<ActiveTurn>();
+const requiredCheckpointContext = new AsyncLocalStorage<boolean>();
 const inFlight = new Set<ActiveTurn>();
 const liveChildren = new Map<string, number>();
 const pendingUnavailable = new Map<string, DeferredSession>();
@@ -70,6 +71,25 @@ export function _pendingUnavailableCountForTest(sessionId: string): number {
 let queue: Promise<unknown> = Promise.resolve();
 
 class InvalidCheckpointStorageError extends Error {}
+
+class CodeCheckpointRequiredError extends Error {
+  constructor() { super("Code checkpoint unavailable; retry with explicit approval"); }
+}
+
+function requireAvailableCheckpoint(identity: ActiveTurn | undefined): void {
+  if (requiredCheckpointContext.getStore() === true
+    && (!identity || identity.deleted || identity.unavailable || !identity.admitted || identity.dir !== namespace.dir)) {
+    throw new CodeCheckpointRequiredError();
+  }
+}
+
+/** Automatic edits require rewind at the actual mutation boundary, too. */
+export async function withRequiredCodeCheckpoint<T>(run: () => Promise<T>): Promise<T> {
+  return requiredCheckpointContext.run(true, async () => {
+    requireAvailableCheckpoint(turnContext.getStore());
+    return run();
+  });
+}
 
 function childKey(sessionId: string, dir = namespace.dir): string {
   return `${dir}\0${sessionId}`;
@@ -384,6 +404,32 @@ export async function withCodeCheckpoint<T>(identity: TurnIdentity, run: () => P
   }
 }
 
+/** Only a healthy admitted turn with capturable originals can justify automatic writes. */
+export async function isCodeCheckpointAvailable(paths: readonly string[]): Promise<boolean> {
+  const identity = turnContext.getStore();
+  if (!identity || !identity.admitted || identity.deleted || identity.unavailable
+    || identity.dir !== namespace.dir || paths.length === 0) return false;
+  return exclusive(async () => {
+    try {
+      const turns = await loadLedger(true);
+      const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
+      if (!turn || turn.unavailable || turn.consumed || identity.unavailable || identity.deleted) return false;
+      for (const change of turn.changes) await hydrate(change);
+      let projectedBytes = ledgerStorageBytes(turns);
+      for (const path of new Set(paths.map((value) => resolve(value)))) {
+        const before = await snapshot(path);
+        projectedBytes += (before.bytes === null ? 0 : Math.ceil(before.bytes.length / 3) * 4 + 3)
+          + Buffer.byteLength(path) + 512;
+        if (projectedBytes > CODE_CHECKPOINT_POLICY.maxStorageBytes) return false;
+      }
+      return !identity.unavailable && !identity.deleted;
+    } catch (error) {
+      log.warn("checkpoint admission unavailable: %s", (error as Error).message);
+      return false;
+    }
+  });
+}
+
 async function makeUnavailable(turns: Turn[], identity: ActiveTurn, reason: string): Promise<void> {
   // Missing records are a gap in every earlier restore range for this session.
   const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
@@ -456,14 +502,17 @@ async function checkpointMutation<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const identity = turnContext.getStore();
+  requireAvailableCheckpoint(identity);
   if (!identity || identity.deleted) return run();
   return exclusive(async () => {
     let turns: Turn[];
     try { turns = await load(); }
-    catch (error) { deferUnavailable(identity, error); return run(); }
+    catch (error) { deferUnavailable(identity, error); requireAvailableCheckpoint(identity); return run(); }
     const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
+    if (requiredCheckpointContext.getStore() === true && turn?.consumed) throw new CodeCheckpointRequiredError();
     if (!turn || turn.unavailable || identity.unavailable) {
       await makeUnavailable(turns, identity, "unsupported edits");
+      requireAvailableCheckpoint(identity);
       return run();
     }
     const changes: StoredChange[] = [];
@@ -482,6 +531,7 @@ async function checkpointMutation<T>(
       }
     } catch {
       await makeUnavailable(turns, identity, "uncapturable original");
+      requireAvailableCheckpoint(identity);
       return run();
     }
     turn.changes.push(...changes);
@@ -489,6 +539,7 @@ async function checkpointMutation<T>(
     await save(turns, turn);
     if (turn.unavailable) {
       identity.unavailable = true;
+      requireAvailableCheckpoint(identity);
       return run();
     }
     for (const change of changes) {
@@ -499,6 +550,7 @@ async function checkpointMutation<T>(
         throw new Error("File changed before checkpointed mutation");
       }
     }
+    requireAvailableCheckpoint(identity);
     const removeUnchanged = async () => {
       // No-op failures claim no edit; partial effects remain guarded by the intended after-hash.
       for (const change of changes) {

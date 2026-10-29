@@ -610,6 +610,12 @@ interface SensitivePatternIndex {
   folded: Map<string, number[]>;
 }
 const sensitivePatternIndexes = new Map<boolean, SensitivePatternIndex>();
+const ENV_TEMPLATE_NAMES: ReadonlySet<string> = new Set([".env.example", ".env.sample", ".env.template", ".env.dist"]);
+
+function isEnvironmentTemplatePath(path: string, insensitive: boolean): boolean {
+  const name = basename(normalizePath(path).replace(/\/+$/u, ""));
+  return ENV_TEMPLATE_NAMES.has(insensitive ? name.toLowerCase() : name);
+}
 
 function sensitivePatternIndex(insensitivePlatform: boolean): SensitivePatternIndex {
   const cached = sensitivePatternIndexes.get(insensitivePlatform);
@@ -732,6 +738,7 @@ export function createSensitivePathMatcher(effect: PathEffect = "write", spend?:
       const lower = candidate.toLowerCase();
       for (const ordinal of eligible) {
         const { pattern, test, readOnly, insensitive, literal } = patterns[ordinal]!;
+        if (pattern === "**/.env.*" && isEnvironmentTemplatePath(candidate, insensitive)) continue;
         if (!(insensitive ? lower.includes(literal) : candidate.includes(literal))) continue;
         spend?.();
         if (!(canReadSession && readOnly) && test(candidate)) return pattern;

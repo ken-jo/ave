@@ -299,6 +299,7 @@ describe("file native tools", () => {
       const result = await new ToolClass().execute({ path, ...change }, ctx());
       expect(result.isError).toBe(true);
       expect(result.output).toContain("changed after it was read");
+      expect(result.output).toContain("Read it again with read_file before changing it.");
       expect(readFileSync(path, "utf8")).toBe("alpha changed elsewhere\n");
     });
 
@@ -545,6 +546,27 @@ describe("file native tools", () => {
       { sourcePath: "README.md", destinationPath: "docs/README.md" },
       { cwd: workDir },
     )).toBe(`source:${join(workDir, "README.md")}:destination:${join(workDir, "docs", "README.md")}`);
+  });
+
+  it("single-file patches share a path scope while preserving the patch policy key", () => {
+    const input = { patch: "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-alpha\n+ALPHA\n*** End Patch" };
+    const tool = new ApplyPatchTool();
+    const scope = { kind: "path", path: join(workDir, "src", "a.ts") };
+    expect(tool.approvalCacheKey(input, { cwd: workDir })).toBe(JSON.stringify({ operation: "apply_patch", paths: [scope.path] }));
+    expect(tool.approvalMemoryScope(input, { cwd: workDir })).toEqual(scope);
+    for (const editTool of [new WriteFileTool(), new EditFileTool(), new MultiEditTool()]) {
+      expect(tool.approvalMemoryScope(input, { cwd: workDir })).toEqual(editTool.approvalMemoryScope({ path: "src/a.ts" }, { cwd: workDir }));
+    }
+  });
+
+  it("multi-file patch scopes include every source and move destination exactly once", () => {
+    const patch = "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/z.ts\n@@\n-alpha\n+ALPHA\n*** Add File: added.md\n+new\n*** End Patch";
+    expect(new ApplyPatchTool().approvalMemoryScope({ patch }, { cwd: workDir })).toEqual({
+      kind: "paths",
+      paths: [join(workDir, "src", "a.ts"), join(workDir, "src", "z.ts"), join(workDir, "added.md")].sort(),
+    });
+    expect(() => new ApplyPatchTool().approvalMemoryScope({ patch: "invalid" }, { cwd: workDir })).toThrow("invalid patch");
+    expect(() => new ApplyPatchTool().approvalMemoryScope({ patch: "*** Begin Patch\n*** End Patch" }, { cwd: workDir })).toThrow("the patch names no files");
   });
 
   it("write-capable approval cache keys require explicit cwd", () => {

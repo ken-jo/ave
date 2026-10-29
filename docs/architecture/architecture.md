@@ -1815,6 +1815,19 @@ All tool execution flows through the registry and executor:
 The source of a tool changes display and audit metadata; it does not create a
 separate policy bypass.
 
+Default and auto-review modes allow recoverable builtin file-tool writes when
+every touched lexical and canonical path lies inside the session cwd or its
+configured additional project directories. The write must have an available
+per-turn code checkpoint. This category decision precedes reviewer routing and
+follows explicit deny/ask rules and mandatory floors: sensitive paths, protected
+control paths, project escapes, remote controllers, staged/overlay origins,
+corrupt rules and strict mode retain their existing authority. Headless turns
+without a user gain no new automatic lane. Application home and temporary roots
+are not project roots. An ordinary external write uses one approval card for
+both its directory grant and that invocation; mandatory floors remain separate.
+See [Project file writes](permission-policy-design.md#project-file-writes) for
+the owner decision, checkpoint eligibility and recovery contract.
+
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
 

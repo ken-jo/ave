@@ -188,6 +188,7 @@ export function isReviewerAutoDecisionOutcome(
 }
 
 export interface PermissionCheckResult {
+  requiresCodeCheckpoint?: true;
   decision: PermissionDecision;
   reason: string;
   layer: number;
@@ -215,6 +216,8 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  // Host-derived native file facts; never accepted from tool arguments.
+  fileWritePolicy?: { insideProject: boolean; checkpointAvailable?: boolean; directoryApproved: boolean };
   disposableSubstrate?: DisposableSubstrate;
   // Host-only bound native execution; JSON and terminal callers cannot issue it.
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
@@ -589,6 +592,7 @@ export class PermissionManager {
   // Open the reviewer route for an undecided call the configured chain may decide. Only an `active` chain (or settings that could not be read, which fail closed through the chain's unavailable fallback) opens a route. A `shadow` chain never opens one: it observes only the calls the existing reviewer lanes already route, so it cannot change any decision.
   private routeJudge(result: PermissionCheckResult, category: ToolCategory, context: PermissionCheckContext, trust: TrustLevel): PermissionCheckResult {
     if (result.reviewer !== undefined) return result;
+    if (context.headless !== true && context.fileWritePolicy && context.fileWritePolicy.checkpointAvailable === false) return result;
     if (trust === "low" || result.decision !== "ask" || result.layer < 3 || result.forceModal === true || !this.hasJudge(category)) return result;
     if (this.judgeDeps?.settings.mode !== "active" && this.judgeDeps?.settingsUnreadable !== true) return result;
     return { ...result, reviewer: { route: context.headless === true ? "headless" : "foreground-auto" } };
@@ -1801,7 +1805,7 @@ export class PermissionManager {
     // Only a decision made on exactly these arguments short-circuits review
     // here. A target-wide hit on other arguments is classified as a fresh
     // request; the foreground memory skip may reuse it only after that review.
-    const userApproval = rememberedDecision && isExactArgsDecision(rememberedDecision, userApprovalArgs)
+    const userApproval = rememberedDecision && isExactArgsDecision(rememberedDecision, userApprovalArgs, toolName)
       ? rememberedDecision
       : null;
 
@@ -2181,6 +2185,19 @@ export class PermissionManager {
         reason: t("be_permissionManager.mcpLowTrustForced", { category }),
         layer: 6,
       };
+    }
+
+    if (trust === "high" && category === "write" && context.headless !== true && context.fileWritePolicy) {
+      const policy = context.fileWritePolicy;
+      if (policy.directoryApproved || (policy.insideProject && policy.checkpointAvailable)) {
+        return { decision: "allow", reason: policy.directoryApproved
+          ? "Directory approval covers this file write"
+          : "Checkpointed in-project file write", layer: 6,
+          ...(!policy.directoryApproved ? { requiresCodeCheckpoint: true as const } : {}) };
+      }
+      if (policy.checkpointAvailable === false) {
+        return { decision: "ask", reason: "File write has no available code checkpoint", layer: 6 };
+      }
     }
 
     const descriptor = getToolCategoryDescriptor(category);

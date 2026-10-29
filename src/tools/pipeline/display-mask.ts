@@ -79,7 +79,9 @@ async function approvalMemoryFor(
         : scope;
   return Object.freeze({
     kind: "key",
-    key: `${tool.name}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
+    key: `${tool.source === "builtin" && scope.kind === "path" && executionPlan === null
+      && ["write_file", "edit_file", "multi_edit", "apply_patch"].includes(tool.name)
+      ? "file-write-path" : tool.name}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
     scope: Object.freeze({ ...scope }),
   });
 }

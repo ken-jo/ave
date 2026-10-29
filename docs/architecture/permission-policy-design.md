@@ -78,8 +78,10 @@ Existing rule files are retained unchanged. Rules previously keyed to home or an
    sandbox limits, explicit deny policies, and unsafe origin combinations.
 4. Resolve policy mode.
 5. Apply mandatory per-call gates, user ask/allow rules and saved grants, then
-   the mode matrix. An eligible call still undecided may enter the configured
-   judge chain; existing auto-review uses the builtin judge adapter.
+   the category-level mode matrix. Default and auto-review allow eligible,
+   checkpoint-backed project file writes here, before reviewer routing. An
+   eligible call still undecided may enter the configured judge chain; existing
+   auto-review uses the builtin judge adapter.
 6. Route to user approval, inline allow, deferred queue, or deny.
 7. Execute only after the decision is resolved.
 8. Write audit data for allow, ask, deny, deferred, reviewer unavailable, and
@@ -2307,10 +2309,56 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 
 | Mode | Behavior |
 | --- | --- |
-| Default | Allows low-risk workspace reads; asks for mutation, network, shell, and out-of-scope access. A configured active judge chain may decide eligible calls left undecided after rules and mandatory gates. |
+| Default | Allows low-risk workspace reads and eligible, checkpoint-backed project file writes. Other writes and out-of-scope access ask; network and shell retain their own permission rules. A configured active judge chain may decide eligible calls left undecided after rules and mandatory gates. |
 | Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
-| Auto-review | Uses the reviewer for eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to every eligible call; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
+| Auto-review | Allows the same eligible, checkpoint-backed project file writes before review. Uses the reviewer for remaining eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to reviewed calls; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
 | Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. Within-cap runtime-dependent, syntactically unproven or unknown/incompletely consumed argv asks at L2 or denies headless; a Lane B pre-analysis cap refusal follows the L6 unsandboxed path. Only a qualifying within-cap literal-evaluation request whose closed grammar consumes every option and operand can use the documented exact-rule exception; a cap refusal never can. Unsandboxed shell execution still requires a current-format exact rule after positive proof. |
+
+### Project file writes
+
+Owner decision 2026-10-29 makes reversible project edits the lowest-friction
+file-tool tier. The comparison motivating the decision is that agent hosts pair
+in-workspace edits with recovery while reserving separate consent for external
+writes and protecting control files in every mode. Ave uses its per-turn code
+checkpoints and `restoreCodeCheckpoint` for that recovery boundary.
+
+In default and auto-review modes, a builtin file-tool write is allowed without
+an approval card only when every touched lexical and canonical path is inside
+the session cwd or a configured `additionalDirectories` root, and the write's
+code checkpoint is available. Application home, temporary roots and scratch
+roots do not become project roots through the broader allowed-directory list;
+existing scratch auto-approval remains separate. Move and copy operations must
+cover both endpoints. Archive extraction must cover its destination and retain
+its existing source-path and transfer checks. Brokered, remote and transfer
+routes that mark the checkpoint unavailable require human approval rather than
+reviewer auto-approval. Explicit grants keep their existing authority after all
+mandatory floors; being inside the project alone supplies no transfer grant.
+
+This category rule runs after sensitive-path denial, explicit deny and ask
+rules, corrupt-store handling, remote-controller one-shot consent, the scoped
+Edit protected-control-path and project-escape floors, staged/overlay origin
+checks, and strict mode. It does not open a new lane for a headless turn without
+a user. These gates cannot be replaced by the checkpoint or an existing grant.
+Strict mode still asks for all tools. Shell policy is unchanged.
+
+For an ordinary write outside the project, the directory approval card also
+approves that invocation, avoiding a second category-level card for the same
+write. A directory grant never replaces a later mandatory floor.
+
+Path-scoped remembered approvals for builtin `write_file`, `edit_file`,
+`multi_edit` and `apply_patch` share one text-write identity. The approval card
+names all four operations for a single-path scope. A single-path patch shares
+that file's scope; a multi-path patch retains a tool-specific identity bound to
+the exact sorted set of touched paths. Its card names only `apply_patch`. Other sources
+and other tools retain their own memory identities. Reuse still requires the
+existing risk check and re-prompts on escalation.
+
+Real secrets such as `.env`, `.env.local` and `.env.production` remain
+hard-denied. The exact template names `.env.example`, `.env.sample`,
+`.env.template` and `.env.dist` are excluded from the environment-file
+sensitive set for reads and writes; other sensitive rules still apply. Existing
+read-before-write observation and unchanged-since-read hash checks remain
+mandatory. A stale observation instructs the agent to re-read the file.
 
 For actually confined shell invocations, destructive and runtime-evaluation floor
 asks use the same foreground reviewer eligibility and configured threshold as

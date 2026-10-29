@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm, symlink, link, stat, mkdir, realpath 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { checkpointFileMutation, markCodeCheckpointUnavailable, restoreCodeCheckpoint as restoreWithPolicy, withCodeCheckpoint } from "../code-checkpoints.js";
+import { checkpointFileMutation, isCodeCheckpointAvailable, markCodeCheckpointUnavailable, restoreCodeCheckpoint as restoreWithPolicy, withCodeCheckpoint, withRequiredCodeCheckpoint } from "../code-checkpoints.js";
 import { CODE_CHECKPOINT_POLICY } from "../../shared/code-rewind.js";
 import { ApplyPatchTool, DeleteFileTool, EditFileTool, MoveFileTool, MultiEditTool, ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import type { ToolExecutionContext } from "../../tools/types.js";
@@ -31,6 +31,88 @@ async function write(content: string, path = file) {
 }
 
 describe("native file-tool code checkpoints", () => {
+  it("admits automatic writes only in an active healthy checkpoint turn", async () => {
+    expect(await isCodeCheckpointAvailable([file])).toBe(false);
+    await writeFile(file, "before");
+    await turn("automatic", async () => {
+      expect(await isCodeCheckpointAvailable([file, join(root, "new.txt")])).toBe(true);
+      expect(await isCodeCheckpointAvailable([])).toBe(false);
+      await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "after" }], () => writeFile(file, "after")));
+      await markCodeCheckpointUnavailable();
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+    });
+    expect(await isCodeCheckpointAvailable([file])).toBe(false);
+  });
+
+  it("refuses automatic mutations when the turn loses checkpoint authority", async () => {
+    const mutate = vi.fn(async () => {});
+    await expect(withRequiredCodeCheckpoint(mutate)).rejects.toThrow("retry with explicit approval");
+    await turn("revoked", async () => {
+      expect(await isCodeCheckpointAvailable([file])).toBe(true);
+      await withRequiredCodeCheckpoint(async () => {
+        await markCodeCheckpointUnavailable();
+        await expect(checkpointFileMutation([{ path: file, content: "after" }], mutate)).rejects.toThrow("retry with explicit approval");
+      });
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("refuses automatic writes with uncapturable originals", async () => {
+    await writeFile(file, "before");
+    const alias = join(root, "hard-link.txt");
+    await link(file, alias);
+    await turn("linked-original", async () => {
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+      const mutate = vi.fn(() => writeFile(file, "after"));
+      await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "after" }], mutate))).rejects.toThrow("retry with explicit approval");
+      expect(mutate).not.toHaveBeenCalled();
+    });
+    expect(await readFile(file, "utf8")).toBe("before");
+  });
+
+  it("does not allow a capture failure after automatic admission to mutate", async () => {
+    await writeFile(file, "before");
+    const mutate = vi.fn(() => writeFile(file, "after"));
+    await turn("oversized-result", async () => {
+      expect(await isCodeCheckpointAvailable([file])).toBe(true);
+      await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([
+        { path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) },
+      ], mutate))).rejects.toThrow("retry with explicit approval");
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await readFile(file, "utf8")).toBe("before");
+  });
+
+  it("does not admit oversized originals or directories for automatic writes", async () => {
+    await writeFile(file, Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1));
+    await turn("unsupported-original", async () => {
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+      expect(await isCodeCheckpointAvailable([root])).toBe(false);
+    });
+  });
+
+  it("requires fresh authority after checkpoint ledger corruption", async () => {
+    const mutate = vi.fn(async () => {});
+    await turn("corrupt-admission", async () => {
+      expect(await isCodeCheckpointAvailable([file])).toBe(true);
+      await writeFile(join(root, "state/code-checkpoints/turns.json"), "invalid JSON");
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+      await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "after" }], mutate))).rejects.toThrow("retry with explicit approval");
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("preserves the before-image hash race gate for automatic writes", async () => {
+    await writeFile(file, "before");
+    const mutate = vi.fn(() => writeFile(file, "agent"));
+    await expect(turn("automatic-race", () => withRequiredCodeCheckpoint(() => checkpointFileMutation([{
+      path: file,
+      get content() { writeFileSync(file, "external"); return "agent"; },
+    }], mutate)))).rejects.toThrow("File changed before checkpointed mutation");
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await readFile(file, "utf8")).toBe("external");
+  });
+
   it("restores exact original bytes after edits across turns and reload", async () => {
     const original = Buffer.from("before\r\n한글\r\n");
     await writeFile(file, original);

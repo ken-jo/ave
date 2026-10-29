@@ -20,7 +20,6 @@ import {
   sandboxRelaxesCategory,
   type SandboxCapability,
 } from "../sandbox-capability.js";
-import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
@@ -1308,24 +1307,6 @@ function isInsideAllowed(path: string, allowed: readonly string[]): boolean {
   return isPathAllowed(path, { directories: allowed });
 }
 
-// The scratch root in the classifier's own path form, or nothing while it does not verify.
-function verifiedScratchRoot(): string | undefined {
-  const scratch = verifyAveScratchDir();
-  return scratch.ok ? caseFoldForMatch(canonicalizePathForMatch(scratch.path)) : undefined;
-}
-
-// "Deep" = path is inside an allowed dir but ≥3 levels below the matched root (heuristic for "more dangerous than a leaf write"). Containment per entry is isInsideAllowed; only the depth measurement is local. First matching root wins (unchanged).
-function isDeepInsideAllowed(path: string, allowed: readonly string[]): boolean {
-  for (const a of allowed) {
-    if (isPathAllowed(path, { directories: [a] })) {
-      const tail = path.slice(a.length).replace(/^\/+/, "");
-      const segs = tail.split("/").filter((s) => s.length > 0);
-      return segs.length >= 3;
-    }
-  }
-  return false;
-}
-
 const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   // credential-exfiltration floor First, ahead of the disposable-guest lane: a guest's egress is not confined, and a file-sourced upload is the exfiltration shape whatever substrate runs it. HIGH keeps it once-only at the approval gate.
   (ctx) => {
@@ -1529,22 +1510,6 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
     }
     if (paths.some((p) => !isInsideAllowed(p, ctx.allowedDirectories))) {
       return { level: "high", reason: "write outside allowed dirs" };
-    }
-    return null;
-  },
-  (ctx) => {
-    if (ctx.category !== "write") return null;
-    const paths = extractDeclaredPaths(ctx);
-    // The application scratch directory is disposable to its full depth — that is the whole point of advertising it as somewhere to stage a build tree — so depth below it is not a signal. Anything else deep inside an allowed root keeps the heuristic.
-    const scratchRoot = verifiedScratchRoot();
-    if (
-      paths.some(
-        (p) =>
-          !(scratchRoot !== undefined && isInsideAllowed(p, [scratchRoot])) &&
-          isDeepInsideAllowed(p, ctx.allowedDirectories),
-      )
-    ) {
-      return { level: "medium", reason: "write deep inside allowed" };
     }
     return null;
   },

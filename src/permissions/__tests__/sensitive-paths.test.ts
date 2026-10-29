@@ -276,6 +276,17 @@ describe("isSensitivePath — Permission policy P2.5 OS sensitive paths", () => 
     );
   });
 
+  it.each(["read", "write"] as const)("exempts exact environment template names for %s only", (effect) => {
+    for (const name of [".env.example", ".env.sample", ".env.template", ".env.dist"]) {
+      expect(isSensitivePath(`/work/project/${name}`, effect)).toBeNull();
+      expect(isSensitivePath(`/work/project/nested/${name}`, effect)).toBeNull();
+      expect(isSensitivePath(`/work/.aws/${name}`, effect)).not.toBeNull();
+    }
+    for (const name of [".env", ".env.local", ".env.production", ".env.example.local", ".env.dist.bak"]) {
+      expect(isSensitivePath(`/work/project/${name}`, effect)).not.toBeNull();
+    }
+  });
+
   it("matches generic id_rsa even outside .ssh/", () => {
     expect(isSensitivePath("/tmp/staging/id_rsa")).toBe("**/id_rsa");
   });

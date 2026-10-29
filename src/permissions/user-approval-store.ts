@@ -112,9 +112,9 @@ export function approvalCacheKeyIdentity(
   return Object.freeze({ ...(key === undefined ? {} : { key }), memoryKey: memory.key });
 }
 
-// Whether a remembered decision was made for exactly this input. Args-identity rows always are; a target-wide row is only when its recorded args hash matches. A target-wide hit on different args must be re-reviewed before a remembered allow is reused.
-export function isExactArgsDecision(entry: UserApprovalEntry, args: string): boolean {
-  return entry.argsIdentity === undefined || entry.argsIdentity === sha256Hex(args);
+// Exact input also requires the same tool: different native edits may interpret identical input fields differently.
+export function isExactArgsDecision(entry: UserApprovalEntry, args: string, toolName: string): boolean {
+  return entry.toolName === toolName && (entry.argsIdentity === undefined || entry.argsIdentity === sha256Hex(args));
 }
 
 function scopeToWorkingDirectory(unscopedKey: string, workingDirectoryIdentity?: string): string {
@@ -150,9 +150,12 @@ function memoryEntryKey(
   memoryKey: string,
   workingDirectoryIdentity?: string,
 ): string {
+  const identityTool = source === "builtin" && memoryKey.startsWith("file-write-path:")
+    && ["write_file", "edit_file", "multi_edit", "apply_patch"].includes(toolName)
+    ? "file-write-path" : toolName;
   return scopeToWorkingDirectory(sha256Hex(canonicalStringify({
     version: "approval-memory-key/v2",
-    toolName,
+    toolName: identityTool,
     source,
     trustOrigin: trustOrigin || null,
     memoryKey,
@@ -352,9 +355,30 @@ export async function lookupUserDecision(
   const unscopedKey = entryKey(toolName, args, source, trustOrigin, approvalCacheKey);
   if (unscopedKey !== key) denyOnlyKeys.add(unscopedKey);
   if (approvalCacheKey?.memoryKey !== undefined) {
-    denyOnlyKeys.add(argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key));
+    // Old per-tool path denies remain restrictive; old allows never widen to the shared identity.
+    if (source === "builtin" && approvalCacheKey.memoryKey.startsWith("file-write-path:")
+      && ["write_file", "edit_file", "multi_edit", "apply_patch"].includes(toolName)) {
+      const legacyMemoryKey = toolName + approvalCacheKey.memoryKey.slice("file-write-path".length);
+      const legacyUnscopedKey = memoryEntryKey(toolName, source, trustOrigin, legacyMemoryKey);
+      denyOnlyKeys.add(legacyUnscopedKey);
+      denyOnlyKeys.add(globalEntryKey(legacyUnscopedKey));
+      if (workingDirectoryIdentity !== undefined) {
+        const legacyProjectKey = memoryEntryKey(toolName, source, trustOrigin, legacyMemoryKey, workingDirectoryIdentity);
+        denyOnlyKeys.add(legacyProjectKey);
+        if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyProjectKey, approvalConversationRoot(sessionId)));
+      } else if (sessionId !== undefined) {
+        denyOnlyKeys.add(conversationEntryKey(legacyUnscopedKey, approvalConversationRoot(sessionId)));
+      }
+    }
+    const legacyArgsUnscopedKey = argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key);
+    denyOnlyKeys.add(legacyArgsUnscopedKey);
+    denyOnlyKeys.add(globalEntryKey(legacyArgsUnscopedKey));
     if (workingDirectoryIdentity !== undefined) {
-      denyOnlyKeys.add(argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key, workingDirectoryIdentity));
+      const legacyArgsProjectKey = argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key, workingDirectoryIdentity);
+      denyOnlyKeys.add(legacyArgsProjectKey);
+      if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyArgsProjectKey, approvalConversationRoot(sessionId)));
+    } else if (sessionId !== undefined) {
+      denyOnlyKeys.add(conversationEntryKey(legacyArgsUnscopedKey, approvalConversationRoot(sessionId)));
     }
   }
   const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));

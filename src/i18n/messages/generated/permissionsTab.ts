@@ -107,7 +107,7 @@ export const en = {
 
   // Policy section
   "permissionsTab.policyTitle": "Permission Policy",
-  "permissionsTab.policyDescription": "Default allows read tools; Ask All confirms even reads. Auto-validate validates both headless and interactive runs through the reviewer; Allow All auto-allows tools outside hard-block scope but requires separate approval for access outside allowed directories.",
+  "permissionsTab.policyDescription": "Default allows reads and recoverable project file edits. Writes outside the project and protected paths still require approval; unavailable checkpoints also require approval. Confirm all asks even for reads. Auto-verify allows the same project edits before reviewing other eligible calls. Allow all preserves hard blocks and approval outside allowed directories.",
   "permissionsTab.policyAriaLabel": "Select permission policy",
 
   // Reviewer section
@@ -484,7 +484,7 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.summaryCloseDenies": "Escape 키는 거부 처리",
 
   "permissionsTab.policyTitle": "권한 정책",
-  "permissionsTab.policyDescription": "기본은 읽기 도구를 허용하고, 전체 물어보기는 읽기까지 확인합니다. 자동 검증은 자동(헤드리스) 실행과 대화형 채팅 모두를 권한 리뷰어 설정으로 검증하고, 전체 허용은 하드 차단 범위 밖의 도구를 자동 허용하되 허용 디렉터리 밖 접근은 별도 승인합니다.",
+  "permissionsTab.policyDescription": "기본은 읽기와 복구 가능한 프로젝트 파일 변경을 허용합니다. 프로젝트 밖 쓰기와 보호 경로는 계속 승인을 요청하고, 체크포인트를 사용할 수 없어도 승인을 요청합니다. 모두 확인은 읽기까지 확인합니다. 자동 검증은 같은 프로젝트 변경을 허용한 뒤 나머지 검증 대상에 리뷰어를 적용합니다. 모두 허용도 하드 차단과 허용 디렉터리 밖 접근 승인을 유지합니다.",
   "permissionsTab.policyAriaLabel": "권한 정책 선택",
 
   "permissionsTab.reviewerTitle": "권한 리뷰어",

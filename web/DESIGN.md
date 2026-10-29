@@ -301,7 +301,7 @@ soon as one exists.
       through `pkg()`. Connector copy claims reading only, because most
       connectors are read-only by default.
 21. Names match the app's labels (Settings → Model, Allow once, Split pane,
-    Work complete, Confirm writes).
+    Work complete, Confirm writes outside the project).
 
 ## Libraries
 

@@ -397,12 +397,12 @@ const ko: Pages = {
   security: {
     meta: {
       title: "보안",
-      description: "Ave는 바꾸는 작업을 실행 전에 묻고, 민감한 경로는 항상 막고, OS 샌드박스로 도구를 가두고, HMAC 체인 감사 로그를 남깁니다.",
+      description: "Ave는 복구 가능한 프로젝트 파일 변경을 허용하고, 보호 대상 작업은 실행 전에 묻고, 민감한 경로는 항상 막습니다. OS 샌드박스로 도구를 가두고 HMAC 체인 감사 로그를 남깁니다.",
     },
     hero: {
       eyebrow: "보안",
       title: "무엇이 바뀌는지 보고 나서 허용합니다",
-      lead: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고 위험도는 낮음, 중간, 높음입니다. 기본 모드는 읽기만 허용하고, 바꾸는 작업은 대화를 가리지 않는 승인 독에서 묻습니다.",
+      lead: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고 위험도는 낮음, 중간, 높음입니다. 기본 모드는 읽기와 복구 가능한 프로젝트 파일 변경을 허용합니다. 프로젝트 밖 쓰기와 보호 대상 작업은 대화를 가리지 않는 승인 독에서 묻습니다.",
       pic: { k: "approval-shell", alt: "builtin:bash 승인 창. 중간 위험, OS 격리 활성, 명령마다 임시 HOME, 거부·이번 세션 동안 허용·한 번만 허용 버튼" },
     },
     first: {
@@ -410,12 +410,12 @@ const ko: Pages = {
       title: "얼마나 자주 물을지는 내가 정합니다",
       body: "모드와 상관없이 강제 차단 규칙이 먼저 돕니다. 민감한 경로, 잘못된 매니페스트, 샌드박스 한계가 여기에 걸립니다.",
       points: [
-        ["쓰기만 확인.", "기본값입니다. 읽기는 허용하고 쓰기, 셸, 네트워크는 승인을 받습니다."],
+        ["프로젝트 밖 쓰기 확인.", "기본값입니다. 읽기와 복구 가능한 프로젝트 파일 변경은 허용합니다. 프로젝트 밖 쓰기와 보호 경로는 승인을 요청하며, 나머지 도구는 해당 권한 규칙을 따릅니다."],
         ["모두 확인.", "읽기를 포함해 모든 도구가 승인을 받습니다."],
-        ["자동 검증.", "대화에서 낮음과 중간 위험은 감사 기록을 남기고 자동 허용하고, 높은 위험만 묻습니다. 헤드리스 실행은 별도의 리뷰 대기열을 씁니다."],
+        ["자동 검증.", "복구 가능한 프로젝트 파일 변경은 허용합니다. 나머지 대화형 검증 대상은 설정한 리뷰어 임계값을 적용하고, 헤드리스 실행은 별도의 리뷰 대기열을 씁니다."],
         ["모두 허용.", "강제 차단 밖은 허용하지만, 허용된 폴더 밖 접근은 따로 승인을 받습니다."],
       ],
-      pic: { k: "settings-permissions", alt: "권한 설정의 권한 정책 목록. 모두 확인, 쓰기만 확인(선택됨), 자동 검증, 모두 허용" },
+      pic: { k: "settings-permissions", alt: "권한 설정의 권한 정책 목록. 모두 확인, 프로젝트 밖 쓰기 확인(선택됨), 자동 검증, 모두 허용" },
     },
     grid: {
       eyebrow: "실제 화면",
@@ -842,12 +842,12 @@ const en: Pages = {
   security: {
     meta: {
       title: "Security",
-      description: "Ave asks before anything changes, always blocks sensitive paths, confines tools with the OS sandbox, and keeps an HMAC-chained audit log.",
+      description: "Ave allows recoverable project file edits, asks before protected operations, always blocks sensitive paths, confines tools with the OS sandbox, and keeps an HMAC-chained audit log.",
     },
     hero: {
       eyebrow: "Security",
       title: "See what will change, then allow it",
-      lead: "Tool calls fall into read, write, shell, network and meta, and risk is low, medium or high. The default mode allows reads only; anything that changes something asks in an approval dock that does not cover the conversation.",
+      lead: "Tool calls fall into read, write, shell, network and meta, and risk is low, medium or high. The default mode allows reads and recoverable project file edits. Writes outside the project and protected operations ask in an approval dock that does not cover the conversation.",
       pic: { k: "approval-shell", alt: "An approval card for builtin:bash: medium risk, OS isolation active, a temporary HOME for each command, and Deny, Allow for session and Allow once" },
     },
     first: {
@@ -855,12 +855,12 @@ const en: Pages = {
       title: "You decide how often it asks",
       body: "In every mode, hard-deny rules run first: sensitive paths, invalid manifests and sandbox limits.",
       points: [
-        ["Confirm writes.", "The default. Reads are allowed; writes, shell commands and network requests ask for approval."],
+        ["Confirm writes outside the project.", "The default. Reads and recoverable project file edits are allowed; writes outside the project and protected paths ask for approval. Other tools follow their own permission rules."],
         ["Confirm all.", "Every tool asks for approval, reads included."],
-        ["Auto-verify.", "In chat, low and medium risk are allowed automatically with an audit trail, and only high risk asks. Headless runs use a separate reviewer queue."],
+        ["Auto-verify.", "Recoverable project file edits are allowed. Other eligible calls in chat use the configured reviewer threshold. Headless runs use a separate reviewer queue."],
         ["Allow all.", "Everything outside the hard blocks is allowed, but access outside the allowed folders still asks."],
       ],
-      pic: { k: "settings-permissions", alt: "The permission policy list in Permissions settings: Confirm all, Confirm writes (selected), Auto-verify and Allow all" },
+      pic: { k: "settings-permissions", alt: "The permission policy list in Permissions settings: Confirm all, Confirm writes outside the project (selected), Auto-verify and Allow all" },
     },
     grid: {
       eyebrow: "In the app",

@@ -76,10 +76,11 @@ export interface ShellRuleApproval {
 export type UserApprovalDecision = "allow" | "deny";
 
 /** The target a remembered decision covers when a tool opts into target-wide memory (`Tool.approvalMemoryScope`). Host-derived from the final input, and the only source the approval card uses to say what "remember" will cover. - `origin`: every web_fetch to `scheme://host:port`
- * (public network only). - `path`: this tool on this resolved path, any content. - `transfer`: this tool from source to destination, with its overwrite flag. - `command`: this exact shell command (by digest) in this working directory and sandbox plan; timeout and justification may vary. */
+ * (public network only). - `path`: this resolved path, any content. - `paths`: this exact resolved path set, any content. - `transfer`: this tool from source to destination, with its overwrite flag. - `command`: this exact shell command (by digest) in this working directory and sandbox plan; timeout and justification may vary. */
 export type ApprovalMemoryScope =
   | { readonly kind: "origin"; readonly origin: string }
   | { readonly kind: "path"; readonly path: string }
+  | { readonly kind: "paths"; readonly paths: readonly string[] }
   | {
       readonly kind: "transfer";
       readonly sourcePath: string;

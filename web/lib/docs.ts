@@ -185,9 +185,9 @@ const ko: Record<DocSlug, DocPage> = {
         h: "권한 모드",
         blocks: [
           { dl: [
-            ["쓰기만 확인", "기본값. 읽기는 허용하고 바꾸는 작업은 승인을 요청합니다."],
+            ["프로젝트 밖 쓰기 확인", "기본값. 읽기와 복구 가능한 프로젝트 파일 변경은 허용합니다. 프로젝트 밖 쓰기와 보호 경로는 승인을 요청하며, 나머지 도구는 해당 권한 규칙을 따릅니다."],
             ["모두 확인", "읽기를 포함한 모든 도구에 승인을 요청합니다."],
-            ["자동 검증", "대화에서 저위험·중위험 판정은 감사 기록과 함께 자동 허용하고 고위험만 승인을 요청합니다. 헤드리스 실행은 별도의 실패 폐쇄형 리뷰 대기열을 씁니다."],
+            ["자동 검증", "복구 가능한 프로젝트 파일 변경은 허용합니다. 나머지 대화형 검증 대상은 설정한 리뷰어 임계값을 적용합니다. 헤드리스 실행은 별도의 실패 폐쇄형 리뷰 대기열을 씁니다."],
             ["모두 허용", "하드 차단 밖은 자동으로 허용합니다. 허용 디렉터리 밖 접근은 따로 승인을 받습니다."],
           ] },
           { p: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고, 위험도는 낮음, 중간, 높음입니다." },
@@ -641,9 +641,9 @@ const en: Record<DocSlug, DocPage> = {
         h: "Permission modes",
         blocks: [
           { dl: [
-            ["Confirm writes", "The default. Reads are allowed; operations that change something ask for approval."],
+            ["Confirm writes outside the project", "The default. Reads and recoverable project file edits are allowed. Writes outside the project and protected paths ask for approval. Other tools follow their own permission rules."],
             ["Confirm all", "Every tool asks for approval, reads included."],
-            ["Auto-verify", "In chat, low- and medium-risk verdicts are allowed automatically with an audit trail, and high risk asks. Headless runs use a separate fail-closed reviewer queue."],
+            ["Auto-verify", "Recoverable project file edits are allowed. Other eligible calls in chat use the configured reviewer threshold. Headless runs use a separate fail-closed reviewer queue."],
             ["Allow all", "Everything outside the hard blocks is allowed. Access outside the allowed folders still needs its own approval."],
           ] },
           { p: "Tool calls fall into read, write, shell, network and meta. Risk is low, medium or high." },

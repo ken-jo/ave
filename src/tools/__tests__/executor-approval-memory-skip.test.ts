@@ -65,6 +65,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
     // Path is a direct LEAF of the allowed dir → rule verdict LOW. Stored verdict LOW → max(LOW, LOW) === LOW === stored → skip.
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: "low",
       nlJustification: null,
@@ -229,6 +230,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
   it("approval-memory audit persists the Host-owned governed projection", async () => {
     state.lookupResult = {
+      toolName: "plugin_checkin_read",
       scope: "session",
       verdictAtApproval: "high",
       nlJustification: null,
@@ -284,6 +286,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       deferredQueue: {} as never,
     });
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: "low",
       nlJustification: null,
@@ -314,46 +317,22 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     expect(requestAndWait).not.toHaveBeenCalled();
   });
 
-  it("(b) prior approval but args mutated to a higher rule verdict → re-prompt (maxVerdict)", async () => {
-    const executeSpy = vi.fn(async () => "wrote");
-    const registry = new ToolRegistry();
-    registry.register(makeWriteProbeTool(executeSpy));
-
-    const permMgr = pmReturning({ decision: "ask", reason: "needs confirm", layer: 6 });
-
-    // Stored LOW. Current path is DEEP inside the allowed dir → rule MEDIUM. max(MEDIUM, LOW) === MEDIUM !== stored LOW → escalation → re-prompt.
+  it("(b) an out-of-scope current path exceeds the stored verdict and refuses memory reuse", async () => {
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: "low",
       nlJustification: null,
       revokedAt: null,
     };
-
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
-    const executor = new ToolExecutor(
-      registry,
-      undefined,
-      permMgr,
-      undefined,
-      { requestAndWait } as never,
+    const result = await tryUserApprovalMemorySkip(
+      "write_probe", "builtin", "write", ["path"],
+      { path: join(dir, "outside", "file.txt") }, dir,
+      [join(dir, "allowed")], [], userPermissionContext(), undefined, {}, randomUUID(),
     );
-
-    const result = await executor.executeAll(
-      [{ id: "tu-escalate", name: "write_probe", input: { path: join(dir, "nested", "deep", "file.txt") } }],
-      {
-        sessionId: "sess-escalate",
-        executionCwd: dir,
-        permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
-      },
-    );
-
-    // Modal IS shown (escalation); and we denied it, so the tool did not run.
-    expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(executeSpy).not.toHaveBeenCalled();
-    expect(result[0].is_error).toBe(true);
+    expect(result).toBeNull();
+    expect(lookupApprovalMock).toHaveBeenCalledTimes(1);
+    expect(emitSandboxAuditMock).not.toHaveBeenCalled();
   });
 
   it("(c) revoked / absent approval (lookup null) → re-prompt", async () => {
@@ -400,6 +379,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
     // Legacy entry; verdictAtApproval is null (provenance lost).
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "persistent",
       verdictAtApproval: null,
       nlJustification: null,
@@ -450,6 +430,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
     // A matching prior approval exists; it must be IGNORED.
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: "low",
       nlJustification: null,
@@ -494,6 +475,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
     // A matching prior approval exists; it must NOT skip the hard-ask gate.
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: "low",
       nlJustification: null,
@@ -537,6 +519,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
     // A matching prior approval exists; headless must not read it.
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: "low",
       nlJustification: null,
@@ -688,6 +671,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     permMgr.setBroadcastUserApprovalHit(broadcast);
 
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: "low",
       nlJustification: null,
@@ -739,6 +723,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     permMgr.setBroadcastUserApprovalHit(broadcast);
 
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "persistent",
       verdictAtApproval: "low",
       nlJustification: null,
@@ -778,6 +763,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     permMgr.setBroadcastUserApprovalHit(broadcast);
 
     state.lookupResult = {
+      toolName: "write_probe",
       scope: "session",
       verdictAtApproval: null,
       nlJustification: null,

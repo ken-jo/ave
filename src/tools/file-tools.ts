@@ -1302,6 +1302,14 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     return JSON.stringify({ operation: this.name, paths });
   }
 
+  approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
+    const operations = this.parseOrThrow(this.requireStringField(input, "patch"));
+    const paths = [...new Set(patchOperationPaths(operations)
+      .map((path) => this.resolveApprovalPath(path, ctx)))].sort();
+    if (paths.length === 1) return { kind: "path", path: paths[0]! };
+    return { kind: "paths", paths };
+  }
+
   private parseOrThrow(patch: string): readonly PatchFileOperation[] {
     const parsed = parsePatchEnvelope(patch);
     if (!parsed.ok) throw new Error(`apply_patch: invalid patch: ${parsed.error}`);
