@@ -177,6 +177,18 @@ function terminalResult(
   } as const;
 }
 
+function runningBrokerShell(executionId: string) {
+  return { output: "", isError: false, executionId, offset: 0, status: "running" };
+}
+
+function brokerShellRead(executionId: string, output: string, nextOffset: number) {
+  return { executionId, offset: 0, nextOffset, output, isError: false, running: true, truncated: false, status: "running" };
+}
+
+function cancelledBrokerShell(executionId: string, output: string, nextOffset: number, isError = true) {
+  return { ...terminalResult("cancelled"), executionId, nextOffset, output, isError, truncated: false };
+}
+
 beforeEach(() => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -231,7 +243,7 @@ describe("brokered workload shell execution", () => {
     const start = vi.fn(() => ({ signal: new AbortController().signal, write, finish, bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }));
     setAgentTerminalObservationSink({ start, egress: vi.fn(), releaseSessions: vi.fn() });
     const identity = { sessionId: SESSION_ID, turnId: "observed-turn", toolUseId: "tool-use-test" };
-    broker.execute.mockResolvedValueOnce({ output: "", isError: false, executionId: "exec_observed", offset: 0, status: "running" });
+    broker.execute.mockResolvedValueOnce(runningBrokerShell("exec_observed"));
     const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
       () => new BashTool().execute({ command, timeoutSeconds: 10, run_in_background: true }, context(binding))));
     const shellId = result.metadata?.shellId as string;
@@ -256,7 +268,7 @@ describe("brokered workload shell execution", () => {
     setAgentTerminalObservationSink({ start: () => ({ signal: new AbortController().signal, write, finish,
       bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }), egress: vi.fn(), releaseSessions: vi.fn() });
     const identity = { sessionId: SESSION_ID, turnId: "stopped-turn", toolUseId: "tool-use-test" };
-    broker.execute.mockResolvedValueOnce({ output: "", isError: false, executionId: "exec_stopped", offset: 0, status: "running" });
+    broker.execute.mockResolvedValueOnce(runningBrokerShell("exec_stopped"));
     const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
       () => new BashTool().execute({ command, timeoutSeconds: 10, run_in_background: true }, context(binding))));
     broker.execute.mockResolvedValueOnce({ ...successfulRun("tail\n"), executionId: "exec_stopped", nextOffset: 5, truncated: true });
@@ -548,43 +560,14 @@ describe("brokered workload shell execution", () => {
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
     broker.execute.mockImplementation(async (_capability, operation) => {
       if (operation === "shell.start") {
-        return {
-          output: "",
-          isError: false,
-          executionId: "exec_1",
-          offset: 0,
-          status: "running",
-        };
+        return runningBrokerShell("exec_1");
       }
       if (operation === "shell.read") {
-        return {
-          executionId: "exec_1",
-          offset: 0,
-          nextOffset: 5,
-          output: "ready",
-          isError: false,
-          running: true,
-          truncated: false,
-          status: "running",
-        };
+        return brokerShellRead("exec_1", "ready", 5);
       }
       if (operation === "shell.kill") {
-        return {
-          executionId: "exec_1",
-          nextOffset: 9,
-          // Kill returns the full transcript; presentation removes already-read UTF-8 bytes.
-          output: "readydone",
-          isError: false,
-          truncated: false,
-          status: "cancelled",
-          exitCode: null,
-          signal: "SIGKILL",
-          timedOut: false,
-          cancelled: true,
-          oomDelta: 0,
-          ownedResourcesZero: true,
-          receiptDigest: RECEIPT_DIGEST,
-        };
+        // Kill returns the full transcript; presentation removes already-read UTF-8 bytes.
+        return cancelledBrokerShell("exec_1", "readydone", 9, false);
       }
       throw new Error(`unexpected operation: ${String(operation)}`);
     });
@@ -652,42 +635,13 @@ describe("brokered workload shell execution", () => {
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
     broker.execute.mockImplementation(async (_capability, operation) => {
       if (operation === "shell.start") {
-        return {
-          output: "",
-          isError: false,
-          executionId: "exec_unicode",
-          offset: 0,
-          status: "running",
-        };
+        return runningBrokerShell("exec_unicode");
       }
       if (operation === "shell.read") {
-        return {
-          executionId: "exec_unicode",
-          offset: 0,
-          nextOffset: 6,
-          output: "é🙂",
-          isError: false,
-          running: true,
-          truncated: false,
-          status: "running",
-        };
+        return brokerShellRead("exec_unicode", "é🙂", 6);
       }
       if (operation === "shell.kill") {
-        return {
-          executionId: "exec_unicode",
-          nextOffset: 9,
-          output: "é🙂終",
-          isError: true,
-          truncated: false,
-          status: "cancelled",
-          exitCode: null,
-          signal: "SIGKILL",
-          timedOut: false,
-          cancelled: true,
-          oomDelta: 0,
-          ownedResourcesZero: true,
-          receiptDigest: RECEIPT_DIGEST,
-        };
+        return cancelledBrokerShell("exec_unicode", "é🙂終", 9);
       }
       throw new Error(`unexpected operation: ${String(operation)}`);
     });
@@ -717,22 +671,8 @@ describe("brokered workload shell execution", () => {
     const command = "bad-unicode-cursor";
     const cwd = "/app";
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
-    broker.execute.mockResolvedValueOnce({
-      output: "",
-      isError: false,
-      executionId: "exec_bad_cursor",
-      offset: 0,
-      status: "running",
-    }).mockResolvedValueOnce({
-      executionId: "exec_bad_cursor",
-      offset: 0,
-      nextOffset: "é🙂".length,
-      output: "é🙂",
-      isError: false,
-      running: true,
-      truncated: false,
-      status: "running",
-    });
+    broker.execute.mockResolvedValueOnce(runningBrokerShell("exec_bad_cursor"))
+      .mockResolvedValueOnce(brokerShellRead("exec_bad_cursor", "é🙂", "é🙂".length));
 
     const started = await new BashTool().execute(
       { command, cwd, timeoutSeconds: 10, run_in_background: true },
@@ -756,13 +696,7 @@ describe("brokered workload shell execution", () => {
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
     let finishKill!: (result: unknown) => void;
     const pendingKill = new Promise((resolve) => { finishKill = resolve; });
-    broker.execute.mockResolvedValueOnce({
-      output: "",
-      isError: false,
-      executionId: "exec_dispose",
-      offset: 0,
-      status: "running",
-    }).mockReturnValueOnce(pendingKill);
+    broker.execute.mockResolvedValueOnce(runningBrokerShell("exec_dispose")).mockReturnValueOnce(pendingKill);
 
     const started = await new BashTool().execute(
       { command, cwd, timeoutSeconds: 10, run_in_background: true },
@@ -784,21 +718,7 @@ describe("brokered workload shell execution", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
-    finishKill({
-      executionId: "exec_dispose",
-      nextOffset: 0,
-      output: "",
-      isError: true,
-      truncated: false,
-      status: "cancelled",
-      exitCode: null,
-      signal: "SIGKILL",
-      timedOut: false,
-      cancelled: true,
-      oomDelta: 0,
-      ownedResourcesZero: true,
-      receiptDigest: RECEIPT_DIGEST,
-    });
+    finishKill(cancelledBrokerShell("exec_dispose", "", 0));
     const report = await settling;
     expect(report).toMatchObject({
       state: "complete",
@@ -830,13 +750,7 @@ describe("brokered workload shell execution", () => {
     const now = vi.spyOn(Date, "now");
     // Admit with command and cleanup slack, then force expiry only during disposal.
     now.mockReturnValue(expiresAt - 60_000);
-    broker.execute.mockResolvedValueOnce({
-      output: "",
-      isError: false,
-      executionId: "exec_expired",
-      offset: 0,
-      status: "running",
-    }).mockResolvedValueOnce({
+    broker.execute.mockResolvedValueOnce(runningBrokerShell("exec_expired")).mockResolvedValueOnce({
       output: "Workload broker refused execution (capability-expired).",
       isError: true,
       metadata: { source: "workload-broker", code: "capability-expired" },
@@ -889,21 +803,7 @@ describe("brokered workload shell execution", () => {
     broker.execute.mockImplementation(async (_capability, operation, payload) => {
       expect(operation).toBe("shell.kill");
       const executionId = (payload as { executionId: string }).executionId;
-      return {
-        executionId,
-        nextOffset: 0,
-        output: "",
-        isError: true,
-        truncated: false,
-        status: "cancelled",
-        exitCode: null,
-        signal: "SIGKILL",
-        timedOut: false,
-        cancelled: true,
-        oomDelta: 0,
-        ownedResourcesZero: true,
-        receiptDigest: RECEIPT_DIGEST,
-      };
+      return cancelledBrokerShell(executionId, "", 0);
     });
 
     expect(backgroundShellManager.disposeAllBrokerShells()).toBe(2);
