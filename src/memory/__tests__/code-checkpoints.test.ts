@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, writeFile, rm, symlink, link, stat, mkdir, realpath } from "node:fs/promises";
+import fsPromises, { mkdtemp, readFile, writeFile, rm, symlink, link, stat, mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -81,6 +81,154 @@ describe("native file-tool code checkpoints", () => {
     });
     expect(mutate).not.toHaveBeenCalled();
     expect(await readFile(file, "utf8")).toBe("before");
+  });
+
+  it.each([false, true])("preserves earlier automatic edits when capture fails with preceding effect %s", async (precedingEffect) => {
+    await writeFile(file, "original");
+    const other = join(root, "other.txt");
+    await writeFile(other, "other original");
+    const mutate = vi.fn(async () => {});
+    await turn("failed-followup", async () => {
+      await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "first" }], () => writeFile(file, "first")));
+      const ledger = join(root, "state/code-checkpoints/turns.json");
+      const originalLedger = await readFile(ledger, "utf8");
+      expect(await isCodeCheckpointAvailable([file, other])).toBe(true);
+      await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([
+        ...(precedingEffect ? [{ path: other, content: "second" }] : []),
+        { path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) },
+      ], mutate))).rejects.toThrow("retry with explicit approval");
+      expect(mutate).not.toHaveBeenCalled();
+      expect(await readFile(ledger, "utf8")).toBe(originalLedger);
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+      await expect(withRequiredCodeCheckpoint(mutate)).rejects.toThrow("retry with explicit approval");
+      // Explicitly approved supported edits still retain their before-images.
+      await checkpointFileMutation([{ path: file, content: "approved" }], () => writeFile(file, "approved"));
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+    });
+    expect(await restoreCodeCheckpoint(sessionId, "failed-followup")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("original");
+    expect(await readFile(other, "utf8")).toBe("other original");
+  });
+
+  it("rechecks queued automatic admission before recording any new capture", async () => {
+    await writeFile(file, "original");
+    const mutate = vi.fn(async () => {});
+    await turn("queued-refusal", async () => {
+      await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "first" }], () => writeFile(file, "first")));
+      const ledger = join(root, "state/code-checkpoints/turns.json");
+      const originalLedger = await readFile(ledger, "utf8");
+      const first = withRequiredCodeCheckpoint(() => checkpointFileMutation([
+        { path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) },
+      ], mutate));
+      const queued = withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "queued" }], mutate));
+      const results = await Promise.allSettled([first, queued]);
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+        if (result.status === "rejected") expect(result.reason.message).toContain("retry with explicit approval");
+      }
+      expect(await readFile(ledger, "utf8")).toBe(originalLedger);
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await restoreCodeCheckpoint(sessionId, "queued-refusal")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("original");
+  });
+
+  it("preserves earlier automatic edits when a new capture exceeds the ledger cap", async () => {
+    const original = Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes, 65);
+    await writeFile(file, original);
+    const mutate = vi.fn(async () => {});
+    await turn("automatic-cap", async () => {
+      for (let index = 0; index < 5; index++) {
+        const next = Buffer.from(original); next[0] = index;
+        await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: next }], () => writeFile(file, next)));
+      }
+      const ledger = join(root, "state/code-checkpoints/turns.json");
+      const originalLedger = await readFile(ledger, "utf8");
+      await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "overflow" }], mutate))).rejects.toThrow("retry with explicit approval");
+      expect(await readFile(ledger, "utf8")).toBe(originalLedger);
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await restoreCodeCheckpoint(sessionId, "automatic-cap")).toEqual({ ok: true });
+    expect(await readFile(file)).toEqual(original);
+  });
+
+  it("blocks further automatic writes after a ledger storage failure without hiding the error", async () => {
+    await writeFile(file, "original");
+    const mutate = vi.fn(async () => {});
+    await turn("storage-refusal", async () => {
+      await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "first" }], () => writeFile(file, "first")));
+      const ledger = join(root, "state/code-checkpoints/turns.json");
+      const originalLedger = JSON.parse(await readFile(ledger, "utf8"));
+      const rename = fsPromises.rename;
+      const failure = new Error("ledger write failed");
+      let failed = false;
+      const renameSpy = vi.spyOn(fsPromises, "rename").mockImplementation(async (source, destination) => {
+        if (destination === ledger && !failed) { failed = true; throw failure; }
+        return rename(source, destination);
+      });
+      try {
+        await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "second" }], mutate))).rejects.toBe(failure);
+      } finally { renameSpy.mockRestore(); }
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+      expect(JSON.parse(await readFile(ledger, "utf8"))).toEqual(originalLedger);
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await restoreCodeCheckpoint(sessionId, "storage-refusal")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("original");
+  });
+
+  it("reconciles an unexecuted capture after a post-rename ledger durability error", async () => {
+    await writeFile(file, "original");
+    const mutate = vi.fn(async () => {});
+    await turn("durability-refusal", async () => {
+      await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "first" }], () => writeFile(file, "first")));
+      const ledger = join(root, "state/code-checkpoints/turns.json");
+      const originalLedger = JSON.parse(await readFile(ledger, "utf8"));
+      const rename = fsPromises.rename;
+      const failure = new Error("ledger directory sync failed");
+      let failed = false;
+      const renameSpy = vi.spyOn(fsPromises, "rename").mockImplementation(async (source, destination) => {
+        await rename(source, destination);
+        // Inject the durability error after the ledger replacement has actually landed.
+        if (destination === ledger && !failed) { failed = true; throw failure; }
+      });
+      try {
+        await expect(withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "second" }], mutate))).rejects.toBe(failure);
+      } finally { renameSpy.mockRestore(); }
+      expect(failed).toBe(true);
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+      expect(JSON.parse(await readFile(ledger, "utf8"))).toEqual(originalLedger);
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await restoreCodeCheckpoint(sessionId, "durability-refusal")).toEqual({ ok: true });
+    expect(await readFile(file, "utf8")).toBe("original");
+  });
+
+  it("reports both the required admission and rollback storage errors", async () => {
+    await writeFile(file, "original");
+    const mutate = vi.fn(async () => {});
+    await turn("rollback-refusal", async () => {
+      const ledger = join(root, "state/code-checkpoints/turns.json");
+      const rename = fsPromises.rename;
+      const originalError = new Error("ledger admission failed");
+      const rollbackError = new Error("ledger rollback failed");
+      let attempts = 0;
+      const renameSpy = vi.spyOn(fsPromises, "rename").mockImplementation(async (source, destination) => {
+        if (destination === ledger) throw ++attempts === 1 ? originalError : rollbackError;
+        return rename(source, destination);
+      });
+      try {
+        const failure = await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "second" }], mutate))
+          .then(() => undefined, (error: unknown) => error);
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).errors).toEqual([originalError, rollbackError]);
+        expect((failure as AggregateError).cause).toBe(originalError);
+      } finally { renameSpy.mockRestore(); }
+      expect(await isCodeCheckpointAvailable([file])).toBe(false);
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(await readFile(file, "utf8")).toBe("original");
   });
 
   it("does not admit oversized originals or directories for automatic writes", async () => {

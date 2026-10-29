@@ -2320,7 +2320,9 @@ Owner decision 2026-10-29 makes reversible project edits the lowest-friction
 file-tool tier. The comparison motivating the decision is that agent hosts pair
 in-workspace edits with recovery while reserving separate consent for external
 writes and protecting control files in every mode. Ave uses its per-turn code
-checkpoints and `restoreCodeCheckpoint` for that recovery boundary.
+checkpoints and `restoreCodeCheckpoint` for that recovery boundary. A refused automatic
+mutation preserves earlier before-images and blocks further automatic writes
+in that active turn, so a retry needs approval.
 
 In default and auto-review modes, a builtin file-tool write is allowed without
 an approval card only when every touched lexical and canonical path is inside

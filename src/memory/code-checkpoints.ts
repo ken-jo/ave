@@ -54,7 +54,7 @@ type Change = z.infer<typeof ChangeSchema>;
 type StoredChange = z.infer<typeof StoredChangeSchema>;
 type Turn = z.infer<typeof StoredTurnSchema>;
 interface TurnIdentity { sessionId: string; messageId: string }
-interface ActiveTurn extends TurnIdentity { dir: string; unavailable: boolean; deleted: boolean; admitted: boolean }
+interface ActiveTurn extends TurnIdentity { dir: string; unavailable: boolean; deleted: boolean; admitted: boolean; automaticWritesBlocked: boolean }
 interface DeferredSession {
   dir: string;
   sessionId: string;
@@ -78,9 +78,14 @@ class CodeCheckpointRequiredError extends Error {
 
 function requireAvailableCheckpoint(identity: ActiveTurn | undefined): void {
   if (requiredCheckpointContext.getStore() === true
-    && (!identity || identity.deleted || identity.unavailable || !identity.admitted || identity.dir !== namespace.dir)) {
+    && (!identity || identity.deleted || identity.unavailable || identity.automaticWritesBlocked || !identity.admitted || identity.dir !== namespace.dir)) {
     throw new CodeCheckpointRequiredError();
   }
+}
+
+function blockAutomaticWrites(identity: ActiveTurn): never {
+  identity.automaticWritesBlocked = true;
+  throw new CodeCheckpointRequiredError();
 }
 
 /** Automatic edits require rewind at the actual mutation boundary, too. */
@@ -383,7 +388,7 @@ async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: num
 }
 
 export async function withCodeCheckpoint<T>(identity: TurnIdentity, run: () => Promise<T>): Promise<T> {
-  const active: ActiveTurn = { ...identity, dir: namespace.dir, unavailable: false, deleted: false, admitted: false };
+  const active: ActiveTurn = { ...identity, dir: namespace.dir, unavailable: false, deleted: false, admitted: false, automaticWritesBlocked: false };
   if (liveChildren.has(childKey(identity.sessionId))) downgrade(active, "child alive");
   inFlight.add(active);
   try {
@@ -407,13 +412,13 @@ export async function withCodeCheckpoint<T>(identity: TurnIdentity, run: () => P
 /** Only a healthy admitted turn with capturable originals can justify automatic writes. */
 export async function isCodeCheckpointAvailable(paths: readonly string[]): Promise<boolean> {
   const identity = turnContext.getStore();
-  if (!identity || !identity.admitted || identity.deleted || identity.unavailable
+  if (!identity || !identity.admitted || identity.deleted || identity.unavailable || identity.automaticWritesBlocked
     || identity.dir !== namespace.dir || paths.length === 0) return false;
   return exclusive(async () => {
     try {
       const turns = await loadLedger(true);
       const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
-      if (!turn || turn.unavailable || turn.consumed || identity.unavailable || identity.deleted) return false;
+      if (!turn || turn.unavailable || turn.consumed || identity.unavailable || identity.deleted || identity.automaticWritesBlocked) return false;
       for (const change of turn.changes) await hydrate(change);
       let projectedBytes = ledgerStorageBytes(turns);
       for (const path of new Set(paths.map((value) => resolve(value)))) {
@@ -422,7 +427,7 @@ export async function isCodeCheckpointAvailable(paths: readonly string[]): Promi
           + Buffer.byteLength(path) + 512;
         if (projectedBytes > CODE_CHECKPOINT_POLICY.maxStorageBytes) return false;
       }
-      return !identity.unavailable && !identity.deleted;
+      return !identity.unavailable && !identity.deleted && !identity.automaticWritesBlocked;
     } catch (error) {
       log.warn("checkpoint admission unavailable: %s", (error as Error).message);
       return false;
@@ -505,6 +510,7 @@ async function checkpointMutation<T>(
   requireAvailableCheckpoint(identity);
   if (!identity || identity.deleted) return run();
   return exclusive(async () => {
+    requireAvailableCheckpoint(identity);
     let turns: Turn[];
     try { turns = await load(); }
     catch (error) { deferUnavailable(identity, error); requireAvailableCheckpoint(identity); return run(); }
@@ -530,13 +536,30 @@ async function checkpointMutation<T>(
         else changes.push({ path, ...await storeImage(before.bytes), mode: before.mode, afterHash: hash(after) });
       }
     } catch {
+      // No effect ran: preserve earlier rewind images and require a person on retry.
+      if (requiredCheckpointContext.getStore() === true) blockAutomaticWrites(identity);
       await makeUnavailable(turns, identity, "uncapturable original");
       requireAvailableCheckpoint(identity);
       return run();
     }
     turn.changes.push(...changes);
+    if (requiredCheckpointContext.getStore() === true && ledgerStorageBytes(turns) > CODE_CHECKPOINT_POLICY.maxStorageBytes) {
+      turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
+      blockAutomaticWrites(identity);
+    }
     // Write ahead: a crash cannot leave a successful edit without its before-image.
-    await save(turns, turn);
+    try { await save(turns, turn); }
+    catch (error) {
+      if (requiredCheckpointContext.getStore() === true) {
+        identity.automaticWritesBlocked = true;
+        turn.changes = turn.changes.filter((entry) => !changes.includes(entry));
+        try { await save(turns, turn); }
+        catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], "Code checkpoint rollback failed", { cause: error });
+        }
+      }
+      throw error;
+    }
     if (turn.unavailable) {
       identity.unavailable = true;
       requireAvailableCheckpoint(identity);
