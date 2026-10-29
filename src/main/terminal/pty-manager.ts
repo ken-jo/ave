@@ -138,8 +138,9 @@ interface TerminalSession {
   observation?: TerminalCommandObservation;
   /** Host terminals only: who controls the shell and what an approved agent command disclosed. */
   control?: HostTerminalControl;
-  /** The workspace pane conversation this host terminal was last seen bound to, for binding-change revocation. */
-  hostBinding?: string;
+  /** The workspace pane conversation this host terminal was last seen bound to (null: none), for binding-change revocation; undefined
+   * until the first binding change in its window is observed. */
+  hostBinding?: string | null;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   cleanupIntegration?: () => void;
   closing: boolean;
@@ -1262,14 +1263,15 @@ export interface HostTerminalTypingRequest {
 /** A pane binding changed in `windowId`: end every host lease whose requesting conversation is no longer that tab's pane chat, so its
  * pending bytes and output admission stop with the binding. `boundConversation` names the conversation the tab's pane chat holds while
  * the tab sits in a workspace pane (undefined otherwise). With no lease, a changed binding still moves the control generation, so an
- * approval card pending under the old binding types nothing. */
+ * approval card pending under the old binding types nothing. The first observation only records the binding: an unrelated pane's change
+ * must not invalidate a pending card, and a card sealed under another binding is refused anyway by the binding check before every byte. */
 export function revokeUnboundHostTerminalLeases(windowId: number, boundConversation: (tabId: string) => string | undefined): void {
   for (const session of sessions.values()) {
     const control = session.control;
     if (session.ownerWindowId !== windowId || session.info.lane !== "manual" || !control) continue;
-    const bound = boundConversation(session.info.tabId);
+    const bound = boundConversation(session.info.tabId) ?? null;
     const holder = control.leaseSession();
-    const changed = holder === undefined ? bound !== session.hostBinding : bound !== holder;
+    const changed = holder !== undefined ? bound !== holder : session.hostBinding !== undefined && bound !== session.hostBinding;
     session.hostBinding = bound;
     if (changed) control.revoke("binding");
   }

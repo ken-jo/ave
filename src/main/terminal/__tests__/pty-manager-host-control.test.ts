@@ -300,14 +300,16 @@ describe.runIf(process.platform !== "win32")("host terminal control periods", ()
     expect((await spawnTerminal({ tabId: TAB, lane: "manual", purpose: "workspace", ownerWindowId: WINDOW })).ok).toBe(true);
     const afterMove = generation();
     expect(afterMove).toBeGreaterThan(afterKey);
+    // The first binding change seen in the window only records this terminal's binding, and an unrelated one leaves it alone.
     revokeUnboundHostTerminalLeases(WINDOW, () => "conversation-a");
-    const afterBind = generation();
-    expect(afterBind).toBeGreaterThan(afterMove);
-    // An unrelated binding change in the window leaves this terminal's generation alone.
+    expect(generation()).toBe(afterMove);
     revokeUnboundHostTerminalLeases(WINDOW, () => "conversation-a");
-    expect(generation()).toBe(afterBind);
+    expect(generation()).toBe(afterMove);
     revokeUnboundHostTerminalLeases(WINDOW, () => "conversation-b");
-    expect(generation()).toBeGreaterThan(afterBind);
+    const afterRebind = generation();
+    expect(afterRebind).toBeGreaterThan(afterMove);
+    revokeUnboundHostTerminalLeases(WINDOW, () => undefined);
+    expect(generation()).toBeGreaterThan(afterRebind);
     expect(controlTerminal(shell.session, WINDOW, "get")).toMatchObject({ ok: true, control: { mode: "available" } });
   });
 
