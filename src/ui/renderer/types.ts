@@ -628,6 +628,8 @@ export type AveApi = {
       surface?: ActiveWorkspaceSurface,
       /** The side chat the sending view shows; a turn never lands in a pane's chat by accident. */
       sessionId?: string,
+      /** The turn's true origin. A user send carries its gesture's one-shot intent; absent, main treats the send as a queue drain. */
+      origin?: { inputOrigin: "queue-auto" } | { inputOrigin: "user-keyboard"; userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot },
     ) => Promise<
       | { ok: true; result: unknown }
       | SideChatOperationFailure
@@ -761,7 +763,8 @@ export type AveApi = {
     personaPromptId?: string,
     options?: { interrupt?: boolean },
   ) => Promise<unknown>;
-  chatGuide: (input: string) => Promise<unknown>;
+  /** `userIntent` is the composer gesture's one-shot keyboard intent; without a valid one main queues the text as another principal's. */
+  chatGuide: (input: string, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot) => Promise<unknown>;
   chatNew: (opts?: { projectRoot?: string; projectName?: string }) => Promise<
     { ok: true } | { ok: false; error: string }
   >;
@@ -808,7 +811,7 @@ export type AveApi = {
    * is the row's durable identity (see ChatEntry.messageId) — a position would
    * name a different row after the next compaction.
    */
-  chatEditResend: (messageId: string, newText: string) => Promise<{ ok: boolean; error?: string }>;
+  chatEditResend: (messageId: string, newText: string, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot) => Promise<{ ok: boolean; error?: string }>;
   /**
    * Restore conversation, native file-tool edits, or both before this user
    * message. Omitted mode restores conversation only: the message and later
@@ -819,8 +822,8 @@ export type AveApi = {
   chatGetTurnReview: (expectedSessionId: string) => Promise<TurnReviewResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
-  chatContinueLastUser: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
-  chatRetryEffort: (opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean }) => Promise<{ ok: boolean; error?: string }>;
+  chatContinueLastUser: (sessionId: string, authority?: import("../../shared/chat-origin.js").ContinueAuthority) => Promise<{ ok: boolean; error?: string }>;
+  chatRetryEffort: (opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean }, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot) => Promise<{ ok: boolean; error?: string }>;
   /** `sessionId` targets a conversation other than the loaded one. */
   chatExport: (format: "markdown" | "json", sessionId?: string) => Promise<{ ok: boolean; filePath?: string; canceled?: boolean; error?: string }>;
   /** Row-level conversation edits. Each field is optional; omitted means unchanged. */
@@ -850,10 +853,12 @@ export type AveApi = {
   // standard { ok: boolean } pattern. Callers guard with `"error" in result`.
   chatEnterCheckpointView: (sessionId: string, compactNum: number) => Promise<{ messageIndexAtCreation: number } | { error: string }>;
   chatExitCheckpointView: () => Promise<{ ok: boolean }>;
-  chatBranchFromCheckpoint: (sessionId: string, compactNum: number) => Promise<{
+  chatBranchFromCheckpoint: (sessionId: string, compactNum: number, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot) => Promise<{
     newSessionId: string;
     lastMessageRole: "user" | "assistant" | "tool_result" | null;
     shouldAutoContinue: boolean;
+    /** Present when the click's gesture was verified: the single-use grant the auto-continue spends. */
+    branchContinuation?: string;
   } | { error: string }>;
   chatAbort: () => Promise<{ ok: boolean }>;
   chatListShellTasks: (expectedSessionId: string) => Promise<ShellTask[]>;

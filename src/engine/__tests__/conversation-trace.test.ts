@@ -18,6 +18,7 @@ import {
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { subscriptionTransportFailure } from "../../main/subscription-transport-error-diagnostics.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -87,7 +88,7 @@ describe("ConversationTracer — §4.5 11-step", () => {
       const loop = makeLoop(provider);
       const tracer = createTracer("transport-error", { enabled: true, traceDir: dir });
       loop.setTracer(tracer);
-      await loop.runTurn("private-user-input", undefined, undefined, { inputOrigin: "user-keyboard" });
+      await loop.runTurn("private-user-input", undefined, undefined, { ...userKeyboardTurn() });
       const raw = readFileSync(tracer.filePath!, "utf8");
       const entries: TraceEntry[] = raw.trim().split("\n").map((line) => JSON.parse(line) as TraceEntry);
       expect(entries.find((entry) => entry.step === "LLM_STREAM_ERROR")?.meta).toMatchObject({
@@ -119,7 +120,7 @@ describe("ConversationTracer — §4.5 11-step", () => {
     const rec = new RecordingTracer();
     loop.setTracer(rec);
 
-    await loop.runTurn("디렉토리 보여줘", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("디렉토리 보여줘", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     const names = new Set(rec.steps.map((s) => s.name));
@@ -178,7 +179,7 @@ describe("ConversationTracer — §4.5 11-step", () => {
     loop.setTracer(rec);
 
     await loop.runTurn("인덱서 호출", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const streamStep = rec.steps.find((step) => step.name === "LLM_STREAM");

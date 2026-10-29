@@ -26,6 +26,7 @@ import {
 } from "../../tools/agent-send.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeConversationPermissionDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 // Real filesystem I/O can schedule lock retries after fake time has advanced.
 const retrySleep = vi.hoisted(() => ({ skip: false }));
@@ -187,7 +188,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summary = s;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(summary).not.toBeNull();
@@ -237,7 +238,7 @@ describe("ConversationLoop onTurnSummary", () => {
     let summary: TurnSummary | null = null;
 
     try {
-      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { ...userKeyboardTurn() });
     } finally {
       await auditLogger.close();
     }
@@ -325,7 +326,7 @@ describe("ConversationLoop onTurnSummary", () => {
     } as never);
     let summary: TurnSummary | undefined;
     try {
-      const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+      const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
       expect(result.text).toBe("answer");
       expect(readValue).toHaveBeenCalledOnce();
       expect(fetchResponse).toHaveBeenCalledTimes(2);
@@ -375,7 +376,7 @@ describe("ConversationLoop onTurnSummary", () => {
         settingsService: { get: () => fakeLlmSettings({ provider: "openai", model }), getSecret: () => "test-key" },
       } as never);
       let summary: TurnSummary | null = null;
-      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { ...userKeyboardTurn() });
       return { sentTools, modelSettings: summary!.modelSettings };
     };
 
@@ -404,7 +405,7 @@ describe("ConversationLoop onTurnSummary", () => {
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
-    await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
     expect(requests).toHaveLength(2);
     for (const request of requests) {
       expect(request.tools).toBeUndefined();
@@ -452,7 +453,7 @@ describe("ConversationLoop onTurnSummary", () => {
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
-    const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
     expect(result.text).toBe("answer");
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
@@ -481,7 +482,7 @@ describe("ConversationLoop onTurnSummary", () => {
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
-    const turn = loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    const turn = loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { ...userKeyboardTurn() });
     await Promise.race([primaryStarted, turn]);
     await vi.advanceTimersByTimeAsync(30_000);
     expect((await turn).text).toBe("fallback answer");
@@ -519,7 +520,7 @@ describe("ConversationLoop onTurnSummary", () => {
     let summary: TurnSummary | null = null;
 
     try {
-      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { ...userKeyboardTurn() });
     } finally {
       await auditLogger.close();
     }
@@ -551,7 +552,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summaries.push(s);
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     // Reasoning-only turns still need a summary to retain usage and cost accounting.
@@ -575,7 +576,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: () => {
         calls += 1;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(calls).toBe(0);
@@ -601,7 +602,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: () => {
         calls += 1;
       },
-    }, controller.signal, { inputOrigin: "user-keyboard" },
+    }, controller.signal, { ...userKeyboardTurn() },
     );
 
     // Suppress summary footers for aborted and error turns with partial-round stats.
@@ -650,7 +651,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summaries.push(s);
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(result.stopReason).toBe("input-required");
@@ -676,7 +677,7 @@ describe("ConversationLoop onTurnSummary", () => {
       } as never,
     });
 
-    await loop.runTurn("질문", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("질문", {}, undefined, { ...userKeyboardTurn() });
 
     expect(saveSession).toHaveBeenCalled();
     const lastCall = saveSession.mock.calls.at(-1);
@@ -742,7 +743,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summary = s;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
     // Finish checkpoint I/O before advancing the provider retry clock.
     await primaryStarted;
@@ -819,7 +820,7 @@ describe("ConversationLoop onTurnSummary", () => {
     const onTurnSummary = vi.fn<(summary: TurnSummary) => void>();
     retrySleep.skip = true;
     try {
-      await loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
+      await loop.runTurn("reply", { onTurnSummary }, undefined, { ...userKeyboardTurn() });
     } finally { retrySleep.skip = false; }
     expect(primarySent).toHaveLength(resumePrimary ? 6 : 5);
     expect(primarySent[0]?.model).toBe(model);
@@ -933,7 +934,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summary = s;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
     // Wait for round-two I/O before advancing each retry timer independently.
     await retryRoundStarted;
@@ -1017,7 +1018,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (value) => {
         summary = value;
       },
-    }, undefined, { inputOrigin: "user-keyboard" });
+    }, undefined, { ...userKeyboardTurn() });
 
     // Fallback status stays observable without billing its synthetic serving identity.
     expect(onLlmStatus).toHaveBeenCalledWith(expect.objectContaining({
@@ -1131,7 +1132,7 @@ describe("ConversationLoop onTurnSummary", () => {
       },
     );
 
-    await loop.runTurn("질문", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("질문", {}, undefined, { ...userKeyboardTurn() });
 
     const auditPayload = auditLogger.logTurn.mock.calls.at(-1)?.[0] as
       | Record<string, unknown>
@@ -1201,7 +1202,7 @@ describe("ConversationLoop onTurnSummary", () => {
       } as never,
     });
 
-    await loop.runTurn("run the probe", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("run the probe", {}, undefined, { ...userKeyboardTurn() });
 
     expect(calls).toBe(2);
     expect((loop as unknown as { lastRoundProviderInputTokens: number })
@@ -1240,7 +1241,7 @@ describe("ConversationLoop onTurnSummary", () => {
       }),
     });
 
-    await loop.runTurn("질문", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("질문", {}, undefined, { ...userKeyboardTurn() });
 
     const savedMessages = saveSession.mock.calls.at(-1)?.[1] as
       | GenericMessage[] | undefined;
@@ -1293,7 +1294,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: () => {
         summaryCalls += 1;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(result.text).toBe("저장 실패 답변");
@@ -1344,7 +1345,7 @@ describe("ConversationLoop onTurnSummary", () => {
       memoryManager: { saveSession, listSessions: () => [] } as never,
     });
 
-    await loop.runTurn("지금 메일 읽어줘", {}, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("지금 메일 읽어줘", {}, undefined, { ...userKeyboardTurn(),
     });
 
     const savedMessages = saveSession.mock.calls.at(-1)?.[1] as
@@ -1370,7 +1371,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: () => {
         summaryCallCount += 1;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(result.stopReason).toBe("context-error");
@@ -1390,7 +1391,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summary = s;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(summary).not.toBeNull();
@@ -1436,7 +1437,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summary = s;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(summary).not.toBeNull();
@@ -1482,7 +1483,7 @@ describe("ConversationLoop onTurnSummary", () => {
       onTurnSummary: (s) => {
         summary = s;
       },
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     const savedMessages = saveSession.mock.calls.at(-1)?.[1] as

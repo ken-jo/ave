@@ -16,7 +16,7 @@ export type ApprovalCardChoice =
 /** A choice a dropdown holds. */
 export type RememberingChoice = Exclude<ApprovalCardChoice, "deny-once" | "allow-once">;
 
-export const ALLOW_MENU_CHOICES = ["allow-session", "allow-project", "allow-everywhere"] as const satisfies readonly RememberingChoice[];
+const ALLOW_MENU_CHOICES = ["allow-session", "allow-project", "allow-everywhere"] as const satisfies readonly RememberingChoice[];
 
 /** How "Edit rule" edits a selected choice's rule: in the card (a rule the host checks against the card's grammar), in Settings (an exact tool approval), or not at all. */
 type RuleEditing = "inline" | "settings" | null;
@@ -32,6 +32,8 @@ interface DecisionOption {
   readonly needsEdit: boolean;
   /** i18n key of the choice's label. */
   readonly labelKey: string;
+  /** i18n key of what an offered choice covers, when the label alone would mislead (a host terminal card's Always deny saves a broad Bash rule). */
+  readonly noteKey?: string;
 }
 
 export interface ApprovalDecisionModel {
@@ -40,6 +42,8 @@ export interface ApprovalDecisionModel {
   readonly options: Readonly<Record<RememberingChoice, DecisionOption>>;
   /** An edited allow that is a wildcard runs only sandboxed commands; the card says so while the rule is edited. */
   readonly warnsOnWildcardAllow: boolean;
+  /** The lasting allows this card lists, in order; absent means every one of {@link ALLOW_MENU_CHOICES}. */
+  readonly allowChoices?: readonly RememberingChoice[];
 }
 
 export const DECISION_LABEL_KEYS: Readonly<Record<ApprovalCardChoice, string>> = {
@@ -50,6 +54,9 @@ export const DECISION_LABEL_KEYS: Readonly<Record<ApprovalCardChoice, string>> =
   "allow-everywhere": "toolApprovalDialog.decisionAllowEverywhere",
   "allow-once": "toolApprovalDialog.allowOnce",
 };
+
+/** A host terminal card's lasting allow names one command in one folder of one shell, not "everywhere". */
+const HOST_TERMINAL_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowHostTerminal";
 
 /** A folder card's lasting allow is "Always allow this folder", not "everywhere": it grants the folder, not the tool. */
 export const FOLDER_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowFolder";
@@ -67,6 +74,29 @@ const label = (choice: RememberingChoice): string => DECISION_LABEL_KEYS[choice]
 /** A bash or PowerShell card: every remembering choice saves a `Bash(...)` / `PowerShell(...)` rule, editable in the card. Always deny saves the command's literal argv, or a rule the person writes when there is none. */
 export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionModel {
   const exact = rule.exactRule;
+  if (rule.hostTerminal !== undefined) {
+    // The user's own host terminal: the only lasting allow is the exact `HostTerminal(...)` rule (this shell, this folder, this command),
+    // saved as written by the host; no session or project allow, and the rule is not editable into anything broader.
+    return {
+      variant: "shell",
+      options: {
+        // Always deny saves a `Bash(...)` rule, which denies the command in every shell and folder: the card says so.
+        "deny-always": rule.denyAllowed
+          ? { ...offered(rule.denyRule, "inline", label("deny-always"), rule.denyRule === null), noteKey: "toolApprovalDialog.hostTerminalDenyScope" }
+          : refused("toolApprovalDialog.persistentUnavailableOneShot", label("deny-always")),
+        "allow-session": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-session")),
+        "allow-project": refused("toolApprovalDialog.hostTerminalRuleScope", label("allow-project")),
+        "allow-everywhere": rule.hostTerminal.afterExternalContent === true
+          ? refused("toolApprovalDialog.hostTerminalAfterExternalContent", HOST_TERMINAL_ALLOW_LABEL_KEY)
+          : exact === null
+          ? refused("toolApprovalDialog.shellExactRuleUnavailable", HOST_TERMINAL_ALLOW_LABEL_KEY)
+          : offered(exact, null, HOST_TERMINAL_ALLOW_LABEL_KEY),
+      },
+      warnsOnWildcardAllow: false,
+      // No session or project allow exists here, so the card lists only the one lasting allow it can save.
+      allowChoices: ["allow-everywhere"],
+    };
+  }
   const allow = (choice: RememberingChoice, allowed: boolean): DecisionOption =>
     exact === null
       ? refused("toolApprovalDialog.shellExactRuleUnavailable", label(choice))
@@ -176,13 +206,18 @@ export function oneShotDecisionModel(reasonKey: string): ApprovalDecisionModel {
 
 /** What the middle button does with nothing selected: the first allow its dropdown offers (Allow for session when offered). */
 export function defaultAllowChoice(model: ApprovalDecisionModel): RememberingChoice | null {
-  return ALLOW_MENU_CHOICES.find((choice) => model.options[choice].offered) ?? null;
+  return allowMenuChoices(model).find((choice) => model.options[choice].offered) ?? null;
+}
+
+/** The lasting allows `model`'s card lists. */
+export function allowMenuChoices(model: ApprovalDecisionModel): readonly RememberingChoice[] {
+  return model.allowChoices ?? ALLOW_MENU_CHOICES;
 }
 
 /** Why the middle button cannot allow anything, or null when it can: a folder card's reason is its folder's; every other card's is its session allow's. */
 export function allowRefusalKey(model: ApprovalDecisionModel): string | null {
   if (defaultAllowChoice(model) !== null) return null;
-  return model.options[model.variant === "path-grant" ? "allow-everywhere" : "allow-session"].reasonKey;
+  return model.options[allowMenuChoices(model)[0] === "allow-everywhere" || model.variant === "path-grant" ? "allow-everywhere" : "allow-session"].reasonKey;
 }
 
 /** True for a rule text whose matching scope needs a warning before saving: a shell rule ending in the ` *` wildcard (`Bash(git *)`, `PowerShell(Get-Item *)`) or a host rule naming subdomains (`Network(*.example.com)`). */

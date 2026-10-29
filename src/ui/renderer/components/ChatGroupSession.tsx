@@ -1,5 +1,6 @@
 import type { RewindMode } from "../../../shared/code-rewind.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
+import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
@@ -560,10 +561,11 @@ export function ChatGroupSession({
 
   const handleGuide = useCallback(async (
     text: string,
+    intent?: UserKeyboardIntentSnapshot,
   ): Promise<{ ok: true } | { ok: false; error: string }> => {
     if (text.trim().length === 0) return { ok: false, error: "empty-text" };
     try {
-      const result = await api.chatGuide(text);
+      const result = await api.chatGuide(text, intent);
       // Main-process handler returns `{ ok: boolean, error?: string }`. Type-narrow defensively since the IPC boundary is
       // `Promise<unknown>`.
       if (result && typeof result === "object" && "ok" in result) {

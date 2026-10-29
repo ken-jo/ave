@@ -28,6 +28,7 @@ function fixture(options: {
   manager.setMode(options.mode ?? "allow");
   const requestAndWait = vi.fn(async (request: { id: string }): Promise<ApprovalDecision> => ({ requestId: request.id, choice: "deny-once" }));
   const memorySkip = vi.fn(async () => null);
+  const allowsPolicyTransition = vi.fn(() => false);
   const tool: Tool = {
     name: "inspect_resource", description: "Inspect a resource", version: "1.0.0",
     category: options.category ?? "read", source: options.source ?? "builtin",
@@ -38,7 +39,7 @@ function fixture(options: {
   const context: AuthorizationStageContext = {
     services: {
       permissionManager: manager,
-      approvalGate: { requestAndWait },
+      approvalGate: { requestAndWait, allowsPolicyTransition },
       tryUserApprovalMemorySkip: memorySkip,
     } as unknown as InvocationRunnerServices,
     tool, toolUse: { id: "inspect", name: tool.name, input: {} },
@@ -59,7 +60,7 @@ function fixture(options: {
     abortDeps: vi.fn(), returnRationaleResumeBlock: vi.fn(), sessionId: "pipeline", startTime: Date.now(),
     permissionResult: undefined, resolvedPluginOperation: undefined, pluginOperationPrincipal: undefined,
   };
-  return { manager, context, requestAndWait, memorySkip };
+  return { manager, context, requestAndWait, memorySkip, allowsPolicyTransition };
 }
 
 describe("invocation permission pipeline orchestration", () => {
@@ -108,7 +109,7 @@ describe("invocation permission pipeline orchestration", () => {
   });
 
   it("rejects a card answer after permission policy changes", async () => {
-    const { context, manager, requestAndWait } = fixture({ category: "write", mode: "strict" });
+    const { context, manager, requestAndWait, allowsPolicyTransition } = fixture({ category: "write", mode: "strict" });
     context.finalInput = Object.freeze({ path: join(directory, "resource.txt"), content: "unchanged input" });
     requestAndWait.mockImplementation(async (request) => {
       manager.setRules([{ pattern: context.toolUse.name, action: "deny" }]);
@@ -117,6 +118,8 @@ describe("invocation permission pipeline orchestration", () => {
     const result = await authorizeToolInvocation(context);
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Permission policy changed") });
     expect(requestAndWait).toHaveBeenCalledOnce();
+    expect(allowsPolicyTransition).toHaveBeenCalledOnce();
+    expect(context.tool.execute).not.toHaveBeenCalled();
     expect(context.finalInput).toEqual({ path: join(directory, "resource.txt"), content: "unchanged input" });
   });
 

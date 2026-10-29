@@ -10,6 +10,7 @@ import { isObservationAck, isTerminalObservationSubscription, type ObservationRe
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { setAgentTerminalObservationSink } from "../tools/agent-terminal-observation.js";
 import { resolveSessionWindow } from "../tools/session-window-scope.js";
+import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 
 interface TerminalViewOwner {
   event: IpcMainInvokeEvent;
@@ -43,8 +44,10 @@ export class TerminalObservationRuntime {
         const holder = findSessionMainWindowContents(sessionId);
         const pane = this.deps.paneChatLoops?.holding(sessionId);
         const rail = this.deps.sideChatConversationLoop?.getSessionId() === sessionId ? sideChatOwnerWindow() : null;
+        // A restored pane chat is hosted by the window whose stored pane binding names it, before its pane loop has loaded it.
         return windows.find((window) => window && !window.isDestroyed()
-          && (window.webContents === holder || window.id === pane?.windowId || window.webContents === rail?.webContents))?.id ?? null;
+          && (window.webContents === holder || window.id === pane?.windowId || window.webContents === rail?.webContents
+            || browserTabRegistry.conversationSurface(window.id, sessionId) !== undefined))?.id ?? null;
       },
       liveOriginSessionId: (sessionId) => this.deps.getSubAgentRunner?.()?.liveOriginSessionId(sessionId),
     });

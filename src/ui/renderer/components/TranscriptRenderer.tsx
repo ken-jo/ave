@@ -155,7 +155,7 @@ export function TranscriptRenderer({
   onPreviewTarget,
 }: SharedTranscriptProps): React.ReactElement {
   const { t } = useTranslation();
-  const terminalObservation = useTerminalObservation(currentSessionId, observeTerminal);
+  const terminalObservation = useTerminalObservation(currentSessionId, observeTerminal, entries.length);
   const openNativeContextMenu = useNativeContextMenu();
   const pricingOverrides = usePricingOverrides();
 

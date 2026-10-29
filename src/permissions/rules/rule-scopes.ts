@@ -6,13 +6,13 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
+import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type HostTerminalShell, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
-import type { ShellCommandInput } from "./shell-prefix-policy.js";
+import { asParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 
 export type ProjectRuleState =
   | { ok: true; projectRoot: string; rules: readonly PermissionRule[] }
@@ -164,12 +164,38 @@ function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>
   return { deny, ask, allow };
 }
 
+// The allow set of a command typed into the user's host terminal: only `HostTerminal(...)` rules of that shell kind, that canonical physical
+// directory and that complete literal command. A `Bash(...)` allow never qualifies, and no host rule ever reaches the ordinary set above.
+function hostTerminalAllows(
+  target: HostTerminalRuleTarget,
+  command: string,
+  scopes: ReadonlyArray<readonly PermissionRule[]>,
+): ShellRuleInput[] {
+  const allow: ShellRuleInput[] = [];
+  forEachCommandRule(scopes, (rule, spec) => {
+    if (rule.action !== "allow" || spec.kind !== "host-terminal" || spec.shell !== target.shell || spec.cwd !== target.cwd) return;
+    // The complete command, word for word: one simple command and nothing composed from several rules.
+    if (spec.tokens.join(" ") !== command) return;
+    allow.push({ pattern: rule.pattern, spec: { kind: "bash", tokens: spec.tokens, wildcard: false } });
+  });
+  return allow;
+}
+
+/** The host terminal a typed command runs in, as a host rule names it. */
+export interface HostTerminalRuleTarget {
+  readonly shell: HostTerminalShell;
+  /** Canonical physical directory of the shell (realpath, case as stored). */
+  readonly cwd: string;
+}
+
 export function evaluateShellSubject(
-  subject: { command: ShellCommandInput; cwd?: string; exactAllowOnly?: boolean },
+  subject: { command: ShellCommandInput; cwd?: string; exactAllowOnly?: boolean; hostTerminal?: HostTerminalRuleTarget },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ShellRuleEvaluation {
   const rules = collectShellRuleSet(...scopes);
   if (subject.exactAllowOnly) rules.allow = rules.allow.filter((rule) => !rule.spec.wildcard);
+  // Deny and ask `Bash(...)` rules still restrict a host terminal command; floors still run in evaluateShellRules.
+  if (subject.hostTerminal) rules.allow = hostTerminalAllows(subject.hostTerminal, asParsedShellCommand(subject.command).command, scopes);
   return evaluateShellRules(subject.command, rules, subject.cwd);
 }
 

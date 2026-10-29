@@ -96,6 +96,8 @@ export interface GuidanceQueueEntry {
   a2aCausalContext?: A2AAgentCausalContext;
   // Structured child provenance prevents quoted labels from impersonating a child report.
   subAgentTitle?: string;
+  /** Set only by queueUserGuidance (the renderer's guide path). Absent means another principal: a plugin, an app, an agent or a child. */
+  principal?: "user-keyboard";
 }
 
 export interface SessionTransitionLease {
@@ -119,15 +121,25 @@ export class ConversationLoop {
   readonly auditLogger: AuditLogger;
   provider: LLMProvider | null = null;
   private approvalSessionId = createDlpSafeUuid();
+  private sessionEpochValue = 0;
+  /** Read-only: the session identity changes only through `replaceSessionIdentity`. */
   get sessionId(): string {
     return this.approvalSessionId;
   }
-  set sessionId(sessionId: string) {
+  /** Monotonic host generation; increments on every active-session replacement, and only there. */
+  get sessionEpoch(): number {
+    return this.sessionEpochValue;
+  }
+  /**
+   * The one place a loop's session identity changes, for a main loop or a sub-agent child alike. It moves the approval surface and
+   * advances the epoch together, so nothing that is bound to the epoch (a session lease, a branch's auto-continue grant, a pending
+   * file-mention read) can outlive a swap.
+   */
+  replaceSessionIdentity(sessionId: string): void {
     updateApprovalSurface({ kind: "move", previousSessionId: this.approvalSessionId, sessionId });
     this.approvalSessionId = sessionId;
+    this.sessionEpochValue += 1;
   }
-  /** Monotonic host generation; increments on every active-session replacement. */
-  sessionEpoch = 0;
   sessionKind: SessionKind = "main";
   sessionRoutineId: string | null = null;
   sessionRoutineTitle: string | null = null;
@@ -231,9 +243,14 @@ export class ConversationLoop {
   }
 
   /** Queue non-interrupting guidance only while a turn is active; reject overflow atomically.
-   * Callers must surface rejection so the renderer retains unsent text. */
+   * Callers must surface rejection so the renderer retains unsent text. Its rows count as another principal's (an app or plugin message). */
   queueGuidance(text: string): "queued" | "no-active-turn" | "queue-full" | "too-long" | "empty" | "session-transition" {
     return this.enqueueGuidance(text);
+  }
+
+  /** Queue guidance the user typed in the composer while the turn runs; the only producer whose rows count as the user's own words. */
+  queueUserGuidance(text: string): "queued" | "no-active-turn" | "queue-full" | "too-long" | "empty" | "session-transition" {
+    return this.enqueueGuidance(text, {}, "user-keyboard");
   }
 
   /** Acknowledge durable guidance only after injection, never after enqueue alone. */
@@ -247,6 +264,7 @@ export class ConversationLoop {
   private enqueueGuidance(
     text: string,
     disposition: GuidanceDisposition = {},
+    principal?: "user-keyboard",
   ): "queued" | "no-active-turn" | "queue-full" | "too-long" | "empty" | "session-transition" {
     if (this.activeSessionTransition !== null) return "session-transition";
     const trimmed = text.trim();
@@ -254,7 +272,7 @@ export class ConversationLoop {
     if (trimmed.length > GUIDE_MAX_CHARS) return "too-long";
     if (this.currentAbortController === null) return "no-active-turn";
     if (this.guidanceQueue.length >= GUIDE_MAX_ENTRIES) return "queue-full";
-    this.guidanceQueue.push({ text: trimmed, ...disposition });
+    this.guidanceQueue.push({ text: trimmed, ...disposition, ...(principal ? { principal } : {}) });
     return "queued";
   }
 

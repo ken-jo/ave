@@ -1165,7 +1165,7 @@ describe("pty-manager typing an approved agent command", () => {
     pty.emitData(prompt());
     writeTerminal(TAB, "echo human\r");
     pty.emitData(`${mark("C;cmdline_url=echo%20human")}private user output\n${mark("D;0")}`);
-    const manual = await spawnLane({ tabId: "terminal:0000000b-1", lane: "manual", ownerWindowId: 3 });
+    const manual = await spawnLane({ tabId: "terminal:0000000b-1", lane: "manual", purpose: "workspace", ownerWindowId: 3 });
     expect(manual.ok).toBe(true);
     if (!manual.ok) throw new Error("Missing manual terminal");
     expect(writeLane(manual.session, "echo manual\r")).toEqual({ ok: true });
@@ -2394,7 +2394,7 @@ describe("host tabs and conversation-owned isolation", () => {
     vi.stubEnv("SHELL", process.execPath);
     vi.stubEnv("ZDOTDIR", "/synthetic/shell-profile");
     try {
-      const result = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8, cwd: tmpdir() });
+      const result = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, cwd: tmpdir() });
       expect(result).toMatchObject({ ok: true, session: { lane: "manual", substrate: "host", shellIntegration: false, integrationUnavailableReason: expect.any(String) } });
       expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
       expect(ptySpawnMock.mock.calls[0]?.[0]).toBe(process.execPath);
@@ -2409,9 +2409,9 @@ describe("host tabs and conversation-owned isolation", () => {
   it("reserves host ownership after interpreter failure without granting an isolated companion", async () => {
     vi.stubEnv("SHELL", "/missing/interactive-shell");
     try {
-      expect((await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 })).ok).toBe(false);
+      expect((await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8 })).ok).toBe(false);
       expect(terminalTabOwnerWindow(tabId)).toBe(8);
-      expect(await spawnLane({ tabId, lane: "manual", ownerWindowId: 9 })).toMatchObject({ ok: false, reason: "bad-request" });
+      expect(await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 9 })).toMatchObject({ ok: false, reason: "bad-request" });
       expect(await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 })).toMatchObject({ ok: false, reason: "no-terminal" });
       const abort = new AbortController(); abort.abort();
       await expect(ensureConversationTerminal("conversation-cancelled", 8, undefined, abort.signal)).rejects.toThrow();
@@ -2431,7 +2431,7 @@ describe("host tabs and conversation-owned isolation", () => {
   it("refuses host input addressed to a retired terminal incarnation", async () => {
     vi.stubEnv("SHELL", process.execPath);
     try {
-      const host = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 });
+      const host = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8 });
       if (!host.ok) throw new Error("expected host terminal");
       expect(writeLane({ ...host.session, terminalSessionId: "retired" }, "bad")).toEqual({ ok: false, error: "stale-terminal-session" });
       expect(lastPty!.written).toEqual([]);
@@ -2457,7 +2457,7 @@ describe("host tabs and conversation-owned isolation", () => {
     expect(__terminalSessionCountForTest()).toBe(16);
     vi.stubEnv("SHELL", process.execPath);
     try {
-      expect(await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 })).toMatchObject({ ok: true, session: { lane: "manual" } });
+      expect(await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8 })).toMatchObject({ ok: true, session: { lane: "manual" } });
       expect(__terminalSessionCountForTest()).toBe(17);
     } finally { vi.unstubAllEnvs(); }
   });
@@ -2507,7 +2507,7 @@ describe("host tabs and conversation-owned isolation", () => {
   it("closes only the host PTY on host-tab close and releases isolated state on conversation end", async () => {
     vi.stubEnv("SHELL", process.execPath);
     try {
-      const host = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 });
+      const host = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8 });
       if (!host.ok) throw new Error("expected host terminal");
       const isolated = await initializedConversation("conversation-one");
       killHostTerminal(tabId);
@@ -2545,7 +2545,7 @@ describe("host tabs and conversation-owned isolation", () => {
     expect(__terminalSessionCountForTest()).toBe(0);
     vi.stubEnv("SHELL", process.execPath);
     try {
-      expect(await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 })).toMatchObject({ ok: true });
+      expect(await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8 })).toMatchObject({ ok: true });
       expect(ptySpawnMock).toHaveBeenCalledTimes(1);
     } finally { vi.unstubAllEnvs(); }
   });

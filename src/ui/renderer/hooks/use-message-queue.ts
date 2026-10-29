@@ -10,7 +10,7 @@ import type { Attachment } from "../types/attachments.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
 import type { ChatStreamEvent } from "../../../lib/chat-stream-state.js";
-import type { ComposerHandle, ComposerSurface } from "../components/Composer.js";
+import { captureComposerKeyboardIntent, type ComposerHandle, type ComposerSurface } from "../components/Composer.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { augmentFileReferenceMarkers } from "../utils/compose.js";
 
@@ -21,7 +21,9 @@ import { augmentFileReferenceMarkers } from "../utils/compose.js";
  * instead, and the shortcut is not registered.
  */
 interface MessageQueueGuide {
-  inject: (text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** `intent` is present only for a guide the user just typed (⌘K); a queue flush at a round boundary has none, so main treats it as
+   * another principal's text, as a queued send is `queue-auto` rather than the keyboard. */
+  inject: (text: string, intent?: UserKeyboardIntentSnapshot) => Promise<{ ok: true } | { ok: false; error: string }>;
   onError: (message: string) => void;
 }
 
@@ -300,7 +302,7 @@ export function useMessageQueue({
     const formatted = formatQueueInject(taken);
     // ESC / esc 취소 = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint.
     startQueueTurn();
-    void onAsk(formatted, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
+    void onAsk(formatted, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
   }, [messageQueueStore, onAbort, onAsk, startQueueTurn]);
 
   // composer Enter morph — busy = queue.add, idle = onAsk 직행. ⌘⏎ = 즉시 주입 (LLM abort + 큐 selected + 현재 입력).
@@ -353,7 +355,7 @@ export function useMessageQueue({
     setQuestion("");
     // ⌘⏎ = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint. handleAsk 가 streaming 시 자체 abort 처리.
     startQueueTurn();
-    void onAsk(combined, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
+    void onAsk(combined, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
   }, [question, messageQueueStore, onAsk, setQuestion, interceptSubmit, startQueueTurn]);
 
   const handleMessageQueueSendNow = useCallback((item: MessageQueueItem) => {
@@ -361,7 +363,7 @@ export function useMessageQueue({
     if (!taken) return;
     const text = formatQueueInject([taken]);
     startQueueTurn();
-    void onAsk(text, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
+    void onAsk(text, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
   }, [messageQueueStore, onAsk, startQueueTurn]);
 
   // ESC 우선순위
@@ -418,8 +420,10 @@ export function useMessageQueue({
       const text = question.trim();
       if (text.length === 0) return;
       e.preventDefault();
+      // Capture the gesture's one-shot intent now, inside the key handler, before any await.
+      const intent = captureComposerKeyboardIntent();
       void (async () => {
-        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments));
+        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments), intent);
         if (result?.ok === true) {
           setQuestion("");
         } else if (result?.ok === false) {

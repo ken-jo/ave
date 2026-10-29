@@ -75,6 +75,9 @@ export interface ToolExecutionContext {
    * after authorization and never originates in model input, plugin arguments, renderer payloads, or persisted state. */
   executionRouteGrant?: ExecutionGrant;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
+  /** Host-private: the route sealed for a command typed into the user's own host terminal. `recheck` re-proves, before each write to that
+   * terminal, that the route is still the host and its path-policy relaxations are the ones the permission decision saw; it throws otherwise. */
+  hostTerminalRoute?: { recheck(): Promise<void> };
   /** Host-issued native image and environment proof for this exact shell invocation. */
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   /** Opaque one-shot approval proof for a requested-sandbox plain-shell fallback. It is minted only after allow-once and is consumed by bash/PowerShell. */

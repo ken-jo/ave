@@ -82,7 +82,7 @@ test(`agent shell output streams locally while user terminal commands stay outsi
     const manual = await ctx.page.evaluate(async (cwd) => {
       const terminal = window.aveApi.terminal;
       if (!terminal) throw new Error("Terminal API is unavailable");
-      const spawned = await terminal.spawn({ tabId: "terminal:aabbccdd-1", lane: "manual", cwd });
+      const spawned = await terminal.spawn({ tabId: "terminal:aabbccdd-1", lane: "manual", purpose: "workspace", cwd });
       if (!spawned.ok) throw new Error(`User terminal did not start: ${spawned.reason}`);
       const typed = await terminal.input(spawned.session, "echo user-only-terminal-marker\r");
       if (!typed.ok) throw new Error(`User terminal input failed: ${typed.error}`);

@@ -6,6 +6,7 @@ import type { PermissionEvaluationContext } from "../permissions/evaluation-cont
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
 import type { ApprovalDecision, ApprovalRequestInput } from "../permissions/approval-gate.js";
@@ -96,10 +97,10 @@ import {
 
 const log = createLogger("executor");
 
-class HandlerPausedError extends Error {
+class HandlerPermissionAskError extends Error {
   constructor() {
-    super("Handler admission is paused");
-    this.name = "HandlerPausedError";
+    super("Handler admission requires approval");
+    this.name = "HandlerPermissionAskError";
   }
 }
 
@@ -190,6 +191,7 @@ export interface ExecutionStageContext {
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
+  hostTerminalRoute?: { recheck(): Promise<void> };
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
@@ -250,6 +252,7 @@ export async function executeAuthorizedToolInvocation(
     hostShellExecutionPlan,
     executionRouteGrant,
     finalizeExecutionRouteGrant,
+    hostTerminalRoute,
     preparedShellInvocation,
     verifiedShellCommand,
     hostShellRequiresExplicitApproval,
@@ -762,6 +765,7 @@ export async function executeAuthorizedToolInvocation(
     ...(ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot } : {}),
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
+    ...(hostTerminalRoute ? { hostTerminalRoute } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),
@@ -862,8 +866,9 @@ export async function executeAuthorizedToolInvocation(
       const paused = refreshed.decision === "ask" && refreshed.pipelineRequest?.automationPause !== undefined;
       const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.manualRerun === true;
       if (!permissionRecheckResult || refreshed.decision === "deny" || paused || forced) permissionResult = refreshed;
-      if (refreshed.decision === "deny" || forced) throw new Error(refreshed.reason);
-      if (paused) throw new HandlerPausedError();
+      if (refreshed.decision === "deny") throw new Error(refreshed.reason);
+      if (paused || refreshed.decision === "ask" && refreshed.pipelineRequest?.floor !== undefined) throw new HandlerPermissionAskError();
+      if (forced) throw new Error(refreshed.reason);
       // The sealed rationale receipt remains separate authority when its
       // original issued request still asks under unchanged policy.
       if (!permissionRecheckResult && refreshed.decision !== "allow") throw new Error(refreshed.reason);
@@ -886,20 +891,20 @@ export async function executeAuthorizedToolInvocation(
     signal.throwIfAborted();
   };
 
-  let pausedApprovalPolicyEpoch: string | undefined;
-  const assertPausedPolicyCurrent = (): void => {
+  let lateApprovalPolicyEpoch: string | undefined;
+  const assertLateApprovalPolicyCurrent = (): void => {
     const manager = services.permissionManager;
-    if (manager && pausedApprovalPolicyEpoch !== manager.getPolicyEpoch()) {
+    if (manager && lateApprovalPolicyEpoch !== manager.getPolicyEpoch()) {
       if (permissionResult?.pipelineRequest) permissionResult = manager.recheckPermission(permissionResult);
       throw new Error(permissionResult?.reason ?? "Permission policy changed before execution.");
     }
   };
 
-  const preparePausedApproval = async (
+  const prepareLateApproval = async (
     signal: AbortSignal,
   ): Promise<ApprovalRequestInput & { sessionId: string }> => {
-    if (permissionResult?.decision !== "ask" || !permissionResult.pipelineRequest?.automationPause) {
-      throw new Error("Paused approval requires an issued human approval decision");
+    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
+      throw new Error("Late approval requires an issued human approval decision");
     }
     const reason = permissionResult.reason;
     const userAvailable = invocationPermissionContext.headless !== true &&
@@ -910,7 +915,7 @@ export async function executeAuthorizedToolInvocation(
     });
     if (!userAvailable) throw new Error(NO_APPROVER_MESSAGE);
     if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
-    pausedApprovalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
+    lateApprovalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
     const permHook = await runScriptHook(
       services.scriptHookManager, "perm", toolUse.name, source, invocationCategory,
       finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
@@ -919,7 +924,7 @@ export async function executeAuthorizedToolInvocation(
     );
     signal.throwIfAborted();
     latePermissionHookChain = hookChainFromDispatch("perm", permHook);
-    assertPausedPolicyCurrent();
+    assertLateApprovalPolicyCurrent();
     if (permHook.decision === "deny") {
       permissionResult = { ...permissionResult, decision: "deny", reason: permHook.reason };
       throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
@@ -930,8 +935,13 @@ export async function executeAuthorizedToolInvocation(
       invocationPermissionContext, targetFilePath, currentAuditMetadata(finalInput),
     );
     signal.throwIfAborted();
-    assertPausedPolicyCurrent();
-    const ruleAssessment = permissionResult.reviewer?.verdict === undefined
+    assertLateApprovalPolicyCurrent();
+    if (services.permissionManager && permissionResult.pipelineRequest) {
+      permissionResult = services.permissionManager.recheckPermission(permissionResult);
+      if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
+    }
+    const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
+    const ruleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true
       ? classifyApprovalRuleVerdict({
           toolName: toolUse.name, source, category: invocationCategory,
           pathFields: tool.pathFields ?? [], finalInput, approvalCacheKey, executionCwd,
@@ -941,6 +951,7 @@ export async function executeAuthorizedToolInvocation(
           sandboxAttestation: { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) },
           mcpServerId: tool.mcpServerId, workerId: tool.workerId, pluginId: tool.pluginId,
           hostShellExecutionPlan,
+          ...(hostTerminalFacts.sandboxCapability ? { sandboxCapability: hostTerminalFacts.sandboxCapability } : {}),
         }) : undefined;
     return {
       id: randomUUID(), sessionId, category: "tool", kind: "tool", toolName: toolUse.name,
@@ -948,6 +959,7 @@ export async function executeAuthorizedToolInvocation(
       args: finalInput, reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${reason}` : reason,
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
+      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
       isReadOnly: invocationCategory === "read", mode: currentApprovalMode(services.permissionManager),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
       ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
@@ -967,21 +979,30 @@ export async function executeAuthorizedToolInvocation(
         : { sandboxCapability: invocationPermissionContext.disposableSubstrate
             ? disposableContainerCapability(invocationPermissionContext.disposableSubstrate)
             : resolveReviewerSandboxCapability(source, toolUse.name, tool.mcpServerId, tool.workerId, tool.pluginId, hostShellExecutionPlan) }),
+      ...hostTerminalFacts,
     };
   };
 
-  const requestPausedApproval = async (request: ApprovalRequestInput & { sessionId: string }): Promise<void> => {
+  const requestLateApproval = async (request: ApprovalRequestInput & { sessionId: string }): Promise<void> => {
     abortSignal?.throwIfAborted();
-    if (permissionResult?.decision !== "ask" || !permissionResult.pipelineRequest?.automationPause) {
-      throw new Error("Paused approval requires an issued human approval decision");
+    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
+      throw new Error("Late approval requires an issued human approval decision");
     }
-    assertPausedPolicyCurrent();
-    const decision = await services.approvalGate!.requestAndWait(request);
+    assertLateApprovalPolicyCurrent();
+    if (services.permissionManager && permissionResult.pipelineRequest) {
+      permissionResult = services.permissionManager.recheckPermission(permissionResult);
+      if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
+    }
+    const decision = await services.approvalGate!.requestAndWait({ ...request,
+      reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
+      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
+      ...hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command),
+    });
     abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
-    if (pausedApprovalPolicyEpoch !== currentEpoch &&
-        (pausedApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
-          !services.approvalGate!.allowsPolicyTransition(decision, pausedApprovalPolicyEpoch, currentEpoch))) {
+    if (lateApprovalPolicyEpoch !== currentEpoch &&
+        (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
+          !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch))) {
       permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
       throw new Error(permissionResult.reason);
     }
@@ -1051,10 +1072,10 @@ export async function executeAuthorizedToolInvocation(
         ),
       );
     } catch (error) {
-      if (error instanceof HandlerPausedError) {
+      if (error instanceof HandlerPermissionAskError) {
         // Hook and required ask-audit work retain the attempt's cancellation
         // and settlement ownership. Only waiting for the person moves outside.
-        const request = await preparePausedApproval(signal);
+        const request = await prepareLateApproval(signal);
         throw new HandlerApprovalRequiredError(request);
       }
       throw error;
@@ -1075,7 +1096,7 @@ export async function executeAuthorizedToolInvocation(
       // No execution timer survives a refused admission. User consent uses
       // the same card timeout and caller cancellation as ordinary approval.
       try {
-        await requestPausedApproval(attempt.error.request);
+        await requestLateApproval(attempt.error.request);
       } catch (error) {
         return {
           ok: false,

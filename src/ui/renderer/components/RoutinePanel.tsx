@@ -393,6 +393,8 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
   };
 
   const handleNaturalLanguageParse = async () => {
+    // Captured inside the click: main runs the request as the user's turn only with this gesture's consumed token.
+    const userIntent = api.captureUserKeyboardIntent();
     if (!naturalInput.trim()) return;
     setNaturalParsing(true);
     setNaturalError("");
@@ -404,6 +406,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
         t("routinePanel.naturalRoutinePrompt", { input: fencedInput }),
         undefined,
         "user-keyboard",
+        userIntent,
       );
       onAdded();
       onClose();

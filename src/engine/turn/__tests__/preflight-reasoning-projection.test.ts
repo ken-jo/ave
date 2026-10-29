@@ -22,6 +22,7 @@ vi.mock("../../structured-compact.js", () => ({
 }));
 
 import { compactWithBoundary } from "../../structured-compact.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 beforeEach(() => {
   vi.mocked(compactWithBoundary).mockReset();
@@ -68,7 +69,7 @@ describe("preflight reasoning projection", () => {
       (loop as unknown as { provider: typeof provider }).provider = provider;
       vi.mocked(compactWithBoundary).mockResolvedValue(makeSyntheticCompactResult(history));
 
-      await loop.runTurn("Continue.", undefined, undefined, { inputOrigin: "user-keyboard" });
+      await loop.runTurn("Continue.", undefined, undefined, { ...userKeyboardTurn() });
 
       expect(steps.find((step) => step.name === "PREFLIGHT_GUARD")?.meta).toMatchObject({
         outcome: shouldCompact ? "fired" : "not-reached",

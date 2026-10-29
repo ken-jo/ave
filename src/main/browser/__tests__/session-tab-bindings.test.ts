@@ -86,6 +86,32 @@ beforeEach(async () => {
 afterEach(async () => { await cleanupTmpDir(directory); });
 
 describe("durable session tab bindings", () => {
+  it("keeps each tab's placement from main's own layout record and announces a move", async () => {
+    const { registry } = registryFor();
+    const announced: number[] = [];
+    registry.onBindingsChanged((windowId) => announced.push(windowId));
+    // Restored from the saved layout: the terminal sits in the side panel.
+    expect(registry.surfacePlacement(1, TERMINAL_TAB)).toBe("side-panel");
+    const terminal = layout().sideTabs.main![1]!;
+    const inPane: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, sideTabs: { main: [layout().sideTabs.main![0]!] } };
+    registry.prepareLayoutBindings(1, inPane);
+    expect(registry.surfacePlacement(1, TERMINAL_TAB)).toBe("workspace");
+    expect(announced.length).toBeGreaterThan(0);
+    expect(new Set(announced)).toEqual(new Set([1]));
+    // The same layout again moves nothing and announces nothing.
+    const afterMove = announced.length;
+    registry.prepareLayoutBindings(1, inPane);
+    expect(announced).toHaveLength(afterMove);
+    registry.prepareLayoutBindings(1, layout());
+    expect(registry.surfacePlacement(1, TERMINAL_TAB)).toBe("side-panel");
+    expect(announced.length).toBeGreaterThan(afterMove);
+    // Another window's record says nothing about this one, and a released window keeps none.
+    expect(registry.surfacePlacement(2, TERMINAL_TAB)).toBeUndefined();
+    registry.releaseWindow(1);
+    expect(Reflect.get(registry, "placements")).toHaveProperty("size", 0);
+    await registry.flushBindingWrites();
+  });
+
   it.each(["sessions", "clear"])("does not rewrite identical restored bindings (%s)", async (state) => {
     const saved = layout();
     saved.sideTabs.main![0]!.binding = state === "sessions"

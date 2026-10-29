@@ -13,6 +13,8 @@ import type { GenericMessage } from "../../../engine/llm/types.js";
 const REWIND = "ave:chat:rewind-to";
 const FORK = "ave:chat:fork";
 const EDIT_RESEND = "ave:chat:edit-resend";
+// What preload sends once it consumed the click's gesture token.
+const KEYBOARD_GESTURE = { inputOrigin: "user-keyboard", userActivation: true } as const;
 const ACTIVE_SESSION = "active-session";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -286,7 +288,7 @@ describe("ave:chat:edit-resend — same rule, same fixture", () => {
     const deps = await setup(driftShapedHistory());
 
     const result = await invokeRegisteredHandler<Promise<{ ok: boolean; error?: string }>>(
-      handlers, EDIT_RESEND, "m-compacted-away", "rewritten", "main",
+      handlers, EDIT_RESEND, "m-compacted-away", "rewritten", "main", KEYBOARD_GESTURE,
     );
 
     expect(result).toEqual({ ok: false, error: "message-not-found" });
@@ -297,7 +299,7 @@ describe("ave:chat:edit-resend — same rule, same fixture", () => {
     const deps = await setup(driftShapedHistory());
 
     const result = await invokeRegisteredHandler<Promise<{ ok: boolean; error?: string }>>(
-      handlers, EDIT_RESEND, "", "rewritten", "main",
+      handlers, EDIT_RESEND, "", "rewritten", "main", KEYBOARD_GESTURE,
     );
 
     expect(result).toEqual({ ok: false, error: "invalid-message-id" });

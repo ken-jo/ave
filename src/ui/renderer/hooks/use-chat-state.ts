@@ -22,6 +22,7 @@ import { detectFromStream } from "../../../lib/stream-markers.js";
 import { debugLog, isDebugStreamEnabled } from "../../../lib/debug-stream.js";
 import { isMissingStagedEnvelopeErrorMessage } from "../../../shared/staged-origins.js";
 import type { AveApi } from "../types.js";
+import type { ContinueAuthority } from "../../../shared/chat-origin.js";
 import { resetSuggestedReplies } from "./use-suggested-replies.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
@@ -578,6 +579,8 @@ export function useChatState(
 
   const handleEditSave = useCallback(
     async (entryIdx: number, newText: string) => {
+      // Captured synchronously inside the save gesture; main runs the replay as the user's turn only with it.
+      const userIntent = api.captureUserKeyboardIntent();
       const target = entries[entryIdx];
       const messageId = target?.kind === "user" ? target.messageId : undefined;
       if (messageId === undefined) return;
@@ -591,7 +594,7 @@ export function useChatState(
         thoughtRef.current = "";
         releaseActiveStream();
         finalAssistantRoundClosedRef.current = false;
-        const res = await api.chatEditResend(messageId, newText);
+        const res = await api.chatEditResend(messageId, newText, userIntent);
         if (!res?.ok) {
           failed = true;
           setEntries(
@@ -623,6 +626,7 @@ export function useChatState(
   );
 
   const handleRetryEffort = useCallback(async () => {
+    const userIntent = api.captureUserKeyboardIntent();
     const prevEntries = entries;
     const requestId = beginStreamingRequest();
     setEntries((p) => {
@@ -644,7 +648,7 @@ export function useChatState(
     try {
       const res = await api.chatRetryEffort({
         enableThinking: true,
-      });
+      }, userIntent);
       if (!res?.ok) {
         setEntries(
           setAssistantError(
@@ -741,7 +745,10 @@ export function useChatState(
     });
   }, []);
 
-  const handleContinueFromLastUser = useCallback(async (sessionId: string, opts?: { userBubble?: string }) => {
+  // A branch's auto-continue passes the grant its click left; any other continue captures its click's gesture here. Resolves true
+  // only when the host admitted and ran the continue.
+  const handleContinueFromLastUser = useCallback(async (sessionId: string, opts?: { userBubble?: string; authority?: ContinueAuthority }): Promise<boolean> => {
+    const authority = opts?.authority ?? api.captureUserKeyboardIntent();
     const requestId = beginStreamingRequest();
     streamRef.current = "";
     thoughtRef.current = "";
@@ -752,14 +759,17 @@ export function useChatState(
     if (opts?.userBubble) appendUserMessage(opts.userBubble);
     appendAssistantStatus(t("useChatState.continueFromLastUserStatus"));
     try {
-      const res = await api.chatContinueLastUser(sessionId);
+      const res = await api.chatContinueLastUser(sessionId, authority);
       if (!res?.ok) {
         if (opts?.userBubble) dropUnannouncedUserBubble(opts.userBubble);
         setErrorWithThought(t("useChatState.continueGenerationFailedError", { error: res?.error ?? t("useChatState.unknownError") }));
+        return false;
       }
+      return true;
     } catch (err) {
       if (opts?.userBubble) dropUnannouncedUserBubble(opts.userBubble);
       setErrorWithThought(t("useChatState.errorPrefix", { error: errorMessage(err) }));
+      return false;
     } finally {
       finishStreamingRequest(requestId);
     }

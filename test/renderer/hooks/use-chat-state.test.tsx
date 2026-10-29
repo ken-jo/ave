@@ -21,7 +21,7 @@ describe("useChatState", () => {
     await act(async () => {
       await result.current.handleContinueFromLastUser("sess-1", { userBubble: "Continue" });
     });
-    expect(api.chatContinueLastUser).toHaveBeenCalledWith("sess-1");
+    expect(api.chatContinueLastUser).toHaveBeenCalledWith("sess-1", expect.objectContaining({ inputOrigin: "user-keyboard" }));
     expect(result.current.entries.filter((e) => e.kind === "user")).toEqual([
       expect.objectContaining({ kind: "user", text: "Continue" }),
     ]);

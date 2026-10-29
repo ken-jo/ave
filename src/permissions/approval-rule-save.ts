@@ -40,6 +40,10 @@ function targetOf(snapshot: RequestSnapshot): Target | undefined {
 
 // Where an allow at `scope` may be saved for this request, or the error that refuses it.
 function allowRefusal(target: Target, scope: ShellRuleSaveScope): string | undefined {
+  // A host terminal rule already names its exact directory; it is user-global and never lives only for a session.
+  if (target.kind === "shell" && target.context.hostTerminal !== undefined) {
+    return scope === "always" && target.context.persistentAllowed ? undefined : "scope-not-offered";
+  }
   if (target.kind === "shell") {
     const offered = scope === "session" ? target.context.sessionAllowed : target.context.persistentAllowed;
     return offered ? undefined : "one-shot-not-recordable";
@@ -69,6 +73,10 @@ function editedRule(text: string): { ok: true; pattern: string } | { ok: false; 
 
 // True when `pattern`, as `action`, decides this request: a shell rule of the card's own dialect that allows (or refuses) its command, or a host rule naming its destination.
 function decidesRequest(target: Target, pattern: string, action: "allow" | "deny"): boolean {
+  if (target.kind === "shell" && action === "allow" && target.context.hostTerminal !== undefined) {
+    // Only the host-derived exact rule for this shell, directory and command; an edited allow is never a host terminal rule.
+    return target.context.exactRule !== null && pattern === target.context.exactRule;
+  }
   if (target.kind === "shell") {
     const command = target.snapshot.args && typeof target.snapshot.args === "object"
       ? (target.snapshot.args as Record<string, unknown>).command : undefined;

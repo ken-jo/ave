@@ -14,6 +14,7 @@ import {
 } from "../shared/multimodal-token-estimate.js";
 import { estimateTokens } from "../shared/token-estimate.js";
 import { skillNameFromReadResult } from "../main/skill-overlay.js";
+import { staleToolResultRewrite } from "./conversation-history.js";
 
 export { countHangul, estimateTokens } from "../shared/token-estimate.js";
 
@@ -251,17 +252,8 @@ export function markStaleToolResults(
     freedCharsOnSerialize += msg.image?.data.length ?? 0;
     markedCount += 1;
 
-    return {
-      role: "tool_result",
-      toolUseId: msg.toolUseId,
-      toolName: msg.toolName,
-      isError: msg.isError,
-      content: msg.content,
-      meta: {
-        ...(msg.meta ?? {}),
-        compactedAt: nowIso,
-      },
-    } as GenericMessage;
+    // The raw content stays; compactedAt makes the wire serialize it as a stub, and the image goes.
+    return staleToolResultRewrite(msg, { dropImage: true, compactedAt: nowIso });
   });
 
   return {
@@ -315,8 +307,7 @@ export function evictAgedToolResultImages(
     if (!agedIdx.has(i) || msg.role !== "tool_result" || msg.image === undefined) return msg;
     freedChars += msg.image.data.length;
     evictedCount += 1;
-    const { image: _image, ...rest } = msg;
-    return rest as GenericMessage;
+    return staleToolResultRewrite(msg, { dropImage: true });
   });
 
   return {

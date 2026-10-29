@@ -4,7 +4,7 @@ import type {
   PlatformConversationEventSink,
 } from "../../engine/conversation-platform-protocol.js";
 import { deriveTurnFailureSummary } from "../../engine/turn-failure-summary.js";
-import type { ChatInputOrigin, RemoteControllerAuthority } from "../../shared/chat-origin.js";
+import type { ChatInputOrigin, RemoteControllerAuthority, VerifiedUserKeyboardIntent } from "../../shared/chat-origin.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
 import type { ConversationLoop, TurnResult } from "../../engine/conversation-loop.js";
 import type { UserContentPart } from "../../engine/llm/types.js";
@@ -25,9 +25,6 @@ import {
 
 export type ConversationStreamEventSink = PlatformConversationEventSink;
 
-// Keyboard is the default origin; replay paths still require provenance derivation for stored staged input.
-export const STREAM_TURN_OPTIONS = { inputOrigin: "user-keyboard" as const };
-
 export async function runStreamedTurn(
   conversationLoop: ConversationLoop,
   input: string,
@@ -35,6 +32,8 @@ export async function runStreamedTurn(
   options: {
     attachments?: UserContentPart[];
     inputOrigin: ChatInputOrigin;
+    /** Main's verified keyboard intent for this exact send; required for a user-keyboard turn and never defaulted. */
+    userKeyboardIntent?: VerifiedUserKeyboardIntent;
     /** DLP-before-send keyboard text used only to mint a host RequestAnchor. */
     requestAnchorRawIntent?: string;
     rolePrompt?: ActiveRolePrompt;
@@ -262,6 +261,8 @@ export async function runStreamedTurn(
         ? { attachments: options.attachments }
         : {}),
       inputOrigin,
+      // A staged envelope's origin replaces a claimed keyboard one; its intent is then not forwarded.
+      ...(inputOrigin === "user-keyboard" && options.userKeyboardIntent ? { userKeyboardIntent: options.userKeyboardIntent } : {}),
       ...(options.requestAnchorRawIntent !== undefined
         ? { requestAnchorRawIntent: options.requestAnchorRawIntent }
         : {}),

@@ -571,7 +571,8 @@ export async function queryLoop(
             displayText: joined,
             ...(subAgentHistoryMeta(subAgentSource).meta ?? {}),
           },
-        });
+        // Only a batch the user typed, every entry of it, is the user's own words; anything else marks another principal at the history.
+        }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard" } : undefined);
         delivery.historyMessage = historyMessage;
       }
 
@@ -1921,7 +1922,8 @@ export async function queryLoop(
         );
         if (ie.evicted) {
           self.history.clear();
-          self.history.restore(afterEvict);
+          // Evicting aged images rewrites tool results the model already saw, and nothing else.
+          self.history.restore(afterEvict, "stale-tool-result-truncation");
           if (process.env.NODE_ENV !== "production") {
             log.info(
               `image-evict (intra-turn): dropped ${ie.evictedCount} aged image(s), ~${ie.freedChars} base64 chars`,
@@ -1959,7 +1961,8 @@ export async function queryLoop(
         });
         if (mr.marked) {
           self.history.clear();
-          self.history.restore(afterMark);
+          // Stubbing stale tool results rewrites results the model already saw, and nothing else.
+          self.history.restore(afterMark, "stale-tool-result-truncation");
           if (process.env.NODE_ENV !== "production") {
             log.info(
               `mark-stale (intra-turn): marked ${mr.markedCount} tool_results, ~${mr.freedCharsOnSerialize} chars saved on serialize`,
@@ -2013,6 +2016,11 @@ function truncateGuidanceBatch<T extends { text: string }>(
       ? t("be_conversationLoop.guidanceTruncationMarker", { count: truncatedCount, joined })
       : joined,
   };
+}
+
+/** A guidance entry is the user's own words only when the renderer's guide path queued it and it does not carry a staged app/plugin envelope. */
+function isUserTypedGuidance(entry: { text: string; principal?: "user-keyboard" }): boolean {
+  return entry.principal === "user-keyboard" && parseStagedEnvelope(entry.text) === null;
 }
 
 /** Attribute to children only when every entry is a child report; mixed user guides keep user framing. */

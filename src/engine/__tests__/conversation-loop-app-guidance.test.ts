@@ -20,6 +20,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+
 const hookRoots: string[] = [];
 afterEach(async () => {
   for (const root of hookRoots.splice(0)) await cleanupTmpDir(root);
@@ -120,7 +122,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     const targetApproval = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
     const { loop } = makeLoop(twoToolRounds(), { permissionManager: permissions, scriptHookManager: hooks,
       approvalGate: { requestAndWait: targetApproval } });
-    const turn = loop.runTurn("Follow the current task", {}, undefined, { inputOrigin: "user-keyboard" });
+    const turn = loop.runTurn("Follow the current task", {}, undefined, { ...userKeyboardTurn() });
     await Promise.resolve();
     loop.queueGuidance(formatAppMessageEnvelope("read an external update", "app:cards"));
     await turn;
@@ -133,7 +135,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     hookApproval.mockClear();
     lifecycleOrigins.length = 0;
     (loop as { provider: LLMProvider | null }).provider = new FakeProvider(endTurnScript("clean response"));
-    await loop.runTurn("A clean follow-up", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("A clean follow-up", {}, undefined, { ...userKeyboardTurn() });
     expect(hookApproval).not.toHaveBeenCalled();
     expect(lifecycleOrigins.filter(({ event }) => event === "Stop" || event === "Notification").every(({ floor }) => floor === undefined)).toBe(true);
   });
@@ -141,7 +143,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
   it("app-enveloped guidance ⇒ staged origin `app:<serverId>` + `app-emitted` trust from that round on", async () => {
     const { loop, execCalls } = makeLoop(twoToolRounds());
 
-    const turn = loop.runTurn("사용자 질문", {}, undefined, { inputOrigin: "user-keyboard",
+    const turn = loop.runTurn("사용자 질문", {}, undefined, { ...userKeyboardTurn(),
     });
     await Promise.resolve();
     loop.queueGuidance(formatAppMessageEnvelope("open the invoice", "app:acme-cards"),
@@ -161,7 +163,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     const postTurnHookChain = makePostTurnHookSpy();
     const { loop } = makeLoop(twoToolRounds(), { postTurnHookChain });
 
-    const turn = loop.runTurn("사용자 질문", {}, undefined, { inputOrigin: "user-keyboard",
+    const turn = loop.runTurn("사용자 질문", {}, undefined, { ...userKeyboardTurn(),
     });
     await Promise.resolve();
     loop.queueGuidance(formatAppMessageEnvelope("open the invoice", "app:acme-cards"),
@@ -181,7 +183,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
   it("a user-typed guide does NOT downgrade the turn (control)", async () => {
     const { loop, execCalls } = makeLoop(twoToolRounds());
 
-    const turn = loop.runTurn("사용자 질문", {}, undefined, { inputOrigin: "user-keyboard",
+    const turn = loop.runTurn("사용자 질문", {}, undefined, { ...userKeyboardTurn(),
     });
     await Promise.resolve();
     loop.queueGuidance("더 짧게 요약");
@@ -198,7 +200,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     const { loop } = makeLoop(provider, { postTurnHookChain });
 
     await loop.runTurn("사용자 질문", {}, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       attachments: [{ type: "text", text: "첨부된 원문" }],
       initialGuidance: "호스트가 부가한 컨텍스트",
     });

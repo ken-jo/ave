@@ -22,6 +22,7 @@ import { interruptRunningTurnsForExit } from "../turn/turn-journal.js";
 import { SubAgentRunner, exactToolScope } from "../subagent-runner.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { makeConversationPermissionDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const SESSION_ID = "5d1e2f3a-46a9-493a-8a3e-f277ba673230";
 
@@ -106,7 +107,7 @@ function buildLoop(memoryManager: MemoryManager, toolRegistry: ToolRegistry, pro
     ...makeConversationPermissionDeps(),
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as { provider: LLMProvider | null }).provider = provider;
-  (loop as { sessionId: string }).sessionId = SESSION_ID;
+  loop.replaceSessionIdentity(SESSION_ID);
   return loop;
 }
 
@@ -165,7 +166,7 @@ describe("mid-stream durability", () => {
       [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
     ]);
     const loop = buildLoop(memoryManager, registry, provider);
-    const turn = loop.runTurn("batch question", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const turn = loop.runTurn("batch question", undefined, undefined, { ...userKeyboardTurn() });
     const crashed = mkdtempSync(join(tmpdir(), "ave-batch-crashed-"));
     try {
       const transcript = join(dir, "sessions", SESSION_ID + ".jsonl");
@@ -197,7 +198,7 @@ describe("mid-stream durability", () => {
     const loop = buildLoop(memoryManager, new ToolRegistry(), new ScriptedProvider([
       streamThenBlock("partial text survives denied write", () => { streamed = true; }),
     ]));
-    const turn = loop.runTurn("write failure", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const turn = loop.runTurn("write failure", undefined, undefined, { ...userKeyboardTurn() });
     const sidecar = turnInflightPath(join(dir, "sessions"), SESSION_ID);
     try {
       await waitFor(() => streamed && existsSync(sidecar) && JSON.parse(readFileSync(sidecar, "utf8")).partial !== undefined);
@@ -249,7 +250,7 @@ describe("mid-stream durability", () => {
     );
 
     await buildLoop(memoryManager, toolRegistry, provider).runTurn("세 라운드", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(onDiskAtRound2.map((m) => [m.role, m.role === "tool_result" ? m.toolUseId : m.content])).toEqual([
@@ -271,7 +272,7 @@ describe("mid-stream durability", () => {
       [{ type: "text_delta", text: "완료" }, { type: "message_complete", stopReason: "end_turn" }],
     ]);
     await buildLoop(memoryManager, toolRegistry, provider).runTurn("정상 완료", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const messages = (new MemoryManager({ aveDir: dir }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
@@ -292,7 +293,7 @@ describe("mid-stream durability", () => {
       streamThenBlock("스트리밍 중인 두 번째 답변", () => { streamed = true; }),
     ]);
     const loop = buildLoop(memoryManager, toolRegistry, provider);
-    const turn = loop.runTurn("부분 응답", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const turn = loop.runTurn("부분 응답", undefined, undefined, { ...userKeyboardTurn() });
     const sidecar = turnInflightPath(join(dir, "sessions"), SESSION_ID);
     await waitFor(() => streamed);
     // The first stream snapshot must not wait for the throttle interval.
@@ -329,7 +330,7 @@ describe("mid-stream durability", () => {
       [{ type: "text_delta", text: "이어서 끝냈습니다" }, { type: "message_complete", stopReason: "end_turn" }],
     ]);
     const loop = buildLoop(memoryManager, toolRegistry, provider);
-    const turn = loop.runTurn("종료 테스트", undefined, undefined, { inputOrigin: "user-keyboard" });
+    const turn = loop.runTurn("종료 테스트", undefined, undefined, { ...userKeyboardTurn() });
     await waitFor(() => streamed);
 
     const outcome = await interruptRunningTurnsForExit(3_000);
@@ -378,7 +379,7 @@ describe("mid-stream durability", () => {
     }));
     const provider = new ScriptedProvider([toolRound("느린 도구 실행", "call-slow", "slow_tool")]);
     const turn = buildLoop(memoryManager, toolRegistry, provider).runTurn("도구 중 종료", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     await waitFor(() => toolStarted);
     await interruptRunningTurnsForExit(3_000);

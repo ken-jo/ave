@@ -447,7 +447,7 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
       );
       return EXEC_FAILURE_EXIT_CODE;
     }
-    const { runStreamedTurn, STREAM_TURN_OPTIONS } =
+    const { runStreamedTurn } =
       await import("../ipc/handlers/chat-stream.js");
     const sink = (event: PlatformConversationEvent) => {
       if (request.output === "stream-json") {
@@ -455,7 +455,9 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
       }
     };
     const result = await runStreamedTurn(deps.conversationLoop, prompt, sink, {
-      ...STREAM_TURN_OPTIONS,
+      // The owner typed this prompt on the command line. Its proof is the single-use unattended authority below, which run-turn
+      // accepts in place of a renderer gesture; it never grants host terminal typing.
+      inputOrigin: "user-keyboard",
       // The owner started this turn from the command line with nobody to ask. The authority is minted per turn: a retained session's later turns arrive
       // through remote surfaces and never inherit it.
       unattendedAuthority: issueUnattendedTurnAuthority(),

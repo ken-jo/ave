@@ -6,7 +6,7 @@ import type { PermissionCheckResult, PermissionManager } from "../../permissions
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { RuleBasedRiskClassifier, maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
-import { resolveReviewerSandboxCapability } from "../../permissions/sandbox-capability.js";
+import { resolveReviewerSandboxCapability, type SandboxCapability } from "../../permissions/sandbox-capability.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
 import {
   approvalCacheKeyIdentity,
@@ -39,10 +39,12 @@ export function classifyApprovalRuleVerdict(input: {
   pluginId?: string;
   hostShellExecutionPlan?: HostShellExecutionPlan;
   approvalCacheKey?: string;
+  /** Actual capability for a host terminal that runs outside isolated terminal routes. */
+  sandboxCapability?: SandboxCapability;
 }): { ctx: ToolInvocationContext; verdict: ReturnType<RuleBasedRiskClassifier["classify"]>; basis: ApprovalRuleBasis } {
   // Substrate-aware (NOT process-global): a plugin/MCP or in-process builtin call resolves to a "none" capability so the audit + any sandbox-sensitive rule reflect that
   // this call's effects are NOT ASRT-isolated; except a genuinely ASRT-wrapped external MCP worker (keyed on id) or host-spawned plugin worker (keyed on pluginId + workerId).
-  const sandboxCapability = resolveReviewerSandboxCapability(
+  const sandboxCapability = input.sandboxCapability ?? resolveReviewerSandboxCapability(
     input.source,
     input.toolName,
     input.mcpServerId,
@@ -106,6 +108,8 @@ export async function tryUserApprovalMemorySkip(
   // Built outside the storage catch: a policy key without its memory mode is an internal contract violation, not a storage failure.
   const canonicalArgs = canonicalStringify(finalInput);
   const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
+  // A manual host terminal requires its current user turn and an exact host rule or fresh native consent.
+  if (context.approvalMemory?.kind === "key" && context.approvalMemory.scope.kind === "terminal-command" && context.approvalMemory.scope.lane === "manual") return null;
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,

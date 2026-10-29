@@ -29,6 +29,7 @@ vi.mock("../structured-compact.js", () => ({
 
 import { compactWithBoundary } from "../structured-compact.js";
 import { CompressionStatus } from "../../shared/compact-status.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 beforeEach(() => {
   vi.mocked(compactWithBoundary).mockClear();
@@ -85,7 +86,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
       "hello",
       { onCompactOccurred: compactOccurredCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).toHaveBeenCalled();
@@ -129,7 +130,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
       "small current input",
       { onCompactStarted: compactStarted },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(projectRequestInput).toHaveBeenCalledWith(expect.objectContaining({
@@ -187,7 +188,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
       "trigger compact",
       {},
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const messages = loop.getHistory().getMessages();
@@ -221,7 +222,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
       "trigger content truncation",
       {},
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const messages = loop.getHistory().getMessages();
@@ -267,7 +268,7 @@ describe("runPreflightGuard — context-token secondary trigger", () => {
       "next turn",
       { onCompactOccurred: compactOccurredCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).toHaveBeenCalled();
@@ -300,7 +301,7 @@ describe("runPreflightGuard — context-token secondary trigger", () => {
       "next turn",
       { onCompactOccurred: compactOccurredCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
@@ -339,7 +340,7 @@ describe("runPreflightGuard — context-token secondary trigger", () => {
       "p".repeat(800),
       { onCompactStarted: compactStartedCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).toHaveBeenCalled();
@@ -402,7 +403,7 @@ describe("queryLoop — rate-limit reactive compact", () => {
         onTextDelta: textDeltaCb,
       },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).toHaveBeenCalledTimes(1);
@@ -449,7 +450,7 @@ describe("queryLoop — rate-limit reactive compact", () => {
       "trigger rpm",
       { onError: errorCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
@@ -492,7 +493,7 @@ describe("queryLoop — rate-limit reactive compact", () => {
       "first tpm",
       { onError: firstErrorCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const secondErrorCb = vi.fn();
@@ -500,7 +501,7 @@ describe("queryLoop — rate-limit reactive compact", () => {
       "second tpm",
       { onError: secondErrorCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).toHaveBeenCalledTimes(1);
@@ -542,7 +543,7 @@ describe("runPreflightGuard — request projection source", () => {
       "next turn",
       { onCompactStarted: compactStartedCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).toHaveBeenCalled();
@@ -578,7 +579,7 @@ describe("runPreflightGuard — message count is not a trigger", () => {
       "message 50",
       { onCompactStarted: compactStartedCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
@@ -606,7 +607,7 @@ describe("runPreflightGuard — skip conditions", () => {
       "hello",
       { onCompactOccurred: compactOccurredCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
@@ -634,7 +635,7 @@ describe("runPreflightGuard — skip conditions", () => {
       "hello",
       { onCompactOccurred: compactOccurredCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
@@ -665,7 +666,7 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
       "trigger turn",
       { onRecoveryExhausted: recoveryExhaustedCb, onCompactStarted: compactStartedCb },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
@@ -693,7 +694,7 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
       "turn while exhausted",
       { onCompactStarted: compactStartedCb1 },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     expect(compactWithBoundary).not.toHaveBeenCalled();
     expect(compactStartedCb1).not.toHaveBeenCalled();
@@ -710,7 +711,7 @@ describe("runPreflightGuard — force-recover hard-cap (#917)", () => {
       "turn after re-arm",
       { onCompactStarted: compactStartedCb2 },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     expect(compactWithBoundary).toHaveBeenCalled();
     expect(compactStartedCb2).toHaveBeenCalled();
@@ -832,7 +833,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       "run the probe until you are done",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).toHaveBeenCalled();
@@ -868,7 +869,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       "run the probe until you are done",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(decisions).toContainEqual(
@@ -919,7 +920,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
     (loop as unknown as { provider: LLMProvider }).provider = new ToolLoopProvider(0);
 
     await loop.runTurn("one more question", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(compactWithBoundary).toHaveBeenCalledWith(
@@ -952,7 +953,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       "one more question",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(roundsWhenCompacted).toEqual([0]);
@@ -967,7 +968,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       "run the probe until you are done",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
@@ -991,7 +992,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       "run the probe until you are done",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const held = decisions.filter(
@@ -1013,7 +1014,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       "run the probe until you are done",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const attempts = vi.mocked(compactWithBoundary).mock.calls.length;

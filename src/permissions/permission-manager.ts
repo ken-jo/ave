@@ -2,6 +2,9 @@ import { inspectShellPermissionPaths } from "../tools/shell-path-policy.js";
 import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
 import { wrapperCommand } from "./rules/shell-prefix-policy.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
+import { currentHostTerminalTurn } from "../tools/host-terminal-turn.js";
+import type { HostTerminalCommandScope } from "../tools/terminal-run.js";
+import { isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -17,7 +20,7 @@ import { permissionsFilePath as defaultPermissionsFilePath, readPermissionsFile,
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError, ShellRuleDialect } from "../shared/permissions-events.js";
-import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject } from "./rules/rule-scopes.js";
+import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject, type HostTerminalRuleTarget } from "./rules/rule-scopes.js";
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
@@ -30,7 +33,7 @@ import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGT
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
 import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
-import { decidePermission, type PermissionDecisionRequest } from "./decision-pipeline.js";
+import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isHostNetworkSubject } from "./host-network-subject.js";
 import { canonicalEgressHost, isValidEgressPort } from "./egress-grants.js";
 import {
@@ -208,6 +211,8 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  hostTerminalTurn?: HostTerminalCommandScope;
+  trustOrigin?: ToolTrustOrigin;
   approvalSurface?: ApprovalSurface;
   mcpReadOnlyHint?: boolean;
   manualRerun?: boolean;
@@ -235,7 +240,8 @@ export interface PermissionCheckContext {
   // Tool-author `decisionOverride` for `meta`-category builtin tools, carried from the executor so the post-computation guard owns re-elevation (V1 SOT). A foreground `"ask"` meta invocation uses the same reviewer route as write/shell/network in automatic execution mode; otherwise it remains a per-invocation `forceModal` ask. `"always-allow-with-audit"` is short-circuited before checkDetailed runs. Non-meta callers pass `undefined`.
   decisionOverride?: "ask" | "always-allow-with-audit";
   // Host-built rule subject. Native file subjects retain the sealed path snapshot; mediated fetches and MCP use actual destination/tool identity. Shell dialects share floors; Bash rules match only the bash dialect.
-  ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string } | ScopedRuleSubject;
+  // `hostTerminal`: a bash command typed into the user's own host terminal; only exact `HostTerminal(...)` rules of that shell and physical directory may allow it.
+  ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string; hostTerminal?: HostTerminalRuleTarget } | ScopedRuleSubject;
   // project whose per-project rule file applies. The caller must have awaited PermissionManager.ensureProjectRulesLoaded for it.
   projectRulesCwd?: string;
   // Host-only per-invocation route; a missing shell route is plain (no sandbox). pathPolicyRelaxations comes from the selected execution plan (executionPlanPathPolicyRelaxations); missing means none.
@@ -245,6 +251,8 @@ export interface PermissionCheckContext {
   // Host-detected approval-store corruption is an admission failure, naming the file.
   permissionStoreError?: string;
 }
+
+type HostTerminalPermissionContext = Pick<PermissionCheckContext, "hostTerminalTurn" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
 
 // Permission policy input bundle for reviewer-agent dispatch. Set when the caller wants the headless lane to consult the Layer 5 classifier (rather than the temporary "reviewer → ask" mapping).
 export interface ReviewerDispatchInput {
@@ -498,7 +506,7 @@ export class PermissionManager {
   private resolveJudgeRootSession: (sessionId: string) => string = (sessionId) => sessionId;
   private verdictCache: VerdictCache | null = null;
   private recentlyDenied: RecentlyDeniedStore | null = null;
-  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string }>();
+  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; hostTerminalContext?: HostTerminalPermissionContext }>();
   private reviewerCacheScope: Record<string, unknown> = {};
   // Runtime degrade flag — true when the persisted reviewer mode is "llm" but boot wiring could not instantiate the LLM provider adapter (fresh install: no chat provider/key configured) and fell back to the rule classifier. Surfaced to the renderer (PermissionsTab banner) so the user understands the reviewer is running rule-only until they configure a provider. Reset to false on every successful "llm" wiring.
   private reviewerDegradedToRule = false;
@@ -992,12 +1000,13 @@ export class PermissionManager {
       sessionId: context.sessionId, projectRulesCwd: context.projectRulesCwd, permissionStoreError: context.permissionStoreError,
       remoteControllerAuthority: context.remoteControllerAuthority, floor: context.floor, paths: context.paths,
       manualRerun: context.manualRerun, admissionDenial, approvalCacheKey: identity,
+      hostTerminalTurn: context.hostTerminalTurn, trustOrigin: context.trustOrigin,
     });
     const issued = this.pipelineRequests.get(base);
     if (!issued) throw new Error("Network permission request was not issued");
     const permission = rule === undefined ? base : this.pipelineResult({
       ...issued.request, rules: { ...issued.request.rules, [rule.decision]: rule.pattern },
-    });
+    }, issued.hostTerminalContext);
     if (permission.reasonCode === undefined) throw new Error("Network permission decision has no reason code");
     return { permission, identity, destination: exactDestination, reasonKey: permission.reasonCode, ...(rule ? { rule } : {}) };
   }
@@ -1242,7 +1251,33 @@ export class PermissionManager {
     return this.evaluatePermission(toolName, source, category, overlayTriggerOrigin, context);
   }
 
-  private pipelineResult(evidence: PermissionDecisionRequest): PermissionCheckResult {
+  private hostTerminalEvidence(context: HostTerminalPermissionContext, admissionDenial: PermissionDecisionRequest["admissionDenial"], floor: PermissionDecisionRequest["floor"]): Pick<PermissionDecisionRequest, "admissionDenial" | "floor"> {
+    if (context.hostTerminalTurn) {
+      const scope = context.hostTerminalTurn;
+      if (context.remoteControllerAuthority) {
+        admissionDenial ??= { code: "host-terminal-turn", reason: "Host terminal typing is unavailable to remote-controller requests" };
+      } else if (context.headless === true || context.approvalSurface === "unavailable") {
+        admissionDenial ??= { code: "host-terminal-turn", reason: NO_APPROVER_MESSAGE };
+      } else {
+        const hostTurn = currentHostTerminalTurn(scope.sessionId);
+        const externalContent = hostTurn?.externalContentSeen() === true;
+        const trusted = context.trustOrigin !== undefined && isUntaintedToolTrustOrigin(context.trustOrigin)
+          || context.trustOrigin === "file-content" && externalContent;
+        if (!trusted || !hostTurn || hostTurn.turnId !== scope.turnId || context.sessionId !== scope.sessionId || hostTurn.otherPrincipalGuidance()) {
+          admissionDenial ??= { code: "host-terminal-turn", reason: "Host terminal typing is available only to the user's own turn in its pane chat" };
+        }
+        if (externalContent) floor ??= { code: "other-principal", reason: "Host terminal command after external content in this turn; saved rules do not apply" };
+      }
+    }
+    return { admissionDenial, floor };
+  }
+
+  private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
+    const hostTerminalContext = context?.hostTerminalTurn ? Object.freeze({
+      hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }), trustOrigin: context.trustOrigin, sessionId: context.sessionId,
+      remoteControllerAuthority: context.remoteControllerAuthority, headless: context.headless, approvalSurface: context.approvalSurface,
+    }) : undefined;
+    const { admissionDenial, floor } = hostTerminalContext ? this.hostTerminalEvidence(hostTerminalContext, evidence.admissionDenial, evidence.floor) : evidence;
     const permissionStoreError = this.refreshPermissionStoreError();
     const { automationPause: _previousPause, ...currentEvidence } = evidence;
     const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
@@ -1252,8 +1287,8 @@ export class PermissionManager {
       tool: Object.freeze({ ...evidence.tool }),
       ...(evidence.paths ? { paths: Object.freeze(evidence.paths.map((path) => Object.freeze({ ...path }))) } : {}),
       ...(evidence.rules ? { rules: Object.freeze({ ...evidence.rules }) } : {}),
-      ...(evidence.floor ? { floor: Object.freeze({ ...evidence.floor }) } : {}),
-      ...(evidence.admissionDenial ? { admissionDenial: Object.freeze({ ...evidence.admissionDenial }) } : {}),
+      ...(floor ? { floor: Object.freeze({ ...floor }) } : {}),
+      ...(admissionDenial ? { admissionDenial: Object.freeze({ ...admissionDenial }) } : {}),
       ...(evidence.shell ? { shell: Object.freeze({ ...evidence.shell }) } : {}),
       ...(evidence.fileWrite ? { fileWrite: Object.freeze({ ...evidence.fileWrite }) } : {}),
       ...(evidence.reviewer ? { reviewer: Object.freeze({ ...evidence.reviewer }) } : {}),
@@ -1269,7 +1304,7 @@ export class PermissionManager {
       ...(decision.outcome === "ask-forced" || request.manualRerun && decision.outcome === "ask" ? { forceModal: true } : {}),
       ...(decision.reviewRequired ? { reviewer: { route: request.headless ? "headless" as const : "foreground-auto" as const } } : {}),
     };
-    this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch() });
+    this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
     return result;
   }
 
@@ -1280,7 +1315,7 @@ export class PermissionManager {
     const stale = issued.policyEpoch !== this.getPolicyEpoch();
     const refreshed = this.pipelineResult({ ...issued.request,
       ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed before execution." } } : {}),
-    });
+    }, issued.hostTerminalContext);
     const shellRule = issuedShellAllowRuleDecisions.get(result);
     issuedShellAllowRuleDecisions.delete(result);
     if (!stale) {
@@ -1315,7 +1350,7 @@ export class PermissionManager {
     const resolved = this.pipelineResult({ ...issued.request, ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed during review." } } : {}), reviewer: {
       level, status: failed ? "error" : "success",
       breakerOpen: judge.judged && judge.pause !== undefined,
-    } });
+    } }, issued.hostTerminalContext);
     resolved.reviewer = { route: result.reviewer.route, verdict: review.verdict, outcome: review.outcome,
       ...(review.approvalBasis ? { approvalBasis: review.approvalBasis } : {}) };
     return resolved;
@@ -1328,7 +1363,7 @@ export class PermissionManager {
     return this.pipelineResult({ ...issued.request,
       ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed during approval lookup." } } : {}),
       rules: { ...issued.request.rules, remembered: rememberedReason },
-    });
+    }, issued.hostTerminalContext);
   }
 
   private evaluatePermission(
@@ -1342,7 +1377,13 @@ export class PermissionManager {
     let floor = context.floor;
     const invalidMeta = category === "meta" && (source !== "builtin" || context.decisionOverride === undefined);
     if (invalidMeta) admissionDenial ??= { code: "invalid-meta", reason: "The tool has no valid host decision contract." };
-    const requestedRuleSubject = context.ruleSubject?.kind === "shell" ? context.ruleSubject : undefined;
+    const suppliedRuleSubject = context.ruleSubject?.kind === "shell" ? context.ruleSubject : undefined;
+    const requestedRuleSubject = suppliedRuleSubject && context.hostTerminalTurn ? {
+      ...suppliedRuleSubject,
+      dialect: "bash" as const,
+      cwd: context.hostTerminalTurn.physicalCwd,
+      hostTerminal: { shell: context.hostTerminalTurn.shell, cwd: context.hostTerminalTurn.physicalCwd },
+    } : suppliedRuleSubject;
     if (requestedRuleSubject && requestedRuleSubject.dialect !== "bash" && requestedRuleSubject.dialect !== "powershell") {
       throw new Error("Shell rule subject has no known dialect");
     }
@@ -1416,7 +1457,8 @@ export class PermissionManager {
       secretRead ||= evidence.effect === "read" && evidence.secret !== null;
     }
     const sessionRules = context.sessionId === undefined ? [] : this.sessionRules.get(approvalConversationRoot(context.sessionId)) ?? [];
-    const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules)
+    const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
+        ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
       : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true, floorSignal: shellSignals?.exfiltration ?? null }, this.rules, projectRules, sessionRules) : undefined;
     const approvalKey = normalizeApprovalCacheKey(context.approvalCacheKey);
     const denyTargets = approvalKey ? [toolName, approvalKey] : [toolName];
@@ -1450,7 +1492,7 @@ export class PermissionManager {
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
       ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };
-    const result = this.pipelineResult(request);
+    const result = this.pipelineResult(request, context);
     if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && projectPolicyVersion && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
       issuedShellAllowRuleDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd, cwdIdentity, issuer: this, policyEpoch: this.getPolicyEpoch(), persistedPolicyVersions: Object.freeze([this.userRulesVersion, projectPolicyVersion]) }));
     }

@@ -8,6 +8,7 @@ import { createDynamicTool } from "../../tools/base.js";
 import { NotificationService } from "../../main/notification-service.js";
 import { issueAuthorizationRequiredControl } from "../../shared/authorization-required.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 function makeHarness(notificationService?: NotificationService): { loop: ConversationLoop; toolRegistry: ToolRegistry } {
   const toolRegistry = new ToolRegistry();
@@ -41,7 +42,7 @@ describe("ConversationLoop currentAbortController lifecycle", () => {
     };
 
     const errors: string[] = [];
-    const result = await loop.runTurn("ask", { onError: (message) => errors.push(message) }, undefined, { inputOrigin: "user-keyboard" },
+    const result = await loop.runTurn("ask", { onError: (message) => errors.push(message) }, undefined, { ...userKeyboardTurn() },
     );
     expect(result.text).toContain("synthetic provider failure");
     expect(errors[0]).toContain("synthetic provider failure");
@@ -63,7 +64,7 @@ describe("ConversationLoop currentAbortController lifecycle", () => {
     };
 
     const errors: string[] = [];
-    const result = await loop.runTurn("ask", { onError: (message) => errors.push(message) }, undefined, { inputOrigin: "user-keyboard" },
+    const result = await loop.runTurn("ask", { onError: (message) => errors.push(message) }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(result.stopReason).toBe("stream-error");
@@ -94,7 +95,7 @@ describe("ConversationLoop abort (B4)", () => {
     const textDeltas: string[] = [];
     const result = await loop.runTurn("hi", {
       onTextDelta: (t) => textDeltas.push(t),
-    }, ac.signal, { inputOrigin: "user-keyboard" },
+    }, ac.signal, { ...userKeyboardTurn() },
     );
 
     expect(result.stopReason).toBe("interrupted");
@@ -125,7 +126,7 @@ describe("ConversationLoop abort (B4)", () => {
     const ac = new AbortController();
     ac.abort();
 
-    const result = await loop.runTurn("go", undefined, ac.signal, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("go", undefined, ac.signal, { ...userKeyboardTurn(),
     });
     expect(result.stopReason).toBe("interrupted");
     expect(toolExecuted).toBe(false);
@@ -165,7 +166,7 @@ describe("ConversationLoop abort (B4)", () => {
     const textDeltas: string[] = [];
     const result = await loop.runTurn("go", {
       onTextDelta: (delta) => textDeltas.push(delta),
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(toolEntered).toBe(true);
@@ -196,7 +197,7 @@ describe("ConversationLoop abort (B4)", () => {
       },
     };
 
-    const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hi", undefined, undefined, { ...userKeyboardTurn(),
     });
     loop.abortCurrentTurn();
 
@@ -217,7 +218,7 @@ describe("ConversationLoop abort (B4)", () => {
     };
 
     const errors: string[] = [];
-    const result = await loop.runTurn("hi", { onError: (message) => errors.push(message) }, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hi", { onError: (message) => errors.push(message) }, undefined, { ...userKeyboardTurn(),
     });
     expect(result.stopReason).toBe("stream-error");
     expect(errors).toHaveLength(1);
@@ -238,7 +239,7 @@ describe("ConversationLoop abort (B4)", () => {
 
     let errorCalled = false;
     const result = await loop.runTurn("hi", { onError: () => { errorCalled = true; },
-      }, undefined, { inputOrigin: "user-keyboard" },
+      }, undefined, { ...userKeyboardTurn() },
     );
     expect(result.stopReason).not.toBe("interrupted");
     expect(result.text).toContain("네트워크 연결 문제");
@@ -319,7 +320,7 @@ describe("turn completion notification sound delivery", () => {
         yield { type: "message_complete", stopReason: "end_turn" };
       },
     };
-    const result = await loop.runTurn("hi", {}, abort.signal, { inputOrigin: "user-keyboard" });
+    const result = await loop.runTurn("hi", {}, abort.signal, { ...userKeyboardTurn() });
     if (["interrupted", "stream-error", "context-error", "authorization-required"].includes(outcome)) expect(result.stopReason).toBe(outcome);
     if (outcome === "authorization-required") expect(result.text).not.toBe("");
     expect(notificationFactory).toHaveBeenCalledTimes(count);

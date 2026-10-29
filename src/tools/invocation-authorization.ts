@@ -22,9 +22,10 @@ import {
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
-import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf, type HostTerminalCommandScope } from "./terminal-run.js";
 import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
+import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import {
   isRemoteControllerAuthorityCurrent,
   remoteControllerOriginOf,
@@ -320,6 +321,10 @@ export async function authorizeToolInvocation(
       ...(invocationPermissionContext.approvalMemory?.kind === "key"
         ? { approvalMemoryScope: invocationPermissionContext.approvalMemory.scope } : {}),
     }) === true;
+  const terminalScope = isCanonicalTerminalRunTool(tool)
+    ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
+    : undefined;
+  const hostTerminalScope: HostTerminalCommandScope | undefined = terminalScope?.lane === "manual" ? terminalScope : undefined;
   const otherPrincipal = invocationPermissionContext.otherPrincipal === true || approvalReasonPrefix !== undefined ||
     requiresRemoteLocalOneShot || requiresPerActionApproval;
   const floor = context.floor ?? (otherPrincipal ? {
@@ -338,9 +343,6 @@ export async function authorizeToolInvocation(
     // bash terminals are typed into, and the command text refuses everything
     // they read differently from bash (terminal-command-text.ts), so the words
     // the rules match are the words the shell runs.
-    const terminalScope = isCanonicalTerminalRunTool(tool)
-      ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
-      : undefined;
     const shellRuleSubject = shellDialect !== undefined && typeof finalInput.command === "string"
       ? {
           kind: "shell" as const,
@@ -352,14 +354,21 @@ export async function authorizeToolInvocation(
           ),
         }
       : terminalScope !== undefined && typeof finalInput.command === "string"
-        ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
+        ? terminalScope.lane === "manual"
+          // Evaluate the user's host shell in its OS-verified physical directory and its own rule namespace.
+          ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.physicalCwd,
+            hostTerminal: { shell: terminalScope.shell, cwd: terminalScope.physicalCwd } }
+          : { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
         : undefined;
     const shellExecution = shellDialect !== undefined && hostShellExecutionPlan !== undefined
       ? {
           runsSandboxed: isConfinedHostShellExecution(hostShellExecutionPlan, invocationPermissionContext.disposableSubstrate)
             || invocationPermissionContext.disposableSubstrate !== undefined,
           pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
-        } : terminalScope !== undefined ? { runsSandboxed: false } : undefined;
+        } : terminalScope !== undefined
+          // The user's host terminal decides on its sealed host route's relaxations (none); the isolated terminal keeps its own.
+          ? { runsSandboxed: false, ...(terminalScope.lane === "manual" ? { pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [] } : {}) }
+          : undefined;
     const scopedSubjectCandidate = scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets);
     // Guest file paths belong to the workload namespace, never to host Edit scopes.
     const scopedRuleSubject = scopedSubjectCandidate?.kind === "edit"
@@ -381,6 +390,8 @@ export async function authorizeToolInvocation(
             fileWritePolicy: context.fileWritePolicy,
             floor,
             admissionDenial: context.admissionDenial,
+            ...(hostTerminalScope ? { hostTerminalTurn: hostTerminalScope } : {}),
+            trustOrigin: invocationPermissionContext.trustOrigin,
             paths: context.paths,
             secretRead: context.secretRead,
             shellReadOnlyProven: context.shellReadOnlyProven,
@@ -865,6 +876,7 @@ export async function authorizeToolInvocation(
         // Layer 3: wire target.filePath + isReadOnly + mode so the
         // approval gate can apply sensitive-path and read-only checks to
         // the exact invocation shown to the user.
+        const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true
           ? classifyApprovalRuleVerdict({
             toolName: toolUse.name,
@@ -882,6 +894,7 @@ export async function authorizeToolInvocation(
             workerId: tool.workerId,
             pluginId: tool.pluginId,
             hostShellExecutionPlan,
+            ...(hostTerminalFacts.sandboxCapability ? { sandboxCapability: hostTerminalFacts.sandboxCapability } : {}),
           }) : undefined;
         const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         const approvalRequest = {
@@ -983,6 +996,7 @@ export async function authorizeToolInvocation(
                 ),
               }
             : {}),
+          ...hostTerminalFacts,
           evaluationContext,
         };
 

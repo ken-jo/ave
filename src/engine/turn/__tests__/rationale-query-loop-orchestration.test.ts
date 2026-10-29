@@ -19,6 +19,7 @@ import {
   type RationaleCoordinatorFactoryInput,
 } from "../rationale-conversation-orchestration.js";
 import { runRationaleOnlyRound } from "../rationale-round.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 vi.mock("../rationale-round.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../rationale-round.js")>()),
@@ -156,7 +157,7 @@ describe("ConversationLoop rationale orchestration", () => {
     ).executeConversationBatch = executeConversationBatch;
 
     await fixture.loop.runTurn("run it", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "run it",
     });
 
@@ -185,7 +186,7 @@ describe("ConversationLoop rationale orchestration", () => {
     ).executeConversationBatch = executeConversationBatch;
 
     await fixture.loop.runTurn("run it", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "run it",
     });
 
@@ -222,7 +223,7 @@ describe("ConversationLoop rationale orchestration", () => {
     ).executeConversationBatch = executeConversationBatch;
 
     await fixture.loop.runTurn("run it", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "run it",
     });
 
@@ -264,7 +265,7 @@ describe("ConversationLoop rationale orchestration", () => {
     ).executeConversationBatch = executeConversationBatch;
 
     await fixture.loop.runTurn("run it", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "run it",
     });
 
@@ -327,7 +328,7 @@ describe("ConversationLoop rationale orchestration", () => {
     });
 
     const result = await fixture.loop.runTurn("run the batch", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "run the batch",
     },
     );
@@ -378,7 +379,7 @@ describe("ConversationLoop rationale orchestration", () => {
     ).executeConversationBatch = executeConversationBatch;
 
     await fixture.loop.runTurn("inspect then act", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "inspect then act",
     });
 
@@ -433,7 +434,7 @@ describe("ConversationLoop rationale orchestration", () => {
       undefined,
       undefined,
       {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         requestAnchorRawIntent: "run then expand",
       },
     );
@@ -512,7 +513,7 @@ describe("ConversationLoop rationale orchestration", () => {
       undefined,
       undefined,
       {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         requestAnchorRawIntent: "prepare both files",
       },
     );
@@ -586,7 +587,7 @@ describe("ConversationLoop rationale orchestration", () => {
       undefined,
       undefined,
       {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         requestAnchorRawIntent: "prepare a file",
       },
     );
@@ -658,7 +659,7 @@ describe("ConversationLoop rationale orchestration", () => {
       undefined,
       undefined,
       {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         requestAnchorRawIntent: "first request",
       },
     );
@@ -667,7 +668,7 @@ describe("ConversationLoop rationale orchestration", () => {
       undefined,
       undefined,
       {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         requestAnchorRawIntent: "second request",
       },
     );
@@ -747,7 +748,7 @@ describe("ConversationLoop rationale orchestration", () => {
         undefined,
         undefined,
         {
-          inputOrigin: "user-keyboard",
+          ...userKeyboardTurn(),
           requestAnchorRawIntent: "prepare guarded files",
         },
       );

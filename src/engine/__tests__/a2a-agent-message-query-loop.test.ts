@@ -18,6 +18,7 @@ import type {
   StreamTurnParams,
 } from "../llm/types.js";
 import { makeConversationPermissionDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -195,7 +196,7 @@ describe("A2A question control and causal propagation", () => {
     const loop = createLoop(provider, toolRegistry);
 
     const result = await loop.runTurn("continue", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     if (source === "builtin") {
@@ -324,7 +325,7 @@ describe("A2A question control and causal propagation", () => {
     const result = await loop.runTurn("start", undefined, undefined, {
       sessionIdOverride: "sub-recipient",
       spawnDepth: 1,
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(result.stopReason).toBe("end_turn");
@@ -451,7 +452,7 @@ describe("A2A question control and causal propagation", () => {
       const runPromise = loop.runTurn("start", undefined, undefined, {
         sessionIdOverride: recipientChildSessionId,
         spawnDepth: 1,
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         maxRounds: args.maxRounds,
       });
       return {

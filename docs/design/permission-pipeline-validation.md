@@ -28,7 +28,7 @@ The screenshot and CDP assertions establish the displayed state in that isolated
 - Final full app build and isolated CDP launch: passed (`cdp-publish-launch.log`). `cdp-publish-assertions.json` confirms owner-away `0`, zero obsolete interactive selectors and no account email. The screenshot above records the corresponding permissions state.
 - Production/push gates after the latest source changes: pending. No future CI or publish result is asserted.
 - Native filesystem-denial attribution is supported by the macOS monitor. Installed Linux diagnostic-attempt records are deliberately rejected as escalation authority, so Linux retains the original failure. The owner decision remains pending: accept this limitation or require a trusted Linux supervisor before delivery. Controlled Linux executor cases prove orchestration only.
-- Related terminal work [#308](https://github.com/ken-jo/ave/pull/308) remains open in this handoff; this record does not count it as landed verification.
+- Related terminal work [#308](https://github.com/ken-jo/ave/pull/308) is merged on origin/main at 7e26a6df5. Its normal merge is conflict-resolved but not yet committed in this working tree; the native-terminal policy fork below blocks delivery.
 - The external design source has three-way drift relative to the committed contract and implementation. Its proposed surface selectors remain pending owner confirmation; this record does not revise the immutable tree.
 
 ## Integration follow-up
@@ -68,7 +68,7 @@ The parent-model and away automatic deciders are retired. The breaker now overla
 | Executor and approval-memory consumers | 137 passed across 2 files; `executor-and-memory-final.log`; subsequent executor-only recheck passed 119 in `executor-two-targets-final.log`. These overlap and are not added. |
 | Broker route and mandatory floors | 10 passed; `validation-broker-route-final.log`. |
 
-Production typecheck and the test-type ratchet passed in the final publish checks described above. The latest normal push attempt did not complete; the repair record below supersedes the earlier pending state. No cross-run aggregate or future CI success is asserted. The Linux owner decision and open terminal work #308 remain unchanged.
+Production typecheck and the test-type ratchet passed in the final publish checks described above. The latest normal push attempt did not complete; the repair record below supersedes the earlier pending state. No cross-run aggregate or future CI success is asserted. The Linux owner decision remains pending; #308 is now merged upstream and its policy conflict is recorded below.
 
 ## Same-card rule saves and final execution admission
 
@@ -101,3 +101,30 @@ Production permission admission now reads the actual AVE_HOME/config/settings.js
 The normal push attempt stopped at observed failures and a specified stale abort fixture; only the owned process group was terminated (exit 143). There is no completed 996-case gate result. Later focused repairs above passed; fresh integrated production type and normal-push gates remain pending. Earlier green type/build results do not certify the latest tree, and no future CI result is asserted.
 
 The final main bundle build passed in `build-main-reconciled-direct.log`. Its preceding shared-wrapper attempt built successfully but failed process-group cleanup with `EPERM`; that nonzero wrapper result is retained separately and is not counted as a successful command. The narrow direct rerun exited zero.
+
+## Native terminal merge and unresolved mode fork
+
+The normal merge of origin/main 7e26a6df5 is syntax/conflict-resolved but not committed at this snapshot. The push is stopped and no PR is open. The inventory retains the original 97 records and adds 13 N records, for 110 bounded regions.
+
+Physical user typing stays outside the agent tool tree. Agent terminal_run still uses central permission followed by exact native recipient/turn/physical-cwd/lease enforcement. Normal, outside-directory and late approval surfaces reuse finalized native facts. Production manager consumes the trusted manual context and live S1/S2 evidence; shell rule subjects use physical cwd.
+
+Pristine #308 requires all-mode human approval unless an exact HostTerminal rule covers the command, while the immutable host/escalation row permits ordinary mode routing. That is an unresolved owner product-policy choice, not a reason to silently add an exception. No exception or new mode is implemented; delivery remains blocked pending the owner response. The Linux native-attribution limitation remains independently pending.
+
+| Combined-tree check | Observed scoped result |
+| --- | --- |
+| Preload, channel, packaging and internal terminal locks | 212 passed, zero skips, across 4 files; merge308-four-locks.log. |
+| Engine terminal/turn consumers | 61 passed in the combined-tree focused run. |
+| Host-terminal rule/manager normalization | 51 passed; merge308-host-rule-normalization.log; actual authority-fault admission 7 remains separately evidenced and overlaps prior coverage. |
+| Native approval gate consumers | 158 passing cases in the latest-per-file combined-tree reconciliation; overlaps earlier gate/IPC runs and is not a new aggregate. |
+| All three native card surfaces | New late-terminal suite 8, pause 30 and authorization 12 passed in their scoped runs; overlapping earlier cases are not summed. |
+| Combined test-type ratchet | Held at 231 files / 1,012 inherited diagnostics; merge308-test-types.log. This baseline change came from main and is not a clean test compilation. |
+
+Production typecheck passed before the latest small integration changes; fresh final types are running. Normal merge commit, normal push and PR creation have not completed. No completed combined gate or future CI success is asserted.
+
+## Source-complete terminal merge handoff
+
+Production types passed in `merge308-typecheck-handoff.log`; the test-type ratchet held at 231 files and 1,012 inherited diagnostics in `merge308-test-types-handoff.log` without a feature baseline update. The combined full app build passed in `merge308-ui-build-resolved.log` after the resolved merge files were marked in the index. The earlier build refusal for unresolved index entries is retained separately, not counted as a build pass.
+
+The approved contract matrix passed all 10,797 cases again (`merge308-contract-matrix.log`). A real native terminal takeover UI test passed (`merge308-terminal-takeover.log`): the user regained control and private user-period output did not reach the model. The capture was inspected and contains no email; the task-owned isolated profile was torn down by its fixture.
+
+The ordinary ask-rule assertion was migrated to v4 normal-card routing while preserving forced exfiltration and native consent checks. Three unchanged policy assertions remain red across the host-terminal rule and invocation suites: they require native-human/exact-rule handling in Allow mode for an agent typing into an existing user terminal. The committed contract instead places host shells on mode handling. Addendum B requires stopping and reporting a tree deviation; no special mode exception or additional forced floor was introduced. The normal merge is source-resolved and staged but not committed, and the feature push/PR await that owner decision.

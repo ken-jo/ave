@@ -3,6 +3,8 @@ import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
+import { consumeUserKeyboardIntent } from "./gesture-intent.js";
+import type { UserKeyboardIntentSnapshot } from "../shared/chat-origin.js";
 import type { SideChatOperationFailure } from "../shared/side-chat-operation.js";
 import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
 import { buildTerminalApiSurface } from "./terminal-api-surface.js";
@@ -296,12 +298,17 @@ export function buildInternalApiSurface() {
       sendRequestId?: string,
       surface?: ActiveWorkspaceSurface,
       sessionId?: string,
+      origin?: { inputOrigin: "queue-auto" } | { inputOrigin: "user-keyboard"; userIntent?: UserKeyboardIntentSnapshot },
     ) =>
       ipcRenderer.invoke(CHANNELS.sidechat.send, {
         input, attachments, originSessionId,
         ...(sendRequestId !== undefined ? { sendRequestId } : {}),
         ...(surface !== undefined ? { surface } : {}),
         ...(sessionId !== undefined ? { sessionId } : {}),
+        // The same one-shot intent chatSend consumes; a send without a valid one is never the user's keyboard.
+        ...(origin?.inputOrigin === "user-keyboard"
+          ? { inputOrigin: "user-keyboard", userActivation: consumeUserKeyboardIntent(origin.userIntent) }
+          : { inputOrigin: "queue-auto" }),
       }) as Promise<
         | { ok: true; result: TurnResult }
         | SideChatOperationFailure

@@ -5,10 +5,10 @@ import { fanOutToAllWindows } from "../window-fanout.js";
 import { createLogger } from "../../lib/logger.js";
 import {
   setTerminalEmitter, spawnTerminal, writeTerminal, resizeTerminal, killTerminal,
-  terminalOwnedBy,
+  terminalOwnedBy, controlTerminal,
 } from "../../main/terminal/pty-manager.js";
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../../main/terminal/terminal-blocks.js";
-import { isTerminalSessionRef } from "../../shared/terminal-session.js";
+import { isTerminalControlAction, isTerminalPurpose, isTerminalSessionRef } from "../../shared/terminal-session.js";
 import type { IpcDeps } from "../types.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.js";
@@ -19,7 +19,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
   setTerminalEmitter((event, payload, ownerWindowId) => {
     if (payload.lane !== "manual") return;
-    const channel = event === "data" ? CHANNELS.terminal.data : CHANNELS.terminal.exit;
+    const channel = event === "data" ? CHANNELS.terminal.data : event === "exit" ? CHANNELS.terminal.exit : CHANNELS.terminal.controlChanged;
     const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
     const targets = ownerWindowId === null ? windows : windows.filter((win) => win && !win.isDestroyed() && win.id === ownerWindowId);
     fanOutToAllWindows(targets, channel, payload, { logger: log });
@@ -36,7 +36,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.terminal.spawn, async (event, payload) => {
     if (!authorized(event, CHANNELS.terminal.spawn)) return { ok: false, reason: "unauthorized-frame", message: "sender frame is not authorized" };
-    if (!payload || typeof payload.tabId !== "string" || payload.lane !== "manual"
+    if (!payload || typeof payload.tabId !== "string" || payload.lane !== "manual" || !isTerminalPurpose(payload.purpose)
       || (payload.cwd !== undefined && typeof payload.cwd !== "string")
       || (payload.cols !== undefined && (typeof payload.cols !== "number" || !Number.isFinite(payload.cols)))
       || (payload.rows !== undefined && (typeof payload.rows !== "number" || !Number.isFinite(payload.rows)))) {
@@ -52,7 +52,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     }
     if (!terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, reason: "not-owner", message: "terminal belongs to another window" };
     updateApprovalSurface({ kind: "attach-terminal", tabId: payload.tabId, surface: event.sender });
-    return spawnTerminal({ tabId: payload.tabId, lane: payload.lane, ownerWindowId,
+    return spawnTerminal({ tabId: payload.tabId, lane: payload.lane, ownerWindowId, purpose: payload.purpose,
       ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
       ...(payload.cols !== undefined ? { cols: payload.cols } : {}),
       ...(payload.rows !== undefined ? { rows: payload.rows } : {}),
@@ -72,6 +72,16 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       return resizeTerminal(payload, payload.cols, payload.rows);
     });
   }
+  // The user's visible control buttons. Only the owning window's host renderer may take over, stop or hand back its own host terminal.
+  ipcMain.handle(CHANNELS.terminal.control, async (event, payload) => {
+    if (!authorized(event, CHANNELS.terminal.control)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+    if (!isTerminalSessionRef(payload) || payload.lane !== "manual" || !("action" in payload) || !isTerminalControlAction(payload.action)) {
+      return { ok: false, error: "invalid-params" };
+    }
+    const ownerWindowId = senderWindowId(event);
+    if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
+    return controlTerminal(payload, ownerWindowId, payload.action);
+  });
   ipcMain.handle(CHANNELS.terminal.kill, async (event, payload) => {
     if (!authorized(event, CHANNELS.terminal.kill)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
     if (!payload || typeof payload.tabId !== "string" || !payload.tabId || (payload.lane !== undefined && payload.lane !== "manual")) return { ok: false, error: "invalid-params" };

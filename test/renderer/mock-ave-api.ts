@@ -201,6 +201,8 @@ function makeTerminalDouble() {
       return () => { dataListeners.delete(listener); };
     }),
     onExit: vi.fn(() => () => {}),
+    onControl: vi.fn(() => () => {}),
+    control: vi.fn(async () => ({ ok: true, control: { mode: "available", generation: 0, agentInput: "supported" } })),
     listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { cwd: "/", latestBlockId: null, files: [], warnings: [] } })),
     listBlocks: vi.fn(async (ref: TerminalSessionRef) => ({ ok: true, session: terminalSessionFixture(ref.tabId, ref.lane, ref.terminalSessionId), blocks: [], integrated: false })),
     getBlock: vi.fn(async () => ({ ok: false, error: "no-block" })),

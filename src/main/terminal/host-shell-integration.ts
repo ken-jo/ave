@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { TerminalIntegrationUnavailableReason } from "../../shared/terminal-session.js";
 import type { ManualShellLaunch } from "./manual-shell.js";
-import { generateHostShellHooks, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
+import { aveHome, readWindowsDirectoryDacls } from "../../shared/ave-home.js";
+import { isOwnerOnlyDacl } from "../../shared/windows-path-facts.js";
+import { generateHostShellHooks, generatePwshHostHooks, PWSH_PROFILE_STARTUP, powerShellQuote, pwshNoncePrologue, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
 
 export interface HostShellIntegration {
   command: string;
@@ -29,6 +31,7 @@ export function prepareHostShellIntegration(launch: ManualShellLaunch, env: Node
     marksPromptEnd: false, integrationUnavailableReason: reason, cleanup() {},
   });
   const shell = basename(launch.command).replace(/\.exe$/iu, "");
+  if (shell === "pwsh") return preparePwsh(launch, shellEnv, nonce, native);
   if (shell !== "zsh" && shell !== "bash") {
     return native("unsupported-shell");
   }
@@ -86,4 +89,61 @@ export function prepareHostShellIntegration(launch: ManualShellLaunch, env: Node
     if (directory) rmSync(directory, { recursive: true, force: true });
     return native("setup-failed");
   }
+}
+
+const PWSH_STARTUP_FLAGS: Readonly<Record<string, "login" | "interactive">> = {
+  "-l": "login", "-login": "login", "-i": "interactive", "-interactive": "interactive",
+};
+
+// PowerShell 7: launch with -NoProfile so nothing of the user's runs before the owned wrapper, which takes the nonce first, then dot-sources the
+// user's profiles in PowerShell's own order, then installs the hooks. A launch with any other argument stays native.
+function preparePwsh(
+  launch: ManualShellLaunch,
+  env: Record<string, string>,
+  nonce: string,
+  native: (reason: TerminalIntegrationUnavailableReason) => HostShellIntegration,
+): HostShellIntegration {
+  const flags = launch.args.map((arg) => PWSH_STARTUP_FLAGS[arg.toLowerCase()]);
+  if (flags.some((flag) => flag === undefined)) return native("custom-launch");
+  let directory: string | undefined;
+  try {
+    // POSIX modes mean nothing to a Windows ACL, and a temporary directory inherits its parent's (which may grant every user read). On Windows the
+    // directory is a fresh child of the Ave home, created owner-only and inheritance-protected by the home's own protection helper and verified
+    // on read-back, before the nonce is written into it; the files inherit it.
+    directory = process.platform === "win32" ? createOwnerOnlyHomeDirectory() : mkdtempSync(join(tmpdir(), "ave-host-terminal-"));
+    const ownedDirectory = directory;
+    const write = (name: string, text: string): string => {
+      const path = join(ownedDirectory, name);
+      writeFileSync(path, text, { mode: 0o600 });
+      return path;
+    };
+    const noncePath = write(SHELL_INTEGRATION_NONCE_FILE, nonce);
+    const hooksPath = write("hooks.ps1", generatePwshHostHooks());
+    const wrapper = write("startup.ps1", [pwshNoncePrologue(noncePath), PWSH_PROFILE_STARTUP, `. ${powerShellQuote(hooksPath)}`, ""].join("\n"));
+    return {
+      command: launch.command,
+      // -Login must come first when it is given at all.
+      args: [...(flags.includes("login") ? ["-Login"] : []), "-NoProfile", "-NoExit", "-Command", `. ${powerShellQuote(wrapper)}`],
+      env, nonce, marksPromptEnd: true,
+      cleanup: () => rmSync(ownedDirectory, { recursive: true, force: true }),
+    };
+  } catch {
+    if (directory) rmSync(directory, { recursive: true, force: true });
+    return native("setup-failed");
+  }
+}
+
+/** Create a new direct child of the Ave home with an owner-only, inheritance-protected DACL and confirm it on read-back. The protection helper
+ * only verifies the first path (the home root, which must already be safe) and creates or repairs the children after it, so the owned
+ * directory must be one of those children rather than a temporary directory of its own. */
+function createOwnerOnlyHomeDirectory(): string {
+  const home = aveHome();
+  const directory = join(home, `host-terminal-${randomBytes(8).toString("hex")}`);
+  const [root, descriptor] = readWindowsDirectoryDacls([home, directory], true);
+  if (root?.error !== undefined || descriptor === undefined || descriptor.error !== undefined || descriptor.protected !== true
+    || typeof descriptor.currentUserSid !== "string" || !isOwnerOnlyDacl(descriptor, descriptor.currentUserSid)) {
+    rmSync(directory, { recursive: true, force: true });
+    throw new Error("owner-only directory protection failed");
+  }
+  return directory;
 }

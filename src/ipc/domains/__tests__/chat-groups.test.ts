@@ -13,6 +13,9 @@ import type { SessionGoal } from "../../../shared/session-goal.js";
 import { approvalSurfaceRegistry } from "../../../permissions/approval-surface-registry.js";
 import { installNativeChatWindow, nativeChatFrameEvent } from "../../../__tests__/support/native-chat-window.js";
 
+// What preload sends once it consumed the click's gesture token: main runs a replay as the user's turn only with it.
+const KEYBOARD_GESTURE = { inputOrigin: "user-keyboard", userActivation: true } as const;
+
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
@@ -274,7 +277,7 @@ describe("ave:chat:* with chat groups", () => {
       const input = formatFileMentionReference(1, { path: "src/source.ts", startLine: 3, endLine: 5, turnId: "main-q1", hunkId: "a".repeat(64) });
       const original = [...main.getHistory().getMessages()];
       const sending = Promise.resolve(operation === "edit"
-        ? invoke(CHANNELS.chat.editResend, "main-q1", input, MAIN_CHAT_GROUP_ID)
+        ? invoke(CHANNELS.chat.editResend, "main-q1", input, MAIN_CHAT_GROUP_ID, KEYBOARD_GESTURE)
         : invoke(CHANNELS.chat.send, { input, inputOrigin: "user-keyboard", userActivation: true }, MAIN_CHAT_GROUP_ID));
       await expansionEntered;
       const stopping = Promise.resolve(invoke(CHANNELS.chat.abort, MAIN_CHAT_GROUP_ID));
@@ -320,11 +323,11 @@ describe("ave:chat:* with chat groups", () => {
     const { invoke, groups } = await registerWithGroups();
     invoke(CHANNELS.chat.hasProvider, "group-2");
     const loop = groups.get("group-2")!;
-    const result = await invoke(CHANNELS.chat.continueLastUser, { sessionId: loop.sessionId }, "group-2");
+    const result = await invoke(CHANNELS.chat.continueLastUser, { sessionId: loop.sessionId, intent: KEYBOARD_GESTURE }, "group-2");
     expect(result).toEqual({ ok: false, error: "no-user-message" });
-    const retried = await invoke(CHANNELS.chat.retryEffort, {}, "group-2");
+    const retried = await invoke(CHANNELS.chat.retryEffort, {}, "group-2", KEYBOARD_GESTURE);
     expect(retried).toEqual({ ok: false, error: "no-user-message" });
-    const mismatched = await invoke(CHANNELS.chat.continueLastUser, { sessionId: sessionUuid("session-of-main") }, "group-2");
+    const mismatched = await invoke(CHANNELS.chat.continueLastUser, { sessionId: sessionUuid("session-of-main"), intent: KEYBOARD_GESTURE }, "group-2");
     expect(mismatched).toEqual({ ok: false, error: "session-mismatch" });
   });
 

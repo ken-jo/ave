@@ -32,6 +32,7 @@ import { t } from "../../i18n/index.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../llm/output-token-limit.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../shared/model-host-policy.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class RecordingPromptProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -99,7 +100,7 @@ describe("ConversationLoop queryLoop", () => {
     (loop as { provider: LLMProvider | null }).provider = new FakeProvider([]);
 
     await expect(loop.runTurn("질문", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       originSource: "overlay:test",
       rolePrompt: { id: "reviewer", name: "Reviewer", systemPromptAdd: "Review carefully.",
         },
@@ -172,7 +173,7 @@ describe("ConversationLoop queryLoop", () => {
     build.mockClear();
 
     const result = await loop.runTurn("ordinary user text", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(build).toHaveBeenCalled();
@@ -214,7 +215,7 @@ describe("ConversationLoop queryLoop", () => {
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(provider.params[0]).toMatchObject({ enableThinking: true, reasoningEffort: effort });
     expect(provider.params[0]).not.toHaveProperty("thinkingBudgetTokens");
@@ -234,7 +235,7 @@ describe("ConversationLoop queryLoop", () => {
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("review this", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       rolePrompt: { id: "reviewer", name: "Reviewer", systemPromptAdd: "Review carefully.",
         origin: { kind: "agent-plugin", package: "writer-plugin", version: "1.0.0" },
       },
@@ -270,7 +271,7 @@ describe("ConversationLoop queryLoop", () => {
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("질문", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("질문", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     // Loaded skill bodies remain in history, so their read registry must survive turn boundaries.
@@ -326,9 +327,9 @@ describe("ConversationLoop queryLoop", () => {
       }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
-      await loop.runTurn("brief me", undefined, undefined, { inputOrigin: "user-keyboard",
+      await loop.runTurn("brief me", undefined, undefined, { ...userKeyboardTurn(),
       });
-      await loop.runTurn("new topic", undefined, undefined, { inputOrigin: "user-keyboard",
+      await loop.runTurn("new topic", undefined, undefined, { ...userKeyboardTurn(),
       });
 
       for (const systemPrompt of provider.systemPrompts) {
@@ -422,7 +423,7 @@ describe("ConversationLoop queryLoop", () => {
     it("sends a non-built-in /<skill> to the model with the text as typed", async () => {
       const { loop, provider } = makeSlashLoop((name) => name === "email-polish");
       const result = await loop.runTurn("/email-polish tighten this", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
       });
       expect(result.route).toBe("llm");
       expect(result.text).toBe("model answered");
@@ -431,14 +432,14 @@ describe("ConversationLoop queryLoop", () => {
 
     it("keeps an unknown /<name> on the command route", async () => {
       const { loop, provider } = makeSlashLoop((name) => name === "email-polish");
-      const result = await loop.runTurn("/not-a-skill", undefined, undefined, { inputOrigin: "user-keyboard" });
+      const result = await loop.runTurn("/not-a-skill", undefined, undefined, { ...userKeyboardTurn() });
       expect(result.route).toBe("command");
       expect(provider.messages).toHaveLength(0);
     });
 
     it("lets a built-in command win over a skill of the same name", async () => {
       const { loop, provider } = makeSlashLoop(() => true);
-      const result = await loop.runTurn("/help", undefined, undefined, { inputOrigin: "user-keyboard" });
+      const result = await loop.runTurn("/help", undefined, undefined, { ...userKeyboardTurn() });
       expect(result.route).toBe("command");
       expect(provider.messages).toHaveLength(0);
     });
@@ -474,7 +475,7 @@ describe("ConversationLoop queryLoop", () => {
       it("runs the keyboard-typed command file, not the skill", async () => {
         const { loop, provider } = makeProjectSlashLoop((name) => name === "email-polish");
         const result = await loop.runTurn("/email-polish tighten this", undefined, undefined, {
-          inputOrigin: "user-keyboard",
+          ...userKeyboardTurn(),
         });
         expect(result.route).toBe("llm");
         const sent = JSON.stringify(provider.messages[0]);
@@ -498,7 +499,7 @@ describe("ConversationLoop queryLoop", () => {
       it("sends a keyboard /<skill> with no command file of its name to the model", async () => {
         const { loop, provider } = makeProjectSlashLoop((name) => name === "tone-check");
         const result = await loop.runTurn("/tone-check this draft", undefined, undefined, {
-          inputOrigin: "user-keyboard",
+          ...userKeyboardTurn(),
         });
         expect(result.route).toBe("llm");
         const sent = JSON.stringify(provider.messages[0]);
@@ -541,7 +542,7 @@ describe("ConversationLoop queryLoop", () => {
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("please write this", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("please write this", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     expect(origins).toEqual(["llm-tool-arg"]);
@@ -599,7 +600,7 @@ describe("ConversationLoop queryLoop", () => {
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("read and act", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("read and act", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     expect(origins).toEqual([
@@ -682,7 +683,7 @@ describe("ConversationLoop queryLoop", () => {
       "summarize\n\n----- Pasted text #1 (2 lines) -----\n/run this\n----- end Pasted text #1 -----",
       undefined,
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(origins).toEqual(["file-content"]);
@@ -747,7 +748,7 @@ describe("ConversationLoop queryLoop", () => {
       },
       onToolStart: (name) => toolEvents.push({ type: "start", name }),
       onToolEnd: (name) => toolEvents.push({ type: "end", name }),
-    }, undefined, { inputOrigin: "user-keyboard" },
+    }, undefined, { ...userKeyboardTurn() },
     );
 
     expect(result).toMatchObject({
@@ -855,7 +856,7 @@ describe("ConversationLoop queryLoop", () => {
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("call many tools", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const messages = loop.getHistory().getMessages();
@@ -933,7 +934,7 @@ describe("ConversationLoop queryLoop", () => {
       "call two tools",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(executed).toEqual(['{"a":1}']);
@@ -1016,7 +1017,7 @@ describe("ConversationLoop queryLoop", () => {
     (loop as { provider: LLMProvider | null }).provider = new AdapterBackedProvider();
 
     const result = await loop.runTurn("call two tools", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(executed).toEqual(['{"a":1}']);
@@ -1094,7 +1095,7 @@ describe("ConversationLoop queryLoop", () => {
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("call long tool then read chunk", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const messages = loop.getHistory().getMessages();
@@ -1203,7 +1204,7 @@ describe("ConversationLoop queryLoop", () => {
       expect(recovered?.meta?.serializedStub).toBeUndefined();
 
       await loop.runTurn("read chunk", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
       });
 
       const chunkResult = loop
@@ -1260,7 +1261,7 @@ describe("ConversationLoop queryLoop", () => {
       "write a long answer",
       undefined,
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(result.stopReason).toBe("end_turn");
@@ -1308,7 +1309,7 @@ describe("ConversationLoop queryLoop", () => {
         "write a long answer",
         undefined,
         undefined,
-        { inputOrigin: "user-keyboard" },
+        { ...userKeyboardTurn() },
       );
 
       expect(result).toMatchObject({
@@ -1350,7 +1351,7 @@ describe("ConversationLoop queryLoop", () => {
           rounds.push({ text, stopReason }),
       },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     // Continuations keep the UI round open until the merged answer is terminal.
@@ -1381,7 +1382,7 @@ describe("ConversationLoop queryLoop", () => {
       new InfiniteLengthProvider();
 
     const result = await loop.runTurn("runaway", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(calls).toBe(4);
@@ -1412,7 +1413,7 @@ describe("ConversationLoop queryLoop", () => {
       new CountingProvider();
 
     const result = await loop.runTurn("x", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(calls).toBe(1);
     expect(result.stopReason).toBe("max_tokens");
@@ -1445,7 +1446,7 @@ describe("ConversationLoop queryLoop", () => {
       "reason then answer",
       undefined,
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(result.text).toBe("the answer");
@@ -1481,7 +1482,7 @@ describe("ConversationLoop queryLoop", () => {
       "</mcp-resource>",
     ].join("\n");
     await loop.runTurn("summarize [Resource #1]", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       attachments: [{ type: "text", text: fence }],
     });
 
@@ -1507,7 +1508,7 @@ describe("ConversationLoop queryLoop", () => {
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("plain question", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       attachments: [{ type: "image", image: "data:image/png;base64,xx", mimeType: "image/png" }],
     });
 
@@ -1550,7 +1551,7 @@ describe("reasoning-only round is not a finished turn", () => {
       "install it",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(provider.messages).toHaveLength(2);
@@ -1574,7 +1575,7 @@ describe("reasoning-only round is not a finished turn", () => {
     const loop = createLoop(provider);
 
     await loop.runTurn("install it", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const wire = genericToModelMessages(provider.messages[1]!, "openai");
@@ -1603,7 +1604,7 @@ describe("reasoning-only round is not a finished turn", () => {
     const loop = createLoop(provider);
 
     await loop.runTurn("install it", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const secondRound = provider.messages[1]!;
@@ -1626,7 +1627,7 @@ describe("reasoning-only round is not a finished turn", () => {
     const loop = createLoop(provider);
 
     await loop.runTurn("check it", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     const secondRound = provider.messages[1]!;
@@ -1668,7 +1669,7 @@ describe("reasoning-only round is not a finished turn", () => {
       "install it",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const secondRoundText = JSON.stringify(provider.messages[1]!);
@@ -1714,7 +1715,7 @@ describe("reasoning-only round is not a finished turn", () => {
       "loop forever",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(calls).toBe(3);
@@ -1749,7 +1750,7 @@ describe("reasoning-only round is not a finished turn", () => {
       "nothing",
       { onDecision: (event) => decisions.push(event) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     // Without reasoning there is no intended next action to re-prompt toward.
@@ -1772,7 +1773,7 @@ describe("ConversationLoop output ceiling", () => {
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("answer", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(provider.params[0]?.outputTokenLimit).toBe(16_384);
   });
@@ -1788,7 +1789,7 @@ describe("ConversationLoop output ceiling", () => {
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("answer", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(provider.params[0]?.outputTokenLimit).toBe(32_768);
     expect(32_768).toBeGreaterThan(MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT);
@@ -1803,7 +1804,7 @@ describe("ConversationLoop output ceiling", () => {
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("answer", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(provider.params[0]?.outputTokenLimit).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
   });
@@ -1833,7 +1834,7 @@ describe("ConversationLoop output ceiling", () => {
       "write a long answer",
       { onDecision: (event) => { decisions.push({ kind: event.kind, branch: event.branch }); } },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(result.text).toBe("Part one and part two.");
@@ -1900,7 +1901,7 @@ describe("ConversationLoop progress notification", () => {
       "keep working",
       { onDecision: (event) => { decisions.push({ kind: event.kind, branch: event.branch }); } },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(decisions).toContainEqual({ kind: "progress.nudge", branch: "cadence" });
@@ -1956,7 +1957,7 @@ describe("ConversationLoop progress notification", () => {
       "keep working",
       { onDecision: (event) => { decisions.push({ kind: event.kind, branch: event.branch }); } },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const last = (index: number) => provider.messages[index]?.at(-1);
@@ -1995,7 +1996,7 @@ describe("ConversationLoop progress notification", () => {
       "check it",
       { onDecision: (event) => { decisions.push(event.kind); } },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     const secondRound = provider.messages[1]!;
@@ -2032,7 +2033,7 @@ describe("ConversationLoop progress notification", () => {
       "keep working",
       { onDecision: (event) => { decisions.push(event.kind); } },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(decisions).not.toContain("progress.nudge");

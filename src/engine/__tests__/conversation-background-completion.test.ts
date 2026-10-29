@@ -12,6 +12,7 @@ import { backgroundShellManager as manager, createBashOutputTool } from "../../t
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider } from "../llm/types.js";
 import { makeConversationLoopDeps, makeConversationLoopSettings } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -105,7 +106,7 @@ describe("conversation background completion delivery", () => {
     const onToolEnd = vi.fn();
     const pending = loop.runTurn("Wait for the owned child to finish.", {
       onToolStart: () => { markStarted(); }, onToolEnd,
-    }, undefined, { inputOrigin: "user-keyboard" });
+    }, undefined, { ...userKeyboardTurn() });
     await started;
     if (kind === "noisy") await progress("new progress");
     await new Promise<void>((resolve) => setImmediate(resolve));
