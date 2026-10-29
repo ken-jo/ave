@@ -1,10 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { EventEmitter } from "node:events";
+import { nativeTheme, type BrowserWindow } from "electron";
+import { TITLEBAR_COLORS } from "../window-titlebar-shell.js";
 import type { Cookie, CookiesSetDetails, Session } from "electron";
 
 // auth-window-service imports `electron` at module load time. Vitest's default node environment can't resolve it, so stub the module to just the shapes
 // the service references. The test only exercises pure helpers — BrowserWindow / Session are never constructed.
 vi.mock("electron", () => ({
   BrowserWindow: vi.fn(),
+  nativeTheme: { get shouldUseDarkColors() { return false; }, on: vi.fn(), off: vi.fn() },
   shell: { openExternal: vi.fn() },
   session: {},
   app: {},
@@ -267,41 +271,47 @@ describe("buildAuthResult", () => {
   });
 });
 
+const { authWindowChromeOptions, wireAuthWindowTheme } = await import("../auth-window-content.js");
+
 describe("buildAuthWindowShellHtml", () => {
-  it("Win/Linux: renders HTML titlebar with min/max/close (no native frame)", () => {
-    const html = buildAuthWindowShellHtml({
-      title: "Login <unsafe>",
-      url: "https://sso.example.com/login",
-      partition: "persist:plugin-auth:example",
-      platform: "win32",
-    });
-    expect(html).toContain("titlebar-btn");
-    expect(html).toContain("id=\"minimize\"");
-    expect(html).toContain("id=\"maximize\"");
-    expect(html).toContain("id=\"close\"");
-    expect(html).toContain("<webview");
-    expect(html).toContain("window.aveWindow");
-    expect(html).toContain("https://sso.example.com/login");
-    expect(html).toContain("persist:plugin-auth:example");
-    expect(html).toContain("<title>Login &lt;unsafe&gt;</title>");
+  it.each(["darwin", "win32", "linux"] as const)("uses native title controls in the shared row on %s", platform => {
+    const options = authWindowChromeOptions(platform, false);
+    expect(options).toMatchObject({ frame: true, minWidth: 520, titleBarStyle: platform === "darwin" ? "hiddenInset" : "hidden" });
+    expect(options.titleBarOverlay).toEqual(platform === "darwin" ? undefined : { height: 36, color: TITLEBAR_COLORS.light.background, symbolColor: TITLEBAR_COLORS.light.foreground });
+    if (platform === "darwin") expect(options.trafficLightPosition).toEqual({ x: 12, y: 11 });
+  });
+  it.each(["win32", "linux"] as const)("updates native overlay colors with the system theme on %s", platform => {
+    const window = Object.assign(new EventEmitter(), { setTitleBarOverlay: vi.fn() });
+    wireAuthWindowTheme(window as unknown as BrowserWindow, platform);
+    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 36, color: TITLEBAR_COLORS.light.background, symbolColor: TITLEBAR_COLORS.light.foreground });
+    const update = vi.mocked(nativeTheme.on).mock.calls.at(-1)![1] as () => void;
+    const dark = vi.spyOn(nativeTheme, "shouldUseDarkColors", "get").mockReturnValue(true);
+    try {
+      update();
+      expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 36, color: TITLEBAR_COLORS.dark.background, symbolColor: TITLEBAR_COLORS.dark.foreground });
+      expect(authWindowChromeOptions(platform, true).titleBarOverlay).toEqual({ height: 36, color: TITLEBAR_COLORS.dark.background, symbolColor: TITLEBAR_COLORS.dark.foreground });
+      window.emit("closed");
+      expect(nativeTheme.off).toHaveBeenCalledWith("updated", update);
+    } finally { dark.mockRestore(); }
   });
 
-  it("macOS: suppresses HTML titlebar buttons + title text so OS traffic lights aren't duplicated", () => {
-    const html = buildAuthWindowShellHtml({
-      title: "Login",
-      url: "https://sso.example.com/login",
-      partition: "persist:plugin-auth:example",
-      platform: "darwin",
-    });
-    expect(html).not.toContain("id=\"minimize\"");
-    expect(html).not.toContain("id=\"maximize\"");
-    expect(html).not.toContain("id=\"close\"");
-    // No <button class="titlebar-btn"> elements should be rendered. The CSS class itself stays in the <style> block (harmless dead rule) — only the DOM rendering is suppressed.
-    expect(html).not.toContain("<button class=\"titlebar-btn");
-    expect(html).toContain("titlebar-mac");
-    expect(html).toContain("<webview");
-    // Drag region must remain so users can still move the window.
-    expect(html).toContain("-webkit-app-region: drag");
+  it.each(["darwin", "win32", "linux"] as const)("renders one trusted address row beside native controls on %s", platform => {
+    const html = buildAuthWindowShellHtml({ title: "Login <unsafe>", url: "https://sso.example.com/login", partition: "ephemeral-auth-test", platform });
+    expect(html).toContain('<title>Login &lt;unsafe&gt;</title>');
+    expect(html).toContain('<div id="oauth-location">');
+    expect(html).toContain('<bdi id="oauth-domain" dir="ltr">');
+    expect(html).not.toContain('<input');
+    expect(html).not.toContain('window.aveWindow');
+    expect(html).toContain('-webkit-app-region: drag');
+    expect(html).toContain('-webkit-app-region: no-drag');
+    for (const id of ["oauth-scheme", "oauth-subdomain", "oauth-path", "oauth-port", "oauth-suffix"]) {
+      expect(html).not.toContain(id);
+    }
+    expect(html).toContain('direction: rtl; text-align: left');
+    expect(html).toContain('user-select: text');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('text-overflow: ellipsis');
+    expect(html).toContain('<webview');
   });
 
   it("devConsole=true: inlines eruda init script in the shell", () => {

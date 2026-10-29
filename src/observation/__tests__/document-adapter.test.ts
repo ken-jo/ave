@@ -11,6 +11,7 @@ vi.mock("node:timers/promises", async (importOriginal) => {
     return clock.immediate ? Promise.resolve(value) : original.setTimeout(milliseconds, value, options);
   } };
 });
+import { terminalFileEvidence } from "../../main/terminal/changed-file-evidence.js";
 import { DocumentObservationAdapter } from "../document-adapter.js";
 import type { DocumentObservationEngine, DocumentObservationEvent } from "../../shared/agent-observation.js";
 import type { PreviewTableDocument } from "../../shared/preview-document.js";
@@ -266,6 +267,72 @@ describe("agent document observation", () => {
     await tick();
     expect(events.some((event) => event.kind === "element" || event.kind === "snapshot")).toBe(false);
     expect(events.findLast((event) => event.kind === "status")).toMatchObject({ after: { code: "reload-required" } });
+  });
+
+  it("discards a verified snapshot revoked while file evidence recording is pending", async () => {
+    const { path, adapter, events } = fixture();
+    let entered!: () => void;
+    let resume!: () => void;
+    const recording = new Promise<void>((resolve) => { entered = resolve; });
+    const suspended = new Promise<void>((resolve) => { resume = resolve; });
+    const record = vi.spyOn(terminalFileEvidence, "recordWrite").mockImplementationOnce(async () => {
+      entered();
+      await suspended;
+    });
+    writeFileSync(path, "after");
+    const pending = adapter.observeMutation(identity, path, HASHES.before, HASHES.after);
+    try {
+      await recording;
+      adapter.revokeInvocation(identity);
+      resume();
+      await pending;
+      await tick();
+      expect(events.some((event) => event.kind === "element" || event.kind === "snapshot")).toBe(false);
+      expect(events.findLast((event) => event.kind === "status")).toMatchObject({ after: { code: "reload-required" } });
+    } finally {
+      resume();
+      await pending;
+      record.mockRestore();
+    }
+  });
+
+  it("discards an older verified snapshot replaced while file evidence recording is pending", async () => {
+    const { path, adapter, events } = fixture();
+    let enterOlder!: () => void;
+    let enterNewer!: () => void;
+    let resumeOlder!: () => void;
+    let resumeNewer!: () => void;
+    const olderRecording = new Promise<void>((resolve) => { enterOlder = resolve; });
+    const newerRecording = new Promise<void>((resolve) => { enterNewer = resolve; });
+    const olderSuspended = new Promise<void>((resolve) => { resumeOlder = resolve; });
+    const newerSuspended = new Promise<void>((resolve) => { resumeNewer = resolve; });
+    const record = vi.spyOn(terminalFileEvidence, "recordWrite")
+      .mockImplementationOnce(async () => { enterOlder(); await olderSuspended; })
+      .mockImplementationOnce(async () => { enterNewer(); await newerSuspended; });
+    writeFileSync(path, "after");
+    const older = adapter.observeMutation(identity, path, HASHES.before, HASHES.after);
+    let newer: Promise<void> | undefined;
+    try {
+      await olderRecording;
+      writeFileSync(path, "after-two");
+      newer = adapter.observeMutation({ ...identity, toolUseId: "tool-2" }, path, HASHES.after, HASHES["after-two"]);
+      await newerRecording;
+      resumeOlder();
+      await older;
+      await tick();
+      expect(events.some((event) => event.kind === "element" || event.kind === "snapshot")).toBe(false);
+      resumeNewer();
+      await newer;
+      await tick();
+      const snapshots = events.filter((event) => event.kind === "snapshot");
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({ after: { sheet: { rows: [["Name", "Value"], ["Alpha", "99"], ["Beta", "84"]] } } });
+    } finally {
+      resumeOlder();
+      resumeNewer();
+      await Promise.all([older, newer]);
+      record.mockRestore();
+    }
   });
 
   it("discards an older invocation's queued save after a newer receipt replaces its proof", async () => {

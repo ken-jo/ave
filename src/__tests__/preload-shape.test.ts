@@ -731,6 +731,7 @@ describe("preload contextBridge world shape lock", () => {
             "input",
             "kill",
             "listBlocks",
+            "listFileReviews",
             "onData",
             "onExit",
             "preview",

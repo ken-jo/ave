@@ -1,3 +1,5 @@
+import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
+import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
 import type { WorkspaceTab, WorkspaceTabKind, WorkspaceTabsStore } from "../preview/workspace-tabs.js";
@@ -23,14 +25,14 @@ import {
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { SIDE_PANEL_DEFAULT_WIDTH, SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
+import { SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
 import { ToolActivityBody, ToolActivityWorkspace, toolActivityTotal, type ToolActivityState } from "./ToolActivity.js";
-import { EdgeResizeBar } from "./EdgeResizeBar.js";
+import { WorkPanelCard } from "./DockedWorkPanel.js";
 import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import type { WorkspaceChanges, FileWorkspaceReveal } from "../preview/workspace-changes.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
-import { PtyTerminalView } from "./PtyTerminalView.js";
+import { SidePanelTerminal } from "./SidePanelTerminal.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
 import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
 import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
@@ -828,6 +830,8 @@ export function ChatSidePanel({
   const surfaceMoves = useSurfaceMoves();
   const canMoveSurfaces = surfaceMoves !== null && chatGroupId !== undefined;
   const [stripDropActive, setStripDropActive] = useState(false);
+  // The terminal tab showing its 변경 파일 view instead of the shell, if any.
+  const [terminalChangesTabId, setTerminalChangesTabId] = useState<string | null>(null);
   const terminalAttention = useTerminalAttention();
 
   // The sub-agents the side chat's own turns started. The tile's list above
@@ -966,7 +970,10 @@ export function ChatSidePanel({
   const closeWorkspaceTab = useCallback(
     (id: string) => {
       const closing = tabs.find((tab) => tab.id === id);
-      if (closing?.kind === "terminal") void api.terminal?.kill(id);
+      if (closing?.kind === "terminal") {
+        forgetTerminalFileReview(id);
+        void api.terminal?.kill(id);
+      }
       closeTab(id);
     },
     [tabs, api, closeTab],
@@ -1152,6 +1159,7 @@ export function ChatSidePanel({
                       <TerminalAttentionDot testId="chat-side-panel-tab-terminal-attention" message={terminalAttention.get(tab.id)!.message} />
                     ) : null}
                   </button>
+                  {tab.kind === "terminal" ? <TerminalFileReviewBadge tabId={tab.id} onOpen={() => { setActiveTabId(tab.id); setTerminalChangesTabId(tab.id); }} /> : null}
                   {isEphemeral ? (
                     <button
                       type="button"
@@ -1210,30 +1218,17 @@ export function ChatSidePanel({
   );
 
   return (
-    <aside
-      data-testid={TEST_IDS.chatSidePanel}
-      // A raised card — the floating sidebar's own recipe — filling the box
-      // its tile reserves for it (the wrapper carries the card's insets), so a
-      // docked panel and a floating one are one surface at two positions.
-      className={[
-        "ave-surface-raised h-full w-full min-h-0 min-w-0 overflow-hidden rounded-2xl bg-card backdrop-blur",
-        className,
-      ].join(" ")}
+    <WorkPanelCard
+      testId={TEST_IDS.chatSidePanel}
+      className={className}
+      width={width}
+      minWidth={minWidth}
+      maxWidth={maxWidth}
+      onWidthChange={onWidthChange}
+      onWidthCommit={onWidthCommit}
+      {...(resizeElementRef ? { resizeElementRef } : {})}
+      splitterTestId="chat-side-panel-width-splitter"
     >
-      <EdgeResizeBar
-        width={width}
-        edge="start"
-        // The card clips its overflow, so its handle sits inside the edge.
-        variant="inset"
-        onWidthChange={onWidthChange}
-        onWidthCommit={onWidthCommit}
-        min={minWidth}
-        max={Math.max(minWidth, maxWidth)}
-        resetWidth={SIDE_PANEL_DEFAULT_WIDTH}
-        applyElementRef={resizeElementRef}
-        ariaLabel={t("chatPreviewRail.resizePanel")}
-        data-testid="chat-side-panel-width-splitter"
-      />
       <div
         data-testid="chat-preview-rail"
         className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
@@ -1291,11 +1286,13 @@ export function ChatSidePanel({
               onManualUrlChange={setBrowserTabUrl}
             />
           ) : activeTab.kind === "terminal" ? (
-            <PtyTerminalView
+            <SidePanelTerminal
               api={api}
-              location="side-panel"
               tabId={activeTab.id}
               tabLabel={`${t(tabLabelKey(activeTab.kind))} ${activeTab.ordinal}`}
+              visible={visible}
+              showChanges={terminalChangesTabId === activeTab.id}
+              onShowChanges={(show) => setTerminalChangesTabId(show ? activeTab.id : null)}
               {...(onAttachText ? { onAttachText } : {})}
             />
           ) : activeTab.kind === "subagent" ? (
@@ -1359,6 +1356,6 @@ export function ChatSidePanel({
           ) : null}
         </div>
       </div>
-    </aside>
+    </WorkPanelCard>
   );
 }

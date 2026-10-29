@@ -790,6 +790,7 @@ export const CHANNELS = {
     preview: "ave:terminal:preview", // invoke renderer-only last authenticated command
     blocks: "ave:terminal:blocks", // invoke  command-block summaries of one tab (no output)
     block: "ave:terminal:block", // invoke  one command block with its output
+    fileReviews: "ave:terminal:file-reviews",
   },
   // ── Browser tabs (agent browser tools) ────────────────────────────────────
   // ALL INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /

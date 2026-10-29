@@ -24,9 +24,24 @@ const owners = new Map<string, number | null>();
 const internalIds = new Set<string>();
 const writeTerminal = vi.fn(() => ({ ok: true }));
 const killTerminal = vi.fn();
+const reviewSnapshot = vi.fn(async () => ({ cwd: "/work", latestBlockId: null, files: [{ path: "/work/script.sh", sessionIds: ["s"], lastUsed: null }], warnings: [] }));
+vi.mock("../../main/terminal/changed-file-evidence.js", () => ({
+  terminalFileEvidence: { snapshot: reviewSnapshot },
+}));
+const tracker = { list: () => [] };
+let currentTracker: typeof tracker | undefined;
+vi.mock("../../main/terminal/terminal-blocks.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../main/terminal/terminal-blocks.js")>();
+  return {
+    ...actual,
+    getWindowTerminalBlockTracker: (...args: Parameters<typeof actual.getWindowTerminalBlockTracker>) => currentTracker ?? actual.getWindowTerminalBlockTracker(...args),
+    getWindowTerminalBlockSession: (...args: Parameters<typeof actual.getWindowTerminalBlockSession>) => currentTracker
+      ? terminalSessionFixture("terminal:0000000a-1", "manual") : actual.getWindowTerminalBlockSession(...args),
+  };
+});
 vi.mock("../../main/terminal/pty-manager.js", () => ({
   setTerminalEmitter: (fn: TerminalEmit) => { emitter = fn; },
-  spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane) })),
+  spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" })),
   writeTerminal,
   resizeTerminal: vi.fn(() => ({ ok: true })),
   killTerminal,
@@ -60,6 +75,8 @@ beforeEach(() => {
   fanOut.mockClear();
   writeTerminal.mockClear();
   killTerminal.mockClear();
+  reviewSnapshot.mockClear();
+  currentTracker = undefined;
   fromWebContents.mockImplementation((sender: { windowId: number }) => (sender.windowId === 1 ? windowOne : windowTwo));
   registerTerminalHandlers({
     auditLogger: { log: vi.fn() },
@@ -115,7 +132,7 @@ describe("terminal IPC between two windows", () => {
 describe("terminal IPC lane validation", () => {
   it("requires explicit lane on spawn and incarnation on mutations and block reads", async () => {
     expect(await handlers.get(CHANNELS.terminal.spawn)!(from(windowOne), { tabId: "terminal:0000000a-1" })).toMatchObject({ ok: false, reason: "bad-request" });
-    for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block]) {
+    for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block, CHANNELS.terminal.fileReviews]) {
       expect(await handlers.get(channel)!(from(windowOne), { tabId: "terminal:0000000a-1" })).toEqual({ ok: false, error: "invalid-params" });
     }
   });
@@ -126,7 +143,7 @@ describe("conversation terminal privacy boundary", () => {
   it("refuses renderer agent requests and never forwards their data or exit", async () => {
     const ref = terminalSessionFixture("terminal:0000000a-9", "agent");
     expect(await handlers.get(CHANNELS.terminal.spawn)!(from(windowOne), { tabId: ref.tabId, lane: "agent" })).toMatchObject({ ok: false, reason: "bad-request" });
-    for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block]) {
+    for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block, CHANNELS.terminal.fileReviews]) {
       expect(await handlers.get(channel)!(from(windowOne), { ...ref, data: "bad", cols: 80, rows: 24, blockId: 1 })).toEqual({ ok: false, error: "invalid-params" });
     }
     expect(await handlers.get(CHANNELS.terminal.kill)!(from(windowOne), ref)).toEqual({ ok: false, error: "invalid-params" });
@@ -183,5 +200,31 @@ describe("terminal preview display boundary", () => {
     expect(await preview(from(windowOne), { tabId, lane: "agent" })).toEqual({ ok: false, error: "invalid-params" });
     const event = { ...from(windowOne), senderFrame: { url: "file:///Applications/Ave.app/dist/index.html" } };
     expect(await preview(event as IpcMainInvokeEvent, { tabId })).toMatchObject({ ok: false });
+  });
+});
+
+describe("host file review boundary", () => {
+  const ref = terminalSessionFixture("terminal:0000000a-1", "manual");
+  it("requires the owning window, top-level sender and current incarnation", async () => {
+    owners.set(ref.tabId, 1);
+    const handler = handlers.get(CHANNELS.terminal.fileReviews)!;
+    expect(await handler(from(windowTwo), ref)).toEqual({ ok: false, error: "not-owner" });
+    expect(await handler({ ...from(windowOne), senderFrame: { url: "file:///Applications/Ave.app/dist/index.html" } } as IpcMainInvokeEvent, ref)).toMatchObject({ ok: false });
+    expect(await handler(from(windowOne), ref)).toEqual({ ok: false, error: "stale-terminal-session" });
+    expect(reviewSnapshot).not.toHaveBeenCalled();
+  });
+  it("lists the read-only snapshot and registers no channel that records a review", async () => {
+    currentTracker = tracker;
+    expect(await handlers.get(CHANNELS.terminal.fileReviews)!(from(windowOne), ref)).toMatchObject({ ok: true, snapshot: { files: [{ path: "/work/script.sh" }] } });
+    expect([...handlers.keys()].filter((channel) => channel.startsWith("ave:terminal:") && /review/u.test(channel))).toEqual([CHANNELS.terminal.preview, CHANNELS.terminal.fileReviews]);
+    expect(writeTerminal).not.toHaveBeenCalled();
+  });
+  it("revokes responses when the terminal closes during filesystem reads", async () => {
+    currentTracker = tracker;
+    reviewSnapshot.mockImplementationOnce(async () => {
+      currentTracker = undefined;
+      return { cwd: "/work", latestBlockId: null, files: [], warnings: [] };
+    });
+    expect(await handlers.get(CHANNELS.terminal.fileReviews)!(from(windowOne), ref)).toEqual({ ok: false, error: "stale-terminal-session" });
   });
 });

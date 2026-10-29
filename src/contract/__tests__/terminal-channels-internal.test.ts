@@ -29,6 +29,7 @@ describe("#1444 terminal channels are internal (fail-closed)", () => {
       preview: "ave:terminal:preview",
       blocks: "ave:terminal:blocks",
       block: "ave:terminal:block",
+      fileReviews: "ave:terminal:file-reviews",
     });
   });
 
