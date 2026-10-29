@@ -1826,7 +1826,58 @@ describe("Sidebar — every conversation family", () => {
     } finally { restore(); }
   });
 
-  it.each(["ko", "en"])("returns an ended binding to an ordinary row with a provenance caption in %s", async (locale) => {
+  it("hides pane rows and provenance while the host binding snapshot is loading", async () => {
+    const tabId = "terminal:loading";
+    let resolveBindings!: (state: SessionTabBindingsState) => void;
+    const snapshot = new Promise<SessionTabBindingsState>((resolve) => { resolveBindings = resolve; });
+    const browserTabs = {
+      getSessionBindings: () => snapshot,
+      onSessionBindingsChanged: () => () => {},
+    } as unknown as AveApi["browserTabs"];
+    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }] }, { browserTabs });
+    try {
+      expect(view.queryByText("이전 터미널 채팅")).toBeNull();
+      expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
+      await act(async () => resolveBindings({ revision: 1, bindings: [{ sessionId: sideChatRow.id, browserTabIds: [], terminalTabIds: [tabId] }] }));
+      expect(view.getByTestId("sidebar-surface-chats-" + tabId).contains(view.getByTestId("sidebar-session-side-1"))).toBe(true);
+      expect(view.queryByText("이전 터미널 채팅")).toBeNull();
+    } finally { view.restore(); }
+  });
+
+  it("omits a globally listed unarchived pane chat outside this window instead of calling it former", async () => {
+    const browserTabs = {
+      getSessionBindings: vi.fn(async () => ({ revision: 1, bindings: [] })),
+      onSessionBindingsChanged: () => () => {},
+    } as unknown as AveApi["browserTabs"];
+    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: "terminal:other-window" }] }, { browserTabs });
+    try {
+      await act(async () => {});
+      expect(view.queryByText("이전 터미널 채팅")).toBeNull();
+      expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
+    } finally { view.restore(); }
+  });
+
+  it("keeps the archive toggle reachable for a closed pane chat scoped only to a project", async () => {
+    const root = "/projects/closed-pane";
+    const onOpenSideChat = vi.fn();
+    const browserTabs = {
+      getSessionBindings: async () => ({ revision: 1, bindings: [] }),
+      onSessionBindingsChanged: () => () => {},
+    } as unknown as AveApi["browserTabs"];
+    const view = renderSidebar({ sessions: [{ ...sideChatRow, projectRoot: root, paneTabId: "terminal:closed", archivedAt: "2026-10-29T00:00:00Z" }], projects: [{ projectRoot: root, projectName: "Closed pane project" }], onOpenSideChat }, { browserTabs });
+    try {
+      await act(async () => {});
+      expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
+      fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
+      expect(view.getByTestId("sidebar-projects").textContent).toContain("이전 터미널 채팅");
+      fireEvent.click(view.getByTestId("sidebar-session-side-1"));
+      expect(onOpenSideChat).toHaveBeenCalledWith("side-1", "sess-1");
+      fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
+      expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
+    } finally { view.restore(); }
+  });
+
+  it.each(["ko", "en"])("archives an ended binding behind the toggle with an openable provenance row in %s", async (locale) => {
     let update!: (state: SessionTabBindingsState) => void;
     const tabId = "terminal:closed";
     const browserTabs = {
@@ -1836,13 +1887,19 @@ describe("Sidebar — every conversation family", () => {
     const onOpenSideChat = vi.fn();
     const onOpenPaneChat = vi.fn();
     const suiteLocale = getLocale();
-    const conversationActions = { isArchived: () => true, isUnread: () => false, isResponding: () => false,
+    const session: SessionSummary = { ...sideChatRow, paneTabId: tabId };
+    const conversationActions = { isArchived: () => Boolean(session.archivedAt), isUnread: () => false, isResponding: () => false,
       onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() };
-    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId, archivedAt: "2026-10-29T00:00:00Z" }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }], onOpenSideChat, onOpenPaneChat, conversationActions }, { browserTabs, locale });
+    const view = renderSidebar({ sessions: [session], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }], onOpenSideChat, onOpenPaneChat, conversationActions }, { browserTabs, locale });
     try {
       await waitFor(() => view.getByTestId("sidebar-surface-chats-" + tabId));
-      act(() => update({ revision: 2, bindings: [] }));
+      act(() => {
+        session.archivedAt = "2026-10-29T00:00:00Z";
+        update({ revision: 2, bindings: [] });
+      });
       expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
+      expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
+      fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
       expect(view.getByTestId("sidebar-unassigned-sessions").textContent).toContain(locale === "ko" ? "이전 터미널 채팅" : "Former terminal chat");
       expect(view.getByTestId("sidebar-surface-tree-" + tabId).contains(view.getByTestId("sidebar-session-side-1"))).toBe(false);
       fireEvent.click(view.getByTestId("sidebar-session-side-1"));
@@ -1851,13 +1908,13 @@ describe("Sidebar — every conversation family", () => {
     } finally { view.restore(); setRuntimeLocale(suiteLocale); }
   });
 
-  it("does not nest a renderer-only pane claim without a host binding", () => {
+  it("omits a renderer-only pane claim without a host binding", () => {
     const tabId = "terminal:unbound";
     const onOpenPaneChat = vi.fn();
     const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }], onOpenPaneChat });
     try {
       expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
-      fireEvent.click(view.getByTestId("sidebar-session-side-1"));
+      expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
       expect(onOpenPaneChat).not.toHaveBeenCalled();
     } finally { view.restore(); }
   });

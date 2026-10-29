@@ -23,7 +23,7 @@ function sidebarBoundSessionId(surface: MainSurface, owner: BrowserSessionActor 
 }
 
 /** Read the existing surface stores, guest metadata and main-owned session bindings. */
-export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupIds: readonly string[], browserTabs: BrowserTabsApi | undefined, sessionIds: ReadonlySet<string>): SidebarSurface[] {
+export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupIds: readonly string[], browserTabs: BrowserTabsApi | undefined, sessionIds: ReadonlySet<string>): { surfaces: SidebarSurface[]; bindingsLoaded: boolean } {
   const [, refresh] = useReducer((revision: number) => revision + 1, 0);
   const [bindings, setBindings] = useState<SessionTabBindingsState | null>(null);
   useEffect(() => {
@@ -69,5 +69,5 @@ export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupI
       faviconDataUrl: guestFaviconSource(webSurfaceFavicon(surface.tabId)),
     });
   }
-  return [...surfaces.values()];
+  return { surfaces: [...surfaces.values()], bindingsLoaded: bindings !== null };
 }

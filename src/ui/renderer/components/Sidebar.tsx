@@ -1137,6 +1137,7 @@ function ProjectSessionList({
   onProjectError,
   projects: projectsProp,
   surfaces,
+  bindingsLoaded,
   onOpenSurface,
   isSurfaceVisible,
   isSessionStarred,
@@ -1173,6 +1174,7 @@ function ProjectSessionList({
   onProjectError?: ProjectErrorReporter;
   projects?: ProjectIdentity[];
   surfaces: readonly SidebarSurface[];
+  bindingsLoaded: boolean;
   onOpenSurface?: (tabId: string) => void;
   isSurfaceVisible?: (tabId: string) => boolean;
   isSessionStarred?: (sessionId: string) => string | null;
@@ -1271,7 +1273,11 @@ function ProjectSessionList({
   const paneSurfaceOf = (session: SessionSummary) => session.family === "side-chat"
     ? surfaces.find((surface) => surface.tabId === session.paneTabId && surface.boundSessionIds.includes(session.id))
     : undefined;
-  const ordinarySessions = sessions.filter((session) => !paneSurfaceOf(session));
+  // The global list cannot establish that a pane ended from a window-local absence.
+  // Wait for host bindings and omit unarchived pane chats not held by this window.
+  const listableSessions = sessions.filter((session) => session.family !== "side-chat" || !session.paneTabId
+    || (bindingsLoaded && (Boolean(session.archivedAt) || Boolean(paneSurfaceOf(session)))));
+  const ordinarySessions = listableSessions.filter((session) => !paneSurfaceOf(session));
   const sessionsByProject = useMemo(
     () => namedProjects.map((project) => {
       const projectSessions = sortWithPinnedFirst(
@@ -1323,7 +1329,7 @@ function ProjectSessionList({
   const generalSurfaces = surfaces.filter((surface) => !projectOfSurface(surface));
   const hasUngroupedSessions = ungroupedSessions.length > 0 || generalSurfaces.length > 0;
   const renderSurfaceRow = (surface: SidebarSurface) => {
-    const children = sessions.filter((session) => paneSurfaceOf(session)?.tabId === surface.tabId);
+    const children = visibleSessions(listableSessions.filter((session) => paneSurfaceOf(session)?.tabId === surface.tabId));
     return (
       <div key={surface.tabId} data-testid={`sidebar-surface-tree-${surface.tabId}`}>
         <SidebarSurfaceRow surface={surface} visible={Boolean(isSurfaceVisible?.(surface.tabId))} onOpen={onOpenSurface} />
@@ -1414,7 +1420,7 @@ function ProjectSessionList({
           )}
           t={t}
         />
-        {session.paneTabId && !paneSurfaceOf(session) && (
+        {bindingsLoaded && session.paneTabId && session.archivedAt && !paneSurfaceOf(session) && (
           <div className="truncate pl-7 text-[10px] text-muted-foreground">
             {t(session.paneTabId.startsWith("terminal:") ? "sidebar.formerTerminalChat" : "sidebar.formerPageChat")}
           </div>
@@ -1459,14 +1465,9 @@ function ProjectSessionList({
 
   // Archived conversations leave the default listing. They are not deleted, so the toggle below brings them straight back —
   // the reason archive is worth having as something distinct from delete.
-  const visibleSessions = (list: SessionSummary[]) =>
-    showArchived || !conversationActions
-      ? list
-      : list.filter((session) => session.family === "side-chat" || !conversationActions.isArchived(session.id));
-
-  const hasArchivedSessions = Boolean(
-    conversationActions && sessions.some((session) => session.family !== "side-chat" && conversationActions.isArchived(session.id)),
-  );
+  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
+  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
+  const hasArchivedSessions = listableSessions.some(isSessionArchived);
 
   // The folder's own actions, built once. The row's right-click and its trailing button both call this, so the two can never
   // offer different sets.
@@ -1688,7 +1689,7 @@ function ProjectSessionList({
         } as NativeContextMenuHandlers)}
       >
         <h2 className="px-2 text-[11px] font-medium text-muted-foreground">{t("sidebar.generalLabel")}</h2>
-        {hasUngroupedSessions ? (
+        {hasUngroupedSessions || hasArchivedSessions ? (
           <>
             <RevealingSessionList
               sessions={visibleSessions(ungroupedSessions)}
@@ -1859,7 +1860,7 @@ export function Sidebar({
 }: SidebarProps) {
   const { t } = useTranslation();
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
-  const surfaces = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
+  const { surfaces, bindingsLoaded } = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
   // Card element ref — EdgeResizeBar applies the live drag width directly to this node's style (rAF-coalesced) so dragging
   // never re-renders the whole Sidebar tree, mirroring ChatSidePanel's drag-perf pattern.
@@ -2338,6 +2339,7 @@ export function Sidebar({
                     onRefreshProjects={onRefreshProjects}
                     onProjectError={onProjectError}
                     surfaces={surfaces}
+                    bindingsLoaded={bindingsLoaded}
                     onOpenSurface={onOpenSurface}
                     isSurfaceVisible={isSurfaceVisible}
                     isSessionStarred={isSessionStarred}

@@ -1221,12 +1221,19 @@ A pane chat is nested beneath its terminal or page row only when its host-record
 window-scoped session binding snapshot. It is excluded from the independent
 General and project conversation lists. Creator ownership may place the surface
 inside a project; the pane chat still belongs beneath that surface. Closing the
-surface ends the live binding: the retained chat returns to its ordinary project
-or General list, with a localized former-terminal or former-page caption. Its
-stored pane identity is provenance, not authority to reopen a closed surface.
-Close-time archival metadata is retained for the host lifecycle, but does not
-hide this read-only family in the sidebar. Opening the row uses the ordinary
-side-chat route. Starting a new pane chat clears the previous chat’s pane identity.
+surface ends the live binding and the host archives its chat. The retained row
+appears in its ordinary project or General location only under Show archived,
+with a localized former-terminal or former-page caption. It remains openable
+through the ordinary side-chat route. The archive toggle remains reachable even
+when all archived rows belong to projects. Stored pane identity is provenance,
+not authority to reopen a closed surface. Starting a new pane chat clears the
+previous chat’s pane identity.
+
+Until the first valid host binding snapshot arrives, pane-bound session rows are
+omitted. Unarchived pane chats without a matching live surface and binding in
+this window are also omitted: the global session list can include chats active
+in another window. A window-local absence never establishes that a binding has
+ended; the former-chat caption requires the host’s persisted archival state.
 
 A terminal or web pane opens the side chat in its own panel (the header's
 panel toggle), beside the page or terminal, as that pane's own conversation.
