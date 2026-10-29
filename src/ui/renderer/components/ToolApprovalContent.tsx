@@ -23,6 +23,7 @@ import { buildApprovalScopeOptions } from "../../../permissions/approval-scope-o
 import { SOURCE_BADGE } from "../constants.js";
 import type { ApprovalDecisionExtras } from "../hooks/use-approval.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
+import { UserOwnedSurfaceApprovalCard } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
 import type {
@@ -763,7 +764,7 @@ export function ToolApprovalContent({
 
   // HIGH approval is itself the explicit act. The explanatory text is a read-only, one-shot audit
   // summary from host-owned context; it is never a renderer-authored prerequisite for the decision.
-  const showsHighRiskReason = finalVerdict === "high" && !isRationaleApproval;
+  const showsHighRiskReason = finalVerdict === "high" && !isRationaleApproval && request?.userOwnedSurfaceReviewFallback !== true;
   const highRiskReasonSource = userProvidedPurpose.length > 0
     ? tHook("toolApprovalDialog.reasonFromRequest")
     : tHook("toolApprovalDialog.reasonFromPermissionAudit");
@@ -1085,6 +1086,11 @@ export function ToolApprovalContent({
   ]);
 
   if (!open || !request) return null;
+  if (request.userOwnedSurface !== undefined && request.userOwnedSurfaceReviewFallback !== true) {
+    return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
+      targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}
+      notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []} />;
+  }
   if (request.kind === "egress-host") {
     return (
       <EgressHostApprovalCard
@@ -1113,7 +1119,9 @@ export function ToolApprovalContent({
   const originLabel = trustOriginLabel(request.trustOrigin);
   const category = request.toolCategory ?? "meta";
   // finalVerdict already computed above (before the null-check guard); use it here.
-  const badgeClassName = levelBadgeClass(request?.shellRule?.hostTerminal !== undefined ? "high" : finalVerdict as RiskLevel);
+  const isSurfaceReviewFallback = request.userOwnedSurfaceReviewFallback === true;
+  const badgeClassName = isSurfaceReviewFallback ? "text-muted-foreground" : levelBadgeClass(request?.shellRule?.hostTerminal !== undefined ? "high" : finalVerdict as RiskLevel);
+  const reviewClassName = isSurfaceReviewFallback ? "border-border" : reviewBoxClass(finalVerdict as RiskLevel);
   // Rationale cards render the sealed table and out-of-dir cards render the path-grant evidence rows;
   // neither consumes the generic review rows, so skip computing them. The frame around that evidence is shared.
   const rows = isRationaleApproval || isOutOfDir
@@ -1164,8 +1172,7 @@ export function ToolApprovalContent({
                 <div className="min-w-0 space-y-1">
                   <div className="flex min-w-0 items-center gap-2">
                     <Badge variant="outline" className={`${badgeClassName} shrink-0`}>
-                      {/* A command for the user's own terminal is never graded or auto-reviewed: the person is the only check. */}
-                      {request?.shellRule?.hostTerminal !== undefined
+                      {isSurfaceReviewFallback ? <span data-testid="approval-logical-review-fallback">{tHook("toolApprovalDialog.surfaceReviewNeedsConfirmation")}</span> : request?.shellRule?.hostTerminal !== undefined
                         ? <span data-testid="approval-no-automatic-review">{tHook("toolApprovalDialog.noAutomaticReview")}</span>
                         : riskLevelKoLabel(finalVerdict as RiskLevel)}
                     </Badge>
@@ -1334,7 +1341,7 @@ export function ToolApprovalContent({
                   <RationaleApprovalCard display={rationaleDisplay} />
                 ) : isOutOfDir ? (
                   <div
-                    className={`min-w-0 overflow-hidden rounded-md border ${reviewBoxClass(finalVerdict as RiskLevel)}`}
+                    className={`min-w-0 overflow-hidden rounded-md border ${reviewClassName}`}
                     data-testid="approval-path-grant-evidence"
                   >
                     <h4 className="border-b px-3 py-2 text-xs font-semibold">
@@ -1363,7 +1370,7 @@ export function ToolApprovalContent({
                     ) : null}
                   </div>
                 ) : (
-                  <div className={`min-w-0 overflow-hidden rounded-md border ${reviewBoxClass(finalVerdict as RiskLevel)}`}>
+                  <div className={`min-w-0 overflow-hidden rounded-md border ${reviewClassName}`}>
                     <h4 className="border-b px-3 py-2 text-xs font-semibold">
                       {reviewTitleForCategory(category)}
                     </h4>
@@ -1740,7 +1747,7 @@ function approvalReviewRows(
   _sourceBadge: string,
 ): ReviewBasisRow[] {
   const parsed = parseArgs(request.args);
-  const reviewer = request.reviewerVerdict
+  const reviewer = request.userOwnedSurfaceReviewFallback === true ? request.reviewerVerdict?.reason ?? request.reason : request.reviewerVerdict
     ? `${riskLevelKoLabel(request.reviewerVerdict.level)} · ${request.reviewerVerdict.reason}`
     : request.reason;
   // Source, trust origin, category, conversation and sandbox now live in the compact always-visible summary. Details contain only additional evidence.

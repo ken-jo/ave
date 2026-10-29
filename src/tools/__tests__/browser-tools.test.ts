@@ -1,3 +1,4 @@
+import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers
  * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
@@ -75,6 +76,7 @@ function fakeActions() {
     },
     // Waits until released or cancelled, like a real wait for text.
     waitFor: (target) => new Promise((resolve, reject) => {
+      targets.push(target);
       calls.push({ action: "waitFor", tab: target.tab.handle, args: [] });
       pending = { resolve: () => resolve({ found: true, waitedMs: 1 }) };
       target.signal.addEventListener("abort", () => {
@@ -144,6 +146,10 @@ describe("browser tools", () => {
   /** Window 1 hosts the conversation (and its child); window 2 hosts another. Every card is answered
    * allow, remembered for the session when the card allows remembering. `onCard` runs while the card is open. */
   function harness(options: {
+    surfaceChoice?: UserOwnedSurfaceChoice;
+    denySurface?: boolean;
+    logicalReview?: (input: import("../../permissions/reviewer/user-owned-surface-reviewer.js").UserOwnedSurfaceReviewInput) => Promise<{ consistent: boolean; reason: string }>;
+    headless?: boolean;
     onCard?: (card: ApprovalRequest) => void;
     beforeActions?: () => void | Promise<void>;
     onPrepare?: (target: BrowserActionTab<FakeGuest>) => void | Promise<void>;
@@ -178,7 +184,7 @@ describe("browser tools", () => {
 
     reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
     setReviewerForTest(manager, {
-      classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "stub medium" })) },
+      classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "stub medium" })), ...(options.logicalReview ? { reviewUserOwnedSurface: options.logicalReview } : {}) },
       cache: reviewerCache,
       recentlyDenied: makeRecentlyDeniedStore(join(aveHomeDir, "deferred.jsonl")),
     });
@@ -208,7 +214,8 @@ describe("browser tools", () => {
           options.onCard?.(request);
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id,
-            choice: "allow-once",
+            choice: options.denySurface && request.userOwnedSurface ? "deny-once" : "allow-once",
+            ...(!options.denySurface && request.userOwnedSurface && !request.userOwnedSurfaceReviewFallback ? { userOwnedSurfaceChoice: options.surfaceChoice ?? "ask" } : {}),
             nonce: request.nonce,
             hmac: request.hmac,
           }, nativeWebContents as never);
@@ -224,7 +231,7 @@ describe("browser tools", () => {
         {
           ...(sessionId !== undefined ? { sessionId } : {}),
           executionCwd: dir,
-          permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
+          permissionContext: userPermissionContext({ additionalDirectories: [dir], userIntent: "Inspect the selected page for the current task.", currentTaskStep: "Read the selected page snapshot.", ...(options.headless ? { headless: true } : {}) }),
         },
       );
       await Promise.all(recordings);
@@ -394,7 +401,7 @@ describe("browser tools", () => {
     expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: browserOrigin("https://evil.com") } });
   });
 
-  it("reads an agent tab without asking, but asks before the first read of a user tab", async () => {
+  it("reads an agent tab without asking and asks again when the user selects Ask", async () => {
     const { run, cards, page, userTab, agentTab } = harness();
     const agent = await agentTab("https://a.example/");
     expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle })).isError).toBe(false);
@@ -403,15 +410,14 @@ describe("browser tools", () => {
     const user = userTab("https://a.example/");
     expect((await run(BROWSER_TOOL.snapshot, { tabId: user.handle })).isError).toBe(false);
     expect(cards).toHaveLength(1);
-    // What "remember" covers is the origin in a user's tab, and only for the session.
+    // The exact live target remains sealed even though the surface choice is session-wide.
     expect(cards[0]!.approvalMemory).toMatchObject({
       kind: "key",
       scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener: "user" },
     });
     expect(isSessionOnlyApprovalMemoryScope((cards[0]!.approvalMemory as { scope: ApprovalMemoryScope }).scope)).toBe(true);
-    // Remembered for this origin, for the session.
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
-    expect(cards).toHaveLength(1);
+    expect(cards).toHaveLength(2);
     expect(page.calls.map((call) => call.action)).toEqual(["snapshot", "snapshot", "snapshot"]);
   });
 
@@ -460,8 +466,8 @@ describe("browser tools", () => {
     expect(page.calls).toEqual([{ action: "pressKey", tab: user.handle, args: ["Escape", undefined] }]);
   });
 
-  it("remembers a user tab's origin exactly: a.example, b.example and http://a.example are three origins", async () => {
-    const { run, cards, userTab } = harness();
+  it("applies Allow to the browser surface across page origins for this session", async () => {
+    const { run, cards, userTab, manager } = harness({ surfaceChoice: "allow" });
     const user = userTab("https://a.example/one");
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
     expect(cards).toHaveLength(1);
@@ -470,14 +476,114 @@ describe("browser tools", () => {
     expect(cards).toHaveLength(1);
     user.guest.url = "https://b.example/";
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
-    expect(cards).toHaveLength(2);
+    expect(cards).toHaveLength(1);
     user.guest.url = "http://a.example/";
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(1);
     user.guest.url = "https://a.example:8443/";
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
-    expect(cards).toHaveLength(4);
+    expect(cards).toHaveLength(1);
+    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "browser")).toBe("allow");
+    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "host-terminal")).toBe("ask");
+    expect(manager.getUserOwnedSurfaceChoice(OTHER_WINDOW_SESSION, "browser")).toBe("ask");
     expect(browserOrigin("https://A.example/x")).toBe("https://a.example:443");
+  });
+
+  it("reviews the current browser action after selecting Auto before any page effect", async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const logical = vi.fn(async () => { await held; return { consistent: true, reason: "The requested snapshot follows the current reading step." }; });
+    const { run, cards, page, userTab, manager } = harness({ mode: "allow", surfaceChoice: "auto", logicalReview: logical });
+    const tab = userTab("https://a.example/");
+    const pending = run(BROWSER_TOOL.snapshot, { tabId: tab.handle });
+    await vi.waitFor(() => expect(logical).toHaveBeenCalledTimes(1));
+    expect(page.calls).toEqual([]);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].userOwnedSurface).toBe("browser");
+    release();
+    expect((await pending).isError).toBe(false);
+    expect(page.calls).toHaveLength(1);
+    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "browser")).toBe("auto");
+    expect((await run(BROWSER_TOOL.snapshot, { tabId: tab.handle })).isError).toBe(false);
+    expect(logical).toHaveBeenCalledTimes(2);
+    expect(cards).toHaveLength(1);
+  });
+
+  it("uses a native normal fallback card when current Auto review cannot confirm the action", async () => {
+    const logical = vi.fn(async () => ({ consistent: false, reason: "The requested action is outside the current step." }));
+    const { run, cards, page, userTab } = harness({ surfaceChoice: "auto", logicalReview: logical });
+    const tab = userTab("https://a.example/");
+    expect((await run(BROWSER_TOOL.snapshot, { tabId: tab.handle })).isError).toBe(false);
+    expect(logical).toHaveBeenCalledTimes(1);
+    expect(cards).toHaveLength(2);
+    expect(cards[1]).toMatchObject({ userOwnedSurface: "browser", userOwnedSurfaceReviewFallback: true, allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false });
+    expect(page.calls).toHaveLength(1);
+  });
+
+  it.each([BROWSER_TOOL.wait, BROWSER_TOOL.tabs])("covers user-owned observation and tab selection for %s", async name => {
+    const { run, cards, userTab, tabs, page } = harness({ mode: "allow" });
+    const tab = userTab("https://a.example/");
+    tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${tab.guest.id}` });
+    const pending = run(name, name === BROWSER_TOOL.tabs ? { select: tab.handle } : { tabId: tab.handle, timeMs: 1 });
+    if (name === BROWSER_TOOL.wait) {
+      await vi.waitFor(() => expect(page.calls).toHaveLength(1));
+      page.release();
+    }
+    const result = await pending;
+    expect(result.isError).toBe(false);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].userOwnedSurface).toBe("browser");
+  });
+
+  it("requires native surface consent to select an opaque user-owned tab", async () => {
+    const { run, cards, page, tabs, userTab } = harness({ mode: "allow" });
+    const tab = userTab("about:blank");
+    tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${tab.guest.id}` });
+    const result = await run(BROWSER_TOOL.tabs, { select: tab.handle });
+    expect(result.isError).toBe(false);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ userOwnedSurface: "browser", approvalMemory: { scope: { kind: "browser-origin", origin: "about:blank", tabId: tab.handle } } });
+    expect(page.calls).toEqual([]);
+  });
+
+  it("denies a browser scope that becomes stale before central admission", async () => {
+    const { run, cards, page, tabs, ops, userTab, manager } = harness({ mode: "allow" });
+    manager.setUserOwnedSurfaceChoice(HOST_SESSION, "browser", "allow");
+    const tab = userTab("about:blank");
+    tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${tab.guest.id}` });
+    const load = manager.ensureProjectRulesLoaded.bind(manager);
+    vi.spyOn(manager, "ensureProjectRulesLoaded").mockImplementationOnce(async cwd => {
+      await load(cwd);
+      const target = tabs.liveTab(tab.handle)!;
+      Object.assign(target, { documentId: target.documentId + 1 });
+    });
+    const before = ops.length;
+    const result = await run(BROWSER_TOOL.tabs, { select: tab.handle });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("browser target is invalid or changed");
+    expect(cards).toHaveLength(0);
+    expect(ops.slice(before)).toEqual([]);
+    expect(page.calls).toEqual([]);
+  });
+
+  it("keeps Ask and performs no browser action when the first surface card is dismissed", async () => {
+    const { run, cards, page, userTab, manager } = harness({ denySurface: true });
+    const tab = userTab("https://a.example/");
+    expect((await run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" })).isError).toBe(true);
+    expect(cards).toHaveLength(1);
+    expect(page.calls).toEqual([]);
+    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "browser")).toBe("ask");
+  });
+
+  it("denies headless browser actions even after this surface was allowed", async () => {
+    const { run, cards, page, userTab, manager } = harness({ mode: "allow", headless: true });
+    manager.setUserOwnedSurfaceChoice(HOST_SESSION, "browser", "allow");
+    const tab = userTab("https://a.example/");
+    const result = await run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Nobody can approve this request; do not retry.");
+    expect(cards).toHaveLength(0);
+    expect(page.calls).toEqual([]);
   });
 
   it("asks before every action in a user tab, with nothing to remember", async () => {
@@ -526,7 +632,7 @@ describe("browser tools", () => {
     const result = await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
     expect(cards).toHaveLength(1);
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("approved for https://a.example:443; it now shows https://evil.example:443");
+    expect(result.output).toContain("browser target is invalid or changed");
     expect(result.output).toContain("nothing was done");
     expect(page.calls).toEqual([]);
 
@@ -620,7 +726,7 @@ describe("browser tools", () => {
 
   it("refuses a same-origin document replacement during approval", async () => {
     let replaceDocument: (() => void) | undefined;
-    const { run, page, tabs, userTab } = harness({ onCard: () => replaceDocument?.() });
+    const { run, page, tabs, userTab, manager } = harness({ surfaceChoice: "allow", onCard: () => replaceDocument?.() });
     const user = userTab("https://a.example/");
     replaceDocument = () => {
       const tab = tabs.liveTab(user.handle)!;
@@ -630,6 +736,7 @@ describe("browser tools", () => {
     const result = await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
     expect(result.isError).toBe(true);
     expect(page.calls).toEqual([]);
+    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "browser")).toBe("ask");
   });
 
   it.each([BROWSER_TOOL.click, BROWSER_TOOL.navigate, BROWSER_TOOL.snapshot, BROWSER_TOOL.screenshot])("rechecks the approved document after loading actions for %s", async (name) => {
@@ -686,7 +793,7 @@ describe("browser tools", () => {
     expect((browserHeader(registryError.output).error as string).length).toBeLessThanOrEqual(200);
   });
 
-  it.each([BROWSER_TOOL.click, BROWSER_TOOL.type, BROWSER_TOOL.pressKey, BROWSER_TOOL.navigate, BROWSER_TOOL.tabClose])("refuses %s without concrete approval identity", async (name) => {
+  it.each([BROWSER_TOOL.click, BROWSER_TOOL.type, BROWSER_TOOL.pressKey, BROWSER_TOOL.navigate, BROWSER_TOOL.tabClose, BROWSER_TOOL.wait])("refuses %s without concrete approval identity", async (name) => {
     const { browserTools, page, agentTab } = harness();
     const tab = await agentTab("https://a.example/");
     const tool = browserTools.find((candidate) => candidate.name === name)!;
@@ -698,6 +805,16 @@ describe("browser tools", () => {
     expect(result.isError).toBe(true);
     expectBrowserFence(result.output);
     expect(page.calls).toEqual([]);
+  });
+
+  it("passes the approved live document to a browser wait", async () => {
+    const { run, page, userTab } = harness();
+    const tab = userTab("https://a.example/");
+    const pending = run(BROWSER_TOOL.wait, { tabId: tab.handle, text: "Done" });
+    await vi.waitFor(() => expect(page.calls).toHaveLength(1));
+    expect(page.targets[0]?.approval).toMatchObject({ tabId: tab.handle, documentId: expect.any(Number), controlGeneration: expect.any(Number) });
+    page.release();
+    expect((await pending).isError).toBe(false);
   });
 
   it("bounds page URLs and titles to 200 characters and preserves a valid capped result", async () => {
@@ -732,15 +849,18 @@ describe("browser tools", () => {
     expect(direct.match(/<\s*browser-content/gi)).toHaveLength(1);
   });
 
-  it("keeps observation available while takeover persistently pauses mutations", async () => {
+  it("stops a stale wait on takeover while fresh observation remains available and mutations stay paused", async () => {
     const { run, page, agentTab, tabs } = harness();
     const agent = await agentTab("https://a.example/");
     const waiting = run(BROWSER_TOOL.wait, { tabId: agent.handle, text: "Done" });
     await vi.waitFor(() => expect(page.calls.map((call) => call.action)).toEqual(["waitFor"]));
     tabs.userInput(agent.guest.id);
     page.release();
-    expect((await waiting).isError).toBe(false);
+    const stopped = await waiting;
+    expect(stopped.isError).toBe(true);
+    expect(stopped.output).toContain("changed after approval");
     expect(tabs.liveTab(agent.handle)?.actions.signal.aborted).toBe(true);
+    expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle })).isError).toBe(false);
     const blocked = await run(BROWSER_TOOL.click, { tabId: agent.handle, ref: "e1" });
     expect(blocked.isError).toBe(true);
     expect(blocked.output).toContain("paused");
@@ -760,7 +880,7 @@ describe("browser tools", () => {
     expect(tab.lease).toBeNull();
   });
 
-  it("always asks once for upload, including owned tabs, and accepts no host paths", async () => {
+  it("uses ordinary session approval for agent-tab uploads and accepts no host paths", async () => {
     const { run, cards, page, agentTab, browserTools } = harness();
     const agent = await agentTab("https://a.example/");
     for (let call = 0; call < 2; call++) {
@@ -768,10 +888,10 @@ describe("browser tools", () => {
       expect(result.isError).toBe(false);
       expect(browserHeader(result.output)).toMatchObject({ status: "selected", files: [{ name: "chosen.txt", bytes: 12 }] });
     }
-    expect(cards).toHaveLength(2);
-    expect(cards.map((card) => card.allowedChoices)).toEqual([
-      ["allow-once", "deny-once"], ["allow-once", "deny-once"],
-    ]);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].allowedChoices).toBeUndefined();
+    expect(cards[0].userOwnedSurface).toBeUndefined();
+    expect(cards[0].approvalMemory).toMatchObject({ scope: { kind: "browser-origin", tabOpener: "agent" } });
     expect((await run(BROWSER_TOOL.upload, { tabId: agent.handle, ref: "e1", path: "/tmp/secret" })).isError).toBe(true);
     expect(page.calls.filter((call) => call.action === "upload")).toHaveLength(2);
     const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.upload)!.toJsonSchema();
@@ -877,7 +997,7 @@ describe("browser tools", () => {
     const result = await h.run(BROWSER_TOOL.tabClose, { tabId: tab.handle });
     expect(changed).toBe(true);
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("since approval");
+    expect(result.output).toContain(kind === "user" ? "browser target is invalid or changed" : "since approval");
     expect(h.ops.slice(before)).toEqual([]);
     expect(h.tabs.liveTab(tab.handle)).toBeDefined();
   });

@@ -199,10 +199,19 @@ const ko: Record<DocSlug, DocPage> = {
         blocks: [
           { ul: [
             "입장 차단과 거부 규칙을 먼저 적용합니다. 보호 경로, 위험 삭제, 프로젝트 탈출, 유출, 다른 주체의 요청은 매번 사람이 확인하며 승인을 기억하지 않습니다.",
-            "호스트 셸과 샌드박스 승격은 일반 승인 경로를 따르며, 카드에서 접두사 규칙을 저장할 수 있습니다.",
+            "일반 호스트 셸과 샌드박스 승격은 모드별 승인 경로를 따릅니다. 내 브라우저와 호스트 터미널은 아래의 별도 세션 선택을 사용합니다.",
             "auto에서 연속 3회 또는 한 턴 20회 거부하면 남은 턴은 사람이 확인합니다.",
-            "사람이 없는 실행에서도 auto 리뷰어가 먼저 판단합니다. 사람 확인이 필요해지면 거부하고 모델에 재시도하지 말라고 알립니다.",
+            "일반 헤드리스 auto 요청은 리뷰어가 먼저 판단하고 사람 확인이 필요하면 거부합니다. 사용자 소유 브라우저·호스트 터미널은 항상 거부하고 재시도하지 말라고 알립니다.",
           ] },
+        ],
+      },
+      {
+        id: "user-owned",
+        h: "내 브라우저와 호스트 터미널",
+        blocks: [
+          { p: "처음 맡기는 동작에서 ‘이 세션 모두 허용’, ‘오토’, ‘모두 질문’을 고릅니다. 모두 질문이 기본이고, 카드를 닫으면 실행하지 않습니다. 모두 질문으로 현재 동작을 확인해도 다음 동작은 다시 묻습니다." },
+          { p: "오토는 사용자 요청과 현재 작업 단계에 맞는 동작인지, 대상 탭·페이지나 명령이 맞고 요청하지 않은 일이 섞이지 않았는지만 확인합니다. 일반 위험도 검증이 아니며, 오류·의도 부족·불확실성은 일반 카드로 확인합니다." },
+          { p: "선택은 대화 세션과 브라우저/터미널별로 따로 적용하고 세션이 끝나면 지웁니다. 전역 권한 모드나 일반 기억 승인이 대신하지 않으며, 사람이 없는 실행은 항상 거부합니다. 차단 규칙, 실제 다른 주체·유출 강제 확인, 자격증명 입력·결제·되돌릴 수 없는 제출 보호는 계속 적용됩니다. 내가 터미널에 직접 입력한 명령에는 묻지 않습니다." },
         ],
       },
       {
@@ -656,10 +665,19 @@ const en: Record<DocSlug, DocPage> = {
         blocks: [
           { ul: [
             "Admission blocks and deny rules run first. Protected paths, critical deletion, escape, exfiltration and other-principal requests require fresh one-shot human approval, without memory.",
-            "Host shells and sandbox escalation use ordinary approval and can offer savable prefix rules.",
+            "Ordinary host shells and sandbox escalation use mode-based approval. Your browser and host-terminal tabs use the separate session choices below.",
             "In auto, three consecutive or twenty total denials in a turn send the rest of that turn to a person.",
-            "Headless auto still reviews first. If human approval is required, the call is denied and the model is told not to retry.",
+            "Ordinary headless auto reviews first and denies human fallback. User-owned browser and host-terminal actions always deny with no-retry guidance.",
           ] },
+        ],
+      },
+      {
+        id: "user-owned",
+        h: "Your browser and host terminal",
+        blocks: [
+          { p: "The first eligible action offers Allow all this session, Auto, or Ask every time. Ask every time is the default; closing the card does not execute. Confirming the current action with Ask every time keeps later actions on individual cards." },
+          { p: "Auto checks only whether the action follows your request and current task step, targets the intended tab/page or command, and adds no unrequested steps. It is not general risk review. Errors, missing intent or uncertainty fall back to a normal card." },
+          { p: "Choices are separate for each conversation session and browser/terminal surface, and disappear when that session ends. Global permission mode and generic remembered approvals do not replace them; headless actions always deny. Deny rules, genuine other-principal and exfiltration floors, credential entry, payment and irreversible-submit protections still apply. Commands you type into the terminal yourself never ask." },
         ],
       },
       {

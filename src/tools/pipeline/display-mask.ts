@@ -9,6 +9,7 @@ import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js"
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { parsePatchEnvelope } from "../../shared/patch-envelope.js";
 import type { Tool } from "../base.js";
+import { preserveUserOwnedBrowserScope } from "../../permissions/user-owned-browser-scope.js";
 import type {
   ToolCallMeta,
   ToolExecutorCallbacks,
@@ -97,12 +98,14 @@ async function approvalMemoryFor(
     ? parsePatchEnvelope(input.patch) : undefined;
   const deletesFile = patch?.ok === true && patch.operations.some((operation) => operation.kind === "delete");
   const memoryTool = deletesFile ? "apply_patch-delete" : tool.name;
+  const frozenScope = Object.freeze({ ...scope });
+  if (frozenScope.kind === "browser-origin") preserveUserOwnedBrowserScope(scope, frozenScope);
   return Object.freeze({
     kind: "key",
     key: `${tool.source === "builtin" && scope.kind === "path" && executionPlan === null
       && ["write_file", "edit_file", "multi_edit", "apply_patch"].includes(tool.name)
       ? "file-write-path" : memoryTool}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
-    scope: Object.freeze({ ...scope }),
+    scope: frozenScope,
   });
 }
 

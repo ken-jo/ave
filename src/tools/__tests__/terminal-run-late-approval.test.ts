@@ -1,3 +1,5 @@
+import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -35,17 +37,18 @@ afterEach(async () => {
   await resources.cleanup();
 });
 
-async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean } = {}) {
+async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean; surfaceChoice?: UserOwnedSurfaceChoice; logicalReview?: () => Promise<{ consistent: boolean; reason: string }>; headless?: boolean } = {}) {
   const root = realpathSync(resources.makeTmpDir("ave-late-terminal-"));
   const outside = realpathSync(resources.makeTmpDir("ave-terminal-outside-"));
   const command = options.outside ? `printf ready > ${shellQuote(join(outside, "output.txt"))}` : COMMAND;
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode(options.mode ?? "auto");
+  if (options.holdFinalizer !== false) manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
   if (options.exactRule !== false) await manager.addRulePersist({ pattern: formatRuleSpecifier({
     kind: "host-terminal", shell: "zsh", cwd: root, tokens: command.split(" "),
   }), action: "allow" }, { kind: "user" });
   setReviewerForTest(manager, {
-    classifier: { classify: () => ({ level: "high", reason: "Sibling action requires human approval" }) },
+    classifier: { classify: () => ({ level: "high", reason: "Sibling action requires human approval" }), ...(options.logicalReview ? { reviewUserOwnedSurface: options.logicalReview } : {}) },
     cache: resources.makeVerdictCache(join(root, "verdicts.jsonl")),
     recentlyDenied: makeRecentlyDeniedStore(join(root, "recently-denied.json")),
   });
@@ -98,7 +101,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
   const gate = new ApprovalGate(owner as never);
   const request = vi.spyOn(gate, "requestAndWait");
   const approve = (card: ApprovalRequest, native: boolean) => {
-    const decision = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
+    const decision = { requestId: card.id, choice: "allow-once" as const, ...(card.userOwnedSurface && !card.userOwnedSurfaceReviewFallback ? { userOwnedSurfaceChoice: options.surfaceChoice ?? "ask" } : {}), nonce: card.nonce, hmac: card.hmac };
     return native ? gate.resolveFromDesktopRenderer(card.id, decision, owner as never) : gate.resolve(card.id, decision);
   };
   const deny = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
@@ -118,7 +121,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
   }));
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
   const run = () => executor.executeAll([{ id: "late-terminal-command", name: "terminal_run", input: { command, waitSeconds: 0 } }], {
-    sessionId: SESSION_ID, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }),
+    sessionId: SESSION_ID, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", userIntent: "Print ready in the selected terminal.", currentTaskStep: "Run the requested terminal status command.", ...(options.headless ? { headless: true } : {}) }),
   });
   return { manager, pause, typed, cards, request, approve, deny, gate, reached, release, run, command };
 }
@@ -202,6 +205,57 @@ describe("host terminal late native approval", () => {
       expect(result.is_error, result.content).toBeFalsy();
       expect(f.typed).toEqual([f.command]);
       expect(f.cards).toHaveLength(1);
+    });
+  });
+
+  it.each(["allow", "auto", "ask"] as const)("applies the native %s choice to this and later terminal commands", async choice => {
+    const logical = vi.fn(async () => ({ consistent: true, reason: "The status command follows the user's task." }));
+    const f = await fixture({ exactRule: false, holdFinalizer: false, surfaceChoice: choice, logicalReview: logical });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "surface-choice-turn" }, async () => {
+      const first = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      expect(f.cards[0].userOwnedSurface).toBe("host-terminal");
+      expect(f.typed).toEqual([]);
+      f.approve(f.cards[0], true);
+      expect((await first)[0].is_error).toBeFalsy();
+      expect(f.manager.getUserOwnedSurfaceChoice(SESSION_ID, "host-terminal")).toBe(choice);
+      const second = f.run();
+      if (choice === "ask") {
+        await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+        f.approve(f.cards[1], true);
+      }
+      expect((await second)[0].is_error).toBeFalsy();
+      expect(f.typed).toEqual([COMMAND, COMMAND]);
+      expect(logical).toHaveBeenCalledTimes(choice === "auto" ? 2 : 0);
+      expect(f.cards).toHaveLength(choice === "ask" ? 2 : 1);
+    });
+  });
+
+  it.each(["allow", "auto"] as const)("keeps a single outside-write selector when the terminal choice is %s", async choice => {
+    const logical = vi.fn(async () => ({ consistent: true, reason: "The requested redirected command follows the current task." }));
+    const f = await fixture({ outside: true, mode: "strict", exactRule: false, holdFinalizer: false, surfaceChoice: choice, logicalReview: logical });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "outside-choice-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      expect(f.cards[0]).toMatchObject({ kind: "out-of-allowed-dir", userOwnedSurface: "host-terminal" });
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(result.is_error, result.content).toBeFalsy();
+      expect(f.cards).toHaveLength(1);
+      expect(f.typed).toEqual([f.command]);
+      expect(logical).toHaveBeenCalledTimes(choice === "auto" ? 1 : 0);
+    });
+  });
+
+  it("denies a user-owned terminal in headless mode despite a saved surface Allow", async () => {
+    const f = await fixture({ exactRule: false, holdFinalizer: false, headless: true });
+    f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "headless-turn" }, async () => {
+      const [result] = await f.run();
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain(NO_APPROVER_MESSAGE);
+      expect(f.cards).toHaveLength(0);
+      expect(f.typed).toEqual([]);
     });
   });
 

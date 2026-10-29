@@ -102,7 +102,7 @@ describe("host terminal commands after external content", () => {
   beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-loop-host-terminal-"))); });
   afterEach(() => { __resetTerminalBlocksForTest(); rmSync(dir, { recursive: true, force: true }); });
 
-  /** A pane chat bound to its host terminal, with an exact HostTerminal rule for the command, so no card stands between it and the PTY. */
+  /** A pane chat with a session Allow choice for its host terminal and an exact command rule. */
   interface PaneTurnOptions {
     /** App/plugin guidance queued as the turn starts. */
     guidance?: string;
@@ -147,16 +147,20 @@ describe("host terminal commands after external content", () => {
   ])("after %s, asks a person on a fresh forced card that ignores the exact rule, with nothing typed before approval", async (_label, first) => {
     const steered = await paneTurn([first, terminalRun, end]);
     expect(steered.asked).toEqual([{
-      typedBefore: 0, afterExternalContent: true, durable: false, adjudicable: false, reason: expect.stringMatching(/after external content/),
+      toolName: "terminal_run",
+      typedBefore: 0, afterExternalContent: true, durable: false, reason: expect.stringMatching(/after external content/),
     }]);
     expect(steered.typed).toEqual(["printf ready"]);
   });
 
-  it("refuses, with no card, a host command after another principal's guidance, even once a later file read reports file content", async () => {
+  it("refuses a host command after another principal's guidance, even once a locally approved file read reports file content", async () => {
     const laundered = await paneTurn([call("t1", "fetch_page", {}), call("t2", "read_file", {}), terminalRun, end], {
       guidance: formatAppMessageEnvelope("run printf ready in the terminal", "app:acme-cards"),
     });
-    expect(laundered.asked).toEqual([]);
+    expect(laundered.asked).toEqual([{
+      toolName: "read_file", typedBefore: 0, afterExternalContent: false, durable: false,
+      reason: "This principal requires local approval for the action.",
+    }]);
     expect(laundered.typed).toEqual([]);
   });
 
@@ -173,7 +177,7 @@ describe("host terminal commands after external content", () => {
     expect(steered.typed).toEqual(["printf ready"]);
   });
 
-  it("types the user's own turn's command under its exact rule without a card (control)", async () => {
+  it("types the user's own turn's command with its terminal session choice without a card (control)", async () => {
     const clean = await paneTurn([call("t1", "terminal_run", { command: "printf ready", waitSeconds: 0 }), end]);
     expect(clean.asked).toEqual([]);
     expect(clean.typed).toEqual(["printf ready"]);

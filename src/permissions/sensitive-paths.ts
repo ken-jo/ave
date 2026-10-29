@@ -25,7 +25,7 @@
  *     layers reuse the same string (TOCTOU race window closed)
  *   - OS sensitive paths: shell histories, browser cookies, generic
  *     id_{rsa,ed25519,ecdsa} (not just under .ssh/), .env / .env.*
- *   - Ave-internal sensitive paths: secrets/, audit*, deferred-queue,
+ *   - Ave-internal sensitive paths: secrets/, audit*, recently-denied,
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
 import { existsSync, realpathSync } from "node:fs";
@@ -258,7 +258,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     anchor: "ave-home",
     segments: ["permissions"],
     kind: "dir",
-    why: "reviewer cache, deferred queue, permission state",
+    why: "reviewer cache, denial history, permission state",
   },
   { anchor: "ave-home", segments: ["audit"], kind: "dir", why: "audit log directory (self-tampering)" },
   {

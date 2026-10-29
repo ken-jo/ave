@@ -15,6 +15,7 @@ type ActionRow = {
   name: string;
   evidence: Partial<PermissionDecisionRequest>;
   expected: readonly [ExpectedAction, ExpectedAction, ExpectedAction, ExpectedAction];
+  headlessExpected?: ExpectedAction;
 };
 const READ = { name: "read_file", source: "builtin", kind: "read" } as const;
 const WRITE = { name: "write_file", source: "builtin", kind: "file-write" } as const;
@@ -22,8 +23,14 @@ const SHELL = { name: "shell", source: "builtin", kind: "shell" } as const;
 const SAFE_SHELL = { sandboxed: true, readOnlyProven: true, unproven: false, destructive: false };
 const QUESTION = ["ask", "ask", "reviewer", "allow"] as const;
 
-// The first twelve action rows are the mode matrix; its thirteenth row is tested for every human fallback below.
+// Ordinary actions and user-owned surfaces have separate mode matrices; human fallbacks are checked below.
 const ACTION_ROWS: readonly ActionRow[] = [
+  { name: "user browser session allow", evidence: { userOwnedSurface: { kind: "browser", choice: "allow" } }, expected: ["allow", "allow", "allow", "allow"], headlessExpected: "deny" },
+  { name: "user browser logical auto", evidence: { userOwnedSurface: { kind: "browser", choice: "auto" } }, expected: ["reviewer", "reviewer", "reviewer", "reviewer"], headlessExpected: "deny" },
+  { name: "user browser ask", evidence: { userOwnedSurface: { kind: "browser", choice: "ask" } }, expected: ["ask", "ask", "ask", "ask"], headlessExpected: "deny" },
+  { name: "user host terminal session allow", evidence: { userOwnedSurface: { kind: "host-terminal", choice: "allow" } }, expected: ["allow", "allow", "allow", "allow"], headlessExpected: "deny" },
+  { name: "user host terminal logical auto", evidence: { userOwnedSurface: { kind: "host-terminal", choice: "auto" } }, expected: ["reviewer", "reviewer", "reviewer", "reviewer"], headlessExpected: "deny" },
+  { name: "user host terminal ask", evidence: { userOwnedSurface: { kind: "host-terminal", choice: "ask" } }, expected: ["ask", "ask", "ask", "ask"], headlessExpected: "deny" },
   { name: "ordinary file read", evidence: {}, expected: ["allow", "allow", "allow", "allow"] },
   { name: "secret file read", evidence: { secretRead: true }, expected: QUESTION },
   { name: "recoverable project write", evidence: { tool: WRITE, fileWrite: { insideProject: true, checkpointAvailable: true } }, expected: ["ask", "allow", "allow", "allow"] },
@@ -47,7 +54,7 @@ describe("permission decision mode matrix", () => {
     for (const [index, mode] of MODES.entries()) {
       for (const headless of [false, true]) {
         it(`${row.name}, ${mode}, headless=${headless}`, () => {
-          const expected = row.expected[index];
+          const expected = headless ? row.headlessExpected ?? row.expected[index] : row.expected[index];
           const decision = decidePermission(request({ ...row.evidence, mode, headless }));
           if (expected === "reviewer") {
             expect(decision).toMatchObject({ outcome: "ask", reviewRequired: true });

@@ -1582,6 +1582,18 @@ from each other. Origin approval is not a complete browser network firewall.
 The [architecture](architecture.md#browser-and-terminal-workspace) owns state,
 tab lifetimes, and presentation; this section owns effect authorization.
 
+### User-owned surface choices
+
+The [decision tree's resolved browser and host-terminal contracts](permission-decision-tree.md#resolved-conflicts-with-existing-invariants-lead-decision-2026-10-30-from-inventory-review) govern user-owned browser tabs and the user's host terminal. Being a user-owned surface does not itself create a forced one-shot floor. The first eligible agent action offers one shared card:
+
+- **Allow all this session** permits later eligible actions on that surface without another ordinary card.
+- **Auto** checks only logical consistency: does this action follow from the user's request and current task step, and target the intended tab/page or command without unrequested extras? Failure, error, missing intent or uncertainty uses a normal approval card. This is not a general risk assessment and does not reuse the general risk cache.
+- **Ask every time** explicitly confirms this action and continues asking later. This is the default when no choice exists. Dismissing the card does not execute the action.
+
+The host stores choices only in memory, keyed independently by conversation session and surface (browser or host-terminal), and clears them at session teardown. A browser choice does not choose terminal behavior. Global execution mode, generic remembered grants and exact shell allows cannot bypass this surface decision. Headless actions on either surface always deny, regardless of choice, global mode or an allow rule.
+
+Admission checks and deny rules remain authoritative. Genuine other-principal/taint, exfiltration and other forced floors bypass the selector and retain one-shot approval. Credential entry, payments and irreversible submission protections remain enforced for every choice. Selection comes only from the authenticated native owner's valid live answer, never tool arguments. Physical terminal typing is a user action outside this pipeline.
+
 The host resolves the actual session actor and direct parent from trusted tool
 context. Window discovery does not authorize another conversation's owned tab.
 Owned-tab access allows the owner, the owner's direct parent, or a caller whose
@@ -1722,7 +1734,7 @@ agent access.
 
 Tools, ambient context, observation snapshots and continuations cannot read host
 startup, user commands or scrollback. The one agent path into a host shell is
-[Host command control](#host-command-control): a single person-approved command
+[Host command control](#host-command-control): one surface-authorized command
 from the terminal's own workspace pane chat, whose own output span returns to
 that chat. Only an explicit user block-attachment action may share other host
 content, as user-provided untrusted context. Side-work-panel host terminals have
@@ -1834,7 +1846,7 @@ does not permit typing into a user's host terminal.
 
 A workspace pane chat bound to a host terminal (the pane binding, for that exact
 conversation, never a parent or an active tab) may ask `terminal_run` to type
-one command into that terminal. Main owns the boundary
+one command at a time under its [user-owned surface choice](#user-owned-surface-choices). Main owns the boundary
 ([host-terminal-control.ts](../../src/main/terminal/host-terminal-control.ts),
 [terminal-run.ts](../../src/tools/terminal-run.ts)):
 
@@ -1897,14 +1909,11 @@ one command into that terminal. Main owns the boundary
   only when it carries the same one-shot keyboard intent a send consumes; a
   queue flush or any call without that intent is another principal's. A
   missing, forged, consumed or expired intent token is never rescued by the
-  browser's lingering user activation, for a guide or a send. After that, every host command in the turn needs a fresh person's
-  approval: the card is forced, a saved exact `HostTerminal` rule and
-  remembered approvals do not apply, the card offers no lasting allow and
-  says so, and it stays desktop-only. In a clean turn an exact rule still runs
-  the command without a card. This is a host-terminal rule only; the general
-  tool trust origin is unchanged. The
-  final PTY write, the disclosed span and its `terminal_read` continuation are
-  bound to it, and the turn's end ends the lease (`turn-ended`).
+  browser's lingering user activation, for a guide or a send. Host-computed
+  principal and taint facts retain the forced-floor behavior in the
+  [decision tree](permission-decision-tree.md); a session surface choice does
+  not clear them. The final PTY write, disclosed output span and terminal_read
+  continuation remain bound to the exact current turn. Turn end ends the lease.
 - **Target.** Two records must both say workspace: the mount's declared purpose
   (every spawn and replay declares `workspace` or `side-panel`) and main's own
   layout record of the window, where the tab sits in a workspace pane rather than
@@ -1917,23 +1926,15 @@ one command into that terminal. Main owns the boundary
   is refused (no bracketed paste) and its strip says so. Typing needs a fresh
   attested empty prompt with bracketed paste, the exact incarnation, the pane
   binding and the control lease below.
-- **Decision.** The command is the bash rule subject in the shell's physical
-  directory, checked against the operating system (device and inode). Bash
-  deny/ask rules and every floor apply unchanged. No `Bash(...)` allow, mode,
-  remembered decision or reviewer allows it: the only allow is an exact
-  `HostTerminal(<shell> <JSON cwd> <command>)` rule, allow-only, naming the same
-  shell, the same canonical directory and the identical literal command. Without
-  one, a person decides in every mode, on a desktop-only card that names the
-  terminal, shell and directory and warns that output returns to the model. The
-  card is never offered to remote or away responders, a non-native answer is
-  rejected, a timeout denies once, and headless refuses. Its one lasting allow,
-  **Always allow this exact command in this folder**, saves only that exact
-  `HostTerminal` rule; there is no session or project allow and no approval
-  memory. Its lasting deny saves a `Bash(...)` rule, which the card says applies
-  in every shell and folder. The risk classifier judges the command with no
-  sandbox (the host terminal's own capability), and the card claims no
-  automatic review. An allow reaching the host path without that plain-shell
-  exact decision is a contract error.
+- **Decision.** The host terminal uses the shared [per-session surface choice](#user-owned-surface-choices), independently of the browser choice. The command
+  and physical cwd remain host-computed policy subjects. Existing deny rules,
+  admission, true other-principal/taint and exfiltration floors still apply.
+  The session choice replaces the intrinsic per-command human/exact-rule
+  requirement; remembered generic or exact shell grants do not bypass it.
+  Auto uses the dedicated logical-consistency review, not general shell risk
+  heuristics. Headless denies. A native card names the recipient terminal,
+  shell, command and physical directory; its valid answer never authorizes a
+  different recipient or turn.
 - **Execution recheck.** Before typing, main rechecks the session, turn, binding,
   placement, incarnation, shell, control generation, the shell's reported
   directory and its device/inode. Any change refuses. The invocation runner
@@ -2788,7 +2789,7 @@ claim a benchmark score or task correctness.
 
 ## Automated Judge Chain
 
-The [decision tree](permission-decision-tree.md) owns reviewer eligibility and outcome routing. Review runs only in auto mode for ordinary requests that require assessment; protected floors never reach it. LOW/MEDIUM allow. HIGH, unavailable provider, malformed output, timeout or live abort falls back to a normal card; without a human, that fallback denies and includes the no-retry message. A corrupt policy store is an admission denial before review.
+The [decision tree](permission-decision-tree.md) owns reviewer eligibility and outcome routing. General risk review runs only in global auto mode for ordinary requests that require assessment; protected floors never reach it. User-owned surface Auto instead uses the separate logical-only review described in [surface choices](#user-owned-surface-choices), independently of global mode. LOW/MEDIUM allow. HIGH, unavailable provider, malformed output, timeout or live abort falls back to a normal card; without a human, that fallback denies and includes the no-retry message. A corrupt policy store is an admission denial before review.
 
 The judge settings and transport contract remains in the [judge design](../design/permissions-always-allow-and-judge.md#p2-judge-slot). Configuration and shadow observations cannot override this permission contract. Shadow stages do not grant authority or count breaker denials. Explicit model selections do not silently switch providers; unset reviewer selection follows the active chat model. Invalid settings writes fail before persistence and valid writes preserve unrelated settings, with compare-and-swap rollback on refresh failure. The judge subtree remains user-only configuration under the protected-path floor.
 

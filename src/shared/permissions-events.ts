@@ -10,6 +10,17 @@ import type { RiskLevel } from "./permission-review-status.js";
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
 export type UserApprovalScope = "session" | "persistent" | "global";
 
+export type UserOwnedSurface = "browser" | "host-terminal";
+export type UserOwnedSurfaceChoice = "allow" | "auto" | "ask";
+
+export function isUserOwnedSurface(value: unknown): value is UserOwnedSurface {
+  return value === "browser" || value === "host-terminal";
+}
+
+export function isUserOwnedSurfaceChoice(value: unknown): value is UserOwnedSurfaceChoice {
+  return value === "allow" || value === "auto" || value === "ask";
+}
+
 export interface ScopedPermissionRuleError {
   filePath: string;
   errorCode: "rules-file-unavailable";
@@ -119,9 +130,8 @@ export type ApprovalMemoryScope =
       readonly cwd: string;
       readonly cwdForMatch: string;
     }
-  // One exact command typed into the user's own host terminal by that tab's pane chat. Never remembered: each command is the person's
-  // decision unless an exact `HostTerminal(...)` rule names this shell, physical directory and command. Every field is sealed before the card
-  // and rechecked immediately before the first byte is typed.
+  // One exact command typed into the user's own host terminal by that tab's pane chat. Session surface choices do not widen this
+  // target binding: every field is sealed before approval and rechecked immediately before the first byte is typed.
   | {
       readonly kind: "terminal-command";
       readonly lane: "manual";

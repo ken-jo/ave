@@ -4,6 +4,12 @@ import { wrapperCommand } from "./rules/shell-prefix-policy.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
 import { currentHostTerminalTurn } from "../tools/host-terminal-turn.js";
 import type { HostTerminalCommandScope } from "../tools/terminal-run.js";
+import { isIssuedUserOwnedBrowserScope, type UserOwnedBrowserScope } from "./user-owned-browser-scope.js";
+import { UserOwnedSurfaceStore } from "./user-owned-surface-store.js";
+import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
+import { UserOwnedSurfaceReviewError, type UserOwnedSurfaceReviewInput } from "./reviewer/user-owned-surface-reviewer.js";
+import { runWithCeiling } from "../tools/executor-ceiling.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
@@ -211,6 +217,7 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  userOwnedBrowser?: UserOwnedBrowserScope;
   hostTerminalTurn?: HostTerminalCommandScope;
   trustOrigin?: ToolTrustOrigin;
   approvalSurface?: ApprovalSurface;
@@ -252,7 +259,7 @@ export interface PermissionCheckContext {
   permissionStoreError?: string;
 }
 
-type HostTerminalPermissionContext = Pick<PermissionCheckContext, "hostTerminalTurn" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
+type HostTerminalPermissionContext = Pick<PermissionCheckContext, "hostTerminalTurn" | "userOwnedBrowser" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
 
 // Permission policy input bundle for reviewer-agent dispatch. Set when the caller wants the headless lane to consult the Layer 5 classifier (rather than the temporary "reviewer → ask" mapping).
 export interface ReviewerDispatchInput {
@@ -279,6 +286,7 @@ export interface ReviewerDispatchInput {
   // Recent user-authored message used for reviewer context-quality checks.
   conversationContext?: {
     recentUserMessage?: string;
+    currentTaskStep?: string;
   };
   allowedDirectories: string[];
   sensitivePathsAdjacent: string[];
@@ -498,6 +506,8 @@ export class PermissionManager {
   private userRulesVersion: PersistedPolicyVersion | undefined;
   // Reviewer evidence services, wired at boot.
   private reviewerClassifier: TracingRiskClassifier | null = null;
+  private surfaceReviewer: RiskClassifier["reviewUserOwnedSurface"];
+  private readonly userOwnedSurfaceChoices = new UserOwnedSurfaceStore();
   private reviewerJudgmentEnabled = false;
   private reviewerModel: string | undefined;
   private reviewerUnavailableReason: string | undefined;
@@ -547,6 +557,7 @@ export class PermissionManager {
     unavailableReason?: string;
   }): void {
     this.reviewerClassifier = traceRiskClassifier(deps.classifier);
+    this.surfaceReviewer = this.reviewerClassifier.reviewUserOwnedSurface;
     this.reviewerJudgmentEnabled = !(deps.classifier instanceof DisabledRiskClassifier);
     this.reviewerModel = deps.model;
     this.reviewerUnavailableReason = deps.unavailableReason;
@@ -908,6 +919,18 @@ export class PermissionManager {
   }
 
   // The "This session" rules a conversation holds.
+  getUserOwnedSurfaceChoice(sessionId: string, surface: UserOwnedSurface): UserOwnedSurfaceChoice {
+    return this.userOwnedSurfaceChoices.get(sessionId, surface);
+  }
+
+  setUserOwnedSurfaceChoice(sessionId: string, surface: UserOwnedSurface, choice: UserOwnedSurfaceChoice): void {
+    this.userOwnedSurfaceChoices.set(sessionId, surface, choice);
+  }
+
+  clearUserOwnedSurfaceChoices(sessionId: string): boolean {
+    return this.userOwnedSurfaceChoices.clear(sessionId);
+  }
+
   listSessionRules(sessionId: string): readonly string[] {
     return (this.sessionRules.get(approvalConversationRoot(sessionId)) ?? []).map((rule) => rule.pattern);
   }
@@ -919,11 +942,12 @@ export class PermissionManager {
     }
     this.judgeBreaker.forget(this.resolveJudgeRootSession(rootSessionId));
     const dropped = this.sessionRules.delete(rootSessionId);
+    const clearedSurfaces = this.userOwnedSurfaceChoices.clearMatching(sessionId => approvalConversationRoot(sessionId) === rootSessionId);
     if (dropped) {
       this.policyGeneration += 1;
       this.broadcastConfigChanged?.();
     }
-    return dropped;
+    return dropped || clearedSurfaces;
   }
 
   // remove a rules-language rule from the user-global or a project scope.
@@ -1273,15 +1297,23 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
-    const hostTerminalContext = context?.hostTerminalTurn ? Object.freeze({
-      hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }), trustOrigin: context.trustOrigin, sessionId: context.sessionId,
+    const hostTerminalContext = context?.hostTerminalTurn || context?.userOwnedBrowser ? Object.freeze({
+      ...(context.hostTerminalTurn ? { hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }) } : {}), userOwnedBrowser: context.userOwnedBrowser,
+      trustOrigin: context.trustOrigin, sessionId: context.sessionId,
       remoteControllerAuthority: context.remoteControllerAuthority, headless: context.headless, approvalSurface: context.approvalSurface,
     }) : undefined;
-    const { admissionDenial, floor } = hostTerminalContext ? this.hostTerminalEvidence(hostTerminalContext, evidence.admissionDenial, evidence.floor) : evidence;
+    let { admissionDenial, floor } = hostTerminalContext ? this.hostTerminalEvidence(hostTerminalContext, evidence.admissionDenial, evidence.floor) : evidence;
+    const browser = hostTerminalContext?.userOwnedBrowser;
+    if (browser && (!isIssuedUserOwnedBrowserScope(browser) || browser.tabOpener !== "user" || typeof browser.tabId !== "string" || !Number.isInteger(browser.documentId) || !Number.isInteger(browser.controlGeneration))) {
+      admissionDenial ??= { code: "invalid-browser-scope", reason: "The browser target is invalid or changed; nothing was done." };
+    }
+    const surface: UserOwnedSurface | undefined = hostTerminalContext?.hostTerminalTurn ? "host-terminal" : browser && isIssuedUserOwnedBrowserScope(browser) && browser.tabOpener === "user" ? "browser" : undefined;
+    if (surface && !evidence.sessionId?.trim()) admissionDenial ??= { code: "user-owned-session", reason: NO_APPROVER_MESSAGE };
     const permissionStoreError = this.refreshPermissionStoreError();
     const { automationPause: _previousPause, ...currentEvidence } = evidence;
     const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
     const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
+      ...(surface ? { userOwnedSurface: Object.freeze({ kind: surface, choice: this.getUserOwnedSurfaceChoice(evidence.sessionId ?? "", surface) }) } : {}),
       ...(permissionStoreError ? { admissionDenial: Object.freeze({ code: "policy-unreadable", reason: permissionStoreError }) } : {}),
       ...(pause ? { automationPause: Object.freeze({ kind: pause, reason: "Automated approval is paused for this turn; human approval is required." }) } : {}),
       tool: Object.freeze({ ...evidence.tool }),
@@ -1506,6 +1538,20 @@ export class PermissionManager {
     routineScope?: Record<string, unknown>,
     options?: { lane?: ReviewerLane; abortSignal?: AbortSignal; purpose?: "approval-scope" },
   ): Promise<ReviewerDispatchResult> {
+    const permission = input.permissionDecision as PermissionCheckResult | undefined;
+    const issued = permission === undefined ? undefined : this.pipelineRequests.get(permission);
+    if (issued?.request.userOwnedSurface?.choice === "auto") {
+      const current = this.pipelineResult(issued.request, issued.hostTerminalContext);
+      const currentRequest = this.pipelineRequests.get(current)!.request;
+      this.pipelineRequests.delete(current);
+      if (!current.reviewer || current.reasonCode !== "user-owned-surface-review") {
+        return { verdict: { level: "high", reason: current.reason }, outcome: "unavailable", cacheReason: "miss-not-found",
+          judge: { judged: false, skip: "rule-decided" } };
+      }
+      if (currentRequest.tool.name !== toolName || currentRequest.tool.source !== input.source || currentRequest.sessionId !== input.sessionId || !input.invocationId?.trim()) throw new JudgeContractError("Logical review requires its issued surface action");
+      return this.dispatchSurfaceReviewer(currentRequest, issued.hostTerminalContext!, input, options?.abortSignal);
+    }
+    if (permission?.pipelineRequest?.userOwnedSurface) throw new JudgeContractError("Logical review requires an issued surface request");
     const lane = (options?.lane ?? input.permissionDecision?.reviewer?.route) === "headless" ? "headless" : "foreground";
     let judged: Awaited<ReturnType<PermissionManager["dispatchJudge"]>>;
     try {
@@ -1523,6 +1569,31 @@ export class PermissionManager {
     }
     if (judged.baseline) return judged.baseline;
     return reviewerResultForJudge(judged);
+  }
+
+  private async dispatchSurfaceReviewer(request: PermissionDecisionRequest, context: HostTerminalPermissionContext, input: ReviewerDispatchInput, signal?: AbortSignal): Promise<ReviewerDispatchResult> {
+    const finish = (consistent: boolean, reason: string, outcome: ReviewerDispatchOutcome): ReviewerDispatchResult => {
+      const breakerTripped = outcome === "fresh" ? this.judgeBreaker.record(this.resolveJudgeRootSession(input.sessionId!), consistent ? "allow" : "ask", input.invocationId) : false;
+      const pause = this.getAutomatedApprovalPauseReason(input.sessionId);
+      return { verdict: { level: consistent ? "low" : "high", reason }, outcome, cacheReason: "miss-not-found",
+        judge: { judged: true, mode: "active", decision: consistent ? "allow" : "ask", applied: true, source: "judge", rationale: reason, breakerTripped, ...(pause ? { pause } : {}) } };
+    };
+    if (!input.conversationContext?.recentUserMessage?.trim()) return finish(false, "The user request is missing.", "unavailable");
+    if (!input.conversationContext.currentTaskStep?.trim()) return finish(false, "The current task step is missing.", "unavailable");
+    const reviewer = this.surfaceReviewer;
+    if (!reviewer || !this.reviewerJudgmentEnabled || this.reviewerUnavailableReason) return finish(false, "Logical consistency review is unavailable.", "unavailable");
+    const reviewInput: UserOwnedSurfaceReviewInput = {
+      surface: request.userOwnedSurface!.kind, toolName: request.tool.name, userRequest: input.conversationContext.recentUserMessage,
+      currentTaskStep: input.conversationContext.currentTaskStep,
+      target: context.hostTerminalTurn ? { shell: context.hostTerminalTurn.shell, cwd: context.hostTerminalTurn.physicalCwd, tabId: context.hostTerminalTurn.tabId } : { ...context.userOwnedBrowser },
+      action: input.finalInput,
+    };
+    const outcome = await runWithCeiling(innerSignal => reviewer(reviewInput, innerSignal), TOOL_TIMEOUT_POLICY.reviewerHttpTimeoutMs, signal, "Logical consistency review");
+    if (signal?.aborted) throw signal.reason;
+    if (!outcome.ok) return finish(false, "Logical consistency review could not confirm the action.", outcome.reason === "ceiling" ? "timeout" : outcome.error instanceof UserOwnedSurfaceReviewError ? "malformed" : "error");
+    const result = outcome.value;
+    if (!result || typeof result.consistent !== "boolean" || typeof result.reason !== "string" || !result.reason.trim() || result.reason.length > 200) return finish(false, "Logical consistency review returned invalid output.", "malformed");
+    return finish(result.consistent, result.reason, "fresh");
   }
 
   private async assessReviewer(

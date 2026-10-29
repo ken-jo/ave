@@ -40,7 +40,9 @@ describe("host terminal admission before directory authorization", () => {
       expect(generic.decision).toBe("ask");
       const pattern = formatRuleSpecifier({ kind: "host-terminal", shell: scope.shell, cwd: scope.physicalCwd, tokens: ["touch", "output.txt"] });
       await manager.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
-      expect(check(context)).toMatchObject({ decision: "allow", reasonCode: "rule-allow", pipelineRequest: { rules: { allow: pattern } } });
+      expect(check(context)).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask", pipelineRequest: { rules: { allow: pattern } } });
+      manager.setUserOwnedSurfaceChoice("pane", "host-terminal", "allow");
+      expect(check(context)).toMatchObject({ decision: "allow", reasonCode: "user-owned-surface-allow" });
       expect(check({ ...context, ruleSubject: { kind: "shell", dialect: "bash", command: "touch different.txt", cwd: directory } }).pipelineRequest?.rules?.allow).toBeUndefined();
       noteOtherPrincipalGuidance();
       expect(check(context)).toMatchObject({ decision: "deny", reasonCode: "host-terminal-turn" });

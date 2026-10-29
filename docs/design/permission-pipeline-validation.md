@@ -1,130 +1,67 @@
 # Permission pipeline validation record
 
-Snapshot: 2026-10-30, working tree on `feat/permission-pipeline-v4`. The [approved decision tree](../architecture/permission-decision-tree.md) defines behavior; the [97-site inventory](permission-decision-inventory.md#current-source-reconciliation) records current source ownership and retained boundaries. These results describe the inspected working tree before the final publish gates. They do not certify a release or future CI result.
+Snapshot: 2026-10-30, `feat/permission-pipeline-v4`. The [approved decision tree](../architecture/permission-decision-tree.md) defines behavior; the [inventory](permission-decision-inventory.md#current-source-reconciliation) accounts for original and native-terminal sites. Results below are scoped observations, not release certification or a full-suite result. Evidence logs remain in the task workspace.
 
-## Targeted results
+## Integrated foundation
+
+The prerequisite project-write change is preserved. Native-terminal authority from main `7e26a6df5` was normally merged in `8e3ad3521` and pushed. The updated owner contract was copied byte-for-byte in the separate documentation-only commit `bbeaaf83c`. Its shared surface choices supersede the earlier browser forced-floor and terminal per-command policy conflict.
 
 | Scope | Observed result | Evidence and limits |
 | --- | --- | --- |
-| Core decision matrix, native executor, authorization and escalation | 10,589 passed across 5 files | `core-final.log`: pure matrix and boundary cases plus actual executor/authorization paths. Escalation cases use controlled issued evidence; they do not establish native Linux denial attribution. |
-| Replay reconstruction, root binding and manager | 52 passed across 4 files | `replay-manager-final.log`: saved invocation references, fresh permission entry, exact input/root identity and manager integration. Persisted references are not stored grants or executable-input copies. |
-| Scoped rules and redirect boundaries | 75 passed | `redirect-final.log`: full scoped-rules suite after earlier redirect failures were fixed. A preceding single-case filtered run is not counted as another 75 passes. |
-| IPC grants, effect ledger and terminal authorization | 16 passed across 3 files | `consumer-final.log`: egress-grant IPC, host-observed effect ledger and terminal authorization-required behavior. |
-| Changed desktop flows | 6 unique cases passed | `ui-e2e.log` initially had 4 passes and 2 navigation-fixture failures. After fixture corrections, `ui-e2e-recheck.log` passed the 2 affected cases and repeated 1 already passing navigation case. The repeated case is counted once. |
+| Contract matrix | 10,797 passed across 2 files | `merge308-contract-matrix.log`: 428 golden and 10,369 Cartesian cases before the shared-surface extension. |
+| Preload, channel, internal terminal and packaging locks | 212 passed, zero skips, across 4 files | `merge308-four-locks.log`. |
+| Engine terminal and turn consumers | 61 passed | Combined-tree scoped run; physical typing and turn provenance retained. |
+| Native host rule/manager normalization | 51 passed | `merge308-host-rule-normalization.log`; overlaps earlier manager checks. |
+| Late, outside-directory and normal native card facts | 8 new cases passed | `terminal-run-late-approval` scoped suite. |
+| Actual policy-store failure | 7 passed | `permission-settings-admission.log`: unreadable authority denies all modes and stops execution after human consent; ordinary app preference saves cannot clear it. |
+| Direct UI versus approved native secret reads | 325 passed across 6 files | `direct-preview-guards.log`: direct preview/picker guards remain restrictive; ordinary native secret reads follow central permission. |
+| Replay reconstruction/root binding | 52 passed across 4 files | `replay-manager-final.log`: unique saved transcript identity and fresh manual approval; no stored-decision replay. |
+| Hook cancellation and child ownership | 49 passed across 6 files | Targeted hook tests; script blocking precedes permission cards. |
+| Egress boundaries | 1,125 passing cases across 37 files | Latest-per-file reconciliation, not one fresh combined run; overlaps other sets. |
+| Production typecheck | Passed | `merge308-typecheck-handoff.log`. |
+| Inherited test-type ratchet | Held at 231 files / 1,012 diagnostics | `merge308-test-types-handoff.log`; not a clean test compilation and no feature baseline increase. |
+| Combined application build | Passed | `merge308-ui-build-resolved.log`. Earlier unresolved-index refusal was corrected before this build. |
+| Real terminal takeover UI | 1 passed | `merge308-terminal-takeover.log`: agent-period output only; private user-period sentinel absent from model result. |
 
-These are separate targeted runs. Their totals are not a fresh whole-suite result, and overlapping cases are not additional unique coverage.
+These counts overlap. They must not be summed into a claimed unique total. The former three terminal Allow-mode failures represented the policy conflict now superseded by the shared session-choice contract; the follow-up must test the new behavior rather than relax recipient checks.
 
-## Built-app and visible evidence
+## Shared user-owned surfaces
 
-The isolated built app was exercised through the desktop test harness and CDP. The captured permissions view shows the owner-away value `0` with its unlimited-wait explanation, a DLP-redacted recent denial and the no-retry reason. The seeded entry has no safely resolvable original invocation, so its rerun control is disabled; this screenshot does not prove the valid persisted-reference rerun path. That path has separate reconstruction and executor tests above. The inspected capture contains no account email.
+Browser and host terminal use one selector component, one in-memory store keyed by exact conversation and surface, and one logical-only reviewer prompt. Allow, Auto and Ask every time do not create persisted grants. Auto reviews the current action too; uncertainty/error falls back to native once/deny approval. Dismissal grants nothing. Admission, deny rules, credential protections and genuine forced floors remain authoritative; headless denies every surface choice.
+
+The existing terminal external-content taint is retained. A tool result marks the current turn; a subsequent command influenced by that content can still require forced approval. This is distinct from the removed intrinsic user-owned-surface floor. Physical user PTY input stays outside the pipeline.
+
+The final source-complete targeted run passed **18,345 tests across 32 files, with zero failures or skips** (`surface-ready-tests.log` and its JSON reporter). This includes 572 golden cases, 10,369 Cartesian cases and 154 surface-mode cases; four required lock suites contribute 212 passing cases. The runner suite includes 462 independently reviewed semantic security cases plus one benign-background uncertainty control. The full PowerShell boundary group passes 662 cases. These are subsets of the same run and must not be added again.
+
+Production typecheck passed in `surface-ready-typecheck.log`. The test-type ratchet held at 231 files / 1,012 inherited diagnostics in `surface-ready-test-types.log`; no baseline increase or update was used. The main bundle, renderer bundle and styles built. The shared wrapper reported a process-group cleanup `EPERM` after a successful main build; that nonzero result is retained separately, and the direct narrow main-build rerun exited zero (`surface-ready-main-direct.log`). This is not represented as a passing wrapper invocation.
+
+The final built desktop run passed **3/3** cases (`surface-ready-ui.log`): both shared selectors and real terminal takeover/private-output separation. The native card test also asserts that all choices and both buttons fit inside its dock before scrolling. Earlier failures exposed a protected-home fixture and an uncommitted canonical-configuration fixture; both protections stayed intact. The corrected isolated fixture uses an ordinary workspace and lets normal boot migration establish trusted configuration from the legacy source. No crash dialog was dismissed or guard weakened.
+
+Independent read-only security and correctness reviews found and closed document-binding, native focus, first-action Auto, breaker, target disclosure, obsolete-floor and test-oracle gaps. Literal PowerShell call-operator and background-separator evidence gaps were fixed without granting reusable literal proof. Opaque/foreign syntax remains ordinary mode evidence unless there is a positive typed exfiltration signal.
+
+## Built-app evidence
+
+The requested isolated CDP launch used port 9238, a separate AVE_HOME/profile and mock keychain. `cdp-publish-assertions.json` confirms owner-away value `0`, unlimited-wait explanation, zero obsolete interactive threshold controls and no email. Only the verified task-owned application PID was terminated.
 
 ![Owner-away unlimited setting and recent denial history](evidence/permission-pipeline/owner-away-recently-denied.png)
 
-The screenshot and CDP assertions establish the displayed state in that isolated build. They do not establish production authentication, every native backend or a packaged installer result.
+The shared browser selector below is a renderer fixture; the terminal selector is captured from a real scoped PTY invocation. Both captures were inspected; no email or account-prompt module is visible.
 
-## Remaining gates and decisions
+![Browser session choice](evidence/permission-pipeline/browser-session-choice.png)
 
-- The earlier production typecheck passed (`typecheck-publish-final.log`) and test-type ratchet held (`test-types-publish-final.log`): 232 files / 1,013 inherited errors, with 3 files improved and 12 fully fixed. Fresh checks after the direct-UI/settings repairs remain pending; this is not a clean test compilation.
-- Final full app build and isolated CDP launch: passed (`cdp-publish-launch.log`). `cdp-publish-assertions.json` confirms owner-away `0`, zero obsolete interactive selectors and no account email. The screenshot above records the corresponding permissions state.
-- Production/push gates after the latest source changes: pending. No future CI or publish result is asserted.
-- Native filesystem-denial attribution is supported by the macOS monitor. Installed Linux diagnostic-attempt records are deliberately rejected as escalation authority, so Linux retains the original failure. The owner decision remains pending: accept this limitation or require a trusted Linux supervisor before delivery. Controlled Linux executor cases prove orchestration only.
-- Related terminal work [#308](https://github.com/ken-jo/ave/pull/308) is merged on origin/main at 7e26a6df5. Its normal merge is conflict-resolved but not yet committed in this working tree; the native-terminal policy fork below blocks delivery.
-- The external design source has three-way drift relative to the committed contract and implementation. Its proposed surface selectors remain pending owner confirmation; this record does not revise the immutable tree.
+![Native terminal session choice](evidence/permission-pipeline/host-terminal-session-choice.png)
 
-## Integration follow-up
+The seeded history entry is deliberately unreconstructable, so its rerun control is disabled. This capture establishes displayed state, not valid replay execution; valid saved-reference replay is separately tested above. It does not certify production authentication or a packaged installer.
 
-The first normal push stopped at the test-type ratchet. Test fixtures and obsolete parent-review expectations were corrected without changing the baseline. The ratchet then held; production types remained clean. The repository's inherited test-type errors are not represented as a clean test compilation.
+## Push and static checks
 
-Further direct-consumer checks exposed and corrected loss of mandatory-floor metadata after an outer approval, swallowed no-approver denials in nested effects, stale rationale eligibility/order assumptions, and cancellation while awaiting a moved hook. Cached shell-egress rules and grants now enter fresh policy evaluation before use; a forced one-connection answer cannot become a standing grant. Concurrent initial project-rule loads share one snapshot rather than manufacturing different policy epochs for identical bytes.
+Normal pre-commit checks passed. The preservation push selected a global-input pre-push tier with 991 file arguments. Production types, the test-type ratchet, dependency dry run and duplicate-helper scan completed before that owned diagnostic run was stopped. The user explicitly authorized the bottleneck exception; `git push --no-verify` then preserved `8e3ad3521`. The PR must disclose this exception and the actual targeted checks performed. This is not a successful full pre-push gate.
 
-| Additional boundary | Observed focused result |
-| --- | --- |
-| Child permission and working-directory provenance | 25 passed |
-| Automatic pause, caller stop and rationale resume | 27 passed |
-| Rationale guards and ordered security suffix | 175 passed; a later 43-case ordering recheck also passed |
-| Hook cancellation and managed-child ownership | 49 passed across 6 files |
-| Shell-egress policy, grants and phase continuation | 262 passed across 8 files; existing platform skips excluded |
-| Network request normalization | 14 passed |
-| Concurrent project-rule loading plus affected egress callback | 106 passed; overlaps the egress set above |
-| Caught nested no-approver denial and replay | 9 passed; includes earlier replay cases |
-| Mode and typed UI fixture consumers | 173 passed across 5 files |
-| Parameter binding and shell path evidence | 222 passed across 3 files, including the 162-case shell rules suite; the 162 cases are not added again |
-| Final shell-egress boundary reconciliation | 1,125 passing cases across 37 files, deduplicated by latest result per file; overlaps earlier egress checks and is not one fresh combined run |
-| Fixed automatic-review UI behavior | 231 passed across 5 files; overlaps earlier mode/UI checks |
-| Fixed automatic-review backend behavior | 366 passing cases in the lead backend reconciliation; overlaps earlier manager/judge checks |
+No lint script exists. Available validation uses diff/path policy, source-text, naming, duplicate-helper, i18n and targeted contract checks. No full suite, forced push or PR merge is claimed.
 
-These focused results overlap and are not summed. Final normal-push status remains a separate publish gate.
+## Known limits
 
-## Latest boundary rechecks
-
-The parent-model and away automatic deciders are retired. The breaker now overlays normal human routing on all automatic decision sources for the rest of the turn, including reads, remembered grants, successful reviewer results and Allow mode. Admission denials and forced floors remain intact. A configured uncovered outside read is an S1 denial under accepted resolution 4; outside sandbox filesystem scope instead reaches the escalated mode/human route before expansion.
-
-| Recheck | Observed result and reporter |
-| --- | --- |
-| Pure decision and rest-of-turn overlay | 10,797 passed across 2 files; `validation-pipeline-pause-final.log`. Overlaps the earlier core matrix. |
-| Outside sandbox scope and exact escalation | 8 passed; `sandbox-scope-final.log`. Controlled executor evidence retains the native Linux limitation above. |
-| Retired parent configuration data | 281 passed across 2 files; `retired-parent-flag-data.log`. |
-| Checkpoint-backed project-write fixtures | 31 passed; `project-write-fixtures.log`. |
-| Executor and approval-memory consumers | 137 passed across 2 files; `executor-and-memory-final.log`; subsequent executor-only recheck passed 119 in `executor-two-targets-final.log`. These overlap and are not added. |
-| Broker route and mandatory floors | 10 passed; `validation-broker-route-final.log`. |
-
-Production typecheck and the test-type ratchet passed in the final publish checks described above. The latest normal push attempt did not complete; the repair record below supersedes the earlier pending state. No cross-run aggregate or future CI success is asserted. The Linux owner decision remains pending; #308 is now merged upstream and its policy conflict is recorded below.
-
-## Same-card rule saves and final execution admission
-
-An independently reviewed P1 race is resolved by a synchronous policy-epoch check at final handler admission, after asynchronous route preparation. That check runs without an await before handler entry. The same-card rule-save receipt permits only its authenticated, exact pending decision to cross the expected single policy transition; it does not grant an action or waive later deny/floor/capability checks. Unrelated changes, copied answers, overlapping saves and replay remain rejected.
-
-| Final check | Observed result and scope |
-| --- | --- |
-| Prefix-save identity and races | 310 passed across 5 files; `prefix-save-final-boundaries.log`: native approval/execution 35, permissions IPC 152, approval gate 110, rule-ceiling provenance 10 and owner-away feedback 3. The actual host command executes once after its own valid save; unrelated policy changes prevent execution. |
-| Shell/network wildcard warning consumers | 69 passed across 4 files; `wildcard-warning-renderer.log`. Shell broader-scope warnings and network sandbox-only warnings retain distinct semantics. |
-| Late pause and execution races | 30 passed; `late-pause-final.log`. This full affected-file result includes the earlier 2-case host-race filter and overlaps previous pause coverage. |
-
-These groups are not summed with earlier overlapping results. A completed normal push remains pending; no future CI result is claimed.
-
-## Direct UI and live policy-authority repairs
-
-The normal gate exposed a real direct-UI sensitivity regression as well as stale fixtures. Direct preview/mention and workspace picker/drop retain the existing full sensitive matcher outside the agent tool decision tree. Native ReadFileTool separately uses its central permission and execute-time file gate; checkpoint inspection/recovery receives no new scope from tool approval.
-
-Production permission admission now reads the actual AVE_HOME/config/settings.json authority through createPermissionManager and refreshes its live fault in getPolicyEpoch, including after a human answer. The separate ave-settings.json app preference writer owns only owner-away wait configuration and cannot clear that fault.
-
-| Focused repair | Observed result and scope |
-| --- | --- |
-| Direct preview and native file boundaries | 325 passed, zero skips, across 6 files; direct-preview-guards.log. The subsequent read-core recheck passed 23 and overlaps that group. |
-| Engine fixture consumers | 168 passed; subagent consumers separately passed 79. These are scoped runs, not an aggregate gate. |
-| Rationale timeout/cancellation consumers | 24 passed; validation-rationale-owned-final.log. |
-| IPC formatter consumers | 37 passed across 2 files; ipc-error-coverage-fix.log. |
-| Markdown impact policy | 33 passed; markdown-policy-fixed.log. |
-| Actual settings-authority consumers | 384 passed and 1 existing skip across 5 files; settings-actual-authority-paths.log. The earlier 112-case subset overlaps and is not added. |
-| Production live authority admission | 7 passed; permission-settings-admission.log. Actual native reads, network and remembered approval deny across all four modes before classification when the real authority is corrupt; valid repair restores behavior. Corruption after human consent stops the handler, and ordinary app saves cannot erase the separate fault. |
-
-The normal push attempt stopped at observed failures and a specified stale abort fixture; only the owned process group was terminated (exit 143). There is no completed 996-case gate result. Later focused repairs above passed; fresh integrated production type and normal-push gates remain pending. Earlier green type/build results do not certify the latest tree, and no future CI result is asserted.
-
-The final main bundle build passed in `build-main-reconciled-direct.log`. Its preceding shared-wrapper attempt built successfully but failed process-group cleanup with `EPERM`; that nonzero wrapper result is retained separately and is not counted as a successful command. The narrow direct rerun exited zero.
-
-## Native terminal merge and unresolved mode fork
-
-The normal merge of origin/main 7e26a6df5 is syntax/conflict-resolved but not committed at this snapshot. The push is stopped and no PR is open. The inventory retains the original 97 records and adds 13 N records, for 110 bounded regions.
-
-Physical user typing stays outside the agent tool tree. Agent terminal_run still uses central permission followed by exact native recipient/turn/physical-cwd/lease enforcement. Normal, outside-directory and late approval surfaces reuse finalized native facts. Production manager consumes the trusted manual context and live S1/S2 evidence; shell rule subjects use physical cwd.
-
-Pristine #308 requires all-mode human approval unless an exact HostTerminal rule covers the command, while the immutable host/escalation row permits ordinary mode routing. That is an unresolved owner product-policy choice, not a reason to silently add an exception. No exception or new mode is implemented; delivery remains blocked pending the owner response. The Linux native-attribution limitation remains independently pending.
-
-| Combined-tree check | Observed scoped result |
-| --- | --- |
-| Preload, channel, packaging and internal terminal locks | 212 passed, zero skips, across 4 files; merge308-four-locks.log. |
-| Engine terminal/turn consumers | 61 passed in the combined-tree focused run. |
-| Host-terminal rule/manager normalization | 51 passed; merge308-host-rule-normalization.log; actual authority-fault admission 7 remains separately evidenced and overlaps prior coverage. |
-| Native approval gate consumers | 158 passing cases in the latest-per-file combined-tree reconciliation; overlaps earlier gate/IPC runs and is not a new aggregate. |
-| All three native card surfaces | New late-terminal suite 8, pause 30 and authorization 12 passed in their scoped runs; overlapping earlier cases are not summed. |
-| Combined test-type ratchet | Held at 231 files / 1,012 inherited diagnostics; merge308-test-types.log. This baseline change came from main and is not a clean test compilation. |
-
-Production typecheck passed before the latest small integration changes; fresh final types are running. Normal merge commit, normal push and PR creation have not completed. No completed combined gate or future CI success is asserted.
-
-## Source-complete terminal merge handoff
-
-Production types passed in `merge308-typecheck-handoff.log`; the test-type ratchet held at 231 files and 1,012 inherited diagnostics in `merge308-test-types-handoff.log` without a feature baseline update. The combined full app build passed in `merge308-ui-build-resolved.log` after the resolved merge files were marked in the index. The earlier build refusal for unresolved index entries is retained separately, not counted as a build pass.
-
-The approved contract matrix passed all 10,797 cases again (`merge308-contract-matrix.log`). A real native terminal takeover UI test passed (`merge308-terminal-takeover.log`): the user regained control and private user-period output did not reach the model. The capture was inspected and contains no email; the task-owned isolated profile was torn down by its fixture.
-
-The ordinary ask-rule assertion was migrated to v4 normal-card routing while preserving forced exfiltration and native consent checks. Three unchanged policy assertions remain red across the host-terminal rule and invocation suites: they require native-human/exact-rule handling in Allow mode for an agent typing into an existing user terminal. The committed contract instead places host shells on mode handling. Addendum B requires stopping and reporting a tree deviation; no special mode exception or additional forced floor was introduced. The normal merge is source-resolved and staged but not committed, and the feature push/PR await that owner decision.
+- Native filesystem-denial attribution supports the macOS monitor. Linux diagnostic write-attempt hints are spoofable and rejected as escalation authority; Linux preserves the original sandbox failure. Controlled Linux fixtures prove central orchestration, not a trusted native Linux supervisor. The limitation is disclosed in the PR.
+- Platform spelling/junction tests do not constitute a native Windows application run.
+- Unbindable streaming uploads in active tool contexts refuse before network effects.
+- Browser payment/permanent-submit guards cannot infer arbitrary remote business semantics from untrusted page labels. Their tested scope and residual limits must be stated with the final evidence.

@@ -578,6 +578,7 @@ export class ConversationLoop {
         throw new Error("workload-broker:session-cleanup-unproven");
       }
       this.deps.closeRationaleSession?.(ownedLease.sessionId);
+      this.deps.permissionManager?.clearUserOwnedSurfaceChoices?.(ownedLease.sessionId);
       this.deps.pluginRuntime?.clearSessionActivated?.(ownedLease.sessionId);
       updateApprovalSurface({ kind: "release", sessionId: ownedLease.sessionId });
     };

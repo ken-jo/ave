@@ -1,4 +1,5 @@
 import type { ToolCategory, ToolSource } from "../tools/types.js";
+import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 
 export type PermissionPipelineOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
 export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "exfiltration" | "other-principal";
@@ -19,6 +20,7 @@ export interface PermissionDecisionRequest {
   shell?: { sandboxed: boolean; readOnlyProven: boolean; unproven: boolean; destructive: boolean; escalated?: boolean };
   reviewer?: { level?: "low" | "medium" | "high"; status: "success" | "error" | "abort"; breakerOpen?: boolean };
   manualRerun?: boolean;
+  userOwnedSurface?: { kind: UserOwnedSurface; choice: UserOwnedSurfaceChoice };
 }
 
 export interface PermissionPipelineDecision {
@@ -62,6 +64,17 @@ function decideBasePermission(request: PermissionDecisionRequest): PermissionPip
     return request.headless
       ? { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE }
       : { outcome: "ask-forced", reasonCode: request.floor.code, reason: request.floor.reason };
+  }
+  if (request.userOwnedSurface) {
+    if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
+    if (request.manualRerun) return askHuman(request, "manual-rerun", "The rerun requires fresh human approval.");
+    if (request.userOwnedSurface.choice === "allow") return { outcome: "allow", reasonCode: "user-owned-surface-allow", reason: "The user allowed this surface for the session." };
+    if (request.userOwnedSurface.choice === "auto") {
+      if (!request.reviewer) return { outcome: "ask", reasonCode: "user-owned-surface-review", reason: "Logical consistency review is required.", reviewRequired: true };
+      if (request.reviewer.status === "success" && request.reviewer.level === "low" && !request.reviewer.breakerOpen) return { outcome: "allow", reasonCode: "user-owned-surface-reviewed", reason: "The action follows the user's request." };
+      return askHuman(request, "user-owned-surface-human-required", "The action needs human confirmation.");
+    }
+    return askHuman(request, "user-owned-surface-ask", "Choose how to approve actions on this user-owned surface.");
   }
   if (request.manualRerun) return askHuman(request, "manual-rerun", "The rerun requires fresh human approval.");
   if (request.rules?.ask !== undefined) return applyMode(request, "rule-ask", request.rules.ask);

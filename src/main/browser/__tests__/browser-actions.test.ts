@@ -259,6 +259,88 @@ describe("resolving refs", () => {
   });
 });
 
+describe("manual final submissions", () => {
+  async function fixture(button: string, formName?: string) {
+    const { cdp, refs } = snapshotFixture();
+    const field = ax("field", "textbox", "Search", { backendDOMNodeId: 5, properties: [{ name: "focused", value: { value: true } }] });
+    const control = ax("control", "button", button, { backendDOMNodeId: 6 });
+    cdp.nodes = formName === undefined ? page([field, control]) : [
+      ax("root", "RootWebArea", "Fixture", { childIds: ["form"] }),
+      ax("form", "form", formName, { parentId: "root", childIds: ["field", "control"] }),
+      { ...field, parentId: "form" }, { ...control, parentId: "form" },
+    ];
+    await snapshot(target(cdp), {}, refs);
+    return { cdp, refs, fieldRef: "e1", buttonRef: "e2" };
+  }
+
+  it.each(["Pay", "Pay now", "Place order", "Confirm transfer", "Send money", "Delete permanently", "Close my account", "결제하기", "영구 삭제"])("refuses the recognizable final control %s before input", async (name) => {
+    const { cdp, refs, buttonRef } = await fixture(name);
+    await expect(click(target(cdp), buttonRef, refs)).rejects.toMatchObject({ code: "manual-submit-required" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it.each(["Search", "Save", "Show payment methods"])("still activates the ordinary control %s", async (name) => {
+    const { cdp, refs, buttonRef } = await fixture(name);
+    cdp.hit = { frameId: "main", backendNodeId: 6 };
+    await click(target(cdp), buttonRef, refs);
+    expect(cdp.inputs()).toContain("Input.dispatchTouchEvent");
+  });
+
+  it.each(["Payment", "Checkout", "계정 삭제"])("refuses a submit from the named %s form before typing", async (name) => {
+    const { cdp, refs, fieldRef } = await fixture("Confirm", name);
+    await expect(typeInto(target(cdp), fieldRef, "ordinary text", { submit: true }, refs)).rejects.toMatchObject({ code: "manual-submit-required" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it("finds the final payment control in an otherwise unnamed form before typing", async () => {
+    const { cdp, refs, fieldRef } = await fixture("Place order", "");
+    await expect(typeInto(target(cdp), fieldRef, "ordinary text", { submit: true }, refs)).rejects.toMatchObject({ code: "manual-submit-required" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it("refuses Enter from the focused field in a payment form", async () => {
+    const { cdp, refs } = await fixture("Pay", "");
+    cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
+    await expect(pressKey(target(cdp), "Enter", undefined, refs)).rejects.toMatchObject({ code: "manual-submit-required" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it("refuses Enter into a named payment field before focus input", async () => {
+    const { cdp, refs, fieldRef } = await fixture("Pay", "");
+    await expect(pressKey(target(cdp), "Enter", fieldRef, refs)).rejects.toMatchObject({ code: "manual-submit-required" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it("allows ordinary search submission from its own form", async () => {
+    const { cdp, refs, fieldRef } = await fixture("Search", "Search");
+    await typeInto(target(cdp), fieldRef, "ordinary query", { submit: true }, refs);
+    expect(cdp.calls.some((call) => call.method === "Input.insertText")).toBe(true);
+    expect(cdp.calls.some((call) => call.method === "Input.dispatchKeyEvent" && call.params?.key === "Enter")).toBe(true);
+  });
+
+  it("refuses Space when a final payment control already has focus", async () => {
+    const { cdp, refs } = await fixture("Pay");
+    cdp.nodes = cdp.nodes.map((node) => ({ ...node, properties: [{ name: "focused", value: { value: node.nodeId === "root" || node.nodeId === "control" } }] }));
+    await expect(pressKey(target(cdp), "Space", undefined, refs)).rejects.toMatchObject({ code: "manual-submit-required" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it("fails closed when the activation semantics cannot be read", async () => {
+    const { cdp, refs, buttonRef } = await fixture("Search");
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation((method, params) => method === "Accessibility.getFullAXTree" ? Promise.reject(new Error("Activation tree unavailable")) : send(method, params));
+    await expect(click(target(cdp), buttonRef, refs)).rejects.toThrow("Activation tree unavailable");
+    expect(cdp.inputs()).toEqual([]);
+  });
+
+  it("refuses an activation key when the focused element cannot be identified", async () => {
+    const { cdp, refs } = await fixture("Search");
+    cdp.nodes = cdp.nodes.map((node) => ({ ...node, properties: [{ name: "focused", value: { value: node.nodeId === "root" } }] }));
+    await expect(pressKey(target(cdp), "Enter", undefined, refs)).rejects.toMatchObject({ code: "activation-unavailable" });
+    expect(cdp.inputs()).toEqual([]);
+  });
+});
+
 describe("typing", () => {
   async function field(attributes: Record<string, string>) {
     const { refs, cdp } = snapshotFixture();
@@ -1095,6 +1177,32 @@ it("refuses a real document replacement between approval and the first dispatch"
   expect(cdp.inputs()).toEqual([]);
 });
 
+it.each(["same-origin", "cross-origin", "reload", "takeover"] as const)("stops an approved browser wait before probing a changed target: %s", async change => {
+  const { cdp, guest, tab, registry, approve, navigate, tool } = adapterFixture();
+  const live = await approve("browser_wait");
+  const send = cdp.send.bind(cdp);
+  let searches = 0;
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method !== "DOM.performSearch") return result;
+    searches += 1;
+    if (searches === 1) {
+      if (change === "takeover") registry.userInput(guest.id);
+      else navigate(change === "cross-origin" ? "https://b.example/next" : change === "reload" ? "https://a.example/form" : "https://a.example/next");
+    }
+    return { searchId: `search-${searches}`, resultCount: searches > 1 ? 1 : 0 };
+  });
+  const result = await tool("browser_wait").execute({ tabId: tab.handle, text: "Private result", timeMs: 1000 }, {
+    cwd: tmpdir(), extraAllowedDirectories: [], metadata: { sessionId: "conversation", approvalMemoryScope: {
+      kind: "browser-origin", ...live.approval, tabOpener: "user",
+    } },
+  });
+  expect(result.isError).toBe(true);
+  expect(result.output).toContain("no longer the approved target");
+  expect(searches).toBe(1);
+  expect(cdp.calls.filter(call => call.method === "DOM.discardSearchResults")).toEqual([]);
+});
+
 it.each(["https://a.example/next", "https://b.example/next"])("reports navigation completed by the approved link to %s", async (destination) => {
   const { cdp, tab, actions, approve, navigate, tool, registry } = adapterFixture();
   tab.opener = "agent";
@@ -1351,6 +1459,7 @@ describe("one press at a time in a window", () => {
 it.each(["Enter", "Space"])("finishes after navigation on %s without releasing into the next document", async (key) => {
   const { cdp, actions, approve, navigate } = adapterFixture();
   const live = await approve("browser_press_key");
+  cdp.nodes = cdp.nodes.map((node, index) => index === 1 ? { ...node, properties: [{ name: "focused", value: { value: true } }] } : node);
   const send = cdp.send.bind(cdp);
   vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
     const result = await send(method, params);

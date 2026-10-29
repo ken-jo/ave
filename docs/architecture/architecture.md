@@ -1429,8 +1429,8 @@ improvement.
 
 Each visible terminal tab owns one
 native host shell, with a host badge/color band. A side-work-panel mount is
-labeled **No agent access**; a workspace mount is labeled **Agent commands need
-your approval**. Its real HOME and configured profile remain intact. zsh, bash and
+labeled **No agent access**; eligible workspace agent commands follow the
+[user-owned surface choice](permission-policy-design.md#user-owned-surface-choices). Its real HOME and configured profile remain intact. zsh, bash and
 pwsh use nonce-authenticated integration from a per-PTY temporary startup directory
 (pwsh: directory and exit status are attested, but agent typing into pwsh is refused
 and its mount says so);
@@ -1462,14 +1462,22 @@ unconfined command shows host execution rather than claiming isolation. Every
 persistent conversation PTY remains confined; approving a one-shot host command
 does not permit typing into a user's host terminal.
 
-A workspace pane chat bound to its host terminal may run one person-approved
-command at a time there through `terminal_run`. A main-owned control lease per
+A workspace pane chat bound to its host terminal may run one eligible
+command at a time there through `terminal_run`, using the session
+[user-owned surface choice](permission-policy-design.md#user-owned-surface-choices). A main-owned control lease per
 host incarnation gates every agent byte; user input, Take over, Stop, a purpose
 or binding change, or exit revokes it before user bytes reach the shell, and Hand
 back needs an empty attested prompt. Only output received under the lease returns,
 to the requesting conversation only. The
 [host command control](permission-policy-design.md#host-command-control) policy
 is canonical for its target, decision, recheck and disclosure rules.
+
+Browser and host-terminal choices use the same three-choice card, independently
+keyed by conversation and surface. Missing/dismissed choice means ask; choices
+never persist across sessions. Auto reviews logical task/target consistency
+only, with normal-card fallback. Global mode and remembered generic grants do
+not bypass the choice; headless always denies. Admission, deny rules, genuine
+principal/taint floors and credential/payment protections remain enforced.
 
 The [terminal permission policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal)
 is canonical for exact command approval, authorized-project containment,

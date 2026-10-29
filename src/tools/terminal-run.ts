@@ -1,8 +1,8 @@
 /** Type into the calling conversation's confined shell, or, for a workspace terminal's own pane chat, into that bound host terminal.
  * Seal the target and cwd before approval and refuse changed targets at execution. A host terminal is never reached by fallback: an
- * unavailable bound host refuses. Host commands need a person's approval each time unless an exact `HostTerminal(...)` rule names them,
+ * unavailable bound host refuses. Host commands use the conversation's user-owned surface choice,
  * run under a main-owned control lease, and return only the output their own lease received.
- * Use ordinary shell rules, containment, and sensitive/exfiltration floors; remembered approval covers this exact command/cwd only for the app session.
+ * Keep shell rules, containment, and sensitive/exfiltration floors; isolated-terminal memory covers only the exact command and cwd for the session.
  * Require a fresh empty shell prompt before approval and execution; refuse busy, unmarked, edited, or exited terminals.
  * Accept only one plain command line with no control/invisible text, history expansion, comments, dialect-only syntax, or persistent shell-state changes. */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";

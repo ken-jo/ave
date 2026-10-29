@@ -116,6 +116,8 @@ export interface ToolPermissionContext {
   expectedMcpServerId?: string;
   /** Recent user-authored intent for reviewer context only. */
   userIntent?: string;
+  /** Current assistant step observed by the host; context for logical review, never a grant. */
+  currentTaskStep?: string;
   // Host-detected permission-store corruption; never a tool or wire field.
   permissionStoreError?: string;
   onTurnDirectoryGrant?: (approvedDirectory: string) => void;

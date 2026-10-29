@@ -1,5 +1,6 @@
-/** terminal_run into a pane chat's own host terminal, through the real ToolExecutor and PermissionManager: a person decides each command on a
- * desktop-only, never-remembered card unless an exact `HostTerminal(...)` rule names it; no Bash allow, reviewer or mode stands in.
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+/** terminal_run into a pane chat's own host terminal uses its native session surface choice through the real ToolExecutor and PermissionManager.
+ * The physical directory, current user turn and final route remain independently enforced.
  * Only the host PTY typing and its disclosure are stubs, recording what would have been typed. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -118,8 +119,17 @@ async function run(command: string, options: {
       }),
     },
   }));
-  const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: options.choice ?? "deny-once" }));
-  const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
+  const owner = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    if (channel !== "ave:approval:request") return;
+    const choice = options.choice ?? "deny-once";
+    gate.resolveFromDesktopRenderer(request.id, {
+      requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac,
+      ...(choice === "allow-once" && request.userOwnedSurface && !request.userOwnedSurfaceReviewFallback ? { userOwnedSurfaceChoice: "ask" as const } : {}),
+    }, owner as never);
+  } };
+  const gate = new ApprovalGate(owner as never);
+  const requestAndWait = vi.spyOn(gate, "requestAndWait");
+  const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
   const turn = options.turn === undefined ? { sessionId: "pane", turnId: "turn-1" } : options.turn ?? undefined;
   const [result] = await runWithHostTerminalTurn(turn, () => runWithToolExecutionCwd(dir, () => executor.executeAll(
     [{ id: "terminal-run-host", name: "terminal_run", input: { command, waitSeconds: 0 } }],
@@ -148,11 +158,12 @@ describe("terminal_run host permission", () => {
     expect(context?.shellExecution).toEqual({ runsSandboxed: false, pathPolicyRelaxations: [] });
   });
 
-  it.each(["default", "allow", "strict"] as const)("asks a person on a desktop-only, never-remembered card in %s mode, typing only after approval", async (mode) => {
+  it.each(["default", "allow", "strict"] as const)("asks for the native session surface choice in %s mode and types only after approval", async (mode) => {
     const denied = await run("printf ready", { mode });
     expect(denied.requestAndWait).toHaveBeenCalledOnce();
     expect(denied.request).toMatchObject({
       toolName: "terminal_run",
+      userOwnedSurface: "host-terminal",
       durableApprovalRecordAllowed: false,
       hostTerminal: { tabId: HOST, sessionId: "pane", shell: "zsh", physicalCwd: dir, command: "printf ready" },
       approvalMemory: { kind: "key", scope: { kind: "terminal-command", lane: "manual", tabId: HOST, sessionId: "pane", turnId: "turn-1", controlGeneration: 1 } },
@@ -174,11 +185,11 @@ describe("terminal_run host permission", () => {
     expect(request?.sandboxCapability).toMatchObject({ kind: "none", confines: { filesystem: false, process: false, network: false } });
   });
 
-  it("runs an exact HostTerminal(...) rule's command without a card, and no Bash(...) allow does", async () => {
+  it("retains host-terminal rule matching without allowing any rule to bypass the initial surface choice", async () => {
     const ruled = await run("printf ready", { rules: [{ pattern: hostRule("printf ready"), action: "allow" }] });
-    expect(ruled.decision).toMatchObject({ decision: "allow", layer: 3 });
-    expect(ruled.requestAndWait).not.toHaveBeenCalled();
-    expect(ruled.typed).toEqual(["printf ready"]);
+    expect(ruled.decision).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask", pipelineRequest: { rules: { allow: expect.any(String) } } });
+    expect(ruled.requestAndWait).toHaveBeenCalledOnce();
+    expect(ruled.typed).toEqual([]);
     const bash = await run("printf ready", { mode: "allow", rules: [{ pattern: "Bash(printf ready)", action: "allow" }] });
     expect(bash.requestAndWait).toHaveBeenCalledOnce();
     expect(bash.typed).toEqual([]);

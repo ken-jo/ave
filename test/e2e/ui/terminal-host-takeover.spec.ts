@@ -2,7 +2,7 @@ import { test, expect } from "./fixtures.js";
 import type { ElectronApplication, Page } from "playwright";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +22,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
   const userData = join(root, "user-data");
   const home = join(root, "home");
   const featureHome = join(home, ".ave");
+  const workspace = join(root, "workspace");
   const tabId = "terminal:abcd1234-1";
   const parentId = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const sideId = "a2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
@@ -65,6 +66,10 @@ if (process.platform !== "win32") test("the user takes over an approved host com
   let page: Page | undefined;
   try {
     mkdirSync(userData, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(featureHome, { recursive: true });
+    // Boot owns migration from the legacy root into its committed configuration namespace.
+    writeFileSync(join(featureHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [workspace] } }), { mode: 0o600 });
     mkdirSync(join(featureHome, "sessions"), { recursive: true });
     mkdirSync(join(featureHome, "side-chat", "sessions"), { recursive: true });
     const settings = buildLlmSettings("openai-compatible", model);
@@ -75,7 +80,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
       appearance: buildE2eBaseSettings(true, "en").appearance,
       system: { mainLayout: {
         version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-        surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+        surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: workspace, url: null } },
         panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
       } },
     }));
@@ -94,6 +99,9 @@ if (process.platform !== "win32") test("the user takes over an approved host com
       env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: featureHome, AVE_DEV: "1", AVE_E2E: "1", NODE_ENV: "test",
         ...(existsSync("/bin/zsh") ? { SHELL: "/bin/zsh" } : {}) }),
     });
+    const bootLog = testInfo.outputPath("isolated-app-boot.log");
+    app.process().stdout?.on("data", (chunk) => appendFileSync(bootLog, chunk));
+    app.process().stderr?.on("data", (chunk) => appendFileSync(bootLog, chunk));
     page = await app.firstWindow();
     page.on("pageerror", (error) => appErrors.push(error.message));
     await page.setViewportSize({ width: 1280, height: 860 });
@@ -114,8 +122,8 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     // The pane's one header row: the host chip names the exposure, its tooltip states it in full.
     // The chip is portaled into the pane's header row, which sits above the surface pane.
     const chip = page.locator('[data-testid="pane-header"]').getByTestId("terminal-pane-host-chip");
-    await expect(chip).toHaveText("Host · commands need approval");
-    await expect(chip).toHaveAttribute("title", /My terminal \(host\) · Agent commands need your approval/);
+    await expect(chip).toHaveText("Host · conversation permissions");
+    await expect(chip).toHaveAttribute("title", /My terminal \(host\) · Agent access follows this conversation/);
     await expect(pane.locator(".xterm")).toBeVisible();
     await expect(observationFailed).toHaveCount(0);
 
@@ -123,11 +131,25 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await composer.fill("Run the slow check in my terminal.");
     await composer.press("Enter");
     const approval = page.getByTestId(TEST_IDS.approvalDock).first();
-    await expect(approval.getByTestId(TEST_IDS.approveButton)).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => page!.evaluate(async () => (await window.ave.approval.listPending()).length)).toBeGreaterThan(0);
+    const pendingMetadata = await page.evaluate(async () => (await window.ave.approval.listPending()).map(({ kind, reason, userOwnedSurface, userOwnedSurfaceReviewFallback, toolName, requireExplicit }) => ({ kind, reason, userOwnedSurface, userOwnedSurfaceReviewFallback, toolName, requireExplicit })));
+    await testInfo.attach("native-approval-metadata", { body: JSON.stringify(pendingMetadata, null, 2), contentType: "application/json" });
+    await expect(approval.getByTestId("user-owned-surface-card")).toBeVisible({ timeout: 30_000 });
+    await expect(approval.getByTestId("user-owned-surface-ask")).toBeChecked();
     await expect(approval).toContainText("your real shell");
+    const choicesFit = await approval.evaluate((dock) => {
+      const bounds = dock.getBoundingClientRect();
+      return ["allow", "auto", "ask", "confirm", "dismiss"].every((choice) => {
+        const control = dock.querySelector(`[data-testid="user-owned-surface-${choice}"]`);
+        if (!(control instanceof HTMLElement)) return false;
+        const rect = control.getBoundingClientRect();
+        return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+      });
+    });
+    expect(choicesFit).toBe(true);
     await expect(observationFailed).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("host-approval-card.png") });
-    await approval.getByTestId(TEST_IDS.approveButton).click();
+    await approval.getByTestId("user-owned-surface-confirm").click();
 
     const agentStrip = pane.getByTestId("terminal-agent-control");
     await expect(agentStrip).toBeVisible({ timeout: 20_000 });

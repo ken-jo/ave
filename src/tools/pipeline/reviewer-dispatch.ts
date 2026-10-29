@@ -39,7 +39,7 @@ async function dispatchReview(args: ReviewArguments, headless: boolean): Promise
     invocationId: reviewerInvocationId(meta), sessionId, source, category, pathFields, finalInput,
     executionCwd: evaluationContext.executionCwd, auditInput, allowedDirectories, sensitivePathsAdjacent,
     trustOrigin: context.trustOrigin, evaluationContext, permissionDecision: initial,
-    ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent } } : {}),
+    ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent, ...(context.currentTaskStep ? { currentTaskStep: context.currentTaskStep } : {}) } } : {}),
     ...(context.approvalCacheKey ? { approvalCacheKey: context.approvalCacheKey } : {}),
     ...(context.approvalMemory ? { approvalMemory: context.approvalMemory } : {}),
     ...sandboxAttestation,

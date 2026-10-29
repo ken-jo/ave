@@ -1,3 +1,5 @@
+import { userOwnedBrowserScopeOf } from "./browser-tools.js";
+import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { makeRecentlyDeniedInvocationRef } from "../permissions/reviewer/recently-denied-replay.js";
 import { sandboxBlockForResult } from "../shared/sandbox-block.js";
@@ -1435,6 +1437,7 @@ export async function runToolInvocation(
       await manager.ensureProjectRulesLoaded(shellSubject?.cwd ?? executionCwd);
       let directoryPermission = manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
         ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
+        userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
         ...(terminalScope?.lane === "manual" ? { hostTerminalTurn: terminalScope, trustOrigin: invocationPermissionContext.trustOrigin } : {}),
         ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
         ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan,
@@ -1601,6 +1604,7 @@ export async function runToolInvocation(
           ...(approvalCacheKey ? { approvalCacheKey } : {}),
           approvalMemory,
           ...hostTerminalApprovalFacts(tool, approvalMemory, finalInput.command),
+          ...userOwnedSurfaceCardFacts(dirLayerResult),
         };
 
         let decision;
@@ -1697,7 +1701,13 @@ export async function runToolInvocation(
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
-        const approvedPermissionResult: PermissionCheckResult = { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
+        const surfaceResolution = await resolveUserOwnedSurfaceApproval({ manager, gate: services.approvalGate, permission: dirLayerResult, decision, request: { ...approvalRequest, abortSignal }, sessionId,
+          review: async permission => await dispatchReviewerForInteractiveAuto(manager, toolUse.name, source, invocationCategory, reviewerPathFields, finalInput, invocationAllowedScope.directories, [], invocationPermissionContext, makeEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }), {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, permission) ?? permission,
+        });
+        dirLayerResult = surfaceResolution.permission;
+        decision = surfaceResolution.decision;
+        if (decision.choice.startsWith("deny")) return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: dirLayerResult.reason, is_error: true, durationMs: Date.now() - startTime }) };
+        const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult : { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
         const approvedDirectory = decision.choice === "allow-always"
           ? (typeof decision.rememberPattern === "string" && decision.rememberPattern.length > 0
               ? decision.rememberPattern
@@ -1726,7 +1736,7 @@ export async function runToolInvocation(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: true };
+          return { allowed: true, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.humanApproved ?? true };
         }
         if (decision.choice === "allow-session") {
           // Mirror allow-always' persist convention so the permission

@@ -1603,6 +1603,8 @@ export async function queryLoop(
                 }
               : {}),
             ...(bounds.permissionUserIntent ? { userIntent: bounds.permissionUserIntent } : {}),
+            currentTaskStep: mergedText.trim().slice(0, 2048) ||
+              `Assistant round ${roundIndex}: ${toolUsesForExecutor.map((tool) => tool.name).join(", ").slice(0, 2048)}`,
             onTurnDirectoryGrant: (path) => self.addTurnAdditionalDirectory(path),
             onSessionDirectoryGrant: (path) => self.addSessionAdditionalDirectory(path),
           },

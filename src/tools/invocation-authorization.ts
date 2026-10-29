@@ -1,3 +1,5 @@
+import { userOwnedBrowserScopeOf } from "./browser-tools.js";
+import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
@@ -315,23 +317,15 @@ export async function authorizeToolInvocation(
   const remoteControllerOrigin = remoteControllerOriginOf(
     invocationPermissionContext.remoteControllerAuthority,
   );
-  const requiresPerActionApproval = source === "builtin" &&
-    tool.requiresPerActionApproval?.(finalInput, {
-      ...(sessionId === undefined ? {} : { sessionId }),
-      ...(invocationPermissionContext.approvalMemory?.kind === "key"
-        ? { approvalMemoryScope: invocationPermissionContext.approvalMemory.scope } : {}),
-    }) === true;
   const terminalScope = isCanonicalTerminalRunTool(tool)
     ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
     : undefined;
   const hostTerminalScope: HostTerminalCommandScope | undefined = terminalScope?.lane === "manual" ? terminalScope : undefined;
   const otherPrincipal = invocationPermissionContext.otherPrincipal === true || approvalReasonPrefix !== undefined ||
-    requiresRemoteLocalOneShot || requiresPerActionApproval;
+    requiresRemoteLocalOneShot;
   const floor = context.floor ?? (otherPrincipal ? {
     code: "other-principal" as const,
-    reason: requiresPerActionApproval
-      ? "an action on a tab the user opened asks every time"
-      : "another principal's request requires local allow-once approval",
+    reason: "another principal's request requires local allow-once approval",
   } : undefined);
   if (context.directoryAuthorization === undefined) {
     const shellDialect = isCanonicalBashTool(tool)
@@ -391,6 +385,7 @@ export async function authorizeToolInvocation(
             floor,
             admissionDenial: context.admissionDenial,
             ...(hostTerminalScope ? { hostTerminalTurn: hostTerminalScope } : {}),
+            userOwnedBrowser: userOwnedBrowserScopeOf(tool, invocationPermissionContext.approvalMemory),
             trustOrigin: invocationPermissionContext.trustOrigin,
             paths: context.paths,
             secretRead: context.secretRead,
@@ -877,7 +872,7 @@ export async function authorizeToolInvocation(
         // approval gate can apply sensitive-path and read-only checks to
         // the exact invocation shown to the user.
         const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
-        const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true
+        const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyApprovalRuleVerdict({
             toolName: toolUse.name,
             source,
@@ -997,6 +992,7 @@ export async function authorizeToolInvocation(
               }
             : {}),
           ...hostTerminalFacts,
+          ...userOwnedSurfaceCardFacts(permissionResult),
           evaluationContext,
         };
 
@@ -1197,6 +1193,13 @@ export async function authorizeToolInvocation(
             durationMs,
           });
         }
+        const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
+          manager: services.permissionManager, gate: services.approvalGate, permission: permissionResult, decision,
+          request: { ...approvalRequest, abortSignal }, sessionId,
+          review: async permission => await dispatchReviewerForInteractiveAutoImpl(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, sandboxAttestation, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, permission) ?? permission,
+        }) : { permission: permissionResult, decision, humanApproved: undefined };
+        permissionResult = surfaceResolution.permission;
+        decision = surfaceResolution.decision;
         const manuallyApproved = decision.choice.startsWith("allow") &&
           !isHostApprovalRejectedDecision(decision);
 
@@ -1216,9 +1219,9 @@ export async function authorizeToolInvocation(
           const hostFailure = approvalFailureOutcome(
             decision, toolUse.name, permissionResult,
           );
-          const msg = hostFailure?.content ?? t("be_executor.approvalDeniedByUser", {
+          const msg = hostFailure?.content ?? (permissionResult.decision === "deny" ? permissionResult.reason : t("be_executor.approvalDeniedByUser", {
             name: toolUse.name,
-          });
+          }));
           const durationMs = Date.now() - startTime;
           // finalInput matches the args the user actually saw + denied via
           // approvalRequest — never log stale pre-hook input here.
@@ -1240,11 +1243,11 @@ export async function authorizeToolInvocation(
             msg,
             true,
             startTime,
-            hostFailure?.permission ?? {
+            hostFailure?.permission ?? (permissionResult.decision === "deny" ? permissionResult : {
               ...permissionResult,
               decision: "deny",
               reason: "user denied approval request",
-            },
+            }),
             Infinity,
             invocationPermissionContext,
             invocationCategory,
@@ -1264,9 +1267,9 @@ export async function authorizeToolInvocation(
         // silently widen "this tool + this input" into tool-wide permission.
         // Out-of-directory approvals are handled earlier by invocation-runner
         // and retain their explicit reviewed-parent persistence contract.
-        humanApproved = manuallyApproved;
+        humanApproved = surfaceResolution.humanApproved ?? manuallyApproved;
         approvedPolicyEpoch = services.permissionManager?.getPolicyEpoch();
-        permissionResult = {
+        if (humanApproved) permissionResult = {
           ...permissionResult,
           decision: "allow",
           reason: `user approved approval request (${decision.choice})`,

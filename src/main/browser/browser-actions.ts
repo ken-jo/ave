@@ -223,6 +223,54 @@ async function centerOf(cdp: CdpSession, backendNodeId: number): Promise<{ x: nu
   return visibleCenter(cdp, backendNodeId);
 }
 
+// Page-supplied semantics catch recognizable final actions; they cannot prove an arbitrary page's effects.
+const MANUAL_ACTIVATION = /\b(?:pay(?:\s+now)?|buy\s+now|purchase|place\s+(?:an?\s+)?order|confirm\s+(?:payment|purchase|order|transfer)|(?:send|transfer)\s+(?:money|funds)|delete\s+permanently|permanently\s+delete|(?:delete|close|deactivate)\s+(?:(?:my|the|your)\s+)?account)\b|결제|구매|주문\s*확정|송금|영구\s*삭제|계정\s*삭제|회원\s*탈퇴/iu;
+const MANUAL_FORM = /\b(?:checkout|payment|purchase|money\s+transfer)\b|결제|구매|송금|영구\s*삭제|계정\s*삭제|회원\s*탈퇴/iu;
+const ACTIVATION_ROLES: ReadonlySet<string> = new Set(["button", "link", "menuitem"]);
+
+async function assertOrdinaryActivation(cdp: CdpSession, backendNodeId?: number, submitsForm = false): Promise<void> {
+  const nodes = await fullTree(cdp);
+  const node = backendNodeId === undefined
+    ? nodes.find((entry) => entry.role?.value !== "RootWebArea" && (entry.properties ?? []).some((property) => property.name === "focused" && property.value?.value === true))
+    : nodes.find((entry) => entry.backendDOMNodeId === backendNodeId);
+  if (!node || node.backendDOMNodeId === undefined) {
+    throw new BrowserActionError("activation-unavailable", "cannot verify the current activation target; select an ordinary control explicitly");
+  }
+  const attributes = await attributesOf(cdp, node.backendDOMNodeId);
+  const identity = [node.name?.value, attributes["aria-label"], attributes.title, attributes.value, attributes.name, attributes.id].filter(Boolean).join(" ");
+  let manual = ACTIVATION_ROLES.has(String(node.role?.value)) && MANUAL_ACTIVATION.test(identity);
+  const byId = new Map(nodes.map((entry) => [entry.nodeId, entry]));
+  const ancestors = new Set<string>();
+  let ancestor: AXNode | undefined = node;
+  let form: AXNode | undefined;
+  while (ancestor && !ancestors.has(ancestor.nodeId)) {
+    ancestors.add(ancestor.nodeId);
+    if (ancestor.role?.value === "form" || ancestor.role?.value === "dialog") { form = ancestor; break; }
+    ancestor = ancestor.parentId === undefined ? undefined : byId.get(ancestor.parentId);
+  }
+  if (form && (submitsForm || ACTIVATION_ROLES.has(String(node.role?.value)))) {
+    const children = new Map<string, AXNode[]>();
+    for (const entry of nodes) {
+      if (entry.parentId === undefined) continue;
+      const siblings = children.get(entry.parentId) ?? [];
+      siblings.push(entry);
+      children.set(entry.parentId, siblings);
+    }
+    const pending = [form];
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const entry = pending.pop()!;
+      if (visited.has(entry.nodeId)) continue;
+      visited.add(entry.nodeId);
+      if (entry === form ? MANUAL_FORM.test(String(entry.name?.value ?? "")) : ACTIVATION_ROLES.has(String(entry.role?.value)) && MANUAL_ACTIVATION.test(String(entry.name?.value ?? ""))) manual = true;
+      pending.push(...(children.get(entry.nodeId) ?? []));
+    }
+  }
+  if (manual) {
+    throw new BrowserActionError("manual-submit-required", "refused: payment or irreversible submission is a user action; the user completes it themselves");
+  }
+}
+
 export async function click(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs,
   onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void): Promise<void> {
   return withGuardedAction(target, async (target) => {
@@ -238,7 +286,10 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
     }
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
-    await target.injectInput(() => withPageFocus(target, () => pressAt(target, x, y, target.finishWithInput)));
+    await target.injectInput(() => withPageFocus(target, async () => {
+      await assertOrdinaryActivation(target.cdp, backendNodeId);
+      return pressAt(target, x, y, target.finishWithInput);
+    }));
   });
 }
 
@@ -339,6 +390,7 @@ export async function type(
     if (sensitive) {
       throw new BrowserActionError("sensitive-field", `refused: ${ref} is ${sensitive}; the user types those themselves`);
     }
+    if (options.submit) await assertOrdinaryActivation(target.cdp, backendNodeId, true);
     onObservationTarget?.(observationElement(ref, refs, attributes, true));
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
@@ -360,7 +412,10 @@ export async function type(
           throw new BrowserActionError("not-typed", `the text did not reach ${ref} (the page kept losing focus); check the field and try again`);
         }
       }
-      if (options.submit) await target.finishWithInput(() => dispatchKey(target.cdp, "Enter"));
+      if (options.submit) {
+        await assertOrdinaryActivation(target.cdp, backendNodeId, true);
+        await target.finishWithInput(() => dispatchKey(target.cdp, "Enter"));
+      }
     }));
   });
 }
@@ -452,11 +507,13 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
       );
     }
     throwIfAborted(target.signal);
+    if (key === "Enter" || key === "Space") await assertOrdinaryActivation(target.cdp, point?.backendNodeId, key === "Enter");
     await target.injectInput(() => withPageFocus(target, async () => {
       if (point) {
         await pressForFocus(target, point.x, point.y);
         await target.cdp.send("DOM.focus", { backendNodeId: point.backendNodeId });
       }
+      if (key === "Enter" || key === "Space") await assertOrdinaryActivation(target.cdp, point?.backendNodeId, key === "Enter");
       await target.finishWithInput(() => dispatchKey(target.cdp, key));
     }));
   });

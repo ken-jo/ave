@@ -215,6 +215,7 @@ export async function newConversation(
     // Require terminal resource-zero cleanup proof before mutating session identity or scoped state.
     await settleOutgoingSession(self, lease);
     self.deps.closeRationaleSession?.(outgoingSessionId);
+    self.deps.permissionManager?.clearUserOwnedSurfaceChoices?.(outgoingSessionId);
     self.deps.skillOverlay?.clear(outgoingSessionId);
     // Clear old session activations before replacing its ID or the runtime entry will be orphaned.
     self.deps.pluginRuntime?.clearSessionActivated?.(outgoingSessionId);
@@ -267,6 +268,7 @@ export async function loadSession(
     }
     await settleOutgoingSession(self, lease);
     self.deps.closeRationaleSession?.(outgoingSessionId);
+    self.deps.permissionManager?.clearUserOwnedSurfaceChoices?.(outgoingSessionId);
 
     // Clear old session activations before replacing its ID or the runtime entry will be orphaned.
     self.deps.pluginRuntime?.clearSessionActivated?.(outgoingSessionId);

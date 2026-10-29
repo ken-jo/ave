@@ -12,6 +12,7 @@ import {
 } from "./judge-contract.js";
 
 export interface TracingRiskClassifier {
+  reviewUserOwnedSurface?: RiskClassifier["reviewUserOwnedSurface"];
   classifyWithTrace(
     input: ToolInvocationContext,
     opts?: { abortSignal?: AbortSignal },
@@ -33,6 +34,7 @@ export function assertRiskClassificationTrace(trace: LlmRiskClassificationTrace)
 // consumes traces without knowing which classifier produced them.
 export function traceRiskClassifier(classifier: RiskClassifier): TracingRiskClassifier {
   return {
+    ...(classifier.reviewUserOwnedSurface ? { reviewUserOwnedSurface: classifier.reviewUserOwnedSurface.bind(classifier) } : {}),
     async classifyWithTrace(input, options) {
       try {
         if (classifier instanceof LlmRiskClassifier) {

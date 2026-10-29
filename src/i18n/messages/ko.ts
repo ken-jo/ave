@@ -5,7 +5,7 @@ import type { SeedMessageKey } from "./en.js";
 export const ko: Record<SeedMessageKey, string> = {
   "sidebarPreview.localFile": "로컬 파일",
   "sidebarPreview.running": "에이전트 응답",
-  "ptyTerminal.hostChipApproval": "호스트 · 명령 승인 필요",
+  "ptyTerminal.hostChipApproval": "호스트 · 대화별 사용 권한",
   "ptyTerminal.hostChipNoAgentInput": "호스트 · 에이전트 입력 없음",
   "ptyTerminal.hostChipAgentless": "호스트 · 에이전트 접근 없음",
   "terminalFileReview.changed": "에이전트 변경 {count}",

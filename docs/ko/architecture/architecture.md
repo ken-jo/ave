@@ -1709,6 +1709,10 @@ flowchart TB
 
 ### 6.3 Tool Permission Model
 
+사용자 소유 브라우저 탭과 호스트 터미널은 공통 세 가지 선택을 대화 세션·표면별로 따로 사용합니다. 전역 모드나 일반 기억 승인이 이를 대신하지 않으며, 오토는 작업과 대상의 논리적 일치만 확인합니다. 실제 주체/오염·유출·입장 차단과 자격증명·결제 보호는 유지합니다.
+
+전체 [표면 선택 계약](../../architecture/permission-policy-design.md#user-owned-surface-choices)을 따릅니다.
+
 권한 판정 순서와 모드별 동작은 [오너 승인 결정 트리](../../architecture/permission-decision-tree.md)만을 기준으로 합니다. 이 문서는 근거·실행 경계·승인 화면을 설명하며 별도의 판정 순서를 정의하지 않습니다.
 
 | 저장 ID | 표시 이름 | 동작 |

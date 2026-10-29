@@ -253,7 +253,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "add-failed": "formatIpcError.addFailed",
   "remove-failed": "formatIpcError.removeFailed",
 
-  // ── Deferred queue lifecycle ──
+  // ── Recently denied history ──
   "not-found": "formatIpcError.notFound",
   // ── Shell egress grants (ave:permissions:egress-grant*) ──
   "egress-grant-store-unreadable": "formatIpcError.egressGrantStoreUnreadable",

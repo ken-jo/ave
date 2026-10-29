@@ -1,3 +1,5 @@
+import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
+import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -867,7 +869,7 @@ export async function executeAuthorizedToolInvocation(
       const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.manualRerun === true;
       if (!permissionRecheckResult || refreshed.decision === "deny" || paused || forced) permissionResult = refreshed;
       if (refreshed.decision === "deny") throw new Error(refreshed.reason);
-      if (paused || refreshed.decision === "ask" && refreshed.pipelineRequest?.floor !== undefined) throw new HandlerPermissionAskError();
+      if (paused || refreshed.decision === "ask" && (refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.userOwnedSurface !== undefined)) throw new HandlerPermissionAskError();
       if (forced) throw new Error(refreshed.reason);
       // The sealed rationale receipt remains separate authority when its
       // original issued request still asks under unchanged policy.
@@ -903,7 +905,7 @@ export async function executeAuthorizedToolInvocation(
   const prepareLateApproval = async (
     signal: AbortSignal,
   ): Promise<ApprovalRequestInput & { sessionId: string }> => {
-    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
+    if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.pipelineRequest?.userOwnedSurface || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
       throw new Error("Late approval requires an issued human approval decision");
     }
     const reason = permissionResult.reason;
@@ -941,7 +943,7 @@ export async function executeAuthorizedToolInvocation(
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
     const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
-    const ruleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true
+    const ruleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
       ? classifyApprovalRuleVerdict({
           toolName: toolUse.name, source, category: invocationCategory,
           pathFields: tool.pathFields ?? [], finalInput, approvalCacheKey, executionCwd,
@@ -980,6 +982,7 @@ export async function executeAuthorizedToolInvocation(
             ? disposableContainerCapability(invocationPermissionContext.disposableSubstrate)
             : resolveReviewerSandboxCapability(source, toolUse.name, tool.mcpServerId, tool.workerId, tool.pluginId, hostShellExecutionPlan) }),
       ...hostTerminalFacts,
+      ...userOwnedSurfaceCardFacts(permissionResult),
     };
   };
 
@@ -993,11 +996,14 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = services.permissionManager.recheckPermission(permissionResult);
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
-    const decision = await services.approvalGate!.requestAndWait({ ...request,
+    const liveRequest: ApprovalRequestInput = { ...request,
+      userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined,
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
       ...hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command),
-    });
+      ...userOwnedSurfaceCardFacts(permissionResult),
+    };
+    let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
     if (lateApprovalPolicyEpoch !== currentEpoch &&
@@ -1006,17 +1012,23 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
       throw new Error(permissionResult.reason);
     }
+    const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
+      manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision, request: liveRequest, sessionId,
+      review: async permission => await dispatchReviewerForInteractiveAuto(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) }, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, undefined, sessionId, permission) ?? permission,
+    }) : { permission: permissionResult, decision, humanApproved: undefined };
+    permissionResult = surfaceResolution.permission;
+    decision = surfaceResolution.decision;
     const failure = approvalFailureOutcome(decision, toolUse.name, permissionResult);
     if (failure) {
       permissionResult = failure.permission;
       throw new Error(failure.content);
     }
-    humanApproved = decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
-    if (!humanApproved) {
+    humanApproved = surfaceResolution.humanApproved ?? (decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision));
+    if (!humanApproved && permissionResult.decision !== "allow") {
       permissionResult = { ...permissionResult, decision: "deny", reason: request.reason };
       throw new Error(request.reason);
     }
-    permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
+    if (humanApproved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
     approvedPolicyEpoch = currentEpoch;
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
       const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,

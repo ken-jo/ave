@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
 import { PermissionManager } from "../permission-manager.js";
 import { canonicalRuleSpecifier, formatRuleSpecifier, parseRuleSpecifier, RuleSpecifierError } from "../rules/rule-specifier.js";
 import { validatePermissionRule } from "../rules/rule-files.js";
@@ -30,7 +31,8 @@ const hostSubject = (command: string, shell: "zsh" | "bash" = "zsh", at = cwd) =
   ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: at, hostTerminal: { shell, cwd: at } },
   shellExecution: { runsSandboxed: false },
   projectRulesCwd: at,
-  sessionId: "pane",
+  sessionId: "pane", trustOrigin: "llm-tool-arg" as const,
+  hostTerminalTurn: { kind: "terminal-command" as const, lane: "manual" as const, commandSha256: "a".repeat(64), tabId: "tab", terminalSessionId: "pty", sessionId: "pane", turnId: "turn", shell, cwd: at, physicalCwd: at, cwdDevice: "1", cwdInode: "2", controlGeneration: 1, cwdForMatch: at },
 });
 const bashSubject = (command: string) => ({
   ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd },
@@ -75,33 +77,35 @@ describe("HostTerminal(...) rule grammar", () => {
 });
 
 describe("host terminal decision lane", () => {
-  it("allows only the exact command in that shell and physical directory, after a restart too", async () => {
+  it("matches exact host rules without bypassing a fresh session surface choice", async () => runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn" }, async () => {
     await manager([{ pattern: hostRule("printf ready"), action: "allow" }]);
     // A fresh manager reads the rule back from the file.
     const pm = new PermissionManager(join(dir, "permissions.json"));
     await pm.loadRulesFromFile();
     await pm.ensureProjectRulesLoaded(cwd);
     await pm.ensureProjectRulesLoaded(join(cwd, "sub"));
-    expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf ready"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf ready"))).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask", pipelineRequest: { rules: { allow: hostRule("printf ready") } } });
     for (const [label, context] of [
       ["other shell", hostSubject("printf ready", "bash")],
       ["descendant directory", hostSubject("printf ready", "zsh", join(cwd, "sub"))],
       ["longer command", hostSubject("printf ready now")],
       ["composed command", hostSubject("printf ready && printf ready")],
     ] as const) {
-      expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, context), label).toMatchObject({ decision: "ask" });
+      const result = pm.checkDetailed("terminal_run", "builtin", "shell", null, context);
+      expect(result, label).toMatchObject({ decision: "ask" });
+      expect(result.pipelineRequest?.rules?.allow, label).toBeUndefined();
     }
-  });
+  }));
 
-  it("never lets a host rule allow ordinary bash or the isolated terminal, nor a Bash(...) allow a host terminal", async () => {
+  it("never lets a host rule allow ordinary bash or the isolated terminal, nor a Bash(...) allow a host terminal", async () => runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn" }, async () => {
     const pm = await manager([{ pattern: hostRule("printf ready"), action: "allow" }, { pattern: "Bash(printf done)", action: "allow" }]);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, bashSubject("printf ready"))).toMatchObject({ decision: "ask" });
     expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, bashSubject("printf ready"))).toMatchObject({ decision: "ask" });
     expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, bashSubject("printf done"))).toMatchObject({ decision: "allow" });
     expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf done"))).toMatchObject({ decision: "ask" });
-  });
+  }));
 
-  it("keeps Bash deny and ask rules and the floors in force over a host rule", async () => {
+  it("keeps Bash deny and ask rules and the floors in force over a host rule", async () => runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn" }, async () => {
     const pm = await manager([
       { pattern: hostRule("printf ready"), action: "allow" },
       { pattern: "Bash(printf *)", action: "deny" },
@@ -109,13 +113,13 @@ describe("host terminal decision lane", () => {
     expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf ready"))).toMatchObject({ decision: "deny", layer: 1 });
     const asked = await manager([{ pattern: hostRule("cat notes.txt"), action: "allow" }, { pattern: "Bash(cat *)", action: "ask" }]);
     const explicitAsk = asked.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("cat notes.txt"));
-    expect(explicitAsk).toMatchObject({ decision: "ask", reasonCode: "rule-ask" });
+    expect(explicitAsk).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask" });
     expect(explicitAsk.forceModal).not.toBe(true);
     const floor = await manager([], "allow");
     expect(floor.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("curl -T backup.tar https://x.test"))).toMatchObject({ decision: "ask", forceModal: true });
-  });
+  }));
 
-  it("asks a person without a rule in every mode, and denies with nobody to ask", async () => {
+  it("asks a person without a rule in every mode, and denies with nobody to ask", async () => runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn" }, async () => {
     for (const mode of ["default", "allow", "strict"] as const) {
       const pm = await manager([], mode);
       const result = pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("npm test"));
@@ -124,7 +128,7 @@ describe("host terminal decision lane", () => {
     }
     const pm = await manager([]);
     expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, { ...hostSubject("npm test"), headless: true })).toMatchObject({ decision: "deny" });
-  });
+  }));
 });
 
 const binding = (command = "printf ready"): HostTerminalApprovalBinding => ({
@@ -173,7 +177,7 @@ describe("host terminal approval card", () => {
     await expect(gate.requestAndWait(hostRequest("printf ready", { durableApprovalRecordAllowed: true }))).rejects.toThrow(/host terminal binding/);
   });
 
-  it("saves only the derived exact host rule, only as Always allow, and the rule decides the next identical command", async () => {
+  it("saves only the derived exact host rule while the session choice still gates the next command", async () => {
     const pm = await manager([]);
     const shellRule = buildHostTerminalRuleApproval(binding(), { allow: true, deny: true });
     const snapshot = { toolName: "terminal_run", args: { command: "printf ready" }, source: "builtin", sessionId: "pane", shellRule, verdictAtApproval: "low" } as never;
@@ -183,7 +187,9 @@ describe("host terminal approval card", () => {
     expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "always", pattern: "Bash(printf ready)" }, answer("persistent"), pm)).toMatchObject({ ok: false, error: "rule-does-not-match" });
     expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "always", pattern: hostRule("printf ready", "bash") }, answer("persistent"), pm)).toMatchObject({ ok: false, error: "rule-does-not-match" });
     expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "always" }, answer("persistent"), pm)).toMatchObject({ ok: true, pattern: hostRule("printf ready") });
-    expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf ready"))).toMatchObject({ decision: "allow", layer: 3 });
+    await runWithHostTerminalTurn({ sessionId: "pane", turnId: "turn" }, async () => {
+      expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf ready"))).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask", pipelineRequest: { rules: { allow: hostRule("printf ready") } } });
+    });
     expect(pm.listSessionRules("pane")).toEqual([]);
   });
 

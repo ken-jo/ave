@@ -106,9 +106,6 @@ function assertToolGovernanceShape(tool: Tool): void {
   if (external && hasDynamicCategory) {
     throw new Error(`External tool '${tool.name}' cannot declare categoryForInput`);
   }
-  if (external && tool.requiresPerActionApproval !== undefined) {
-    throw new Error(`External tool '${tool.name}' cannot declare requiresPerActionApproval`);
-  }
   if (tool.category === "meta") {
     if (hasDynamicCategory) {
       throw new Error(`Meta tool '${tool.name}' cannot declare categoryForInput`);

@@ -1,6 +1,5 @@
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-/** Per-action asks always require one-shot human approval with no memory reuse or recording.
- * Pass the authorized target scope to execution so moving targets can recheck it. */
+/** Execution receives only the finalized approval scope; a scope shape does not issue user-owned surface authority. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +25,7 @@ import type { ToolExecutionContext } from "../types.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { BROWSER_TOOL } from "../../shared/browser-tools.js";
 
-describe("per-action approval and the authorized scope", () => {
+describe("authorized approval scope", () => {
   let dir: string;
   let aveHomeDir: string;
   let prevAveHome: string | undefined;
@@ -34,8 +33,8 @@ describe("per-action approval and the authorized scope", () => {
   let reviewerCache: VerdictCache | undefined;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "ave-per-action-"));
-    aveHomeDir = mkdtempSync(join(tmpdir(), "ave-home-per-action-"));
+    dir = mkdtempSync(join(tmpdir(), "ave-authorized-scope-"));
+    aveHomeDir = mkdtempSync(join(tmpdir(), "ave-home-authorized-scope-"));
     prevAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = aveHomeDir;
     __resetSessionStoreForTest();
@@ -108,7 +107,7 @@ describe("per-action approval and the authorized scope", () => {
       const [result] = await executor.executeAll(
         [{ id: `call-${seq += 1}`, name, input }],
         {
-          sessionId: "per-action",
+          sessionId: "authorized-scope",
           executionCwd: dir,
           permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
         },
@@ -119,7 +118,7 @@ describe("per-action approval and the authorized scope", () => {
     return { cards, recorded, run, classify };
   }
 
-  function probe(options: { perAction: (input: { owner: string }) => boolean; scoped?: boolean }) {
+  function probe(options: { scoped?: boolean }) {
     const seen: ToolExecutionContext[] = [];
     const tool = createDynamicTool({
       name: BROWSER_TOOL.click,
@@ -127,7 +126,6 @@ describe("per-action approval and the authorized scope", () => {
       source: "builtin",
       category: "write",
       jsonSchema: { type: "object", properties: { owner: { type: "string" }, n: { type: "integer" } }, required: ["owner"] },
-      requiresPerActionApproval: (input) => options.perAction(input as { owner: string }),
       ...(options.scoped
         ? {
             approvalMemoryScope: (input: unknown): ApprovalMemoryScope => ({
@@ -147,46 +145,8 @@ describe("per-action approval and the authorized scope", () => {
     return { tool, seen };
   }
 
-  it("a per-action input bypasses the auto reviewer and asks one-shot every time", async () => {
-    const { tool, seen } = probe({ perAction: (input) => input.owner === "user", scoped: true });
-    const { cards, recorded, run } = harness([tool]);
-
-    // The ordinary input is answered by the MEDIUM reviewer without a card.
-    await run(BROWSER_TOOL.click, { owner: "agent" });
-    expect(cards).toHaveLength(0);
-
-    await run(BROWSER_TOOL.click, { owner: "user", n: 1 });
-    await run(BROWSER_TOOL.click, { owner: "user", n: 1 });
-    expect(cards).toHaveLength(2);
-    for (const card of cards) {
-      expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-      expect(card.persistentAllowAllowed).toBe(false);
-    }
-    expect(recorded).toEqual([]);
-    expect(seen).toHaveLength(3);
-  });
-
-  it("a remembered session approval for the agent scope never answers a per-action call", async () => {
-    // Nothing is auto-answered: every ask reaches a card.
-    const { tool, seen } = probe({ perAction: (input) => input.owner === "user", scoped: true });
-    const { cards, recorded, run } = harness([tool], "default");
-
-    await run(BROWSER_TOOL.click, { owner: "agent", n: 1 });
-    expect(cards).toHaveLength(1);
-    expect(recorded).toHaveLength(1);
-    // The agent scope is now remembered for the session.
-    await run(BROWSER_TOOL.click, { owner: "agent", n: 2 });
-    expect(cards).toHaveLength(1);
-
-    await run(BROWSER_TOOL.click, { owner: "user", n: 1 });
-    await run(BROWSER_TOOL.click, { owner: "user", n: 1 });
-    expect(cards).toHaveLength(3);
-    expect(recorded).toHaveLength(1);
-    expect(seen).toHaveLength(4);
-  });
-
   it("hands execute the scope the call was authorized under", async () => {
-    const { tool, seen } = probe({ perAction: () => true, scoped: true });
+    const { tool, seen } = probe({ scoped: true });
     const { run } = harness([tool]);
     await run(BROWSER_TOOL.click, { owner: "user" });
     expect(authorizedApprovalMemoryScope(seen[0])).toEqual({
@@ -199,24 +159,21 @@ describe("per-action approval and the authorized scope", () => {
   });
 
   it("an exact-args tool gets no authorized scope", async () => {
-    const { tool, seen } = probe({ perAction: () => true });
+    const { tool, seen } = probe({});
     const { run } = harness([tool]);
     await run(BROWSER_TOOL.click, { owner: "user" });
     expect(authorizedApprovalMemoryScope(seen[0])).toBeUndefined();
   });
 
-  it("an external tool cannot declare requiresPerActionApproval", () => {
-    const registry = new ToolRegistry();
-    const external = createDynamicTool({
-      name: "plugin_probe",
-      description: "probe",
-      source: "plugin",
-      pluginId: "probe",
-      category: "write",
-      jsonSchema: { type: "object" },
-      requiresPerActionApproval: () => false,
-      execute: async () => ({ output: "ok", isError: false }),
-    });
-    expect(() => registry.register(external)).toThrow(/requiresPerActionApproval/);
+  it("does not treat an arbitrary builtin's browser-shaped scope as a user-owned surface", async () => {
+    const { tool, seen } = probe({ scoped: true });
+    const { run, cards } = harness([tool], "default");
+    const result = await run(BROWSER_TOOL.click, { owner: "user" });
+    expect(result?.is_error).toBeFalsy();
+    expect(cards).toHaveLength(1);
+    expect(cards[0].userOwnedSurface).toBeUndefined();
+    expect(cards[0].allowedChoices).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(authorizedApprovalMemoryScope(seen[0])).toMatchObject({ kind: "browser-origin", tabOpener: "user" });
   });
 });

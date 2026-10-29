@@ -19,7 +19,7 @@ function fixture(options: {
   source?: Tool["source"];
   prefix?: string;
   headless?: boolean;
-  perAction?: boolean;
+  otherPrincipal?: boolean;
   mcpReadOnlyHint?: boolean;
   mode?: "strict" | "default" | "auto" | "allow";
   manualRerun?: boolean;
@@ -33,7 +33,6 @@ function fixture(options: {
     name: "inspect_resource", description: "Inspect a resource", version: "1.0.0",
     category: options.category ?? "read", source: options.source ?? "builtin",
     mcpReadOnlyHint: options.mcpReadOnlyHint,
-    ...(options.perAction ? { requiresPerActionApproval: () => true } : {}),
     execute: vi.fn(), toJsonSchema: () => ({}), isReadOnly: () => true,
   };
   const context: AuthorizationStageContext = {
@@ -50,7 +49,7 @@ function fixture(options: {
     hostShellPathPolicyRelaxations: undefined, hostShellExecutionPermitBinding: undefined,
     hostShellApprovalDecision: undefined, finalInput: {},
     invocationAllowedScope: { directories: [directory] }, sensitivePathPattern: null,
-    invocationPermissionContext: userPermissionContext({ headless: options.headless, manualRerun: options.manualRerun }),
+    invocationPermissionContext: userPermissionContext({ headless: options.headless, manualRerun: options.manualRerun, otherPrincipal: options.otherPrincipal }),
     evaluationContext: {} as AuthorizationStageContext["evaluationContext"], callbacks: undefined,
     meta: { groupId: "pipeline", toolUseId: "inspect", displayOrder: 0 }, approvalPurpose: undefined, auditInput: {}, abortSignal: undefined,
     rationaleResumeContext: undefined, rationaleBatchContext: undefined,
@@ -86,8 +85,8 @@ describe("invocation permission pipeline orchestration", () => {
     expect(review).not.toHaveBeenCalled();
   });
 
-  it("routes a user-owned action through the floor before allow rules", async () => {
-    const { context, manager, requestAndWait } = fixture({ perAction: true });
+  it("routes an actual other-principal action through the floor before allow rules", async () => {
+    const { context, manager, requestAndWait } = fixture({ otherPrincipal: true });
     manager.setRules([{ pattern: "inspect_resource", action: "allow" }]);
     await authorizeToolInvocation(context);
     expect(requestAndWait).toHaveBeenCalledOnce();

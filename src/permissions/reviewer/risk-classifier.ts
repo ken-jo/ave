@@ -37,6 +37,7 @@ import { resolve as resolvePath } from "node:path";
 import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal, inspectShellCommand } from "../rules/shell-exfiltration.js";
 import { powerShellExfiltrationSignal, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
+import { reviewUserOwnedSurface, type UserOwnedSurfaceReviewInput, type UserOwnedSurfaceReviewResult } from "./user-owned-surface-reviewer.js";
 
 // Verdict shape returned by every classifier.
 export interface RiskVerdict {
@@ -108,6 +109,7 @@ export interface ToolInvocationContext {
 
 export interface RiskClassifier {
   classify(input: ToolInvocationContext): RiskVerdict | Promise<RiskVerdict>;
+  reviewUserOwnedSurface?(input: UserOwnedSurfaceReviewInput, signal?: AbortSignal): Promise<UserOwnedSurfaceReviewResult>;
 }
 
 // DisabledRiskClassifier
@@ -121,7 +123,7 @@ export class DisabledRiskClassifier implements RiskClassifier {
 
 // StrictRiskClassifier
 
-// Fail-closed reviewer — every dispatch returns HIGH so headless mutations land in the deferred queue. Use this for hardened deployments where the user wants to manually approve every plugin/MCP write before it executes. Equivalent to the pre-"disabled" semantic but under an honest name.
+// A strict assessment requires the normal human fallback. Without an approver, the decision pipeline denies with no-retry guidance.
 export class StrictRiskClassifier implements RiskClassifier {
   classify(_: ToolInvocationContext): RiskVerdict {
     return { level: "high", reason: "reviewer strict — defer all" };
@@ -1755,6 +1757,10 @@ export class LlmRiskClassifier implements RiskClassifier {
     private readonly telemetry: LlmRiskClassifierTelemetry = {},
     private readonly retry: LlmReviewerRetryConfig = DEFAULT_REVIEWER_RETRY,
   ) {}
+
+  reviewUserOwnedSurface(input: UserOwnedSurfaceReviewInput, signal?: AbortSignal): Promise<UserOwnedSurfaceReviewResult> {
+    return reviewUserOwnedSurface(this.provider, this.model, input, signal);
+  }
 
   // Run `provider.complete` with bounded retry on transient errors. Returns the attempt count on success so telemetry can record it. Throws the LAST error on exhaustion or on the first terminal error. Honors `abortSignal` at every sleep boundary so user-cancel is not blocked.
   private async runProviderWithRetry(

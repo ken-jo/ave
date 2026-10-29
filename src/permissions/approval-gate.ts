@@ -24,7 +24,7 @@ import type {
   ParentEscalationNotice,
 } from "../shared/parent-escalation-notice.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { resolveUserApprovalVerdict, type ApprovalMemory } from "../shared/permissions-events.js";
+import { isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 import { buildHostTerminalRuleApproval, buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
@@ -107,6 +107,8 @@ interface EgressHostApproval {
 
 export interface ApprovalRequest {
   id: string;
+  userOwnedSurface?: UserOwnedSurface;
+  userOwnedSurfaceReviewFallback?: true;
   category: "tool" | "agent-action";
   // Permission policy.5 — discriminator for the renderer to pick the right card. Defaults to `"tool"` when omitted (backwards-compatible).
   kind?: ApprovalKind;
@@ -272,6 +274,7 @@ export type ApprovalChoice =
 export interface ApprovalDecision {
   requestId: string;
   choice: ApprovalChoice;
+  userOwnedSurfaceChoice?: UserOwnedSurfaceChoice;
   // For an `egress-host` ask answered `allow-once`: how long the allow lasts, one of the request's `egressHost.scopes`. Required there, ignored everywhere else; a missing or unoffered scope makes the answer a deny.
   egressScope?: EgressGrantScope;
 
@@ -446,6 +449,8 @@ interface ApprovalPolicyTransition {
 }
 
 interface PendingEntry {
+  userOwnedSurface?: UserOwnedSurface;
+  userOwnedSurfaceReviewFallback?: true;
   ruleSaveTransition?: ApprovalPolicyTransition;
   resolve: (decision: ApprovalDecision) => void;
   reject: (err: Error) => void;
@@ -720,6 +725,13 @@ export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
   private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
   private readonly approvedPolicyTransitions = new WeakMap<ApprovalDecision, { from: string; to: string }>();
+  private readonly approvedSurfaceChoices = new WeakMap<ApprovalDecision, { sessionId: string; surface: UserOwnedSurface; choice: UserOwnedSurfaceChoice }>();
+
+  consumeUserOwnedSurfaceChoice(decision: ApprovalDecision, sessionId: string, surface: UserOwnedSurface): UserOwnedSurfaceChoice | undefined {
+    const selection = this.approvedSurfaceChoices.get(decision);
+    this.approvedSurfaceChoices.delete(decision);
+    return selection?.sessionId === sessionId && selection.surface === surface ? selection.choice : undefined;
+  }
 
   /** Capture a live card before its host-validated rule save. Tokens never cross IPC. */
   beginApprovalRuleSave(requestId: string, before: string): object | undefined {
@@ -924,6 +936,8 @@ export class ApprovalGate {
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
       hostTerminal,
+      userOwnedSurface: requestedUserOwnedSurface,
+      userOwnedSurfaceReviewFallback: requestedSurfaceReviewFallback,
       executionPlan: requestedExecutionPlan,
       executionCwd: _requestedExecutionCwd,
       sandboxCapability: requestedSandboxCapability,
@@ -947,6 +961,15 @@ export class ApprovalGate {
     }
     const forceExplicit = requestedForceExplicit || childProvenance !== undefined ||
       remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined;
+    if ((requestedUserOwnedSurface !== undefined && (!isUserOwnedSurface(requestedUserOwnedSurface) || !req.sessionId)) ||
+      (requestedSurfaceReviewFallback !== undefined && (requestedSurfaceReviewFallback !== true || requestedUserOwnedSurface === undefined))) {
+      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: "Invalid user-owned surface approval" });
+    }
+    const userOwnedSurface = !forceExplicit && req.category === "tool" && (req.kind === undefined || req.kind === "tool" || req.kind === "out-of-allowed-dir")
+      ? requestedUserOwnedSurface : undefined;
+    if (requestedUserOwnedSurface !== undefined && req.evaluationContext?.headless === true) {
+      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: NO_APPROVER_MESSAGE });
+    }
     // Strip bindings, controller authority, abort signals and child eligibility/provenance before spreading renderer requests; live host capability must not reach renderer or audit. Audit only allowlisted plan fields and inject origin into every row so absence cannot masquerade as desk provenance.
     const auditFieldsFor = (
       fields: ApprovalAuditFields,
@@ -1001,15 +1024,17 @@ export class ApprovalGate {
       requestedChoices.includes("deny-once");
     // Exact one-shot requests and rationale prompts are never eligible for a durable user-approval record. Treat this as an invariant instead of a caller preference: a future emitter must not be able to widen a per-invocation decision by setting the host-only option to `true`.
     const durableApprovalRecordAllowed =
-      req.kind !== "rationale" && !forceExplicit &&
+      userOwnedSurface === undefined && req.kind !== "rationale" && !forceExplicit &&
       !hasOneShotApprovalChoiceContract &&
       requestedDurableApprovalRecordAllowed !== false;
     const hasOneShotHostShellApprovalContract =
       forceExplicit === true &&
       hasOneShotApprovalChoiceContract;
+    const rawShellArgs = req.args && typeof req.args === "object" && !Array.isArray(req.args)
+      ? req.args as Record<string, unknown> : undefined;
     // A regular builtin command dock may save an escape rule and then answer allow-once. Its native action still uses the same authenticated receipt.
     if (hostTerminal !== undefined && (req.toolName !== "terminal_run" || req.source !== "builtin" || req.toolCategory !== "shell"
-      || requestedDurableApprovalRecordAllowed !== false || req.sessionId !== hostTerminal.sessionId)) {
+      || requestedDurableApprovalRecordAllowed !== false || req.sessionId !== hostTerminal.sessionId || typeof rawShellArgs?.command !== "string" || rawShellArgs.command !== hostTerminal.command)) {
       throw new Error("approval: host terminal binding does not describe this request");
     }
     const hasShellRuleApprovalContract = !forceExplicit && requestedChoices === undefined &&
@@ -1113,14 +1138,12 @@ export class ApprovalGate {
           ? captureApprovalWorkingDirectory(req.evaluationContext.executionCwd) : undefined)
       : undefined;
     const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
-    const rawShellArgs = req.args && typeof req.args === "object" && !Array.isArray(req.args)
-      ? req.args as Record<string, unknown> : undefined;
     const shellRuleCwd = req.evaluationContext?.executionCwd;
     // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
     const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract &&
       remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
     const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
-    const shellRule = hostTerminal !== undefined
+    const shellRule = userOwnedSurface !== undefined ? undefined : hostTerminal !== undefined
       // The person's own host terminal: an exact HostTerminal(...) allow, always user-global, never a session rule; a Bash deny still narrows.
       ? typeof rawShellArgs?.command === "string" && rawShellArgs.command === hostTerminal.command
         ? buildHostTerminalRuleApproval(hostTerminal, { allow: shellRuleSaveAllowed, deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined })
@@ -1136,6 +1159,8 @@ export class ApprovalGate {
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
+      ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
       ...(executionPlanAudit === undefined
         ? {}
         : { executionPlan: executionPlanAudit }),
@@ -1156,7 +1181,7 @@ export class ApprovalGate {
           }
         : {}),
       allowedChoices:
-        req.kind === "rationale" || forceExplicit
+        userOwnedSurface !== undefined || req.kind === "rationale" || forceExplicit
           ? ["allow-once", "deny-once"]
           : req.allowedChoices,
       persistentAllowAllowed,
@@ -1167,7 +1192,7 @@ export class ApprovalGate {
         req.kind === "rationale"
           ? true
           // Only an explicit false relaxes it: a policy object that lost the field stays explicit.
-          : oneShotPermitBinding !== undefined || hostTerminal !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
+          : userOwnedSurface !== undefined || oneShotPermitBinding !== undefined || hostTerminal !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
     };
 
     // Missing or destroyed registered owners have the same fail-closed semantics as headless runs.
@@ -1343,6 +1368,8 @@ export class ApprovalGate {
       }
 
       this.pending.set(fullReq.id, {
+        ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
+        ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
         resolve: settle,
         reject,
         timer,
@@ -1405,7 +1432,7 @@ export class ApprovalGate {
 
       // Announce the parked request to host-internal observers. Positioned after `pending.set` so an observer's answer through `resolve` finds the entry, and below every host-only short circuit above (which all returned before a pending entry existed).
       // Desktop-only requests are never announced to host-internal observers (Telegram and other remote surfaces answer through them).
-      if (oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
+      if (userOwnedSurface === undefined && oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
         requestId: fullReq.id,
         toolName: fullReq.toolName,
         ...(fullReq.source === undefined ? {} : { source: fullReq.source }),
@@ -1579,7 +1606,7 @@ export class ApprovalGate {
       // damage the owner's pending request, even with valid signed contents.
       return null;
     }
-    if ((entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
+    if ((entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -1610,6 +1637,15 @@ export class ApprovalGate {
       return forcedDecision;
     }
 
+    if ((decision.userOwnedSurfaceChoice !== undefined &&
+      (entry.userOwnedSurface === undefined || entry.userOwnedSurfaceReviewFallback === true || decision.choice !== "allow-once" || !isUserOwnedSurfaceChoice(decision.userOwnedSurfaceChoice))) ||
+      (entry.userOwnedSurface !== undefined && entry.userOwnedSurfaceReviewFallback !== true && decision.choice === "allow-once" && !isUserOwnedSurfaceChoice(decision.userOwnedSurfaceChoice))) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Invalid user-owned surface choice" });
+      entry.resolve(rejected);
+      return rejected;
+    }
     if (
       entry.allowedChoices &&
       !entry.allowedChoices.includes(decision.choice)
@@ -1666,16 +1702,20 @@ export class ApprovalGate {
     }
     // A rationale response is a sealed, one-shot verdict. Do not pass any renderer-provided auxiliary text or structured content to audit or the caller after the authenticated choice has been accepted.
     const resolvedDecision: ApprovalDecision =
-      entry.kind === "rationale"
+      entry.kind === "rationale" || entry.userOwnedSurface !== undefined
         ? {
             requestId,
             choice: decision.choice,
             nonce: decision.nonce,
             hmac: decision.hmac,
+            ...(entry.userOwnedSurface !== undefined && decision.choice === "allow-once" ? { userOwnedSurfaceChoice: decision.userOwnedSurfaceChoice } : {}),
           }
         : decision;
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
+    if (nativeRenderer && entry.userOwnedSurface !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isUserOwnedSurfaceChoice(resolvedDecision.userOwnedSurfaceChoice)) {
+      this.approvedSurfaceChoices.set(resolvedDecision, { sessionId: entry.sessionId, surface: entry.userOwnedSurface, choice: resolvedDecision.userOwnedSurfaceChoice });
+    }
     const transition = entry.ruleSaveTransition;
     if (nativeRenderer && transition?.valid && !transition.saving && transition.from !== transition.to &&
       (resolvedDecision.choice === "allow-once" || resolvedDecision.choice === "allow-session" || resolvedDecision.choice === "allow-always")) {

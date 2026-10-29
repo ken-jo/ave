@@ -209,8 +209,10 @@ class Lexer {
       if (char === "&") {
         if (next === "&") { endPipeline(); this.index += 2; continue; }
         if (tokens.length > 0) {
-          endCommand();
-          throw new PsUnreadable("unsupported background execution");
+          this.analysis.facts.set("unproven-background", true);
+          endPipeline();
+          this.index += 1;
+          continue;
         }
         pushToken(word("&", "&", false, []));
         this.index += 1;
@@ -547,7 +549,7 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
   const stages: StaticStage[] = [];
   // Comments may carry directives processed before the startup prelude.
   // They remain visible to the lexer, but never supply positive argv proof.
-  let dynamic = analysis.facts.get("unproven-comment") === true;
+  let dynamic = analysis.facts.get("unproven-comment") === true || analysis.facts.get("unproven-background") === true;
   let maximumDepth = 1;
   let nestedUpload: string | null = null;
   // `inline`: every enclosing body is a control-statement body; `switchBody`: the pipelines are switch clauses.
@@ -978,7 +980,16 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     const lexical = absolute ? value : cwd + "/" + value;
     paths.push({ ...permissionPathEvidence({ lexical, canonical, effect }, cwd), ...(deleting ? { deleteIntent: true as const } : {}) });
   };
-  for (const stage of program.stages) {
+  for (const parsedStage of program.stages) {
+    // A literal call target has the same filesystem and credential effects as
+    // direct invocation. Keep the original program and rule proof untouched.
+    const first = parsedStage.command.tokens[0];
+    const stage: StaticStage = first?.kind === "word" && first.raw === "&" && !first.quoted
+      && parsedStage.argv[1] !== undefined
+      ? { ...parsedStage, command: { tokens: parsedStage.command.tokens.slice(1) },
+        argv: parsedStage.argv.slice(1), visible: parsedStage.visible.slice(1), raw: parsedStage.raw.slice(1),
+        name: canonicalName(parsedStage.argv[1]) }
+      : parsedStage;
     const policy = stage.name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[stage.name];
     const credential = policy?.credential;
     if (credential === true || (credential instanceof RegExp && credential.test(stage.visible.filter((value): value is string => value !== undefined).join(" ")))) {

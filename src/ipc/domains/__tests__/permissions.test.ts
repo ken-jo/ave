@@ -367,6 +367,23 @@ describe("permissions IPC handlers", () => {
     expect(deps.auditLogger.log.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
   });
 
+  it.each(["allow", "auto", "ask"])("passes the literal surface choice %s only through the native gate", async (userOwnedSurfaceChoice) => {
+    const { deps, appWindows } = await setup();
+    const answer = { requestId: "surface-card", choice: "allow-once", userOwnedSurfaceChoice, nonce: "signed-nonce", hmac: "signed-hmac" };
+    expect(await invoke(PERMISSIONS.approvalRespond, answer)).toEqual({ ok: true });
+    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("surface-card", answer, appWindows[0].webContents);
+  });
+
+  it.each([null, {}, { requestId: "surface-card", choice: "invalid" },
+    { requestId: "surface-card", choice: "allow-once", userOwnedSurfaceChoice: "always" },
+    { requestId: "surface-card", choice: "allow-once", userOwnedSurface: "browser" },
+    { requestId: "surface-card", choice: "allow-once", userOwnedSurfaceReviewFallback: true },
+  ])("rejects malformed or host-only surface response fields %j", async (answer) => {
+    const { deps } = await setup();
+    expect(await invoke(PERMISSIONS.approvalRespond, answer)).toMatchObject({ ok: false, error: "invalid-payload" });
+    expect(deps.approvalGate.resolveFromDesktopRenderer).not.toHaveBeenCalled();
+  });
+
   it("passes a registered main-frame recipient to pending-card filtering", async () => {
     const { deps, appWindows } = await setup();
     expect(await invoke(PERMISSIONS.approvalPending)).toEqual([]);
