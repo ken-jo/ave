@@ -195,7 +195,8 @@ describe("shell confinement and escape rules", () => {
       "Get-ChildItem @options", "Get-ChildItem 'unterminated",
       "tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "zip $flags a.zip d", "Compress-Archive src a.zip", "Compress-Archive -Path $p a.zip",
       "tar --c x.tar", "tar --a x.tar", "tar --u x.tar", "tar --lz4 -t -f x.tar",
-      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt", "xcopy $from out", "robocopy src out $flags", "7z b x.7z", "7z d x.7z", "7z h x.7z", "7z i x.7z", "7z rn x.7z", "7z unknown x.7z",
+      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt", "xcopy $from out", "robocopy src out $flags",
+      "robocopy --% a b /e", "xcopy --% a b /s", "findstr --% /s term src", "$env:X='/e'; robocopy --% a b %X%", "7z b x.7z", "7z d x.7z", "7z h x.7z", "7z i x.7z", "7z rn x.7z", "7z unknown x.7z",
     ])("keeps the forced ask for undecidable traversal %s", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);

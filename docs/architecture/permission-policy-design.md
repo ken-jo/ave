@@ -1303,7 +1303,8 @@ Two classifiers answer different questions about PowerShell traversal:
   robocopy's `/s`, `/e`, `/mir` (also dash-prefixed, without bundles). A colon
   starts an option's value (`/exclude:C:/x.txt`, `/c:a/s`), which is not read
   as switches. Since a dynamic argument to these commands may carry a switch,
-  the may-traverse check keeps the forced ask for it.
+  and so may the verbatim text after `--%` (which expands `%VAR%` at run
+  time), the may-traverse check keeps the forced ask for both.
 
   The host PowerShell block (`validatePowerShellAst`, including the Remove-Item
   recursive-and-forced check) and the permission decision both import it.

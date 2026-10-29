@@ -655,6 +655,7 @@ jobs:
           src/permissions/__tests__/mxc-windows-transport.test.ts
           src/tools/__tests__/mxc-shell-launch.test.ts
           src/tools/__tests__/mxc-link-traversal.integration.test.ts
+          src/tools/__tests__/mxc-pipe-lifetime.integration.test.ts
           src/permissions/__tests__/asrt-deny-absent-native.test.ts
           src/permissions/__tests__/windows-deny-acl.test.ts
           src/permissions/__tests__/allowed-directories.test.ts

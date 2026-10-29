@@ -40,9 +40,19 @@ const NATIVE_RECURSE_SWITCHES: ReadonlyMap<string, (word: string) => boolean> = 
   ["findstr", (word: string) => slashSwitchRecurses(word, "/-", /s/, FINDSTR_NAMED)],
 ]);
 
-/** robocopy, xcopy and findstr take recursion as a switch, so a dynamic argument may carry one. */
-export function isNativeRecursionSwitchCommand(command: string): boolean {
-  return NATIVE_RECURSE_SWITCHES.has(commandLeaf(command));
+/**
+ * robocopy, xcopy and findstr take recursion as a switch, so a dynamic argument may carry one, and so may the verbatim
+ * text after `--%`, which also expands %VAR% at run time.
+ */
+export function mayCarryNativeRecursionSwitch(command: string, args: readonly PowerShellTraversalArgument[]): boolean {
+  if (!NATIVE_RECURSE_SWITCHES.has(commandLeaf(command))) return false;
+  return args.some((argument) => argument.kind === "dynamic"
+    || (argument.kind === "parameter" && argument.argument?.kind === "dynamic")
+    || isStopParsing(argument));
+}
+
+function isStopParsing(argument: PowerShellTraversalArgument): boolean {
+  return argument.kind === "literal" && /^[-\u2013\u2014\u2015]{2}%/.test(argument.value);
 }
 
 function commandLeaf(name: string): string {
@@ -75,10 +85,14 @@ export function isDefinitePowerShellRecursion(command: string, args: readonly Po
   const leaf = commandLeaf(command);
   if (classifyArchiveTraversal(leaf, args) === "definite") return true;
   const native = NATIVE_RECURSE_SWITCHES.get(leaf);
-  if (native !== undefined) return args.some((argument) => {
-    const word = nativeWord(argument);
-    return word !== null && native(word);
-  });
+  if (native !== undefined) {
+    // Text after `--%` is passed verbatim and may expand %VAR%, so it is undecidable rather than definite.
+    const stop = args.findIndex(isStopParsing);
+    return (stop === -1 ? args : args.slice(0, stop)).some((argument) => {
+      const word = nativeWord(argument);
+      return word !== null && native(word);
+    });
+  }
   // The leaf also covers a module-qualified cmdlet name.
   return RECURSIVE_PARAMETER_COMMANDS.has(leaf)
     && args.some((argument) => argument.kind === "parameter" && isPowerShellRecursionParameter(leaf, argument));

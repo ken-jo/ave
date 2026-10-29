@@ -905,6 +905,8 @@ describe("powershell tool", () => {
         // Undecidable: the decision asks, and the host block does not refuse.
         ["tar $mode x.tar", [command("tar", psDynamic("$mode"), psLiteral("x.tar"))]],
         ["Compress-Archive src a.zip", [command("Compress-Archive", psLiteral("src"), psLiteral("a.zip"))]],
+        // PowerShell 5.1 and 7 both parse `--%` as a literal followed by one literal holding the verbatim rest.
+        ...[["robocopy", "a b /e"], ["xcopy", "a b /s"], ["findstr", "/s term src"]].map(([name, rest]) => [`${name} --% ${rest}`, [command(name!, psLiteral("--%"), psLiteral(rest!))]] as const),
       ] as const)("does not refuse %s as traversal", (_, commands) => {
         const summary = ast([...commands]);
         expect(validatePowerShellAst(summary)).toBeNull();

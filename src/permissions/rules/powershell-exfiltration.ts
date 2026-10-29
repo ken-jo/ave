@@ -20,7 +20,7 @@ import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from ".
 import {
   classifyPowerShellArchiveTraversal,
   isDefinitePowerShellRecursion,
-  isNativeRecursionSwitchCommand,
+  mayCarryNativeRecursionSwitch,
   isPowerShellRecursionParameter,
   type PowerShellTraversalArgument,
   type PowerShellTraversalValue,
@@ -1006,8 +1006,7 @@ function stageMayTraverse(stage: TraversalStage): boolean {
   if (stage.name === undefined || classifyPowerShellArchiveTraversal(stage.name, stage.args) === "undecidable") return true;
   const policy = POWERSHELL_COMMAND_POLICIES[stage.name];
   if (policy === undefined || policy.effects.includes("launcher") || stageDefinitelyTraverses(stage)) return true;
-  if (isNativeRecursionSwitchCommand(stage.name) && stage.args.some((argument) => argument.kind === "dynamic"
-    || (argument.kind === "parameter" && argument.argument?.kind === "dynamic"))) return true;
+  if (mayCarryNativeRecursionSwitch(stage.name, stage.args)) return true;
   // A wildcard operand stays unresolved here, as it was before wildcards were read as literals.
   if (stage.name === "get-childitem" && stage.args.some((argument) => unresolvedOperand(argument)
     || (argument.kind === "parameter" && argument.argument !== undefined && unresolvedOperand(argument.argument)))) return true;
