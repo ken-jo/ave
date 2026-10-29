@@ -1410,9 +1410,10 @@ improvement.
 ### Host terminals and conversation shells
 
 Each visible terminal tab owns one
-native host shell, with a host badge/color band and **No agent access** label.
-Its real HOME and configured profile remain intact. zsh and bash use
-nonce-authenticated integration from a per-PTY temporary startup directory;
+native host shell, with a host badge/color band. A side-work-panel mount is
+labeled **No agent access**; a workspace mount is labeled **Agent commands need
+your approval**. Its real HOME and configured profile remain intact. zsh, bash and
+pwsh use nonce-authenticated integration from a per-PTY temporary startup directory;
 unsupported shells or failed integration retain the user's native shell without
 claiming current-directory, exit-status or agent-control capabilities that have
 not been attested. Host integration never installs the disposable-HOME startup
@@ -1441,14 +1442,22 @@ unconfined command shows host execution rather than claiming isolation. Every
 persistent conversation PTY remains confined; approving a one-shot host command
 does not permit typing into a user's host terminal.
 
+A workspace pane chat bound to its host terminal may run one person-approved
+command at a time there through `terminal_run`. A main-owned control lease per
+host incarnation gates every agent byte; user input, Take over, Stop, a purpose
+or binding change, or exit revokes it before user bytes reach the shell, and Hand
+back needs an empty attested prompt. Only output received under the lease returns,
+to the requesting conversation only. The
+[host command control](permission-policy-design.md#host-command-control) policy
+is canonical for its target, decision, recheck and disclosure rules.
+
 The [terminal permission policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal)
 is canonical for exact command approval, authorized-project containment,
 confinement, TTY/nonce readiness, egress and cancellation checks. These isolated
 checks remain in force, including the Linux initial-namespace revalidation limit
 and fail-closed behavior when the backend is unavailable. Host startup/user output
 is private; only explicit user-selected block attachments share host context.
-Side-work-panel host terminals have no agent read/write access. Host command
-approval and takeover are pending; this delivery enables no agent host typing.
+Side-work-panel host terminals have no agent read/write access.
 
 ## Extension Runtime
 

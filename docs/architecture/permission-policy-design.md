@@ -1720,17 +1720,21 @@ in force.
 
 ## Commands Typed Into A Workspace Terminal
 
-Each visible workspace or side-work-panel terminal has one **My terminal
-(host) · No agent access** shell. It uses real HOME, the configured native
-interpreter/profile and a validated initial directory. zsh and bash use a
-per-PTY temporary rc directory and nonce-authenticated hooks, sourcing the actual
-startup files before hooks and restoring the original ZDOTDIR for user startup
-files. This never runs the disposable-HOME installer against real HOME. Unsupported
+Each visible workspace or side-work-panel terminal has one native host shell.
+A side-work-panel mount is labeled **My terminal (host) · No agent access**; a
+workspace mount is labeled **My terminal (host) · Agent commands need your
+approval** (see [Host command control](#host-command-control)). It uses real HOME,
+the configured native interpreter/profile and a validated initial directory. zsh
+and bash use a per-PTY temporary rc directory and nonce-authenticated hooks,
+sourcing the actual startup files before hooks and restoring the original ZDOTDIR
+for user startup files. pwsh launches with `-NoProfile -NoExit` and an owned
+wrapper that dot-sources the user's profiles in PowerShell's own order before the
+hooks. This never runs the disposable-HOME installer against real HOME. Unsupported
 interpreters or integration failure preserve the normal user shell and report why
 integration is unavailable; unverified current directory/exit state stays unknown.
 Integration is not authority to type, read host output or claim native support.
 
-The first owned startup step (zsh's temporary `.zshenv`, bash's rcfile) reads
+The first owned startup step (zsh's temporary `.zshenv`, bash's rcfile, pwsh's wrapper) reads
 the nonce into an unexported shell variable and deletes its file before any user
 startup file runs, so a user rc or a loader it starts cannot read the file and
 forge markers. Residual limit: user startup files run in the same shell and can
@@ -1753,12 +1757,13 @@ The shell's read-only `login_shell` flag remains false, and automatic logout-fil
 semantics are not emulated. This startup compatibility limit does not grant
 agent access.
 
-There is no agent host typing in this delivery. Tools, ambient context,
-observation snapshots and continuations cannot automatically read host startup,
-user commands or scrollback. Only an explicit user block-attachment action may
-share selected host content as user-provided untrusted context. Side-work-panel
-host terminals have no agent read/write authority. Neither focus nor a pane-chat
-binding creates it. The [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes)
+Tools, ambient context, observation snapshots and continuations cannot read host
+startup, user commands or scrollback. The one agent path into a host shell is
+[Host command control](#host-command-control): a single person-approved command
+from the terminal's own workspace pane chat, whose own output span returns to
+that chat. Only an explicit user block-attachment action may share other host
+content, as user-provided untrusted context. Side-work-panel host terminals have
+no agent read/write authority. Focus alone never creates it. The [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes)
 explains the visible host and inline isolated surfaces.
 
 An ordinary conversation instead owns an **Agent (isolated)** persistent PTY,
@@ -1778,8 +1783,9 @@ never a valid Agent jail anchor, even if it appears as an authorized project.
 Host cwd validation remains separate from this Agent confinement gate.
 
 `terminal_run` ([terminal-run.ts](../../src/tools/terminal-run.ts)) types one
-command into the invoking conversation's isolated PTY and presses Enter. It
-cannot type into a host shell. It remains a builtin in the `shell` category and uses the same
+command into the invoking conversation's isolated PTY and presses Enter. From a
+workspace pane chat bound to a host terminal it targets that host shell instead,
+under [Host command control](#host-command-control). It remains a builtin in the `shell` category and uses the same
 policy classifier as `bash`; the isolated terminal ref is an execution identity, not a
 separate permission category. The checks in this section apply to Agent:
 
@@ -1824,8 +1830,9 @@ session context; model arguments cannot select another conversation's terminal,
 a visible host tab or its cwd authority. The registry deduplicates concurrent
 spawn and seals the internal terminal identity, incarnation and containment
 before approval. Execute refuses a changed shell directory or replacement PTY.
-A terminal-bound pane turn refuses host typing explicitly; it does not silently
-fall through to an isolated shell or a different target.
+A terminal-bound pane turn targets only its bound host terminal, under the host
+rules below; when that terminal cannot take the command it refuses with the
+reason and never falls through to an isolated shell or a different target.
 
 `terminal_read` inventories and reads only the invoking conversation's existing
 isolated PTY. Targeted reads and continuations retain exact internal identity,
@@ -1846,10 +1853,13 @@ cancelling a waiter is not process-cleanup proof.
 
 Unavailable confinement refuses without host/foreign fallback while the host
 shell remains usable. The current Windows isolated interactive backend cannot
-attest this contract. Supported host-shell integration is a separate capability;
-PowerShell (pwsh and Windows PowerShell), cmd, fish and nu have no host
-integration in this delivery and receive no agent-typing claim. pwsh
-integration moves to the host-typing delivery, with native Windows verification.
+attest this contract. Supported host-shell integration is a separate capability:
+zsh, bash and pwsh (PowerShell 7) have it; Windows PowerShell, cmd, fish and nu
+do not and receive no agent-typing claim. pwsh integration attests prompts,
+directories and exits, but PSReadLine documents no bracketed paste, so its
+prompts report `Paste=0` and agent typing refuses them (`no-bracketed-paste`).
+On Windows the host shell is `COMSPEC`; pwsh integration applies when it names
+`pwsh.exe`.
 
 Existing one-shot shell tools retain their explicit approved host/outside-sandbox
 execution route. Their inline badge reflects the actual execution mode: an
@@ -1857,24 +1867,61 @@ unconfined command shows host execution rather than claiming isolation. Every
 persistent conversation PTY remains confined; approving a one-shot host command
 does not permit typing into a user's host terminal.
 
-### Pending host command control
+### Host command control
 
-Host approval and takeover remain a later delivery from main after the terminal
-ownership foundation and the execution-route transport change are integrated.
-The intended boundary is one exact command at a time from the terminal's own
-user-origin pane-chat turn, verified locally and sealed to command bytes,
-physical cwd, shell kind, PTY incarnation and control generation. It must not
-use similar-command auto-approval, remembered-session grants, full-buffer
-sharing or an active-tab fallback. Take over must revoke queued writes and
-output admission before user input; hand back cannot revive stale approvals or
-partial input. Only the approved command's authenticated control-period output
-may return to its requesting turn. None of this enables host typing now.
+A workspace pane chat bound to a host terminal (the pane binding, for that exact
+conversation, never a parent or an active tab) may ask `terminal_run` to type
+one command into that terminal. Main owns the boundary
+([host-terminal-control.ts](../../src/main/terminal/host-terminal-control.ts),
+[terminal-run.ts](../../src/tools/terminal-run.ts)):
+
+- **Target.** The mount must declare purpose `workspace`; every spawn and replay
+  declares `workspace` or `side-panel`, and a move to the side panel revokes any
+  lease. Trust limit: the purpose comes from the host renderer, which already
+  holds raw-input authority over that PTY. The shell must be zsh or bash with
+  authenticated integration; a shell with no prompt marker yet (for example while
+  `compinit` runs) refuses with that reason. Typing needs a fresh attested empty
+  prompt with bracketed paste, the exact incarnation, the pane binding and the
+  control lease below.
+- **Decision.** The command is the bash rule subject in the shell's physical
+  directory, checked against the operating system (device and inode). Bash
+  deny/ask rules and every floor apply unchanged. No `Bash(...)` allow, mode,
+  remembered decision or reviewer allows it: the only allow is an exact
+  `HostTerminal(<shell> <JSON cwd> <command>)` rule, allow-only, naming the same
+  shell, the same canonical directory and the identical literal command. Without
+  one, a person decides in every mode, on a desktop-only card that names the
+  terminal, shell and directory and warns that output returns to the model. The
+  card is never offered to remote or away responders, a non-native answer is
+  rejected, a timeout denies once, and headless refuses. Its lasting choice saves
+  only that exact `HostTerminal` rule; there is no session allow and no approval
+  memory. An allow reaching the host path without that plain-shell exact decision
+  is a contract error.
+- **Execution recheck.** Before typing, main rechecks the session, binding,
+  incarnation, shell, control generation, the shell's reported directory and its
+  device/inode. Any change refuses.
+- **Control lease.** Admission takes one generation-bound agent lease. Every
+  agent byte passes the lease check at the final PTY write. Any user input
+  (except an exact emulator reply), **Take over**, **Stop**, a purpose change, a
+  lost binding or the shell's exit revokes it synchronously, before the user's
+  bytes reach the shell. Stop also sends one Ctrl-C, only while the lease's block
+  is still running. After a take-over the agent cannot type again until the user
+  presses **Hand back** at an empty attested prompt after a quiet period; hand
+  back resumes nothing.
+- **Disclosure.** Output is attributed at PTY receipt: only bytes that arrive
+  while the lease holds enter that command's span, at most 96K characters (the
+  newest kept), and a revocation drops the undelivered parser tail. The exit code
+  is returned only when the authenticated exit marker arrived under the lease.
+  The span returns only to the requesting conversation (`terminal_read`
+  continuations by block id); at most 8 spans are kept per incarnation. If the
+  shell runs a different command or directory than approved, disclosure stops,
+  the mismatch is audited and the terminal is taken over. Bytes already written
+  to the operating system cannot be retracted.
 
 The interaction comparison is [Warp's take-over controls and
 optional auto-approval](https://docs.warp.dev/agents/capabilities/agent-profiles-permissions/).
-The useful comparison is visible control transfer. Ave's planned host path
-requires exact command admission and bounded output disclosure; it does not
-adopt auto-approval or full terminal-buffer sharing.
+The useful comparison is visible control transfer. Ave's host path requires
+exact command admission and bounded output disclosure; it does not adopt
+auto-approval or full terminal-buffer sharing.
 
 Agent-written-file execution warnings, the inline warning/review panel and
 hash-based file reviews are separately deferred, together with expanded isolated

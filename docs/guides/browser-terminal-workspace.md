@@ -169,18 +169,20 @@ runtime evidence before claiming a resource-use improvement.
 ## Host terminals and isolated conversation shells
 
 Visible terminals have no lane selector. Each workspace or side-work-panel terminal contains one native
-shell, labeled **My terminal (host) · No agent access**. It uses your real HOME,
+shell. In the side work panel it is labeled **My terminal (host) · No agent
+access**; in a workspace pane it is labeled **My terminal (host) · Agent commands
+need your approval**. It uses your real HOME,
 profile and validated initial directory. Moving or hiding the pane preserves its
 shell; closing the terminal tab ends that host shell.
 
-zsh and bash use authenticated hooks installed through a temporary
+zsh, bash and pwsh use authenticated hooks installed through a temporary
 startup directory, without replacing your HOME or modifying your startup files.
 The wrapper sources your actual startup files before installing its hooks and
-preserves their environment semantics, including the original ZDOTDIR. Other
-interpreters (PowerShell, cmd, fish, nu) and integration failures leave the
-configured user shell usable, with integration reported as unavailable. pwsh
-integration is not part of this delivery; it arrives with agent host typing,
-together with native Windows verification.
+preserves their environment semantics, including the original ZDOTDIR; pwsh
+dot-sources your profiles in PowerShell's own order. Other interpreters (Windows
+PowerShell, cmd, fish, nu) and integration failures leave the configured user
+shell usable, with integration reported as unavailable. pwsh prompts have no
+bracketed paste, so the agent cannot type into a pwsh terminal.
 
 The wrapper's first startup step reads the marker nonce into a shell variable
 and deletes its file before any of your startup files run, so a startup file or
@@ -206,6 +208,25 @@ Host scrollback, startup output and your commands remain private. Only your
 explicit block-attachment action shares a selected host block as user-provided,
 untrusted context. Focus, selection, a pane chat or a tool call does not share
 it. Side-work-panel host terminals have no agent read/write access.
+
+<a id="agent-commands-in-your-terminal"></a>
+
+### Agent commands in your terminal
+
+The chat in a workspace terminal's own pane can ask to run a command in that
+terminal. Unless you saved an exact rule for that command, shell and folder, you
+decide each command on an approval card that names the terminal, shell and
+folder; your permission mode does not approve it for you, and nothing is
+approved while you are away or from another device. **Always allow** saves only
+that exact command in that folder for that shell.
+
+While the agent types or runs the command, a strip above the terminal shows it
+with **Take over** and **Stop**. Typing anything, pressing Take over or Stop,
+moving the terminal to the side panel, or closing the pane's chat binding ends
+the agent's control immediately; Stop also interrupts the command once. After a
+take-over, clear or run the line and press **Hand back** before the agent can run
+its next approved command. Only the output that arrived while the agent held
+control returns to the chat that asked for it.
 
 An ordinary conversation owns its own **Agent (isolated)** persistent shell,
 with a disposable HOME and existing filesystem/process confinement. Each
