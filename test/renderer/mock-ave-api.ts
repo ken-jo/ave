@@ -203,7 +203,7 @@ export const DEFAULT_APP_INFO = {
 function makeTerminalDouble() {
   const dataListeners = new Set<(payload: TerminalDataEvent) => void>();
   return {
-    spawn: vi.fn(async ({ tabId, lane }: TerminalRef) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane) })),
+    spawn: vi.fn(async ({ tabId, lane }: TerminalRef) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" })),
     input: vi.fn(async () => ({ ok: true })),
     resize: vi.fn(async () => ({ ok: true })),
     kill: vi.fn(async () => ({ ok: true })),
@@ -214,6 +214,7 @@ function makeTerminalDouble() {
     onExit: vi.fn(() => () => {}),
     onControl: vi.fn(() => () => {}),
     control: vi.fn(async () => ({ ok: true, control: { mode: "available", generation: 0, agentInput: "supported" } })),
+    listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { cwd: "/", latestBlockId: null, files: [], warnings: [] } })),
     listBlocks: vi.fn(async (ref: TerminalSessionRef) => ({ ok: true, session: terminalSessionFixture(ref.tabId, ref.lane, ref.terminalSessionId), blocks: [], integrated: false })),
     getBlock: vi.fn(async () => ({ ok: false, error: "no-block" })),
     /** Not part of the surface: what the main process's PTY output would do. */

@@ -1,3 +1,4 @@
+import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
 import { constants, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -11,7 +12,6 @@ import {
   rename,
   stat,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import {
   dirname,
@@ -543,8 +543,9 @@ async function requireFreshRead(
   return { ok: true, value: { sessionId, key } };
 }
 
-/** After an edit tool's own write, the model has seen the new content. */
-async function recordOwnWrite(sessionId: string, target: string, content: string): Promise<void> {
+/** After an edit tool's own write, the model has seen the new content; `identity` is what the write's descriptor saw. */
+async function recordOwnWrite(sessionId: string, target: string, content: string, before: string | null | undefined, identity: WrittenFileIdentity | undefined): Promise<void> {
+  await terminalFileEvidence.recordWrite(sessionId, target, before, identity);
   const written = await stat(target);
   recordFileRead(sessionId, await fileReadKey(target), {
     mtimeMs: written.mtimeMs,
@@ -1061,8 +1062,8 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     const after = input.content;
 
     await mkdir(dirname(target), { recursive: true });
-    await atomicTextWrite(target, after);
-    if (readSession !== undefined) await recordOwnWrite(readSession, target, after);
+    const written = await atomicTextWrite(target, after);
+    if (readSession !== undefined) await recordOwnWrite(readSession, target, after, skipSidecar ? undefined : existing.value === null ? null : before, written);
 
     const sessionId =
       typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
@@ -1172,8 +1173,8 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
     const next = input.replaceAll
       ? current.split(oldText).join(newText)
       : current.replace(oldText, () => newText);
-    await atomicTextWrite(target, next);
-    await recordOwnWrite(fresh.value.sessionId, target, next);
+    const written = await atomicTextWrite(target, next);
+    await recordOwnWrite(fresh.value.sessionId, target, next, bytes.toString("utf8"), written);
     return {
       output: JSON.stringify({ path: target, replacements: input.replaceAll ? occurrences : 1 }),
       isError: false,
@@ -1261,8 +1262,8 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
         : next.replace(oldText, () => newText);
     }
 
-    await atomicTextWrite(target, next);
-    await recordOwnWrite(fresh.value.sessionId, target, next);
+    const written = await atomicTextWrite(target, next);
+    await recordOwnWrite(fresh.value.sessionId, target, next, undefined, written);
     return {
       output: JSON.stringify({ path: target, replacements: totalReplacements }),
       isError: false,
@@ -1406,12 +1407,12 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
       }
       const written = change.kind === "add" ? change.path : change.destination;
       await mkdir(dirname(written), { recursive: true });
-      await atomicTextWrite(written, change.content);
+      const identity = await atomicTextWrite(written, change.content);
       if (change.kind === "update" && change.destination !== change.path) {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
         await checkpointFileMutation([{ path: change.path, content: null }], () => unlink(change.path));
       }
-      if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content);
+      if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content, undefined, identity);
       summary.push(
         change.kind === "update" && change.destination !== change.path
           ? `${PATCH_CHANGE_LETTER.update} ${change.path} -> ${change.destination}`
@@ -1488,7 +1489,8 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
     if (!sourceStat.value.isFile()) {
       return toolError(`move_file requires a regular source file: ${source}`);
     }
-    return checkpointFileMutation([
+    let moved: WrittenFileIdentity | undefined;
+    const result = await checkpointFileMutation([
       { path: source, content: null },
       { path: destination, copyFrom: source },
     ], async () => {
@@ -1499,10 +1501,19 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
         if (destinationStat.value && !destinationStat.value.isFile()) {
           return toolError(`move_file destination is not a regular file: ${destination}`);
         }
-        await rename(source, destination);
+        // The rename moves the inode this descriptor holds; a source replaced before the rename moves another file,
+        // which the evidence then refuses.
+        const held = await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try {
+          moved = writtenFileIdentity(await held.stat({ bigint: true }));
+          noteOwnedWrite(destination, moved);
+          await rename(source, destination);
+        } finally { await held.close(); }
       } else {
-        const moved = await noClobberMoveFile(source, destination);
-        if (!moved.ok) return moved.error;
+        // copyFile creates the destination without a descriptor Ave holds, so the evidence records no identity.
+        const copied = await noClobberMoveFile(source, destination);
+        if (!copied.ok) return copied.error;
+        noteOwnedWrite(destination, undefined);
       }
       return {
         output: JSON.stringify({ sourcePath: source, destinationPath: destination }),
@@ -1510,6 +1521,9 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
         metadata: { sourcePath: source, destinationPath: destination },
       };
     });
+    const sessionId = sessionIdOf(ctx);
+    if (sessionId !== undefined && !result.isError) await terminalFileEvidence.recordWrite(sessionId, destination, undefined, moved);
+    return result;
   }
 }
 
@@ -1928,15 +1942,25 @@ function temporaryWritePath(target: string): string {
   return `${target}.ave-tmp-${process.pid}-${randomUUID()}`;
 }
 
-async function atomicTextWrite(target: string, content: string): Promise<void> {
+/** Writes `content` to `target` through a temporary file, returning the identity its own descriptor saw. */
+async function atomicTextWrite(target: string, content: string): Promise<WrittenFileIdentity | undefined> {
   return checkpointFileMutation([{ path: target, content }], () => writeTextAtomically(target, content));
 }
 
-async function writeTextAtomically(target: string, content: string): Promise<void> {
+async function writeTextAtomically(target: string, content: string): Promise<WrittenFileIdentity | undefined> {
   const temp = temporaryWritePath(target);
   try {
-    await writeFile(temp, content, "utf8");
+    // The descriptor that wrote the bytes names the file; the rename moves that inode to the target. Anything that
+    // replaces the temporary path or the target in between is a different inode, which the evidence then refuses.
+    const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o666);
+    let identity: WrittenFileIdentity | undefined;
+    try {
+      await handle.writeFile(content, "utf8");
+      identity = writtenFileIdentity(await handle.stat({ bigint: true }));
+    } finally { await handle.close(); }
+    noteOwnedWrite(target, identity);
     await renameWithTransientRetry(temp, target);
+    return identity;
   } catch (err) {
     try {
       await unlink(temp);

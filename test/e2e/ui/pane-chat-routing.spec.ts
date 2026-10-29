@@ -52,6 +52,8 @@ test("pane-bound sidebar row reveals its terminal and chat without opening the r
     // Session hydration selects the parent after layout restoration; the terminal stays live in the surface inventory.
     const surfaceRow = page.getByTestId(`sidebar-surface-${tabId}`);
     await expect(surfaceRow).toBeVisible();
+    await expect(page.getByTestId(`sidebar-surface-chats-${tabId}`).getByTestId(`sidebar-session-${sideId}`)).toBeVisible();
+    await expect(page.getByTestId(`sidebar-session-${sideId}`)).toHaveCount(1);
     await surfaceRow.click();
     await expect(page.locator(`[data-testid="surface-pane"][data-tab-id="${tabId}"]`)).toBeVisible();
     await page.getByTestId(`sidebar-session-${parentId}`).click();

@@ -344,8 +344,19 @@ describe("TerminalBlockTracker — marker nonce", () => {
     for (let i = 0; i < shown.length; i += 5) display += tracker.recordOutput(shown.slice(i, i + 5));
     expect(display).not.toContain(NONCE);
     expect(display).toBe(
-      `${osc("133;A")}$ ${osc("133;B")}ls\r\n${osc("133;C")}${ESC}[32ma${ESC}[0m\r\n${osc("133;D;0")}${osc("133;D")}`,
+      `${osc("133;A")}$ ${osc("133;B")}ls\r\n${osc(`133;C;ave-block=1;ave-view=${tracker.viewToken}`)}${ESC}[32ma${ESC}[0m\r\n${osc("133;D;0")}${osc("133;D")}`,
     );
+  });
+
+  it("names the block on an authenticated C for the view and drops a program's forged block field", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    let display = tracker.recordOutput(`${mark("A")}$ ${mark("C;cmdline_url=make%20build")}`);
+    expect(display).toBe(`${osc("133;A")}$ ${osc(`133;C;ave-block=1;ave-view=${tracker.viewToken}`)}`);
+    display = tracker.recordOutput(`${osc("133;C;ave-block=9")}out\r\n${mark("D;0")}${mark("A")}$ ${mark("C;cmdline_url=ls")}`);
+    expect(display).toBe(`out\r\n${osc("133;D")}${osc("133;A")}$ ${osc(`133;C;ave-block=2;ave-view=${tracker.viewToken}`)}`);
+    expect(tracker.viewToken).toMatch(/^[0-9a-f]{32}$/u);
+    expect(new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true }).viewToken).not.toBe(tracker.viewToken);
+    expect(tracker.list().map((block) => [block.id, block.command])).toEqual([[2, "ls"], [1, "make build"]]);
   });
 
   it("refuses an empty nonce", () => {

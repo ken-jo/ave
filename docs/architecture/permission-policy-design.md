@@ -249,8 +249,19 @@ remain bounded by source length. A Lane A character, data, token or structural
 limit stops analysis with a foreground modal/L2 or headless deny. No rule, saved
 grant, mode or reviewer satisfies either refusal. Identified floors retain their
 precedence over ordinary reasons.
-Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
-requirements keep their own authority.
+Hard denies, credential-exfiltration and sensitive-path floors, analysis limits,
+scoped floors, explicit ask rules, origin and explicit host-execution requirements
+retain their authority. When the invocation actually uses a host shell confinement plan,
+auto mode with an enabled judging foreground reviewer routes destructive and runtime
+unproven floors to foreground review at L2. Other modes, auto approval set to off,
+and unsandboxed execution retain per-call human approval; headless unproven input
+denies. Disabled review and disposable guests retain human-only floors. The
+host shell sandbox confines writes to the workspace's admitted write scope and
+egress to the proxy, so the reviewer can assess the full command within those
+boundaries. Disposable guests have their own network policy; their egress is not
+claimed as proxy-confined and does not qualify for this route. The recursive
+container-traversal gate still requires a person before any floor review. This
+does not establish static proof or a reusable allow rule.
 
 Decision cost is bounded by structural limits, not elapsed time or a work-step
 verdict. The floor derives immutable facts for each source node and literal token
@@ -853,12 +864,34 @@ each admitted write root, taking precedence over grants:
 - `.bashrc`, `.zshrc`, `.profile`, `.bash_profile` and `.zprofile`;
 - `.gitconfig` and the repository control paths defined below;
 - `.vscode/**`;
+- `.envrc`, `.mise.toml`, `mise.toml`, `.tool-versions`, `.npmrc`, `.yarnrc.yml`,
+  `bunfig.toml` and `.husky/**`;
+- configured `core.hooksPath` directories, including absent targets and their
+  physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with
   paths derived from their owning stores rather than copied filenames.
 
 The Windows MXC PowerShell container receives the same denies from the same
 policy builder: an existing protected entry inside a write grant becomes
 read-only and an absent one is denied, so it cannot be created.
+
+Loader denies apply to isolated processes through the common filesystem policy,
+including the persistent conversation shell and worker confinement when enabled.
+They do not interpose on commands the user types into a host terminal. Existing
+loader trust prompts remain independent of these write denies. Hook discovery
+reads bounded regular configuration files without running repository programs.
+It includes repository ancestry, linked-worktree/common configuration, inherited
+home/XDG/system configuration and explicit configuration-file environment
+overrides. Conditional includes are conservatively included regardless of their
+current condition. Configuration sources, include sources, configured hook
+directories and physical aliases remain protected; relative hook paths cover
+both the worktree and metadata working directories. Unsupported path interpolation,
+named-home expansion, invalid escapes and exhausted read/include budgets refuse
+policy preparation instead of leaving an unknown target writable. Conventional
+system locations and explicit overrides are inspected; custom compiled-in system
+configuration prefixes require an explicit system-config override. The Unix
+loader paths retain creation protection on Linux rather than using its special
+Git-metadata quarantine exception.
 
 The existing sensitive-write floor owns real-home startup-file protection; the
 root-relative policy does not maintain a second real-home filename list.
@@ -1986,12 +2019,88 @@ The useful comparison is visible control transfer. Ave's host path requires
 exact command admission and bounded output disclosure; it does not adopt
 auto-approval or full terminal-buffer sharing.
 
-Agent-written-file execution warnings, the inline warning/review panel and
-hash-based file reviews are separately deferred, together with expanded isolated
-loader-file denies for `.envrc`, `.mise.toml`, `.tool-versions` and
-`.npmrc`. That independent follow-up starts from main after the ownership
-foundation and does not depend on host control. Existing deny floors and checks
-below remain unchanged; these warnings are not delivered permission authority.
+### Agent-changed file review
+
+Host terminals, including the agent-inaccessible side-work-panel terminal, show
+an advisory inline warning when a command uses a file with concrete successful
+agent-write evidence from this application session. Direct scripts and sourced
+files, target recipes in makefiles, package scripts and their referenced scripts,
+and physical local-bin entry points (only where a package runner puts them on
+PATH) are matched conservatively. A runner matches only in a proven executing
+form: every option before the operand is on a short per-runner list, and an
+option that takes a value has one the list validates (a shell's `-o errexit`,
+`make -j N` with a positive count, `-s`, `-C dir`, `-f file`, `--silent`
+before a package runner's subcommand, `npx --no-install`). A package runner
+given `--version`, `-v`, `--help` or `-h` anywhere in its arguments runs no
+script, and a command word is looked up only among the listed runners, never
+among object properties. Any other option or value, including dry runs,
+version or help output, syntax checks, preloads and variable assignments, is
+uncertain and never a positive match: precision wins over recall. The command
+continues without a confirmation dialog. Only a positive match to at least one
+agent-changed file warns: commands with no file reference, shell-integration and
+prompt internals, and unresolved dynamic indirection never do. The warning is
+an inline annotation on the matched command's own row, drawn as a renderer-only
+terminal decoration after the command text like a trailing shell comment. Main
+names each authenticated command block on the C marker it regenerates for the
+view, together with a per-terminal view token it hands only to the renderer and
+never to the shell; the renderer anchors nothing without that token, so program
+output cannot forge an anchor in any OSC encoding. Nothing is written to the
+shell, the PTY or the terminal buffer, so no rows are taken and the annotation
+scrolls with its block until its row leaves the scrollback. The annotation
+starts after the command text, measured in cells, and never covers it: on a
+long command row it shrinks to the warning and its button, then to the warning
+glyph alone, and a row the command fills gets none (the badge still counts the
+file). Only the latest command that matched offers [view changes]; earlier
+matches remain as dim history text, and later commands that matched nothing
+leave the button where it is. The changes view carries one static note that
+detection is best-effort; subprocess writes without concrete path evidence and
+dynamic indirection are not claimed covered. Provenance is advisory and is
+never permission or terminal authority.
+
+The agent-changed badge appears once, in the terminal's header or tab, and
+counts the agent-changed files this terminal's commands used. The badge and
+[view changes] open the terminal's 변경 파일 (changed files) view with the clicked
+file selected; no panel is drawn inside the terminal's output. In a workspace
+pane the view is a tab of the pane's work panel, next to the pane's chat: the
+same docked column, card and push-aside layout as a conversation pane's work
+panel. A side-work-panel terminal shows it in place of the shell, with a way
+back; the PTY outlives the switch. The view reuses the conversation's change
+UI (the file tree's rows, `TurnChangeDetail` and `FileEditDiff`) in a
+matched-only mode: it lists exactly the files main delivered, with no filter,
+no folder browsing and no workspace listing call, so it cannot reach a path the
+terminal never executed. Each file's text is bounded at 1 MiB and a snapshot's
+review text at 4 MiB in all; files past that are listed without a diff. Main sends
+each file's change as a turn-review entry built against the recorded
+baseline, and a file without one shows that its diff is unavailable: this view
+never falls back to reading the file. There is no review or acknowledgement state:
+the change has already happened, so the count follows the set of changed files
+and never drops on a user action. Canonical physical paths retain session
+attribution across symlink aliases and delete/restore. Each attributed write
+records the identity (device, inode, birth time) that fstat gives on the
+writer's own descriptor: the atomic text write's temporary file (whose inode the
+rename moves), the source descriptor `move_file` holds across its rename, or the
+descriptor an owned transfer created the file with. The path is never re-opened
+to identify it, so a swap between the write and its recording cannot enter the
+ledger. A write with no descriptor to report (a no-clobber copy, a document
+app's save, any other mutation) records no identity and shows no diff. The diff
+reads only through a non-following open whose descriptor has the recorded
+identity; it never relies on repeated path checks, so a parent swapped for a
+link at any point, or a save that replaced the inode, shows no diff until the
+agent writes the path again. The baseline (the text before the write) is
+captured only when the read provably came from the file the path names in its
+physical parent: a non-following open whose descriptor's identity equals
+`lstat` of the path before and after the read, with the parent's identity and
+realpath unchanged across it; otherwise no baseline is stored and the change
+has no diff. A parent swapped and swapped back entirely between two of those
+checks is not detectable without `openat`. That residual is accepted because
+review text is display-only: it leaves main only through the terminal's
+fileReviews IPC to the renderer views that draw it, and no tool result, model
+context, observation feed or `terminal_read` path reads it (a static test pins
+this, and the view's reference controls are disabled). At worst the user sees,
+in their own app, text of a file they can already read. Deleting a file does not
+erase its historical evidence. Evidence lives only in memory for the running
+application; restarting clears it. Command use is inferred from command blocks and static
+file contents, rather than proof of operating-system file opens.
 
 ### Isolated shell readiness and command checks
 
@@ -2410,6 +2519,18 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 | Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
 | Auto-review | Uses the reviewer for eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to every eligible call; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
 | Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. Within-cap runtime-dependent, syntactically unproven or unknown/incompletely consumed argv asks at L2 or denies headless; a Lane B pre-analysis cap refusal follows the L6 unsandboxed path. Only a qualifying within-cap literal-evaluation request whose closed grammar consumes every option and operand can use the documented exact-rule exception; a cap refusal never can. Unsandboxed shell execution still requires a current-format exact rule after positive proof. |
+
+For actually confined shell invocations, destructive and runtime-evaluation floor
+asks use the same foreground reviewer eligibility and configured threshold as
+other auto-mode calls. The original permission decision supplies the floor reason through the existing
+rule-verdict context
+alongside the full command; review assesses the text without executing runtime
+expansions. Destructive compounds are at least MEDIUM in rule review, including
+when model review degrades to rules. LOW/MEDIUM verdicts pass only through the configured
+threshold; HIGH asks a person. These confined builtin shell floor calls bypass remembered approvals and
+verdict-cache reuse, never seed a verdict cache or reusable rule, and retain
+per-call approval when review asks a person or is unavailable. Credential and
+sensitive-path floors remain mandatory human decisions.
 
 ## Foreground And Headless Behavior
 

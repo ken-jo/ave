@@ -1,9 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentObservationFixture } from "../../__tests__/support/agent-observation.js";
+import { reviewChange } from "../../__tests__/support/terminal-session-fixtures.js";
 
+import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity } from "../../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation } from "../../memory/code-checkpoints.js";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
 import type { ObservationIdentity } from "../../shared/agent-observation.js";
@@ -316,6 +318,25 @@ describe("agent document observation context", () => {
     expect(sink.beforeMutation).toHaveBeenCalledExactlyOnceWith(IDENTITY, [{ path, content: "after" }]);
     expect(sink.revokeInvocation).toHaveBeenCalledExactlyOnceWith(IDENTITY);
     expect(finishMutation).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it("retains successful write evidence when observer finalization fails", async () => {
+    const path = join(directory, "run.sh");
+    await writeFile(path, "before");
+    finishMutation.mockImplementation(async () => { throw new Error("observer finalization failed"); });
+    await expect(admitted(() => checkpointFileMutation([{ path, content: "after" }], async () => {
+      const handle = await open(path, "w");
+      try { await handle.writeFile("after"); noteOwnedWrite(path, writtenFileIdentity(await handle.stat({ bigint: true }))); }
+      finally { await handle.close(); }
+    })))
+      .rejects.toThrow("observer finalization failed");
+    // The evidence lists a changed file once a command of the terminal uses it.
+    const snapshot = await terminalFileEvidence.snapshot(directory, [{ id: 1, command: "./run.sh", cwd: directory, startedAt: Date.now() + 1_000,
+      endedAt: null, exitCode: null, status: "running", source: "osc133", outputChars: 0, truncated: false }]);
+    const canonical = await realpath(path);
+    const entry = snapshot.files.find(file => file.path === canonical);
+    expect(entry).toMatchObject({ sessionIds: [IDENTITY.sessionId] });
+    expect(reviewChange(entry)).toEqual({ operation: "modify", hunks: [["before", "after"]] });
   });
 
   it("does not execute a mutation after its observation admission fails", async () => {

@@ -192,26 +192,18 @@ async function runChildToolCall(options: {
   }
 }
 
+function eligibilityCase(options: Parameters<typeof runChildToolCall>[0], eligible: boolean) {
+  return async () => {
+    const run = await runChildToolCall({ provenance: false, ...options });
+    expect(run.requests[0]?.parentAdjudicationEligible).toBe(eligible);
+  };
+}
+
 describe("the eligibility the lane asserts", () => {
-  it("asserts it for a layer-3 ask that carries a tier-1 verdict", async () => {
-    const run = await runChildToolCall({ provenance: false });
-    expect(run.requests[0]?.parentAdjudicationEligible).toBe(true);
-  });
-
-  it("withholds it when policy already forced a modal", async () => {
-    const run = await runChildToolCall({ provenance: false, forceModal: true });
-    expect(run.requests[0]?.parentAdjudicationEligible).toBe(false);
-  });
-
-  it("withholds it when there is no tier-1 verdict to refine", async () => {
-    const run = await runChildToolCall({ provenance: false, verdict: false });
-    expect(run.requests[0]?.parentAdjudicationEligible).toBe(false);
-  });
-
-  it("withholds it below layer 3", async () => {
-    const run = await runChildToolCall({ provenance: false, layer: 2 });
-    expect(run.requests[0]?.parentAdjudicationEligible).toBe(false);
-  });
+  it("asserts it for a layer-3 ask that carries a tier-1 verdict", eligibilityCase({}, true));
+  it("withholds it when policy already forced a modal", eligibilityCase({ forceModal: true }, false));
+  it("withholds it when there is no tier-1 verdict to refine", eligibilityCase({ verdict: false }, false));
+  it("withholds it below layer 3", eligibilityCase({ layer: 2 }, false));
 });
 
 describe("what happens after the parent answers", () => {

@@ -69,6 +69,12 @@ function foregroundCtx(sessionId = "session-x"): ToolExecutionContext {
   return { ...base, metadata };
 }
 
+function unansweredQuestionTool() {
+  return createAskUserQuestionTool({
+    getGate: () => ({ ask: () => Promise.resolve({ requestId: "r", answers: [] }) }) as never,
+  });
+}
+
 describe("ask_user_question tool", () => {
   it("rejects when gate is missing", async () => {
     const tool = createAskUserQuestionTool({ getGate: () => undefined });
@@ -80,21 +86,13 @@ describe("ask_user_question tool", () => {
   });
 
   it("rejects empty questions[]", async () => {
-    const tool = createAskUserQuestionTool({
-      getGate: () => ({
-        ask: () => Promise.resolve({ requestId: "r", answers: [] }),
-      }) as never,
-    });
+    const tool = unansweredQuestionTool();
     const r = await tool.execute({ questions: [] }, ctx());
     expect(r.isError).toBe(true);
   });
 
   it("rejects when any questions[].question is blank", async () => {
-    const tool = createAskUserQuestionTool({
-      getGate: () => ({
-        ask: () => Promise.resolve({ requestId: "r", answers: [] }),
-      }) as never,
-    });
+    const tool = unansweredQuestionTool();
     const r = await tool.execute(
       { questions: [{ question: "  " }] },
       ctx(),
@@ -103,11 +101,7 @@ describe("ask_user_question tool", () => {
   });
 
   it("rejects a question that offers no way to answer", async () => {
-    const tool = createAskUserQuestionTool({
-      getGate: () => ({
-        ask: () => Promise.resolve({ requestId: "r", answers: [] }),
-      }) as never,
-    });
+    const tool = unansweredQuestionTool();
     const missing = await tool.execute({ questions: [{ question: "Pick" }] }, ctx());
     expect(missing.isError).toBe(true);
     expect(missing.output).toContain("choices array");
@@ -270,11 +264,7 @@ describe("ask_user_question tool", () => {
   });
 
   it("rejects when more than 4 questions are supplied", async () => {
-    const tool = createAskUserQuestionTool({
-      getGate: () => ({
-        ask: () => Promise.resolve({ requestId: "r", answers: [] }),
-      }) as never,
-    });
+    const tool = unansweredQuestionTool();
     const r = await tool.execute(
       {
         questions: Array.from({ length: 5 }, (_, i) => ({ question: `q${i}` })),

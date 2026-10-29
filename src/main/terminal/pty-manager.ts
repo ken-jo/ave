@@ -411,7 +411,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
     if (existing.ring.length > 0 || existing.hostNotices.length > 0) {
       emitTerminal("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${existing.ring.join("")}` }, existing.ownerWindowId);
     }
-    return Promise.resolve({ ok: true, tabId, replayed: true, session: sessionInfo(existing) });
+    return Promise.resolve({ ok: true, tabId, replayed: true, session: sessionInfo(existing), blockMarkerToken: existing.blocks.viewToken });
   }
 
   // Reserve the tab before the first async boundary. Concurrent renderer IPC calls for one tab must share the
@@ -783,7 +783,7 @@ async function spawnNewTerminal(
     owner.cleanupResources = undefined;
     cleanups.length = 0;
     log.info({ tabId, cwd, cols, rows, pid: pty.pid }, "terminal: spawned sandboxed PTY");
-    return { ok: true, tabId, replayed: false, session: sessionInfo(session) };
+    return { ok: true, tabId, replayed: false, session: sessionInfo(session), blockMarkerToken: session.blocks.viewToken };
   } catch (err) {
     // Reverse acquisition order detaches listeners before killing the PTY; each release is shared with cancellation and any late setup result.
     disposeResources();
@@ -890,7 +890,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     if (logical && logical.ownerWindowId === session.ownerWindowId) logical.initialCwd = cwd;
     registered = true;
     owner.cleanupResources = undefined;
-    return { ok: true, tabId, replayed: false, session: sessionInfo(session) };
+    return { ok: true, tabId, replayed: false, session: sessionInfo(session), blockMarkerToken: session.blocks.viewToken };
   } catch (error) {
     cleanup();
     return { ok: false, reason: "spawn-failed", message: errorMessage(error) };

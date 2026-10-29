@@ -57,6 +57,7 @@ class FakeBrowserWindow extends FakeEmitter {
   private _destroyed = false;
   private _minimized = false;
   public setMenu = vi.fn();
+  public setTitleBarOverlay = vi.fn();
   public isDestroyed = vi.fn(() => this._destroyed);
   public isMinimized = vi.fn(() => this._minimized);
   public restore = vi.fn(() => { this._minimized = false; });
@@ -84,6 +85,7 @@ vi.mock("electron", () => {
   }
   return {
     BrowserWindow: MockBrowserWindow,
+    nativeTheme: { shouldUseDarkColors: false, on: vi.fn(), off: vi.fn() },
     WebContentsView: class {
       webContents = new FakeWebContents();
       setBounds = vi.fn();
@@ -119,11 +121,6 @@ vi.mock("../window-chrome.js", () => ({ getCommonChromeOptions: vi.fn(() => ({})
 vi.mock("../../ipc/domains/window.js", () => ({ registerWindowEventListeners: vi.fn() }));
 vi.mock("../../ipc/window-control-registry.js", () => ({ markAsWindowControlOwned: vi.fn() }));
 vi.mock("../auth-window-registry.js", () => ({ markAsAuthOwned: vi.fn() }));
-vi.mock("../window-titlebar-shell.js", () => ({
-  buildTitlebarCss: vi.fn(() => ""),
-  buildTitlebarHtml: vi.fn(() => ""),
-  buildTitlebarButtonScript: vi.fn(() => ""),
-}));
 vi.mock("../app-icon.js", () => ({ resolveAppIconPath: vi.fn(() => undefined) }));
 vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
@@ -309,6 +306,8 @@ describe("host OAuth auth window", () => {
       const contents = decision.createWindow({ ...decision.overrideBrowserWindowOptions, webContents: supplied });
       expect(contents).toBe(supplied);
       const popup = constructed.at(-1)!;
+      expect(popup.options).toMatchObject({ titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden" });
+      expect(popup.views[0].setBounds).toHaveBeenCalledWith({ x: 0, y: 36, width: 1024, height: 732 });
       expect(popupContents(popup)).toBe(contents);
       return popup;
     }
@@ -322,14 +321,17 @@ describe("host OAuth auth window", () => {
   function shellState(win: FakeBrowserWindow) {
     const html = decodeURIComponent(win.loadURL.mock.calls.at(-1)![0]);
     const listeners = new Map<string, (event: Record<string, unknown>) => void>();
-    const uri = { value: "" };
-    const security = { textContent: "", dataset: { security: "" } };
+    const uriListeners = new Map<string, (event: Record<string, unknown>) => void>();
+    const uri = { title: "", addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => uriListeners.set(name, callback) };
+    const parts = { "oauth-domain": { textContent: "" }, "oauth-status": { textContent: "" } };
+    const security = { title: "", innerHTML: "", setAttribute: vi.fn(), dataset: { security: "" } };
     const view = { setAttribute: vi.fn(), addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => listeners.set(name, callback) };
     const context = {
-      document: { title: "", getElementById: (id: string) => ({ "auth-view": view, "oauth-uri": uri, "oauth-security": security })[id] },
+      URL,
+      document: { title: "", getElementById: (id: string) => ({ "auth-view": view, "oauth-uri": uri, "oauth-security": security, ...parts })[id] },
     };
     runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], context);
-    return { uri, security, listeners, context };
+    return { uri, security, listeners, context, parts, uriListeners };
   }
 
   describe.each(["oauth", "cookie"] as const)("shared %s window", lane => {
@@ -342,38 +344,84 @@ describe("host OAuth auth window", () => {
       return { pending, finish: async () => { complete(); constructed[0].close(); await pending.catch(() => undefined); } };
     }
 
-    it("keeps the committed identity through starts, redirects, aborts and subframe failures", async () => {
+    it("keeps the visible document identity through starts, redirects, aborts and subframe failures", async () => {
       const attempt = start();
       try {
         const { uri, security, listeners } = shellState(constructed[0]);
-        expect(uri.value).toBe("");
-        expect(security.dataset.security).not.toBe("https");
+        expect(uri.title).toBe("https://auth.example.test/authorize");
+        expect(security.dataset.security).toBe("https");
         const committed = "http://identity.example.test/login";
         listeners.get("did-navigate")!({ url: committed, isMainFrame: true });
         for (const name of ["did-start-navigation", "did-redirect-navigation"]) {
           listeners.get(name)?.({ url: "https://trusted.example.test/", isMainFrame: true });
-          expect(uri.value).toBe(committed);
+          expect(uri.title).toBe(committed);
           expect(security.dataset.security).toBe("http");
         }
         for (const [errorCode, isMainFrame] of [[-3, true], [-105, false], [-202, false]]) {
           listeners.get("did-fail-load")!({ validatedURL: "https://trusted.example.test/", errorCode, isMainFrame });
-          expect(uri.value).toBe(committed);
+          expect(uri.title).toBe(committed);
           expect(security.dataset.security).toBe("http");
         }
+      } finally { await attempt.finish(); }
+    });
+
+    it.each(["https://auth.example.test/", "http://127.0.0.1:8123/"])("renders an accessible security icon with the domain for %s", async base => {
+      const attempt = start();
+      try {
+        const { uri, security, listeners, parts, uriListeners } = shellState(constructed[0]);
+        const url = base + "long-path/".repeat(200);
+        listeners.get("did-start-navigation")!({ url: base, isMainFrame: true });
+        listeners.get("did-navigate")!({ url, isMainFrame: true });
+        expect(uri.title).toBe(url);
+        const setData = vi.fn();
+        const preventDefault = vi.fn();
+        uriListeners.get("copy")!({ clipboardData: { setData }, preventDefault });
+        expect(setData).toHaveBeenCalledWith("text/plain", url);
+        expect(preventDefault).toHaveBeenCalled();
+        expect(parts["oauth-domain"].textContent).toBe(base.startsWith("https:") ? "example.test" : "127.0.0.1");
+        expect(security.innerHTML).toContain('<svg');
+        expect(security.setAttribute).toHaveBeenLastCalledWith("aria-label", t(base.startsWith("https:") ? "oauthWindow.secure" : "oauthWindow.insecure"));
+      } finally { await attempt.finish(); }
+    });
+
+    it.each([
+      ["https://accounts.google.com/o/oauth2/authorize?client_id=fixture#signin", "google.com"],
+      ["https://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:8443/path", "attacker-example.io"],
+      ["https://" + "a".repeat(63) + ".com:8443/path", "a".repeat(63) + ".com"],
+      ["https://signin.accounts.example.co.uk:8443/path", "example.co.uk"],
+      ["https://signin.accounts.example.co.uk.:8443/path", "example.co.uk"],
+      ["https://signin.tenant.github.io/path", "tenant.github.io"],
+      ["http://[::1]:8123/path", "[::1]"],
+      ["http://127.0.0.1:8123/path", "127.0.0.1"],
+      ["http://localhost:8123/path", "localhost"],
+      ["https://co.uk:8443/path", "co.uk"],
+      ["about:blank", "about:blank"],
+    ])("shows only the domain or hostname fallback for %s", async (url, domain) => {
+      const attempt = start();
+      try {
+        const { uri, security, listeners, parts } = shellState(constructed[0]);
+        listeners.get("did-navigate")!({ url, isMainFrame: true });
+        expect(uri.title).toBe(url);
+        expect(parts["oauth-domain"].textContent).toBe(domain);
+        expect(parts["oauth-status"].textContent).toBe(security.title);
+        if (url.startsWith("http:")) expect(security.innerHTML).toContain("m12 2 10 10-10 10L2 12Z");
       } finally { await attempt.finish(); }
     });
 
     it.each([-202, -105])("replaces the shell identity on a main-frame error-page commit (%s)", async errorCode => {
       const attempt = start();
       try {
-        const { uri, security, listeners } = shellState(constructed[0]);
+        const { uri, security, listeners, parts } = shellState(constructed[0]);
         listeners.get("did-navigate")!({ url: "https://identity.example.test/login", isMainFrame: true });
         const failedUrl = "https://failed.example.test/login";
         listeners.get("did-start-navigation")!({ url: failedUrl, isMainFrame: true });
         listeners.get("did-fail-load")!({ validatedURL: failedUrl, errorCode, isMainFrame: true });
-        expect(uri.value).toBe(failedUrl);
+        expect(uri.title).toBe(failedUrl);
         expect(security.dataset.security).toBe(errorCode === -202 ? "certificate-error" : "load-error");
-        expect(security.textContent).toBe(t(errorCode === -202 ? "oauthWindow.certificateError" : "oauthWindow.loadError"));
+        expect(security.title).toBe(t(errorCode === -202 ? "oauthWindow.certificateError" : "oauthWindow.loadError"));
+        expect(security.setAttribute).toHaveBeenLastCalledWith("aria-label", security.title);
+        expect(parts["oauth-status"].textContent).toBe(security.title);
+        expect(security.innerHTML).toContain(errorCode === -202 ? "<circle" : "m12 3 10 18H2Z");
         listeners.get("did-navigate-in-page")!({ url: failedUrl + "#details", isMainFrame: true });
         expect(security.dataset.security).not.toBe("https");
         listeners.get("did-navigate")!({ url: "https://recovered.example.test/", isMainFrame: true });
@@ -406,7 +454,7 @@ describe("host OAuth auth window", () => {
         page.emit("certificate-error", { preventDefault: vi.fn() }, failedUrl, "Certificate failed", {}, rejectSubframe, false);
         page.emit("did-fail-load", {}, -202, "Certificate failed", failedUrl, false);
         page.emit("did-fail-load", {}, -105, "Name not resolved", failedUrl, false);
-        expect(read().uri.value).toBe(committed);
+        expect(read().uri.title).toBe(committed);
         expect(read().security.dataset.security).toBe("https");
         if (failure === "certificate-error") {
           const rejectCertificate = vi.fn();
@@ -415,9 +463,9 @@ describe("host OAuth auth window", () => {
         } else {
           page.emit("did-fail-load", {}, failure, "Navigation failed", failedUrl, true);
         }
-        expect(read().uri.value, String(failure)).toBe(failedUrl);
+        expect(read().uri.title, String(failure)).toBe(failedUrl);
         expect(read().security.dataset.security).toBe(failure === -105 ? "load-error" : "certificate-error");
-        expect(read().security.textContent).toBe(t(failure === -105 ? "oauthWindow.loadError" : "oauthWindow.certificateError"));
+        expect(read().security.title).toBe(t(failure === -105 ? "oauthWindow.loadError" : "oauthWindow.certificateError"));
         expect(page.executeJavaScript).not.toHaveBeenCalled();
       } finally { await attempt.finish(); }
     });
@@ -433,12 +481,12 @@ describe("host OAuth auth window", () => {
       try {
         const { uri, security, listeners } = shellState(constructed[0]);
         listeners.get("did-navigate")!({ url, isMainFrame: true });
-        expect(uri.value).toBe(url);
-        expect(security.textContent).toBe(t("oauthWindow.secure"));
+        expect(uri.title).toBe(url);
+        expect(security.title).toBe(t("oauthWindow.secure"));
         listeners.get("did-fail-load")!({ validatedURL: url, errorCode: -202, isMainFrame: true });
-        expect(security.textContent).toBe(t("oauthWindow.certificateError"));
+        expect(security.title).toBe(t("oauthWindow.certificateError"));
         listeners.get("did-navigate-in-page")!({ url: url + "next", isMainFrame: true });
-        expect(uri.value).toBe(url + "next");
+        expect(uri.title).toBe(url + "next");
         expect(security.dataset.security).toBe("certificate-error");
         listeners.get("did-navigate")!({ url: "https://other.example.test", isMainFrame: false });
         expect(security.dataset.security).toBe("certificate-error");
@@ -467,23 +515,23 @@ describe("host OAuth auth window", () => {
         expect(read().security.dataset.security).toBe("https");
         page.emit("did-start-navigation", {}, "https://trusted.example.test/", false, true);
         page.emit("did-fail-provisional-load", {}, -202, "Certificate failed", "https://trusted.example.test/", true);
-        expect(read().uri.value).toBe(committed);
+        expect(read().uri.title).toBe(committed);
         expect(read().security.dataset.security).toBe("https");
         page.emit("did-redirect-navigation", {}, "https://trusted.example.test/next", false, true);
         page.emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://trusted.example.test/next", true);
-        expect(read().uri.value).toBe(committed);
+        expect(read().uri.title).toBe(committed);
         expect(read().security.dataset.security).toBe("https");
         const rejectCertificate = vi.fn();
         page.emit("certificate-error", { preventDefault: vi.fn() }, committed.split("#", 1)[0], "Certificate failed", {}, rejectCertificate, true);
         await flush(1);
         expect(rejectCertificate).toHaveBeenCalledWith(false);
-        expect(read().uri.value).toBe(committed.split("#", 1)[0]);
+        expect(read().uri.title).toBe(committed.split("#", 1)[0]);
         expect(read().security.dataset.security).toBe("certificate-error");
         commit(committed);
-        expect(read().uri.value).toBe(committed);
+        expect(read().uri.title).toBe(committed);
         expect(read().security.dataset.security).toBe("certificate-error");
         commit(committed + "#step", true);
-        expect(read().uri.value).toBe(committed + "#step");
+        expect(read().uri.title).toBe(committed + "#step");
         expect(read().security.dataset.security).toBe("certificate-error");
         commit("http://identity.example.test/login");
         expect(read().security.dataset.security).toBe("http");
@@ -538,7 +586,7 @@ describe("host OAuth auth window", () => {
       try {
         const win = constructed[0];
         const html = decodeURIComponent(win.loadURL.mock.calls[0][0]);
-        expect(html).toContain('id="oauth-uri" readonly');
+        expect(html).toContain('id="oauth-domain" dir="ltr"');
         expect(html).toContain('id="oauth-security"');
         expect(html).not.toContain("ave-oauth-system-browser:");
         const preferences = { preload: "unsafe.js", preloadURL: "file:///unsafe.js" };
@@ -597,7 +645,7 @@ describe("host OAuth auth window", () => {
       const location = "http://127.0.0.1:12345/callback?code=private";
       page.emit("did-navigate", {}, location);
       const html = decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0]);
-      expect(html).toContain('id="oauth-uri" readonly');
+      expect(html).toContain('id="oauth-domain" dir="ltr"');
       expect(html).toContain(location);
       expect(html).not.toContain("<webview");
       page.emit("did-navigate", {}, "https://invalid.example.test/");

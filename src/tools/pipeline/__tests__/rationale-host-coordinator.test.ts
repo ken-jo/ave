@@ -343,18 +343,7 @@ describe("RationaleHostCoordinator", () => {
   it("requires fresh cache-bypassed reevaluation, one-shot modal, and authentic resume", async () => {
     const state = setup();
     const materialized = materialize(state);
-    const round = await state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "calls",
-        calls: [{
-          id: "rationale-call-1",
-          name: "permission_rationale",
-          input: responseFor(materialized.control),
-        }],
-      },
-      now: NOW + 1,
-    });
+    const round = await runReadyRound(state, materialized);
 
     expect(round).toMatchObject({
       status: "ready",
@@ -456,18 +445,7 @@ describe("RationaleHostCoordinator", () => {
       };
       const state = setup({ reviewer, approvalChoice: "allow-session" });
       const materialized = materialize(state);
-      const pending = state.coordinator.handleRationaleRoundResult({
-        ticketId: materialized.control.ticketId,
-        result: {
-          kind: "calls",
-          calls: [{
-            id: "rationale-call-1",
-            name: "permission_rationale",
-            input: responseFor(materialized.control),
-          }],
-        },
-        now: NOW + 1,
-      });
+      const pending = runReadyRound(state, materialized);
       await vi.advanceTimersByTimeAsync(0);
 
       await vi.advanceTimersByTimeAsync(
@@ -558,18 +536,7 @@ describe("RationaleHostCoordinator", () => {
     };
     const state = setup({ reviewer });
     const materialized = materialize(state);
-    const round = await state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "calls",
-        calls: [{
-          id: "rationale-call-1",
-          name: "permission_rationale",
-          input: responseFor(materialized.control),
-        }],
-      },
-      now: NOW + 1,
-    });
+    const round = await runReadyRound(state, materialized);
 
     expect(round).toMatchObject({
       status: "failed",
@@ -658,18 +625,7 @@ describe("RationaleHostCoordinator", () => {
   it("burns an allow receipt path when current identity generations changed", async () => {
     const state = setup();
     const materialized = materialize(state);
-    await state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "calls",
-        calls: [{
-          id: "rationale-call-1",
-          name: "permission_rationale",
-          input: responseFor(materialized.control),
-        }],
-      },
-      now: NOW + 1,
-    });
+    await runReadyRound(state, materialized);
     await state.coordinator.promptForApproval(materialized.control.ticketId, { now: NOW + 2 });
     state.generations.registry = "registry-generation-2";
 
@@ -783,18 +739,7 @@ describe("RationaleHostCoordinator", () => {
       },
     });
     const materialized = materialize(state);
-    await state.coordinator.handleRationaleRoundResult({
-      ticketId: materialized.control.ticketId,
-      result: {
-        kind: "calls",
-        calls: [{
-          id: "rationale-call-1",
-          name: "permission_rationale",
-          input: responseFor(materialized.control),
-        }],
-      },
-      now: NOW + 1,
-    });
+    await runReadyRound(state, materialized);
 
     await expect(state.coordinator.promptForApproval(
       materialized.control.ticketId,

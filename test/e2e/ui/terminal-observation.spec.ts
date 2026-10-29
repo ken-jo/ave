@@ -63,7 +63,7 @@ test(`agent shell output streams locally while user terminal commands stay outsi
     await expect(ctx.page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await ctx.page.getByTestId("chat-side-panel-add-tab").click();
     await ctx.page.getByTestId("chat-side-panel-launcher-menu-terminal").click();
-    await expect(ctx.page.getByTestId("terminal-host-badge")).toHaveText(locale === "en" ? "My terminal (host) · No agent access" : "내 터미널 (호스트) · 에이전트 접근 없음");
+    await expect(ctx.page.getByTestId("chat-side-panel-pty-terminal").getByTestId("terminal-pane-host-chip")).toHaveText(locale === "en" ? "Host · no agent access" : "호스트 · 에이전트 접근 없음");
     const hostScreenshot = test.info().outputPath(`host-terminal-${locale}.png`);
     await ctx.page.screenshot({ path: hostScreenshot });
     await test.info().attach(`host-terminal-${locale}`, { path: hostScreenshot, contentType: "image/png" });

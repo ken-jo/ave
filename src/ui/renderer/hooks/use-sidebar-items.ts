@@ -9,6 +9,8 @@ import { subscribeWebSurfaces, subscribeWebSurfaceLocations, webSurfaceFavicon, 
 
 export interface SidebarSurface extends MainSurface {
   title?: string;
+  /** Main-owned binding membership, independent of the surface creator. */
+  boundSessionIds: readonly string[];
   sessionId?: string;
   faviconDataUrl: string | null;
 }
@@ -21,7 +23,7 @@ function sidebarBoundSessionId(surface: MainSurface, owner: BrowserSessionActor 
 }
 
 /** Read the existing surface stores, guest metadata and main-owned session bindings. */
-export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupIds: readonly string[], browserTabs: BrowserTabsApi | undefined, sessionIds: ReadonlySet<string>): SidebarSurface[] {
+export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupIds: readonly string[], browserTabs: BrowserTabsApi | undefined, sessionIds: ReadonlySet<string>): { surfaces: SidebarSurface[]; bindingsLoaded: boolean } {
   const [, refresh] = useReducer((revision: number) => revision + 1, 0);
   const [bindings, setBindings] = useState<SessionTabBindingsState | null>(null);
   useEffect(() => {
@@ -58,11 +60,14 @@ export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupI
     const url = surface.kind === "browser" ? webSurfaceLocation(surface.tabId) ?? browser?.url ?? surface.url : surface.url;
     surfaces.set(surface.tabId, {
       ...surface,
+      boundSessionIds: bindings?.bindings.filter((binding) =>
+        (surface.kind === "browser" ? binding.browserTabIds : binding.terminalTabIds).includes(surface.tabId))
+        .map((binding) => binding.sessionId) ?? [],
       url,
       ...(browser ? { title: browser.title } : {}),
       ...(sessionId ? { sessionId } : {}),
       faviconDataUrl: guestFaviconSource(webSurfaceFavicon(surface.tabId)),
     });
   }
-  return [...surfaces.values()];
+  return { surfaces: [...surfaces.values()], bindingsLoaded: bindings !== null };
 }

@@ -1,3 +1,4 @@
+import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
 import { currentHostTerminalTurn } from "./host-terminal-turn.js";
 import { HOST_TERMINAL_SANDBOX_CAPABILITY } from "../permissions/sandbox-capability.js";
@@ -478,7 +479,8 @@ export async function authorizeToolInvocation(
         : undefined;
     const shellExecution = shellDialect !== undefined && hostShellExecutionPlan !== undefined
       ? {
-          runsSandboxed: hostShellExecutionPlan.sandboxed || invocationPermissionContext.disposableSubstrate !== undefined,
+          runsSandboxed: isConfinedHostShellExecution(hostShellExecutionPlan, invocationPermissionContext.disposableSubstrate)
+            || invocationPermissionContext.disposableSubstrate !== undefined,
           pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
         } : terminalScope !== undefined
           // The user's host terminal decides on its sealed host route's relaxations (none); the isolated terminal keeps its own.
@@ -1100,6 +1102,7 @@ export async function authorizeToolInvocation(
         abortSignal,
         auditInput,
         sessionId,
+        permissionResult,
       );
       if (abortSignal?.aborted) {
         return withHostShellExecutionPlan(
@@ -1107,7 +1110,10 @@ export async function authorizeToolInvocation(
         );
       }
       if (reviewerResult) {
-        permissionResult = reviewerResult;
+        // A reviewed floor remains per-call even when review falls back to a human.
+        permissionResult = permissionResult.layer <= 2
+          ? { ...reviewerResult, layer: permissionResult.layer }
+          : reviewerResult;
       }
     }
     const needsRationaleSecurityContext =

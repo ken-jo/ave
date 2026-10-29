@@ -111,7 +111,10 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     const pane = page.locator(`[data-testid="surface-pane"][data-tab-id="${tabId}"]`);
     const paneChat = page.locator(`[data-testid="pane-chat"][data-tab-id="${tabId}"]`);
     await expect(paneChat).toBeVisible();
-    await expect(pane.getByTestId("terminal-host-badge")).toHaveText("My terminal (host) · Agent commands need your approval");
+    // The pane's one header row: the host chip names the exposure, its tooltip states it in full.
+    const chip = pane.getByTestId("terminal-pane-host-chip");
+    await expect(chip).toHaveText("Host · commands need approval");
+    await expect(chip).toHaveAttribute("title", /My terminal \(host\) · Agent commands need your approval/);
     await expect(pane.locator(".xterm")).toBeVisible();
     await expect(observationFailed).toHaveCount(0);
 

@@ -160,6 +160,15 @@ const permissionContext = {
   userIntent: "Perform the requested operation.",
 };
 
+function rationaleOptions(runtime: RationaleHostRuntime) {
+  return {
+    executionCwd: process.cwd(),
+    sessionId: "session-rationale",
+    permissionContext,
+    rationaleRuntime: runtime,
+  };
+}
+
 describe("ToolExecutor rationale conversation batches", () => {
   it("keeps the existing completed-result path when no anchored runtime is present", async () => {
     const registry = new ToolRegistry();
@@ -229,10 +238,7 @@ describe("ToolExecutor rationale conversation batches", () => {
           { id: "suffix", name: "suffix_read", input: { payload: "after" } },
         ],
         {
-          executionCwd: process.cwd(),
-          sessionId: "session-rationale",
-          permissionContext,
-          rationaleRuntime: runtime,
+          ...rationaleOptions(runtime),
           callbacks: { onToolStart, onToolEnd },
         },
       );
@@ -294,22 +300,12 @@ describe("ToolExecutor rationale conversation batches", () => {
       const firstRuntime = hostRuntime();
       const first = await executor.executeConversationBatch(
         [{ id: "fresh-trigger", name: "cache_write", input: { payload: "same" } }],
-        {
-          executionCwd: process.cwd(),
-          sessionId: "session-rationale",
-          permissionContext,
-          rationaleRuntime: firstRuntime.runtime,
-        },
+        rationaleOptions(firstRuntime.runtime),
       );
       const secondRuntime = hostRuntime();
       const second = await executor.executeConversationBatch(
         [{ id: "cache-trigger", name: "cache_write", input: { payload: "same" } }],
-        {
-          executionCwd: process.cwd(),
-          sessionId: "session-rationale",
-          permissionContext,
-          rationaleRuntime: secondRuntime.runtime,
-        },
+        rationaleOptions(secondRuntime.runtime),
       );
 
       expect(first.outcome).toBe("rationale-required");
@@ -357,10 +353,7 @@ describe("ToolExecutor rationale conversation batches", () => {
             input: category === "shell" ? { command: "echo safe" } : { payload: "value" },
           }],
           {
-            executionCwd: process.cwd(),
-            sessionId: "session-rationale",
-            permissionContext,
-            rationaleRuntime: runtime,
+            ...rationaleOptions(runtime),
             callbacks: { onToolStart, onToolEnd },
           },
         );

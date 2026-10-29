@@ -17,6 +17,10 @@ function workbook(bookType: XLSX.BookType, bookSST = false): Buffer {
   return XLSX.write(book, { type: "buffer", bookType, bookSST }) as Buffer;
 }
 
+function rewriteXml(archive: AdmZip, path: string, rewrite: (xml: string) => string) {
+  archive.updateFile(path, Buffer.from(rewrite(archive.readAsText(path))));
+}
+
 function table(rows: string): string {
   return `<table:table table:name="Data">${rows}</table:table>`;
 }
@@ -75,8 +79,7 @@ describe("workbook container validation", () => {
       expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
     }
     const archive = new AdmZip(workbook("xlsx"));
-    const types = archive.readAsText("[Content_Types].xml");
-    archive.updateFile("[Content_Types].xml", Buffer.from(types.replace("spreadsheetml.sheet.main+xml", "spreadsheetml.template.main+xml")));
+    rewriteXml(archive, "[Content_Types].xml", (types) => types.replace("spreadsheetml.sheet.main+xml", "spreadsheetml.template.main+xml"));
     expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
   });
 
@@ -111,11 +114,10 @@ describe("workbook container validation", () => {
     ["_rels/.rels", "officeDocument"],
   ])("rejects arbitrary relationship URI suffixes in %s", (path, kind) => {
     const archive = new AdmZip(workbook("xlsx"));
-    const xml = archive.readAsText(path);
-    archive.updateFile(path, Buffer.from(xml.replace(
+    rewriteXml(archive, path, (xml) => xml.replace(
       `http://schemas.openxmlformats.org/officeDocument/2006/relationships/${kind}`,
       `urn:unsupported/${kind}`,
-    )));
+    ));
     expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
   });
 
@@ -146,8 +148,7 @@ describe("workbook container validation", () => {
     (part) => {
       const archive = new AdmZip(workbook("xlsx", true));
       expect(prepareWorkbookContainer(archive.toBuffer(), "xlsx", PREVIEW_DOCUMENT_LIMITS, 0)).toBeInstanceOf(Buffer);
-      const xml = archive.readAsText(part);
-      archive.updateFile(part, Buffer.from(xml.replace("?>", '?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>')));
+      rewriteXml(archive, part, (xml) => xml.replace("?>", '?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>'));
       expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
     },
   );
@@ -183,8 +184,7 @@ describe("workbook container validation", () => {
     const strings = archive.getEntry("xl/sharedStrings.xml")!.getData();
     archive.deleteFile("xl/sharedStrings.xml");
     archive.addFile("xl/sharedStrings.dat", strings);
-    const types = archive.readAsText("[Content_Types].xml");
-    archive.updateFile("[Content_Types].xml", Buffer.from(types.replace("/xl/sharedStrings.xml", "/xl/sharedStrings.dat")));
+    rewriteXml(archive, "[Content_Types].xml", (types) => types.replace("/xl/sharedStrings.xml", "/xl/sharedStrings.dat"));
     expect(refusal(archive.toBuffer(), "xlsx").code).toBe("corrupt-document");
 
     const comments = new AdmZip(workbook("xlsx"));
@@ -198,11 +198,10 @@ describe("workbook container validation", () => {
   it("byte-checks the legacy drawing the decoder reads", () => {
     const vmlDrawing = (target: string, vml: string): Buffer => {
       const archive = new AdmZip(workbook("xlsx"));
-      const sheet = archive.readAsText("xl/worksheets/sheet1.xml");
-      archive.updateFile("xl/worksheets/sheet1.xml", Buffer.from(sheet.replace(
+      rewriteXml(archive, "xl/worksheets/sheet1.xml", (sheet) => sheet.replace(
         "</worksheet>",
         '<legacyDrawing r:id="rId9" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></worksheet>',
-      )));
+      ));
       archive.addFile(`xl/drawings/${target}`, Buffer.from(vml));
       archive.addFile("xl/worksheets/_rels/sheet1.xml.rels", Buffer.from(
         `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/${target}"/></Relationships>`,

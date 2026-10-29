@@ -90,23 +90,7 @@ function comparablePath(path: string | undefined): string {
 function makeReadFileTool(
   executeSpy: ReturnType<typeof vi.fn>,
 ): Tool {
-  return createDynamicTool({
-    name: "read_file",
-    description: "Reads a file.",
-    source: "builtin",
-    category: "read",
-    pathFields: ["path"],
-    isReadOnly: () => true,
-    jsonSchema: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-    },
-    execute: async (rawInput) => {
-      const value = await executeSpy(rawInput);
-      return { output: String(value), isError: false };
-    },
-  });
+  return makeFileTool("read", executeSpy);
 }
 
 // Directory approval confines writes; reads at the same path do not reach this dialog.
@@ -114,13 +98,17 @@ function makeWriteFileTool(
   // Bare Mock is not callable under this configuration; vi.fn satisfies the call signature.
   executeSpy: (input: unknown) => unknown,
 ): Tool {
+  return makeFileTool("write", executeSpy);
+}
+
+function makeFileTool(category: "read" | "write", executeSpy: (input: unknown) => unknown): Tool {
   return createDynamicTool({
-    name: "write_file",
-    description: "Writes a file.",
+    name: `${category}_file`,
+    description: category === "read" ? "Reads a file." : "Writes a file.",
     source: "builtin",
-    category: "write",
+    category,
     pathFields: ["path"],
-    isReadOnly: () => false,
+    isReadOnly: () => category === "read",
     jsonSchema: {
       type: "object",
       properties: { path: { type: "string" } },

@@ -1,4 +1,5 @@
 import type { TerminalBlock, TerminalBlockSummary } from "./terminal-blocks.js";
+import type { TerminalFileReviewSnapshot } from "./terminal-file-review.js";
 
 export type TerminalIntegrationUnavailableReason = "unsupported-shell" | "missing-home" | "custom-launch" | "setup-failed";
 
@@ -57,7 +58,8 @@ export type TerminalControlResult =
   | { readonly ok: false; readonly error: string; readonly message?: string };
 export type TerminalMutationResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 export type TerminalSpawnResult =
-  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo }
+  /** `blockMarkerToken` authenticates block ids on forwarded C markers (see TERMINAL_VIEW_TOKEN_FIELD); renderer-only. */
+  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo; readonly blockMarkerToken: string }
   | { readonly ok: false; readonly reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "too-many-terminals" | "still-closing" | "no-terminal" | "unauthorized-frame"; readonly message: string };
 export type TerminalDataEvent = TerminalSessionRef & { readonly chunk: string };
 export type TerminalExitEvent = TerminalSessionRef & { readonly exitCode: number; readonly signal?: number };
@@ -80,6 +82,10 @@ export interface TerminalApi {
   >;
   /** Read or change who controls a host terminal: Take over, Stop the agent's command, or Hand back. */
   control(ref: TerminalSessionRef, action: TerminalControlAction): Promise<TerminalControlResult>;
+  listFileReviews(ref: TerminalSessionRef): Promise<
+    | { readonly ok: true; readonly snapshot: TerminalFileReviewSnapshot }
+    | { readonly ok: false; readonly error: string }
+  >;
   onData(handler: (event: TerminalDataEvent) => void): () => void;
   onExit(handler: (event: TerminalExitEvent) => void): () => void;
   onControl(handler: (event: TerminalControlEvent) => void): () => void;

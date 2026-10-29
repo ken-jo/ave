@@ -3,6 +3,11 @@
 
 import { t } from "../i18n/index.js";
 
+export const TITLEBAR_COLORS = {
+  light: { background: "#f3f2ed", foreground: "#1c1917" },
+  dark: { background: "#312d2b", foreground: "#f5f2ea" },
+} as const;
+
 export interface TitlebarShellOptions {
   // Process platform — drives macOS hidden-inset vs Win/Linux full titlebar.
   platform: NodeJS.Platform;
@@ -33,13 +38,12 @@ export function buildTitlebarHtml({ platform }: TitlebarShellOptions): string {
   </div>`;
 }
 
-// Emit the CSS for the titlebar + supporting layout primitives. Light tokens are warm-cream (matches Violet Light feel); dark tokens are warm-grey-1
-// (matches Violet Dark feel). Both use HSL so theme bundle changes in a future revision can reuse the same variable names.
+// Emit shared shell tokens and layout primitives. Native overlay controls use the same background and foreground values.
 export function buildTitlebarCss(): string {
   return `
     :root {
-      --ts-bg:              hsl(48 20% 94%);
-      --ts-fg:              hsl(24 10% 10%);
+      --ts-bg:              ${TITLEBAR_COLORS.light.background};
+      --ts-fg:              ${TITLEBAR_COLORS.light.foreground};
       --ts-border:          hsl(35 14% 80% / 0.7);
       --ts-btn:             hsl(24 8% 32%);
       --ts-btn-hover-bg:    hsl(35 14% 84% / 0.8);
@@ -48,8 +52,8 @@ export function buildTitlebarCss(): string {
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --ts-bg:              hsl(20 6% 18%);
-        --ts-fg:              hsl(44 37% 94%);
+        --ts-bg:              ${TITLEBAR_COLORS.dark.background};
+        --ts-fg:              ${TITLEBAR_COLORS.dark.foreground};
         --ts-border:          hsl(20 8% 30% / 0.7);
         --ts-btn:             hsl(40 8% 68%);
         --ts-btn-hover-bg:    hsl(20 6% 24%);
