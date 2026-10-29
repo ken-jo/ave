@@ -30,13 +30,30 @@ afterEach(async () => {
 
 function surface(id: number) {
   const cards: ApprovalRequest[] = [];
+  const waiting: Array<{ index: number; resolve: (card: ApprovalRequest) => void }> = [];
   const contents = {
     id, isDestroyed: () => false,
     send: (channel: string, request: ApprovalRequest) => {
-      if (channel === "ave:approval:request") cards.push(request);
+      if (channel === "ave:approval:request") {
+        cards.push(request);
+        for (let index = waiting.length - 1; index >= 0; index -= 1) {
+          const waiter = waiting[index];
+          const card = cards[waiter.index];
+          if (card !== undefined) {
+            waiting.splice(index, 1);
+            waiter.resolve(card);
+          }
+        }
+      }
     },
   } as unknown as WebContents;
-  return { contents, cards };
+  const waitForCard = (index: number): Promise<ApprovalRequest> => {
+    const card = cards[index];
+    return card === undefined
+      ? new Promise((resolve) => { waiting.push({ index, resolve }); })
+      : Promise.resolve(card);
+  };
+  return { contents, cards, waitForCard };
 }
 
 async function boardRun() {
@@ -110,8 +127,8 @@ describe("Work Board registered approval owner", () => {
   it("delivers plan and execution-child cards through the real runner, loop, executor and gate", async () => {
     const f = await boardRun();
     const running = f.engine.runItem(f.itemId, { approvalSurface: f.owner.contents });
-    await vi.waitFor(() => expect(f.owner.cards).toHaveLength(1));
-    const plan = f.owner.cards[0];
+    const plan = await f.owner.waitForCard(0);
+    expect(f.owner.cards).toHaveLength(1);
     expect(plan.sessionId).toBe(workBoardOriginSessionId(f.itemId));
     expect(plan.toolName).toBe("work_board_run");
     expect(f.foreign.cards).toHaveLength(0);
@@ -120,8 +137,8 @@ describe("Work Board registered approval owner", () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.approve(plan, f.owner.contents)?.choice).toBe("allow-once");
 
-    await vi.waitFor(() => expect(f.owner.cards).toHaveLength(2));
-    const action = f.owner.cards[1];
+    const action = await f.owner.waitForCard(1);
+    expect(f.owner.cards).toHaveLength(2);
     expect(action.toolName).toBe("board_write");
     expect(action.sessionId).not.toBe(plan.sessionId);
     expect(approvalSurfaceRegistry.resolve(action.sessionId)).toBe(f.owner.contents);
@@ -142,11 +159,11 @@ describe("Work Board registered approval owner", () => {
   it("cannot transfer a live board run through a second run request", async () => {
     const f = await boardRun();
     const running = f.engine.runItem(f.itemId, { approvalSurface: f.owner.contents });
-    await vi.waitFor(() => expect(f.owner.cards).toHaveLength(1));
+    const plan = await f.owner.waitForCard(0);
+    expect(f.owner.cards).toHaveLength(1);
     expect((await f.engine.runItem(f.itemId, { approvalSurface: f.foreign.contents })).status).toBe("already_running");
     expect(approvalSurfaceRegistry.resolve(workBoardOriginSessionId(f.itemId))).toBe(f.owner.contents);
     expect(f.gate.listPendingRendererRequests(f.foreign.contents)).toEqual([]);
-    const plan = f.owner.cards[0];
     f.gate.resolveFromDesktopRenderer(plan.id, { requestId: plan.id, choice: "deny-once", nonce: plan.nonce, hmac: plan.hmac }, f.owner.contents);
     expect((await running).status).toBe("denied");
     expect(f.execute).not.toHaveBeenCalled();

@@ -1,9 +1,13 @@
 // Integrations are mocked; these cases exercise notification trigger wiring.
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { AskUserQuestionGate } from "../ask-user-question-gate.js";
 import { ApprovalGate } from "../../permissions/approval-gate.js";
 import type { NotificationService, FireOptions } from "../notification-service.js";
+import { resolveConversationTitle } from "../../shared/conversation-title.js";
+import { t, setLocale } from "../../i18n/runtime.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+
+afterEach(() => setLocale("ko"));
 
 function makeFakeNotificationService(): NotificationService {
   return {
@@ -33,6 +37,61 @@ describe("Trigger 3: AskUserQuestionGate fires `ask-user` on requestAndWait entr
 });
 
 describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () => {
+  it.each([
+    ["write_file", "write", "views.c4", "views.c4 파일 쓰기"],
+    ["read_file", "read", "README.md", "README.md 파일 읽기"],
+  ] as const)("describes %s and its conversation without policy diagnostics", async (toolName, toolCategory, path, action) => {
+    setLocale("ko");
+    const svc = makeFakeNotificationService();
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    gate.setConversationTitleResolver((sessionId) => resolveConversationTitle({
+      sessionId, messages: [{ role: "user", content: "그래 두개 진행해보자" }],
+    }, t));
+    const waiting = gate.requestAndWait({
+      id: "human-notice", category: "tool", toolName, toolCategory, args: { path },
+      reason: "사용자 컨펌 필요 (category: write, trust: high)",
+      source: "builtin", createdAt: Date.now(), sessionId: "session-1",
+    });
+    const notice = vi.mocked(svc.fire).mock.calls[0][0];
+    expect(notice.body).toBe(action + " · 대화: 그래 두개 진행해보자");
+    expect(notice.body).not.toMatch(/category:|trust:|write_file|read_file|사용자 컨펌/);
+    expect(notice.contextRef).toEqual({ approvalId: "human-notice", sessionId: "session-1" });
+    gate.disposeAll();
+    await waiting;
+  });
+  it("retains the conversation in the bounded notification body for a long action", async () => {
+    const svc = makeFakeNotificationService();
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    gate.setConversationTitleResolver(() => "그래 두개 진행해보자");
+    const waiting = gate.requestAndWait({
+      id: "bounded-notice", category: "tool", toolName: "write_file", toolCategory: "write",
+      args: { path: "x".repeat(100) + ".c4" }, reason: "internal", createdAt: Date.now(), sessionId: "session-1",
+    });
+    const notice = vi.mocked(svc.fire).mock.calls[0][0];
+    expect([...notice.body].length).toBeLessThanOrEqual(80);
+    expect(notice.body).toContain("대화: 그래 두개 진행해보자");
+    gate.disposeAll();
+    await waiting;
+  });
+
+  it.each(["ko", "en"] as const)("keeps the action verb around a long filename in %s", async (locale) => {
+    setLocale(locale);
+    const svc = makeFakeNotificationService();
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    gate.setConversationTitleResolver(() => "T".repeat(30));
+    const waiting = gate.requestAndWait({
+      id: "long-filename", category: "tool", toolName: "write_file", toolCategory: "write",
+      args: { path: "x".repeat(100) }, reason: "internal", createdAt: Date.now(), sessionId: "session-1",
+    });
+    const notice = vi.mocked(svc.fire).mock.calls[0][0];
+    expect(notice.body).toMatch(locale === "ko" ? /x+… 파일 쓰기/ : /Write x+… file/);
+    expect(notice.body).toContain("T".repeat(30));
+    expect([...notice.body].length).toBeLessThanOrEqual(80);
+    gate.disposeAll();
+    await waiting;
+    setLocale("ko");
+  });
+
   it("fires with kind=approval and urgent=true", async () => {
     const wc = makeMockWebContents();
     const svc = makeFakeNotificationService();

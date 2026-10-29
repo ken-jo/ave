@@ -81,6 +81,19 @@ describe("ApprovalDock", () => {
     expect(container).toBeTruthy();
   });
 
+  it("identifies a covered conversation and offers a return action", () => {
+    const onOpenConversation = vi.fn();
+    const label = t("approvalAttribution.paneConversation", { title: "그래 두개 진행해보자" });
+    const { getByRole, getAllByText } = render(
+      <ApprovalDock conversationLabel={label} onOpenConversation={onOpenConversation}
+        queue={[makeRequest()]} onDecide={vi.fn()} />,
+    );
+    expect(getAllByText(label).length).toBeGreaterThan(0);
+    expect(label).toContain("현재 화면 뒤에 있는 대화의 요청");
+    fireEvent.click(getByRole("button", { name: t("approvalAttribution.returnToConversation") }));
+    expect(onOpenConversation).toHaveBeenCalledOnce();
+  });
+
   it("renders one named non-modal approval dock with request identity", async () => {
     render(
       <ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={vi.fn()} />,

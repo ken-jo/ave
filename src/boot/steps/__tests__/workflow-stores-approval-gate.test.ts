@@ -53,6 +53,7 @@ function makeCtx(): { ctx: BootContext; registry: InstanceType<typeof ToolRegist
   const registry = new ToolRegistry();
   const probe: GateProbe = { requests: [] };
   const approvalGate = {
+    setConversationTitleResolver: vi.fn(),
     requestAndWait: async (req: { toolName?: string; args?: unknown }) => {
       probe.requests.push({ toolName: req.toolName, args: req.args });
       return { choice: "allow" };
@@ -72,6 +73,45 @@ function makeCtx(): { ctx: BootContext; registry: InstanceType<typeof ToolRegist
 }
 
 describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
+  it("names a child approval from its owning root conversation", async () => {
+    const { ctx } = makeCtx();
+    const rootSessionId = "5b2e9248-42cd-4c68-87eb-c4f3cb940613";
+    const childSessionId = "f0f9dcf5-c2c6-4789-804b-6edf7b0e7a86";
+    const titleResolver = vi.fn();
+    ctx.approvalGate.setConversationTitleResolver = titleResolver;
+    ctx.findLoopBySessionId = vi.fn((sessionId) => ({
+      getHistory: () => ({ getMessages: () => [{ role: "user", content: sessionId === rootSessionId
+        ? "그래 두개 진행해보자" : "Internal child task" }] }),
+    })) as unknown as BootContext["findLoopBySessionId"];
+    const store = { hasSessionTranscript: () => false, hasSessionMetadataFile: () => false,
+      loadSessionMetadata: () => null, loadSession: vi.fn(() => null) };
+    await setupWorkflowStores(ctx, [store as never]);
+    ctx.subAgentRunnerRef.fn = {
+      resolveOriginSessionId: (sessionId: string) => sessionId === childSessionId ? rootSessionId : undefined,
+    } as never;
+    const resolveTitle = titleResolver.mock.calls[0][0] as (id: string) => string;
+    expect(resolveTitle(childSessionId)).toBe("그래 두개 진행해보자");
+    expect(ctx.findLoopBySessionId).toHaveBeenCalledWith(rootSessionId);
+    expect(ctx.findLoopBySessionId).not.toHaveBeenCalledWith(childSessionId);
+    ctx.idleScheduler?.stop();
+  });
+
+  it("names an approval from the live first turn before its transcript is flushed", async () => {
+    const { ctx } = makeCtx();
+    const sessionId = "live-session";
+    const titleResolver = vi.fn();
+    ctx.approvalGate.setConversationTitleResolver = titleResolver;
+    ctx.findLoopBySessionId = vi.fn(() => ({
+      getHistory: () => ({ getMessages: () => [{ role: "user", content: "그래 두개 진행해보자" }] }),
+    })) as unknown as BootContext["findLoopBySessionId"];
+    const store = { hasSessionTranscript: () => false, hasSessionMetadataFile: () => false,
+      loadSessionMetadata: () => null, loadSession: vi.fn(() => null) };
+    await setupWorkflowStores(ctx, [store as never]);
+    const resolveTitle = titleResolver.mock.calls[0][0] as (id: string) => string;
+    expect(resolveTitle(sessionId)).toBe("그래 두개 진행해보자");
+    expect(store.loadSession).not.toHaveBeenCalled();
+    ctx.idleScheduler?.stop();
+  });
   it("registers skill_load and routes its first-use modal to ctx.approvalGate", async () => {
     const { ctx, registry, probe } = makeCtx();
 
@@ -105,7 +145,7 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
     const ctx = {
       host: createBootHostFixture(),
       getMainWindow: () => null,
-      approvalGate: { requestAndWait: async () => ({ choice: "deny-once" }) },
+      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: async () => ({ choice: "deny-once" }) },
       toolRegistry: registry,
       settingsService: { get: () => undefined, getAll: () => ({}) },
     } as unknown as BootContext;
@@ -144,7 +184,7 @@ describe("setupWorkflowStores — ask_user_question on a headless turn", () => {
           },
         },
       }),
-      approvalGate: { requestAndWait: async () => ({ choice: "allow" }) },
+      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: async () => ({ choice: "allow" }) },
       toolRegistry: registry,
       settingsService: { get: () => undefined, getAll: () => ({}) },
     } as unknown as BootContext;
@@ -207,7 +247,7 @@ describe("setupWorkflowStores — web_fetch transport", () => {
     const ctx = {
       host: createBootHostFixture(),
       getMainWindow: () => null,
-      approvalGate: { requestAndWait: async () => ({ choice: "allow" }) },
+      approvalGate: { setConversationTitleResolver: vi.fn(), requestAndWait: async () => ({ choice: "allow" }) },
       networkFetch: plain,
       singleHopNetworkFetch: singleHop,
       toolRegistry: registry,

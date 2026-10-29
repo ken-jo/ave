@@ -1,6 +1,16 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "approvalAction.writeFile": "Write {target} file",
+  "approvalAction.editFile": "Edit {target} file",
+  "approvalAction.readFile": "Read {target} file",
+  "approvalAction.outsideDirectory": "Read {target} outside scope",
+  "approvalAction.read": "Read data",
+  "approvalAction.write": "Change data",
+  "approvalAction.network": "Transfer network data",
+  "approvalAction.shell": "Run a system command",
+  "approvalAction.meta": "Change app or agent state",
+  "be_approvalGate.conversationNotification": "{action} · Conversation: {title}",
   "terminalObservation.decisionBasis": "Decision basis: {basis}",
   "terminalObservation.decisionScope": "Permission scope: {scope}",
   "terminalObservation.basis.extensionAllowlist": "declared network access",

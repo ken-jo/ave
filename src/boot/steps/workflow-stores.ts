@@ -31,6 +31,8 @@ import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWind
 import { browserOrigin } from "../../tools/browser-tools.js";
 import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
 import { setApprovalConversationRootResolver } from "../../permissions/user-approval-store.js";
+import { resolveConversationTitle } from "../../shared/conversation-title.js";
+import { t } from "../../i18n/index.js";
 
 const log = createLogger("ave");
 
@@ -55,6 +57,20 @@ export async function setupWorkflowStores(
     sessionMetadataStores.find(
       (store) => store.hasSessionTranscript(sessionId) || store.hasSessionMetadataFile(sessionId),
     ) ?? sessionMetadataStores[0];
+  approvalGate.setConversationTitleResolver((requestingSessionId) => {
+    const sessionId = ctx.resolveRootSessionId(requestingSessionId);
+    const store = sessionOwner(sessionId);
+    const metadata = store.loadSessionMetadata(sessionId);
+    const liveLoop = ctx.findLoopBySessionId?.(sessionId)
+      ?? (ctx.sideChatConversationLoop?.getSessionId() === sessionId ? ctx.sideChatConversationLoop : undefined)
+      ?? ctx.paneChatLoops?.all().find((loop) => loop.getSessionId() === sessionId);
+    return resolveConversationTitle({
+      sessionId,
+      title: metadata?.title,
+      routineTitle: metadata?.routineTitle,
+      messages: liveLoop?.getHistory().getMessages() ?? store.loadSession(sessionId),
+    }, t);
+  });
   const sessionTasksStore = new SessionTasksStore({
     load: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId)?.tasks ?? [],
     save: (sessionId, items) => sessionOwner(sessionId).saveSessionTasks(sessionId, items),

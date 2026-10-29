@@ -1,4 +1,5 @@
 import { chatSurface } from "./components/chat-surface.js";
+import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import type { RewindMode } from "../../shared/code-rewind.js";
 import { RewindDialog } from "./dialogs/RewindDialog.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -933,7 +934,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       />
       <ApprovalDock
         queue={pendingApprovals}
-        conversationLabel={currentSessionTitle ?? t("mainToolbar.newChat")}
+        conversationLabel={resolveConversationTitle({
+          sessionId: currentSessionId ?? "",
+          title: currentSessionTitle,
+          messages: entries.flatMap((entry) => entry.kind === "user" || entry.kind === "assistant"
+            ? [{ role: entry.kind, content: entry.text }] : []),
+        }, t)}
         proposedChoice={
           approvalHead !== null && approvals.proposal?.requestId === approvalHead.id
             ? approvals.proposal.choice

@@ -56,7 +56,8 @@ import {
   SIDEBAR_MIN_WIDTH,
 } from "../../../shared/side-panel.js";
 import { formatRelativeSessionTime } from "../../../shared/format-time.js";
-import { isSuggestionsSession, sessionDisplayTitle } from "../../../shared/suggestions-session.js";
+import { isSuggestionsSession } from "../../../shared/suggestions-session.js";
+import { resolveConversationTitle } from "../../../shared/conversation-title.js";
 
 // A nav row draws the same glyph the pane header draws for the view it opens — one map, so a row and the header it
 // produces cannot disagree.
@@ -1400,7 +1401,7 @@ function ProjectSessionList({
     // id, in the language in use now, and carries the number of suggestions
     // waiting in it.
     const suggestions = isSuggestionsSession(listed.id);
-    const session = suggestions ? { ...listed, title: sessionDisplayTitle(listed.id, listed.title, t) } : listed;
+    const session = { ...listed, title: resolveConversationTitle({ sessionId: listed.id, title: listed.title }, t) };
     return (
       <SessionRow
         key={session.id}

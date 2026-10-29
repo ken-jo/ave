@@ -21,6 +21,37 @@ async function currentSessionId(mainWindow: Page): Promise<string> {
   });
 }
 
+test('approval toast returns from a browser surface and focuses the requesting conversation card', async ({ app, mainWindow }, testInfo) => {
+  const sessionId = await currentSessionId(mainWindow);
+  const features = mainWindow.getByTestId('sidebar-group-features');
+  if ((await features.getAttribute('aria-expanded')) !== 'true') await features.click();
+  await mainWindow.getByTestId('sidebar-web').click();
+  const browser = mainWindow.locator('[data-surface-kind="browser"]');
+  await expect(browser).toBeVisible();
+  await app.evaluate(({ BrowserWindow }, sid) => {
+    const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
+    if (!win) throw new Error('Visible window unavailable');
+    win.webContents.send('ave:approval:request', {
+      id: 'approval-notice-e2e', sessionId: sid, category: 'tool', kind: 'tool',
+      toolName: 'write_file', toolCategory: 'write', source: 'builtin', trustOrigin: 'user-keyboard',
+      args: { path: '/workspace/views.c4' }, reason: 'User confirmation required (category: write, trust: high)',
+      createdAt: Date.now(), requireExplicit: false,
+    });
+    win.webContents.send('ave:notification:toast', {
+      kind: 'approval', title: 'Approval needed', body: 'Write views.c4 · Conversation: Set up diagrams',
+      contextRef: { approvalId: 'approval-notice-e2e', sessionId: sid },
+    });
+  }, sessionId);
+  await expect(mainWindow.getByRole('button', { name: /Return to conversation|대화로 돌아가기/ })).toBeVisible();
+  await mainWindow.screenshot({ path: testInfo.outputPath('covered-approval.png') });
+  await mainWindow.getByRole('button', { name: /Learn more|자세히 알아보기/ }).click();
+  await expect(browser).not.toBeVisible();
+  const panel = mainWindow.getByTestId('tool-approval-panel');
+  await expect(panel).toHaveAttribute('data-approval-request-id', 'approval-notice-e2e');
+  await expect(panel).toBeFocused();
+  await mainWindow.screenshot({ path: testInfo.outputPath('conversation-approval.png') });
+});
+
 // Inject a real main-to-renderer request to verify route-independent approval without an ambient tool run.
 test('approval dock floats over the route without changing its layout', async ({
   app,
