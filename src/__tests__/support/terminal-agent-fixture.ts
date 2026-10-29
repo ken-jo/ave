@@ -7,11 +7,14 @@ import {
 import { getTerminalBlockTracker as getTracker } from "../../main/terminal/terminal-blocks.js";
 import type { TerminalSessionRef } from "../../shared/terminal-session.js";
 import { terminalSessionFixture } from "./terminal-session-fixtures.js";
+import { isTerminalTabId } from "../../shared/tab-id.js";
 
 const refs = new Map<string, TerminalSessionRef>();
 const ref = (tabId: string): TerminalSessionRef => refs.get(tabId) ?? terminalSessionFixture(tabId);
 export async function spawnTerminal(options: Omit<SpawnTerminalOptions, "lane">) {
-  _reserveConversationTerminalForTest(options.tabId, options.tabId, options.ownerWindowId ?? null, options.cwd);
+  if (isTerminalTabId(options.tabId)) {
+    _reserveConversationTerminalForTest(options.tabId, options.tabId, options.ownerWindowId ?? null, options.cwd);
+  }
   const result = await spawnLane({ ...options, lane: "agent" });
   if (result.ok) refs.set(options.tabId, result.session);
   return result;
