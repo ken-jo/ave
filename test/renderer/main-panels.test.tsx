@@ -5,7 +5,7 @@ import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import { clickSidebarNavRow, deferred, splitIntoTwoTiles } from "./helpers.js";
 import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.js";
-import { SURFACE_DRAG_TYPE } from "../../src/ui/renderer/preview/surface-moves.js";
+import { SURFACE_DRAG_TYPE, getSideTabsSink } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
@@ -326,6 +326,20 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)).toEqual([{ kind: "terminal", tabId }]));
     await waitFor(() => expect(document.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden") ?? "true").toBe("true"));
     expect(document.querySelector('[data-testid="pane-panel-toggle"]')?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps a side panel open when a tab is adopted in the same batch that releases its last one", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    const tabId = await openSideTerminal(container);
+    const sink = getSideTabsSink("main");
+    expect(sink).toBeDefined();
+    // One React batch: another conversation hands this panel a browser tab while its terminal moves away.
+    act(() => {
+      sink!.adopt({ id: "browser:batched", kind: "browser", ordinal: 9 }, null);
+      expect(sink!.release(tabId)).toBeDefined();
+    });
+    await waitFor(() => expect(sideTabIds()).toEqual(["browser:batched"]));
+    expect(document.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden")).not.toBe("true");
   });
 
   it("keeps a side panel open when the move leaves other tabs in it", async () => {

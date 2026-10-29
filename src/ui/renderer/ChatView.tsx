@@ -246,17 +246,23 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId });
   savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId };
   const sidePanelVisibleRef = useRef(false);
+  // A tab that moved away and left the panel empty takes the panel with it: an open panel with no tabs is the workspace
+  // launcher, which nobody asked for here and which floats over the conversation once the move narrows it.
+  const releasedTabRef = useRef(false);
+  useEffect(() => {
+    if (!releasedTabRef.current) return;
+    releasedTabRef.current = false;
+    if (workspaceTabs.tabs.length === 0) openSidePanelRef.current(false);
+  }, [workspaceTabs.tabs]);
   useEffect(() => {
     if (chatGroupId === undefined) return undefined;
     const unregister = registerSideTabsSink(chatGroupId, {
       adopt: adoptTab,
-      // A tab that moves away and leaves the panel empty takes the panel with it: an open panel with no tabs is the
-      // workspace launcher, which nobody asked for here and which floats over the conversation once the move narrows it.
+      // Whether the move emptied the panel is decided once the tab list commits (below), not from this render's list:
+      // a tab adopted in the same batch keeps the panel open.
       release: (tabId) => {
-        const { tabs } = savedTabsRef.current;
-        const emptied = tabs.length > 0 && tabs.every((tab) => tab.id === tabId);
         const tab = releaseTab(tabId);
-        if (tab && emptied) openSidePanelRef.current(false);
+        if (tab) releasedTabRef.current = true;
         return tab;
       },
       open: () => openSidePanelRef.current(true),
