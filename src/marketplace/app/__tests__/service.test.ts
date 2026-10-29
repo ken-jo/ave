@@ -419,7 +419,7 @@ describe("MarketplaceService", () => {
     market.repo.commit({ "policy/revocations.json": text({ schemaVersion: 1, revocations }) }, "revoke");
   }
 
-  async function installPackage(kind: "skill" | "mcp") {
+  async function installPackage<Kind extends "skill" | "mcp">(kind: Kind) {
     const source = market();
     await addMarket(source.url);
     const key = { sourceId: "acme-tools", kind, name: kind === "mcp" ? "notes" : "review" };
