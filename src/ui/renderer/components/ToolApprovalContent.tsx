@@ -1506,7 +1506,10 @@ export function ToolApprovalContent({
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
             {shellRule ? (
               <div className="space-y-1" data-testid="approval-shell-rule-context">
-                <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
+                {/* Only an unconfined run is outside the sandbox; a confined command's card must not claim it. */}
+                {request.executionPlan?.sandboxed !== true ? (
+                  <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
+                ) : null}
                 <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
                   {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
                 </p>

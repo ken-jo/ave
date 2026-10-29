@@ -55,6 +55,15 @@ describe("shell approval card: the shared decision row", () => {
     expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeProjectTarget", { root: "/workspace/project" }));
   });
 
+  it("does not claim a sandboxed command runs outside the sandbox or needs an exact rule", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    const executionPlan = { sandboxed: true, mode: "sandboxed" } as unknown as ApprovalRequest["executionPlan"];
+    renderApproval(shellRequest({ executionPlan }), vi.fn());
+    expect(screen.queryByTestId("approval-shell-outside-sandbox")).toBeNull();
+    expect(screen.getByTestId("approval-shell-rule-context").textContent).not.toContain(t("toolApprovalDialog.shellOutsideSandbox"));
+    expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeProjectTarget", { root: "/workspace/project" }));
+  });
+
   // An -EncodedCommand payload is shown as the script it runs; no allow rule covers it, so the host sends no exact rule.
   it("shows each decoded -EncodedCommand script, and offers no lasting allow for it", () => {
     renderApproval(shellRequest({}, { exactRule: null, decodedCommands: ["Remove-Item -Recurse C:\\data"] }), vi.fn());
