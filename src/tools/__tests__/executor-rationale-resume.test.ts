@@ -367,14 +367,15 @@ async function fixture() {
   };
 }
 
+function resumeFixture(f: Awaited<ReturnType<typeof fixture>>) {
+  return f.executor.executeSealedRationaleResume(f.request, f.options);
+}
+
 describe("ToolExecutor sealed rationale resume", () => {
   it("uses the existing security suffix without a second modal", async () => {
     const f = await fixture();
     try {
-      const result = await f.executor.executeSealedRationaleResume(
-        f.request,
-        f.options,
-      );
+      const result = await resumeFixture(f);
 
       expect(result).toMatchObject({
         tool_use_id: "sealed-use",
@@ -418,10 +419,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         action: "modify",
         updatedInput: { payload: "changed" },
       }));
-      const result = await f.executor.executeSealedRationaleResume(
-        f.request,
-        f.options,
-      );
+      const result = await resumeFixture(f);
 
       expect(result.is_error).toBe(true);
       expect(result.content).toContain("sealed original/final input changed");
@@ -439,10 +437,7 @@ describe("ToolExecutor sealed rationale resume", () => {
     const policy = await fixture();
     try {
       policy.manager.setMode("allow");
-      const policyResult = await policy.executor.executeSealedRationaleResume(
-        policy.request,
-        policy.options,
-      );
+      const policyResult = await resumeFixture(policy);
       expect(policyResult.is_error).toBe(true);
       expect(policyResult.content).toContain("same eligible ask");
       expect(policy.loadReceipt).not.toHaveBeenCalled();
@@ -498,14 +493,8 @@ describe("ToolExecutor sealed rationale resume", () => {
   it("enforces start at-most-once on replay and never falls back to the modal", async () => {
     const f = await fixture();
     try {
-      const first = await f.executor.executeSealedRationaleResume(
-        f.request,
-        f.options,
-      );
-      const second = await f.executor.executeSealedRationaleResume(
-        f.request,
-        f.options,
-      );
+      const first = await resumeFixture(f);
+      const second = await resumeFixture(f);
 
       expect(first.is_error).toBeUndefined();
       expect(second.is_error).toBe(true);
@@ -535,10 +524,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         f.order.push("script-pre");
         return { decision: "deny", reason: "blocked before start", results: [] };
       });
-      const result = await f.executor.executeSealedRationaleResume(
-        f.request,
-        f.options,
-      );
+      const result = await resumeFixture(f);
 
       expect(result.is_error).toBe(true);
       expect(result.content).toContain("script PreToolUse hook denied");
@@ -555,10 +541,7 @@ describe("ToolExecutor sealed rationale resume", () => {
     const f = await fixture();
     try {
       f.execute.mockRejectedValueOnce(new Error("sealed tool failure"));
-      const result = await f.executor.executeSealedRationaleResume(
-        f.request,
-        f.options,
-      );
+      const result = await resumeFixture(f);
 
       expect(result.is_error).toBe(true);
       expect(f.invocationAudits.map((record) => record.state)).toEqual([

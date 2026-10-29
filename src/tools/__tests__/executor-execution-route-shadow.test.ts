@@ -169,26 +169,7 @@ describe("execution route shadow metadata", () => {
     setShellSandboxRequestedAtBoot(false);
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-shadow-"));
     try {
-      const registry = new ToolRegistry();
-      registry.register(new BashTool());
-      const permissions = new PermissionManager(join(dir, "permissions.json"));
-      permissions.checkDetailed = () => ({ decision: "allow", reason: "test", layer: 5 });
-      const appendPermissionAuditEntry = vi.fn();
-      const auditLogger = {
-        log: vi.fn(),
-        isPermissionAuditChainReady: () => true,
-        assertPermissionAuditWritable: vi.fn(),
-        appendPermissionAuditEntry,
-      };
-      const executor = new ToolExecutor(
-        registry,
-        undefined,
-        permissions,
-        undefined,
-        undefined,
-        undefined,
-        auditLogger as never,
-      );
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir);
       const onToolEnd = vi.fn<(
         name: string,
         result: string,
