@@ -18,6 +18,7 @@ interface PreviewContextValue {
   activeId: string | undefined;
   show: (request: PreviewRequest, immediate: boolean) => void;
   hide: (leaving?: boolean, id?: string) => void;
+  update: (id: string, data: SidebarPreviewData) => void;
 }
 const PreviewContext = createContext<PreviewContextValue | null>(null);
 
@@ -58,6 +59,16 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
     if (immediate || activeRef.current || Date.now() < warmUntil.current) reveal();
     else timer.current = setTimeout(reveal, 500);
   }, []);
+  const update = useCallback((id: string, data: SidebarPreviewData) => {
+    const current = activeRef.current;
+    if (!current || current.id !== id) return;
+    const nextData = data.kind === "browser" && current.data.kind === "browser"
+      ? { ...data, imageDataUrl: data.imageDataUrl ?? (data.url === current.data.url ? current.data.imageDataUrl : undefined) }
+      : data;
+    const next = { ...current, data: nextData };
+    activeRef.current = next;
+    setActive(next);
+  }, []);
   useEffect(() => {
     const dismiss = () => hide();
     const handleScroll = (event: Event) => {
@@ -82,9 +93,9 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
   }, [hide]);
   const rect = active?.anchor.getBoundingClientRect();
   const sidebarRect = active?.anchor.closest("[data-sidebar-preview-boundary]")?.getBoundingClientRect();
-  return <PreviewContext.Provider value={{ activeId: active?.id, show, hide }}>
+  return <PreviewContext.Provider value={{ activeId: active?.id, show, hide, update }}>
     {children}
-    {active && rect && createPortal(<div
+    {active && active.anchor.isConnected && rect && createPortal(<div
       className="pointer-events-none fixed z-50 w-[300px] max-w-[calc(100vw-16px)]"
       style={{ left: Math.min((sidebarRect?.right ?? rect.right) + 10, Math.max(8, window.innerWidth - 308)), top: Math.max(8, Math.min(rect.top, window.innerHeight - (active.data.kind === "browser" && active.data.imageDataUrl ? 250 : 140))) }}
     ><SidebarPreviewCard id={active.id} preview={active.data} /></div>, document.body)}
@@ -99,10 +110,16 @@ export function SidebarPreviewTrigger({ preview, loadPreview, children }: {
 }) {
   const context = useContext(PreviewContext);
   const id = useId();
+  const hide = context?.hide;
+  const update = context?.update;
+  useEffect(() => () => hide?.(false, id), [hide, id]);
+  useEffect(() => { update?.(id, preview); }, [update, id, preview]);
   if (!context) return children;
   const original = children.props;
   const show = (anchor: HTMLElement, immediate: boolean) => context.show({ id, data: preview, anchor, loadPreview }, immediate);
   return cloneElement(children, {
+    title: undefined,
+    "aria-label": original["aria-label"] ?? original.title,
     "aria-describedby": context.activeId === id ? [original["aria-describedby"], id].filter(Boolean).join(" ") : original["aria-describedby"],
     onPointerEnter: (event) => { original.onPointerEnter?.(event); show(event.currentTarget, false); },
     onPointerLeave: (event) => { original.onPointerLeave?.(event); context.hide(true, id); },
@@ -115,13 +132,13 @@ export function SidebarPreviewTrigger({ preview, loadPreview, children }: {
 export function SidebarPreviewCard({ id, preview }: { id: string; preview: SidebarPreviewData }) {
   const { t } = useTranslation();
   let domain = "";
-  if (preview.kind === "browser" && preview.url) {
+  if (preview.kind === "browser" && preview.url && URL.canParse(preview.url)) {
     const url = new URL(preview.url);
     domain = url?.protocol === "file:" ? t("sidebarPreview.localFile") : url?.hostname ?? "";
   }
   return <div id={id} role="tooltip" data-testid="sidebar-preview" className="overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-xl text-[13px] motion-reduce:transition-none">
     {preview.kind === "browser" && preview.imageDataUrl && <img className="h-[150px] w-full object-cover object-top border-b border-border" src={preview.imageDataUrl} alt="" />}
-    {preview.kind === "terminal" && preview.command && <div className="px-3 py-2 font-mono text-xs break-all whitespace-pre-wrap" style={{ background: "hsl(var(--p-code-dark-bg))", color: "hsl(var(--p-code-dark-fg))" }}>❯ {preview.command}</div>}
+    {preview.kind === "terminal" && preview.command && <div className="truncate px-3 py-2 font-mono text-xs" style={{ background: "hsl(var(--p-code-dark-bg))", color: "hsl(var(--p-code-dark-fg))" }}>❯ {preview.command}</div>}
     <div className="flex flex-col gap-1 px-3 py-2.5">
       <div className="font-semibold break-words">{preview.title}</div>
       {preview.kind === "browser" && domain && <div className="text-xs text-muted-foreground">{domain}</div>}

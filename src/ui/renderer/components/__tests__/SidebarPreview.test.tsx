@@ -23,6 +23,10 @@ describe("sidebar preview cards", () => {
     expect(screen.getByRole("tooltip").textContent).toMatch(/Local file|로컬 파일/);
     expect(document.querySelector("img")).toBeNull();
   });
+  it("renders an invalid browser URL without a domain or render failure", () => {
+    render(<SidebarPreviewCard id="invalid" preview={{ kind: "browser", title: "Unresolved page", url: "http://[invalid" }} />);
+    expect(screen.getByRole("tooltip").textContent).toBe("Unresolved page");
+  });
   it("renders conversation summary, relative activity and running state in one card", () => {
     render(<SidebarPreviewCard id="conversation" preview={conversation} />);
     expect(screen.getByRole("tooltip").textContent).toContain(conversation.message);
@@ -75,6 +79,37 @@ describe("sidebar preview cards", () => {
     fireEvent.blur(entry);
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(entry.hasAttribute("aria-describedby")).toBe(false);
+  });
+  it("hides an open card and cancels pending hover when its entry unmounts", () => {
+    vi.useFakeTimers();
+    const content = (shown: boolean) => <SidebarPreviewProvider>{shown && <SidebarPreviewTrigger preview={conversation}><button>Conversation</button></SidebarPreviewTrigger>}</SidebarPreviewProvider>;
+    const { rerender } = render(content(true));
+    fireEvent.focus(screen.getByText("Conversation"));
+    expect(screen.getByRole("tooltip")).not.toBeNull();
+    rerender(content(false));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    rerender(content(true));
+    fireEvent.pointerEnter(screen.getByText("Conversation"));
+    rerender(content(false));
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+  it("updates an open conversation's last message and running pill", () => {
+    const content = (message: string, running: boolean) => <SidebarPreviewProvider><SidebarPreviewTrigger preview={{ ...conversation, message, running }}><button>Conversation</button></SidebarPreviewTrigger></SidebarPreviewProvider>;
+    const { rerender } = render(content("Working", true));
+    fireEvent.focus(screen.getByText("Conversation"));
+    expect(screen.getByRole("tooltip").textContent).toMatch(/Agent responding|에이전트 응답/);
+    rerender(content("Completed", false));
+    expect(screen.getByRole("tooltip").textContent).toContain("Completed");
+    expect(screen.getByRole("tooltip").textContent).not.toContain("Working");
+    expect(screen.getByRole("tooltip").textContent).not.toMatch(/Agent responding|에이전트 응답/);
+  });
+  it("removes the native tooltip while preserving its accessible name", () => {
+    render(<SidebarPreviewProvider><SidebarPreviewTrigger preview={conversation}><button title="Build review">Conversation</button></SidebarPreviewTrigger></SidebarPreviewProvider>);
+    const entry = screen.getByRole("button", { name: "Build review" });
+    expect(entry.hasAttribute("title")).toBe(false);
+    fireEvent.focus(entry);
+    expect(entry.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
   });
   it.each(["click", "scroll", "leave", "escape"])("hides on %s and cancels pending hover", (action) => {
     vi.useFakeTimers(); entries();

@@ -20,3 +20,21 @@ describe("sidebar display data", () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+
+it("keeps thumbnails for consecutive A to B sidebar hovers on the shared queue", async () => {
+  vi.useFakeTimers();
+  const tabs = ["browser:a", "browser:b"].map((tabId) => ({ tabId, documentGeneration: 1, title: tabId, url: "https://example.test/", zoomFactor: 1 }));
+  const preview = vi.fn(async (target: { tabId: string; documentGeneration: number }) => ({ ok: true, value: { ...target, dataUrl: "data:image/jpeg;base64,YQ==", width: 100, height: 50 } }));
+  vi.stubGlobal("aveApi", { browserWorkspace: { getState: async () => ({ ok: true, value: { tabs } }), preview } });
+  const surface = (tabId: string) => ({ tabId, kind: "browser" as const, ordinal: 1, url: "https://example.test/", boundSessionIds: [] });
+  const first = loadSidebarSurfacePreview(surface("browser:a"), "A");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(await first).toMatchObject({ imageDataUrl: "data:image/jpeg;base64,YQ==" });
+  const second = loadSidebarSurfacePreview(surface("browser:b"), "B");
+  await vi.advanceTimersByTimeAsync(1599);
+  expect(preview).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await second).toMatchObject({ imageDataUrl: "data:image/jpeg;base64,YQ==" });
+  expect(preview).toHaveBeenCalledTimes(2);
+  vi.useRealTimers();
+});

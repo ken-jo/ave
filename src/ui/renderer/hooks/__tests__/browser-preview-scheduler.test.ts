@@ -136,3 +136,102 @@ describe("visible browser card scheduling", () => {
     expect(preview).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("one-shot sidebar captures", () => {
+  it("queues rapid A to B hovers behind the shared throttle and reuses their cache", async () => {
+    vi.useFakeTimers();
+    const preview = vi.fn(async (target: typeof TARGET) => ({ ok: true as const, value: { ...PREVIEW, ...target } }));
+    const scheduler = new BrowserPreviewScheduler({ preview }, () => true);
+    const first = scheduler.request(TARGET);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await first).toEqual(PREVIEW);
+    await vi.advanceTimersByTimeAsync(100);
+    const targetB = { ...TARGET, tabId: "browser:two" };
+    const second = scheduler.request(targetB);
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(preview).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await second).toEqual({ ...PREVIEW, ...targetB });
+    expect(await scheduler.request(TARGET)).toEqual(PREVIEW);
+    expect(preview).toHaveBeenCalledTimes(2);
+  });
+  it("keeps an open workspace card's refresh schedule intact during sidebar capture", async () => {
+    vi.useFakeTimers();
+    let previous = -Infinity;
+    const preview = vi.fn(async (target: typeof TARGET) => {
+      expect(Date.now() - previous).toBeGreaterThanOrEqual(1500);
+      previous = Date.now();
+      return { ok: true as const, value: { ...PREVIEW, ...target } };
+    });
+    const scheduler = new BrowserPreviewScheduler({ preview }, () => true);
+    const workspace = vi.fn();
+    const unregister = scheduler.register(connected(), TARGET, workspace);
+    await vi.advanceTimersByTimeAsync(0);
+    const sidebar = scheduler.request({ ...TARGET, tabId: "browser:two" });
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(await sidebar).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(8399);
+    expect(workspace).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(workspace).toHaveBeenCalledTimes(2);
+    expect(preview).toHaveBeenCalledTimes(3);
+    unregister();
+  });
+  it("shares a pending workspace capture and rejects malformed image payloads", async () => {
+    vi.useFakeTimers();
+    const preview = vi.fn(async () => ({ ok: true as const, value: { ...PREVIEW, dataUrl: "page content" } }));
+    const scheduler = new BrowserPreviewScheduler({ preview }, () => true);
+    const unregister = scheduler.register(connected(), TARGET, vi.fn());
+    const sidebar = scheduler.request(TARGET);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await sidebar).toBeNull();
+    expect(preview).toHaveBeenCalledOnce();
+    unregister();
+  });
+});
+
+it("bounds pending display requests and coalesces repeated hover targets", async () => {
+  vi.useFakeTimers();
+  let visible = true;
+  const preview = vi.fn(async (target: typeof TARGET) => ({ ok: true as const, value: { ...PREVIEW, ...target } }));
+  const scheduler = new BrowserPreviewScheduler({ preview }, () => visible);
+  const first = scheduler.request(TARGET);
+  expect(scheduler.request(TARGET)).toBe(first);
+  const queued = Array.from({ length: 16 }, (_, index) => scheduler.request({ ...TARGET, tabId: `browser:queued-${index}` }));
+  expect(await first).toBeNull();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(await queued[0]).not.toBeNull();
+  expect(preview).toHaveBeenCalledOnce();
+  visible = false;
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(await Promise.all(queued.slice(1))).toEqual(Array(15).fill(null));
+});
+
+it("finishes a shared one-shot when its workspace card unregisters during capture", async () => {
+  vi.useFakeTimers();
+  let finish!: (result: BrowserWorkspaceResult<BrowserPreview>) => void;
+  const preview = vi.fn(() => new Promise<BrowserWorkspaceResult<BrowserPreview>>((resolve) => { finish = resolve; }));
+  const scheduler = new BrowserPreviewScheduler({ preview }, () => true);
+  const unregister = scheduler.register(connected(), TARGET, vi.fn());
+  const sidebar = scheduler.request(TARGET);
+  await vi.advanceTimersByTimeAsync(0);
+  unregister();
+  finish({ ok: true, value: PREVIEW });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(await sidebar).toEqual(PREVIEW);
+  expect(await scheduler.request(TARGET)).toEqual(PREVIEW);
+  expect(preview).toHaveBeenCalledOnce();
+});
+
+it("serves a queued hover before later refreshes even when the workspace fills the capture interval", async () => {
+  vi.useFakeTimers();
+  const preview = vi.fn(async (target: typeof TARGET) => ({ ok: true as const, value: { ...PREVIEW, ...target } }));
+  const scheduler = new BrowserPreviewScheduler({ preview }, () => true);
+  const remove = Array.from({ length: 7 }, (_, index) => scheduler.register(connected(), { ...TARGET, tabId: `browser:workspace-${index}` }, vi.fn()));
+  await vi.advanceTimersByTimeAsync(0);
+  const hover = scheduler.request(TARGET);
+  await vi.advanceTimersByTimeAsync(11_200);
+  expect(await hover).toEqual(PREVIEW);
+  expect(preview).toHaveBeenCalledTimes(8);
+  for (const unregister of remove) unregister();
+});

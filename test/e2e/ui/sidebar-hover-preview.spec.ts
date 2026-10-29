@@ -55,27 +55,25 @@ test("previews sidebar entries on hover and supports keyboard focus in the colla
     await expect(card).toBeHidden();
     await page.getByTestId("sidebar-collapse-toggle").click();
     await expect(page.getByTestId("sidebar-card")).toHaveAttribute("data-surface", "bare");
-    await expect(conversation).toBeVisible();
+    await expect(conversation).toHaveCount(0);
+    await expect(browser).toHaveCount(0);
+    await expect(terminal).toHaveCount(0);
+    await page.getByTestId("sidebar-group-features").click();
+    const terminalMenu = page.getByTestId("sidebar-terminal");
     await page.mouse.move(1100, 700);
-    await conversation.focus();
-    await expect(conversation).toBeFocused();
-    await expect(card).toContainText(message);
-    const collapsedEntryBounds = (await conversation.boundingBox())!;
-    const collapsedCardBounds = (await card.boundingBox())!;
-    expect(collapsedCardBounds.x).toBeGreaterThanOrEqual(collapsedEntryBounds.x + collapsedEntryBounds.width);
-    expect(collapsedCardBounds.x).toBeLessThanOrEqual(collapsedEntryBounds.x + collapsedEntryBounds.width + 30);
-    await expect.poll(() => conversation.evaluate((entry) => {
+    await terminalMenu.focus();
+    await expect(card).toContainText(/터미널|Terminal/);
+    await expect(terminalMenu).not.toHaveAttribute("title");
+    await expect.poll(() => terminalMenu.evaluate((entry) => {
       const id = entry.getAttribute("aria-describedby");
       return id ? document.getElementById(id)?.textContent : null;
-    })).toContain(message);
+    })).toMatch(/터미널|Terminal/);
     await page.screenshot({ path: testInfo.outputPath("collapsed-keyboard-preview.png") });
     await page.keyboard.press("Escape");
     await expect(card).toBeHidden();
-    await expect(conversation).not.toHaveAttribute("aria-describedby");
-    await browser.focus();
+    await page.getByTestId("sidebar-group-features").click();
+    await page.getByTestId("sidebar-web").focus();
     await expect(card).toBeVisible();
-    await terminal.focus();
-    await expect(card).toContainText(/터미널|Terminal/);
     await page.keyboard.press("Escape");
     await expect(card).toBeHidden();
   } finally {

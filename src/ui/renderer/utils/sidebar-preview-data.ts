@@ -1,3 +1,4 @@
+import { browserPreviewScheduler } from "../hooks/browser-preview-scheduler.js";
 import type { SidebarSurface } from "../hooks/use-sidebar-items.js";
 import type { SidebarPreviewData } from "../components/SidebarPreview.js";
 
@@ -13,6 +14,6 @@ export async function loadSidebarSurfacePreview(surface: SidebarSurface, title: 
   const state = await api.getState();
   const tab = state.ok ? state.value.tabs.find((entry) => entry.tabId === surface.tabId) : undefined;
   if (!tab) return base;
-  const result = await api.preview({ tabId: tab.tabId, documentGeneration: tab.documentGeneration });
-  return { ...base, title: tab.title || title, url: tab.url, ...(result.ok ? { imageDataUrl: result.value.dataUrl } : {}) };
+  const preview = await browserPreviewScheduler(api).request({ tabId: tab.tabId, documentGeneration: tab.documentGeneration });
+  return { ...base, title: tab.title || title, url: tab.url, ...(preview ? { imageDataUrl: preview.dataUrl } : {}) };
 }

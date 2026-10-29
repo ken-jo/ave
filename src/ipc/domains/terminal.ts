@@ -88,7 +88,9 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     const ownerWindowId = senderWindowId(event);
     if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
     const entry = listTerminalBlockTabs(ownerWindowId).find(({ session }) => session.tabId === payload.tabId && session.lane === "manual");
-    const command = entry?.tracker.list().find((block) => block.source === "osc133" && block.command.trim())?.command ?? null;
+    const recorded = entry?.tracker.list().find((block) => block.source === "osc133" && block.command.trim())?.command;
+    const firstLine = recorded?.split(/[\r\n]/u, 1)[0];
+    const command = firstLine ? (firstLine.length > 200 ? `${firstLine.slice(0, 199)}…` : firstLine) : null;
     return { ok: true, command };
   });
   for (const operation of ["blocks", "block"] as const) {

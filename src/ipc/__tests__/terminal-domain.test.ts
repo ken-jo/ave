@@ -160,6 +160,18 @@ describe("terminal preview display boundary", () => {
     expect(targeted.output).not.toContain("make build");
     expect(fanOut).not.toHaveBeenCalled();
   });
+  it("bounds a multiline command preview to its first line", async () => {
+    const tabId = "terminal:0000000a-3";
+    owners.set(tabId, 1);
+    const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
+    const firstLine = `cat <<'END' ${"x".repeat(220)}`;
+    tracker.recordOutput(terminalMarker("P;Cwd=/repo;Keys=emacs;Paste=1") + terminalMarker(`C;cmdline_url=${encodeURIComponent(`${firstLine}\nprivate heredoc body\nEND`)}`) + terminalMarker("D;0"));
+    registerTerminalBlockTracker(terminalSessionFixture(tabId, "manual"), tracker, 1);
+    const result = await handlers.get(CHANNELS.terminal.preview)!(from(windowOne), { tabId });
+    expect(result).toEqual({ ok: true, command: `${firstLine.slice(0, 199)}…` });
+    expect(result.command).toHaveLength(200);
+    expect(result.command).not.toContain("private heredoc body");
+  });
   it("exposes no raw scrollback or heuristic command and rejects subframes and agent payloads", async () => {
     const tabId = "terminal:0000000a-2";
     const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });

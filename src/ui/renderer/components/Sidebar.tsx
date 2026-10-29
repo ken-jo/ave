@@ -1061,6 +1061,7 @@ function SessionRow({
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid={`sidebar-session-${session.id}`}
           data-session-family={family}
+          aria-label={session.title}
           title={family === "main" ? undefined : familyLabel}
           onClick={() => {
             if (family !== "main") onOpenFamilyRow?.();
@@ -1312,27 +1313,6 @@ function ProjectSessionList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ordinarySessions, namedProjects, isSessionStarred]);
 
-  const openFamilyRow = (session: SessionSummary): (() => void) | undefined => {
-    switch (session.family) {
-      case "main":
-        return undefined;
-      case "routine":
-        // A routine run IS a session in the main store — the routine panel opens it by loading it, and so does this row.
-        return () => void onLoadSession?.(session.id);
-      case "work-board":
-        return session.workBoardItemId === undefined
-          ? undefined
-          : () => onOpenWorkBoardItem?.(session.workBoardItemId!);
-      case "side-chat":
-        if (paneSurfaceOf(session)) {
-          return () => onOpenPaneChat?.(session.paneTabId!);
-        }
-        return () => onOpenSideChat?.(session.id, session.originSessionId);
-    }
-  };
-  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
-  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
-
   // Collapsed rail: deliberately NOT wired to the add-project menu. The rail
   // renders no projects at all, and it has nowhere to host the adjacency
   // warning `workspace.pickRoot` can demand before an add completes — a
@@ -1341,7 +1321,6 @@ function ProjectSessionList({
   // show the folders.
   if (collapsed) {
     return (
-      <>
       <NavItem
         viewKey="project"
         label={t("sidebar.projectsLabel")}
@@ -1353,25 +1332,6 @@ function ProjectSessionList({
         collapsed
         data-testid="sidebar-projects-collapsed"
       />
-      {surfaces.map((surface) => (
-        <SidebarSurfaceRow key={surface.tabId} surface={surface}
-          visible={Boolean(isSurfaceVisible?.(surface.tabId))} onOpen={onOpenSurface} collapsed />
-      ))}
-      {visibleSessions(ordinarySessions).slice(0, SESSION_PAGE_SIZE).map((listed) => {
-        const session = { ...listed, title: resolveConversationTitle({ sessionId: listed.id, title: listed.title }, t) };
-        return (
-          <NavItem key={session.id} viewKey={session.id} label={session.title} title={session.title}
-            icon={<MessageSquareText className="h-4 w-4" />} isActive={session.id === currentSessionId} collapsed
-            onClick={() => {
-              if (session.family === "main") void onLoadSession?.(session.id);
-              else openFamilyRow(session)?.();
-            }}
-            preview={{ kind: "conversation", title: session.title, message: session.preview,
-              modifiedAt: session.modifiedAt, running: conversationActions?.isResponding(session.id) }}
-            data-testid={`sidebar-session-${session.id}`} />
-        );
-      })}
-      </>
     );
   }
 
@@ -1432,6 +1392,26 @@ function ProjectSessionList({
     } as NativeContextMenuHandlers;
   };
 
+  // Where one family's row lands when it is clicked. Every family but `main` opens the surface that already owns its
+  // transcript; `main` has no entry here because it loads into the tile through `onLoadSession`.
+  const openFamilyRow = (session: SessionSummary): (() => void) | undefined => {
+    switch (session.family) {
+      case "main":
+        return undefined;
+      case "routine":
+        // A routine run IS a session in the main store — the routine panel opens it by loading it, and so does this row.
+        return () => void onLoadSession?.(session.id);
+      case "work-board":
+        return session.workBoardItemId === undefined
+          ? undefined
+          : () => onOpenWorkBoardItem?.(session.workBoardItemId!);
+      case "side-chat":
+        if (paneSurfaceOf(session)) {
+          return () => onOpenPaneChat?.(session.paneTabId!);
+        }
+        return () => onOpenSideChat?.(session.id, session.originSessionId);
+    }
+  };
 
   // A row that is not a main conversation is READ-ONLY here: it cannot be
   // renamed, archived, pinned, deleted or dragged, because those act on the
@@ -1497,6 +1477,10 @@ function ProjectSessionList({
     );
   };
 
+  // Archived conversations leave the default listing. They are not deleted, so the toggle below brings them straight back —
+  // the reason archive is worth having as something distinct from delete.
+  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
+  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
   const hasArchivedSessions = listableSessions.some(isSessionArchived);
 
   // The folder's own actions, built once. The row's right-click and its trailing button both call this, so the two can never
@@ -1891,6 +1875,15 @@ export function Sidebar({
   const { t } = useTranslation();
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   const { surfaces, bindingsLoaded } = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
+  const surfacePreview = (kind: "browser" | "terminal") => {
+    const surface = surfaces.find((entry) => entry.kind === kind && isSurfaceVisible?.(entry.tabId))
+      ?? surfaces.find((entry) => entry.kind === kind);
+    if (!surface) return undefined;
+    const title = surface.title || surface.url ||
+      `${t(BUILTIN_LABEL_KEYS[kind === "terminal" ? "terminal" : "web"])} ${surface.ordinal}`;
+    return { preview: { kind, title, ...(surface.url ? { url: surface.url } : {}) } as SidebarPreviewData,
+      loadPreview: () => loadSidebarSurfacePreview(surface, title) };
+  };
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
   // Card element ref — EdgeResizeBar applies the live drag width directly to this node's style (rAF-coalesced) so dragging
   // never re-renders the whole Sidebar tree, mirroring ChatSidePanel's drag-perf pattern.
@@ -2260,6 +2253,8 @@ export function Sidebar({
                     conversations — the same surfaces the work panel's tabs
                     hold, in the main area. */}
                 <NavItem
+                  preview={surfacePreview("terminal")?.preview}
+                  loadPreview={surfacePreview("terminal")?.loadPreview}
                   viewKey="terminal"
                   label={t(BUILTIN_LABEL_KEYS.terminal)}
                   icon={<TerminalViewIcon className="h-4 w-4" />}
@@ -2270,6 +2265,8 @@ export function Sidebar({
                   data-testid="sidebar-terminal"
                 />
                 <NavItem
+                  preview={surfacePreview("browser")?.preview}
+                  loadPreview={surfacePreview("browser")?.loadPreview}
                   viewKey="web"
                   label={t(BUILTIN_LABEL_KEYS.web)}
                   icon={<WebViewIcon className="h-4 w-4" />}
