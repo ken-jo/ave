@@ -302,7 +302,7 @@ export function useMessageQueue({
     const formatted = formatQueueInject(taken);
     // ESC / esc 취소 = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint.
     startQueueTurn();
-    void onAsk(formatted, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
+    void onAsk(formatted, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
   }, [messageQueueStore, onAbort, onAsk, startQueueTurn]);
 
   // composer Enter morph — busy = queue.add, idle = onAsk 직행. ⌘⏎ = 즉시 주입 (LLM abort + 큐 selected + 현재 입력).
@@ -355,7 +355,7 @@ export function useMessageQueue({
     setQuestion("");
     // ⌘⏎ = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint. handleAsk 가 streaming 시 자체 abort 처리.
     startQueueTurn();
-    void onAsk(combined, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
+    void onAsk(combined, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
   }, [question, messageQueueStore, onAsk, setQuestion, interceptSubmit, startQueueTurn]);
 
   const handleMessageQueueSendNow = useCallback((item: MessageQueueItem) => {
@@ -363,7 +363,7 @@ export function useMessageQueue({
     if (!taken) return;
     const text = formatQueueInject([taken]);
     startQueueTurn();
-    void onAsk(text, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
+    void onAsk(text, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
   }, [messageQueueStore, onAsk, startQueueTurn]);
 
   // ESC 우선순위

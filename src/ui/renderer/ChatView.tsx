@@ -16,7 +16,7 @@ import type { SideChatOpenRequest } from "./components/SideChatView.js";
 import { getApi } from "./api-client.js";
 import { useChatContext } from "./context/ChatContext.js";
 import { useInputStatusRow } from "./hooks/use-input-status-row.js";
-import { type ComposerHandle } from "./components/Composer.js";
+import { captureComposerKeyboardIntent, type ComposerHandle } from "./components/Composer.js";
 import { useSuggestedReplies } from "./hooks/use-suggested-replies.js";
 import { hasActiveSuggestedReplies } from "./utils/composer-placeholder.js";
 import type { PluginEntry } from "./types.js";
@@ -607,7 +607,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   }, [setQuestion]);
 
   const handleBottomSend = useCallback(() => {
-    handleComposerSend({ inputOrigin: "user-keyboard", token: "" });
+    // The click is the gesture: capture its one-shot keyboard intent now.
+    handleComposerSend(captureComposerKeyboardIntent());
   }, [handleComposerSend]);
 
   const runtimeImageAttachmentProvider = subscriptionRuntimePolicy

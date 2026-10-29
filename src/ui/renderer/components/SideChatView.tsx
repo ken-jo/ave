@@ -5,7 +5,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { TranscriptRenderer } from "./TranscriptRenderer.js";
-import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
+import { Composer, ComposerFrame, captureComposerKeyboardIntent, type ComposerHandle } from "./Composer.js";
 import { BoundSurfaceChip, type BoundSurface } from "./BoundSurfaceChip.js";
 import { registerComposerTarget } from "../preview/composer-targets.js";
 import { ComposerApiKeyChip, resolveComposerRuntimeGates } from "./ChatComposerDock.js";
@@ -436,7 +436,8 @@ function SideChatSession({
   });
 
   const handleBottomSend = useCallback(() => {
-    handleComposerSend({ inputOrigin: "user-keyboard", token: "" });
+    // The click is the gesture: capture its one-shot keyboard intent now.
+    handleComposerSend(captureComposerKeyboardIntent());
   }, [handleComposerSend]);
 
   const { handleAttach, handleDropFiles, attachPastedText } = useAttachmentPicker({

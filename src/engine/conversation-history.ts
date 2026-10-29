@@ -27,7 +27,8 @@ export interface HistoryAppendProvenance {
 }
 
 /** A host transform that rewrites rows the history already holds, declared by the transform itself, never inferred from the rows.
- * `stale-tool-result-truncation`: only tool results change (stubbed or their images evicted), under the same tool call.
+ * `stale-tool-result-truncation`: a tool result becomes exactly what {@link staleToolResultRewrite} makes of the committed row (its image
+ * dropped, its compactedAt stamped); any other change under the same ids is new content.
  * `metadata-only`: only row metadata changes; role, content, tool structure and provenance are as committed. */
 export type DeclaredHistoryTransform = "stale-tool-result-truncation" | "metadata-only";
 
@@ -125,20 +126,23 @@ export class ConversationHistory {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const m = this.messages[i]!;
       if (m.role === "assistant") {
-        m.meta = { ...(m.meta ?? {}), turnSummary };
-        // The row object is shared with snapshots, so it is updated in place; this transform declares itself metadata-only, and its
-        // committed digest follows.
-        const id = m.meta.messageId;
-        const prior = typeof id === "string" ? this.committed.get(id) : undefined;
-        if (prior) {
-          const current = { row: m, ...rowDigests(m) };
-          if (!isDeclaredRewrite(prior, current, "metadata-only")) noteToolResultsReturnedToModel();
-          this.committed.set(id!, current);
-        }
+        this.updateRowMeta(m, { turnSummary });
         return true;
       }
     }
     return false;
+  }
+
+  /** The one in-place change of a held row: merge metadata into it, so snapshots sharing the row see it. It is declared metadata-only and
+   * checked as such against the committed digest; a row this history does not hold is refused. */
+  updateRowMeta(row: GenericMessage, patch: Partial<NonNullable<GenericMessage["meta"]>>): void {
+    const id = row.meta?.messageId;
+    const prior = typeof id === "string" ? this.committed.get(id) : undefined;
+    if (!prior || prior.row !== row || !this.messages.includes(row)) throw new Error("updateRowMeta: the row is not held by this history");
+    row.meta = { ...(row.meta ?? {}), ...patch };
+    const current = { row, ...rowDigests(row) };
+    if (!isDeclaredRewrite(prior, current, "metadata-only")) noteToolResultsReturnedToModel();
+    this.committed.set(id!, current);
   }
 
   /** Return a shallow array copy; later row metadata mutations remain visible to snapshots. */
@@ -237,6 +241,21 @@ export class ConversationHistory {
   }
 }
 
+/** The one host rewrite of a stale tool result: drop its image (eviction) and/or stamp compactedAt (mark-stale, which serializes the
+ * result as a stub). Content, call id, tool name and error state are kept. Image eviction and mark-stale both build their rows here, and a
+ * restore declared `stale-tool-result-truncation` is accepted only when each changed row is this function applied to what was committed. */
+export function staleToolResultRewrite(
+  row: Extract<GenericMessage, { role: "tool_result" }>,
+  change: { dropImage?: boolean; compactedAt?: string },
+): Extract<GenericMessage, { role: "tool_result" }> {
+  const { image, ...rest } = row;
+  return {
+    ...rest,
+    ...(change.dropImage || image === undefined ? {} : { image }),
+    ...(change.compactedAt !== undefined ? { meta: { ...(row.meta ?? {}), compactedAt: change.compactedAt } } : {}),
+  };
+}
+
 /** Digests of a row with and without its metadata. Row id and creation time are bookkeeping, never content. */
 function rowDigests(row: GenericMessage): { full: string; bare: string } {
   const { meta, ...body } = row;
@@ -250,7 +269,15 @@ function isDeclaredRewrite(prior: CommittedRow, current: CommittedRow, declared:
   if (prior.full === current.full) return true;
   if (declared === "metadata-only") return prior.bare === current.bare;
   if (declared === "stale-tool-result-truncation") {
-    return prior.row.role === "tool_result" && current.row.role === "tool_result" && prior.row.toolUseId === current.row.toolUseId;
+    if (prior.row.role !== "tool_result" || current.row.role !== "tool_result") return false;
+    const compactedAt = current.row.meta?.compactedAt;
+    if (compactedAt !== undefined && typeof compactedAt !== "string") return false;
+    // Rebuild what the host rewrite makes of the committed row with the changes the current row shows; only an exact match is exempt.
+    const expected = staleToolResultRewrite(prior.row, {
+      dropImage: current.row.image === undefined,
+      ...(compactedAt !== prior.row.meta?.compactedAt && compactedAt !== undefined ? { compactedAt } : {}),
+    });
+    return rowDigests(expected).full === current.full;
   }
   return false;
 }

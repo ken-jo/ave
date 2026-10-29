@@ -983,7 +983,7 @@ function markHostExitInterruption(self: LoopContext): boolean {
   if (!tail || tail.role === "user") return false;
   if (tail.role === "assistant" && tail.meta?.interrupted === true) {
     if (tail.meta.interruptedBy === HOST_EXIT_INTERRUPTION) return false;
-    tail.meta = { ...tail.meta, interruptedBy: HOST_EXIT_INTERRUPTION };
+    self.history.updateRowMeta(tail, { interruptedBy: HOST_EXIT_INTERRUPTION });
     return true;
   }
   self.history.append({

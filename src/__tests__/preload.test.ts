@@ -633,6 +633,33 @@ describe("preload — plugin webview asset URLs", () => {
     }), "main");
   });
 
+  it("never lets lingering activation rescue a missing, replayed, forged or expired chat send intent", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const chatSend = api["chatSend"] as (input: string, attachments: unknown[] | undefined, inputOrigin: string, userIntent?: unknown) => Promise<unknown>;
+    const activation = () => (mockInvoke.mock.calls.at(-1)![1] as { userActivation?: boolean }).userActivation;
+    mockUserActivation.isActive = true;
+    const token = capture();
+    await chatSend("first", undefined, "user-keyboard", token);
+    expect(activation()).toBe(true);
+    await chatSend("replayed", undefined, "user-keyboard", token);
+    expect(activation()).toBe(false);
+    await chatSend("forged", undefined, "user-keyboard", { inputOrigin: "user-keyboard", token: "not-minted" });
+    expect(activation()).toBe(false);
+    await chatSend("missing", undefined, "user-keyboard");
+    expect(activation()).toBe(false);
+    vi.useFakeTimers();
+    try {
+      const stale = capture();
+      vi.advanceTimersByTime(5_001);
+      await chatSend("late", undefined, "user-keyboard", stale);
+      expect(activation()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      mockUserActivation.isActive = false;
+    }
+  });
+
   it("marks a chat guide as the user's own words only with a fresh, unused composer intent", async () => {
     const api = await loadAveApi();
     const capture = api["captureUserKeyboardIntent"] as () => unknown;
@@ -650,14 +677,17 @@ describe("preload — plugin webview asset URLs", () => {
     await chatGuide("forged", { inputOrigin: "user-keyboard", userActivation: true });
     expect(intentOf(1)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
 
-    // A real composer gesture: captured during the key handler, consumed once.
+    // A real composer gesture: captured during the key handler, consumed once. Activation lingers after the gesture, and it rescues neither
+    // the replayed token nor a forged one.
     mockUserActivation.isActive = true;
     const token = capture();
-    mockUserActivation.isActive = false;
     await chatGuide("typed", token);
     expect(intentOf(2)).toEqual({ inputOrigin: "user-keyboard", userActivation: true });
     await chatGuide("replayed", token);
     expect(intentOf(3)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+    await chatGuide("forged token", { inputOrigin: "user-keyboard", token: "not-minted" });
+    expect(mockInvoke.mock.calls.at(-1)![3]).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+    mockUserActivation.isActive = false;
 
     // An expired intent confers nothing.
     vi.useFakeTimers();
@@ -666,8 +696,9 @@ describe("preload — plugin webview asset URLs", () => {
       const stale = capture();
       mockUserActivation.isActive = false;
       vi.advanceTimersByTime(5_001);
+      mockUserActivation.isActive = true;
       await chatGuide("late", stale);
-      expect(intentOf(4)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+      expect(mockInvoke.mock.calls.at(-1)![3]).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
     } finally {
       vi.useRealTimers();
     }

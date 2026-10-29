@@ -1934,11 +1934,16 @@ one command into that terminal. Main owns the boundary
   wire or disk input restored mid-turn), records external content. A held row
   id proves nothing: a row under it is compared, by a digest of its role,
   content, tool structure and provenance, with what was committed, and a
-  changed row counts as new content unless its transform declared itself
-  (stale tool-result truncation by eviction or mark-stale, or a metadata-only
-  change). Composer guidance counts as the user's own words only when it carries
-  the same one-shot keyboard intent a send consumes; a queue flush or any
-  call without that intent is another principal's. After that, every host command in the turn needs a fresh person's
+  changed row counts as new content unless its transform declared itself and
+  the row is exactly that transform's output: a stale tool-result truncation
+  must equal the one host rewrite (`staleToolResultRewrite`, which eviction and
+  mark-stale both use) applied to the committed row, and a metadata-only change
+  must leave the content digest unchanged. In-place metadata changes go through
+  the history's `updateRowMeta`. Composer guidance counts as the user's own words
+  only when it carries the same one-shot keyboard intent a send consumes; a
+  queue flush or any call without that intent is another principal's. A
+  missing, forged, consumed or expired intent token is never rescued by the
+  browser's lingering user activation, for a guide or a send. After that, every host command in the turn needs a fresh person's
   approval: the card is forced, a saved exact `HostTerminal` rule and
   remembered approvals do not apply, the card offers no lasting allow and
   says so, and it stays desktop-only. In a clean turn an exact rule still runs
