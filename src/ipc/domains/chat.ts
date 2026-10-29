@@ -490,27 +490,30 @@ export function registerChatHandlers(deps: IpcDeps): void {
   } = deps;
   // A branch click's gesture becomes the auto-continue's authority. Preload consumes the click's token as the branch request is sent, so the
   // fork and the target's load may take as long as they need; main holds the minted intent for exactly that branch: this group, the source
-  // session it forked and the target session it created. The continue that follows spends it once. A wrong session, a second use, a
-  // newer branch, a new chat, a fork or a switch to another session refuses or revokes it, and an unredeemed grant lapses after a bound
-  // counted from the fork's completion that a normal load never approaches.
+  // session it forked, the target session it created, and the loop's session epoch at the fork. The loop advances that epoch on every
+  // change of its session identity, whatever the path (new chat, tile release, fork, resume, load), so the grant is good only while
+  // the loop's one session change since the fork is the load of the target: any other swap in between, including leaving and coming
+  // back to the target, moves the epoch past it. The continue spends it once; a wrong session, a second use or a newer branch refuses
+  // it, and an unredeemed grant lapses after a bound counted from the fork's completion that a normal load never approaches.
   const BRANCH_CONTINUATION_TTL_MS = 10 * 60_000;
   interface BranchContinuation {
     readonly id: string;
     readonly sourceSessionId: string;
     readonly targetSessionId: string;
     readonly issuedAt: number;
+    /** The loop's session epoch at the fork; the target's load is the one session change allowed after it. */
+    readonly sourceEpoch: number;
     readonly intent: VerifiedUserKeyboardIntent;
   }
   const branchContinuations = new WeakMap<object, BranchContinuation>();
-  const revokeBranchContinuation = (group: object, unlessTarget?: string): void => {
-    const pending = branchContinuations.get(group);
-    if (pending && pending.targetSessionId !== unlessTarget) branchContinuations.delete(group);
-  };
-  const redeemBranchContinuation = (group: object, id: unknown, sessionId: string): VerifiedUserKeyboardIntent | undefined => {
+  const redeemBranchContinuation = (
+    group: object, loop: ConversationLoop, id: unknown, sessionId: string,
+  ): VerifiedUserKeyboardIntent | undefined => {
     const pending = branchContinuations.get(group);
     branchContinuations.delete(group);
     if (!pending || typeof id !== "string" || id !== pending.id) return undefined;
-    if (pending.targetSessionId !== sessionId) return undefined;
+    if (pending.targetSessionId !== sessionId || loop.getSessionId() !== sessionId) return undefined;
+    if (loop.getSessionEpoch() !== pending.sourceEpoch + 1) return undefined;
     // The target must still be the fork of the session this branch came from.
     if (memoryManager.loadSessionMetadata(sessionId)?.parentSessionId !== pending.sourceSessionId) return undefined;
     if (Date.now() - pending.issuedAt > BRANCH_CONTINUATION_TTL_MS) return undefined;
@@ -1149,7 +1152,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.new, async (e, rawProject?: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.new, e); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.new);
-    revokeBranchContinuation(group);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
       const parsed = resolveChatNewProjectPayload(rawProject, defaultWorkspaceProject().projectRoot);
@@ -1220,8 +1222,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { ok: false, compacted: false, compactedAt: null, removedMessageCount: 0 };
     }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.sessionResume);
-    // Opening the branch keeps its pending continuation; opening any other session cancels it.
-    revokeBranchContinuation(group, sessionId);
     const conversationLoop = group.loop;
     // Name the holding tile so the renderer can reveal a folded conversation.
     const holder = groupHolding(sessionId);
@@ -1385,7 +1385,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.chat.fork, async (e, messageId: unknown, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.fork, e); return UNAUTHORIZED_FRAME; }
     const group = groupOf(e, chatGroupId, CHANNELS.chat.fork);
-    revokeBranchContinuation(group);
     const conversationLoop = group.loop;
     const mutation = group.turns.trackSessionMutation(async () => {
       const current = conversationLoop.getHistory().getMessages() as GenericMessage[];
@@ -1440,7 +1439,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // A branch's auto-continue spends the grant that branch's click left (single use, whatever the outcome); any other continue is
     // the user's turn only with its own click's consumed gesture intent.
     const userKeyboardIntent = p.branchContinuation !== undefined
-      ? redeemBranchContinuation(group, p.branchContinuation, p.sessionId)
+      ? redeemBranchContinuation(group, group.loop, p.branchContinuation, p.sessionId)
       : mintUserKeyboardIntent(p.intent);
     if (p.sessionId !== group.loop.getSessionId()) return { ok: false, error: "session-mismatch" };
     if (userKeyboardIntent === undefined) {
@@ -1742,7 +1741,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // Minted now, from the click preload just reported; held below only for a fork that will auto-continue.
     const clickIntent = mintUserKeyboardIntent(p?.intent);
     // A newer branch supersedes an earlier one's pending continuation.
-    revokeBranchContinuation(group);
+    branchContinuations.delete(group);
     if (typeof p?.sessionId !== "string" || !Number.isSafeInteger(p?.compactNum) || (p.compactNum as number) < 0) {
       return { error: "invalid-args" };
     }
@@ -1750,6 +1749,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { error: "session-mismatch" };
     }
     const sourceSessionId = p.sessionId;
+    const sourceEpoch = group.loop.getSessionEpoch();
     const mutation = group.turns.trackSessionMutation(async () =>
       group.loop.branchFromCheckpoint(p.compactNum as number));
     if (!mutation) return { error: STREAMING_ACTIVE };
@@ -1759,9 +1759,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
     } catch (err) {
       return { error: (err as Error).message };
     }
-    if (!branched.shouldAutoContinue || clickIntent === undefined) return branched;
+    // A fork does not change the loop's session; one that did would leave nothing to bind the grant to.
+    if (!branched.shouldAutoContinue || clickIntent === undefined || group.loop.getSessionEpoch() !== sourceEpoch) return branched;
     const continuation: BranchContinuation = {
-      id: createDlpSafeUuid(), sourceSessionId, targetSessionId: branched.newSessionId, issuedAt: Date.now(), intent: clickIntent,
+      id: createDlpSafeUuid(), sourceSessionId, targetSessionId: branched.newSessionId, issuedAt: Date.now(), sourceEpoch, intent: clickIntent,
     };
     branchContinuations.set(group, continuation);
     return { ...branched, branchContinuation: continuation.id };

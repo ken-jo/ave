@@ -1930,10 +1930,15 @@ one command into that terminal. Main owns the boundary
   their click's token; a queued auto-send stays `queue-auto`. A
   checkpoint branch consumes its click's token as the request leaves; main
   holds the minted intent as a single-use grant bound to that branch's
-  source and target sessions, so a slow fork or load cannot outlive the
-  click. The auto-continue spends the grant. A second use, another session,
-  a newer branch, a new chat, a fork or opening another session refuses or
-  revokes it, and an unredeemed grant lapses ten minutes after the fork.
+  source and target sessions and to the loop's session epoch at the fork,
+  so a slow fork or load cannot outlive the click. The loop moves that epoch
+  on every change of its session identity, so the grant holds only while
+  the one change since the fork is the load of the target. Any other swap
+  (a new chat, closing the tile, another session, leaving and returning)
+  moves the epoch past it. The auto-continue spends the grant. A second use,
+  another session or a newer branch refuses it, and an unredeemed grant
+  lapses ten minutes after the fork. A test fails any write of a loop's
+  session id that does not move the epoch.
   The headless `ave exec` prompt is the owner's via its unattended
   authority and never gets the capability. The inventory of entry points and
   their classification is a test over the compiler's syntax tree

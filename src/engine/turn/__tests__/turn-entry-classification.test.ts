@@ -417,6 +417,85 @@ describe("the turn entry inventory", () => {
   });
 });
 
+// A branch's auto-continue grant is bound to the loop's session epoch, so every change of a loop's session identity must move the epoch
+// in the same block. A new swap path that writes `sessionId` without it would let a grant from before the swap survive it.
+const OWNER_TEXTS: ReadonlySet<string> = new Set(["self", "this", "loop"]);
+const ownerText = (node: Node): string | undefined => {
+  const expression = stripExpression(node);
+  if (ts.isThisExpression(expression)) return "this";
+  return ts.isIdentifier(expression) && OWNER_TEXTS.has(expression.text) ? expression.text : undefined;
+};
+const memberOf = (node: Node, member: string): string | undefined => {
+  const expression = stripExpression(node);
+  if (ts.isPropertyAccessExpression(expression) && nameText(expression.name) === member) return ownerText(expression.expression);
+  if (ts.isElementAccessExpression(expression) && literalText(expression.argumentExpression) === member) return ownerText(expression.expression);
+  return undefined;
+};
+const isAssignment = (node: Node): node is ts.BinaryExpression =>
+  ts.isBinaryExpression(node)
+  && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+
+/** Writes of `<owner>.sessionId` whose enclosing block does not also advance `<owner>.sessionEpoch` by one. */
+function sessionWritesWithoutEpoch(source: Node): number {
+  let unpaired = 0;
+  const advancesEpoch = (block: Node, owner: string): boolean => {
+    let found = false;
+    const scan = (node: Node) => {
+      if (found) return;
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken
+        && memberOf(node.left, "sessionEpoch") === owner && ts.isNumericLiteral(node.right) && node.right.text === "1") found = true;
+      if ((ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node)) && node.operator === ts.SyntaxKind.PlusPlusToken
+        && memberOf(node.operand, "sessionEpoch") === owner) found = true;
+      node.forEachChild(scan);
+    };
+    block.forEachChild(scan);
+    return found;
+  };
+  const visit = (node: Node) => {
+    if (isAssignment(node)) {
+      const owner = memberOf(node.left, "sessionId");
+      if (owner !== undefined) {
+        let block: Node | undefined = (node as Node & { parent?: Node }).parent;
+        while (block !== undefined && !ts.isBlock(block) && !ts.isSourceFile(block)) block = (block as Node & { parent?: Node }).parent;
+        if (block === undefined || !advancesEpoch(block, owner)) unpaired += 1;
+      }
+    }
+    node.forEachChild(visit);
+  };
+  visit(source);
+  return unpaired;
+}
+
+describe("conversation session identity", () => {
+  const ENGINE = join(SRC, "engine");
+
+  it("moves the session epoch with every write of a loop's session id", () => {
+    const files = sourceFiles(ENGINE);
+    const parsed = parseSourceFiles(files);
+    expect(files.filter((file) => !parsed.has(file))).toEqual([]);
+    const unpaired = files
+      .map((file) => [relative(SRC, file).split(sep).join("/"), sessionWritesWithoutEpoch(parsed.get(file) as unknown as Node)] as const)
+      .filter(([, count]) => count > 0);
+    expect(unpaired).toEqual([]);
+  });
+
+  const unpairedIn = (text: string): number => {
+    const source = parseSourceTexts(new Map([["fixture.ts", text]])).get("fixture.ts");
+    if (source === undefined) throw new Error("fixture did not parse");
+    return sessionWritesWithoutEpoch(source as unknown as Node);
+  };
+
+  it.each([
+    ["a swap that forgets the epoch", `declare const self: any; function swap(id: string) { self.sessionId = id; }`, 1],
+    ["a swap through an element key", `declare const self: any; function swap(id: string) { self["sessionId"] = id; }`, 1],
+    ["a swap whose epoch moves another object", `declare const self: any; declare const other: any; function swap(id: string) { self.sessionId = id; other.sessionEpoch += 1; }`, 1],
+    ["a swap that moves its epoch", `declare const self: any; function swap(id: string) { self.sessionId = id; self.sessionEpoch += 1; }`, 0],
+    ["a class swap that moves its epoch", `class L { sessionId = ""; sessionEpoch = 0; swap(id: string) { this.sessionId = id; this.sessionEpoch++; } }`, 0],
+  ] as const)("flags %s", (_label, text, expected) => {
+    expect(unpairedIn(text)).toBe(expected);
+  });
+});
+
 describe("keyboard intent minting", () => {
   it.each([
     ["a consumed keyboard gesture", { inputOrigin: "user-keyboard", userActivation: true }, true],

@@ -886,13 +886,29 @@ describe("branch auto-continue grant", () => {
   const BRANCH = "ave:chat:branch-from-checkpoint";
   const CONTINUE = "ave:chat:continue-last-user";
 
-  /** A branch click whose fork takes `forkMs`, then the renderer's load of the branch it created. */
+  /**
+   * A branch click whose fork takes `forkMs`, then the renderer's load of the branch it created through session-resume. The loop
+   * models the real one's session identity: every change of session (load, new chat, release) moves its epoch.
+   */
   async function branchClick(options: { gesture?: boolean; forkMs?: number } = {}) {
     let current = SOURCE;
+    let epoch = 0;
+    let fresh = 0;
     const loop = makeConversationLoop(SOURCE, [{ role: "user", content: "question", meta: { messageId: "row-1" } }]);
     loop.getSessionId.mockImplementation(() => current);
     loop.runTurn.mockResolvedValue({ text: "answer", toolCalls: [], stopReason: "end_turn" });
+    loop.resetAndResume.mockImplementation(async (id: string) => {
+      current = id;
+      epoch += 1;
+      return { ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 };
+    });
+    loop.newConversation.mockImplementation(async () => {
+      current = `00000000-0000-4000-8000-${String(++fresh).padStart(12, "0")}`;
+      epoch += 1;
+    });
     Object.assign(loop, {
+      getSessionEpoch: vi.fn(() => epoch),
+      runSessionTransition: vi.fn(async (_reason: string, operation: (lease: object) => unknown) => operation({})),
       branchFromCheckpoint: vi.fn(async () => {
         // A large conversation or a slow disk: the fork outlasts the preload token's 5 s lifetime.
         if (options.forkMs !== undefined) vi.setSystemTime(Date.now() + options.forkMs);
@@ -904,10 +920,11 @@ describe("branch auto-continue grant", () => {
     const branched = await invokeRegisteredHandler(handlers, BRANCH, {
       sessionId: SOURCE, compactNum: 1, intent: options.gesture === false ? { inputOrigin: "user-keyboard", userActivation: false } : KEYBOARD_GESTURE,
     }, "main") as { branchContinuation?: string; newSessionId?: string };
-    current = TARGET;
+    const open = (id: string) => invokeRegisteredHandler(handlers, "ave:chat:session-resume", id, "main");
+    await open(TARGET);
     const continueWith = (grant: unknown, sessionId = TARGET) =>
       invokeRegisteredHandler(handlers, CONTINUE, { sessionId, branchContinuation: grant }, "main");
-    return { loop, branched, continueWith, setSession: (id: string) => { current = id; } };
+    return { loop, branched, continueWith, open };
   }
 
   beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); });
@@ -939,10 +956,10 @@ describe("branch auto-continue grant", () => {
   });
 
   it("refuses the grant for a session other than the branch it created, and burns it", async () => {
-    const { loop, branched, continueWith, setSession } = await branchClick();
-    setSession(OTHER);
+    const { loop, branched, continueWith, open } = await branchClick();
+    await open(OTHER);
     await expect(continueWith(branched.branchContinuation, OTHER)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
-    setSession(TARGET);
+    await open(TARGET);
     await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
     expect(loop.runTurn).not.toHaveBeenCalled();
   });
@@ -953,15 +970,18 @@ describe("branch auto-continue grant", () => {
     expect(loop.runTurn).not.toHaveBeenCalled();
   });
 
+  // Every way the tile can leave the branch and come back to it moves the session epoch past the grant.
   it.each([
-    ["opening another session", async (loop: ReturnType<typeof makeConversationLoop>) => {
-      loop.resetAndResume.mockResolvedValue({ ok: false, compacted: false, compactedAt: null, removedMessageCount: 0 });
-      await invokeRegisteredHandler(handlers, "ave:chat:session-resume", OTHER, "main");
-    }],
+    ["opening another session", async (open: (id: string) => unknown) => { await open(OTHER); }],
     ["starting a new chat", async () => { await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main"); }],
-  ])("cancels the pending continuation on %s", async (_label, cancel) => {
-    const { loop, branched, continueWith } = await branchClick();
-    await cancel(loop);
+    ["closing the default tile, then starting a new chat", async () => {
+      await expect(invokeRegisteredHandler(handlers, "ave:chat:group-release", "main")).resolves.toMatchObject({ ok: true, released: true });
+      await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main");
+    }],
+  ])("refuses the grant after %s and reopening the branch", async (_label, leave) => {
+    const { loop, branched, continueWith, open } = await branchClick();
+    await leave(open);
+    await open(TARGET);
     await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
     expect(loop.runTurn).not.toHaveBeenCalled();
   });
