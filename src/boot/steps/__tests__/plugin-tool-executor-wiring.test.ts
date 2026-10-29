@@ -130,6 +130,11 @@ function invocationContext(
   } as const;
 }
 
+async function setupInvoker(ctx: BootContext) {
+  await setupPluginToolExecutor(ctx);
+  return ctx.lateBinding.pluginToolInvokerRef.fn!;
+}
+
 describe("setupPluginToolExecutor production auth wiring", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -194,9 +199,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       invalidatedAccountHash: "predecessor-begin-principal",
       invalidatedAccountGenerationId: predecessorGenerationId,
     });
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_login", {}, invocationContext()),
     ).resolves.toEqual({ authenticated: true });
@@ -215,9 +218,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       epoch: 2,
       invalidatedAccountHash: "malformed-principal",
     });
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_login", {}, invocationContext()),
     ).rejects.toThrow("plugin auth invalidation is missing generation provenance");
@@ -231,9 +232,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       invalidatedAccountHash: "predecessor-result-principal",
       invalidatedAccountGenerationId: predecessorGenerationId,
     });
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_status", {}, invocationContext("status")),
     ).resolves.toEqual({ authenticated: true });
@@ -259,9 +258,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       invalidatedAccountHash: "predecessor-detached-principal",
       invalidatedAccountGenerationId: predecessorGenerationId,
     });
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_login", {}, invocationContext()),
     ).rejects.toThrow("auth handler ceiling");
@@ -277,9 +274,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
   it("fails closed before dispatch when pinned auth provenance cannot claim the active generation", async () => {
     const ctx = makeContext();
     mocks.beginPluginAuthInvocation.mockReturnValue(undefined);
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_login", {}, invocationContext()),
     ).rejects.toThrow("plugin auth generation changed before transition admission");
@@ -293,9 +288,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
         _meta: { "ave/operationPolicy": { discriminant: "operation" } },
       }],
     });
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_login", {}, {
         origin: "ui",
@@ -311,9 +304,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
 
   it("rejects host-pinned auth provenance when it does not match the manifest role", async () => {
     const ctx = makeContext();
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_login", {}, invocationContext("status")),
     ).rejects.toThrow("host-pinned plugin auth provenance does not match the active manifest");
@@ -389,9 +380,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       invalidatedAccountHash: "stale-status-principal",
       invalidatedAccountGenerationId: predecessorGenerationId,
     });
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_status", {}, invocationContext("status")),
     ).rejects.toThrow("status refresh failed");
@@ -424,9 +413,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
         beforeHandler();
       },
     );
-    await setupPluginToolExecutor(ctx);
-
-    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn!;
+    const invoke = await setupInvoker(ctx);
     await expect(
       invoke("auth_login", {}, invocationContext()),
     ).rejects.toThrow("plugin operation session is revoked");

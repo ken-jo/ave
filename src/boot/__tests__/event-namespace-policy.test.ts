@@ -17,6 +17,53 @@ import { registerManifestEventSubscriptions } from "../plugins.js";
 import { mkdtempSync } from "node:fs";
 import { servedAgentPluginsDocument } from "../../plugins/__tests__/test-helpers.js";
 
+async function writeEventPluginFixture(
+  testDir: string,
+  installedDir: string,
+  registryPath: string,
+  id: string,
+  declarations: { eventSubscriptions?: string[]; emittedEvents?: string[] },
+  extra: Record<string, unknown>,
+): Promise<void> {
+  const pluginDir = join(installedDir, id);
+  await mkdir(pluginDir, { recursive: true });
+  const toolName = `${id.replace(/-/g, "_")}_ping`;
+  await writeFile(
+    join(pluginDir, "entry.mjs"),
+    `export default async function createPlugin(ctx) {
+  return { handlers: { ${toolName}: async () => "pong" }, start: async () => {}, stop: async () => {} };
+}`,
+    "utf-8",
+  );
+  const manifest = {
+    id,
+    name: id,
+    version: "1.0.0",
+    description: "Test fixture.",
+    entry: "entry.mjs",
+    tools: [
+      {
+        name: toolName,
+        description: `${toolName} test tool`,
+        inputSchema: { type: "object", properties: {} },
+        _meta: { ui: { visibility: ["model", "app"] } },
+      },
+    ],
+    ...declarations,
+    ...extra,
+  };
+  await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
+  await mkdir(join(testDir, "plugins"), { recursive: true });
+  await writeFile(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      plugins: [{ id, manifestPath: join(pluginDir, "plugin.json") }],
+    }),
+    "utf-8",
+  );
+}
+
 describe("capabilities module namespace policy", () => {
   it("classifies private namespaces as 'private'", () => {
     expect(classifySubscription("memory.private.user_doc")).toBe("private");
@@ -140,43 +187,7 @@ describe("registerManifestEventSubscriptions namespace gate", () => {
     eventSubscriptions: string[],
     extra: Record<string, unknown> = {},
   ): Promise<void> {
-    const pluginDir = join(installedDir, id);
-    await mkdir(pluginDir, { recursive: true });
-    const toolName = `${id.replace(/-/g, "_")}_ping`;
-    await writeFile(
-      join(pluginDir, "entry.mjs"),
-      `export default async function createPlugin(ctx) {
-  return { handlers: { ${toolName}: async () => "pong" }, start: async () => {}, stop: async () => {} };
-}`,
-      "utf-8",
-    );
-    const manifest = {
-      id,
-      name: id,
-      version: "1.0.0",
-      description: "Test fixture.",
-      entry: "entry.mjs",
-      tools: [
-        {
-          name: toolName,
-          description: `${toolName} test tool`,
-          inputSchema: { type: "object", properties: {} },
-          _meta: { ui: { visibility: ["model", "app"] } },
-        },
-      ],
-      eventSubscriptions,
-      ...extra,
-    };
-    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
-    await mkdir(join(testDir, "plugins"), { recursive: true });
-    await writeFile(
-      registryPath,
-      JSON.stringify({
-        version: 1,
-        plugins: [{ id, manifestPath: join(pluginDir, "plugin.json") }],
-      }),
-      "utf-8",
-    );
+    await writeEventPluginFixture(testDir, installedDir, registryPath, id, { eventSubscriptions }, extra);
   }
 
   function stubEventCollector(): {
@@ -286,43 +297,7 @@ describe("capability emit gate", () => {
     emittedEvents: string[],
     extra: Record<string, unknown> = {},
   ): Promise<void> {
-    const pluginDir = join(installedDir, id);
-    await mkdir(pluginDir, { recursive: true });
-    const toolName = `${id.replace(/-/g, "_")}_ping`;
-    await writeFile(
-      join(pluginDir, "entry.mjs"),
-      `export default async function createPlugin(ctx) {
-  return { handlers: { ${toolName}: async () => "pong" }, start: async () => {}, stop: async () => {} };
-}`,
-      "utf-8",
-    );
-    const manifest = {
-      id,
-      name: id,
-      version: "1.0.0",
-      description: "Test fixture.",
-      entry: "entry.mjs",
-      tools: [
-        {
-          name: toolName,
-          description: `${toolName} test tool`,
-          inputSchema: { type: "object", properties: {} },
-          _meta: { ui: { visibility: ["model", "app"] } },
-        },
-      ],
-      emittedEvents,
-      ...extra,
-    };
-    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
-    await mkdir(join(testDir, "plugins"), { recursive: true });
-    await writeFile(
-      registryPath,
-      JSON.stringify({
-        version: 1,
-        plugins: [{ id, manifestPath: join(pluginDir, "plugin.json") }],
-      }),
-      "utf-8",
-    );
+    await writeEventPluginFixture(testDir, installedDir, registryPath, id, { emittedEvents }, extra);
   }
 
   /** Exercise the production emit predicate: only declared gated namespaces pass. */

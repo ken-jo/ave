@@ -329,6 +329,18 @@ beforeEach(() => {
 
 afterEach(() => tmpDirs.cleanup());
 
+function leaseSettingsOptions(root: string) {
+  return {
+    userDataPath: root,
+    encryption: {
+      isEncryptionAvailable: () => true,
+      getSelectedStorageBackend: () => "external_key" as const,
+      encryptString: (value: string) => Buffer.from(value),
+      decryptString: (value: Buffer) => value.toString(),
+    },
+  };
+}
+
 describe("HostApi.config.get merged-read precedence", () => {
   it("fails clearly when immutable install provenance is omitted", async () => {
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
@@ -809,15 +821,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
         .map((change) => ({ stage, change }))),
   )("fences issuance at $stage after $change", async ({ stage, change }) => {
     const root = tmpDirs.track(mkdtempSync("/tmp/ave-lease-stage-"));
-    const settings = new SettingsService({
-      userDataPath: root,
-      encryption: {
-        isEncryptionAvailable: () => true,
-        getSelectedStorageBackend: () => "external_key",
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
-      },
-    });
+    const settings = new SettingsService(leaseSettingsOptions(root));
     await settings.patch({ llm: { provider: "openai", vendors: { openai: { baseUrl: "https://api.openai.com" } } } } as never);
     await settings.setSecret("llm.apiKey.openai", "synthetic-secret");
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
@@ -859,15 +863,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
   it("fences issuance when a provider preset is installed after the secret read", async () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-preset-install-")));
-    const settings = new SettingsService({
-      userDataPath: root,
-      encryption: {
-        isEncryptionAvailable: () => true,
-        getSelectedStorageBackend: () => "external_key",
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
-      },
-    });
+    const settings = new SettingsService(leaseSettingsOptions(root));
     await settings.setSecret("llm.apiKey.openai", "synthetic-key");
     const preset = {
       providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",
@@ -889,15 +885,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
   it.each(["update", "uninstall"] as const)("closes a lease when a provider preset is %s", async (change) => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-preset-change-")));
-    const settings = new SettingsService({
-      userDataPath: root,
-      encryption: {
-        isEncryptionAvailable: () => true,
-        getSelectedStorageBackend: () => "external_key",
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
-      },
-    });
+    const settings = new SettingsService(leaseSettingsOptions(root));
     await settings.setSecret("llm.apiKey.openai", "synthetic-key");
     const preset = {
       providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",
@@ -926,15 +914,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
   it("reports caller cancellation during issuance as aborted", async () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-abort-")));
-    const settings = new SettingsService({
-      userDataPath: root,
-      encryption: {
-        isEncryptionAvailable: () => true,
-        getSelectedStorageBackend: () => "external_key",
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
-      },
-    });
+    const settings = new SettingsService(leaseSettingsOptions(root));
     await settings.setSecret("llm.apiKey.openai", "synthetic-key");
     const controller = new AbortController();
     const createHostApi = await initAndGetFactory(settings, undefined, undefined, undefined, {
@@ -951,15 +931,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
   it("refuses an own key when the plugin audience is empty", async () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-empty-audience-")));
-    const settings = new SettingsService({
-      userDataPath: root,
-      encryption: {
-        isEncryptionAvailable: () => true,
-        getSelectedStorageBackend: () => "external_key",
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
-      },
-    });
+    const settings = new SettingsService(leaseSettingsOptions(root));
     await settings.setSecret("plugin.plugin-a.llm.apiKey.openai", "synthetic-key");
     const createHostApi = await initAndGetFactory(settings);
     const api = createHostApi("plugin-a", { id: "plugin-a", networkAccess: { allowedDomains: [] } }, pluginDataDirIn(root), activeIncarnation(), "plugin-a");

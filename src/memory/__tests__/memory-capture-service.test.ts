@@ -67,6 +67,14 @@ function enqueueTrustedAutomatic(service: MemoryCaptureService, input = SOURCE):
   });
 }
 
+function createCaptureService(
+  memoryManager: ConstructorParameters<typeof MemoryCaptureService>[0]["memoryManager"],
+  memoryReviewer: MemoryCaptureReviewer,
+  mode: "auto" | "off" | "review",
+) {
+  return new MemoryCaptureService({ memoryManager, memoryReviewer, getMode: () => mode });
+}
+
 describe("MemoryCaptureService", () => {
   it("host-validates a trusted automatic capture before saving it as active", async () => {
     const { manager, saveMemory } = makeMemoryManager();
@@ -109,11 +117,7 @@ describe("MemoryCaptureService", () => {
   it("keeps unattended captures as candidates in review mode", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer } = makeMemoryReviewer();
-    const service = new MemoryCaptureService({
-      memoryManager: manager,
-      getMode: () => "review",
-      memoryReviewer,
-    });
+    const service = createCaptureService(manager, memoryReviewer, "review");
 
     enqueueTrustedAutomatic(service);
     await service.runOnIdle();
@@ -128,11 +132,7 @@ describe("MemoryCaptureService", () => {
   it("rejects tainted automatic turns before any model or storage call", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer, review } = makeMemoryReviewer();
-    const service = new MemoryCaptureService({
-      memoryManager: manager,
-      getMode: () => "auto",
-      memoryReviewer,
-    });
+    const service = createCaptureService(manager, memoryReviewer, "auto");
 
     service.enqueueAutomatic({
       sessionId: "session-1",
@@ -150,11 +150,7 @@ describe("MemoryCaptureService", () => {
   it("never falls back to raw automatic input after an invalid reviewer result", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer } = makeMemoryReviewer("not json");
-    const service = new MemoryCaptureService({
-      memoryManager: manager,
-      getMode: () => "auto",
-      memoryReviewer,
-    });
+    const service = createCaptureService(manager, memoryReviewer, "auto");
 
     enqueueTrustedAutomatic(service);
     await service.runOnIdle();
@@ -171,11 +167,7 @@ describe("MemoryCaptureService", () => {
       state: "active",
     }]);
     const { memoryReviewer } = makeMemoryReviewer();
-    const service = new MemoryCaptureService({
-      memoryManager: manager,
-      getMode: () => "auto",
-      memoryReviewer,
-    });
+    const service = createCaptureService(manager, memoryReviewer, "auto");
 
     enqueueTrustedAutomatic(service);
     await service.runOnIdle();
@@ -190,11 +182,7 @@ describe("MemoryCaptureService", () => {
   it("runs explicit user saves through the same reviewer even when auto capture is off", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer, review } = makeMemoryReviewer();
-    const service = new MemoryCaptureService({
-      memoryManager: manager,
-      getMode: () => "off",
-      memoryReviewer,
-    });
+    const service = createCaptureService(manager, memoryReviewer, "off");
 
     const result = await service.captureExplicit({
       title: "Status preference",
@@ -226,11 +214,7 @@ describe("MemoryCaptureService", () => {
   it("does not send explicit sensitive input to the reviewer", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer, review } = makeMemoryReviewer();
-    const service = new MemoryCaptureService({
-      memoryManager: manager,
-      getMode: () => "off",
-      memoryReviewer,
-    });
+    const service = createCaptureService(manager, memoryReviewer, "off");
 
     const result = await service.captureExplicit({
       content: "api_key=sk-abcdefghijklmnopqrst",

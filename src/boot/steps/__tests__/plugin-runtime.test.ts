@@ -197,6 +197,30 @@ beforeEach(() => {
 
 afterEach(() => tmpDirs.cleanup());
 
+function createRuntimeToolRegistry() {
+  return {
+    unregisterByPlugin: vi.fn(),
+    register: vi.fn(),
+    listAll: vi.fn(() => []),
+    listPluginIds: vi.fn(() => []),
+    replacePluginTools: vi.fn(),
+  };
+}
+
+function createRuntimeSettings() {
+  return {
+    ...stationaryLeaseState,
+    get: vi.fn((key: string) => {
+      if (key === "llm") return { provider: "openai" };
+      if (key === "pluginConfigs") return {};
+      return undefined;
+    }),
+    getSecret: vi.fn(() => undefined),
+    getPluginConfig: vi.fn(() => ({})),
+    setPluginConfig: vi.fn(),
+  };
+}
+
 describe("auditApprovalViolation (Group C — audit logger try-catch swallow)", () => {
   it("re-throws the original ApprovalOriginError even when auditLogger.log throws", () => {
     const brokenLogger = {
@@ -383,29 +407,13 @@ describe("initPluginRuntime partition policy", () => {
     const output = await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
         hasPluginKeywords: vi.fn(() => false),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
@@ -445,29 +453,13 @@ describe("initPluginRuntime partition policy", () => {
     await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
         hasPluginKeywords: vi.fn(() => false),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
@@ -521,25 +513,9 @@ describe("initPluginRuntime partition policy", () => {
     await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
@@ -617,28 +593,12 @@ describe("initPluginRuntime HostApi factory", () => {
     await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -815,28 +775,12 @@ describe("initPluginRuntime HostApi factory", () => {
     await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -922,28 +866,12 @@ describe("initPluginRuntime HostApi factory", () => {
     await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -1021,28 +949,12 @@ describe("initPluginRuntime HostApi factory", () => {
     const output = await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
@@ -1085,28 +997,12 @@ describe("initPluginRuntime HostApi factory", () => {
     const output = await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
@@ -1194,13 +1090,7 @@ describe("initPluginRuntime HostApi factory", () => {
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -1311,13 +1201,7 @@ describe("initPluginRuntime HostApi factory", () => {
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -1421,13 +1305,7 @@ describe("initPluginRuntime HostApi factory", () => {
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -1499,13 +1377,7 @@ describe("initPluginRuntime HostApi factory", () => {
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -1587,13 +1459,7 @@ describe("initPluginRuntime HostApi factory", () => {
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
       mainWindow: {} as never,
@@ -1690,13 +1556,7 @@ describe("initPluginRuntime HostApi factory", () => {
       inputClassifier: {
         unregisterByPlugin: vi.fn(),
       } as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
@@ -1771,25 +1631,9 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
     await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,
@@ -1880,27 +1724,11 @@ describe("initPluginRuntime sandbox union ordering", () => {
     const output = await initPluginRuntime({
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
-      settingsService: {
-        ...stationaryLeaseState,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai" };
-          if (key === "pluginConfigs") return {};
-          return undefined;
-        }),
-        getSecret: vi.fn(() => undefined),
-        getPluginConfig: vi.fn(() => ({})),
-        setPluginConfig: vi.fn(),
-      } as never,
+      settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       networkFetch: vi.fn() as never,
       clearAuthPartitionService: vi.fn(),
-      toolRegistry: {
-        unregisterByPlugin: vi.fn(),
-        register: vi.fn(),
-        listAll: vi.fn(() => []),
-        listPluginIds: vi.fn(() => []),
-        replacePluginTools: vi.fn(),
-      } as never,
+      toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
       mainWindow: {} as never,

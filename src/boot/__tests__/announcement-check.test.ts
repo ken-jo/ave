@@ -86,6 +86,14 @@ function makeWindow(opts: { url?: string; loading?: boolean } = {}) {
   };
 }
 
+function emptyDismissalSettings() {
+  return {
+    get: vi.fn(() => ({
+      dismissedAnnouncementIds: [],
+    })),
+  };
+}
+
 describe("wireAnnouncementCheck", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -237,11 +245,7 @@ describe("wireAnnouncementCheck", () => {
       const first = makeWindow();
       const second = makeWindow();
       let mainWindow = first.mainWindow;
-      const settingsService = {
-        get: vi.fn(() => ({
-          dismissedAnnouncementIds: [],
-        })),
-      } as unknown as SettingsService;
+      const settingsService = emptyDismissalSettings() as unknown as SettingsService;
       const listAnnouncements = vi.fn(async () => [announcement(1)]);
 
       wireAnnouncementCheck({
@@ -271,11 +275,7 @@ describe("wireAnnouncementCheck", () => {
     try {
       const { mainWindow, send } = makeWindow();
       let announcements = [announcement(1, { body: "before", level: "info" })];
-      const settingsService = {
-        get: vi.fn(() => ({
-          dismissedAnnouncementIds: [],
-        })),
-      } as unknown as SettingsService;
+      const settingsService = emptyDismissalSettings() as unknown as SettingsService;
       const listAnnouncements = vi.fn(async () => announcements);
 
       wireAnnouncementCheck({
@@ -351,11 +351,7 @@ describe("wireAnnouncementCheck", () => {
       const { mainWindow, send } = makeWindow();
 
       let shouldFail = false;
-      const settingsService = {
-        get: vi.fn(() => ({
-          dismissedAnnouncementIds: [],
-        })),
-      } as unknown as SettingsService;
+      const settingsService = emptyDismissalSettings() as unknown as SettingsService;
       const listAnnouncements = vi.fn(async () => {
           if (shouldFail) throw new Error("offline");
           return [announcement(1)];
@@ -391,11 +387,7 @@ describe("wireAnnouncementCheck", () => {
       const second = makeWindow();
       let currentWindow: typeof first.mainWindow | null = first.mainWindow;
       let announcements = [announcement(1)];
-      const settingsService = {
-        get: vi.fn(() => ({
-          dismissedAnnouncementIds: [],
-        })),
-      } as unknown as SettingsService;
+      const settingsService = emptyDismissalSettings() as unknown as SettingsService;
       const listAnnouncements = vi.fn(async () => announcements);
 
       wireAnnouncementCheck({
