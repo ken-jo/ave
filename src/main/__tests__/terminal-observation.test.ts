@@ -9,10 +9,15 @@ import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "
 
 const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown, registered: true,
   paneWindowId: null as number | null, railSessionId: undefined as string | undefined, railOwner: null as unknown,
-  childParent: undefined as string | undefined }));
+  childParent: undefined as string | undefined, storedPane: null as { windowId: number; sessionId: string } | null }));
 vi.mock("electron", () => ({ session: { defaultSession: state.defaultSession } }));
 vi.mock("../app-state.js", () => ({ findSessionMainWindowContents: (id: string) => id === "session-one" ? state.holder : null,
   sideChatOwnerWindow: () => state.railOwner }));
+// The stored pane binding a window restored from its layout, before any pane loop holds the conversation.
+vi.mock("../browser/browser-tab-registry.js", () => ({ browserTabRegistry: {
+  conversationSurface: (windowId: number, sessionId: string) => state.storedPane?.windowId === windowId && state.storedPane.sessionId === sessionId
+    ? { kind: "terminal", tabId: "terminal:0000c0de-1" } : undefined,
+} }));
 import { TerminalObservationRuntime } from "../terminal-observation.js";
 
 const frame = { url: "file:///app/index.html", detached: false, isDestroyed: () => false };
@@ -44,6 +49,7 @@ beforeEach(() => {
   state.railSessionId = undefined;
   state.railOwner = null;
   state.childParent = undefined;
+  state.storedPane = null;
   sender.session = state.defaultSession;
   frame.detached = false;
   sender.send.mockClear();
@@ -74,6 +80,19 @@ describe("terminal observation desktop binding", () => {
     state.paneWindowId = 1;
     const binding = subscribe();
     state.paneWindowId = null;
+    expect(runtime.acknowledge(event, { action: "rendered", ...binding, seq: 0 })).toEqual({ ok: false, error: "unauthorized" });
+  });
+
+  it("admits a restored pane conversation through its window's stored pane binding, before its pane loop holds it", () => {
+    state.holder = null;
+    expect(runtime.acknowledge(event, { action: "subscribe-terminal", sessionId: identity.sessionId })).toEqual({ ok: false, error: "unauthorized" });
+    // Another window's stored binding does not admit this sender.
+    state.storedPane = { windowId: 2, sessionId: identity.sessionId };
+    expect(runtime.acknowledge(event, { action: "subscribe-terminal", sessionId: identity.sessionId })).toEqual({ ok: false, error: "unauthorized" });
+    state.storedPane = { windowId: 1, sessionId: identity.sessionId };
+    const binding = subscribe();
+    expect(runtime.acknowledge(event, { action: "rendered", ...binding, seq: 0 })).toEqual({ ok: true });
+    state.storedPane = null;
     expect(runtime.acknowledge(event, { action: "rendered", ...binding, seq: 0 })).toEqual({ ok: false, error: "unauthorized" });
   });
 

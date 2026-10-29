@@ -13,6 +13,7 @@ import { EAGER_TOOL_EXPOSURE_CEILING } from "../../shared/tool-exposure-policy.j
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 type CapturedToolExposure = {
   loadedToolCount: number;
@@ -148,7 +149,7 @@ describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () =>
     ]);
     const loop = makeLoop({ provider });
     const result = await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(result.text).toBe("완료");
 
@@ -175,7 +176,7 @@ describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () =>
     );
     const loop = makeLoop({ provider, auditLogger });
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(captured).toHaveLength(1);
@@ -194,7 +195,7 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
       inactivePluginIds: new Set(["com.example.meeting"]),
     });
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
@@ -206,7 +207,7 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
     const provider = new RecordingProvider(endTurnScript("ok"));
     const loop = makeLoop({ provider });
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(provider.observedToolNames[0]).toContain("meeting_start");
     expect(provider.observedToolNames[0]).toContain("meeting_stop");
@@ -227,14 +228,14 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
     const inactivePluginIds = new Set<string>();
     const loop = makeLoop({ provider, inactivePluginIds });
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(provider.observedToolNames[0]).toContain("meeting_start");
 
     inactivePluginIds.add("com.example.meeting");
     loop.onPluginDisabled("com.example.meeting");
     await loop.runTurn("계속 진행해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(provider.observedToolNames[1]).not.toContain("meeting_start");
     expect(provider.observedToolNames[1]).not.toContain("meeting_stop");
@@ -270,7 +271,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
       headless: true,
     });
     const result = await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(result.text).toBe("완료");
 
@@ -305,7 +306,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
 
     await loop.runTurn("회의 정리해줘", {
       onDecision: (event) => { decisions.push(event); },
-    }, undefined, { inputOrigin: "user-keyboard" });
+    }, undefined, { ...userKeyboardTurn() });
 
     expect(decisions).toContainEqual(expect.objectContaining({
       kind: "tool_search",
@@ -333,7 +334,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
       headless: true,
     });
     const result = await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(result.text).toBe("완료");
 
@@ -358,7 +359,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
       headless: true,
     });
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
@@ -372,7 +373,7 @@ describe("ConversationLoop — headless MCP scope (#1176 eager)", () => {
     const provider = new RecordingProvider(endTurnScript("no mcp"));
     const loop = makeLoop({ provider, headless: true });
     const result = await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(result.text).toBe("no mcp");

@@ -41,7 +41,23 @@ export type RuleSpecifier =
       // Omitted means every port on this host.
       port?: number;
     }
-  | { kind: "mcp"; server: string; tool?: string };
+  | { kind: "mcp"; server: string; tool?: string }
+  | {
+      // One exact command typed into the user's own host terminal (`HostTerminal(<shell> <"physical cwd"> <command>)`): that shell kind, that
+      // canonical physical directory (no descendants), and the complete literal command. Allow-only; never a prefix, never a Bash rule.
+      kind: "host-terminal";
+      shell: HostTerminalShell;
+      // Canonical physical directory, as the operating system resolves the shell's directory.
+      cwd: string;
+      // Raw literal words of one simple command, in the exact `Bash(...)` grammar. Never empty, never a wildcard.
+      tokens: readonly string[];
+    };
+
+// Host terminal shells a saved rule can name. pwsh is not one until its typing protocol is attested natively.
+export type HostTerminalShell = "zsh" | "bash";
+export function isHostTerminalShell(value: unknown): value is HostTerminalShell {
+  return value === "zsh" || value === "bash";
+}
 
 export type RuleSpecifierKind = RuleSpecifier["kind"];
 
@@ -52,7 +68,7 @@ export class RuleSpecifierError extends Error {
   }
 }
 
-const SPECIFIER_RE = /^(Bash|PowerShell|Edit|WebFetch|Network|Mcp)\(([\s\S]*)\)$/;
+const SPECIFIER_RE = /^(Bash|PowerShell|Edit|WebFetch|Network|Mcp|HostTerminal)\(([\s\S]*)\)$/;
 const SPECIFIER_HEAD_RE = /^[A-Za-z]+\(/;
 // Characters that would make a prefix token shell syntax rather than a word.
 const SHELL_META_RE = /[\s;&|<>()$`'"\\*?[\]{}#~!]/;
@@ -126,7 +142,7 @@ export function parseRuleSpecifier(text: string): RuleSpecifier {
   if (typeof text !== "string") throw new RuleSpecifierError(String(text), "not a string");
   if (text.length > MAX_SPECIFIER_LENGTH) throw new RuleSpecifierError(text.slice(0, 64), "too long");
   const match = SPECIFIER_RE.exec(text);
-  if (!match) throw new RuleSpecifierError(text, "expected Bash(...), PowerShell(...), Edit(...), WebFetch(domain:...), Network(...) or Mcp(...)");
+  if (!match) throw new RuleSpecifierError(text, "expected Bash(...), PowerShell(...), Edit(...), WebFetch(domain:...), Network(...), Mcp(...) or HostTerminal(...)");
   const [, kind, body] = match as unknown as [string, string, string];
   switch (kind) {
     case "Bash": return parseBash(text, body);
@@ -135,6 +151,7 @@ export function parseRuleSpecifier(text: string): RuleSpecifier {
     case "WebFetch": return parseWebFetch(text, body);
     case "Network": return parseNetwork(text, body);
     case "Mcp": return parseMcp(text, body);
+    case "HostTerminal": return parseHostTerminal(text, body);
     default: throw new RuleSpecifierError(text, `unknown rule kind ${kind}`);
   }
 }
@@ -224,6 +241,27 @@ function parseMcp(text: string, body: string): RuleSpecifier {
   return tool === undefined ? { kind: "mcp", server } : { kind: "mcp", server, tool };
 }
 
+// `<shell> <JSON string cwd> <exact bash rule words>`: the directory is a JSON string so any path spelling is unambiguous.
+function parseHostTerminal(text: string, body: string): RuleSpecifier {
+  const space = body.indexOf(" ");
+  const shell = space === -1 ? body : body.slice(0, space);
+  if (!isHostTerminalShell(shell)) throw new RuleSpecifierError(text, "a host terminal rule names its shell: zsh or bash");
+  const rest = body.slice(space + 1);
+  if (!rest.startsWith("\"")) throw new RuleSpecifierError(text, "a host terminal rule names its directory as a quoted absolute path");
+  let end = 1;
+  while (end < rest.length && rest[end] !== "\"") end += rest[end] === "\\" ? 2 : 1;
+  let cwd: unknown;
+  try { cwd = JSON.parse(rest.slice(0, end + 1)); } catch { throw new RuleSpecifierError(text, "the directory is not a valid quoted path"); }
+  if (typeof cwd !== "string" || !cwd.startsWith("/") || cwd.includes("\0") || /[\r\n]/.test(cwd) || (cwd.length > 1 && cwd.endsWith("/"))
+    || cwd.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new RuleSpecifierError(text, "the directory must be a normalized absolute path");
+  }
+  if (rest[end + 1] !== " ") throw new RuleSpecifierError(text, "the command follows the directory after one space");
+  const { tokens, wildcard } = shellRuleWords(text, rest.slice(end + 2), "bash");
+  if (wildcard) throw new RuleSpecifierError(text, "a host terminal rule names one exact command, never a prefix");
+  return { kind: "host-terminal", shell, cwd, tokens: Object.freeze([...tokens]) };
+}
+
 export function formatRuleSpecifier(spec: RuleSpecifier): string {
   switch (spec.kind) {
     case "bash": return `Bash(${[...spec.tokens, ...(spec.wildcard ? ["*"] : [])].join(" ")})`;
@@ -232,6 +270,7 @@ export function formatRuleSpecifier(spec: RuleSpecifier): string {
     case "webfetch": return `WebFetch(domain:${spec.subdomains ? "*." : ""}${spec.host}${spec.port === undefined ? "" : `:${spec.port}`})`;
     case "network": return `Network(${spec.subdomains ? "*." : ""}${spec.host}${spec.port === undefined ? "" : `:${spec.port}`})`;
     case "mcp": return `Mcp(${spec.server}${spec.tool === undefined ? "" : `:${spec.tool}`})`;
+    case "host-terminal": return `HostTerminal(${spec.shell} ${JSON.stringify(spec.cwd)} ${spec.tokens.join(" ")})`;
   }
 }
 
@@ -263,7 +302,7 @@ export function normalizeRuleSpecifierInput(text: string): string {
 }
 
 // Storage admits only rule kinds wired into the host decision path.
-export const ENFORCED_RULE_KINDS: ReadonlySet<RuleSpecifierKind> = new Set(["bash", "powershell", "edit", "webfetch", "network", "mcp"]);
+export const ENFORCED_RULE_KINDS: ReadonlySet<RuleSpecifierKind> = new Set(["bash", "powershell", "edit", "webfetch", "network", "mcp", "host-terminal"]);
 
 // Match a destination hostname and its effective transport port.
 export function matchesWebFetchHost(spec: Extract<RuleSpecifier, { kind: "webfetch" | "network" }>, host: string, port?: number): boolean {

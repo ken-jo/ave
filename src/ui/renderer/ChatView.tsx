@@ -16,7 +16,7 @@ import type { SideChatOpenRequest } from "./components/SideChatView.js";
 import { getApi } from "./api-client.js";
 import { useChatContext } from "./context/ChatContext.js";
 import { useInputStatusRow } from "./hooks/use-input-status-row.js";
-import { type ComposerHandle } from "./components/Composer.js";
+import { captureComposerKeyboardIntent, type ComposerHandle } from "./components/Composer.js";
 import { useSuggestedReplies } from "./hooks/use-suggested-replies.js";
 import { hasActiveSuggestedReplies } from "./utils/composer-placeholder.js";
 import type { PluginEntry } from "./types.js";
@@ -90,11 +90,11 @@ export interface ChatViewProps {
   onToggleStar: (idx: number) => void | Promise<void>;
   onRetryEffort: () => void | Promise<void>;
   /** userBubble is present only when Continue appends a new user row instead of rerunning the existing one. */
-  onContinueFromLastUser?: (sessionId: string, opts?: { userBubble?: string }) => void | Promise<void>;
+  onContinueFromLastUser?: (sessionId: string, opts?: { userBubble?: string; authority?: import("../../shared/chat-origin.js").ContinueAuthority }) => Promise<boolean>;
   isEntryStarred: (idx: number) => string | null;
   onAbort: () => void | Promise<void>;
   /** Mid-stream "guide" utterance — non-interrupting direction adjustment. Returns IPC result so caller can preserve typed text on rejection. */
-  onGuide: (text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onGuide: (text: string, intent?: UserKeyboardIntentSnapshot) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Surface visible error in chat transcript when guide is rejected (queue-full / too-long / no-active-turn). */
   onGuideError: (message: string) => void;
   onFeedback?: (messageIdx: number, rating: "up" | "down", reason?: string) => void | Promise<void>;
@@ -607,7 +607,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   }, [setQuestion]);
 
   const handleBottomSend = useCallback(() => {
-    handleComposerSend({ inputOrigin: "user-keyboard", token: "" });
+    // The click is the gesture: capture its one-shot keyboard intent now.
+    handleComposerSend(captureComposerKeyboardIntent());
   }, [handleComposerSend]);
 
   const runtimeImageAttachmentProvider = subscriptionRuntimePolicy

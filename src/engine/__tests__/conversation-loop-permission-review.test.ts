@@ -7,6 +7,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
 import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 function oneToolRound(): FakeProvider {
   return new FakeProvider([
@@ -75,7 +76,7 @@ describe("permission review verdict persistence", () => {
       reason: "read-only",
     });
 
-    await loop.runTurn("도구 써줘", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("도구 써줘", {}, undefined, { ...userKeyboardTurn() });
 
     const results = toolResults(loop);
     expect(results).toHaveLength(1);
@@ -95,7 +96,7 @@ describe("permission review verdict persistence", () => {
       displayOrder: 0,
     });
 
-    await loop.runTurn("도구 써줘", {}, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("도구 써줘", {}, undefined, { ...userKeyboardTurn() });
 
     const results = toolResults(loop);
     expect(results).toHaveLength(1);

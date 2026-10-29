@@ -31,8 +31,17 @@ describe("useMessageQueue location references", () => {
       return { question, attachments, setAttachments };
     });
     act(() => { result.current.setAttachments([replacement]); });
-    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true })); });
-    expect(inject).toHaveBeenCalledWith('explain [File #1 — path: "src/app.ts" — lines: 8-9 — turn: "turn-2" — hunk: "hunk-2"]');
+    // The shortcut captures the gesture's one-shot keyboard intent inside its key handler and hands it to the guide.
+    const intent = { inputOrigin: "user-keyboard" as const, token: "gesture-token" };
+    const capture = vi.fn(() => intent);
+    (window as unknown as { aveApi?: unknown }).aveApi = { captureUserKeyboardIntent: capture };
+    try {
+      act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true })); });
+    } finally {
+      delete (window as unknown as { aveApi?: unknown }).aveApi;
+    }
+    expect(capture).toHaveBeenCalledOnce();
+    expect(inject).toHaveBeenCalledWith('explain [File #1 — path: "src/app.ts" — lines: 8-9 — turn: "turn-2" — hunk: "hunk-2"]', intent);
     expect(result.current.question).toBe("explain [File #1]");
     expect(result.current.attachments).toEqual([replacement]);
     await act(async () => { reply.resolve({ ok: false, error: "file-reference-active-turn" }); });
@@ -391,6 +400,8 @@ describe("queue reorder with concurrent delivery", () => {
     const original = store.getItems().map((item) => item.text);
     f.emit({ type: "tool_end" });
     expect(f.inject.mock.calls[0][0]).toContain("- first\n- second");
+    // A round-boundary flush has no gesture behind it, so it carries no keyboard intent.
+    expect(f.inject.mock.calls[0]).toHaveLength(1);
     act(() => store.move(store.getItems()[1].id, -1));
     await f.accept();
     expect(store.getItems().every((item) => item.handedOffAs !== undefined)).toBe(true);

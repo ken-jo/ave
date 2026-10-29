@@ -11,6 +11,7 @@ import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { EAGER_TOOL_EXPOSURE_CEILING } from "../../shared/tool-exposure-policy.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class RecordingProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -166,7 +167,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
       availablePluginIds: ["com.example.meeting"],
     });
     const result = await loop.runTurn("일반 질문", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(result.text).toBe("활성화 완료");
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
@@ -208,7 +209,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
     ]);
     const loop = makeLoop({ provider, availablePluginIds: ["local-indexer"] });
     const result = await loop.runTurn("일반 질문", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(result.text).toBe("인덱서 상태를 확인했습니다.");
     expect(provider.observedToolNames[0]).not.toContain("index_scan_status");
@@ -249,7 +250,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
       availablePluginIds: ["com.example.meeting"],
     });
     const result = await loop.runTurn("아무거나", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(result.text).toBe("미등록 플러그인입니다.");
     const messages = loop.getHistory().getMessages();
@@ -283,7 +284,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
     });
 
     await loop.runTurn("일반 질문", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
@@ -326,7 +327,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
     });
 
     await loop.runTurn("heavy", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("heavy_tool_0");
@@ -372,7 +373,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
     });
 
     await loop.runTurn("heavy", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[1]).toContain("heavy_tool_198");
@@ -422,7 +423,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
     ]);
     const loop = makeLoop({ provider, availablePluginIds: ["p1", "p2", "p3"] });
     await loop.runTurn("trigger", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     const messages = loop.getHistory().getMessages();
     const toolResults = messages.filter(
@@ -458,7 +459,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
     });
 
     await loop.runTurn("일반 질문", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
@@ -481,7 +482,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
     });
 
     await loop.runTurn("일반 질문", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).toContain("meeting_start");
@@ -520,10 +521,10 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
     });
 
     await loop.runTurn("야간 재스캔", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     await loop.runTurn("다시 확인", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("index_scan_status");
@@ -566,7 +567,7 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
     });
 
     await loop.runTurn("회의 시작", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
@@ -605,7 +606,7 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
     });
 
     await loop.runTurn("일반 질문", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[0]).not.toContain("index_scan_status");
@@ -653,7 +654,7 @@ describe("ConversationLoop — disable invalidates carried-forward scope without
     });
 
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(provider.observedToolNames[1]).toContain("meeting_start");
     expect(
@@ -664,7 +665,7 @@ describe("ConversationLoop — disable invalidates carried-forward scope without
     inactivePluginIds.push("com.example.meeting");
 
     await loop.runTurn("계속 진행해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(provider.observedToolNames[2]).not.toContain("meeting_start");
@@ -699,10 +700,10 @@ describe("ConversationLoop — disable invalidates carried-forward scope without
     });
 
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     await loop.runTurn("계속 진행해줘", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     // The unchanged-plugin control prevents an always-empty carried scope from passing.

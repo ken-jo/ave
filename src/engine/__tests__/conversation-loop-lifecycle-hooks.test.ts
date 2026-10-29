@@ -6,6 +6,7 @@ import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { MAX_STOP_HOOK_CONTINUATIONS } from "../turn/query-loop.js";
 import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 function completeTurn(): StreamEvent[] {
   return [
@@ -77,9 +78,9 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("first", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("first", undefined, undefined, { ...userKeyboardTurn(),
     });
-    await loop.runTurn("second", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("second", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     const starts = mgr.runLifecycleEvent.mock.calls.filter((c) => c[0] === "SessionStart",
@@ -100,10 +101,10 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("first", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("first", undefined, undefined, { ...userKeyboardTurn(),
     });
     await loop.newConversation();
-    await loop.runTurn("second", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("second", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     const starts = mgr.runLifecycleEvent.mock.calls.filter((c) => c[0] === "SessionStart",
@@ -118,7 +119,7 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
+    await loop.runTurn("hi", undefined, undefined, { ...userKeyboardTurn(),
     });
 
     const stops = mgr.runLifecycleEvent.mock.calls.filter((c) => c[0] === "Stop",
@@ -137,7 +138,7 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hi", undefined, undefined, { ...userKeyboardTurn(),
     });
     expect(result.text).toBe("ok");
     expect(mgr.runLifecycleEvent.mock.calls.some((c) => c[0] === "SessionStart"),
@@ -151,7 +152,7 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
     const loop = buildLoop(provider);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hi", undefined, undefined, { ...userKeyboardTurn(),
     });
     expect(result.text).toBe("ok");
   });
@@ -202,7 +203,7 @@ describe("ConversationLoop — Stop hook continuation", () => {
   async function run(provider: LLMProvider, mgr: ReturnType<typeof stopManager>, signal?: AbortSignal, onError?: (message: string) => void) {
     const loop = buildLoop(provider, mgr as unknown as ReturnType<typeof stubManager>);
     (loop as { provider: LLMProvider | null }).provider = provider;
-    const result = await loop.runTurn("finish the change", onError ? { onError } : undefined, signal, { inputOrigin: "user-keyboard" });
+    const result = await loop.runTurn("finish the change", onError ? { onError } : undefined, signal, { ...userKeyboardTurn() });
     const stops = mgr.runLifecycleEvent.mock.calls.filter((c) => c[0] === "Stop");
     return { loop, result, stops };
   }
@@ -258,7 +259,7 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    const result = await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn(),
     });
     expect(result.text).toBe("ok");
     expect(result.stopReason).toBe("end_turn");
@@ -288,7 +289,7 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    const result = await loop.runTurn("blocked term", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("blocked term", undefined, undefined, { ...userKeyboardTurn(),
     });
     expect(result.stopReason).toBe("blocked");
     expect(result.toolCalls).toEqual([]);
@@ -310,7 +311,7 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hi", undefined, undefined, { ...userKeyboardTurn(),
     });
     expect(result.stopReason).toBe("blocked");
     expect(result.text).toContain("fail-closed");
@@ -322,7 +323,7 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hi", undefined, undefined, { ...userKeyboardTurn(),
     });
     expect(result.text).toBe("ok");
     expect(result.stopReason).toBe("end_turn");
@@ -333,7 +334,7 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
     const loop = buildLoop(provider);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
+    const result = await loop.runTurn("hi", undefined, undefined, { ...userKeyboardTurn(),
     });
     expect(result.text).toBe("ok");
     expect(result.stopReason).toBe("end_turn");

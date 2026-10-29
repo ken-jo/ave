@@ -27,6 +27,7 @@ vi.mock("../../structured-compact.js", () => ({
 
 import { compactWithBoundary } from "../../structured-compact.js";
 import { CompressionStatus } from "../../../shared/compact-status.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 beforeEach(() => {
   vi.mocked(compactWithBoundary).mockClear();
@@ -61,7 +62,7 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
     vi.mocked(compactWithBoundary).mockResolvedValueOnce(makeSyntheticCompactResult(history));
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     const guardStep = rec.steps.find((s) => s.name === "PREFLIGHT_GUARD");
     expect(guardStep?.meta).toMatchObject({
@@ -142,7 +143,7 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
     vi.mocked(compactWithBoundary).mockResolvedValueOnce(makeSyntheticCompactResult(history));
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     return rec.steps.find((s) => s.name === "PREFLIGHT_GUARD")?.meta;
   }
@@ -194,7 +195,7 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
     vi.mocked(compactWithBoundary).mockResolvedValueOnce(makeSyntheticCompactResult(history));
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(rec.steps.find((s) => s.name === "PREFLIGHT_GUARD")?.meta).toMatchObject({
       contextWindowSource: "fallback",
@@ -227,7 +228,7 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
       truncatedCount: 0,
     });
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     const guardStep = rec.steps.find((s) => s.name === "PREFLIGHT_GUARD");
     expect(guardStep?.meta).toMatchObject({ outcome: "fired" });
@@ -259,7 +260,7 @@ describe("PREFLIGHT_GUARD trace step — skipped / not-reached paths", () => {
     const provider = makeTurnProvider();
     (loop as unknown as { provider: typeof provider }).provider = provider;
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(rec.steps.find((step) => step.name === "PREFLIGHT_GUARD")?.meta).toMatchObject({
       outcome: "not-reached", threshold: 217_600, thresholdSource: "input-limit", contextWindowSource: "provider-reported",
@@ -282,7 +283,7 @@ describe("PREFLIGHT_GUARD trace step — skipped / not-reached paths", () => {
     const fakeProvider = makeTurnProvider();
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
     const guardStep = rec.steps.find((s) => s.name === "PREFLIGHT_GUARD");
@@ -310,7 +311,7 @@ describe("PREFLIGHT_GUARD trace step — skipped / not-reached paths", () => {
     const fakeProvider = makeTurnProvider();
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
-    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("hello", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(compactWithBoundary).not.toHaveBeenCalled();
     const guardStep = rec.steps.find((s) => s.name === "PREFLIGHT_GUARD");

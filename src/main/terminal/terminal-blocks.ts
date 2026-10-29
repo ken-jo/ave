@@ -364,6 +364,20 @@ export class TerminalBlockTracker {
     return "between-prompts";
   }
 
+  /** Whether the shell sits at an attested prompt the user has left empty and quiet (`idle`), whatever its line editor's capabilities; else why not.
+   * Hand-back needs only this: the editor settings that keep agent typing out (vi mode, no bracketed paste, a not-found handler) do not matter. */
+  idlePromptState(): "idle" | "pending-input" | "command-running" | "waiting-for-prompt" | "no-shell-integration" | "exited" {
+    if (this.exited) return "exited";
+    if (!this.integrated) return "no-shell-integration";
+    if (this.open) return "command-running";
+    if (this.phase !== "input") return "waiting-for-prompt";
+    // A prompt that reported Paste=0 (zsh with RPROMPT) draws text after its end; there only the user's own keys say they typed.
+    const echoed = this.echo.text().trim() !== "" && this.editor?.bracketedPaste !== false;
+    if (echoed || this.inputSincePromptEnd) return "pending-input";
+    if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
+    return "idle";
+  }
+
   // How many prompts the shell has finished drawing; grows by one with each new prompt.
   promptEndCount(): number {
     return this.promptEnds;

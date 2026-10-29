@@ -29,14 +29,13 @@ export function captureUserKeyboardIntent(): UserKeyboardIntentSnapshot {
   return { inputOrigin: "user-keyboard", token };
 }
 
+/** True only for a token this preload minted during a user gesture, unexpired and not yet consumed. A missing, forged, consumed or expired
+ * token is never rescued by the browser's current activation, which lingers after the gesture and would let a replay pass. */
 export function consumeUserKeyboardIntent(userIntent?: UserKeyboardIntentSnapshot): boolean {
-  const activeGesture = hasActiveUserGesture();
-  if (userIntent && userIntent.inputOrigin === "user-keyboard" && typeof userIntent.token === "string") {
-    const expiresAt = userKeyboardIntentTokens.get(userIntent.token);
-    userKeyboardIntentTokens.delete(userIntent.token);
-    if (typeof expiresAt === "number" && expiresAt > Date.now()) return true;
-  }
-  return activeGesture;
+  if (!userIntent || userIntent.inputOrigin !== "user-keyboard" || typeof userIntent.token !== "string" || userIntent.token.length === 0) return false;
+  const expiresAt = userKeyboardIntentTokens.get(userIntent.token);
+  userKeyboardIntentTokens.delete(userIntent.token);
+  return typeof expiresAt === "number" && expiresAt > Date.now();
 }
 
 export function ipcUserKeyboardIntent(): UserKeyboardIntent | { inputOrigin: "user-keyboard"; userActivation: false } {

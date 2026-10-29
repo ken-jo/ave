@@ -52,6 +52,8 @@ function terminalApi() {
     resize: vi.fn(async () => undefined),
     onData: vi.fn(() => () => {}),
     onExit: vi.fn(() => () => {}),
+    onControl: vi.fn(() => () => {}),
+    control: vi.fn(async () => ({ ok: true as const, control: { mode: "available" as const, generation: 0 } })),
     listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { cwd: "/", latestBlockId: null, files: [], warnings: [] } })),
     listBlocks: vi.fn(async (session: unknown) => ({ ok: true as const, session, integrated: true, blocks: [] as unknown[] })),
     getBlock: vi.fn(async () => ({ ok: false as const, error: "block-not-found" })),

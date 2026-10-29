@@ -87,7 +87,8 @@ describe("ChatView ⌘K guide", () => {
     });
 
     await waitFor(() => {
-      expect(api.chatGuide).toHaveBeenCalledWith("다음 라운드에서 표를 만들어줘");
+      // The shortcut forwards its gesture's keyboard intent snapshot; preload consumes it and main verifies it.
+      expect(api.chatGuide).toHaveBeenCalledWith("다음 라운드에서 표를 만들어줘", expect.objectContaining({ inputOrigin: "user-keyboard" }));
     });
     await waitFor(() => expect(textarea.value).toBe(""));
   });

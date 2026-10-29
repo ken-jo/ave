@@ -317,3 +317,74 @@ export function generateHostShellHooks(shell: "zsh" | "bash"): string {
     // Older interpreters retain the user's DEBUG trap and have no authenticated command-start claim.
     .replace("  trap '__ave_preexec' DEBUG", "  :");
 }
+
+/** A PowerShell single-quoted string literal: only `'` (and its typographic variants) is special, doubled. */
+export function powerShellQuote(value: string): string {
+  return `'${value.replace(/['‘’‚‛]/gu, "$&$&")}'`;
+}
+
+/** The first step of a pwsh host terminal, before any user profile runs: take the nonce into a global variable, delete its file. */
+export function pwshNoncePrologue(noncePath: string): string {
+  const path = powerShellQuote(noncePath);
+  return [
+    "$global:__ave_nonce = ''",
+    `if (Test-Path -LiteralPath ${path} -PathType Leaf) {`,
+    `  $global:__ave_nonce = ([System.IO.File]::ReadAllText(${path})).Trim()`,
+    `  Remove-Item -LiteralPath ${path} -Force`,
+    "}",
+  ].join("\n");
+}
+
+/** Dot-source the user's profiles in PowerShell's own order, in the global scope, as a launch without -NoProfile would. */
+export const PWSH_PROFILE_STARTUP = [
+  "foreach ($__ave_profile in @($PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost)) {",
+  "  if ($__ave_profile -and (Test-Path -LiteralPath $__ave_profile -PathType Leaf)) { . $__ave_profile }",
+  "}",
+  "Remove-Variable -Name __ave_profile -Scope Global -ErrorAction SilentlyContinue",
+].join("\n");
+
+/** pwsh prompt hooks: authenticated D, P (cwd, edit mode, Paste=0, Pid, prompt token), A and B around the user's own prompt, and C from the Enter
+ * key while Enter is still PSReadLine's AcceptLine. PSReadLine documents no bracketed paste, so the prompt always reports Paste=0 and agent typing
+ * refuses it (`no-bracketed-paste`); markers still attest prompts, directories and exits for the user's own command blocks. */
+export function generatePwshHostHooks(): string {
+  return [
+    "# Generated authenticated terminal hooks.",
+    "if (-not $global:__ave_nonce) { return }",
+    "function global:__ave_encode([string]$text) {",
+    "  $out = [System.Text.StringBuilder]::new()",
+    "  foreach ($c in $text.ToCharArray()) {",
+    "    $code = [int]$c",
+    "    if ($c -eq '%' -or $c -eq ';' -or $code -lt 32 -or $code -eq 127) { [void]$out.Append(('%{0:X2}' -f $code)) } else { [void]$out.Append($c) }",
+    "  }",
+    "  $out.ToString()",
+    "}",
+    "$global:__ave_user_prompt = $function:prompt",
+    "function global:prompt {",
+    "  $ok = $?",
+    "  $code = $global:LASTEXITCODE",
+    "  $e = [char]27; $bel = [char]7; $n = $global:__ave_nonce",
+    "  $status = if ($ok) { 0 } elseif ($code -is [int] -and $code -ne 0) { $code } else { 1 }",
+    "  $bytes = [byte[]]::new(16)",
+    "  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)",
+    "  $token = -join ($bytes | ForEach-Object { $_.ToString('x2') })",
+    "  $keys = 'emacs'",
+    "  try { if ((Get-PSReadLineOption).EditMode -eq 'Vi') { $keys = 'vi' } } catch { }",
+    "  $cwd = __ave_encode $executionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath",
+    "  $head = \"$e]133;D;$status;$n$bel$e]133;P;Cwd=$cwd;Keys=$keys;Paste=0;NotFound=0;Edit=0;B=$token;Pid=$PID;$n$bel$e]133;A;$n$bel\"",
+    "  $user = if ($global:__ave_user_prompt) { & $global:__ave_user_prompt } else { \"PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) \" }",
+    "  $global:LASTEXITCODE = $code",
+    "  \"$head$user$e]133;B;$token$bel\"",
+    "}",
+    "try {",
+    "  if ((Get-PSReadLineKeyHandler -Chord Enter -ErrorAction Stop).Function -eq 'AcceptLine') {",
+    "    Set-PSReadLineKeyHandler -Chord Enter -ScriptBlock {",
+    "      $line = $null; $cursor = $null",
+    "      [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)",
+    `      $text = if ($line.Length -gt ${MAX_ENCODED_COMMAND_CHARS}) { $line.Substring(0, ${MAX_ENCODED_COMMAND_CHARS}) } else { $line }`,
+    "      [Console]::Write(\"$([char]27)]133;C;cmdline_url=$(__ave_encode $text);$global:__ave_nonce$([char]7)\")",
+    "      [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()",
+    "    }",
+    "  }",
+    "} catch { }",
+  ].join("\n");
+}

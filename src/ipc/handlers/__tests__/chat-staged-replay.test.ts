@@ -1,6 +1,7 @@
 // Replay must derive staged provenance from stored envelopes before DLP; it cannot default to keyboard trust.
 import { describe, expect, it, vi } from "vitest";
-import { runStreamedTurn, STREAM_TURN_OPTIONS } from "../chat-stream.js";
+import { runStreamedTurn } from "../chat-stream.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 import { formatStagedEnvelope, STAGED_ORIGIN_KINDS } from "../../../shared/staged-origins.js";
 import { makeLoop, turnOptions } from "./chat-stream-test-helpers.js";
 
@@ -14,7 +15,7 @@ const sampleSource: Record<string, string> = {
 describe("staged provenance on the replay paths", () => {
   it("keeps `user-keyboard` for text that carries no envelope", async () => {
     const { loop, runTurn } = makeLoop();
-    await runStreamedTurn(loop, "summarize the repo", vi.fn(), STREAM_TURN_OPTIONS);
+    await runStreamedTurn(loop, "summarize the repo", vi.fn(), userKeyboardTurn());
     expect(turnOptions(runTurn)).toMatchObject({ inputOrigin: "user-keyboard" });
     expect(turnOptions(runTurn).originSource).toBeUndefined();
   });
@@ -90,7 +91,7 @@ describe("a resource turn's transcript row survives the replay paths", () => {
   it("forwards a caller-supplied displayText into the turn", async () => {
     const { loop, runTurn } = makeLoop();
     await runStreamedTurn(loop, "summarize [Resource #1]", () => {}, {
-      ...STREAM_TURN_OPTIONS,
+      ...userKeyboardTurn(),
       displayText: "summarize [Resource #1]",
     });
     expect(turnOptions(runTurn).displayText).toBe("summarize [Resource #1]");
@@ -99,7 +100,7 @@ describe("a resource turn's transcript row survives the replay paths", () => {
   it("adds no displayText when the caller supplies none", async () => {
     const { loop, runTurn } = makeLoop();
     await runStreamedTurn(loop, "an ordinary question", () => {}, {
-      ...STREAM_TURN_OPTIONS,
+      ...userKeyboardTurn(),
     });
     expect(turnOptions(runTurn)).not.toHaveProperty("displayText");
   });

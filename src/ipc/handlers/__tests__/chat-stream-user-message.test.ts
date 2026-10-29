@@ -1,7 +1,8 @@
 // Every streamed turn announces its input once so non-submitting surfaces can render the same row.
 import { describe, expect, it, vi } from "vitest";
 import type { PlatformConversationEvent } from "../../../engine/conversation-platform-protocol.js";
-import { runStreamedTurn, STREAM_TURN_OPTIONS } from "../chat-stream.js";
+import { runStreamedTurn } from "../chat-stream.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 import { makeLoop } from "./chat-stream-test-helpers.js";
 
 function eventsOf(sink: ReturnType<typeof vi.fn>): PlatformConversationEvent[] {
@@ -32,7 +33,7 @@ describe("runStreamedTurn user.message emission", () => {
     const { loop } = makeLoop();
     const sink = vi.fn();
 
-    await runStreamedTurn(loop, "local question", sink, STREAM_TURN_OPTIONS);
+    await runStreamedTurn(loop, "local question", sink, userKeyboardTurn());
 
     expect(eventsOf(sink)).toContainEqual(expect.objectContaining({
       kind: "user.message",
@@ -46,7 +47,7 @@ describe("runStreamedTurn user.message emission", () => {
     const sink = vi.fn();
 
     await runStreamedTurn(loop, "summarize [Resource #1]\n<fenced resource body>", sink, {
-      ...STREAM_TURN_OPTIONS,
+      ...userKeyboardTurn(),
       displayText: "summarize [Resource #1]",
     });
 

@@ -6,7 +6,6 @@
  */
 import type { ReactNode } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import { useTranslation } from "../../../i18n/react.js";
 
 /** The last segment of a directory path — a header has room for a name, not a path. */
 export function directoryName(path: string): string {
@@ -14,21 +13,27 @@ export function directoryName(path: string): string {
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
 }
 
-export function TerminalPaneHeader({ blocks, cwdNote, inline }: {
+/** What the agent may do in this terminal: a word for the chip, and the full statement for its tooltip. */
+export interface TerminalPaneAccess {
+  chip: string;
+  about: readonly string[];
+}
+
+export function TerminalPaneHeader({ blocks, cwdNote, inline, access }: {
   blocks: ReactNode;
+  access: TerminalPaneAccess;
   /** Where the shell started, while it has not reported a current directory. */
   cwdNote: string | null;
-  /** The side-panel row: the chip also says the agent has no access, and the row shows the shell-reported directory. */
+  /** The side-panel row: the row shows the shell-reported directory itself. */
   inline?: { cwd: string | null };
 }) {
-  const { t } = useTranslation();
-  const about = [t("ptyTerminal.hostBadge"), t("ptyTerminal.manualEnvironment"), cwdNote].filter(Boolean).join("\n");
+  const about = [...access.about, cwdNote].filter(Boolean).join("\n");
   const chip = (
     <Tooltip>
       <TooltipTrigger asChild>
         <span tabIndex={0} aria-label={about} title={about} data-testid="terminal-pane-host-chip"
           className="shrink-0 whitespace-nowrap rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 text-[11px] font-medium text-primary outline-none focus-visible:ring-1 focus-visible:ring-ring">
-          {t(inline ? "ptyTerminal.hostChipAgentless" : "ptyTerminal.hostChip")}
+          {access.chip}
         </span>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-72 whitespace-pre-line">{about}</TooltipContent>

@@ -7,7 +7,7 @@ import { Input } from "../../../../components/ui/input.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import {
-  ALLOW_MENU_CHOICES,
+  allowMenuChoices,
   DECISION_LABEL_KEYS,
   defaultAllowChoice,
   isWildcardRuleText,
@@ -138,6 +138,8 @@ export function ApprovalDecisionBar({
       >
         <span className="text-xs">{t(option?.labelKey ?? DECISION_LABEL_KEYS["deny-once"])}</span>
         {reason ? <span className="text-[10px] text-muted-foreground" data-testid={`approval-choice-${choice}-reason`}>{reason}</span> : null}
+        {option?.offered === true && option.noteKey !== undefined
+          ? <span className="text-[10px] text-muted-foreground" data-testid={`approval-choice-${choice}-note`}>{t(option.noteKey)}</span> : null}
       </DropdownMenuItem>
     );
   };
@@ -250,12 +252,12 @@ export function ApprovalDecisionBar({
                 data-choice={allowChoice ?? undefined}
                 onClick={() => commit(allowChoice)}
               >
-                {t(allowChoice === null ? DECISION_LABEL_KEYS["allow-session"] : model.options[allowChoice].labelKey)}
+                {t(model.options[allowChoice ?? allowMenuChoices(model)[0]!].labelKey)}
               </Button>
               {chevron("approval-allow-menu", "toolApprovalDialog.moreAllowChoices", lockAll)}
             </div>
             <DropdownMenuContent align="start" className="max-w-72">
-              {ALLOW_MENU_CHOICES.map((choice) => menuItem(choice))}
+              {allowMenuChoices(model).map((choice) => menuItem(choice))}
             </DropdownMenuContent>
           </DropdownMenu>
         )}

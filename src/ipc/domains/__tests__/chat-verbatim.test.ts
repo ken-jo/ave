@@ -1,5 +1,5 @@
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
-import { beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
 import path from "node:path";
 import os from "node:os";
@@ -7,11 +7,15 @@ beforeAll(() => configureHostResources({ resourcePath: path.resolve("resources")
 import { mkdirSync, realpathSync } from "node:fs";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
+import { BRANCH_CONTINUATION_REFUSED, USER_KEYBOARD_REQUIRED } from "../../../shared/chat-origin.js";
 import * as shellTasks from "../../../tools/shell-tools.js";
 import {
   MCP_RESOURCE_ATTACHMENTS_PER_TURN,
   MCP_RESOURCE_FENCE_OPEN,
 } from "../../../shared/mcp-resource-bounds.js";
+
+// What preload sends once it consumed the click's gesture token: main runs a replay as the user's turn only with it.
+const KEYBOARD_GESTURE = { inputOrigin: "user-keyboard", userActivation: true } as const;
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -875,6 +879,142 @@ describe("ave:chat:fork", () => {
   });
 });
 
+describe("branch auto-continue grant", () => {
+  const SOURCE = "6f1d3c2a-8b4e-4a7f-9c15-3e2d1b0a9f87";
+  const TARGET = "b2a9e7c4-1d3f-4e8a-a6b5-7c9d0e1f2a3b";
+  const OTHER = "d4c3b2a1-9e8f-4a7b-8c6d-5e4f3a2b1c0d";
+  const BRANCH = "ave:chat:branch-from-checkpoint";
+  const CONTINUE = "ave:chat:continue-last-user";
+
+  /**
+   * A branch click whose fork takes `forkMs`, then the renderer's load of the branch it created through session-resume. The loop
+   * models the real one's session identity: every change of session (load, new chat, release) moves its epoch.
+   */
+  async function branchClick(options: { gesture?: boolean; forkMs?: number } = {}) {
+    let current = SOURCE;
+    let epoch = 0;
+    let fresh = 0;
+    const loop = makeConversationLoop(SOURCE, [{ role: "user", content: "question", meta: { messageId: "row-1" } }]);
+    loop.getSessionId.mockImplementation(() => current);
+    loop.runTurn.mockResolvedValue({ text: "answer", toolCalls: [], stopReason: "end_turn" });
+    loop.resetAndResume.mockImplementation(async (id: string) => {
+      current = id;
+      epoch += 1;
+      return { ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 };
+    });
+    loop.newConversation.mockImplementation(async () => {
+      current = `00000000-0000-4000-8000-${String(++fresh).padStart(12, "0")}`;
+      epoch += 1;
+    });
+    Object.assign(loop, {
+      getSessionEpoch: vi.fn(() => epoch),
+      runSessionTransition: vi.fn(async (_reason: string, operation: (lease: object) => unknown) => operation({})),
+      branchFromCheckpoint: vi.fn(async () => {
+        // A large conversation or a slow disk: the fork outlasts the preload token's 5 s lifetime.
+        if (options.forkMs !== undefined) vi.setSystemTime(Date.now() + options.forkMs);
+        return { newSessionId: TARGET, lastMessageRole: "user", shouldAutoContinue: true };
+      }),
+    });
+    const deps = await setupHandlers(loop);
+    deps.memoryManager.loadSessionMetadata.mockImplementation((id: string) => (id === TARGET ? { parentSessionId: SOURCE } : null));
+    const branched = await invokeRegisteredHandler(handlers, BRANCH, {
+      sessionId: SOURCE, compactNum: 1, intent: options.gesture === false ? { inputOrigin: "user-keyboard", userActivation: false } : KEYBOARD_GESTURE,
+    }, "main") as { branchContinuation?: string; newSessionId?: string };
+    const open = (id: string) => invokeRegisteredHandler(handlers, "ave:chat:session-resume", id, "main");
+    await open(TARGET);
+    const continueWith = (grant: unknown, sessionId = TARGET) =>
+      invokeRegisteredHandler(handlers, CONTINUE, { sessionId, branchContinuation: grant }, "main");
+    return { loop, branched, continueWith, open };
+  }
+
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("continues as the user's turn after a fork and load that took longer than the click token's 5 s", async () => {
+    const { loop, branched, continueWith } = await branchClick({ forkMs: 6_000 });
+    expect(typeof branched.branchContinuation).toBe("string");
+    vi.setSystemTime(Date.now() + 4_000);
+    await expect(continueWith(branched.branchContinuation)).resolves.toMatchObject({ ok: true });
+    const options = loop.runTurn.mock.calls[0]?.[3] as Record<string, unknown>;
+    expect(options).toMatchObject({ inputOrigin: "user-keyboard" });
+    expect(options.userKeyboardIntent).toBeDefined();
+  });
+
+  it("issues no grant for a branch whose click was not a consumed gesture", async () => {
+    const { loop, branched, continueWith } = await branchClick({ gesture: false });
+    expect(branched).not.toHaveProperty("branchContinuation");
+    await expect(continueWith("guessed")).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("spends the grant once: a second continue with it is refused", async () => {
+    const { loop, branched, continueWith } = await branchClick();
+    await expect(continueWith(branched.branchContinuation)).resolves.toMatchObject({ ok: true });
+    loop.getHistory().getMessages().push({ role: "user", content: "question again" });
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).toHaveBeenCalledOnce();
+  });
+
+  it("refuses the grant for a session other than the branch it created, and burns it", async () => {
+    const { loop, branched, continueWith, open } = await branchClick();
+    await open(OTHER);
+    await expect(continueWith(branched.branchContinuation, OTHER)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    await open(TARGET);
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a lookalike grant id", async () => {
+    const { loop, continueWith } = await branchClick();
+    await expect(continueWith("00000000-0000-4000-8000-000000000000")).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  // Every way the tile can leave the branch and come back to it moves the session epoch past the grant.
+  it.each([
+    ["opening another session", async (open: (id: string) => unknown) => { await open(OTHER); }],
+    ["starting a new chat", async () => { await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main"); }],
+    // The reported sequence: closing the default tile swaps its session with no other handler in between.
+    ["closing the default tile", async () => {
+      await expect(invokeRegisteredHandler(handlers, "ave:chat:group-release", "main")).resolves.toMatchObject({ ok: true, released: true });
+    }],
+  ])("refuses the grant after %s and reopening the branch", async (_label, leave) => {
+    const { loop, branched, continueWith, open } = await branchClick();
+    await leave(open);
+    await open(TARGET);
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("lets an unredeemed grant lapse after its operation bound", async () => {
+    const { loop, branched, continueWith } = await branchClick();
+    vi.setSystemTime(Date.now() + 10 * 60_000 + 1);
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe("replays without the click's consumed gesture", () => {
+  const SESSION_ID = "4c1f8a2e-6b0d-4f6a-9d3e-2a7b5c9e1f04";
+  const unconsumed = { inputOrigin: "user-keyboard", userActivation: false } as const;
+  // Each replay re-runs the user's request; with no consumed gesture main refuses it before reading history or patching settings.
+  it.each([
+    ["edit-resend with an unconsumed token", ["ave:chat:edit-resend", "row-1", "edited", "main", unconsumed]],
+    ["edit-resend with no gesture report", ["ave:chat:edit-resend", "row-1", "edited", "main"]],
+    ["continue with an unconsumed token", ["ave:chat:continue-last-user", { sessionId: SESSION_ID, intent: unconsumed }, "main"]],
+    ["continue with no gesture report", ["ave:chat:continue-last-user", { sessionId: SESSION_ID }, "main"]],
+    ["retry with an unconsumed token", ["ave:chat:retry-effort", { enableThinking: true }, "main", unconsumed]],
+    ["retry with no gesture report", ["ave:chat:retry-effort", { enableThinking: true }, "main"]],
+  ] as const)("refuses %s and runs no turn", async (_label, [channel, ...args]) => {
+    const loop = makeConversationLoop(SESSION_ID, [{ role: "user", content: "question", meta: { messageId: "row-1" } }]);
+    const deps = await setupHandlers(loop);
+    await expect(invokeRegisteredHandler(handlers, channel, ...args)).resolves.toEqual(USER_KEYBOARD_REQUIRED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+    expect(loop.getHistory().truncate).not.toHaveBeenCalled();
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+  });
+});
+
 describe("ave:chat:continue-last-user", () => {
   const CHANNEL = "ave:chat:continue-last-user";
   const SESSION_ID = "00e839f0-e00d-4caf-8f28-2eceb20d8bfe";
@@ -885,7 +1025,7 @@ describe("ave:chat:continue-last-user", () => {
     ]);
     await setupHandlers(loop);
 
-    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: "5f711b23-ee4f-4cbb-88e0-53b872bbda82" }, "main");
+    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: "5f711b23-ee4f-4cbb-88e0-53b872bbda82", intent: KEYBOARD_GESTURE }, "main");
 
     expect(result).toEqual({ ok: false, error: "session-mismatch" });
     expect(loop.runTurn).not.toHaveBeenCalled();
@@ -899,7 +1039,7 @@ describe("ave:chat:continue-last-user", () => {
     ]);
     await setupHandlers(loop);
 
-    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID }, "main");
+    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID, intent: KEYBOARD_GESTURE }, "main");
 
     expect(result).toEqual({ ok: false, error: "last-message-not-user" });
     expect(loop.runTurn).not.toHaveBeenCalled();
@@ -913,7 +1053,7 @@ describe("ave:chat:continue-last-user", () => {
     await setupHandlers(loop);
     const history = loop.getHistory();
 
-    await expect(invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID }, "main")).rejects.toThrow("provider missing");
+    await expect(invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID, intent: KEYBOARD_GESTURE }, "main")).rejects.toThrow("provider missing");
 
     expect(history.truncate).toHaveBeenCalledWith(0);
     expect(history.restore).toHaveBeenCalledWith([terminalUser]);
@@ -931,7 +1071,7 @@ describe("ave:chat:continue-last-user", () => {
     loop.runTurn.mockResolvedValue({ text: "done", toolCalls: [], stopReason: "end_turn" });
     await setupHandlers(loop);
 
-    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID }, "main");
+    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID, intent: KEYBOARD_GESTURE }, "main");
 
     expect(result).toMatchObject({ ok: true });
     expect(loop.getHistory().truncate).not.toHaveBeenCalled();
@@ -949,7 +1089,7 @@ describe("ave:chat:continue-last-user", () => {
     ]);
     await setupHandlers(loop);
 
-    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID }, "main");
+    const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID, intent: KEYBOARD_GESTURE }, "main");
 
     expect(result).toEqual({ ok: false, error: "last-message-not-user" });
     expect(loop.runTurn).not.toHaveBeenCalled();
@@ -1408,7 +1548,7 @@ B${i}
     };
     await setupHandlers(loop, { personaPromptStore });
 
-    await invokeRegisteredHandler(handlers, "ave:chat:edit-resend", "row-old-text", "new text", "main");
+    await invokeRegisteredHandler(handlers, "ave:chat:edit-resend", "row-old-text", "new text", "main", KEYBOARD_GESTURE);
 
     expect(loop.runTurn).toHaveBeenCalledWith(
       "new text",
@@ -1472,7 +1612,7 @@ B${i}
     const restoreRedactor = await redactPii();
 
     try {
-      await invokeRegisteredHandler(handlers, "ave:chat:edit-resend", "row-old-text", "contact alice@example.com", "main");
+      await invokeRegisteredHandler(handlers, "ave:chat:edit-resend", "row-old-text", "contact alice@example.com", "main", KEYBOARD_GESTURE);
 
       expect(editLoop.runTurn.mock.calls[0]?.[0]).toBe("contact [REDACTED:EMAIL]");
       expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "redact_notice"))
@@ -1507,7 +1647,7 @@ B${i}
         return {};
       });
 
-      await invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: "f7b2cd7d-a877-45aa-8b50-756c10ca2d0c" }, "main");
+      await invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: "f7b2cd7d-a877-45aa-8b50-756c10ca2d0c", intent: KEYBOARD_GESTURE }, "main");
 
       const replayInput = replayLoop.runTurn.mock.calls[0]?.[0] as string;
       const replayOptions = replayLoop.runTurn.mock.calls[0]?.[3] as Record<string, unknown>;
@@ -1545,7 +1685,7 @@ B${i}
       });
 
       // If DLP destroys the source header, replay must fail closed rather than infer keyboard provenance.
-      await expect(invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: "1a75feb0-5469-4d73-8f2e-484c2e309d77" }, "main"))
+      await expect(invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: "1a75feb0-5469-4d73-8f2e-484c2e309d77", intent: KEYBOARD_GESTURE }, "main"))
         .rejects.toThrow("missing-app-envelope");
       expect(stagedLoop.runTurn).not.toHaveBeenCalled();
       expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "redact_notice"))
@@ -1595,7 +1735,7 @@ B${i}
         return {};
       });
 
-      await expect(invokeRegisteredHandler(handlers, "ave:chat:edit-resend", "row-existing-user", stagedInput, "main"))
+      await expect(invokeRegisteredHandler(handlers, "ave:chat:edit-resend", "row-existing-user", stagedInput, "main", KEYBOARD_GESTURE))
         .rejects.toThrow("missing-app-envelope");
       expect(editLoop.runTurn).not.toHaveBeenCalled();
       expect(editLoop.getHistory().restore).toHaveBeenCalledWith(original);
@@ -1613,7 +1753,7 @@ B${i}
         return {};
       });
 
-      await expect(invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true }, "main"))
+      await expect(invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true }, "main", KEYBOARD_GESTURE))
         .rejects.toThrow("missing-app-envelope");
       expect(retryLoop.runTurn).not.toHaveBeenCalled();
       expect(retryLoop.getHistory().restore).toHaveBeenCalledWith(retryOriginal);
@@ -1646,7 +1786,7 @@ B${i}
     llm.vendors.openai.thinkingBudgetTokens = Math.min(14_000, Math.floor(outputTokenLimit / 2));
     const originalGet = deps.settingsService.get.getMockImplementation();
     deps.settingsService.get.mockImplementation((key?: string) => key === "llm" ? llm : originalGet(key));
-    await invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens }, "main");
+    await invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens }, "main", KEYBOARD_GESTURE);
     expect(deps.settingsService.patch).toHaveBeenCalledTimes(2);
     expect(deps.settingsService.patch).toHaveBeenNthCalledWith(1, {
       llm: { vendors: { openai: { ...llm.vendors.openai, enableThinking: true, thinkingBudgetTokens: expected } } },
@@ -1684,7 +1824,7 @@ B${i}
     };
     await setupHandlers(loop, { personaPromptStore });
 
-    await invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 12345 }, "main");
+    await invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 12345 }, "main", KEYBOARD_GESTURE);
 
     expect(loop.runTurn).toHaveBeenCalledWith(
       "retry text",
@@ -2186,7 +2326,7 @@ describe("ave:chat:continue-last-user — a resource turn's row", () => {
     expect((seeded[seeded.length - 1] as { meta?: { displayText?: string } }).meta?.displayText)
       .toBe("summarize [Resource #1]");
 
-    await invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: SESSION_ID }, "main");
+    await invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: SESSION_ID, intent: KEYBOARD_GESTURE }, "main");
 
     expect(loop.runTurn).toHaveBeenCalledTimes(1);
     const options = loop.runTurn.mock.calls[0][3] as { displayText?: string };
@@ -2204,7 +2344,7 @@ describe("ave:chat:continue-last-user — a resource turn's row", () => {
     await setupHandlers(loop);
     loop.runTurn.mockResolvedValue({ text: "ok", toolCalls: [], stopReason: "end_turn" });
 
-    await invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: SESSION_ID }, "main");
+    await invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: SESSION_ID, intent: KEYBOARD_GESTURE }, "main");
 
     expect(loop.runTurn).toHaveBeenCalledTimes(1);
     const options = loop.runTurn.mock.calls[0][3] as Record<string, unknown>;
@@ -2237,12 +2377,12 @@ describe("shared main-conversation lease on replay commands", () => {
     }, "main") as Promise<unknown>;
     await turnEntered.promise;
 
-    await expect(invokeRegisteredHandler(handlers, CHANNELS.chat.editResend, "row-lease-user", "replacement", "main"))
+    await expect(invokeRegisteredHandler(handlers, CHANNELS.chat.editResend, "row-lease-user", "replacement", "main", KEYBOARD_GESTURE))
       .resolves.toEqual({ ok: false, error: "streaming-active" });
     await expect(invokeRegisteredHandler(handlers, CHANNELS.chat.continueLastUser, {
-      sessionId: "7b9c0647-fc72-47d5-8330-c8ea0a2f8274",
+      sessionId: "7b9c0647-fc72-47d5-8330-c8ea0a2f8274", intent: KEYBOARD_GESTURE,
     }, "main")).resolves.toEqual({ ok: false, error: "streaming-active" });
-    await expect(invokeRegisteredHandler(handlers, CHANNELS.chat.retryEffort, { enableThinking: true }, "main"))
+    await expect(invokeRegisteredHandler(handlers, CHANNELS.chat.retryEffort, { enableThinking: true }, "main", KEYBOARD_GESTURE))
       .resolves.toEqual({ ok: false, error: "streaming-active" });
 
     expect(history.truncate).not.toHaveBeenCalled();

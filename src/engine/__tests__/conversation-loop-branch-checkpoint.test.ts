@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ConversationLoop, type ConversationLoopDeps } from "../conversation-loop.js";
 import { makeConversationLoopDeps, makeConversationLoopMemoryManager } from "./conversation-loop-test-helpers.js";
 import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 function makeLoop(
   memoryManager: ConversationLoopDeps["memoryManager"],
@@ -83,7 +84,7 @@ describe("ConversationLoop.branchFromCheckpoint summary", () => {
     const fork = await loop.branchFromCheckpoint(2);
     expect(fork.shouldAutoContinue).toBe(true);
     expect(await loop.loadSession(fork.newSessionId)).toBe(true);
-    await loop.runTurn("what did we decide?", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("what did we decide?", undefined, undefined, { ...userKeyboardTurn() });
 
     const first = requests[0]!;
     expect(first.systemPrompt).not.toContain("SUMMARY-FROM-CHECKPOINT");

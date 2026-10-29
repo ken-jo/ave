@@ -15,6 +15,7 @@ import { computeToolActivity } from "../../ui/renderer/utils/tool-activity.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 const SESSION_ID = "b5a06893-46a9-493a-8a3e-f277ba673230";
 
@@ -45,7 +46,7 @@ function buildLoop(
     memoryManager,
   }));
   (loop as { provider: LLMProvider | null }).provider = provider;
-  (loop as { sessionId: string }).sessionId = SESSION_ID;
+  loop.replaceSessionIdentity(SESSION_ID);
   return loop;
 }
 
@@ -94,7 +95,7 @@ describe("transcript durability", () => {
         "질문입니다",
         undefined,
         undefined,
-        { inputOrigin: "user-keyboard" },
+        { ...userKeyboardTurn() },
       );
 
       expect(onDiskAtStreamStart).toHaveLength(1);
@@ -116,7 +117,7 @@ describe("transcript durability", () => {
 
       await expect(
         loop.runTurn("사라지면 안 되는 질문", undefined, undefined, {
-          inputOrigin: "user-keyboard",
+          ...userKeyboardTurn(),
         }),
       ).rejects.toThrow("prompt assembly failed");
 
@@ -165,7 +166,7 @@ describe("transcript durability", () => {
         "두 라운드 작업",
         undefined,
         undefined,
-        { inputOrigin: "user-keyboard" },
+        { ...userKeyboardTurn() },
       );
       expect(result.stopReason).not.toBe("stream-error");
 
@@ -203,7 +204,7 @@ describe("transcript durability", () => {
         memoryManager,
         new ToolRegistry(),
         provider,
-      ).runTurn("스트림 실패", undefined, undefined, { inputOrigin: "user-keyboard" });
+      ).runTurn("스트림 실패", undefined, undefined, { ...userKeyboardTurn() });
 
       expect(result.stopReason).toBe("stream-error");
       const messages = persisted(memoryManager);
@@ -230,7 +231,7 @@ describe("transcript durability", () => {
       const loop = buildLoop(memoryManager, toolRegistry, provider);
 
       await loop.runTurn("리로드 확인", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
       });
 
       // Reload repairs tool pairs before the renderer projects persisted history.
@@ -286,7 +287,7 @@ describe("transcript durability", () => {
         "출처 확인",
         undefined,
         undefined,
-        { inputOrigin: "user-keyboard" },
+        { ...userKeyboardTurn() },
       );
 
       // An empty registry proves tool attribution was persisted rather than looked up live.

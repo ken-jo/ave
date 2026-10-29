@@ -177,6 +177,16 @@ function clipboardContainsImage(event: ClipboardEvent): boolean {
   return false;
 }
 
+
+/** Capture a one-shot keyboard intent for the gesture now being handled; preload consumes it and main verifies it. Without an active
+ * gesture the token is empty and confers nothing. */
+export function captureComposerKeyboardIntent(): UserKeyboardIntentSnapshot {
+  const api = (globalThis as typeof globalThis & {
+    window?: { aveApi?: { captureUserKeyboardIntent?: () => UserKeyboardIntentSnapshot } };
+  }).window?.aveApi;
+  return api?.captureUserKeyboardIntent?.() ?? { inputOrigin: "user-keyboard", token: "" };
+}
+
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   {
     surface = "main",
@@ -264,12 +274,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     close: inlineClose,
   } = inlineSlash;
 
-  const captureUserKeyboardIntent = useCallback((): UserKeyboardIntentSnapshot => {
-    const api = (globalThis as typeof globalThis & {
-      window?: { aveApi?: { captureUserKeyboardIntent?: () => UserKeyboardIntentSnapshot } };
-    }).window?.aveApi;
-    return api?.captureUserKeyboardIntent?.() ?? { inputOrigin: "user-keyboard", token: "" };
-  }, []);
+  const captureUserKeyboardIntent = useCallback((): UserKeyboardIntentSnapshot => captureComposerKeyboardIntent(), []);
 
   // Live-derive attachments from textarea body (single source of truth). Drop any whose N is no longer present in the body.
   const liveAttachments = useMemo(() => {

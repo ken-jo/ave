@@ -790,6 +790,8 @@ export const CHANNELS = {
     preview: "ave:terminal:preview", // invoke renderer-only last authenticated command
     blocks: "ave:terminal:blocks", // invoke  command-block summaries of one tab (no output)
     block: "ave:terminal:block", // invoke  one command block with its output
+    control: "ave:terminal:control", // invoke  read control, Take over, Stop or Hand back a host terminal
+    controlChanged: "ave:terminal:control-changed", // event   main→renderer (who controls a host terminal)
     fileReviews: "ave:terminal:file-reviews",
   },
   // ── Browser tabs (agent browser tools) ────────────────────────────────────

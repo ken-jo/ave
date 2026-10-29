@@ -68,7 +68,7 @@ async function approvalMemoryFor(
   const memoryScope = scope.kind === "browser-origin"
     ? { kind: scope.kind, origin: scope.origin, tabOpener: scope.tabOpener }
     : scope.kind === "browser-agent-tabs" ? { kind: scope.kind }
-      : scope.kind === "terminal-command" ? {
+      : scope.kind === "terminal-command" ? scope.lane === "agent" ? {
         kind: scope.kind,
         commandSha256: scope.commandSha256,
         tabId: scope.tabId,
@@ -76,6 +76,20 @@ async function approvalMemoryFor(
         terminalSessionId: scope.terminalSessionId,
         sandboxGeneration: scope.sandboxGeneration,
         cwd: scope.cwd,
+      } : {
+        // A host terminal command is never remembered; its key still names every sealed field so no two targets share one.
+        kind: scope.kind,
+        commandSha256: scope.commandSha256,
+        tabId: scope.tabId,
+        lane: scope.lane,
+        terminalSessionId: scope.terminalSessionId,
+        sessionId: scope.sessionId,
+        turnId: scope.turnId,
+        shell: scope.shell,
+        physicalCwd: scope.physicalCwd,
+        cwdDevice: scope.cwdDevice,
+        cwdInode: scope.cwdInode,
+        controlGeneration: scope.controlGeneration,
       }
         : scope;
   const patch = tool.source === "builtin" && tool.name === "apply_patch" && typeof input.patch === "string"

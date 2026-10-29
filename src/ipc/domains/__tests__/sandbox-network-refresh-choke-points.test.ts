@@ -1,6 +1,7 @@
 // Every settings path that changes a provider address must refresh sandbox network configuration.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolve } from "node:path";
+import { installNativeChatWindow, invokeNativeChatHandler } from "../../../__tests__/support/native-chat-window.js";
 import {
   makeAppIpcInvoker,
 } from "./test-helpers.js";
@@ -207,9 +208,12 @@ describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
             { role: "user", content: "hello" },
           ]),
           restore: vi.fn(),
+          truncate: vi.fn(),
         })),
         streamTurn: vi.fn(async () => ({ ok: true })),
+        runTurn: vi.fn(async () => ({ text: "", toolCalls: [], route: "chat" })),
         getActivePersonaId: vi.fn(() => null),
+        getSessionKind: vi.fn(),
       },
       personaPromptStore: { getById: vi.fn(() => null) },
       auditLogger: { log: vi.fn() },
@@ -229,14 +233,16 @@ describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
     const { deps, refreshSandboxNetworkConfig } = makeChatDeps("https://same.openai.azure.com");
 
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow();
     registerChatHandlers(deps as never);
 
-    // An unchanged provider address must not trigger sandbox network refresh.
-    try {
-      await invoke("ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 10000 });
-    } catch {
-    }
+    // An unchanged provider address must not trigger sandbox network refresh. The retry runs from a real app window with the
+    // click's consumed gesture, so it reaches the settings patch this choke point guards.
+    await invokeNativeChatHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 10000 }, "main", {
+      inputOrigin: "user-keyboard", userActivation: true,
+    });
 
+    expect(deps.settingsService.patch).toHaveBeenCalled();
     expect(refreshSandboxNetworkConfig).not.toHaveBeenCalled();
   });
 });

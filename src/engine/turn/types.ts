@@ -180,6 +180,8 @@ export interface RunTurnOptions {
   subAgentReport?: { title?: string };
   a2aCausalContext?: A2AAgentCausalContext;
   inputOrigin: ChatInputOrigin;
+  /** Required with `inputOrigin: "user-keyboard"` and spent by the turn; nothing else makes a turn the user's own. */
+  userKeyboardIntent?: import("../../shared/chat-origin.js").VerifiedUserKeyboardIntent;
   requestAnchorRawIntent?: string;
   rolePrompt?: ActiveRolePrompt;
   // Preserve user display text when replay folds server attachment bodies into durable input.

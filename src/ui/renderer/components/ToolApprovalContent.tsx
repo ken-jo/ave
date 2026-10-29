@@ -571,18 +571,26 @@ function terminalTargetText(
   if (typeof command !== "string") return null;
   const active = getActiveSurface();
   const terminal = active?.kind === "terminal" && active.tabId === memory.scope.tabId ? active.label : memory.scope.tabId;
-  return t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
+  return memory.scope.lane === "manual"
+    ? t("toolApprovalDialog.hostTerminalTarget", { command, terminal, shell: memory.scope.shell, cwd: memory.scope.physicalCwd })
+    : t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
 }
 
 /** Facts about a `terminal_run` command a reader could miss in its text: each character that could pass for another, by code point (a look-alike reads as the letter it imitates; words in one
  * script, such as Korean filenames, are not listed; see terminalCommandLookalikes), and a terminal directory outside the allowed folders (the command still runs there, inside the terminal's sandbox). */
 function terminalCommandNotes(
   t: (key: string, params?: Record<string, string>) => string,
-  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext">,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext" | "shellRule">,
 ): string[] {
   const memory = request.approvalMemory;
   if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return [];
   const notes: string[] = [];
+  // The user's own shell: no sandbox, and the approved command's output goes back to the model.
+  if (memory.scope.lane === "manual") notes.push(t("toolApprovalDialog.hostTerminalWarning"));
+  // Tool results reached the model earlier in this turn: saved rules were set aside and this card saves none.
+  if (memory.scope.lane === "manual" && request.shellRule?.hostTerminal?.afterExternalContent === true) {
+    notes.push(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
+  }
   const command = parseArgs(request.args)?.command;
   if (typeof command === "string") {
     const lookalikes = terminalCommandLookalikes(command);
@@ -603,7 +611,11 @@ function terminalCommandNotes(
       const root = dir.endsWith("/") ? dir.slice(0, -1) : dir;
       return target === root || target.startsWith(`${root}/`);
     });
-    if (!inside) notes.push(t("toolApprovalDialog.terminalOutsideAllowed", { cwd: memory.scope.cwd }));
+    if (!inside) {
+      notes.push(memory.scope.lane === "manual"
+        ? t("toolApprovalDialog.hostTerminalOutsideAllowed", { cwd: memory.scope.physicalCwd })
+        : t("toolApprovalDialog.terminalOutsideAllowed", { cwd: memory.scope.cwd }));
+    }
   }
   return notes;
 }
@@ -1100,7 +1112,7 @@ export function ToolApprovalContent({
   const originLabel = trustOriginLabel(request.trustOrigin);
   const category = request.toolCategory ?? "meta";
   // finalVerdict already computed above (before the null-check guard); use it here.
-  const badgeClassName = levelBadgeClass(finalVerdict as RiskLevel);
+  const badgeClassName = levelBadgeClass(request?.shellRule?.hostTerminal !== undefined ? "high" : finalVerdict as RiskLevel);
   // Rationale cards render the sealed table and out-of-dir cards render the path-grant evidence rows;
   // neither consumes the generic review rows, so skip computing them. The frame around that evidence is shared.
   const rows = isRationaleApproval || isOutOfDir
@@ -1151,7 +1163,10 @@ export function ToolApprovalContent({
                 <div className="min-w-0 space-y-1">
                   <div className="flex min-w-0 items-center gap-2">
                     <Badge variant="outline" className={`${badgeClassName} shrink-0`}>
-                      {riskLevelKoLabel(finalVerdict as RiskLevel)}
+                      {/* A command for the user's own terminal is never graded or auto-reviewed: the person is the only check. */}
+                      {request?.shellRule?.hostTerminal !== undefined
+                        ? <span data-testid="approval-no-automatic-review">{tHook("toolApprovalDialog.noAutomaticReview")}</span>
+                        : riskLevelKoLabel(finalVerdict as RiskLevel)}
                     </Badge>
                     <code
                       className="min-w-0 flex-1 break-all font-mono text-xs font-semibold"
@@ -1518,13 +1533,16 @@ export function ToolApprovalContent({
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
             {shellRule ? (
               <div className="space-y-1" data-testid="approval-shell-rule-context">
-                {/* Only an unconfined run is outside the sandbox; a confined command's card must not claim it. */}
-                {request.executionPlan?.sandboxed !== true ? (
+                {/* Only an unconfined run is outside the sandbox; a confined command's card must not claim it. A command for the user's own
+                    terminal has its own warning and a rule scoped to that shell and folder, not to a project. */}
+                {!shellRule.hostTerminal && request.executionPlan?.sandboxed !== true ? (
                   <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
                 ) : null}
-                <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
-                  {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
-                </p>
+                {shellRule.hostTerminal ? null : (
+                  <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
+                    {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
+                  </p>
+                )}
                 {/* An -EncodedCommand payload is shown as the script it runs; the host checked that text, and no rule covers it. */}
                 {shellRule.decodedCommands?.map((decoded, index) => (
                   <div key={index} className="min-w-0 space-y-0.5" data-testid="approval-shell-decoded-command">

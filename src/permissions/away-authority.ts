@@ -77,6 +77,8 @@ export interface AwayAuthorityCandidate {
   readonly durableApprovalRecordAllowed: boolean;
   // Whether a host-shell one-shot permit binding rides with this request.
   readonly hostShellExecutionPermitBound: boolean;
+  // Whether this request types into the user's own host terminal: a desktop-only decision.
+  readonly hostTerminalBound: boolean;
   // EVERY path this call would touch, not just the one the modal displays. Plural because binding the first path alone is not a bound: `move_file` declares `["sourcePath", "destinationPath"]`, so an in-scope source would carry an out-of-scope destination past a singular check. An empty list is a call that names no path at all, which is refused rather than waved through — see AwayAuthority.targetScopeRefusal.
   readonly targetFilePaths: readonly string[];
 }
@@ -94,6 +96,7 @@ type AwayAuthorityRefusal =
   | "not-one-shot-contract"
   | "durable-record-allowed"
   | "host-shell-permit-bound"
+  | "host-terminal-bound"
   | "target-unresolved"
   | "target-out-of-scope";
 
@@ -284,6 +287,10 @@ export class AwayAuthority {
     // A host-shell one-shot permit binding must never be minted by an away answer. The category check above already excludes it today, because the gate only retains a binding whose request is `toolCategory === "shell"` and shell is not armable. This check is what keeps that true if either of those two facts ever changes.
     if (candidate.hostShellExecutionPermitBound) {
       return refuse("host-shell-permit-bound", true);
+    }
+    // A host terminal command is decided by the person at this desktop, never by an away grant.
+    if (candidate.hostTerminalBound) {
+      return refuse("host-terminal-bound", true);
     }
 
     return this.targetScopeRefusal(grant, candidate);

@@ -20,6 +20,7 @@ import {
   directoryInstructionsForToolResult,
   liveDirectoryInstructions,
 } from "../directory-instructions.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 let project: string;
 
@@ -135,8 +136,8 @@ describe("directory instructions in the query loop", () => {
     loop.sessionProjectRoot = project;
     const toolRows = () => loop.history.getMessages().filter((message) => message.role === "tool_result");
 
-    await loop.runTurn("read it", undefined, undefined, { inputOrigin: "user-keyboard" });
-    await loop.runTurn("read it again", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("read it", undefined, undefined, { ...userKeyboardTurn() });
+    await loop.runTurn("read it again", undefined, undefined, { ...userKeyboardTurn() });
     const [first, second] = toolRows();
     expect(first?.content).toContain("src rule");
     expect(first?.meta?.directoryInstructions?.map((entry) => entry.source)).toEqual([join("src", "AGENTS.md")]);
@@ -147,7 +148,7 @@ describe("directory instructions in the query loop", () => {
       : message);
     loop.history.clear();
     loop.history.restore(compacted);
-    await loop.runTurn("and again", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("and again", undefined, undefined, { ...userKeyboardTurn() });
     expect(toolRows().at(-1)?.content).toContain("src rule");
 
     loop.gitIgnoreVerdicts.set("repo\0path", true);

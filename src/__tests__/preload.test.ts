@@ -40,6 +40,8 @@ Object.defineProperty(globalThis.navigator, "userActivation", {
   value: mockUserActivation,
 });
 
+type UserKeyboardIntentSnapshot = import("../shared/chat-origin.js").UserKeyboardIntentSnapshot;
+
 async function loadAveApi(): Promise<Record<string, unknown>> {
   await import("../preload.js");
   const api = exposed.get("aveApi");
@@ -230,6 +232,7 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.send, {
       input: "hello", attachments: [], originSessionId: "parent-session",
       ...(sendRequestId !== undefined ? { sendRequestId } : {}),
+      inputOrigin: "queue-auto",
     }]]);
   });
 
@@ -241,8 +244,84 @@ describe("preload — plugin webview asset URLs", () => {
     await sideChat.send("hello", [], undefined, "side-request", { kind: "terminal", tabId: "terminal:w-1" }, sessionId);
     expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.send, {
       input: "hello", attachments: [], originSessionId: undefined, sendRequestId: "side-request",
-      surface: { kind: "terminal", tabId: "terminal:w-1" }, sessionId,
+      surface: { kind: "terminal", tabId: "terminal:w-1" }, sessionId, inputOrigin: "queue-auto",
     }]]);
+  });
+
+  it("reports a side-chat keyboard send as the user's only with a captured, unspent gesture token", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+    const sent = () => mockInvoke.mock.calls.at(-1)![1] as { inputOrigin?: string; userActivation?: boolean };
+    mockUserActivation.isActive = true;
+    try {
+      const token = capture() as UserKeyboardIntentSnapshot;
+      await sideChat.send("typed", [], undefined, undefined, undefined, undefined, { inputOrigin: "user-keyboard", userIntent: token });
+      expect(sent()).toMatchObject({ inputOrigin: "user-keyboard", userActivation: true });
+      await sideChat.send("replayed", [], undefined, undefined, undefined, undefined, { inputOrigin: "user-keyboard", userIntent: token });
+      expect(sent()).toMatchObject({ inputOrigin: "user-keyboard", userActivation: false });
+      await sideChat.send("queued", [], undefined, undefined, undefined, undefined, { inputOrigin: "queue-auto" });
+      expect(sent()).toMatchObject({ inputOrigin: "queue-auto" });
+      expect(sent()).not.toHaveProperty("userActivation");
+    } finally {
+      mockUserActivation.isActive = false;
+    }
+  });
+
+  it("consumes a branch click's token as the branch request leaves, so a slow fork cannot expire its auto-continue", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => UserKeyboardIntentSnapshot;
+    const branch = api["chatBranchFromCheckpoint"] as (sessionId: string, compactNum: number, userIntent?: unknown) => Promise<unknown>;
+    const continueLastUser = api["chatContinueLastUser"] as (sessionId: string, authority?: unknown) => Promise<unknown>;
+    vi.useFakeTimers();
+    mockUserActivation.isActive = true;
+    try {
+      const click = capture();
+      mockUserActivation.isActive = false;
+      await branch("source-session", 2, click);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:branch-from-checkpoint", {
+        sessionId: "source-session", compactNum: 2, intent: { inputOrigin: "user-keyboard", userActivation: true },
+      }, "main");
+      // The fork and load take longer than the token's lifetime; the continue spends main's grant, not the token.
+      vi.advanceTimersByTime(6_000);
+      await continueLastUser("branch-session", { branchContinuation: "grant-1" });
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:continue-last-user", { sessionId: "branch-session", branchContinuation: "grant-1" }, "main");
+      // The token itself was spent by the branch request.
+      await branch("source-session", 2, click);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:branch-from-checkpoint", expect.objectContaining({
+        intent: { inputOrigin: "user-keyboard", userActivation: false },
+      }), "main");
+    } finally {
+      vi.useRealTimers();
+      mockUserActivation.isActive = false;
+    }
+  });
+
+  it("carries each replay's gesture token to main once: edit-resend, continue and retry", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const editResend = api["chatEditResend"] as (id: string, text: string, userIntent?: unknown) => Promise<unknown>;
+    const continueLastUser = api["chatContinueLastUser"] as (sessionId: string, userIntent?: unknown) => Promise<unknown>;
+    const retryEffort = api["chatRetryEffort"] as (opts: unknown, userIntent?: unknown) => Promise<unknown>;
+    const gesture = (activation: boolean) => ({ inputOrigin: "user-keyboard", userActivation: activation });
+    mockUserActivation.isActive = true;
+    try {
+      const edit = capture();
+      await editResend("row-1", "new", edit);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:edit-resend", "row-1", "new", "main", gesture(true));
+      await editResend("row-1", "again", edit);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:edit-resend", "row-1", "again", "main", gesture(false));
+      await continueLastUser("session-1", capture());
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:continue-last-user", { sessionId: "session-1", intent: gesture(true) }, "main");
+      await continueLastUser("session-1");
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:continue-last-user", { sessionId: "session-1", intent: gesture(false) }, "main");
+      await retryEffort({ enableThinking: true }, capture());
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:retry-effort", { enableThinking: true }, "main", gesture(true));
+      await retryEffort({ enableThinking: true });
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:retry-effort", { enableThinking: true }, "main", gesture(false));
+    } finally {
+      mockUserActivation.isActive = false;
+    }
   });
 
   it("bridges a pane chat's history read and its ending", async () => {
@@ -631,6 +710,77 @@ describe("preload — plugin webview asset URLs", () => {
       input: "second",
       userActivation: false,
     }), "main");
+  });
+
+  it("never lets lingering activation rescue a missing, replayed, forged or expired chat send intent", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const chatSend = api["chatSend"] as (input: string, attachments: unknown[] | undefined, inputOrigin: string, userIntent?: unknown) => Promise<unknown>;
+    const activation = () => (mockInvoke.mock.calls.at(-1)![1] as { userActivation?: boolean }).userActivation;
+    mockUserActivation.isActive = true;
+    const token = capture();
+    await chatSend("first", undefined, "user-keyboard", token);
+    expect(activation()).toBe(true);
+    await chatSend("replayed", undefined, "user-keyboard", token);
+    expect(activation()).toBe(false);
+    await chatSend("forged", undefined, "user-keyboard", { inputOrigin: "user-keyboard", token: "not-minted" });
+    expect(activation()).toBe(false);
+    await chatSend("missing", undefined, "user-keyboard");
+    expect(activation()).toBe(false);
+    vi.useFakeTimers();
+    try {
+      const stale = capture();
+      vi.advanceTimersByTime(5_001);
+      await chatSend("late", undefined, "user-keyboard", stale);
+      expect(activation()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      mockUserActivation.isActive = false;
+    }
+  });
+
+  it("marks a chat guide as the user's own words only with a fresh, unused composer intent", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const chatGuide = api["chatGuide"] as (input: string, userIntent?: unknown) => Promise<unknown>;
+    const intentOf = (call: number) => mockInvoke.mock.calls[call]![3];
+
+    // No gesture at all (a queue flush at a round boundary), even while the browser still reports activation.
+    mockUserActivation.isActive = true;
+    await chatGuide("flushed");
+    expect(mockInvoke.mock.calls[0]!.slice(0, 3)).toEqual(["ave:chat:guide", "flushed", "main"]);
+    expect(intentOf(0)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+
+    // A renderer-minted claim is not an intent.
+    mockUserActivation.isActive = false;
+    await chatGuide("forged", { inputOrigin: "user-keyboard", userActivation: true });
+    expect(intentOf(1)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+
+    // A real composer gesture: captured during the key handler, consumed once. Activation lingers after the gesture, and it rescues neither
+    // the replayed token nor a forged one.
+    mockUserActivation.isActive = true;
+    const token = capture();
+    await chatGuide("typed", token);
+    expect(intentOf(2)).toEqual({ inputOrigin: "user-keyboard", userActivation: true });
+    await chatGuide("replayed", token);
+    expect(intentOf(3)).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+    await chatGuide("forged token", { inputOrigin: "user-keyboard", token: "not-minted" });
+    expect(mockInvoke.mock.calls.at(-1)![3]).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+    mockUserActivation.isActive = false;
+
+    // An expired intent confers nothing.
+    vi.useFakeTimers();
+    try {
+      mockUserActivation.isActive = true;
+      const stale = capture();
+      mockUserActivation.isActive = false;
+      vi.advanceTimersByTime(5_001);
+      mockUserActivation.isActive = true;
+      await chatGuide("late", stale);
+      expect(mockInvoke.mock.calls.at(-1)![3]).toEqual({ inputOrigin: "user-keyboard", userActivation: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("exposes renderer env flags including debugStream", async () => {

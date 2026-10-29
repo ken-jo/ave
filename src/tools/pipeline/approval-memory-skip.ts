@@ -5,7 +5,7 @@ import type { PermissionCheckResult, PermissionManager } from "../../permissions
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { RuleBasedRiskClassifier, maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
-import { resolveReviewerSandboxCapability } from "../../permissions/sandbox-capability.js";
+import { resolveReviewerSandboxCapability, type SandboxCapability } from "../../permissions/sandbox-capability.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
 import {
   approvalCacheKeyIdentity,
@@ -36,10 +36,12 @@ export function classifyApprovalRuleVerdict(input: {
   workerId?: string;
   pluginId?: string;
   hostShellExecutionPlan?: HostShellExecutionPlan;
+  /** The capability this call actually runs under, when the caller knows it better than the tool name does (the user's own host terminal). */
+  sandboxCapability?: SandboxCapability;
 }): { ctx: ToolInvocationContext; verdict: ReturnType<RuleBasedRiskClassifier["classify"]> } {
   // Substrate-aware (NOT process-global): a plugin/MCP or in-process builtin call resolves to a "none" capability so the audit + any sandbox-sensitive rule reflect that
   // this call's effects are NOT ASRT-isolated; except a genuinely ASRT-wrapped external MCP worker (keyed on id) or host-spawned plugin worker (keyed on pluginId + workerId).
-  const sandboxCapability = resolveReviewerSandboxCapability(
+  const sandboxCapability = input.sandboxCapability ?? resolveReviewerSandboxCapability(
     input.source,
     input.toolName,
     input.mcpServerId,
@@ -103,6 +105,8 @@ export async function tryUserApprovalMemorySkip(
   const canonicalArgs = canonicalStringify(finalInput);
   const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
   if (hostShellExecutionPlan?.mode === "plain") return null;
+  // A command for the user's own host terminal is the person's decision each time: no remembered approval ever stands in for it.
+  if (context.approvalMemory?.kind === "key" && context.approvalMemory.scope.kind === "terminal-command" && context.approvalMemory.scope.lane === "manual") return null;
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,

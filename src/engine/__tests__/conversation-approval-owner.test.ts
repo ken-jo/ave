@@ -96,7 +96,7 @@ describe("conversation approval-owner lifecycle", () => {
     updateApprovalSurface({ kind: "attach", sessionId: parent.sessionId, surface: first });
     updateApprovalSurface({ kind: "inherit", sessionId: child.sessionId, parentSessionId: parent.sessionId });
     const temporary = child.sessionId;
-    child.sessionId = "sub-addressable-approval-owner";
+    child.replaceSessionIdentity("sub-addressable-approval-owner");
     expect(approvalSurfaceRegistry.resolve(temporary)).toBeNull();
     expect(approvalSurfaceRegistry.resolve(child.sessionId)).toBe(first);
     updateApprovalSurface({ kind: "attach", sessionId: parent.sessionId, surface: second });

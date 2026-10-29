@@ -3,7 +3,8 @@
 export const en = {
   "sidebarPreview.localFile": "Local file",
   "sidebarPreview.running": "Agent responding",
-  "ptyTerminal.hostChip": "Host",
+  "ptyTerminal.hostChipApproval": "Host · commands need approval",
+  "ptyTerminal.hostChipNoAgentInput": "Host · no agent input",
   "ptyTerminal.hostChipAgentless": "Host · no agent access",
   "terminalFileReview.changed": "Agent changed {count}",
   "terminalFileReview.annotation": "Uses files the agent changed: {files}",

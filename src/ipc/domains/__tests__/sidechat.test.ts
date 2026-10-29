@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { IpcMainInvokeEvent } from "electron";
 import {
@@ -49,6 +49,15 @@ vi.mock("../../../main/terminal/pty-manager.js", () => ({
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 import * as shellTasks from "../../../tools/shell-tools.js";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createPaneHostTerminalLoop } from "../../../engine/__tests__/support/pane-host-terminal-loop.js";
+import { ScriptedTurnProvider } from "../../../engine/__tests__/support/conversation-loop-fixtures.js";
+import type { LLMProvider, StreamEvent } from "../../../engine/llm/types.js";
+import { runWithToolExecutionCwd } from "../../../tools/execution-context.js";
+import { __resetTerminalBlocksForTest } from "../../../main/terminal/terminal-blocks.js";
+import { USER_KEYBOARD_REQUIRED } from "../../../shared/chat-origin.js";
 
 function rendererContents(senderId = 1) {
   return Object.assign(new EventEmitter(), {
@@ -1232,5 +1241,71 @@ describe("pane chats are their own conversations", () => {
       originSessionId: pane(PANE_A)!.getSessionId(), childSessionId: "55555555-5555-4555-8555-555555555555",
     });
     expect(result).toEqual({ ok: false, error: "sub-agent-runner-unavailable" });
+  });
+});
+
+// The real path a pane chat send takes: the side-chat IPC handler, the pane's ConversationLoop, and terminal_run into the bound host
+// terminal, with the exact HostTerminal rule saved. Only a send main verified as a keyboard gesture may type; a queued auto-send or an
+// unverified keyboard claim never reaches the PTY and asks no one.
+describe("pane chat send origin through the real loop to the host terminal", () => {
+  const WINDOW = 7;
+  // Each send binds a fresh tab: the registry remembers a tab's pane chat across tests.
+  let hostTabs = 0;
+  let HOST = "";
+  let dir: string;
+  beforeEach(() => {
+    HOST = `terminal:0000c0de-${++hostTabs}`;
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-sidechat-host-terminal-")));
+    terminalOwners.set(HOST, WINDOW);
+  });
+  afterEach(() => {
+    __resetTerminalBlocksForTest();
+    terminalOwners.delete(HOST);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function paneSend(origin: Record<string, unknown>) {
+    const pane = await createPaneHostTerminalLoop(dir, WINDOW, HOST);
+    const provider = new ScriptedTurnProvider([
+      [
+        { type: "tool_call", id: "t1", name: "terminal_run", input: { command: "printf ready", waitSeconds: 0 } } as StreamEvent,
+        { type: "message_complete", stopReason: "tool_use" } as StreamEvent,
+      ],
+      [{ type: "text_delta", text: "done" } as StreamEvent, { type: "message_complete", stopReason: "end_turn" } as StreamEvent],
+    ]);
+    const providerRounds = vi.spyOn(provider, "streamTurn");
+    (pane.loop as unknown as { provider: LLMProvider | null }).provider = provider;
+    register(makeSideLoop(), makeMainLoop(), false, makeSideChatStore(), makePanePool(() => pane.loop as never));
+    const result = await runWithToolExecutionCwd(dir, () => handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1), {
+      input: "run printf ready", surface: { kind: "terminal", tabId: HOST }, ...origin,
+    }));
+    const release = { kind: "release" as const, sessionId: pane.loop.getSessionId() };
+    updateApprovalSurface(release);
+    return { result, typed: pane.typed, asked: pane.asked, providerRounds: providerRounds.mock.calls.length };
+  }
+
+  it.each([
+    ["a queued auto-send", { inputOrigin: "queue-auto" }],
+    ["a send that names no origin", {}],
+  ])("%s runs the turn but types nothing and shows no card", async (_label, origin) => {
+    const sent = await paneSend(origin);
+    expect(sent.result).toMatchObject({ ok: true });
+    expect(sent.providerRounds).toBe(2);
+    expect(sent.asked).toEqual([]);
+    expect(sent.typed).toEqual([]);
+  });
+
+  it("refuses a keyboard claim whose gesture token preload did not consume, before any turn", async () => {
+    const sent = await paneSend({ inputOrigin: "user-keyboard", userActivation: false });
+    expect(sent.result).toEqual(USER_KEYBOARD_REQUIRED);
+    expect(sent.providerRounds).toBe(0);
+    expect(sent.typed).toEqual([]);
+  });
+
+  it("types a verified keyboard send's command once under its exact rule, with no card (control)", async () => {
+    const sent = await paneSend({ inputOrigin: "user-keyboard", userActivation: true });
+    expect(sent.result).toMatchObject({ ok: true });
+    expect(sent.asked).toEqual([]);
+    expect(sent.typed).toEqual(["printf ready"]);
   });
 });

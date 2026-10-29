@@ -37,7 +37,7 @@ function setup() {
   const memoryManager = new MemoryManager({ aveDir: dir });
   const loop = new ConversationLoop(makeConversationLoopDeps({ memoryManager }));
   loops.push(loop);
-  loop.sessionId = SESSION;
+  loop.replaceSessionIdentity(SESSION);
   const history = loop.history;
   const shellContext = {
     cwd: dir, extraAllowedDirectories: [],

@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { PlatformConversationEvent } from "../../../engine/conversation-platform-protocol.js";
 import { projectSharedConversationEvent } from "../../../engine/conversation-platform-protocol.js";
 import type { TurnCallbacks, TurnDecisionEvent } from "../../../engine/turn/types.js";
-import { runStreamedTurn, STREAM_TURN_OPTIONS } from "../chat-stream.js";
+import { runStreamedTurn } from "../chat-stream.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 import { makeLoop } from "./chat-stream-test-helpers.js";
 
 const DECISION: TurnDecisionEvent = {
@@ -21,7 +22,7 @@ describe("runStreamedTurn loop.decision emission", () => {
     });
     const sink = vi.fn();
 
-    await runStreamedTurn(loop, "go", sink, STREAM_TURN_OPTIONS);
+    await runStreamedTurn(loop, "go", sink, userKeyboardTurn());
 
     const events = sink.mock.calls.map((call) => call[0] as PlatformConversationEvent);
     expect(events).toContainEqual({ kind: "loop.decision", decision: DECISION });
@@ -43,7 +44,7 @@ describe("runStreamedTurn loop.decision emission", () => {
     });
     const sink = vi.fn();
 
-    await runStreamedTurn(loop, "go", sink, STREAM_TURN_OPTIONS);
+    await runStreamedTurn(loop, "go", sink, userKeyboardTurn());
 
     const events = sink.mock.calls.map((call) => call[0] as PlatformConversationEvent);
     expect(events).toContainEqual(expect.objectContaining({
@@ -73,7 +74,7 @@ describe("nonterminal compaction failure delivery", () => {
       return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
     });
     const sink = vi.fn();
-    await runStreamedTurn(loop, "go", sink, STREAM_TURN_OPTIONS);
+    await runStreamedTurn(loop, "go", sink, userKeyboardTurn());
     const events = sink.mock.calls.map((call) => call[0] as PlatformConversationEvent);
     expect(events).toContainEqual({ kind: "compaction.failed" });
     expect(events.some((event) => event.kind === "turn.error")).toBe(false);

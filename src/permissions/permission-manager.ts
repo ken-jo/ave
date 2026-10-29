@@ -19,7 +19,7 @@ import { permissionsFilePath as defaultPermissionsFilePath, readPermissionsFile,
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError, ShellRuleDialect } from "../shared/permissions-events.js";
-import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject } from "./rules/rule-scopes.js";
+import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject, type HostTerminalRuleTarget } from "./rules/rule-scopes.js";
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
@@ -234,7 +234,8 @@ export interface PermissionCheckContext {
   // Tool-author `decisionOverride` for `meta`-category builtin tools, carried from the executor so the post-computation guard owns re-elevation (V1 SOT). A foreground `"ask"` meta invocation uses the same reviewer route as write/shell/network when interactive auto-review is enabled; otherwise it remains a per-invocation `forceModal` ask. `"always-allow-with-audit"` is short-circuited before checkDetailed runs. Non-meta callers pass `undefined`.
   decisionOverride?: "ask" | "always-allow-with-audit";
   // Host-built rule subject. Native file subjects retain the sealed path snapshot; mediated fetches and MCP use actual destination/tool identity. Shell dialects share floors; Bash rules match only the bash dialect.
-  ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string } | ScopedRuleSubject;
+  // `hostTerminal`: a bash command typed into the user's own host terminal; only exact `HostTerminal(...)` rules of that shell and physical directory may allow it.
+  ruleSubject?: { kind: "shell"; dialect: ShellRuleDialect; command: string; cwd?: string; hostTerminal?: HostTerminalRuleTarget } | ScopedRuleSubject;
   // project whose per-project rule file applies. The caller must have awaited PermissionManager.ensureProjectRulesLoaded for it.
   projectRulesCwd?: string;
   // Host-only per-invocation route; a missing shell route is plain (no sandbox). pathPolicyRelaxations comes from the selected execution plan (executionPlanPathPolicyRelaxations); missing means none.
@@ -1361,7 +1362,8 @@ export class PermissionManager {
     if (shellFloorSignals?.analysisLimited) return closeShellAnalysis();
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
-      ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed || shellFloorSignals?.exactLiteralEvaluation === true }
+      ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed || shellFloorSignals?.exactLiteralEvaluation === true,
+        ...(ruleSubject.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }
       : undefined;
     const sessionRules = context.sessionId === undefined || ruleSubject === undefined
       ? [] : this.sessionRules.get(approvalConversationRoot(context.sessionId)) ?? [];

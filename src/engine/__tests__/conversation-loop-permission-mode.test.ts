@@ -7,6 +7,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnInput,
 } from "../llm/types.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class UnusedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -74,7 +75,7 @@ describe("ConversationLoop permission mode slash events", () => {
       "/permission mode allow",
       { onPermissionModeChanged },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(result.text).toContain("권한 모드 변경됨: default -> allow");
@@ -90,7 +91,7 @@ describe("ConversationLoop permission mode slash events", () => {
       "/permission mode auto --durable",
       { onPermissionModeChanged },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(result.text).toContain("권한 모드 변경됨: default -> auto");

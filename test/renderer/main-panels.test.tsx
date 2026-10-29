@@ -514,9 +514,10 @@ describe("main-area terminal and web panels", () => {
       expect(el?.getAttribute("title")).toContain(t("ptyTerminal.initialCwd", { cwd: manual.initialCwd }));
       return el!;
     });
-    expect(chip.getAttribute("title")).toContain(t("ptyTerminal.manualEnvironment"));
+    // A main-area pane is a workspace terminal: its pane chat may ask for approved commands, and the chip says so.
+    expect(chip.getAttribute("title")).toContain(t("ptyTerminal.workspaceEnvironment"));
     // A launch directory is not evidence of the current directory.
-    expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual" });
+    expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual", purpose: "workspace" });
     expect(terminalApi.spawn.mock.calls[0]![0]).not.toHaveProperty("cwd");
     const spawnsBeforeClose = terminalApi.spawn.mock.calls.length;
 

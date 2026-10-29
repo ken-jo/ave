@@ -17,6 +17,7 @@ import type {
 import { createRequestAnchor } from "../../../tools/pipeline/rationale-control.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { backgroundShellManager } from "../../../tools/shell-tools.js";
+import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
 
 class RecordingProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -135,7 +136,7 @@ describe("RequestAnchor and rationale provenance host wiring", () => {
     ]);
 
     await fixture.loop.runTurn(providerInput, undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: rawIntent,
     });
 
@@ -213,7 +214,7 @@ describe("RequestAnchor and rationale provenance host wiring", () => {
     ]);
 
     await fixture.loop.runTurn("inspect the attachment", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "inspect the attachment",
       attachments: [attachment],
     },
@@ -244,7 +245,7 @@ describe("RequestAnchor and rationale provenance host wiring", () => {
     );
 
     await fixture.loop.runTurn("background request", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       requestAnchorRawIntent: "background request",
     });
 
@@ -359,7 +360,7 @@ describe("RequestAnchor and rationale provenance host wiring", () => {
     const fixture = makeHarness([toolRound("bash-1", "bash"), endRound]);
 
     await fixture.loop.runTurn(folded, undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     // Replay lacks an anchor; trustOrigin owns reviewer framing and verdict-cache partitioning.
@@ -370,7 +371,7 @@ describe("RequestAnchor and rationale provenance host wiring", () => {
   it("leaves an ordinary keyboard turn untainted", async () => {
     const fixture = makeHarness([toolRound("bash-1", "bash"), endRound]);
     await fixture.loop.runTurn("just a question about mcp-resource handling", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     expect(fixture.permissionContexts.map((context) => context.trustOrigin))
       .toEqual(["llm-tool-arg"]);

@@ -1,5 +1,7 @@
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
+import { currentHostTerminalTurn } from "./host-terminal-turn.js";
+import { HOST_TERMINAL_SANDBOX_CAPABILITY } from "../permissions/sandbox-capability.js";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
@@ -29,11 +31,12 @@ import {
 } from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import { isCanonicalBashTool, isCanonicalPowerShellTool } from "./shell-tools.js";
-import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
+import { isCanonicalTerminalRunTool, terminalCommandScopeOf, type HostTerminalCommandScope } from "./terminal-run.js";
 import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import {
   isRemoteControllerAuthorityCurrent,
+  isUntaintedToolTrustOrigin,
   remoteControllerOriginOf,
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
@@ -103,6 +106,8 @@ type AuditPermissionAsk = (
  * excluded from §S4 by its `kind`, but that exclusion lives in a third module
  * and is not what makes this value correct.
  */
+
+
 
 export function deriveApprovalIsReadOnly(opts: {
   invocationCategory: ToolCategory;
@@ -231,6 +236,10 @@ export async function authorizeToolInvocation(
   // The PermissionManager's own layer-3 allow-rule decision that authorized an
   // explicit host request, carried by identity to the permit mint.
   let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
+  // The sealed target of a `terminal_run` into the user's host terminal, set where the permission subject is built.
+  let hostTerminalScope: HostTerminalCommandScope | undefined;
+  // Tool results already returned to the model in this user turn: the host command needs a fresh person's card, with no saved rule.
+  let hostTerminalAfterExternalContent = false;
 
   const returnAuthorizationRequired = async (
     blockedPermission: PermissionCheckResult,
@@ -452,6 +461,7 @@ export async function authorizeToolInvocation(
     const terminalScope = isCanonicalTerminalRunTool(tool)
       ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
       : undefined;
+    hostTerminalScope = terminalScope?.lane === "manual" ? terminalScope : undefined;
     const shellRuleSubject = shellDialect !== undefined && typeof finalInput.command === "string"
       ? {
           kind: "shell" as const,
@@ -463,14 +473,21 @@ export async function authorizeToolInvocation(
           ),
         }
       : terminalScope !== undefined && typeof finalInput.command === "string"
-        ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
+        ? terminalScope.lane === "manual"
+          // The user's own host shell: judged in its OS-verified physical directory, and only exact host rules of that shell may allow it.
+          ? { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.physicalCwd,
+            hostTerminal: { shell: terminalScope.shell, cwd: terminalScope.physicalCwd } }
+          : { kind: "shell" as const, dialect: "bash" as const, command: finalInput.command, cwd: terminalScope.cwd }
         : undefined;
     const shellExecution = shellDialect !== undefined && hostShellExecutionPlan !== undefined
       ? {
           runsSandboxed: isConfinedHostShellExecution(hostShellExecutionPlan, invocationPermissionContext.disposableSubstrate)
             || invocationPermissionContext.disposableSubstrate !== undefined,
           pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [],
-        } : terminalScope !== undefined ? { runsSandboxed: false } : undefined;
+        } : terminalScope !== undefined
+          // The user's host terminal decides on its sealed host route's relaxations (none); the isolated terminal keeps its own.
+          ? { runsSandboxed: false, ...(terminalScope.lane === "manual" ? { pathPolicyRelaxations: hostShellPathPolicyRelaxations ?? [] } : {}) }
+          : undefined;
     const scopedSubjectCandidate = scopedRuleSubjectFor(tool, finalInput, executionCwd, canonicalTargets);
     // Guest file paths belong to the workload namespace, never to host Edit scopes.
     const scopedRuleSubject = scopedSubjectCandidate?.kind === "edit"
@@ -608,6 +625,42 @@ export async function authorizeToolInvocation(
               : "an action on a tab the user opened asks every time",
             forceModal: true,
           };
+    }
+
+    // A command typed into the user's own host terminal: only an exact
+    // `HostTerminal(...)` rule (layer 3, the plain-shell rule lane) runs it
+    // unasked. Otherwise the verified person at this desktop decides, every
+    // time, in every mode: no reviewer, judge, away authority, remembered
+    // approval or remote answer (forceModal + the gate's host-terminal marker).
+    // A remote or headless turn has no such person and no pane binding.
+    if (hostTerminalScope !== undefined && permissionResult.decision !== "deny") {
+      if (remoteControllerOrigin !== undefined || requiresRemoteLocalOneShot) {
+        permissionResult = { decision: "deny", reason: "Host terminal typing is unavailable to remote-controller requests", layer: 2 };
+      } else if (invocationPermissionContext.headless === true) {
+        permissionResult = { decision: "deny", reason: "Host terminal typing needs its pane chat and a person at this desktop; it is unavailable here", layer: permissionResult.layer };
+      } else {
+        const hostTurn = currentHostTerminalTurn(hostTerminalScope.sessionId);
+        hostTerminalAfterExternalContent = hostTurn?.externalContentSeen() === true;
+        // A file read earlier in the turn is external content like any other tool result (the turn fact below). Staged app, plugin or agent
+        // guidance is another speaker and refuses for the rest of the turn, even once a later file read reports `file-content`.
+        const trusted = isUntaintedToolTrustOrigin(invocationPermissionContext.trustOrigin)
+          || (invocationPermissionContext.trustOrigin === "file-content" && hostTerminalAfterExternalContent);
+        if (!trusted || hostTurn?.turnId !== hostTerminalScope.turnId || hostTurn.otherPrincipalGuidance()) {
+          // Only the user turn that asked, still speaking for the user, may type here.
+          permissionResult = { decision: "deny", reason: "Host terminal typing is available only to the user's own turn in its pane chat", layer: 2 };
+        } else if (permissionResult.decision === "allow" && !isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager)) {
+          throw new Error("Host terminal command was allowed without an exact host terminal rule");
+        } else if (hostTerminalAfterExternalContent) {
+          // Content the user did not type has reached the model in this turn: a saved exact rule no longer speaks for this command. A person
+          // decides it on a fresh desktop card, which offers no lasting allow.
+          permissionResult = {
+            decision: "ask", reason: "Host terminal command after external content in this turn; saved rules do not apply", layer: 2, forceModal: true,
+          };
+        } else if (permissionResult.decision === "ask") {
+          const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
+          permissionResult = { ...withoutReviewer, forceModal: true };
+        }
+      }
     }
 
     // A pre-issued app mutation grant replaces only the ordinary foreground
@@ -1579,6 +1632,19 @@ export async function authorizeToolInvocation(
               }
             : {}),
           ...(hostShellExecutionPermitBinding === undefined ? {} : { hostShellExecutionPermitBinding }),
+          // The user's own host terminal: desktop-only, never remembered; the card saves only its exact host terminal rule.
+          ...(hostTerminalScope === undefined || typeof finalInput.command !== "string" ? {} : {
+            durableApprovalRecordAllowed: false as const,
+            hostTerminal: {
+              tabId: hostTerminalScope.tabId,
+              terminalSessionId: hostTerminalScope.terminalSessionId,
+              sessionId: hostTerminalScope.sessionId,
+              shell: hostTerminalScope.shell,
+              physicalCwd: hostTerminalScope.physicalCwd,
+              command: finalInput.command,
+              ...(hostTerminalAfterExternalContent ? { afterExternalContent: true as const } : {}),
+            },
+          }),
           // A guest-routed shell shows the substrate the reviewer graded, not
           // the host plan of a child that never spawns.
           ...(hostShellExecutionPlanAudit === undefined
@@ -1639,6 +1705,8 @@ export async function authorizeToolInvocation(
                   workerId: tool.workerId,
                   pluginId: tool.pluginId,
                   hostShellExecutionPlan,
+                  // The user's own host shell runs unconfined, whatever confines the isolated terminals.
+                  ...(hostTerminalScope === undefined ? {} : { sandboxCapability: HOST_TERMINAL_SANDBOX_CAPABILITY }),
                 }).verdict,
               }
             : {}),
@@ -1699,7 +1767,11 @@ export async function authorizeToolInvocation(
             : {}),
           // Canonical host shells expose only their sealed safe projection;
           // non-host-shell routes retain their existing capability display.
-          ...(hostShellExecutionPlanAudit === undefined
+          // A command typed into the user's own host terminal runs with no
+          // isolation at all, whatever confines the isolated terminals.
+          ...(hostTerminalScope !== undefined
+            ? { sandboxCapability: HOST_TERMINAL_SANDBOX_CAPABILITY }
+            : hostShellExecutionPlanAudit === undefined
             ? {
                 sandboxCapability: resolveReviewerSandboxCapability(
                   source,

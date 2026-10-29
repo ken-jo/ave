@@ -90,8 +90,7 @@ function applyFreshSessionState(
   kind: SessionKind,
   project?: SessionProjectContext,
 ): void {
-  self.sessionId = createDlpSafeUuid();
-  self.sessionEpoch += 1;
+  self.replaceSessionIdentity(createDlpSafeUuid());
   self.sessionKind = kind;
   self.sessionRoutineId = null;
   self.sessionRoutineTitle = null;
@@ -278,8 +277,7 @@ export async function loadSession(
         leavingStartFiredFor,
       );
     }
-    self.sessionId = sessionId;
-    self.sessionEpoch += 1;
+    self.replaceSessionIdentity(sessionId);
     self.sessionStartFiredFor = null;
     self.sessionSource = "resume";
     const sessionMeta = self.deps.memoryManager.loadSessionMetadata(sessionId);

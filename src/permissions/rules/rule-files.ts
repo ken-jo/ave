@@ -63,6 +63,13 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
   if (!ENFORCED_RULE_KINDS.has(spec.kind)) {
     throw new RuleSpecifierError(pattern, `${spec.kind} rules are not enforced yet`);
   }
+  if (spec.kind === "host-terminal") {
+    if (action !== "allow") {
+      throw new RuleSpecifierError(pattern, "a host terminal rule only allows one exact command; deny or ask with a Bash(...) rule, which host terminals also obey");
+    }
+    const refused = refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), false);
+    if (refused) throw new RuleSpecifierError(pattern, `"${spec.tokens.join(" ")}" cannot be allowed by a rule (${refused}); approve it once instead`);
+  }
   if (spec.kind === "bash" && action === "allow") {
     const refused = refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), spec.wildcard);
     if (refused === "broad-prefix") {

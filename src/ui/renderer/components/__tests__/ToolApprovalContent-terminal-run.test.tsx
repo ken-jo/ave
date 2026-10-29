@@ -7,6 +7,9 @@ import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { clearActiveSurface, showActiveSurface } from "../../preview/active-surface.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permission-reviewer-framework.js";
+import { t } from "../../../../i18n/index.js";
+import { allowMenuChoices, shellDecisionModel } from "../permissions/approval-decision.js";
+import { openDecisionMenu } from "./support/decision-bar.js";
 
 /** A `terminal_run` card shows the exact command and the terminal it will be typed into; the target the host
  * sealed before the card was shown; and remembers the command in that directory for this app session only. */
@@ -124,5 +127,82 @@ describe("ToolApprovalContent terminal_run card", () => {
     fireEvent.click(remember);
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-session", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session" }));
+  });
+});
+
+describe("ToolApprovalContent host terminal card", () => {
+  const rule = 'HostTerminal(zsh "/Users/me/repo" npm test)';
+  const shellRule = {
+    dialect: "bash" as const, exactRule: rule, denyRule: "Bash(npm test)", denyAllowed: true, projectCwd: "/Users/me/repo", projectRoot: "/Users/me/repo",
+    sessionAllowed: false, persistentAllowed: true, hostTerminal: { shell: "zsh" as const, cwd: "/Users/me/repo" },
+  };
+  const hostRequest = (allowedDirectories: string[]): ApprovalRequest => terminalRunRequest({
+    args: { command: "npm test" },
+    persistentAllowAllowed: false,
+    persistentApprovalCwd: undefined,
+    requireExplicit: true,
+    shellRule,
+    evaluationContext: evaluationContext(allowedDirectories),
+    approvalMemory: {
+      kind: "key",
+      key: "terminal_run:host",
+      scope: {
+        kind: "terminal-command", lane: "manual", commandSha256: "b".repeat(64), tabId: "terminal:0000c0de-1", terminalSessionId: "host",
+        sessionId: "11111111-1111-4111-8111-111111111111", shell: "zsh", cwd: "/Users/me/repo", physicalCwd: "/Users/me/repo",
+        cwdDevice: "1", cwdInode: "2", turnId: "turn-1", controlGeneration: 3, cwdForMatch: "/users/me/repo",
+      },
+    },
+  });
+  afterEach(() => { vi.unstubAllGlobals(); clearActiveSurface(); });
+
+  it("names the user's own shell and warns that the output returns to the model, without a sandbox claim", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    showActiveSurface({ kind: "terminal", tabId: "terminal:0000c0de-1", label: "Terminal 4", cwd: "/Users/me/repo" });
+    renderApproval(hostRequest(["/elsewhere"]), vi.fn());
+    expect(screen.getByTestId("approval-terminal-target")).toHaveTextContent(
+      t("toolApprovalDialog.hostTerminalTarget", { command: "npm test", terminal: "Terminal 4", shell: "zsh", cwd: "/Users/me/repo" }));
+    const notes = screen.getAllByTestId("approval-terminal-note").map((note) => note.textContent);
+    expect(notes).toContain(t("toolApprovalDialog.hostTerminalWarning"));
+    expect(notes).toContain(t("toolApprovalDialog.hostTerminalOutsideAllowed", { cwd: "/Users/me/repo" }));
+    expect(notes).not.toContain(t("toolApprovalDialog.terminalOutsideAllowed", { cwd: "/Users/me/repo" }));
+    expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "shell");
+    // Its own warning replaces the generic sandbox note, and its rule names a shell and folder, not a project.
+    expect(screen.queryByTestId("approval-shell-outside-sandbox")).toBeNull();
+    expect(screen.queryByTestId("approval-shell-rule-scope-target")).toBeNull();
+  });
+
+  it("offers only the exact host rule as a lasting allow, not editable, with no session or project allow", () => {
+    const model = shellDecisionModel(shellRule);
+    expect(model.options["allow-session"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.hostTerminalRuleScope" });
+    expect(model.options["allow-project"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.hostTerminalRuleScope" });
+    expect(model.options["allow-everywhere"]).toMatchObject({ offered: true, rule, editing: null, labelKey: "toolApprovalDialog.decisionAllowHostTerminal" });
+    expect(model.options["deny-always"]).toMatchObject({ offered: true, rule: "Bash(npm test)" });
+    expect(model.warnsOnWildcardAllow).toBe(false);
+  });
+  it("puts the exact folder rule on the allow button as the only lasting allow, names the deny scope, and claims no automatic review", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    showActiveSurface({ kind: "terminal", tabId: "terminal:0000c0de-1", label: "Terminal 4", cwd: "/Users/me/repo" });
+    renderApproval(hostRequest([]), vi.fn());
+    const lasting = screen.getByTestId(TEST_IDS.allowSessionButton);
+    expect(lasting).toHaveTextContent(t("toolApprovalDialog.decisionAllowHostTerminal"));
+    expect(lasting).toHaveAttribute("data-choice", "allow-everywhere");
+    expect(allowMenuChoices(shellDecisionModel(shellRule))).toEqual(["allow-everywhere"]);
+    openDecisionMenu("allow-everywhere");
+    expect(screen.queryByTestId("approval-choice-allow-session")).toBeNull();
+    expect(screen.queryByTestId("approval-choice-allow-project")).toBeNull();
+    fireEvent.keyDown(screen.getByTestId("approval-choice-allow-everywhere"), { key: "Escape" });
+    openDecisionMenu("deny-always");
+    expect(screen.getByTestId("approval-choice-deny-always-note")).toHaveTextContent(t("toolApprovalDialog.hostTerminalDenyScope"));
+    expect(screen.getByTestId("approval-no-automatic-review")).toHaveTextContent(t("toolApprovalDialog.noAutomaticReview"));
+  });
+
+  it("after external content in the turn, says saved rules do not apply and offers no lasting allow", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    const after = { ...shellRule, exactRule: null, persistentAllowed: false, hostTerminal: { ...shellRule.hostTerminal, afterExternalContent: true as const } };
+    renderApproval({ ...hostRequest([]), shellRule: after }, vi.fn());
+    const notes = screen.getAllByTestId("approval-terminal-note").map((note) => note.textContent);
+    expect(notes).toContain(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
+    expect(shellDecisionModel(after).options["allow-everywhere"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.hostTerminalAfterExternalContent" });
+    expect(screen.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
   });
 });

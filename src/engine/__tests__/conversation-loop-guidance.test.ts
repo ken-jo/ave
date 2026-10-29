@@ -13,6 +13,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -110,7 +111,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "긴 보고서 만들어줘",
       { onGuidanceInjected: (t) => injected.push(t) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await Promise.resolve();
     loop.queueGuidanceWithDisposition("더 짧게 요약", {
@@ -150,7 +151,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     const loop = makeLoop(provider);
 
     const turnPromise = loop.runTurn("start", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     await Promise.resolve();
     loop.queueGuidance("mid-turn guide");
@@ -187,7 +188,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "작업 시작",
       { onGuidanceInjected: (t) => injected.push(t) },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await Promise.resolve();
     loop.queueGuidance("첫번째 지시");
@@ -220,7 +221,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
         onGuidanceDropped: (t) => dropped.push(t),
       },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await Promise.resolve();
     loop.queueGuidance("더 짧게");
@@ -277,7 +278,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
 
     try {
       const turnPromise = loop.runTurn("start", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
       });
       await Promise.resolve();
       expect(
@@ -406,7 +407,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
         onGuidanceDropped: (t) => dropped.push(t),
       },
       undefined,
-      { inputOrigin: "user-keyboard", maxRounds: 1 },
+      { ...userKeyboardTurn(), maxRounds: 1 },
     );
     await Promise.resolve();
     loop.queueGuidanceWithDisposition("late", {
@@ -425,7 +426,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     const loop = makeLoop(provider);
     expect(loop.hasActiveTurn()).toBe(false);
     const p = loop.runTurn("test", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
     await p;
     expect(loop.hasActiveTurn()).toBe(false);
@@ -452,7 +453,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "session A",
       { onGuidanceDropped: rendererDropped },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await gateEntered.promise;
     expect(
@@ -478,7 +479,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "session B",
       { onGuidanceInjected: injectedInB },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
 
     expect(injectedInB).not.toHaveBeenCalled();
@@ -508,7 +509,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "session start failure",
       { onGuidanceDropped: rendererDropped },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await lifecycleEntered.promise;
     expect(
@@ -540,7 +541,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "preflight failure",
       { onGuidanceDropped: rendererDropped },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await preflightEntered.promise;
     expect(
@@ -586,7 +587,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "injection preflight failure",
       { onGuidanceDropped: rendererDropped },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await Promise.resolve();
     expect(
@@ -645,7 +646,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
         onGuidanceDropped: rendererDropped,
       },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await Promise.resolve();
     expect(
@@ -675,7 +676,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       "second attempt",
       { onGuidanceInjected: rendererInjected },
       undefined,
-      { inputOrigin: "user-keyboard" },
+      { ...userKeyboardTurn() },
     );
     await Promise.resolve();
     expect(
@@ -727,7 +728,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
 
     await expect(
       loop.runTurn("parent request", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         initialGuidance,
         approvalReasonPrefix: "[Sub-Agent: Researcher]",
       }),
@@ -742,7 +743,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
 
     await expect(
       loop.runTurn("parent request", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
         initialGuidance,
         approvalReasonPrefix: "[Sub-Agent: Researcher]",
       }),
@@ -780,7 +781,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     };
 
     await loop.runTurn("start the agent turn", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
     });
 
     expect(
@@ -819,7 +820,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       };
 
       await loop.runTurn("start the agent turn", undefined, undefined, {
-        inputOrigin: "user-keyboard",
+        ...userKeyboardTurn(),
       });
 
       expect(intraTurnCalls.filter(Boolean)).toHaveLength(0);
@@ -886,7 +887,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       input: "parent request",
       injectedText: "durable post-turn guidance",
       options: {
-        inputOrigin: "user-keyboard" as const,
+        ...userKeyboardTurn(),
         initialGuidance: "[Sub-Agent: Researcher]\ndurable post-turn guidance",
         approvalReasonPrefix: "[Sub-Agent: Researcher]",
       },

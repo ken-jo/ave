@@ -7,6 +7,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { SystemPromptBuilder } from "../../prompts/system-prompt-builder.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
 class RecordingProvider implements LLMProvider {
   readonly vendor = "claude" as const;
@@ -75,9 +76,9 @@ describe("system prompt stability across turns", () => {
     const provider = new RecordingProvider();
     const { loop } = makeLoop(provider);
 
-    await loop.runTurn("plan the release budget", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("plan the release budget", undefined, undefined, { ...userKeyboardTurn() });
     vi.setSystemTime(new Date("2026-10-15T09:41:47Z"));
-    await loop.runTurn("now draft the changelog", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("now draft the changelog", undefined, undefined, { ...userKeyboardTurn() });
 
     expect(provider.requests).toHaveLength(2);
     const [first, second] = provider.requests as [StreamTurnParams, StreamTurnParams];
@@ -93,11 +94,11 @@ describe("system prompt stability across turns", () => {
     const provider = new RecordingProvider();
     const { loop, builder } = makeLoop(provider);
 
-    await loop.runTurn("plan the release budget", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("plan the release budget", undefined, undefined, { ...userKeyboardTurn() });
     builder.setSessionTitle("Release planning");
-    await loop.runTurn("now draft the changelog", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("now draft the changelog", undefined, undefined, { ...userKeyboardTurn() });
     await loop.runTurn("check the reminder", undefined, undefined, {
-      inputOrigin: "user-keyboard",
+      ...userKeyboardTurn(),
       originSource: "overlay:test",
     });
 
@@ -118,9 +119,9 @@ describe("system prompt stability across turns", () => {
     const provider = new RecordingProvider();
     const { loop } = makeLoop(provider);
 
-    await loop.runTurn("plan the release budget", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("plan the release budget", undefined, undefined, { ...userKeyboardTurn() });
     vi.setSystemTime(new Date("2026-10-15T09:41:47Z"));
-    await loop.runTurn("now draft the changelog", undefined, undefined, { inputOrigin: "user-keyboard" });
+    await loop.runTurn("now draft the changelog", undefined, undefined, { ...userKeyboardTurn() });
 
     const [first, second] = provider.requests as [StreamTurnParams, StreamTurnParams];
     const firstUser = first.messages.at(-1)!;

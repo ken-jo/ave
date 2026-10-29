@@ -19,11 +19,43 @@ export type TerminalSessionInfo = TerminalSessionDetails & (
   | { readonly lane: "manual"; readonly substrate: "host" }
   | { readonly lane: "agent"; readonly substrate: "asrt"; readonly sandboxGeneration: string }
 );
+/** Where a host terminal is mounted. Only a workspace pane's terminal can take approved agent commands from its own pane chat; a side
+ * panel terminal never can. The trusted host renderer declares it on every mount, since one tab can move between the two. */
+export type TerminalPurpose = "workspace" | "side-panel";
+export function isTerminalPurpose(value: unknown): value is TerminalPurpose {
+  return value === "workspace" || value === "side-panel";
+}
 export interface TerminalSpawnRequest extends TerminalRef {
   readonly cwd?: string;
   readonly cols?: number;
   readonly rows?: number;
+  /** Required for a host (manual) spawn or replay. */
+  readonly purpose?: TerminalPurpose;
 }
+/** Who controls a host terminal: the user (`available` for the next approved command, or `taken-over` until they hand it back), or
+ * one approved agent command (`agent`). Main owns it; the renderer only shows it and asks for a change. */
+export type HostTerminalControlMode = "available" | "agent" | "taken-over";
+export type HostTerminalAgentInput = "supported" | "powershell" | "unsupported";
+const AGENT_INPUTS: ReadonlySet<string> = new Set(["supported", "powershell", "unsupported"]);
+export interface HostTerminalControlState {
+  readonly mode: HostTerminalControlMode;
+  readonly generation: number;
+  /** Whether this shell can take agent typing at all: `supported` (integrated zsh or bash), `powershell` (pwsh has no bracketed paste), or
+   * `unsupported` (any other shell, or no shell integration). */
+  readonly agentInput: HostTerminalAgentInput;
+  /** The approved command holding the lease (agent mode only). */
+  readonly command?: string;
+  /** Enter was pressed for it. */
+  readonly typed?: boolean;
+}
+export type TerminalControlEvent = TerminalSessionRef & { readonly control: HostTerminalControlState };
+export type TerminalControlAction = "get" | "take-over" | "stop" | "hand-back";
+export function isTerminalControlAction(value: unknown): value is TerminalControlAction {
+  return value === "get" || value === "take-over" || value === "stop" || value === "hand-back";
+}
+export type TerminalControlResult =
+  | { readonly ok: true; readonly control: HostTerminalControlState }
+  | { readonly ok: false; readonly error: string; readonly message?: string };
 export type TerminalMutationResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 export type TerminalSpawnResult =
   /** `blockMarkerToken` authenticates block ids on forwarded C markers (see TERMINAL_VIEW_TOKEN_FIELD); renderer-only. */
@@ -50,12 +82,15 @@ export interface TerminalApi {
     | { readonly ok: true; readonly session: TerminalSessionInfo; readonly block: TerminalBlock }
     | { readonly ok: false; readonly error: string }
   >;
+  /** Read or change who controls a host terminal: Take over, Stop the agent's command, or Hand back. */
+  control(ref: TerminalSessionRef, action: TerminalControlAction): Promise<TerminalControlResult>;
   listFileReviews(ref: TerminalSessionRef): Promise<
     | { readonly ok: true; readonly snapshot: TerminalFileReviewSnapshot }
     | { readonly ok: false; readonly error: string }
   >;
   onData(handler: (event: TerminalDataEvent) => void): () => void;
   onExit(handler: (event: TerminalExitEvent) => void): () => void;
+  onControl(handler: (event: TerminalControlEvent) => void): () => void;
 }
 
 export function isTerminalLane(value: unknown): value is TerminalLane {
@@ -92,4 +127,19 @@ export function parseTerminalExitEvent(value: unknown): TerminalExitEvent | null
   if (!ref || typeof value !== "object" || value === null || !("exitCode" in value) || !Number.isInteger(value.exitCode)) return null;
   if ("signal" in value && value.signal !== undefined && !Number.isInteger(value.signal)) return null;
   return { ...ref, exitCode: value.exitCode as number, ...("signal" in value && typeof value.signal === "number" ? { signal: value.signal } : {}) };
+}
+const CONTROL_MODES: ReadonlySet<string> = new Set(["available", "agent", "taken-over"]);
+export function parseTerminalControlEvent(value: unknown): TerminalControlEvent | null {
+  const ref = parseTerminalSessionRef(value);
+  if (!ref || typeof value !== "object" || value === null || !("control" in value)) return null;
+  const control = value.control as Record<string, unknown> | null;
+  if (typeof control !== "object" || control === null || typeof control.mode !== "string" || !CONTROL_MODES.has(control.mode)
+    || !Number.isInteger(control.generation) || typeof control.agentInput !== "string" || !AGENT_INPUTS.has(control.agentInput)
+    || (control.command !== undefined && typeof control.command !== "string")
+    || (control.typed !== undefined && typeof control.typed !== "boolean")) return null;
+  return { ...ref, control: {
+    mode: control.mode as HostTerminalControlMode, generation: control.generation as number, agentInput: control.agentInput as HostTerminalAgentInput,
+    ...(typeof control.command === "string" ? { command: control.command } : {}),
+    ...(typeof control.typed === "boolean" ? { typed: control.typed } : {}),
+  } };
 }

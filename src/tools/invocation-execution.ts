@@ -177,6 +177,7 @@ export interface ExecutionStageContext {
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
+  hostTerminalRoute?: { recheck(): Promise<void> };
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
@@ -228,6 +229,7 @@ export async function executeAuthorizedToolInvocation(
     hostShellExecutionPlan,
     executionRouteGrant,
     finalizeExecutionRouteGrant,
+    hostTerminalRoute,
     preparedShellInvocation,
     verifiedShellCommand,
     hostShellRequiresExplicitApproval,
@@ -766,6 +768,7 @@ export async function executeAuthorizedToolInvocation(
     ...(ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot } : {}),
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
+    ...(hostTerminalRoute ? { hostTerminalRoute } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
     ...(hostShellExecutionPermit ? { hostShellExecutionPermit } : {}),
