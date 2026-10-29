@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath, stat, type FileHandle } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 import type { TerminalFileReviewSnapshot, TerminalExecutionWarning, TerminalReviewFile } from "../../shared/terminal-file-review.js";
 import type { TurnReviewFile } from "../../shared/turn-change-review.js";
@@ -12,64 +12,62 @@ import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-pat
 
 const MAX_INFERENCE_BYTES = 1_048_576;
 const MAX_INFERENCE_STEPS = 128;
-/** make options under which no recipe runs: dry run, question, touch, version, help. */
-const MAKE_NON_EXECUTING = /^(?:-[a-zA-Z]*[nqt][a-zA-Z]*|--(?:dry-run|just-print|recon|question|touch|version|help)|-v|-h)$/;
-/** make options that change how recipes run but still run them. */
-const MAKE_EXECUTING_OPTION = /^(?:-[sSkKiBwWeE]+|-j\d*|-l[\d.]*|--(?:silent|quiet|keep-going|ignore-errors|always-make|print-directory|no-print-directory|environment-overrides)|--jobs(?:=\d+)?|--load-average(?:=[\d.]+)?)$/;
+/**
+ * The invocation forms that provably run their operand. A runner matches only when every option before the operand
+ * is listed for it, and an option that takes a value gets one this validates. Anything else (a version or help flag,
+ * a syntax check, a preload, an option that changes what runs, an invalid value, an option not listed) is uncertain:
+ * no annotation. Warnings are best-effort, so precision wins over recall; the list is deliberately short.
+ */
+interface OptionRule { readonly flag: RegExp; readonly value?: (value: string) => boolean }
+/** `set -o` names under which a shell still runs its operand. */
+const SHELL_SET_OPTIONS = new Set(["errexit", "nounset", "pipefail", "xtrace"]);
+/** Python warning filter actions; none changes whether the operand runs. */
+const PYTHON_WARNING_ACTIONS = new Set(["ignore", "default", "error", "always", "once", "module"]);
+const SHELL_RULES: readonly OptionRule[] = [
+  { flag: /^-[eux]+$/ }, { flag: /^--no(?:rc|profile)$/ }, { flag: /^-o$/, value: (name) => SHELL_SET_OPTIONS.has(name) },
+];
+const PYTHON_RULES: readonly OptionRule[] = [{ flag: /^-[uB]+$/ }, { flag: /^-W$/, value: (action) => PYTHON_WARNING_ACTIONS.has(action) }];
+const INTERPRETER_RULES: Readonly<Record<string, readonly OptionRule[]>> = {
+  ".": [], source: [], sh: SHELL_RULES, bash: SHELL_RULES, zsh: SHELL_RULES,
+  node: [{ flag: /^--(?:no-warnings|no-deprecation|enable-source-maps)$/ }],
+  python: PYTHON_RULES, python3: PYTHON_RULES, ruby: [{ flag: /^-w$/ }], perl: [{ flag: /^-w$/ }],
+};
+const nonEmpty = (value: string) => value.length > 0 && !value.startsWith("-");
+const MAKE_RULES: readonly OptionRule[] = [
+  { flag: /^-j\d*$/ }, { flag: /^(?:-s|--silent|--no-print-directory)$/ },
+  { flag: /^-C$/, value: nonEmpty }, { flag: /^-f$/, value: nonEmpty },
+];
+/** Options before a package runner's subcommand. */
+const PACKAGE_RUNNER_RULES: readonly OptionRule[] = [{ flag: /^(?:-s|--silent)$/ }];
+const NPX_RULES: readonly OptionRule[] = [{ flag: /^--no-install$/ }];
 
 /**
- * How an interpreter option affects its operand. Each interpreter's options are an explicit allowlist: an option not
- * classified here is `uncertain`, so the command is never a positive match.
- * - `nothing`: version, help or syntax-check output; the operand never runs.
- * - `source`: the code comes from the command line or a module, not the operand.
- * - `value`: an option that runs the operand and consumes the next word.
- * - `preload`: a required file, followed as a script when it is a path.
- * - `runs`: an option that still runs the operand.
+ * The proven options before the first operand, with each option's value, or undefined when an option is not proven.
+ * `--` ends the options. `make -j 4` reads its count as the value it takes.
  */
-type InterpreterOption = "nothing" | "source" | "value" | "preload" | "runs" | "uncertain";
-const SHELL_INTERPRETERS = ["sh", "bash", "zsh"];
-function interpreterOption(verb: string, option: string): InterpreterOption {
-  if (SHELL_INTERPRETERS.includes(verb)) {
-    if (/^-[a-zA-Z]*n[a-zA-Z]*$/.test(option) || option === "--version" || option === "--help") return "nothing";
-    if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(option)) return "source";
-    if (["-o", "+o", "-O", "+O", "--rcfile", "--init-file"].includes(option)) return "value";
-    if (/^-[aefuvxCl]+$/.test(option) || ["--noprofile", "--norc", "--posix", "--login"].includes(option)) return "runs";
-    return "uncertain";
+function provenOptions(rules: readonly OptionRule[], args: readonly string[]): { options: Array<[string, string | undefined]>; operand: number } | undefined {
+  const options: Array<[string, string | undefined]> = [];
+  let index = 0;
+  while (index < args.length && /^[-+]/.test(args[index]!)) {
+    const option = args[index]!;
+    if (option === "--") return { options, operand: index + 1 };
+    const rule = rules.find(each => each.flag.test(option));
+    if (!rule) return undefined;
+    if (rule.value) {
+      const value = args[index + 1];
+      if (value === undefined || !rule.value(value)) return undefined;
+      options.push([option, value]);
+      index += 2;
+    } else if (option === "-j" && /^\d+$/.test(args[index + 1] ?? "")) {
+      options.push([option, args[index + 1]]);
+      index += 2;
+    } else {
+      options.push([option, undefined]);
+      index += 1;
+    }
   }
-  if (verb === "node") {
-    if (["-v", "-h", "-c", "--version", "--help", "--check"].includes(option)) return "nothing";
-    if (["-e", "-p", "--eval", "--print"].includes(option)) return "source";
-    if (["-r", "--require", "--import"].includes(option)) return "preload";
-    if (["--no-warnings", "--trace-warnings", "--no-deprecation", "--trace-deprecation", "--throw-deprecation",
-      "--enable-source-maps", "--trace-uncaught"].includes(option)) return "runs";
-    return "uncertain";
-  }
-  if (verb === "python" || verb === "python3") {
-    if (/^-V+$/.test(option) || ["-h", "-?", "--version", "--help"].includes(option)) return "nothing";
-    if (["-c", "-m"].includes(option)) return "source";
-    if (["-W", "-X"].includes(option)) return "value";
-    if (/^-[BEIOqsui]+$/.test(option)) return "runs";
-    return "uncertain";
-  }
-  if (verb === "ruby") {
-    if (["-h", "-c", "-y", "--version", "--help"].includes(option)) return "nothing";
-    if (option === "-e") return "source";
-    if (["-r", "-I"].includes(option)) return option === "-r" ? "preload" : "value";
-    if (/^-[wd]+$/.test(option) || /^-W[0-2]?$/.test(option)) return "runs";
-    return "uncertain";
-  }
-  if (verb === "perl") {
-    if (["-v", "-V", "-h", "-c"].includes(option)) return "nothing";
-    if (["-e", "-E"].includes(option)) return "source";
-    if (option === "-I") return "value";
-    if (/^-[wWXTt]+$/.test(option)) return "runs";
-    return "uncertain";
-  }
-  // `.` and `source` take no options this classifies.
-  return "uncertain";
+  return { options, operand: index };
 }
-/** npx options that leave which local bin runs unchanged. */
-const NPX_RUNS_LOCAL_BIN = ["--no-install", "--yes", "-y", "--no", "--quiet", "-q"];
 /**
  * The file an agent write left at a path, as the writer's own descriptor saw it: the diff reads only this file,
  * whatever the path names later.
@@ -268,24 +266,15 @@ async function packageScript(cwd: string, name: string, evidence: ExecutionEvide
 }
 
 async function makeTarget(cwd: string, args: string[], evidence: ExecutionEvidence, localBins: boolean): Promise<void> {
+  // Only the proven forms run recipes: `-j N`, `-s`, `-C dir`, `-f file`, then target names. Dry runs, queries,
+  // variable assignments and any other option are uncertain.
+  const proven = provenOptions(MAKE_RULES, args);
+  const targets = proven ? args.slice(proven.operand) : [];
+  if (!proven || targets.some(target => target.startsWith("-") || target.includes("="))) { evidence.unresolved = true; return; }
   let filename: string | undefined;
-  const targets: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (arg === "-C" || arg === "--directory") { cwd = resolve(cwd, args[++i] ?? "."); continue; }
-    if (arg === "-f" || arg === "--file" || arg === "--makefile") { filename = args[++i]; continue; }
-    if (arg.startsWith("--file=") || arg.startsWith("--makefile=")) { filename = arg.slice(arg.indexOf("=") + 1); continue; }
-    // Dry runs, queries, touch mode, version and help run no recipe; an option this cannot classify is uncertain.
-    // Neither is a positive match.
-    if (MAKE_NON_EXECUTING.test(arg)) return;
-    if ((arg === "-j" || arg === "-l") && /^[\d.]+$/.test(args[i + 1] ?? "")) { i++; continue; }
-    if (arg.startsWith("-")) {
-      if (MAKE_EXECUTING_OPTION.test(arg)) continue;
-      evidence.unresolved = true;
-      return;
-    }
-    if (arg.includes("=")) { evidence.unresolved = true; continue; }
-    targets.push(arg);
+  for (const [option, value] of proven.options) {
+    if (option === "-C") cwd = resolve(cwd, value!);
+    else if (option === "-f") filename = value;
   }
   const path = filename ? await existingFile(resolve(cwd, filename), evidence)
     : await existingFile(join(cwd, "GNUmakefile"), evidence) ?? await existingFile(join(cwd, "makefile"), evidence) ?? await existingFile(join(cwd, "Makefile"), evidence);
@@ -340,59 +329,30 @@ async function command(source: string, cwd: string, evidence: ExecutionEvidence,
       if (bin && localBins) await script(bin, cwd, evidence, localBins);
       else if (bin) evidence.unresolved = true;
     }
-    if ([".", "source", "sh", "bash", "zsh", "node", "python", "python3", "ruby", "perl"].includes(verb)) {
-      let index = 0;
-      let runsNothing = false;
-      while (args[index]?.startsWith("-") || args[index]?.startsWith("+")) {
-        const option = args[index]!;
-        if (option === "--") { index++; break; }
-        const kind = interpreterOption(verb, option);
-        if (kind === "nothing") { runsNothing = true; break; }
-        if (kind === "source" || kind === "uncertain") { evidence.unresolved = true; runsNothing = true; break; }
-        if (kind === "value") {
-          if (args[index + 1] === undefined) { evidence.unresolved = true; runsNothing = true; break; }
-          index += 2; continue;
-        }
-        if (kind === "preload") {
-          const preload = args[index + 1];
-          if (preload?.startsWith(".") || preload && isAbsolute(preload)) await script(resolve(cwd, preload), cwd, evidence, localBins);
-          else evidence.unresolved = true;
-          index += 2; continue;
-        }
-        index++;
-      }
-      if (runsNothing) continue;
-      const operand = args[index];
-      if (operand && !operand.startsWith("-") && !leaf.argvHasExpandableDollar[index + 1]) await script(resolve(cwd, operand), cwd, evidence, localBins);
+    const interpreter = INTERPRETER_RULES[verb];
+    if (interpreter) {
+      const proven = provenOptions(interpreter, args);
+      if (!proven) { evidence.unresolved = true; continue; }
+      const operand = args[proven.operand];
+      if (operand && !leaf.argvHasExpandableDollar[proven.operand + 1]) await script(resolve(cwd, operand), cwd, evidence, localBins);
     } else if (verb === "make" || verb === "gmake") {
       await makeTarget(cwd, args, evidence, localBins);
     } else if (["npm", "pnpm", "yarn", "bun"].includes(verb)) {
-      let packageCwd = cwd;
-      let uncertain = false;
-      while (args[0]?.startsWith("-")) {
-        const option = args.shift()!;
-        if (["--silent", "-s", "--ignore-scripts", "--if-present", "--offline", "--no-install"].includes(option)) continue;
-        if (["--prefix", "--cwd", "-C", "--dir"].includes(option) && args[0] !== undefined) {
-          packageCwd = resolve(packageCwd, args.shift()!); continue;
-        }
-        // `--version`, `--help` and any option this cannot classify may mean nothing runs: never a positive match.
-        evidence.unresolved = true; uncertain = true; break;
-      }
-      if (uncertain) continue;
+      const proven = provenOptions(PACKAGE_RUNNER_RULES, args);
+      if (!proven) { evidence.unresolved = true; continue; }
+      args.splice(0, proven.operand);
       const run = args[0] === "run" || args[0] === "run-script";
       const name = run ? args[1] : args[0];
       if (name && !["exec", "x"].includes(name) && !name.startsWith("-") && (run || ["yarn", "pnpm", "bun"].includes(verb) || ["start", "test", "stop", "restart"].includes(name))) {
-        await packageScript(packageCwd, name, evidence);
+        await packageScript(cwd, name, evidence);
       } else if (args[0] === "exec" || args[0] === "x") {
         const bin = args.slice(1).find(arg => arg !== "--");
-        if (bin) await script(join(packageCwd, "node_modules", ".bin", bin), packageCwd, evidence);
+        if (bin) await script(join(cwd, "node_modules", ".bin", bin), cwd, evidence);
         evidence.unresolved = true;
       }
     } else if (verb === "npx") {
-      let index = 0;
-      while (NPX_RUNS_LOCAL_BIN.includes(args[index] ?? "")) index++;
-      const bin = args[index];
-      // `--version`, `--package` and any other option this cannot classify: which bin runs, if any, is unknown.
+      const proven = provenOptions(NPX_RULES, args);
+      const bin = proven ? args[proven.operand] : undefined;
       if (bin && !bin.startsWith("-")) await script(join(cwd, "node_modules", ".bin", bin), cwd, evidence);
       evidence.unresolved = true;
     } else if (["eval", "exec", "sudo", "xargs"].includes(verb)) evidence.unresolved = true;

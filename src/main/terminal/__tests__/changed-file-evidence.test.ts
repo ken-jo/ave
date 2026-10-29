@@ -273,7 +273,11 @@ describe("host execution provenance", () => {
   it.each(["npm --version run build", "npm --help run build", "pnpm --version build", "make -n build", "make --dry-run build", "make -q build",
     "make -t build", "make -sn build", "make --version", "bash -n ./run.sh", "sh --version ./run.sh", "node --check ./run.js", "node -v ./run.js",
     "python3 -V ./run.py", "python3 -VV ./run.py", "bash -Z ./run.sh", "bash -s ./run.sh", "node --inspect-brk=0 ./run.js", "python3 -X ./run.py",
-    "ruby -v ./run.sh", "perl -M strict ./run.sh"])("never calls a command that runs nothing, or an unclassified option, a match: %s", async (command) => {
+    "ruby -v ./run.sh", "perl -M strict ./run.sh",
+    // Options outside the proven forms, or with a value the form does not validate, are uncertain.
+    "bash -o noexec ./run.sh", "bash -o bogus ./run.sh", "bash -o ./run.sh", "zsh +o errexit ./run.sh", "bash -c ./run.sh",
+    "node -r ./run.js --version", "node --require ./run.js ./run.js", "python3 -W bogus ./run.py", "python3 -m run",
+    "make FOO=1 build", "make -C ./run.sh", "make -f -n build", "make build -n", "npm --prefix . run build", "npm --if-present run build"])("never calls a command that runs nothing, or an unclassified option, a match: %s", async (command) => {
     await changed("package.json", JSON.stringify({ scripts: { build: "node run.js" } }));
     await changed("Makefile", "build:\n\tnode run.js\n");
     await changed("run.sh");
@@ -292,7 +296,7 @@ describe("host execution provenance", () => {
     await mkdir(join(directory, "node_modules/.bin"), { recursive: true });
     await symlink(entry, join(directory, "node_modules/.bin/tool"));
     expect((await evidence.snapshot(directory, [block("npx tool", 1)])).warnings[0]?.files).toEqual([entry]);
-    for (const [index, command] of ["npx --version tool", "npx --help tool", "npx -p other tool", "npx --package=other tool"].entries()) {
+    for (const [index, command] of ["npx --version tool", "npx --help tool", "npx -p other tool", "npx --package=other tool", "npx -y tool", "npx --yes tool"].entries()) {
       expect((await evidence.snapshot(directory, [block(command, index + 2)])).warnings).toEqual([]);
     }
   });
