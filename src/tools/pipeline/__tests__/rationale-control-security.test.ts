@@ -98,6 +98,12 @@ function anchorRoundFor(
   return { triggeringBatchDisposition, anchorRoundReservation, hostAnchorRoundCas };
 }
 
+function controlFor(anchor: ReturnType<typeof anchorAt>, action: ActionIdentity) {
+  return createRationaleRequiredControl({
+    anchor, action, ...anchorRoundFor(anchor, action), sealedAction, eligibilityContext, permission,
+  });
+}
+
 describe("foreground rationale hostile input rejection", () => {
   it("rejects non-canonical final input and sandbox-plan values", () => {
     const anchor = anchorAt();
@@ -290,14 +296,7 @@ describe("foreground rationale identity and eligibility binding", () => {
   it("keeps actionDigest deterministic while binding toolUseId to a unique control", () => {
     const anchor = anchorAt();
     const action = actionFor(anchor.anchorId);
-    const first = createRationaleRequiredControl({
-      anchor,
-      action,
-      ...anchorRoundFor(anchor, action),
-      eligibilityContext,
-      sealedAction,
-      permission,
-    });
+    const first = controlFor(anchor, action);
     const second = createRationaleRequiredControl({
       anchor,
       action,
@@ -335,14 +334,7 @@ it("requires and revalidates the host eligibility snapshot for every control", (
     })).toThrow(/eligible sealed action/);
   }
 
-  const control = createRationaleRequiredControl({
-    anchor,
-    action,
-    ...anchorRoundFor(anchor, action),
-    sealedAction,
-    eligibilityContext,
-    permission,
-  });
+  const control = controlFor(anchor, action);
   expect(isRationaleEligibilityContextCurrent(control, eligibilityContext)).toBe(true);
   expect(isRationaleEligibilityContextCurrent(control, {
     ...eligibilityContext,
@@ -359,14 +351,7 @@ it("requires and revalidates the host eligibility snapshot for every control", (
 it("binds reviewer outcome and a normalized exact verdict outside actionDigest", () => {
   const anchor = anchorAt();
   const action = actionFor(anchor.anchorId);
-  const control = createRationaleRequiredControl({
-    anchor,
-    action,
-    ...anchorRoundFor(anchor, action),
-    sealedAction,
-    eligibilityContext,
-    permission,
-  });
+  const control = controlFor(anchor, action);
   const cacheControl = createRationaleRequiredControl({
     anchor,
     action,
@@ -443,14 +428,7 @@ it("rejects extra authority, coercion, hostile arrays, and stale controls", () =
   expect(RATIONALE_RESPONSE_SCHEMA.inputSchema.additionalProperties).toBe(false);
   const anchor = anchorAt();
   const action = actionFor(anchor.anchorId);
-  const control = createRationaleRequiredControl({
-    anchor,
-    action,
-    ...anchorRoundFor(anchor, action),
-    sealedAction,
-    eligibilityContext,
-    permission,
-  });
+  const control = controlFor(anchor, action);
   const valid = {
     contractVersion: 1,
     anchorId: control.anchor.anchorId,

@@ -110,6 +110,10 @@ function required(
   return snapshot as HostRationaleTicketSnapshot;
 }
 
+function auditedStore(audit: RationaleTicketStoreAuditEvent[]) {
+  return new InProcessRationaleTicketStore({ onAudit: (event) => audit.push(event) });
+}
+
 function createStored(
   store: InProcessRationaleTicketStore,
   control: RationaleRequiredControl,
@@ -154,9 +158,7 @@ function expectAuditPayloadsAreSafe(
 describe("InProcessRationaleTicketStore", () => {
   it("binds control and ticket to one session and rejects duplicate creation", () => {
     const audit: RationaleTicketStoreAuditEvent[] = [];
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => audit.push(event),
-    });
+    const store = auditedStore(audit);
     const control = fixture();
 
     const created = createStored(store, control);
@@ -216,9 +218,7 @@ describe("InProcessRationaleTicketStore", () => {
 
   it("prunes expired tombstones without allowing clock-rollback replay", () => {
     const audit: RationaleTicketStoreAuditEvent[] = [];
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => audit.push(event),
-    });
+    const store = auditedStore(audit);
     const control = fixture("f0100278-9f5c-47d3-87cd-caa530ab3542", "tombstone-expiry");
     const initial = createStored(store, control);
     const expectation = createRationaleTicketCasExpectation(initial);
@@ -249,9 +249,7 @@ describe("InProcessRationaleTicketStore", () => {
 
   it("issues exactly one valid allow-once receipt after the CAS sequence", () => {
     const audit: RationaleTicketStoreAuditEvent[] = [];
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => audit.push(event),
-    });
+    const store = auditedStore(audit);
     const control = fixture("34725366-0fca-4f9b-8464-ee7e996d74c7", "receipt");
     const pending = toPendingReady(store, createStored(store, control));
 
@@ -303,9 +301,7 @@ describe("InProcessRationaleTicketStore", () => {
 
   it("issues exactly one reviewer-authorized-once receipt straight from rationale_ready", () => {
     const audit: RationaleTicketStoreAuditEvent[] = [];
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => audit.push(event),
-    });
+    const store = auditedStore(audit);
     const control = fixture("038f9292-1648-43cb-8d0b-a6673fb1b3d5", "reviewer-auto");
     const requested = required(store.requestRationale(
       createRationaleTicketCasExpectation(createStored(store, control)),
@@ -435,9 +431,7 @@ describe("InProcessRationaleTicketStore", () => {
 
   it("terminalizes stale version and identity mismatches without cross-session mutation", () => {
     const audit: RationaleTicketStoreAuditEvent[] = [];
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => audit.push(event),
-    });
+    const store = auditedStore(audit);
 
     const staleControl = fixture("9f9c6f7c-805d-4e10-8681-b887151bbcf3", "stale");
     const staleInitial = createStored(store, staleControl);
@@ -486,9 +480,7 @@ describe("InProcessRationaleTicketStore", () => {
 
   it("closes only the selected session and revokes its unused receipts", () => {
     const audit: RationaleTicketStoreAuditEvent[] = [];
-    const store = new InProcessRationaleTicketStore({
-      onAudit: (event) => audit.push(event),
-    });
+    const store = auditedStore(audit);
     const first = fixture("e8388133-375c-4f08-8f18-41665da4070f", "close-a");
     const second = fixture("e8388133-375c-4f08-8f18-41665da4070f", "close-b");
     const other = fixture("3bac543f-73e5-4d6a-8162-2013fa0c384e", "other");
