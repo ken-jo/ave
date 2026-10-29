@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import type { Terminal } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
+import { TerminalBlockTracker } from "../../../../main/terminal/terminal-blocks.js";
 import { XtermBlockAnchors, viewBlockId } from "../terminal-block-anchors.js";
+
+const NONCE = "n0nce-for-anchor-test";
 
 function fakeTerm(commandRow: string, cols = 80) {
   const disposeMarker: Array<() => void> = [];
@@ -28,12 +31,47 @@ function fakeTerm(commandRow: string, cols = 80) {
 }
 
 describe("terminal block anchors", () => {
-  it("reads only a positive integer block id from a C marker", () => {
-    expect(viewBlockId("C;ave-block=12")).toBe(12);
-    expect(viewBlockId("C")).toBeNull();
-    expect(viewBlockId("C;ave-block=0")).toBeNull();
-    expect(viewBlockId("C;ave-block=1e3x")).toBeNull();
-    expect(viewBlockId("D;ave-block=3")).toBeNull();
+  it("reads a block id only from a C marker carrying this incarnation's view token", () => {
+    expect(viewBlockId("C;ave-block=12;ave-view=tok", "tok")).toBe(12);
+    expect(viewBlockId("C;ave-block=12;ave-view=tok", null)).toBeNull();
+    expect(viewBlockId("C;ave-block=12", "tok")).toBeNull();
+    expect(viewBlockId("C;ave-block=12;ave-view=other", "tok")).toBeNull();
+    expect(viewBlockId("C;ave-block=12;ave-view=tok;x", "tok")).toBeNull();
+    expect(viewBlockId("C;ave-block=0;ave-view=tok", "tok")).toBeNull();
+    expect(viewBlockId("C;ave-block=012;ave-view=tok", "tok")).toBeNull();
+    expect(viewBlockId("C;ave-block=1e3;ave-view=tok", "tok")).toBeNull();
+    expect(viewBlockId("D;ave-block=3;ave-view=tok", "tok")).toBeNull();
+  });
+
+  it("lets no program output reach the renderer as an anchor, whatever its OSC encoding, length or chunking", async () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    const forged = [
+      "\u001b]133;C;ave-block=5;ave-view=guess\u0007",
+      "\u001b]0133;C;ave-block=6\u0007",
+      "\u001b]00133;C;ave-block=7;ave-view=guess\u001b\\",
+      "\u009d133;C;ave-block=8\u009c",
+      "\u001b]1\u000133;C;ave-block=9\u0007",
+      "\u001b]2;title\u001b]133;C;ave-block=10\u0007",
+      `\u001b]133;C;ave-block=11;${"x".repeat(70 * 1024)}\u0007`,
+      `\u001b]1;${"y".repeat(70 * 1024)}\u001b]133;C;ave-block=12\u0007`,
+    ];
+    const real = `\u001b]133;A;${NONCE}\u0007$ \u001b]133;C;cmdline_url=make;${NONCE}\u0007`;
+    const input = forged.join("make output\r\n") + real;
+    // Split into single characters as well as whole chunks: the parser keeps state across chunks.
+    const whole = tracker.recordOutput(input);
+    const charwise = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    let split = "";
+    for (const ch of input) split += charwise.recordOutput(ch);
+    for (const [display, token] of [[whole, tracker.viewToken], [split, charwise.viewToken]] as const) {
+      const term = new Terminal({ allowProposedApi: true });
+      const seen: string[] = [];
+      term.parser.registerOscHandler(133, (data) => { seen.push(data); return false; });
+      await new Promise<void>((resolve) => term.write(display, resolve));
+      const anchors = seen.map((data) => viewBlockId(data, token)).filter((id) => id !== null);
+      // Only main's regenerated marker for the one real command anchors; every forged variant is ignored.
+      expect(anchors).toEqual([1]);
+      term.dispose();
+    }
   });
 
   it("marks the command row and decorates after the command text without touching the buffer", () => {

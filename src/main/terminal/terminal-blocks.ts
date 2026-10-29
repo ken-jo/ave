@@ -6,7 +6,8 @@ import type {
   TerminalBlockSource,
   TerminalBlockSummary,
 } from "../../shared/terminal-blocks.js";
-import { TERMINAL_VIEW_BLOCK_FIELD as VIEW_BLOCK_FIELD } from "../../shared/terminal-blocks.js";
+import { randomBytes } from "node:crypto";
+import { TERMINAL_VIEW_BLOCK_FIELD as VIEW_BLOCK_FIELD, TERMINAL_VIEW_TOKEN_FIELD as VIEW_TOKEN_FIELD } from "../../shared/terminal-blocks.js";
 import { terminalLaneKey, sameTerminalSession, type TerminalRef, type TerminalSessionRef, type TerminalSessionInfo } from "../../shared/terminal-session.js";
 
 // Completed blocks kept per terminal; older ones are dropped first.
@@ -314,6 +315,8 @@ export class TerminalBlockTracker {
   private blockOutput: { blockId: number; pending: string; onOutput: (text: string) => void } | undefined;
 
   private readonly nonce: string;
+  /** Proves a forwarded C marker came from this tracker; only the renderer receives it (see TERMINAL_VIEW_TOKEN_FIELD). */
+  readonly viewToken = randomBytes(16).toString("hex");
   private readonly now: () => number;
   // Whether this terminal's shell integration marks the end of its prompt (B): zsh and bash do, fish does not.
   private readonly marksPromptEnd: boolean;
@@ -586,7 +589,7 @@ export class TerminalBlockTracker {
       if (!(esc.payload.startsWith("133;") && esc.payload.includes(VIEW_BLOCK_FIELD))) this.display += `${esc.introducer}${esc.payload}${terminator}`;
     } else if (marker === "C" && this.open?.source === "osc133") {
       // The view re-lists on C and anchors block annotations (changed-file warnings) to the row where this block's command was entered.
-      this.display += `\u001b]133;C;${VIEW_BLOCK_FIELD}${this.open.id}\u0007`;
+      this.display += `\u001b]133;C;${VIEW_BLOCK_FIELD}${this.open.id};${VIEW_TOKEN_FIELD}${this.viewToken}\u0007`;
     } else if (marker !== "P" && marker !== "E") {
       // The view only needs the letter (PtyTerminalView re-lists on A/C/D).
       this.display += `\u001b]133;${marker}\u0007`;

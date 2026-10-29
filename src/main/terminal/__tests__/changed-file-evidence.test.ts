@@ -241,6 +241,50 @@ describe("host execution provenance", () => {
     expect((await evidence.snapshot(directory, [])).latestBlockId).toBeNull();
   });
 
+  it.each(["npm --version run build", "npm --help run build", "pnpm --version build", "make -n build", "make --dry-run build", "make -q build",
+    "make -t build", "make -sn build", "make --version", "bash -n ./run.sh", "sh --version ./run.sh", "node --check ./run.js", "node -v ./run.js",
+    "python3 -V ./run.py"])("never calls a command that runs nothing a match: %s", async (command) => {
+    await changed("package.json", JSON.stringify({ scripts: { build: "node run.js" } }));
+    await changed("Makefile", "build:\n\tnode run.js\n");
+    await changed("run.sh");
+    await changed("run.js", "console.log('x');\n");
+    await changed("run.py", "print('x')\n");
+    expect((await evidence.snapshot(directory, [block(command)])).warnings).toEqual([]);
+  });
+
+  it.each(["make -j4 build", "make -j 4 build", "make -s build", "make --no-print-directory build"])("still matches make options that run recipes: %s", async (command) => {
+    const makefile = await changed("Makefile", "build:\n\t./run.sh\n");
+    const script = await changed("run.sh");
+    expect((await evidence.snapshot(directory, [block(command)])).warnings[0]?.files).toEqual([makefile, script]);
+  });
+
+  it("treats a plain command as PATH-resolved, matching a local bin only inside a package script", async () => {
+    const entry = await changed("node_modules/tool/bin/run.js", "console.log('run');\n");
+    await mkdir(join(directory, "node_modules/.bin"), { recursive: true });
+    await symlink(entry, join(directory, "node_modules/.bin/tool"));
+    expect(await inferExecutedPaths("tool --flag", directory)).toEqual({ paths: [], unresolved: true });
+    expect((await evidence.snapshot(directory, [block("tool --flag")])).warnings).toEqual([]);
+    await file("package.json", JSON.stringify({ scripts: { lint: "tool --flag" } }));
+    expect((await evidence.snapshot(directory, [block("npm run lint", 2)])).warnings[0]?.files).toEqual([entry]);
+  });
+
+  it("never reads through a parent directory swapped for a link after the write was recorded", async () => {
+    const recorded = await file("scripts/run.sh", "agent\n");
+    await evidence.recordWrite("session-a", recorded, "before\n");
+    expect((await evidence.snapshot(directory, [])).files[0]?.diff).toEqual({ before: "before\n", after: "agent\n" });
+    const outside = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-host-")));
+    try {
+      await writeFile(join(outside, "run.sh"), "host secret\n");
+      await rename(join(directory, "scripts"), join(directory, "scripts.moved"));
+      await symlink(outside, join(directory, "scripts"));
+      const swapped = await evidence.snapshot(directory, []);
+      expect(swapped.files.map(item => item.path)).toEqual([recorded]);
+      expect(swapped.files[0]?.diff).toBeUndefined();
+      expect(JSON.stringify(swapped)).not.toContain("host secret");
+      expect(await readTerminalReviewText(recorded)).toBeUndefined();
+    } finally { await rm(outside, { recursive: true, force: true }); }
+  });
+
   it("caps text reads and distinguishes absent files from unavailable text", async () => {
     const oversized = await file("large", "x".repeat(1_048_577));
     expect(await readTerminalReviewText(oversized)).toBeUndefined();

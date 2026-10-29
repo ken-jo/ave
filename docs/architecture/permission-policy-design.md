@@ -1904,14 +1904,19 @@ Host terminals, including the agent-inaccessible side-work-panel terminal, show
 an advisory inline warning when a command uses a file with concrete successful
 agent-write evidence from this application session. Direct scripts and sourced
 files, target recipes in makefiles, package scripts and their referenced scripts,
-and physical local-bin entry points are matched conservatively. The command
+and physical local-bin entry points (only where a package runner puts them on
+PATH) are matched conservatively. Options under which nothing runs (a dry run,
+version or help output, a syntax check) and options or executables this cannot
+classify are never a positive match. The command
 continues without a confirmation dialog. Only a positive match to at least one
 agent-changed file warns: commands with no file reference, shell-integration and
 prompt internals, and unresolved dynamic indirection never do. The warning is
 an inline annotation on the matched command's own row, drawn as a renderer-only
 terminal decoration after the command text like a trailing shell comment. Main
-names each authenticated command block on the C marker it forwards to the view
-and drops that field from unauthenticated markers. Nothing is written to the
+names each authenticated command block on the C marker it regenerates for the
+view, together with a per-terminal view token it hands only to the renderer and
+never to the shell; the renderer anchors nothing without that token, so program
+output cannot forge an anchor in any OSC encoding. Nothing is written to the
 shell, the PTY or the terminal buffer, so no rows are taken and the annotation
 scrolls with its block until its row leaves the scrollback. Only the latest
 command's annotation offers [view changes]; once another
@@ -1927,7 +1932,9 @@ known command use or that no execution use was observed, and opens a diff
 against the recorded baseline. There is no review or acknowledgement state:
 the change has already happened, so the count follows the set of changed files
 and never drops on a user action. Canonical physical paths retain session
-attribution across symlink aliases and delete/restore; deleting a file does not
+attribution across symlink aliases and delete/restore, and a re-read refuses a
+path whose components no longer resolve to that physical path (a parent swapped
+for a link included); deleting a file does not
 erase its historical evidence. Evidence lives only in memory for the running
 application; restarting clears it. Command use is inferred from command blocks and static
 file contents, rather than proof of operating-system file opens.

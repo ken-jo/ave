@@ -36,7 +36,7 @@ vi.mock("../../main/terminal/terminal-blocks.js", () => ({
 }));
 vi.mock("../../main/terminal/pty-manager.js", () => ({
   setTerminalEmitter: (fn: TerminalEmit) => { emitter = fn; },
-  spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane) })),
+  spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" })),
   writeTerminal,
   resizeTerminal: vi.fn(() => ({ ok: true })),
   killTerminal,

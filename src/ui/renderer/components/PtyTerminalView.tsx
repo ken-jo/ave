@@ -87,6 +87,18 @@ export function PtyTerminalView({
   return <AttachedPtyTerminal key={props.tabId} {...props} />;
 }
 
+/**
+ * Keyboard focus follows the terminal the user is attending to, so typing reaches the shell (and xterm shows its
+ * blinking focused cursor) without a click. It never takes focus from an editable field elsewhere, such as the chat
+ * composer the user is typing in.
+ */
+function focusAttendedTerminal(term: Terminal, host: HTMLElement): void {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && !host.contains(active)
+    && (active.isContentEditable || active.matches("input, textarea, select"))) return;
+  term.focus();
+}
+
 function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true }: PtyTerminalViewProps) {
   const { t } = useTranslation();
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
@@ -113,6 +125,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
 
     let disposed = false;
     let liveRef: TerminalSessionRef | null = null;
+    let blockMarkerToken: string | null = null;
     setSession(null);
     const term = new Terminal({
       cursorBlink: true,
@@ -149,7 +162,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const markerSub = term.parser.registerOscHandler(133, (data) => {
       const marker = data.charAt(0);
       if (marker === "C") {
-        const blockId = viewBlockId(data);
+        const blockId = viewBlockId(data, blockMarkerToken);
         if (blockId !== null) blockAnchors.noteCommandStart(blockId);
       }
       if (marker === "A" || marker === "C" || marker === "D") bumpBlocks();
@@ -215,6 +228,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
         return;
       }
       liveRef = result.session;
+      blockMarkerToken = result.blockMarkerToken;
       setSession(result.session);
       for (const event of pending) if (sameTerminalSession(result.session, event)) renderEvent(event);
       pending = [];
@@ -263,6 +277,11 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   useEffect(() => {
     if (termRef.current) setTerminalAttended(tabId, attended && hasBoxRef.current);
   }, [tabId, attended]);
+
+  // On open (each new xterm publishes its anchors) and whenever the tab or pane becomes attended.
+  useEffect(() => {
+    if (attended && anchors && termRef.current && hostRef.current) focusAttendedTerminal(termRef.current, hostRef.current);
+  }, [attended, anchors]);
 
   // Re-tint the live terminal when the applied theme changes: its options take a new theme in place, so the shell,
   // scrollback and cursor are kept.

@@ -1,5 +1,5 @@
 import type { IDecoration, IMarker, Terminal } from "@xterm/xterm";
-import { TERMINAL_VIEW_BLOCK_FIELD } from "../../../shared/terminal-blocks.js";
+import { TERMINAL_VIEW_BLOCK_FIELD, TERMINAL_VIEW_TOKEN_FIELD } from "../../../shared/terminal-blocks.js";
 
 /** Columns kept free after the command text before an annotation starts, and the narrowest annotation worth drawing. */
 const ANNOTATION_GAP = 2;
@@ -13,13 +13,17 @@ export interface TerminalBlockAnchors {
   version(): number;
 }
 
-/** The block id main put on an authenticated OSC 133 C marker, or null for any other payload. */
-export function viewBlockId(oscData: string): number | null {
+/** The block id main put on a C marker it regenerated, proven by this incarnation's view token; null for any other
+ * payload, including a program's copy of the fields in whatever OSC encoding. */
+export function viewBlockId(oscData: string, viewToken: string | null): number | null {
+  if (!viewToken) return null;
   const fields = oscData.split(";");
-  if (fields[0] !== "C") return null;
-  const field = fields.find((value) => value.startsWith(TERMINAL_VIEW_BLOCK_FIELD));
-  const id = field ? Number(field.slice(TERMINAL_VIEW_BLOCK_FIELD.length)) : NaN;
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
+  if (fields[0] !== "C" || fields.length !== 3 || fields[2] !== `${TERMINAL_VIEW_TOKEN_FIELD}${viewToken}`) return null;
+  const field = fields[1]!;
+  if (!field.startsWith(TERMINAL_VIEW_BLOCK_FIELD)) return null;
+  const digits = field.slice(TERMINAL_VIEW_BLOCK_FIELD.length);
+  const id = /^[1-9][0-9]{0,15}$/u.test(digits) ? Number(digits) : NaN;
+  return Number.isSafeInteger(id) ? id : null;
 }
 
 /**

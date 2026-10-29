@@ -26,7 +26,8 @@ export interface TerminalSpawnRequest extends TerminalRef {
 }
 export type TerminalMutationResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 export type TerminalSpawnResult =
-  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo }
+  /** `blockMarkerToken` authenticates block ids on forwarded C markers (see TERMINAL_VIEW_TOKEN_FIELD); renderer-only. */
+  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo; readonly blockMarkerToken: string }
   | { readonly ok: false; readonly reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "too-many-terminals" | "still-closing" | "no-terminal" | "unauthorized-frame"; readonly message: string };
 export type TerminalDataEvent = TerminalSessionRef & { readonly chunk: string };
 export type TerminalExitEvent = TerminalSessionRef & { readonly exitCode: number; readonly signal?: number };

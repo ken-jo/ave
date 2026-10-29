@@ -26,6 +26,9 @@ export interface TerminalBlock extends TerminalBlockSummary {
   readonly output: string;
 }
 
-/** Field of the OSC 133 C marker main forwards to the renderer, `ESC ] 133 ; C ; ave-block=<block id> BEL`, naming the
- * block whose command was just entered. Main drops this field from any marker it did not authenticate. */
+/** Fields of the OSC 133 C marker main regenerates for the renderer,
+ * `ESC ] 133 ; C ; ave-block=<block id> ; ave-view=<view token> BEL`, naming the block whose command was just entered.
+ * The view token is a per-incarnation secret main hands only to the renderer (on spawn), never to the shell, so a
+ * program cannot forge an anchor in any OSC encoding; the renderer ignores a block id without it. */
 export const TERMINAL_VIEW_BLOCK_FIELD = "ave-block=";
+export const TERMINAL_VIEW_TOKEN_FIELD = "ave-view=";

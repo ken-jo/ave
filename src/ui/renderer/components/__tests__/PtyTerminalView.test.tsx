@@ -23,6 +23,7 @@ interface FakeTerminal {
   dataHandler: ((data: string) => void) | null;
   written: string[];
   cursorLine: number;
+  focusCount: number;
   markers: { offset: number; marker: FakeMarker }[];
   decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[];
 }
@@ -46,6 +47,8 @@ vi.mock("@xterm/xterm", () => ({
       terminals.push(this);
     }
     cursorLine = 4;
+    focusCount = 0;
+    focus() { this.focusCount++; }
     host: HTMLElement | null = null;
     markers: { offset: number; marker: FakeMarker }[] = [];
     decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[] = [];
@@ -87,7 +90,7 @@ afterEach(() => {
 
 function terminalApi() {
   return {
-    spawn: vi.fn(async (payload: TerminalSpawnRequest) => ({ ok: true as const, tabId: payload.tabId, replayed: false, session: { ...terminalSessionFixture(payload.tabId, payload.lane), initialCwd: payload.cwd ?? "/workspace" } })),
+    spawn: vi.fn(async (payload: TerminalSpawnRequest) => ({ ok: true as const, tabId: payload.tabId, replayed: false, session: { ...terminalSessionFixture(payload.tabId, payload.lane), initialCwd: payload.cwd ?? "/workspace" }, blockMarkerToken: "view-token" })),
     input: vi.fn(async () => ({ ok: true as const })),
     resize: vi.fn(async () => ({ ok: true as const })),
     kill: vi.fn(async () => ({ ok: true as const })),
@@ -299,7 +302,7 @@ describe("PtyTerminalView environment and session boundaries", () => {
       data({ ...manual, terminalSessionId: "old-manual", chunk: "OLD" });
       data({ ...terminalSessionFixture(tabId, "agent"), chunk: "AGENT" });
       data({ ...manual, chunk: "MANUAL" });
-      return { ok: true, tabId, replayed: true, session: manual };
+      return { ok: true, tabId, replayed: true, session: manual, blockMarkerToken: "view-token" };
     });
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={tabId} tabLabel="Terminal 14" />);
     await waitFor(() => expect(terminals[0]!.written.join("")).toBe("MANUAL"));
@@ -313,7 +316,7 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
     const session = { ...terminalSessionFixture("terminal:16", "manual"), shellIntegration: false, integrationUnavailableReason: "unsupported-shell" as const };
-    terminal.spawn.mockResolvedValue({ ok: true, tabId: session.tabId, replayed: false, session });
+    terminal.spawn.mockResolvedValue({ ok: true, tabId: session.tabId, replayed: false, session, blockMarkerToken: "view-token" });
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={session.tabId} tabLabel="Terminal 16" />);
     expect(await screen.findByTestId("terminal-integration-unavailable")).toHaveTextContent(t("ptyTerminal.integrationUnsupportedShell"));
     act(() => terminals[0]!.dataHandler!("user-command\r"));
@@ -349,8 +352,15 @@ describe("PtyTerminalView changed-file annotation", () => {
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:banner" tabLabel="Terminal 1" />);
     await waitFor(() => expect(terminals).toHaveLength(1));
     const term = terminals[0]!;
-    // Main forwards an authenticated C with its block id while the cursor sits just below the entered command.
-    act(() => { term.oscHandlers.get(133)!("C;ave-block=1"); });
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    await act(async () => {});
+    // Main forwards an authenticated C with its block id and this incarnation's view token while the cursor sits just
+    // below the entered command. Copies without the token, as a program could print, are ignored.
+    act(() => {
+      term.oscHandlers.get(133)!("C;ave-block=1;ave-view=forged");
+      term.oscHandlers.get(133)!("C;ave-block=1");
+      term.oscHandlers.get(133)!("C;ave-block=1;ave-view=view-token");
+    });
     expect(term.markers).toEqual([{ offset: -1, marker: expect.objectContaining({ line: 3 }) }]);
     const annotation = await screen.findByTestId("terminal-file-warning");
     expect(annotation).toHaveTextContent("# ⚠ 에이전트가 수정한 파일 사용: Makefile");
@@ -370,11 +380,49 @@ describe("PtyTerminalView changed-file annotation", () => {
     expect(xtermHost).toHaveClass("flex-1");
   });
 
-  it("ignores a C marker without a main-assigned block id", async () => {
+  it("ignores a C marker without a main-assigned, token-proven block id", async () => {
     const { api } = makeMockAveApi();
     render(<PtyTerminalView api={{ ...api, terminal: terminalApi() } as never} location="side-panel" tabId="terminal:plain" tabLabel="Terminal 1" />);
     await waitFor(() => expect(terminals).toHaveLength(1));
-    act(() => { terminals[0]!.oscHandlers.get(133)!("C"); terminals[0]!.oscHandlers.get(133)!("C;ave-block=x"); });
+    await act(async () => {});
+    act(() => {
+      for (const data of ["C", "C;ave-block=x;ave-view=view-token", "C;ave-block=3", "C;ave-block=3;ave-view=other"]) terminals[0]!.oscHandlers.get(133)!(data);
+    });
     expect(terminals[0]!.markers).toEqual([]);
+  });
+});
+
+describe("PtyTerminalView keyboard focus", () => {
+  it("focuses the terminal when it opens attended, so keystrokes reach the shell without a click", async () => {
+    const { api } = makeMockAveApi();
+    render(<PtyTerminalView api={{ ...api, terminal: terminalApi() } as never} location="side-panel" tabId="terminal:focus" tabLabel="Terminal 1" />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    expect(terminals[0]!.focusCount).toBe(1);
+  });
+
+  it("focuses when its pane becomes attended, and not while unattended", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:pane" tabLabel="Terminal 1" attended={false} />);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    expect(terminals[0]!.focusCount).toBe(0);
+    view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:pane" tabLabel="Terminal 1" attended />);
+    expect(terminals[0]!.focusCount).toBe(1);
+  });
+
+  it("never takes focus from the chat composer the user is typing in", async () => {
+    const { api } = makeMockAveApi();
+    const ave = { ...api, terminal: terminalApi() };
+    const composer = document.createElement("textarea");
+    document.body.appendChild(composer);
+    composer.focus();
+    try {
+      const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" attended={false} />);
+      view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" attended />);
+      expect(terminals[0]!.focusCount).toBe(0);
+      expect(document.activeElement).toBe(composer);
+    } finally { composer.remove(); }
   });
 });
