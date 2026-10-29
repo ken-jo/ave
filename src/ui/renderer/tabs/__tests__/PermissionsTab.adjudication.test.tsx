@@ -12,13 +12,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 }));
 
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
-
-function reviewerSettings() {
-  return {
-    mode: "llm" as const,
-    fallbackOnError: "deny" as const,
-  };
-}
+import { reviewerSettings } from "../../../../__tests__/support/reviewer-settings.js";
 
 function installApi() {
   const ave = {

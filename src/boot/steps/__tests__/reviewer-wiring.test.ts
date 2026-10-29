@@ -1,3 +1,4 @@
+import { reviewerSettings } from "../../../__tests__/support/reviewer-settings.js";
 /** Reviewer boot integration (docs/architecture/permission-policy-design.md). */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -358,12 +359,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
     };
   }
 
-  function llmReviewerSettings() {
-    return {
-      mode: "llm" as const,
-      fallbackOnError: "deny" as const,
-    };
-  }
 
   it("degraded→heal: stale rule verdict in shared cache is NOT served after llm heal (miss-stale)", async () => {
     const cachePath = join(tmpDir, "cache-mode-flip.jsonl");
@@ -375,7 +370,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: llmReviewerSettings,
+      readSettings: reviewerSettings,
       streamProviderFor: () => null,
       verdictCachePath: cachePath,
     });
@@ -396,7 +391,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: llmReviewerSettings,
+      readSettings: reviewerSettings,
       streamProviderFor: () => provider,
       verdictCachePath: cachePath,
     });
@@ -424,7 +419,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: llmReviewerSettings,
+      readSettings: reviewerSettings,
       streamProviderFor: () => provider,
       verdictCachePath: cachePath,
     });
@@ -442,7 +437,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
-      readSettings: llmReviewerSettings,
+      readSettings: reviewerSettings,
       streamProviderFor: () => null,
       verdictCachePath: cachePath,
     });
