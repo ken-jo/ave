@@ -28,6 +28,7 @@ vi.mock("@xterm/xterm", () => ({
     open() {}
     onData() { return { dispose() {} }; }
     write(text: string) { xtermWrites.push(text); }
+    focus() {}
     dispose() {}
   },
 }));

@@ -34,6 +34,7 @@ vi.mock("@xterm/xterm", () => ({
     open() {}
     onData() { return { dispose() {} }; }
     write() {}
+    focus() {}
     dispose() {}
   },
 }));
