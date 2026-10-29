@@ -223,6 +223,35 @@ it("finishes a shared one-shot when its workspace card unregisters during captur
   expect(preview).toHaveBeenCalledOnce();
 });
 
+it("evicts the oldest pending hover while preserving an in-flight result", async () => {
+  vi.useFakeTimers();
+  let visible = true;
+  let finish!: (result: BrowserWorkspaceResult<BrowserPreview>) => void;
+  const preview = vi.fn((target: typeof TARGET) => target.tabId === TARGET.tabId
+    ? new Promise<BrowserWorkspaceResult<BrowserPreview>>((resolve) => { finish = resolve; })
+    : Promise.resolve({ ok: true as const, value: { ...PREVIEW, ...target } }));
+  const scheduler = new BrowserPreviewScheduler({ preview }, () => visible);
+  const received = vi.fn();
+  const first = scheduler.request(TARGET);
+  void first.then(received);
+  await vi.advanceTimersByTimeAsync(0);
+  const queued = Array.from({ length: 16 }, (_, index) => scheduler.request({ ...TARGET, tabId: `browser:queued-${index}` }));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(received).not.toHaveBeenCalled();
+  expect(await queued[0]).toBeNull();
+  expect(preview).toHaveBeenCalledOnce();
+  finish({ ok: true, value: PREVIEW });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(await first).toEqual(PREVIEW);
+  expect(received).toHaveBeenCalledWith(PREVIEW);
+  await vi.advanceTimersByTimeAsync(1600);
+  expect(await queued[1]).toEqual({ ...PREVIEW, tabId: "browser:queued-1" });
+  expect(preview).toHaveBeenLastCalledWith({ ...TARGET, tabId: "browser:queued-1" });
+  visible = false;
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(await Promise.all(queued.slice(2))).toEqual(Array(14).fill(null));
+});
+
 it("serves a queued hover before later refreshes even when the workspace fills the capture interval", async () => {
   vi.useFakeTimers();
   const preview = vi.fn(async (target: typeof TARGET) => ({ ok: true as const, value: { ...PREVIEW, ...target } }));

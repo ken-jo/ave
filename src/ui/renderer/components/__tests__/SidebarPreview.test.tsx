@@ -115,10 +115,11 @@ describe("sidebar preview cards", () => {
     rerender(content("Terminal 2"));
     expect(screen.getByRole("tooltip").textContent).not.toContain("make build");
   });
-  it("removes the native tooltip while preserving its accessible name", () => {
-    render(<SidebarPreviewProvider><SidebarPreviewTrigger preview={conversation}><button title="Build review">Conversation</button></SidebarPreviewTrigger></SidebarPreviewProvider>);
-    const entry = screen.getByRole("button", { name: "Build review" });
+  it("moves the native tooltip into its description without replacing the content name", () => {
+    render(<SidebarPreviewProvider><SidebarPreviewTrigger preview={conversation}><button title="Build review" aria-description="Conversation entry">Conversation</button></SidebarPreviewTrigger></SidebarPreviewProvider>);
+    const entry = screen.getByRole("button", { name: "Conversation" });
     expect(entry.hasAttribute("title")).toBe(false);
+    expect(entry.getAttribute("aria-description")).toBe("Conversation entry Build review");
     fireEvent.focus(entry);
     expect(entry.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
   });

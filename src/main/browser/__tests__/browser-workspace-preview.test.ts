@@ -67,14 +67,18 @@ describe("browser preview capture", () => {
       await expect(pending).rejects.toThrow("stale-document");
     }
   });
-  it("never loads a page or captures before a rendered document is available", async () => {
+  it("never loads a page or captures an uncommitted document", async () => {
     const { preview, guest, capturePage, loadURL } = setup();
     vi.mocked(guest.getURL).mockReturnValue("");
     await expect(preview.capture(1, TARGET)).rejects.toThrow("capture-unavailable");
-    vi.mocked(guest.getURL).mockReturnValue("https://example.com");
-    vi.mocked(guest.isLoadingMainFrame).mockReturnValue(true);
-    await expect(preview.capture(1, TARGET)).rejects.toThrow("capture-unavailable");
     expect(capturePage).not.toHaveBeenCalled();
+    expect(loadURL).not.toHaveBeenCalled();
+  });
+  it("captures an available frame while loading instead of causing workspace backoff", async () => {
+    const { preview, guest, capturePage, loadURL } = setup();
+    vi.mocked(guest.isLoadingMainFrame).mockReturnValue(true);
+    await expect(preview.capture(1, TARGET)).resolves.toMatchObject({ tabId: TARGET.tabId, dataUrl: expect.stringMatching(/^data:image\/jpeg;base64,/) });
+    expect(capturePage).toHaveBeenCalledOnce();
     expect(loadURL).not.toHaveBeenCalled();
   });
   it("rejects over-limit image bytes", async () => {

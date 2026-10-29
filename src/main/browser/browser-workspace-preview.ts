@@ -1,7 +1,7 @@
 import type { NativeImage, WebContents } from "electron";
 import { BROWSER_WORKSPACE_LIMITS, type BrowserPreview, type BrowserWorkspaceTarget } from "../../shared/browser-workspace.js";
 
-interface BrowserPreviewTarget { readonly guest: Pick<WebContents, "id" | "isDestroyed" | "capturePage" | "getURL" | "isLoadingMainFrame">; readonly documentGeneration: number }
+interface BrowserPreviewTarget { readonly guest: Pick<WebContents, "id" | "isDestroyed" | "capturePage" | "getURL">; readonly documentGeneration: number }
 export interface BrowserWorkspacePreviewDeps {
   liveTab(windowId: number, tabId: string): BrowserPreviewTarget | null;
   isWindowVisible(windowId: number): boolean;
@@ -30,7 +30,7 @@ export class BrowserWorkspacePreview {
     if (!target || target.guest.isDestroyed()) throw new Error("no-such-tab");
     if (target.documentGeneration !== request.documentGeneration) throw new Error("stale-document");
     if (!this.deps.isWindowVisible(windowId)) { this.invalidateWindow(windowId); throw new Error("window-hidden"); }
-    if (!target.guest.getURL() || target.guest.isLoadingMainFrame()) throw new Error("capture-unavailable");
+    if (!target.guest.getURL()) throw new Error("capture-unavailable");
     const now = (this.deps.now ?? Date.now)();
     if (this.inFlight.has(windowId)) throw new Error("capture-busy");
     if (now - (this.lastCapture.get(windowId) ?? -Infinity) < CAPTURE_INTERVAL_MS) throw new Error("capture-throttled");

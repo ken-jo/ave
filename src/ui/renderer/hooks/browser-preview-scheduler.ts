@@ -23,6 +23,7 @@ export class BrowserPreviewScheduler {
   private readonly cache = new Map<string, { readonly preview: BrowserPreview; readonly at: number }>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = false;
+  private captureTarget: BrowserWorkspaceTarget | null = null;
   private nextCaptureAt = 0;
   private visibilityEpoch: object = {};
   constructor(private readonly api: Pick<BrowserWorkspaceApi, "preview">, private readonly visible: () => boolean = () => document.visibilityState === "visible") {}
@@ -46,7 +47,7 @@ export class BrowserPreviewScheduler {
     const promise = new Promise<BrowserPreview | null>((done) => { resolve = done; });
     this.requests.add({ target, at: Date.now(), promise, resolve });
     while (this.requests.size > CACHE_LIMIT) {
-      const oldest = this.requests.values().next().value!;
+      const oldest = [...this.requests].find((entry) => !this.captureTarget || this.key(entry.target) !== this.key(this.captureTarget))!;
       this.requests.delete(oldest); oldest.resolve(null);
     }
     if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }
@@ -112,6 +113,7 @@ export class BrowserPreviewScheduler {
     if (!card && cached) { this.settle(target, cached.preview); this.schedule(); return; }
     const epoch = this.visibilityEpoch;
     this.inFlight = true;
+    this.captureTarget = target;
     this.nextCaptureAt = Date.now() + CAPTURE_INTERVAL_MS;
     if (card) card.nextAt = Date.now() + REFRESH_INTERVAL_MS;
     let admitted: BrowserPreview | null = null;
@@ -135,6 +137,7 @@ export class BrowserPreviewScheduler {
       if (card) card.nextAt = Date.now() + REFRESH_INTERVAL_MS;
     } finally {
       this.settle(target, admitted);
+      this.captureTarget = null;
       this.inFlight = false; this.schedule();
     }
   }

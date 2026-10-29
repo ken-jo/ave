@@ -121,7 +121,7 @@ export function SidebarPreviewTrigger({ preview, loadPreview, children }: {
   const show = (anchor: HTMLElement, immediate: boolean) => context.show({ id, data: preview, anchor, loadPreview }, immediate);
   return cloneElement(children, {
     title: undefined,
-    "aria-label": original["aria-label"] ?? original.title,
+    "aria-description": [original["aria-description"], original.title].filter(Boolean).join(" ") || undefined,
     "aria-describedby": context.activeId === id ? [original["aria-describedby"], id].filter(Boolean).join(" ") : original["aria-describedby"],
     onPointerEnter: (event) => { original.onPointerEnter?.(event); show(event.currentTarget, false); },
     onPointerLeave: (event) => { original.onPointerLeave?.(event); context.hide(true, id); },

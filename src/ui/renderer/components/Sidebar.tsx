@@ -376,8 +376,7 @@ function NavItem({
   return btn;
 }
 
-function SidebarSurfaceRow({ surface, visible, onOpen, collapsed = false }: {
-  collapsed?: boolean;
+function SidebarSurfaceRow({ surface, visible, onOpen }: {
   surface: SidebarSurface;
   visible: boolean;
   onOpen?: (tabId: string) => void;
@@ -403,7 +402,7 @@ function SidebarSurfaceRow({ surface, visible, onOpen, collapsed = false }: {
         : <Icon className="h-4 w-4" />}
       isActive={visible && active?.tabId === surface.tabId}
       onClick={() => onOpen?.(surface.tabId)}
-      collapsed={collapsed}
+      collapsed={false}
       data-testid={`sidebar-surface-${surface.tabId}`}
     />
   );
@@ -1061,7 +1060,6 @@ function SessionRow({
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid={`sidebar-session-${session.id}`}
           data-session-family={family}
-          aria-label={session.title}
           title={family === "main" ? undefined : familyLabel}
           onClick={() => {
             if (family !== "main") onOpenFamilyRow?.();
@@ -1884,6 +1882,8 @@ export function Sidebar({
     return { preview: { kind, title, ...(surface.url ? { url: surface.url } : {}) } as SidebarPreviewData,
       loadPreview: () => loadSidebarSurfacePreview(surface, title) };
   };
+  const terminalPreview = surfacePreview("terminal");
+  const browserPreview = surfacePreview("browser");
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
   // Card element ref — EdgeResizeBar applies the live drag width directly to this node's style (rAF-coalesced) so dragging
   // never re-renders the whole Sidebar tree, mirroring ChatSidePanel's drag-perf pattern.
@@ -2253,8 +2253,8 @@ export function Sidebar({
                     conversations — the same surfaces the work panel's tabs
                     hold, in the main area. */}
                 <NavItem
-                  preview={surfacePreview("terminal")?.preview}
-                  loadPreview={surfacePreview("terminal")?.loadPreview}
+                  preview={terminalPreview?.preview}
+                  loadPreview={terminalPreview?.loadPreview}
                   viewKey="terminal"
                   label={t(BUILTIN_LABEL_KEYS.terminal)}
                   icon={<TerminalViewIcon className="h-4 w-4" />}
@@ -2265,8 +2265,8 @@ export function Sidebar({
                   data-testid="sidebar-terminal"
                 />
                 <NavItem
-                  preview={surfacePreview("browser")?.preview}
-                  loadPreview={surfacePreview("browser")?.loadPreview}
+                  preview={browserPreview?.preview}
+                  loadPreview={browserPreview?.loadPreview}
                   viewKey="web"
                   label={t(BUILTIN_LABEL_KEYS.web)}
                   icon={<WebViewIcon className="h-4 w-4" />}
