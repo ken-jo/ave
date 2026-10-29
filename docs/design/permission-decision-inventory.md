@@ -190,17 +190,17 @@ Default is the displayed name of stored `strict`; Allow writes is stored `defaul
 5. HTML section 3 is anchored to `3e51a9e89`, not the requested base. In particular, the brief/HTML says no breaker exists, but `judge-breaker.ts` already has 3/20. Its session lifetime and manual-resume behavior differ from the requested turn lifetime. Reuse and correct it; test both thresholds and turn isolation.
 6. The literal `externalContentSeen` identifier is absent at this base. Existing host provenance uses trust origin, resource fences, tool-result updates, staged origin and cross-agent approval reason. Preserve its actual taint semantics while normalizing S2; do not silently invent a broader “all tool results force ask” rule.
 7. “Secret read asks” is the kind's mode/human route, not an absolute override of an explicit allow mode or applicable rule; S1 credential-store protection and S2 protected-control floors still win. The brief's explicit stage order resolves that shorthand. Strict allows ordinary reads; secret reads remain mode/human.
-8. The prerequisite project-write change (#312) is not in this snapshot. Its in-project checkpoint allow, single outside card, template exception, patch memory and depth removal must be preserved after the lead authorizes Phase 1. Do not reconstruct them independently in this phase.
+8. The prerequisite project-write change (#312) is not in this snapshot. Its in-project checkpoint allow, single outside card, template exception, patch memory and depth removal must be preserved after the prerequisite is integrated. Do not reconstruct them independently.
 9. The user-typed terminal prerequisite (#308) may change terminal authority seams. Physical user commands stay outside this tree. This inventory records the current terminal_run subject only; it does not authorize converting physical typing into agent requests.
 10. Historical delegated away answers and parent-model adjudication are retired in the current implementation, including their configuration and controls. Trusted child/session identity and liveness checks remain admission/effect boundaries; there is no remaining parent/away automatic decision tier.
 
 ### Credential-store separation
 
-`SENSITIVE_PATH_ENTRIES` currently mixes ordinary secret files, control/config paths, browser cookie stores, host private runtime state and credential databases. Retain admission denial for host encryption keys and encrypted credential stores (`sensitive-paths.ts:68`, `:253`), credential-bearing runtime capability state (`:254`), and host session/cookie/token databases where raw filesystem access bypasses the app's credential-use protocol. These are host capability boundaries, not generic “secret-file read” restrictions. Ordinary `.env`/key files follow S4; prerequisite template exclusions stay intact. Config/control mutation belongs to S2. Phase 1 must enumerate the retained store entries and rationale explicitly; the current broad table cannot be kept wholesale merely by renaming it “credential stores.”
+`SENSITIVE_PATH_ENTRIES` currently mixes ordinary secret files, control/config paths, browser cookie stores, host private runtime state and credential databases. Retain admission denial for host encryption keys and encrypted credential stores (`sensitive-paths.ts:68`, `:253`), credential-bearing runtime capability state (`:254`), and host session/cookie/token databases where raw filesystem access bypasses the app's credential-use protocol. These are host capability boundaries, not generic “secret-file read” restrictions. Ordinary `.env`/key files follow S4; prerequisite template exclusions stay intact. Config/control mutation belongs to S2. The implementation must enumerate the retained store entries and rationale explicitly; the current broad table cannot be kept wholesale merely by renaming it “credential stores.”
 
 ## Validation contract for the implementation
 
-This inventory changes documentation only. No runtime behavior has changed. Behavioral evidence belongs to Phase 1, after the prerequisite merge and lead instruction.
+The original inventory was documentation-only. Current runtime behavior and results are recorded in the implementation reconciliation and linked validation record.
 
 - Independently authored data matrix: kind × boundary × four modes × human availability × exact floor × rule. Every changed outcome must name an approved behavior change; source/taint and multi-target reductions need focused companion rows.
 - Bypass fixtures: symlink/junction, parent traversal, protected-name case and separator variants, multi-target patch, both transfer endpoints, archive entry escape. Verify secret approval remains executable through G03 and sandbox policy, without weakening protected stores.
@@ -211,7 +211,7 @@ This inventory changes documentation only. No runtime behavior has changed. Beha
 - Contracts: preload-shape, channel-inventory, terminal-channels-internal, packaging-discipline plus changed settings/catalog/persistence consumers. Use targeted suites, typecheck and lint; no full suite.
 - UI: isolated profile/port launch, settings and recent-denial screenshots without account/email prompt material; terminate only the owned process.
 - Complexity: compare actual decision branches over the decision-owner regions above before/after, separately from the diagram's eight decision nodes. For reproducibility, extract the complete functions containing A02–A13, B01–B09, C01–C17, D01–D11, G01–G02, G04, G06–G08, H03, H05–H06, I01–I06 and J02–J07, deduplicate function spans, and report their absolute start/end lines in the measurement output. Count `if`, conditional expressions and switch cases with the same syntax traversal on both versions; exclude evidence parsers, transport guards, UI rendering and tests. Report region list and method, not just a smaller function's count.
-- Changed-line policy: no explanatory external product names, no skip/only/todo/placeholder additions, LF blobs, no unrelated edits. No Phase 1 implementation is claimed by this inventory.
+- Changed-line policy: no explanatory external product names, no skip/only/todo/placeholder additions, LF blobs, no unrelated edits. Inventory structure alone does not prove runtime behavior.
 
 ## Inventory verification
 
@@ -238,7 +238,7 @@ Every inventoried site is accounted for below. Multiple stages indicate an exist
 | Provenance/adjacent (9) | J01–J09 | S1/S2/S3/S4/S5/S7, E, R, O | Owner-away distinct; forced other-principal; physical typing/configuration deliberately O. |
 | UI/contracts (4) | Q01–Q04 | S5/S7, R | Coordinated channel/UI/catalog/settings removal and replacement. |
 | Native/process enforcement (4) | K01–K04 | S1/S2/S4, E | Reconcile silent traversal exclusions and executable/plugin sandbox paths with admitted authority. |
-| Total | 97 bounded sites; 4 deferred append owners: B08, C17, I03, J04 | All mapped or deliberately changed; no pending unmapped ID | Inventory is the refactor checklist; Phase 1 must reconcile it against the newly merged base before edits. |
+| Total | 97 bounded sites; 4 deferred append owners: B08, C17, I03, J04 | All mapped or deliberately changed; no pending unmapped ID | Inventory is the refactor checklist; Implementation must reconcile it against the integrated base. |
 
 ## Current-source reconciliation
 

@@ -65,3 +65,9 @@ No lint script exists. Available validation uses diff/path policy, source-text, 
 - Platform spelling/junction tests do not constitute a native Windows application run.
 - Unbindable streaming uploads in active tool contexts refuse before network effects.
 - Browser payment/permanent-submit guards cannot infer arbitrary remote business semantics from untrusted page labels. Their tested scope and residual limits must be stated with the final evidence.
+
+## Current main integration
+
+Main `4889a55f1` was normally integrated after the final feature run. Its terminal startup and shared test-fixture changes retain the permission pipeline. The single verified-shell fixture conflict keeps both the shared child helper and the trusted filesystem-block/no-replay assertions. Five incoming boundary files passed; the Windows container-floor fixture was corrected to assert protection of the entire settings directory rather than a superseded individual child path and then passed 16/16. The latest-per-file boundary result is 325 passing cases with 5 existing platform skips across six files, not another contribution to the 18,345 count.
+
+Production typecheck and the inherited test-type ratchet passed again (`current-main-types.log`). The merged main bundle rebuilt, and all three desktop cases passed again on that build (`current-main-ui.log`). No native Windows application result is claimed.
