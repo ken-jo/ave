@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { vi } from "vitest";
 
 import type { ExecutionMode } from "../../shared/permission-mode.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -19,7 +19,7 @@ export function makePermissionManager(
   setReviewerForTest(permMgr, {
     classifier: { classify: classifySpy },
     cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-    deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
   });
   return permMgr;
 }

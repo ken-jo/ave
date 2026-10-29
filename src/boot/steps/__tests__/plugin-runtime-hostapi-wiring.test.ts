@@ -1417,7 +1417,10 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       requestAndWait: vi.fn(() => new Promise((resolve) => { approve = resolve as typeof approve; })),
     };
     const transport = vi.fn(async () => new Response("sent")) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, approvalGate);
+    const managerRoot = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-effect-policy-")));
+    const permissionManager = new PermissionManager(join(managerRoot, "permissions.json"));
+    permissionManager.setMode("strict");
+    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, approvalGate, { permissionManager });
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
@@ -1571,5 +1574,56 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(() => api.onEvent("plugin-a.updated", vi.fn())).toThrow(
       /plugin instance is no longer active/,
     );
+  });
+});
+
+describe("host fetch binds approved request bodies to transport", () => {
+  function riskSettings(enabled = true) {
+    const settings = makeSettingsService(new Map());
+    const originalGet = settings.get.getMockImplementation()!;
+    settings.get.mockImplementation((key: string) => key === "features" ? { hostClassifiesRisk: enabled } : originalGet(key));
+    return settings;
+  }
+
+  it.each([false, true])("multipart transport data stays approved with risk classification enabled=%s", async (enabled) => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-form-data-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode("strict");
+    let approve!: (decision: { choice: "allow-once" }) => void;
+    const approvalGate = { requestAndWait: vi.fn(() => new Promise((resolve) => { approve = resolve as typeof approve; })) };
+    const sent: unknown[] = [];
+    const transport = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const body = init?.body as FormData;
+      sent.push(Array.from(body.entries()));
+      return new Response("sent");
+    }) as unknown as typeof fetch;
+    const createHostApi = await initAndGetFactory(riskSettings(enabled), { log: vi.fn() }, transport, approvalGate, { permissionManager });
+    const api = createHostApi("plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["93.184.216.34"] } }, pluginDataDirIn(root), activeIncarnation(), "plugin-a");
+    const body = new FormData();
+    body.set("payload", "approved");
+    const pending = runWithEffectGateContext({ headless: false, approvalSurface: "interactive", toolName: "sample" }, () => api.hostFetch("https://93.184.216.34/resource", { method: "POST", body }));
+    await vi.waitFor(() => expect(approvalGate.requestAndWait).toHaveBeenCalledOnce());
+    body.set("payload", "changed");
+    body.append("extra", "not approved");
+    approve({ choice: "allow-once" });
+    await pending;
+    expect(sent).toEqual([[["payload", "approved"]]]);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("stream bodies fail before tool network effects with risk classification enabled=%s", async (enabled) => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-stream-body-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode("allow");
+    const approvalGate = { requestAndWait: vi.fn() };
+    const transport = vi.fn(async () => new Response("unused")) as unknown as typeof fetch;
+    const createHostApi = await initAndGetFactory(riskSettings(enabled), { log: vi.fn() }, transport, approvalGate, { permissionManager });
+    const api = createHostApi("plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["93.184.216.34"] } }, pluginDataDirIn(root), activeIncarnation(), "plugin-a");
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } });
+    await runWithEffectGateContext({ headless: false, approvalSurface: "interactive", toolName: "sample" }, async () => {
+      await expect(api.hostFetch("https://93.184.216.34/resource", { method: "POST", body })).rejects.toThrow("Tool network effects require a snapshotable request body");
+    });
+    expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
   });
 });

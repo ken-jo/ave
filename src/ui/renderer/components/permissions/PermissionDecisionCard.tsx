@@ -50,7 +50,7 @@ export function ReviewRow({
  * Canonical Korean label for a {@link RiskLevel}.
  *
  * Centralized here so every risk-display site (ToolApprovalContent
- * badge / reviewer-verdict row, DeferredQueuePanel header + review
+ * badge / reviewer-verdict row and denial history
  * row, future surfaces) reads the same translation. Translating only
  * the primary badge is the failure mode this replaced: the remaining
  * `level.toUpperCase()` callers leaked raw English to users.

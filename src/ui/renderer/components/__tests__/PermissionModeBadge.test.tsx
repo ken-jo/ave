@@ -23,7 +23,7 @@ describe("PermissionModeBadge", () => {
     const { getByTestId } = render(<PermissionModeBadge mode="strict" />);
     const badge = getByTestId("permission-mode-badge");
     expect(badge.getAttribute("data-mode")).toBe("strict");
-    expect(badge.textContent).toContain("모두 확인");
+    expect(badge.textContent).toContain("기본");
   });
 
   it("calls fetcher and reflects 'auto' on mount", async () => {
@@ -34,9 +34,9 @@ describe("PermissionModeBadge", () => {
     await waitFor(() => {
       const badge = screen.getByTestId("permission-mode-badge");
       expect(badge.getAttribute("data-mode")).toBe("auto");
-      expect(badge.textContent).toContain("자동 검증");
+      expect(badge.textContent).toContain("auto");
       expect(badge.textContent).not.toContain("LLM");
-      expect(badge.getAttribute("aria-label")).toContain("권한 리뷰어");
+      expect(badge.getAttribute("aria-label")).toContain("리뷰어");
     });
     expect(fetcher).toHaveBeenCalled();
   });
@@ -49,47 +49,47 @@ describe("PermissionModeBadge", () => {
     await waitFor(() => {
       const badge = screen.getByTestId("permission-mode-badge");
       expect(badge.getAttribute("data-mode")).toBe("allow");
-      expect(badge.textContent).toContain("모두 허용");
+      expect(badge.textContent).toContain("허용");
     });
   });
 
-  it("surfaces deferred approvals as a separate queue button", async () => {
-    const deferredFetcher = vi.fn(async () => ({
+  it("surfaces recently denied actions as a separate queue button", async () => {
+    const recentlyDeniedFetcher = vi.fn(async () => ({
       ok: true,
-      pending: [{ id: "p1" }, { id: "p2" }],
+      entries: [{ id: "p1" }, { id: "p2" }],
     }));
     await act(async () => {
-      render(<PermissionModeBadge mode="auto" deferredFetcher={deferredFetcher} />);
+      render(<PermissionModeBadge mode="auto" recentlyDeniedFetcher={recentlyDeniedFetcher} />);
     });
     await waitFor(() => {
-      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("승인 2");
+      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("최근 거부 2");
     });
     const badge = screen.getByTestId("permission-mode-badge");
-    expect(badge.getAttribute("aria-label")).not.toContain("대기 승인 2건");
+    expect(badge.getAttribute("aria-label")).not.toContain("최근 거부 2건");
     const queueButton = screen.getByTestId("permission-queue-button");
-    expect(queueButton.getAttribute("aria-label")).toContain("대기 승인 2건");
+    expect(queueButton.getAttribute("aria-label")).toContain("최근 거부 2건");
     expect(queueButton).toBeDisabled();
   });
 
-  it("surfaces deferred queue load failures instead of hiding the queue state", async () => {
-    const deferredFetcher = vi.fn(async () => ({
+  it("surfaces denied history load failures instead of hiding the queue state", async () => {
+    const recentlyDeniedFetcher = vi.fn(async () => ({
       ok: false,
-      error: "deferred-list unavailable",
+      error: "recently-denied-list unavailable",
     }));
     await act(async () => {
-      render(<PermissionModeBadge mode="auto" deferredFetcher={deferredFetcher} />);
+      render(<PermissionModeBadge mode="auto" recentlyDeniedFetcher={recentlyDeniedFetcher} />);
     });
     await waitFor(() => {
-      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("승인 확인 실패");
+      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("내역 확인 실패");
     });
     expect(screen.getByTestId("permission-queue-button").getAttribute("aria-label")).toContain(
-      "deferred-list unavailable",
+      "recently-denied-list unavailable",
     );
   });
 
-  it("clears deferred queue failure state when a pending-count event arrives", async () => {
-    let capturedHandler: ((summary: { pending: number }) => void) | null = null;
-    const deferredSubscriber = vi.fn((handler) => {
+  it("clears denied history failure state when a history-count event arrives", async () => {
+    let capturedHandler: ((summary: { total: number }) => void) | null = null;
+    const recentlyDeniedSubscriber = vi.fn((handler) => {
       capturedHandler = handler;
       return () => {};
     });
@@ -97,28 +97,28 @@ describe("PermissionModeBadge", () => {
       render(
         <PermissionModeBadge
           mode="default"
-          deferredFetcher={async () => ({ ok: false, error: "down" })}
-          deferredSubscriber={deferredSubscriber}
+          recentlyDeniedFetcher={async () => ({ ok: false, error: "down" })}
+          recentlyDeniedSubscriber={recentlyDeniedSubscriber}
         />,
       );
     });
     await waitFor(() => {
-      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("승인 확인 실패");
+      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("내역 확인 실패");
     });
 
     await act(async () => {
-      capturedHandler!({ pending: 1 });
+      capturedHandler!({ total: 1 });
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("승인 1");
+      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("최근 거부 1");
     });
     expect(screen.getByTestId("permission-queue-button").getAttribute("aria-label")).not.toContain("down");
   });
 
-  it("subscribes to deferred approval changes", async () => {
-    let capturedHandler: ((summary: { pending: number }) => void) | null = null;
-    const deferredSubscriber = vi.fn((handler) => {
+  it("subscribes to denied history changes", async () => {
+    let capturedHandler: ((summary: { total: number }) => void) | null = null;
+    const recentlyDeniedSubscriber = vi.fn((handler) => {
       capturedHandler = handler;
       return () => {};
     });
@@ -126,18 +126,18 @@ describe("PermissionModeBadge", () => {
       render(
         <PermissionModeBadge
           mode="default"
-          deferredFetcher={async () => ({ ok: true, pending: [] })}
-          deferredSubscriber={deferredSubscriber}
+          recentlyDeniedFetcher={async () => ({ ok: true, entries: [] })}
+          recentlyDeniedSubscriber={recentlyDeniedSubscriber}
         />,
       );
     });
 
     await act(async () => {
-      capturedHandler!({ pending: 3 });
+      capturedHandler!({ total: 3 });
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("승인 3");
+      expect(screen.getByTestId("permission-pending-badge").textContent).toContain("최근 거부 3");
     });
   });
 
@@ -186,8 +186,8 @@ describe("PermissionModeBadge", () => {
       permission: {
         getMode: vi.fn(async () => ({ mode: "default" })),
         onModeChanged,
-        deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
-        onDeferredPending: vi.fn(() => () => undefined),
+        recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [], total: 0 })),
+        onRecentlyDeniedChanged: vi.fn(() => () => undefined),
       },
     };
 
@@ -219,14 +219,14 @@ describe("PermissionModeBadge", () => {
 
   it("invokes queue click handler independently from mode settings", async () => {
     const onClick = vi.fn();
-    const onQueueClick = vi.fn();
+    const onHistoryClick = vi.fn();
     await act(async () => {
       render(
         <PermissionModeBadge
           mode="auto"
-          deferredFetcher={async () => ({ ok: true, pending: [{ id: "p1" }] })}
+          recentlyDeniedFetcher={async () => ({ ok: true, entries: [{ id: "p1" }] })}
           onClick={onClick}
-          onQueueClick={onQueueClick}
+          onHistoryClick={onHistoryClick}
         />,
       );
     });
@@ -235,7 +235,7 @@ describe("PermissionModeBadge", () => {
     });
     expect(screen.getByTestId("permission-queue-button")).not.toBeDisabled();
     fireEvent.click(screen.getByTestId("permission-queue-button"));
-    expect(onQueueClick).toHaveBeenCalledTimes(1);
+    expect(onHistoryClick).toHaveBeenCalledTimes(1);
     expect(onClick).not.toHaveBeenCalled();
   });
 
@@ -255,6 +255,6 @@ describe("PermissionModeBadge", () => {
   it("shows description in title attribute (tooltip)", () => {
     const { getByTestId } = render(<PermissionModeBadge mode="strict" />);
     const badge = getByTestId("permission-mode-badge");
-    expect(badge.getAttribute("title")).toContain("전체 물어보기");
+    expect(badge.getAttribute("title")).toContain("일반 읽기");
   });
 });

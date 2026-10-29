@@ -34,7 +34,7 @@ vi.mock("../../audit/sandbox-audit-sink.js", async () => {
 });
 
 import { PermissionManager } from "../permission-manager.js";
-import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import {
   LlmRiskClassifier,
   RuleBasedRiskClassifier,
@@ -112,7 +112,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
         approvalCacheKey, approvalMemory: { kind: "args" } as const,
       };
 
-      const remembered = await pm.dispatchReviewer("write_file", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
+      const remembered = await pm.dispatchReviewer("write_file", { ...input, invocationId: randomUUID() }, undefined, { lane: "foreground-auto" });
       expect(remembered).toMatchObject({ outcome: "approval-memory", verdict: { level: ceiling } });
       expect(remembered.judge).toMatchObject({ judged: true, decision: "allow" });
       expect(broadcast).toHaveBeenLastCalledWith({
@@ -131,7 +131,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       const escalated = await pm.dispatchReviewer("write_file", {
         invocationId: randomUUID(),
         ...input, allowedDirectories: [],
-      }, undefined, { defer: "none" });
+      }, undefined, { lane: "foreground-auto" });
       expect(escalated).toMatchObject({ outcome: "approval-memory", verdict: { level: "high" } });
       expect(escalated.judge).toMatchObject({ judged: true, decision: "ask" });
       expect(broadcast).toHaveBeenLastCalledWith({
@@ -150,7 +150,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       const otherProject = await pm.dispatchReviewer("write_file", {
         invocationId: randomUUID(),
         ...input, executionCwd: otherCwd,
-      }, undefined, { defer: "none" });
+      }, undefined, { lane: "foreground-auto" });
       expect(otherProject.outcome).not.toBe("approval-memory");
       expect(broadcast).toHaveBeenCalledTimes(2);
     },
@@ -199,7 +199,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       sensitivePathsAdjacent: [],
       trustOrigin: "user-keyboard",
       approvalCacheKey, approvalMemory: { kind: "args" } as const,
-    }, undefined, { defer: "none" });
+    }, undefined, { lane: "foreground-auto" });
 
     expect(result.outcome).not.toBe("approval-memory");
     expect(broadcast).not.toHaveBeenCalled();
@@ -208,7 +208,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
     });
   });
 
-  it("reuses an exact remembered decision after an unknown MEDIUM required explicit approval", async () => {
+  it("reuses an exact remembered decision after a medium risk assessment", async () => {
     const broadcast = vi.fn();
     pm.setBroadcastUserApprovalHit(broadcast);
     const finalInput = { operation: "inspect" };
@@ -227,9 +227,9 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       ownerPluginSandboxRoot: cwd,
       pluginId: "plugin_probe",
     };
-    const fresh = await pm.dispatchReviewer("plugin_probe", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
+    const fresh = await pm.dispatchReviewer("plugin_probe", { ...input, invocationId: randomUUID() }, undefined, { lane: "foreground-auto" });
     expect(fresh.verdict).toMatchObject({ level: "medium", requiresExplicitApproval: true });
-    expect(fresh.judge).toMatchObject({ judged: true, decision: "ask" });
+    expect(fresh.judge).toMatchObject({ judged: true, decision: "allow" });
     expect(broadcast).not.toHaveBeenCalled();
 
     await recordApproval("plugin_probe", canonicalStringify(finalInput), "plugin", {
@@ -242,7 +242,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       workingDirectoryIdentity: captureApprovalWorkingDirectory(cwd).identity,
     });
     __resetSessionStoreForTest();
-    const result = await pm.dispatchReviewer("plugin_probe", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
+    const result = await pm.dispatchReviewer("plugin_probe", { ...input, invocationId: randomUUID() }, undefined, { lane: "foreground-auto" });
 
     expect(result).toMatchObject({
       outcome: "approval-memory",
@@ -261,10 +261,11 @@ function makeManager(): {
   classifier: RiskClassifier;
 } {
   const pm = new PermissionManager(tmpFile("permissions.json"));
+  pm.setMode("auto");
   const classifier = new RuleBasedRiskClassifier();
   const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
-  const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
-  setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
+  const queue = makeRecentlyDeniedStore(tmpFile("recently-denied.jsonl"));
+  setReviewerForTest(pm, { classifier, cache, recentlyDenied: queue });
   return { pm, classifier };
 }
 
@@ -409,6 +410,8 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
 
   it("audit separates raw rule verdict, raw LLM verdict, and final composed verdict", async () => {
     const pm = new PermissionManager(tmpFile("permissions.json"));
+    pm.setMode("auto");
+  pm.setMode("auto");
     const classifier = new LlmRiskClassifier(
       {
         // The LLM ESCALATES: a rule-HIGH probe would be composition-pinned and never reach the provider, so verdict separation is shown on a non-HIGH rule verdict with a disagreeing (higher) LLM verdict.
@@ -422,8 +425,8 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
       "gpt-4o-mini",
     );
     const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
-    const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
-    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
+    const queue = makeRecentlyDeniedStore(tmpFile("recently-denied.jsonl"));
+    setReviewerForTest(pm, { classifier, cache, recentlyDenied: queue });
 
     await pm.dispatchReviewer("write_file", {
       invocationId: randomUUID(),

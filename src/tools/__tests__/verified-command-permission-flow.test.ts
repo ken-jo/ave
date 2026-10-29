@@ -9,7 +9,7 @@ import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as verifiedCommands from "../../permissions/verified-shell-command.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
@@ -191,7 +191,7 @@ it.each([
 ])("keeps unsupported %s unproven through the canonical executor despite stored grants", async (command, broadRule) => {
   const f = fixture();
   const backend = vi.fn(() => { throw new Error("The reviewer backend must not run for an unproven command"); });
-  manager.setReviewer({ classifier: { classify: backend }, cache: new VerdictCache(join(cwd, "verdicts.jsonl")), deferredQueue: new DeferredQueue(join(cwd, "deferred.jsonl")) });
+  manager.setReviewer({ classifier: { classify: backend }, cache: new VerdictCache(join(cwd, "verdicts.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(cwd, "deferred.jsonl")) });
   await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
   await manager.addRulePersist({ pattern: broadRule, action: "allow" }, { kind: "user" });
   expect(await manager.listPersistedRules()).toEqual(expect.arrayContaining([

@@ -250,7 +250,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       reviewer: { route: "foreground-auto" },
     });
     const checkDetailed = vi.spyOn(pm, "checkDetailed");
-    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: {} as never });
     pm.dispatchReviewer = vi.fn(async (_toolName, input) => {
       reviewerInput = input;
       return {
@@ -294,7 +294,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     pm.setMode(mode);
     pm.setInteractiveAutoApprove("medium");
     pm.setRules([{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }, { pattern: "bash", action: "allow" }]);
-    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
       requestId: request.id,
@@ -369,7 +369,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-rule.json");
     pm.setMode(mode);
     pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
-    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn();
     const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
@@ -393,7 +393,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-headless.json");
     pm.setMode("allow");
     pm.setRules(withRule ? [{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }] : [{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
-    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    pm.setReviewer({ classifier: {} as never, cache: {} as never, recentlyDenied: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn();
     const audit = recordingAuditLogger();
@@ -730,7 +730,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       registry.register(shellProbe(execute));
       const pm = new PermissionManager(`/tmp/nonexistent-requested-unavailable-${platform}.json`);
       pm.setMode("auto");
-      setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+      setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: {} as never });
       pm.dispatchReviewer = vi.fn() as never;
       const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
       const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);

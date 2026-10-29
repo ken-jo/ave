@@ -30,3 +30,19 @@ test('switching exec-mode away from auto hides the reviewer prompt collapse agai
 
   await closeInlineSettings(app, settingsPage);
 });
+
+test('owner-away approval wait defaults to unlimited and saves a bounded auto-skip', async ({ app, mainWindow }) => {
+  const settingsPage = await openInlineSettings(app, mainWindow, 'permissions');
+  const minutes = settingsPage.getByTestId('owner-away-auto-skip');
+  await expect(minutes).toHaveValue('0');
+  await minutes.fill('2');
+  await minutes.press('Tab');
+  await expect.poll(async () => settingsPage.evaluate(async () =>
+    (await window.aveApi.getSettings()).permissions?.ownerAwayAutoSkipMinutes,
+  )).toBe(2);
+  await settingsPage.screenshot({ path: test.info().outputPath('owner-away-settings.png') });
+  await closeInlineSettings(app, settingsPage);
+  await openInlineSettings(app, mainWindow, 'permissions');
+  await expect(settingsPage.getByTestId('owner-away-auto-skip')).toHaveValue('2');
+  await closeInlineSettings(app, settingsPage);
+});

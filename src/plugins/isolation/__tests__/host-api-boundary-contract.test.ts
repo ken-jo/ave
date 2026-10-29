@@ -4,6 +4,7 @@ import {
   ENFORCEMENT_EXCLUSIONS,
   EffectBoundaryDeniedError,
   GATED_EFFECT_PATHS,
+  pathReadEffectPaths,
 } from "../../../permissions/effect-enforcement.js";
 import { HOSTAPI_EFFECT_BY_PATH } from "../../../permissions/effect-kind.js";
 import { ManifestIntegrityError } from "../../../permissions/manifest-integrity.js";
@@ -240,8 +241,8 @@ describe("the marshalling contract covers exactly the classified hostApi surface
   });
 
   it("declares effect-boundary denial exactly where the gate can actually fire", () => {
-    // Derive gated effects from enforcement so new write chokepoints require a declared denial identity.
-    const canDeny = new Set<string>(GATED_EFFECT_PATHS);
+    // Derive all write and path-read boundaries from actual enforcement.
+    const canDeny = new Set<string>([...GATED_EFFECT_PATHS, ...pathReadEffectPaths]);
     // hostFetch gates its captured verb inline; wrapper exclusion grants no bypass.
     expect(ENFORCEMENT_EXCLUSIONS.has("hostFetch")).toBe(true);
     canDeny.add("hostFetch");

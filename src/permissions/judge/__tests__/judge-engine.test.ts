@@ -92,7 +92,7 @@ describe("resolveJudge — placement", () => {
   it("active allow is applied; suggestion is passed through, never persisted", async () => {
     const d = deps(answering({ ...ALLOW, suggestedRule: "Bash(npm run *)" }));
     const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
-    expect(out).toMatchObject({ judged: true, decision: "allow", applied: true, defer: false, source: "judge", suggestedRule: "Bash(npm run *)" });
+    expect(out).toMatchObject({ judged: true, decision: "allow", applied: true, source: "judge", suggestedRule: "Bash(npm run *)" });
   });
 
   it("shadow mode runs and audits but is not applied", async () => {
@@ -102,20 +102,21 @@ describe("resolveJudge — placement", () => {
     expect(auditPayload(d.entries[0]!)).toMatchObject({ mode: "shadow", applied: false, decision: "allow" });
   });
 
-  it("shadow headless denial never asks the call site to defer", async () => {
+  it("shadow headless denial never creates denial history", async () => {
     const d = deps(answering(DENY), { mode: "shadow" });
     const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
-    expect(out).toMatchObject({ judged: true, decision: "deny", applied: false, defer: false });
+    expect(out).toMatchObject({ judged: true, decision: "deny", applied: false, });
     if (!out.judged) throw new Error("expected judged");
-    expect(out.deferral).toBeUndefined();
+    expect(out.recentlyDenied).toBeUndefined();
   });
 
-  it("headless ask becomes deny + deferral", async () => {
+  it("headless ask becomes deny with redacted history metadata", async () => {
     const d = deps(answering({ decision: "ask", rationale: "unsure" }));
     const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
-    expect(out).toMatchObject({ judged: true, decision: "deny", defer: true });
+    expect(out).toMatchObject({ judged: true, decision: "deny", });
     if (!out.judged) throw new Error("expected judged");
-    expect(out.deferral?.verdict.level).toBe("high");
+    expect(out.recentlyDenied?.verdict.level).toBe("high");
+    expect(out.rationale).toBe("Nobody can approve this request; do not retry.");
   });
 });
 
@@ -131,13 +132,13 @@ describe("resolveJudge — fallbacks never allow", () => {
     it(`${label}: foreground → ask`, async () => {
       const d = deps(make(), { timeoutMs: 30 });
       const out = await resolveJudge(UNDECIDED, judgeRequest(), d);
-      expect(out).toMatchObject({ judged: true, decision: "ask", defer: false, source: "fallback", fallback: kind });
+      expect(out).toMatchObject({ judged: true, decision: "ask", source: "fallback", fallback: kind });
       expect(judgeRecords(d)[0]).toMatchObject({ fallback: kind, decision: "ask" });
     });
-    it(`${label}: headless → deny + defer`, async () => {
+    it(`${label}: headless → deny with denial history`, async () => {
       const d = deps(make(), { timeoutMs: 30 });
       const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
-      expect(out).toMatchObject({ judged: true, decision: "deny", defer: true, source: "fallback", fallback: kind });
+      expect(out).toMatchObject({ judged: true, decision: "deny", source: "fallback", fallback: kind });
     });
   }
 
@@ -256,7 +257,7 @@ describe("resolveJudge — circuit breaker", () => {
     }
     const paused = {
       judged: true, source: "breaker", pause: "consecutive",
-      decision: lane === "foreground" ? "ask" : "deny", applied: true, defer: lane === "headless",
+      decision: lane === "foreground" ? "ask" : "deny", applied: true,
     };
     expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({ ...paused, breakerTripped: true });
     expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({ ...paused, breakerTripped: false });
@@ -280,21 +281,21 @@ describe("resolveJudge — circuit breaker", () => {
     expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({
       judged: true, source: "breaker", pause: "total", breakerTripped: true,
       decision: lane === "foreground" ? "ask" : "deny",
-      rationale: "Automated approval paused: 20 total classifier blocks",
+      rationale: lane === "headless" ? "Nobody can approve this request; do not retry." : "Automated approval paused: 20 total classifier blocks",
     });
-    expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 0, open: true });
+    expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 20, open: true });
     expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({
       judged: true, source: "breaker", pause: "total", breakerTripped: false,
       decision: lane === "foreground" ? "ask" : "deny",
     });
     expect(provider.calls).toBe(39);
-    d.breaker.resume("session-root");
+    d.breaker.beginTurn("session-root");
     expect(await resolveJudge(UNDECIDED, judgeRequest({ lane }), d)).toMatchObject({ decision: "allow", source: "judge" });
     expect(provider.calls).toBe(40);
     expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 0, total: 0, open: false });
   });
 
-  it("a final ask is a classifier block and manual approval resumes the next review", async () => {
+  it("a final ask is a classifier block and a new turn resumes the next review", async () => {
     let allowed = false;
     const provider = answering(async () => allowed ? ALLOW : { decision: "ask", rationale: "needs approval" });
     const d = deps(provider);
@@ -305,11 +306,11 @@ describe("resolveJudge — circuit breaker", () => {
     expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({
       decision: "ask", source: "breaker", pause: "consecutive", breakerTripped: true,
     });
-    d.breaker.resume(request.sessionId);
-    expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 3, open: false });
+    d.breaker.beginTurn(request.sessionId);
+    expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 0, open: false });
     allowed = true;
     expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({ decision: "allow", source: "judge" });
-    expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 3, open: false });
+    expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 0, open: false });
     expect(provider.calls).toBe(4);
   });
 
@@ -444,6 +445,6 @@ it("retains a completed classifier block when the caller stops during its audit 
     },
   };
   await expect(resolveJudge(UNDECIDED, judgeRequest(), d, controller.signal)).rejects.toBe(reason);
-  expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 0, open: true });
+  expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 20, open: true });
   expect(d.breaker.pauseReason("session-root")).toBe("total");
 });

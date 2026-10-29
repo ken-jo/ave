@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { PermissionManager } from "../permission-manager.js";
-import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import {
   RuleBasedRiskClassifier,
   type RiskClassifier,
@@ -32,10 +32,10 @@ afterEach(async () => {
 function makeManager(
   mode: "default" | "strict" | "auto" | "allow" = "default",
   classifier: RiskClassifier = new RuleBasedRiskClassifier(),
-): { pm: PermissionManager; queue: DeferredQueue; cleanup: () => Promise<void> } {
+): { pm: PermissionManager; queue: ReturnType<typeof makeRecentlyDeniedStore>; cleanup: () => Promise<void> } {
   const dir = resources.makeTmpDir("ave-permission-scenarios-");
   const pm = new PermissionManager(join(dir, "permissions.json"));
-  const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+  const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
   pm.setMode(mode);
   // Round-1 critic MAJOR-2 — `interactive.autoApprove` is now the SOT for foreground-auto reviewer dispatch. When the scenario asserts `mode="auto"` behaviour the test must opt in explicitly.
   if (mode === "auto") {
@@ -44,7 +44,7 @@ function makeManager(
   setReviewerForTest(pm, {
     classifier,
     cache: resources.makeVerdictCache(join(dir, "reviewer-cache.jsonl")),
-    deferredQueue: queue,
+    recentlyDenied: queue,
   });
   return { pm, queue, cleanup: () => resources.cleanup() };
 }
@@ -715,11 +715,11 @@ describe("permission-review-scenario-board-v2.html contract", () => {
         input: { endpoint: "https://teams.microsoft.com/webhook", payload: "meeting summary" },
       });
       expect(result[0].is_error).toBe(true);
-      expect(result[0].content).toContain("권한 보류");
+      expect(result[0].content).toContain("do not retry");
       expect(execute).not.toHaveBeenCalled();
       expect(gate.requestAndWait).not.toHaveBeenCalled();
-      expect(queue.listPending()).toHaveLength(1);
-      expect(queue.listPending()[0].verdict.level).toBe("medium");
+      expect((await queue.list())).toHaveLength(1);
+      expect((await queue.list())[0].reason).toBeTruthy();
     } finally {
       await cleanup();
     }

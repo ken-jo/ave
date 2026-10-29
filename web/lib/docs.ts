@@ -185,12 +185,12 @@ const ko: Record<DocSlug, DocPage> = {
         h: "권한 모드",
         blocks: [
           { dl: [
-            ["프로젝트 밖 쓰기 확인", "기본값. 읽기와 복구 가능한 프로젝트 파일 변경은 허용합니다. 프로젝트 밖 쓰기와 보호 경로는 승인을 요청하며, 나머지 도구는 해당 권한 규칙을 따릅니다."],
-            ["모두 확인", "읽기를 포함한 모든 도구에 승인을 요청합니다."],
-            ["자동 검증", "복구 가능한 프로젝트 파일 변경은 허용합니다. 나머지 대화형 검증 대상은 설정한 리뷰어 임계값을 적용합니다. 헤드리스 실행은 별도의 실패 폐쇄형 리뷰 대기열을 씁니다."],
-            ["모두 허용", "하드 차단 밖은 자동으로 허용합니다. 허용 디렉터리 밖 접근은 따로 승인을 받습니다."],
+            ["기본", "새 설치 기본값. 일반 읽기와 샌드박스 안에서 검증된 읽기 전용 셸은 허용하고, 파일 쓰기와 나머지 셸·네트워크 요청은 확인합니다."],
+            ["쓰기 허용", "복구 가능한 프로젝트 파일 변경과 안전한 격리 셸을 허용합니다. 프로젝트 밖 쓰기는 폴더 승인과 함께 카드 한 장으로 확인합니다."],
+            ["auto", "쓰기 허용에 자동 검증을 더합니다. 일반 확인 요청은 리뷰어가 먼저 판단하고, 낮음·중간은 허용하며 높음·오류·중단은 사람에게 묻습니다."],
+            ["허용", "일반 요청을 허용합니다. 거부 규칙, 호스트 자격증명 저장소 차단, 보호 경로 등 강제 일회 확인은 유지합니다."],
           ] },
-          { p: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고, 위험도는 낮음, 중간, 높음입니다." },
+          { p: "기존 사용자는 저장한 모드의 동작을 유지합니다. 읽기 전용 MCP 도구는 허용하고, 그 밖의 MCP 도구는 모드에 따라 확인하거나 검증하며 도구별로 승인을 기억할 수 있습니다." },
         ],
       },
       {
@@ -198,10 +198,10 @@ const ko: Record<DocSlug, DocPage> = {
         h: "판정 순서",
         blocks: [
           { ul: [
-            "하드 차단 규칙이 언제나 먼저 돕니다. 민감한 경로, 잘못된 매니페스트, 샌드박스 한계가 여기에 걸립니다.",
-            "리뷰어 설정은 검증 끔(자동 통과), 규칙 기반 검증, LLM 검증, 엄격(모두 보류) 중 하나입니다. LLM 검증은 위험도를 올릴 수만 있고 낮추지 못합니다.",
-            "리뷰어가 실패하면 통과가 아니라 보류입니다.",
-            "헤드리스 실행에서 저위험이 아닌 요청은 나중에 처리할 대기열로 갑니다.",
+            "입장 차단과 거부 규칙을 먼저 적용합니다. 보호 경로, 위험 삭제, 프로젝트 탈출, 유출, 다른 주체의 요청은 매번 사람이 확인하며 승인을 기억하지 않습니다.",
+            "호스트 셸과 샌드박스 승격은 일반 승인 경로를 따르며, 카드에서 접두사 규칙을 저장할 수 있습니다.",
+            "auto에서 연속 3회 또는 한 턴 20회 거부하면 남은 턴은 사람이 확인합니다.",
+            "사람이 없는 실행에서도 auto 리뷰어가 먼저 판단합니다. 사람 확인이 필요해지면 거부하고 모델에 재시도하지 말라고 알립니다.",
           ] },
         ],
       },
@@ -209,6 +209,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "approve",
         h: "승인",
         blocks: [
+          { p: "앱을 열어 둔 채 자리를 비우면 승인 카드는 기본적으로 무제한 기다립니다. 설정 → 권한의 부재 중 자동 스킵 시간을 지정하면 N분 뒤 거부합니다. 최근 거부는 마스킹한 요약과 원래 저장 대화의 호출 참조를 저장합니다. 참조와 현재 도구·프로젝트·입력을 다시 확인해 복원할 수 있으면 재시작 후에도 새 승인 카드로 다시 실행할 수 있습니다. 참조가 없거나 달라졌으면 다시 실행할 수 없습니다." },
           { p: "승인 요청은 화면 아래 독에 나타나고 대화를 가리지 않습니다. 버튼은 거부▾(항상 거부), 이번 세션 동안 허용▾(이 프로젝트에서 항상 허용 / 모든 곳에서 항상 허용), 한 번만 허용입니다. 셸·네트워크 카드에서는 기억하는 선택을 고르면 저장할 규칙과 규칙 편집 버튼이 나타납니다. 셸 명령은 그 명령의 정확한 Bash/PowerShell 규칙으로, 다른 도구는 정확히 그 도구와 그 입력으로 기억합니다. 이 프로젝트에서 항상 허용은 그 작업 폴더에, 모든 곳에서 항상 허용은 모든 프로젝트에 적용되며, 어디서든 저장한 거부가 허용보다 우선합니다. 대상 이름에 와일드카드가 들어 있으면 규칙을 저장하지 않고 한 번만 허용을 권합니다." },
           { p: "플러그인이 제안한 대화(오버레이 제안)는 내가 받아들여야 시작되고, 그 안의 쓰기, 셸, 네트워크 도구는 다시 확인을 받습니다." },
         ],
@@ -218,7 +219,7 @@ const ko: Record<DocSlug, DocPage> = {
         h: "허용 디렉터리와 민감한 경로",
         blocks: [
           { p: "허용 디렉터리는 프로젝트 루트, ~/.ave, 전용 임시 폴더, 시스템 임시 폴더(macOS와 Linux는 /tmp 포함)에서 시작하고, 설정의 permissions.additionalDirectories 로 넓힙니다. 그 밖에 접근하면 따로 승인을 받습니다." },
-          { p: "~/.ssh 의 키, .env 파일 같은 민감한 경로는 어떤 모드에서도 막힙니다." },
+          { p: "일반 비밀 파일 읽기는 모드와 규칙에 따라 확인하고, 쓰기는 일반 파일 변경 규칙을 따릅니다. 호스트 암호화 키·자격증명 DB·쿠키와 토큰 저장소는 모든 모드에서 차단합니다." },
           { p: "사용자와 관리자가 각각 policy.json 을 둘 수 있고, 올바른 관리자 정책이 있으면 사용자가 그 항목을 바꿀 수 없습니다." },
         ],
       },
@@ -226,7 +227,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "sandbox",
         h: "OS 샌드박스",
         blocks: [
-          { p: "도구 실행을 운영체제 수준에서 가두는 선택 기능입니다. 기본값은 꺼짐이고, 켜면 다시 시작해야 합니다." },
+          { p: "셸 실행을 운영체제 수준에서 가둡니다. macOS와 Linux는 기본 켜짐, Windows는 기본 꺼짐이며 저장한 선택은 유지됩니다. 플러그인 작업자 격리는 별도로 켭니다." },
           { dl: [
             ["macOS", "Seatbelt. 파일, 프로세스, 네트워크를 가둡니다."],
             ["Linux", "bwrap. 파일, 프로세스, 네트워크를 가둡니다."],
@@ -371,7 +372,7 @@ const ko: Record<DocSlug, DocPage> = {
           { ul: [
             "실행마다 따로 대화 루프가 돌고, 그 결과는 채팅 목록에 세션으로 남습니다.",
             "루틴마다 쓸 수 있는 플러그인과 폴더를 정합니다.",
-            "헤드리스로 돌기 때문에 저위험이 아닌 승인은 대기열에서 나를 기다립니다.",
+            "사람이 필요한 요청은 거부하고 재시도를 막습니다. 최근 거부에서 복원 가능한 요청만 새 승인 카드로 다시 실행할 수 있습니다.",
             "필요한 플러그인이 없으면 실행을 건너뛰거나 확인이 필요하다고 표시합니다.",
           ] },
         ],
@@ -641,12 +642,12 @@ const en: Record<DocSlug, DocPage> = {
         h: "Permission modes",
         blocks: [
           { dl: [
-            ["Confirm writes outside the project", "The default. Reads and recoverable project file edits are allowed. Writes outside the project and protected paths ask for approval. Other tools follow their own permission rules."],
-            ["Confirm all", "Every tool asks for approval, reads included."],
-            ["Auto-verify", "Recoverable project file edits are allowed. Other eligible calls in chat use the configured reviewer threshold. Headless runs use a separate fail-closed reviewer queue."],
-            ["Allow all", "Everything outside the hard blocks is allowed. Access outside the allowed folders still needs its own approval."],
+            ["Default", "The default for new installs. Allows ordinary reads and proven read-only sandboxed shells. File writes, other shells and network requests ask."],
+            ["Allow writes", "Allows recoverable project file edits and safe confined shells. A write outside the project asks once, with the folder grant on the same card."],
+            ["auto", "Allow writes plus automatic review. Ordinary requests that would ask go to the reviewer: low and medium allow; high, error or abort asks a person."],
+            ["Allow", "Allows ordinary requests. Deny rules, host credential-store blocks and mandatory one-shot approvals remain in force."],
           ] },
-          { p: "Tool calls fall into read, write, shell, network and meta. Risk is low, medium or high." },
+          { p: "Existing users keep their stored mode behavior. Read-only MCP tools are allowed; other MCP tools ask or review according to the mode and can remember approval per tool." },
         ],
       },
       {
@@ -654,10 +655,10 @@ const en: Record<DocSlug, DocPage> = {
         h: "How a request is decided",
         blocks: [
           { ul: [
-            "Hard-deny rules always run first: sensitive paths, invalid manifests and sandbox limits.",
-            "The reviewer is one of Validation off (auto-pass), Rule-based validation, LLM validation, or Strict (all pending). LLM validation can raise a risk rating, never lower it.",
-            "If the reviewer fails, the request is held, not passed.",
-            "In headless runs, anything above low risk goes to a deferred queue.",
+            "Admission blocks and deny rules run first. Protected paths, critical deletion, escape, exfiltration and other-principal requests require fresh one-shot human approval, without memory.",
+            "Host shells and sandbox escalation use ordinary approval and can offer savable prefix rules.",
+            "In auto, three consecutive or twenty total denials in a turn send the rest of that turn to a person.",
+            "Headless auto still reviews first. If human approval is required, the call is denied and the model is told not to retry.",
           ] },
         ],
       },
@@ -665,6 +666,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "approve",
         h: "Approving",
         blocks: [
+          { p: "When the app is open and you are away, cards wait indefinitely by default. Set the owner-away auto-skip interval in Settings → Permissions to deny after N minutes. Recently denied saves redacted summaries and references to calls in the existing saved transcript. Rerun revalidates the reference, current tool, project and input before a fresh card; it can remain available after restart. Missing or changed references make rerun unavailable." },
           { p: "Requests appear in a dock at the bottom of the window that does not cover the conversation. The buttons are Deny ▾ (Always deny), Allow for session ▾ (Always allow in this project / Always allow everywhere) and Allow once. On a shell or network card, selecting a remembered choice shows the rule it saves and an Edit rule button. A shell command is remembered as its exact Bash/PowerShell rule, any other tool as exactly that tool and input. Always allow in this project applies to that working folder, Always allow everywhere to every project, and a deny you save anywhere wins over an allow; if the target name contains a wildcard, Ave won’t save the rule and suggests Allow once instead." },
           { p: "A conversation a plugin proposes (an overlay suggestion) starts only when you accept it, and write, shell and network tools inside it ask again." },
         ],
@@ -674,7 +676,7 @@ const en: Record<DocSlug, DocPage> = {
         h: "Allowed folders and sensitive paths",
         blocks: [
           { p: "Allowed folders start with the project root, ~/.ave, a private scratch folder and the system temporary folder (plus /tmp on macOS and Linux), and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
-          { p: "Sensitive paths, such as keys under ~/.ssh and .env files, are blocked in every mode." },
+          { p: "Ordinary secret reads follow mode and rules; secret writes follow normal file-write rules. Host encryption keys, credential databases and cookie/token stores remain blocked in every mode." },
           { p: "Users and administrators can each keep a policy.json. A valid administrator policy locks the settings it covers." },
         ],
       },
@@ -682,7 +684,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "sandbox",
         h: "The OS sandbox",
         blocks: [
-          { p: "An opt-in feature that confines tool execution at the operating-system level. It is off by default, and turning it on needs a restart." },
+          { p: "Confines shell execution at the operating-system level. It defaults on for macOS and Linux and off for Windows; stored choices are preserved. Plugin worker confinement is enabled separately." },
           { dl: [
             ["macOS", "Seatbelt. Confines files, processes and network."],
             ["Linux", "bwrap. Confines files, processes and network."],
@@ -827,7 +829,7 @@ const en: Record<DocSlug, DocPage> = {
           { ul: [
             "Each run has its own conversation loop and appears as a session in the chat list.",
             "Each routine has its own list of allowed plugins and folders.",
-            "Runs are headless, so approvals above low risk wait for you in the queue.",
+            "Requests needing a person are denied with no-retry guidance. Recently denied lets you rerun safely reconstructable calls with a fresh approval card.",
             "If a plugin it needs is missing, the run is skipped or marked as needing attention.",
           ] },
         ],

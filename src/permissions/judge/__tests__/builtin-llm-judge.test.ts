@@ -13,7 +13,7 @@ import { BuiltinLlmJudge, mapRiskVerdictToJudgeDecision, type TracingRiskClassif
 import { collectingAudit, judgeInvocation, judgeRequest, judgeSettings } from "./judge-request-fixture.js";
 import { useTempDirs } from "../../../__tests__/test-helpers.js";
 import { VerdictCache } from "../../reviewer/verdict-cache.js";
-import { DeferredQueue } from "../../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { buildPermissionEvaluationContext } from "../../evaluation-context.js";
 import { canonicalizePathForMatch } from "../../sensitive-paths.js";
 import { detectSandboxCapability } from "../../sandbox-capability.js";
@@ -25,20 +25,9 @@ import type { ToolPermissionContext } from "../../../tools/executor.js";
 import { resolveJudge } from "../judge-engine.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 
-describe("builtin risk decision thresholds", () => {
-  it.each([
-    ["low", undefined, "off", "allow"],
-    ["low", true, "low", "allow"],
-    ["medium", undefined, "low", "ask"],
-    ["medium", undefined, "medium", "allow"],
-    ["medium", false, "medium", "allow"],
-    ["medium", true, "medium", "ask"],
-    ["high", undefined, "medium", "ask"],
-  ] as const)("foreground %s explicit=%s threshold=%s produces %s", (level, requiresExplicitApproval, threshold, expected) => {
-    expect(mapRiskVerdictToJudgeDecision({ level, reason: "reviewed", requiresExplicitApproval }, "foreground", threshold)).toBe(expected);
-  });
-  it.each([["low", "allow"], ["medium", "deny"], ["high", "deny"]] as const)("headless %s produces %s", (level, expected) => {
-    expect(mapRiskVerdictToJudgeDecision({ level, reason: "reviewed" }, "headless", "medium")).toBe(expected);
+describe("builtin reviewer decisions", () => {
+  it.each([["low", "allow"], ["medium", "allow"], ["high", "ask"]] as const)("maps %s to %s before human availability", (level, expected) => {
+    expect(mapRiskVerdictToJudgeDecision({ level, reason: "reviewed" })).toBe(expected);
   });
 });
 
@@ -56,16 +45,16 @@ function tracing(trace: Partial<LlmRiskClassificationTrace> & { finalVerdict: Ri
 describe("BuiltinLlmJudge", () => {
   it("maps a fresh MEDIUM under autoApprove medium to allow and forwards the signal", async () => {
     const classifier = tracing({ finalVerdict: { level: "medium", reason: "build" } });
-    const judge = new BuiltinLlmJudge(classifier, () => "medium");
+    const judge = new BuiltinLlmJudge(classifier);
     const signal = new AbortController().signal;
     expect(await judge.judge(judgeRequest(), signal)).toMatchObject({ decision: "allow" });
     expect(classifier.signals[0]).toBe(signal);
     expect(judge.id).toBe("builtin-llm");
   });
 
-  it("headless MEDIUM is deny (call site defers)", async () => {
-    const judge = new BuiltinLlmJudge(tracing({ finalVerdict: { level: "medium", reason: "x" } }), () => "medium");
-    expect(await judge.judge(judgeRequest({ lane: "headless" }), new AbortController().signal)).toMatchObject({ decision: "deny" });
+  it("headless medium review allows before any human fallback", async () => {
+    const judge = new BuiltinLlmJudge(tracing({ finalVerdict: { level: "medium", reason: "x" } }));
+    expect(await judge.judge(judgeRequest({ lane: "headless" }), new AbortController().signal)).toMatchObject({ decision: "allow" });
   });
 
   it.each([
@@ -74,7 +63,7 @@ describe("BuiltinLlmJudge", () => {
     ["malformed", "unparseable"],
   ] as const)("reviewer outcome %s is a %s judge failure, never a mapped verdict", async (outcome, kind) => {
     // finalVerdict LOW is what fallbackOnError="rule" leaves behind; it must not allow.
-    const judge = new BuiltinLlmJudge(tracing({ outcome, finalVerdict: { level: "low", reason: "rule" } }), () => "medium");
+    const judge = new BuiltinLlmJudge(tracing({ outcome, finalVerdict: { level: "low", reason: "rule" } }));
     await expect(judge.judge(judgeRequest(), new AbortController().signal)).rejects.toMatchObject({ kind });
   });
 });
@@ -104,10 +93,12 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
           const finalInput = { command };
           const classifier = new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY);
           const pm = new PermissionManager(join(dir, "permissions.json"));
+          pm.setMode("auto");
+          await pm.ensureProjectRulesLoaded(cwd);
           setReviewerForTest(pm, {
             classifier,
             cache: new VerdictCache(join(dir, "cache.jsonl")),
-            deferredQueue: new DeferredQueue(join(dir, "queue.jsonl")),
+            recentlyDenied: makeRecentlyDeniedStore(join(dir, "queue.jsonl")),
           });
           pm.setInteractiveAutoApprove("medium");
           const evaluationContext = buildPermissionEvaluationContext({
@@ -149,7 +140,7 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
               settings,
               chain: [{
                 settings: settings.chain[0]!,
-                judge: new BuiltinLlmJudge(new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY), () => "medium"),
+                judge: new BuiltinLlmJudge(new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY)),
               }],
               breaker: new JudgeCircuitBreaker(settings.breaker),
               audit: logger,
@@ -173,6 +164,6 @@ it("rejects unknown internal trace outcomes rather than mapping a default decisi
     async classifyWithTrace() {
       return { ruleVerdict: { level: "low", reason: "rule" }, llmVerdict: null, finalVerdict: { level: "low", reason: "rule" }, outcome: "unknown" } as never;
     },
-  }, () => "medium");
+  });
   await expect(judge.judge(judgeRequest(), new AbortController().signal)).rejects.toThrow("Invalid internal reviewer classification trace");
 });

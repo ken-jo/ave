@@ -212,14 +212,20 @@ describe("translate", () => {
   });
 
   it.each([
-    ["en", "Confirm writes outside the project"],
-    ["ko", "프로젝트 밖 쓰기 확인"],
+    ["en", "Allow writes"],
+    ["ko", "쓰기 허용"],
   ] as const)("keeps the %s default policy label consistent across settings and the badge", async (locale, label) => {
     await loadLocaleMessages(locale);
     expect(translate(locale, "constants.execModeDefaultLabel")).toBe(label);
     expect(translate(locale, "permissionModeBadge.labelDefault")).toBe(label);
     expect(translate(locale, "permissionModeBadge.descDefault"))
       .toBe(translate(locale, "constants.execModeDefaultDesc"));
+  });
+
+  it.each([["en", "Default"], ["ko", "기본"]] as const)("names the %s conservative default consistently", async (locale, label) => {
+    await loadLocaleMessages(locale);
+    expect(translate(locale, "constants.execModeStrictLabel")).toBe(label);
+    expect(translate(locale, "permissionModeBadge.labelStrict")).toBe(label);
   });
 
   it("ships complete catalogs for every supported locale", async () => {

@@ -11,7 +11,7 @@ import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from ".
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { LlmRiskClassifier, type LlmReviewerProvider, type RiskVerdict } from "../../../permissions/reviewer/risk-classifier.js";
 import { LlmApprovalSentenceSelector } from "../../../permissions/reviewer/approval-sentence-selector.js";
 import * as approvals from "../../../permissions/user-approval-store.js";
@@ -86,7 +86,7 @@ async function subject(mode: "auto" | "default" = "auto") {
   manager.setReviewer({
     classifier: new LlmRiskClassifier({ complete }, "review-model", "deny", {}, { maxAttempts: 1, baseDelayMs: 0, jitterPct: 0 }),
     cache: resources.makeVerdictCache(join(root, "verdicts.jsonl")),
-    deferredQueue: new DeferredQueue(join(root, "deferred.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(root, "deferred.jsonl")),
   });
   manager.setJudge({
     settings: { ...DEFAULT_JUDGE_SETTINGS, chain: [], categories: { ...DEFAULT_JUDGE_SETTINGS.categories }, breaker: { ...DEFAULT_JUDGE_SETTINGS.breaker } },

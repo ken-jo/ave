@@ -1,13 +1,11 @@
-// Successful review follows foreground/headless risk thresholds; explicit-approval calls cannot auto-allow at medium. Failed, timed-out or malformed reviews never allow regardless of rule fallback: ask foreground and deny/defer headless.
+// Successful low and medium review allows; high review asks the owner. Failures always require a human decision.
 import { LlmRiskClassifier, RuleBasedRiskClassifier, type RiskClassifier, type LlmRiskClassificationTrace, type RiskVerdict, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { errorMessage } from "../../shared/error-message.js";
-import type { ReviewerInteractiveAutoApprove } from "../permission-settings-store.js";
 import {
   JudgeFailure,
   JudgeContractError,
   type JudgeDecision,
   type JudgeFailureKind,
-  type JudgeLane,
   type JudgeRequest,
   type JudgeVerdict,
   type PermissionJudge,
@@ -55,22 +53,11 @@ export function traceRiskClassifier(classifier: RiskClassifier): TracingRiskClas
   };
 }
 
-export function mapRiskVerdictToJudgeDecision(
-  verdict: RiskVerdict,
-  lane: JudgeLane,
-  autoApprove: ReviewerInteractiveAutoApprove,
-): JudgeDecision {
-  if (!["low", "medium", "high"].includes(verdict.level) ||
-      (lane !== "foreground" && lane !== "headless") ||
-      !["off", "low", "medium"].includes(autoApprove)) {
+export function mapRiskVerdictToJudgeDecision(verdict: RiskVerdict): JudgeDecision {
+  if (!["low", "medium", "high"].includes(verdict.level)) {
     throw new JudgeContractError("Invalid builtin reviewer decision inputs");
   }
-  const isLow = verdict.level === "low";
-  if (lane === "headless") return isLow ? "allow" : "deny";
-  const autoApproved =
-    isLow ||
-    (verdict.level === "medium" && autoApprove === "medium" && verdict.requiresExplicitApproval !== true);
-  return autoApproved ? "allow" : "ask";
+  return verdict.level === "high" ? "ask" : "allow";
 }
 
 // null = the outcome may auto-decide; otherwise the failure it surfaces as.
@@ -88,7 +75,6 @@ export class BuiltinLlmJudge implements PermissionJudge {
 
   constructor(
     private readonly classifier: TracingRiskClassifier | null,
-    private readonly autoApprove: () => ReviewerInteractiveAutoApprove,
     // Resolved `<provider>/<model>` the classifier runs on.
     readonly model?: string,
     readonly cacheScope?: Record<string, unknown>,
@@ -109,7 +95,7 @@ export class BuiltinLlmJudge implements PermissionJudge {
     }
     const verdict = trace.finalVerdict;
     return {
-      decision: mapRiskVerdictToJudgeDecision(verdict, request.lane, this.autoApprove()),
+      decision: mapRiskVerdictToJudgeDecision(verdict),
       rationale: `reviewer ${verdict.level}: ${verdict.reason}`,
     };
   }

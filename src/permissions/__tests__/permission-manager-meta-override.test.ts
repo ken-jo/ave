@@ -1,4 +1,3 @@
-// Forged meta calls or missing overrides deny before rules/mode; valid ask overrides re-enter foreground review after rule and memory allows. Strict mode asks earlier; allow mode skips re-elevation, and explicit dock grants remain effective. Always-allow-with-audit is handled before this check.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 
@@ -7,179 +6,57 @@ vi.mock("../permissions-store.js", () => ({
   updatePermissionsFile: vi.fn(async () => undefined),
 }));
 
-describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", () => {
-  let pm: PermissionManager;
+// Host metadata is evidence; ordinary decisions follow docs/architecture/permission-decision-tree.md.
+describe("host operation decision contracts", () => {
+  let manager: PermissionManager;
+  beforeEach(() => { manager = new PermissionManager("/tmp/test-meta-override-permissions.json"); });
 
-  beforeEach(() => {
-    pm = new PermissionManager("/tmp/test-meta-override-permissions.json");
+  it.each(["strict", "default"] as const)("asks normally for an ordinary host operation in %s", (mode) => {
+    manager.setMode(mode);
+    expect(manager.checkDetailed("agent_spawn", "builtin", "meta", undefined, { decisionOverride: "ask" })).toMatchObject({ decision: "ask", reasonCode: "tool-approval" });
   });
 
-  // Layer-6 (override branch) baseline
-
-  it("default mode + decisionOverride='ask' → forceModal ask (layer 6)", () => {
-    pm.setMode("default");
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("ask");
-    expect(result.forceModal).toBe(true);
-    expect(result.layer).toBe(6);
+  it.each(["agent_spawn", "agent_interrupt"])("reviews %s in auto mode", (name) => {
+    manager.setMode("auto");
+    expect(manager.checkDetailed(name, "builtin", "meta", undefined, { decisionOverride: "ask" })).toMatchObject({ decision: "ask", reviewer: { route: "foreground-auto" } });
   });
 
-  it("auto mode + medium threshold + decisionOverride='ask' → common foreground reviewer route", () => {
-    pm.setMode("auto");
-    pm.setInteractiveAutoApprove("medium");
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("ask");
-    expect(result.forceModal).toBeUndefined();
-    expect(result.reviewer).toEqual({ route: "foreground-auto" });
-    expect(result.layer).toBe(6);
+  it("allows an ordinary host operation in allow mode", () => {
+    manager.setMode("allow");
+    expect(manager.checkDetailed("agent_spawn", "builtin", "meta", undefined, { decisionOverride: "ask" }).decision).toBe("allow");
   });
 
-  it("allow mode + decisionOverride='ask' → allow, NO forceModal (#1469 axis)", () => {
-    // The allow-all invariant: the post-computation guard's `mode !== "allow"` check is the live SOT here — it skips the re-elevation so agent_spawn gets the same no-prompt behaviour as any other non-hard-blocked tool under the user's explicit allow-all opt-in.
-    pm.setMode("allow");
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("allow");
-    expect(result.forceModal).toBeUndefined();
+  it("denies a host operation without a decision contract", () => {
+    expect(manager.checkDetailed("some_meta_tool", "builtin", "meta")).toMatchObject({ decision: "deny", reasonCode: "invalid-meta" });
   });
 
-  it("strict mode + decisionOverride='ask' → ask layer 2 (mode-first, no forceModal)", () => {
-    // strict returns ask at layer 2 before layers 3/5/6, so the post-guard never fires (result.decision is already "ask", not "allow").
-    pm.setMode("strict");
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("ask");
-    expect(result.layer).toBe(2);
-    expect(result.forceModal).toBeUndefined();
+  it.each(["default", "auto", "strict", "allow"] as const)("denies forged external host operations in %s", (mode) => {
+    manager.setMode(mode);
+    manager.setRules([{ pattern: "forged_meta", action: "allow" }]);
+    for (const source of ["plugin", "mcp"] as const) {
+      expect(manager.checkDetailed("forged_meta", source, "meta", undefined, { decisionOverride: "ask" })).toMatchObject({ decision: "deny", reasonCode: "invalid-meta" });
+    }
   });
 
-  it("default mode + no decisionOverride → immutable deny", () => {
-    pm.setMode("default");
-    const result = pm.checkDetailed("some_meta_tool", "builtin", "meta");
-    expect(result).toMatchObject({
-      decision: "deny",
-      layer: 0,
-      denyReasons: [{
-        layer: 0,
-        reason: "builtin-meta-missing-decision-override",
-        source: "host-tool-governance",
-      }],
-    });
+  it("allows an audited host contract after immutable checks", () => {
+    expect(manager.checkDetailed("ask_user_question", "builtin", "meta", undefined, { decisionOverride: "always-allow-with-audit" }).decision).toBe("allow");
+    manager.setRules([{ pattern: "ask_user_question", action: "deny" }]);
+    expect(manager.checkDetailed("ask_user_question", "builtin", "meta", undefined, { decisionOverride: "always-allow-with-audit" }).decision).toBe("deny");
   });
 
-  it.each(["default", "auto", "strict", "allow"] as const)(
-    "forged external meta remains denied in %s mode despite an allow rule",
-    (mode) => {
-      pm.setMode(mode);
-      pm.setRules([{ pattern: "forged_meta", action: "allow" }]);
-      for (const source of ["plugin", "mcp"] as const) {
-        const result = pm.checkDetailed("forged_meta", source, "meta", null, {
-          decisionOverride: "ask",
-        });
-        expect(result).toMatchObject({
-          decision: "deny",
-          layer: 0,
-          denyReasons: [{
-            reason: "external-meta-forbidden",
-            source: "host-tool-governance",
-          }],
-        });
-      }
-    },
-  );
-
-  it.each(["agent_spawn", "agent_interrupt"])(
-    "%s uses the common foreground reviewer marker",
-    (toolName) => {
-      pm.setMode("auto");
-      pm.setInteractiveAutoApprove("medium");
-      const result = pm.checkDetailed(toolName, "builtin", "meta", null, {
-        decisionOverride: "ask",
-      });
-      expect(result).toMatchObject({
-        decision: "ask",
-        layer: 6,
-        reviewer: { route: "foreground-auto" },
-      });
-      expect(result.forceModal).toBeUndefined();
-    },
-  );
-
-  it("default mode + decisionOverride='always-allow-with-audit' → allow (post-guard skips)", () => {
-    // Only "ask" triggers the post-guard; "always-allow-with-audit" keeps the override allow. (The executor short-circuits this value before reaching checkDetailed; this is defence-in-depth.)
-    pm.setMode("default");
-    const result = pm.checkDetailed("ask_user_question", "builtin", "meta", null, {
-      decisionOverride: "always-allow-with-audit",
-    });
-    expect(result.decision).toBe("allow");
-    expect(result.forceModal).toBeUndefined();
-    expect(result.layer).toBe(6);
+  it("honors an explicit rule before an ordinary host operation", () => {
+    manager.setRules([{ pattern: "agent_spawn", action: "allow" }]);
+    expect(manager.checkDetailed("agent_spawn", "builtin", "meta", undefined, { decisionOverride: "ask" })).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   });
 
-  // MAJOR-2 — layer-5 alwaysAllowed must not defeat the per-invocation gate
-
-  it("layer-5 alwaysAllowed + default mode + decisionOverride='ask' → allow (dock grant is honoured)", async () => {
-    // Explicit dock grants win over ask re-elevation; disclose their standing authority on the meta impact line so the checkbox remains effective.
-    pm.setMode("default");
-    await pm.addAlwaysAllowedPersist("agent_spawn");
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("allow");
-    expect(result.layer).toBe(5);
+  it("honors a durable grant before an ordinary host operation", async () => {
+    await manager.addAlwaysAllowedPersist("agent_spawn");
+    expect(manager.checkDetailed("agent_spawn", "builtin", "meta", undefined, { decisionOverride: "ask" })).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
   });
 
-  it("does NOT extend the exemption to a layer-3 allow rule", async () => {
-    // The scoping that keeps this safe. A broad allow-rule in settings, or a category default, is not someone looking at THIS tool and deciding — and it is the path a remote or sub-agent turn arrives through. Only the foreground dock click is treated as informed consent.
-    pm.setMode("default");
-    pm.setRules([{ pattern: "agent_spawn", action: "allow" }]);
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("ask");
-    expect(result.forceModal).toBe(true);
-    expect(result.layer).toBe(6);
-  });
-
-  it("layer-5 alwaysAllowed + allow mode + decisionOverride='ask' → allow (allow-all wins)", async () => {
-    // Even with a persisted grant, allow-all mode must mean no prompt at all. The post-guard's `mode !== "allow"` check skips the re-elevation.
-    pm.setMode("allow");
-    await pm.addAlwaysAllowedPersist("agent_spawn");
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("allow");
-    expect(result.forceModal).toBeUndefined();
-  });
-
-  // MAJOR-2 — layer-3 allow-rule must not defeat the per-invocation gate
-
-  it("layer-3 allow-rule + default mode + decisionOverride='ask' → forceModal ask", () => {
-    // A user-created allow-rule (e.g. "agent_spawn" → allow) hits layer 3 and returns allow before categoryBasedDecision. The post-guard must still re-elevate.
-    pm.setMode("default");
-    pm.setRules([{ pattern: "agent_spawn", action: "allow" }]);
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("ask");
-    expect(result.forceModal).toBe(true);
-    expect(result.layer).toBe(6);
-  });
-
-  it("layer-3 allow-rule + allow mode + decisionOverride='ask' → allow (allow-all wins)", () => {
-    // Allow-all still wins even with an explicit allow-rule.
-    pm.setMode("allow");
-    pm.setRules([{ pattern: "agent_spawn", action: "allow" }]);
-    const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
-      decisionOverride: "ask",
-    });
-    expect(result.decision).toBe("allow");
-    expect(result.forceModal).toBeUndefined();
+  it("keeps other-principal approval before rules and audited contracts", () => {
+    manager.setMode("allow");
+    manager.setRules([{ pattern: "ask_user_question", action: "allow" }]);
+    expect(manager.checkDetailed("ask_user_question", "builtin", "meta", "overlay:meeting-detection", { decisionOverride: "always-allow-with-audit" })).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "other-principal" });
   });
 });

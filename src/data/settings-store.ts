@@ -85,6 +85,7 @@ import {
 import { createLogger } from "../lib/logger.js";
 import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
+import { isOwnerAwayAutoSkipMinutes, DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import {
   appearanceMigration,
@@ -445,6 +446,14 @@ class SettingsPatchValidationError extends Error {
   }
 }
 
+class OwnerAwayAutoSkipSettingsError extends Error {
+  readonly code = "invalid-owner-away-auto-skip";
+  constructor() {
+    super("Owner-away auto-skip must be a nonnegative integer.");
+    this.name = "OwnerAwayAutoSkipSettingsError";
+  }
+}
+
 export interface A2ARemoteTargetSettings {
   targetAgentId: number;
   label: string;
@@ -553,6 +562,7 @@ export interface AppSettings {
   routine: RoutineSettings;
   /** How `~/.ave` reference docs follow the shipped ones. */
   homeDocs: HomeDocsSettings;
+  permissions?: { ownerAwayAutoSkipMinutes: number };
   privacy: PrivacySettings;
   updates: UpdateSettings;
   telemetry: TelemetrySettings;
@@ -1057,6 +1067,9 @@ export class SettingsService {
     ) {
       throw new SettingsPatchValidationError();
     }
+    if (partial.permissions !== undefined && (!partial.permissions || typeof partial.permissions !== "object" || Array.isArray(partial.permissions) || Object.keys(partial.permissions).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes(partial.permissions.ownerAwayAutoSkipMinutes))) {
+      throw new OwnerAwayAutoSkipSettingsError();
+    }
     const previousSettings = this.getAll();
     const nextMarketplace = partial.marketplace
       ? normalizeMarketplace({
@@ -1128,6 +1141,9 @@ export class SettingsService {
         isBooleanValue, "homeDocs", PATCHED_FIELD,
       );
       this.settings.homeDocs = nextHomeDocs;
+    }
+    if (partial.permissions) {
+      this.settings.permissions = { ...this.settings.permissions, ownerAwayAutoSkipMinutes: partial.permissions.ownerAwayAutoSkipMinutes };
     }
     if (partial.privacy) {
       this.settings.privacy = { ...this.settings.privacy, ...partial.privacy };
@@ -1370,6 +1386,11 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
+    if (partial.permissions) {
+      for (const listener of this.changeListeners.get("permissions") ?? []) {
+        try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
+      }
+    }
     return this.getAll();
   }
 
@@ -1853,6 +1874,10 @@ export class SettingsService {
         marketplace,
         routine: normalizedRoutine,
         homeDocs: normalizeHomeDocs(parsed.homeDocs),
+        permissions: {
+          ownerAwayAutoSkipMinutes: isOwnerAwayAutoSkipMinutes(parsed.permissions?.ownerAwayAutoSkipMinutes)
+            ? parsed.permissions.ownerAwayAutoSkipMinutes : DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES,
+        },
         privacy: { ...DEFAULT_SETTINGS.privacy, ...parsed.privacy },
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
@@ -1915,7 +1940,21 @@ export class SettingsService {
 
   private async saveSettings(settings: AppSettings): Promise<void> {
     await withFileLock(this.settingsPath, async () => {
-      writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(settings, null, 2));
+      // Directory grants and reviewer policy have independent writers sharing this file lock.
+      // The first acquisition can create an empty lock placeholder before the initial save.
+      const source = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf-8") : "";
+      const document = source.trim() ? JSON.parse(source) as Record<string, unknown> : {};
+      if (!document || typeof document !== "object" || Array.isArray(document)) {
+        throw new Error("Invalid settings document.");
+      }
+      const storedPermissions = document.permissions;
+      if (storedPermissions !== undefined && (!storedPermissions || typeof storedPermissions !== "object" || Array.isArray(storedPermissions))) {
+        throw new Error("Invalid permissions settings.");
+      }
+      writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify({
+        ...settings,
+        permissions: { ...storedPermissions as Record<string, unknown> | undefined, ...settings.permissions },
+      }, null, 2));
     });
   }
 

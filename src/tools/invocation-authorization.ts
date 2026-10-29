@@ -3,18 +3,11 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
-  isIssuedPlainShellExactRuleDecision,
   isIssuedShellAllowRuleDecision,
-  isReviewerAutoDecisionOutcome,
-  isTailnetControllerP1BlockedTool,
   type PermissionCheckContext,
   type PermissionCheckResult,
 } from "../permissions/permission-manager.js";
-import {
-  deferredParentEscalationOf,
-  parentAdjudicationOf,
-} from "../permissions/approval-gate.js";
-import type { ApprovalDecision } from "../permissions/approval-gate.js";
+import { isHostApprovalRejectedDecision, type ApprovalDecision } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type {
   HostShellExecutionPlan,
@@ -78,6 +71,7 @@ import type {
 import type { ResolvedPluginOperation } from "./plugin-operation-governance.js";
 import type { PluginOperationPrincipal } from "../permissions/plugin-operation-grant.js";
 import { errorMessage } from "../shared/error-message.js";
+import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
 import { issueAuthorizationRequiredControl } from "../shared/authorization-required.js";
 
 const log = createLogger("executor");
@@ -87,23 +81,7 @@ type AuditPermissionAsk = (
   ...args: Parameters<AuditWriter["auditPermissionAsk"]>
 ) => Promise<void>;
 
-/**
- * Single authority for `ApprovalRequest.isReadOnly`.
- *
- * The flag has exactly one consumer — the §S4 short-circuit in
- * {@link ApprovalGate.requestAndWait} — which auto-approves without ever
- * consulting `forceExplicit`/`requireExplicit`. So pinning the flag false is
- * the ONLY producer-side lever that keeps a cross-agent (A2A-prefixed) or
- * remote-controller invocation in front of the user; setting `forceExplicit`
- * buys nothing against §S4.
- *
- * Both executor approval sites derive it here so the two cannot drift: the
- * Layer 3 tool ask and the Layer 1 out-of-allowed-dir ask ask the same
- * question about the same invocation. The directory ask is additionally
- * excluded from §S4 by its `kind`, but that exclusion lives in a third module
- * and is not what makes this value correct.
- */
-
+/** Other-principal requests never advertise read-only approval authority. */
 export function deriveApprovalIsReadOnly(opts: {
   invocationCategory: ToolCategory;
   approvalReasonPrefix: string | undefined;
@@ -162,6 +140,13 @@ export interface AuthorizationStageContext {
   sessionId: string | undefined;
   startTime: number;
   fileWritePolicy?: PermissionCheckContext["fileWritePolicy"];
+  floor?: PermissionDecisionRequest["floor"];
+  admissionDenial?: PermissionDecisionRequest["admissionDenial"];
+  paths?: PermissionDecisionRequest["paths"];
+  secretRead?: boolean;
+  shellReadOnlyProven?: boolean;
+  shellEscalated?: boolean;
+  directoryAuthorization?: { permission: PermissionCheckResult; humanApproved: boolean };
   permissionResult: PermissionCheckResult | undefined;
   resolvedPluginOperation: ResolvedPluginOperation | undefined;
   pluginOperationPrincipal: PluginOperationPrincipal | undefined;
@@ -221,20 +206,26 @@ export async function authorizeToolInvocation(
     returnRationaleResumeBlock,
     sessionId,
     startTime,
-    resolvedPluginOperation,
-    pluginOperationPrincipal,
   } = context;
   let { permissionResult, hostShellApprovalDecision } = context;
-  // Policy, remembered and reviewer receipts are automatic authority. Only
-  // a native manual answer below establishes fresh human consent.
-  let humanApproved = false;
+  // The directory lane has already consumed this exact invocation's central
+  // policy and, when required, its human card. Carry that authority once.
+  let humanApproved = context.directoryAuthorization?.humanApproved ?? false;
+  if (context.directoryAuthorization !== undefined) {
+    if (rationaleResumeContext !== undefined) {
+      return returnRationaleResumeBlock("Directory authorization cannot resume a sealed rationale action", finalInput, context.directoryAuthorization.permission);
+    }
+    if (context.directoryAuthorization.permission.decision !== "allow") {
+      throw new Error("Directory authorization requires an allow decision");
+    }
+    permissionResult = context.directoryAuthorization.permission;
+  }
   // The PermissionManager's own layer-3 allow-rule decision that authorized an
   // explicit host request, carried by identity to the permit mint.
   let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
 
   const returnAuthorizationRequired = async (
     blockedPermission: PermissionCheckResult,
-    deferredRequestId?: string,
   ): Promise<ToolResult> => {
     if (abortSignal?.aborted) {
       return withHostShellExecutionPlan(
@@ -259,11 +250,7 @@ export async function authorizeToolInvocation(
       );
     }
     const hostExecution = hostShellRequiresExplicitApproval;
-    const message = hostExecution
-      ? hostShellExecutionPlan?.executionRequest === "host"
-        ? "Authorization required: explicit host shell execution requires local approval, but this host has no approval surface. The turn has stopped and will not retry automatically."
-        : "Authorization required: this shell would run without the requested OS isolation, but this host has no approval surface. The turn has stopped and will not retry automatically."
-      : "Authorization required: this tool requires explicit approval, but this host has no approval surface. The turn has stopped and will not retry automatically.";
+    const message = NO_APPROVER_MESSAGE;
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(
@@ -286,7 +273,7 @@ export async function authorizeToolInvocation(
       {
         ...blockedPermission,
         decision: "deny",
-        reason: "authorization required but approval surface unavailable",
+        reason: NO_APPROVER_MESSAGE,
       },
       Infinity,
       invocationPermissionContext,
@@ -305,7 +292,6 @@ export async function authorizeToolInvocation(
         reason: hostExecution
           ? "host-execution-authorization-required"
           : "approval-surface-unavailable",
-        ...(deferredRequestId ? { deferredRequestId } : {}),
         ...(hostShellExecutionPlanAudit &&
             invocationPermissionContext.disposableSubstrate === undefined
           ? { executionPlan: hostShellExecutionPlanAudit }
@@ -315,131 +301,30 @@ export async function authorizeToolInvocation(
     });
   };
 
-  const returnReviewerInfrastructureFailure = async (
-    blockedPermission: PermissionCheckResult,
-  ): Promise<ToolResult> => {
-    if (abortSignal?.aborted) {
-      return withHostShellExecutionPlan(
-        await returnUserAbort(abortDeps(finalInput)),
-      );
-    }
-    const deniedPermission: PermissionCheckResult = {
-      ...blockedPermission,
-      decision: "deny",
-      reason: `reviewer assessment unavailable: ${blockedPermission.reason}`,
-    };
-    const message = t("be_executor.permBlockDeny", {
-      name: toolUse.name,
-      source,
-      trust,
-      reason: deniedPermission.reason,
-    });
-    const durationMs = Date.now() - startTime;
-    emitToolStart(callbacks, toolUse.name, finalInput, meta);
-    callbacks?.onToolEnd?.(
-      toolUse.name,
-      message,
-      true,
-      meta,
-      undefined,
-      durationMs,
-    );
-    await auditCurrentToolCall(
-      sessionId,
-      toolUse.name,
-      source,
-      trust,
-      finalInput,
-      message,
-      true,
-      startTime,
-      deniedPermission,
-      Infinity,
-      invocationPermissionContext,
-      invocationCategory,
-      executionCwd,
-    );
-    return withHostShellExecutionPlan({
-      tool_use_id: toolUse.id,
-      content: message,
-      is_error: true,
-      durationMs,
-    });
-  };
-
-  // ── Step 3: Permission (source-aware) ───────────
-  //
-  // Permission policy Layer 3 — `meta` category tools take an explicit decisionOverride
-  // path instead of running the standard matrix:
-  //
-  //   `always-allow-with-audit` (e.g. ask_user_question)
-  //     The tool IS the "ask the user" intent — it fires its own
-  //     AskUserQuestionCard. Running it through ApprovalGate would show
-  //     the user two modals back-to-back ("approve this tool?" then the
-  //     actual question). Short-circuit BEFORE PermissionManager runs.
-  //     The tool only emits a renderer card and awaits user input — it
-  //     never mutates state on its own; the user is always the explicit
-  //     decision-maker for the effect. Audit (Step 8) still records.
-  //
-  //   `ask` (e.g. agent_spawn)
-  //     Category is `meta` (control-flow primitive, not a write), but
-  //     the action still requires policy review. PermissionManager routes it
-  //     through the same enabled foreground reviewer threshold as mutating
-  //     categories; verdicts above the threshold still ask the user.
-  //
-  // Trust boundary: only honor decisionOverride for builtin tools. A
-  // plugin or MCP tool that happens to declare `meta` does not get
-  // host-level override authority — it must satisfy the normal Layer 3
-  // matrix (which for `meta` category falls through to the regular
-  // descriptor flow via the registry).
+  // Normalize host facts before the shared policy decision.
   const metaOverride = source === "builtin" && tool.category === "meta"
     ? tool.decisionOverride
     : undefined;
-  const isAlwaysAllowMeta = metaOverride === "always-allow-with-audit";
-  // This marker is host-owned and independent of ToolTrustOrigin, which can
-  // legitimately become file-content/staged after later model rounds. A
-  // Tailnet controller never inherits global allow, reviewer, or approval
-  // memory authority for any ToolExecutor invocation. A declared read is not
-  // a remote authority boundary: plugin/MCP implementations can have effects
-  // that are not represented by their declared category.
   const requiresRemoteLocalOneShot =
     invocationPermissionContext.remoteControllerAuthority !== undefined;
-  // Host-set marker recorded on every approval this invocation raises. It is
-  // projected from the same authority object the one-shot rule above reads, so
-  // "requires a local one-shot" and "was raised by a remote turn" cannot come
-  // apart. Attribution never travels in the approval's `reason` string: that is
-  // localizable free text assembled for a human to read, and a fact recovered
-  // from a display string is not evidence of anything.
   const remoteControllerOrigin = remoteControllerOriginOf(
     invocationPermissionContext.remoteControllerAuthority,
   );
-  // Cross-agent provenance re-elevates even host-owned always-allow meta tools:
-  // the receiver must authorize every tool use caused by an A2A Message.
-  if (
-    (services.permissionManager && (!isAlwaysAllowMeta || requiresRemoteLocalOneShot))
-    || approvalReasonPrefix !== undefined
-    || hostShellRequiresExplicitApproval
-    || requiresRemoteLocalOneShot
-  ) {
-    // Permission policy V1 SOT — PermissionManager re-elevates
-    // `decisionOverride="ask"` and selects either the common foreground
-    // reviewer route or a force-modal ask when that route is disabled.
-    // The executor only CARRIES the override into the check context; it never
-    // rewrites the verdict or re-consults getMode(). The allow-all invariant
-    // (mode==="allow" → no prompt, meta included) remains single-sourced in
-    // PermissionManager.
-    //
-    // Issue #28 — every canonical host shell carries its command as the rule
-    // subject, so the exfiltration and sensitive-path floors read it whatever
-    // the shell. `dialect` keeps the languages apart: `Bash(...)` deny/ask/
-    // allow rules (user-global, this project's file in Ave home, and the
-    // conversation's session rules) match bash only, and `PowerShell(...)`
-    // rules PowerShell only (owner 2026-10-25), so both shells carry the
-    // project rule scope. The project rules are loaded here because the
-    // decision itself is synchronous.
-    // Project rules follow the directory the command will actually run in
-    // (the tool's own cwd resolution); `projectRulesLocation` realpaths it
-    // and walks up to the repository root.
+  const requiresPerActionApproval = source === "builtin" &&
+    tool.requiresPerActionApproval?.(finalInput, {
+      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(invocationPermissionContext.approvalMemory?.kind === "key"
+        ? { approvalMemoryScope: invocationPermissionContext.approvalMemory.scope } : {}),
+    }) === true;
+  const otherPrincipal = invocationPermissionContext.otherPrincipal === true || approvalReasonPrefix !== undefined ||
+    requiresRemoteLocalOneShot || requiresPerActionApproval;
+  const floor = context.floor ?? (otherPrincipal ? {
+    code: "other-principal" as const,
+    reason: requiresPerActionApproval
+      ? "an action on a tab the user opened asks every time"
+      : "another principal's request requires local allow-once approval",
+  } : undefined);
+  if (context.directoryAuthorization === undefined) {
     const shellDialect = isCanonicalBashTool(tool)
       ? "bash" as const
       : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
@@ -476,7 +361,7 @@ export async function authorizeToolInvocation(
     const scopedRuleSubject = scopedSubjectCandidate?.kind === "edit"
       && invocationPermissionContext.disposableSubstrate?.authority === "workload-broker"
       ? undefined : scopedSubjectCandidate;
-    const projectRulesCwd = shellRuleSubject !== undefined ? shellRuleSubject.cwd : scopedRuleSubject ? executionCwd : undefined;
+    const projectRulesCwd = shellRuleSubject !== undefined ? shellRuleSubject.cwd : executionCwd;
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
@@ -490,495 +375,38 @@ export async function authorizeToolInvocation(
             ...invocationPermissionContext,
             decisionOverride: metaOverride,
             fileWritePolicy: context.fileWritePolicy,
+            floor,
+            admissionDenial: context.admissionDenial,
+            paths: context.paths,
+            secretRead: context.secretRead,
+            shellReadOnlyProven: context.shellReadOnlyProven,
+            shellEscalated: context.shellEscalated,
+            mcpReadOnlyHint: tool.mcpReadOnlyHint,
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
             ...(shellExecution === undefined ? {} : { shellExecution }),
-            ...(shellRuleSubject !== undefined && sessionId !== undefined ? { sessionId } : {}),
+            ...(sessionId !== undefined ? { sessionId } : {}),
             ...(scopedRuleSubject ? { ruleSubject: scopedRuleSubject } : {}),
             ...(projectRulesCwd !== undefined ? { projectRulesCwd } : {}),
           },
         )
       : {
-          decision: "ask",
-          reason: "cross-agent message requires receiver approval",
+          decision: "deny",
+          reason: "Permission manager is unavailable",
           layer: 3,
           forceModal: true,
         };
     if (!permissionResult) {
       throw new Error("Permission evaluation returned no result");
     }
-    // A shell that needs a host execution permit (an explicit host request or
-    // the Windows Plan B) is gated here, before reviewer and approval-memory
-    // paths. Deny decisions win unchanged; the floor and ask rules already
-    // returned a forced-modal ask.
-    //   • A matching host-issued, epoch-bound layer-3 exact shell allow rule
-    //     (`Bash(<command>)` or `PowerShell(<command>)`) runs it without a
-    //     card, in the foreground and headless alike (owner 2026-10-25:
-    //     explicit-host and headless follow exact rules). A reviewer or
-    //     mode-wide allow never stands in for that rule.
-    //   • Otherwise the foreground asks on the approval card, whose saves
-    //     store that exact rule, and nobody-can-answer (headless or routine)
-    //     is denied and audited (I5).
-    //   • The explicit host request's rule allow becomes its rule-proof
-    //     permit; the Windows Plan B's is recorded as a policy-lane permit
-    //     below.
-    const explicitHostRequest = hostShellExecutionPlan?.executionRequest === "host";
-    // The explicit host request needs the host-issued, epoch-bound rule proof
-    // its permit is minted from. The Plan B needs the policy's own allow: for a
-    // shell without a sandbox the permission manager allows only on an exact
-    // rule, at layer 3 (every other lane asks or denies first).
-    const explicitHostAllowRule =
-      explicitHostRequest &&
-      remoteControllerOrigin === undefined &&
-      isIssuedShellAllowRuleDecision(permissionResult, services.permissionManager);
-    // The host-issued proof that an exact shell rule decided this plain shell (owner 2026-10-25), never the result's shape.
-    const planBExactRuleAllow = !explicitHostRequest && isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager);
-    const exactShellAllowRule = explicitHostAllowRule || planBExactRuleAllow;
-    if (explicitHostAllowRule) hostShellAllowRuleDecision = permissionResult;
-    if (hostShellRequiresExplicitApproval && permissionResult.decision !== "deny" && !exactShellAllowRule) {
-      const executionReason = explicitHostRequest
-        ? "explicit host execution"
-        : hostShellExecutionPlan!.fallbackReason;
-      if (remoteControllerOrigin !== undefined && explicitHostRequest) {
-        permissionResult = { decision: "deny", reason: "Explicit host execution is unavailable to remote-controller requests", layer: 2 };
-      } else if (invocationPermissionContext.headless === true) {
-        permissionResult = {
-          decision: "deny",
-          reason: `${executionReason}: headless invocation blocked because interactive approval is unavailable`,
-          layer: permissionResult.layer,
-        };
-      } else if (explicitHostRequest) {
-        permissionResult = {
-          decision: "ask",
-          reason: `${executionReason}: this shell will run without OS isolation and needs your approval or a matching allow rule`,
-          layer: permissionResult.layer,
-          forceModal: true,
-        };
-      }
+    // Retain the host-issued rule receipt where one exists. Other central
+    // allows receive an exact live-action policy permit below.
+    if (hostShellExecutionPlan?.executionRequest === "host" &&
+        isIssuedShellAllowRuleDecision(permissionResult, services.permissionManager)) {
+      hostShellAllowRuleDecision = permissionResult;
     }
 
-    // Defense in depth for test-only/no-PermissionManager wiring: the policy
-    // SOT above normally produces this exact result, but an external surface
-    // must fail closed rather than accidentally inherit a precomputed allow.
-    // Keep the P1 deny list here too: it must remain closed even when a test
-    // harness or future composition accidentally omits PermissionManager.
-    if (
-      requiresRemoteLocalOneShot &&
-      (invocationCategory === "meta" || isTailnetControllerP1BlockedTool(toolUse.name))
-    ) {
-      permissionResult = {
-        ...permissionResult,
-        decision: "deny",
-        reason: invocationCategory === "meta"
-          ? "Remote controller meta operations are not enabled"
-          : "Remote controller deferred or capability-expanding operations are not enabled",
-        forceModal: undefined,
-      };
-    } else if (requiresRemoteLocalOneShot && permissionResult.decision !== "deny") {
-      permissionResult = {
-        ...permissionResult,
-        decision: "ask",
-        reason: "Remote controller request requires local allow-once approval",
-        forceModal: true,
-      };
-    }
-
-    // A builtin that declares this input per-action (a browser action on a tab
-    // the user opened) is a person's decision every time, in every mode: no
-    // foreground reviewer, no remembered or mode-wide allow ("allow" mode
-    // included), and below, an allow-once / deny-once prompt that records
-    // nothing. Only a deny stands; with no one to ask (headless) it is denied.
-    const requiresPerActionApproval =
-      source === "builtin" &&
-      tool.requiresPerActionApproval?.(finalInput, {
-        ...(sessionId === undefined ? {} : { sessionId }),
-        ...(invocationPermissionContext.approvalMemory?.kind === "key"
-          ? { approvalMemoryScope: invocationPermissionContext.approvalMemory.scope } : {}),
-      }) === true;
-    if (requiresPerActionApproval && permissionResult.decision !== "deny") {
-      const { reviewer: _reviewer, ...withoutReviewer } = permissionResult;
-      permissionResult = invocationPermissionContext.headless === true
-        ? { decision: "deny", reason: "this action needs a person's approval each time, and no one can be asked here", layer: permissionResult.layer }
-        : {
-            ...withoutReviewer,
-            decision: "ask",
-            reason: permissionResult.decision === "ask"
-              ? permissionResult.reason
-              : "an action on a tab the user opened asks every time",
-            forceModal: true,
-          };
-    }
-
-    // A pre-issued app mutation grant replaces only the ordinary foreground
-    // approval ask. Hard denies, layer-1/2 asks, forceModal, operator Hooks,
-    // rate limits, audit, and final one-shot consumption still apply.
-    if (
-      rationaleResumeContext === undefined &&
-      resolvedPluginOperation?.rule.kind === "write" &&
-      pluginOperationPrincipal !== undefined &&
-      invocationPermissionContext.pluginOperation?.grantToken !== undefined &&
-      permissionResult.decision === "ask" &&
-      permissionResult.layer >= 3 &&
-      permissionResult.forceModal !== true
-    ) {
-      const operationPermHook = await runScriptHook(
-        services.scriptHookManager,
-        "perm",
-        toolUse.name,
-        source,
-        invocationCategory,
-        finalInput,
-        sessionId,
-        invocationPermissionContext,
-        tool.mcpServerId,
-        tool.pluginId,
-        undefined,
-        undefined,
-        tool.pluginGeneration !== undefined,
-      );
-      permissionResult =
-        operationPermHook.decision === "deny"
-          ? {
-              decision: "deny",
-              reason: operationPermHook.reason,
-              layer: permissionResult.layer,
-            }
-          : {
-              decision: "allow",
-              reason:
-                "pre-issued app operation grant pending atomic consumption",
-              layer: permissionResult.layer,
-            };
-    }
-
-    // ── Plugin-read auto-allow ↔ sandbox-fs-containment coupling ──────────
-    //
-    // The merged read-relaxation coupling (the block immediately below) only
-    // gates the `ask` path: it requires `services.sandboxFsContainedProvider(tool)`
-    // before flipping a FOREGROUND PLUGIN `ask` (layer ≥ 3) to `allow`. But a
-    // plugin tool the host inspector classifies as `read` (inspectHostRisk →
-    // `"read"` for a read-only command-bearing arg) is auto-allowed DIRECTLY by
-    // the category × source × trust matrix — `categoryBasedDecision` returns
-    // `{ decision: "allow", layer: 6 }`, never an `ask` — so it SKIPS the
-    // relaxation block and its sandbox coupling entirely. That leaves its
-    // off-hostApi residual (direct `node:fs`, a bare `fetch`, or a detached
-    // async frame that escapes the tool-execute ALS scope) UNCONTAINED when the
-    // sandbox is not filesystem-contained — the exact gap the relaxation
-    // coupling (`isActiveSandboxFilesystemContained`) closes for the ask path.
-    // Close it for the read-auto-allow path too: when `hostClassifiesRisk` is
-    // ON and the active sandbox does NOT filesystem-contain the host, a plugin
-    // read auto-allow must NOT silently proceed — convert it to the pre-exec
-    // approval `ask` so the residual is gated, exactly mirroring the relaxation.
-    //
-    // MUTUAL EXCLUSIVITY — this fires only when `!sandboxFsContainedProvider(tool)`;
-    // the relaxation below fires only when `sandboxFsContainedProvider(tool)`. The
-    // two are mutually exclusive on the same signal and can never both fire on
-    // one invocation, so the ordering relative to the relaxation is immaterial
-    // (a `read` flipped here to `ask` is NOT re-relaxed below — that requires
-    // fs-containment, which is false on this path — so the ask stands).
-    //
-    // SCOPE — each clause load-bearing, mirroring the relaxation:
-    //   • FLAG ON only (`hostClassifiesRiskProvider()`). Flag OFF → the declared
-    //     category drives the decision and this coupling is skipped (byte-for-byte
-    //     unchanged), consistent with the relaxation being flag-gated.
-    //   • PLUGIN only (`source === "plugin"`). BUILTIN reads are host-trusted (no
-    //     off-hostApi-plugin residual) and MCP is host-derived `"network"` (never
-    //     `"read"`) + low-trust `ask` — both untouched.
-    //   • HOST-DERIVED READ only (`invocationCategory === "read"`). Under the flag
-    //     this is the inspector's positive-evidence read, not a self-declared one.
-    //   • CATEGORY-MATRIX AUTO-ALLOW only (`decision === "allow"`, `layer === 6`,
-    //     `getMode() !== "allow"`). An explicit user allow rule (layer 3) /
-    //     always-allow (layer 5) / `allow` mode (the user's deliberate global
-    //     opt-in, under which plugin WRITES are also un-relaxed and uncontained)
-    //     are deliberate grants left intact — just as the relaxation never
-    //     touches a standing `allow`; coupling reads but not writes in allow mode
-    //     would be asymmetric.
-    //   • FOREGROUND only (`headless !== true`). Mirrors the relaxation's
-    //     foreground scope: in a headless/routine lane a bare layer-6 `ask`
-    //     carries no `reviewer` route, so the headless ask handler would
-    //     HARD-DENY it — breaking legitimate routine reads and making headless
-    //     reads stricter than headless writes (which take the reviewer lane).
-    //     Headless plugin reads keep today's auto-allow, exactly as the
-    //     relaxation leaves the headless write lane untouched.
-    //   • NOT FILESYSTEM-CONTAINED only (`!sandboxFsContainedProvider(tool)`).
-    //     A worker-backed, ASRT-wrapped plugin tool keeps the read auto-allow;
-    //     degraded / sandbox-off / ordinary in-process plugin tools fall back
-    //     to the pre-exec ask. Same plugin-effect containment signal the
-    //     relaxation uses.
-    // Deny rules still win — they resolve to a layer-1 `deny` and never reach here.
-    if (
-      services.hostClassifiesRiskProvider() &&
-      source === "plugin" &&
-      invocationCategory === "read" &&
-      permissionResult.decision === "allow" &&
-      permissionResult.layer === 6 &&
-      invocationPermissionContext.headless !== true &&
-      services.permissionManager?.getMode() !== "allow" &&
-      !services.sandboxFsContainedProvider(tool)
-    ) {
-      permissionResult = {
-        decision: "ask",
-        reason:
-          "plugin read auto-allow requires a filesystem-contained sandbox — pre-exec ask stands (hostClassifiesRisk)",
-        layer: permissionResult.layer,
-      };
-    }
-    // ── Effect-boundary pre-exec relaxation (flag-gated, default OFF) ──────
-    //
-    // When `hostClassifiesRisk` is ON, a FIRST-PARTY PLUGIN tool in a
-    // FOREGROUND (interactive) context does NOT run the pre-exec blocking
-    // approval lane (the host-classify category ASK + the reviewer/modal that
-    // follows it). Instead the tool is allowed to EXECUTE, and the merged
-    // effect-boundary gate (bound around `tool.execute` below) is the ONLY
-    // gate: a plugin READ tool performs no mutating host-mediated effect →
-    // runs to completion with NO modal; a plugin WRITE tool trips the
-    // effect-gate AT THE MUTATION (foreground deny → tool error; headless
-    // fails closed). This replaces the imprecise default-strict pre-exec ASK
-    // (which the host inspector raises to `write` without positive read
-    // evidence, so it over-asks for genuine reads) with the precise,
-    // effect-observed gate.
-    //
-    // SCOPE — narrowed deliberately (each clause is load-bearing):
-    //   • PLUGIN ONLY (`source === "plugin"`). MCP tools are
-    //     `hostObservable:false` (not host-mediated) so the effect-gate never
-    //     sees their mutations — relaxing them would be a FAIL-OPEN; builtins
-    //     carry their own trusted host categories. Both keep the full pre-exec
-    //     ask (this branch is skipped for them).
-    //   • FOREGROUND ONLY (`headless !== true`). In a headless/routine lane a
-    //     plugin write would HARD-THROW at the effect-gate (which fails closed
-    //     with no approver) instead of taking the host's deferred/headless
-    //     approval lane, breaking legitimate routine writes — so headless
-    //     keeps the pre-exec lane untouched.
-    //   • ASK ONLY, layer ≥ 3, not `forceModal`. A `deny` (standing deny rule
-    //     or a persisted `deny-always`) is layer 1 and never an ask, so it is
-    //     untouched — explicit user deny still wins. The layer ≥ 3 floor
-    //     preserves the layer ≤ 2 hard gates (overlay-trigger mutation guard,
-    //     MCP/per-tool strict override, global strict mode) exactly as the
-    //     Store B memory-skip does; a per-invocation `forceModal` ask is never
-    //     relaxed.
-    //   • SANDBOX FILESYSTEM-CONTAINED ONLY (`services.sandboxFsContainedProvider(tool)`).
-    //     The effect-boundary only CONTAINS the off-hostApi mutation residual
-    //     (residual #1 below) when the OS sandbox FILESYSTEM-CONTAINS the host.
-    //     This requires `confines.filesystem === true` on the ACTIVE sandbox
-    //     capability, NOT merely that some sandbox is active. On a host that is
-    //     not filesystem-contained (degraded / gate off) the relaxation would
-    //     be WEAKER than the pre-exec ask it replaces, so it does NOT fire —
-    //     the existing pre-exec approval ask stands. This makes
-    //     `hostClassifiesRisk`-ON safe on every platform: macOS / Linux
-    //     (full ASRT) can relax filesystem-contained plugin reads; current
-    //     ordinary plugin tools and degraded/sandbox-off hosts fall back to the
-    //     known-safe ask. Mirrors the reviewer SOT `sandboxRelaxesCategory`,
-    //     but with the specific plugin worker substrate threaded in.
-    //   • FLAG OFF (default) → this whole block is skipped: behaviour is
-    //     byte-for-byte today's full pre-exec ask. The condition is the FIRST
-    //     read, so the relaxed path is reachable only with the flag ON.
-    //
-    // PERM-HOOK PRESERVATION — the relaxation flips the pre-exec ASK to `allow`
-    // BEFORE the `decision === "ask"` block below, which is the ONLY callsite of
-    // the operator's `perm-*.sh` (PermissionRequest) script hook. Without firing
-    // it here, an operator deny policy encoded in a `perm-*.sh` hook would be
-    // SILENTLY dropped under the flag for exactly the relaxed plugin calls. So on
-    // the relaxed path we run the SAME perm hook FIRST: a perm-hook DENY blocks
-    // the tool FAIL-CLOSED (no relaxation), identical to the ask lane's perm-hook
-    // deny handling below; a perm-hook allow / no-opinion proceeds with the
-    // relaxation (no modal), preserving the clean read-relaxation UX. (The
-    // always-on `pre-*.sh` hook still fires downstream regardless — but the
-    // perm-hook is a DISTINCT, separately-registrable deny surface, so it is
-    // restored here under the flag.) Done inside the relaxation branch so it runs
-    // only for the narrowed plugin/foreground/ask/layer≥3 set; for every other
-    // tool the perm hook still runs in its original ask-lane callsite.
-    //
-    // HONEST RESIDUAL — what this gate does NOT contain (NOT papered over).
-    //   NOTE: the relaxation below does NOT pre-classify read vs write — it flips
-    //   ANY foreground/plugin/layer≥3 `ask` to `allow`, so the pre-exec ask is
-    //   gone for EVERY relaxed plugin tool (a read AND a write tool). The ONLY
-    //   remaining gate under the flag is the effect-boundary. The residuals:
-    //   1. OFF-hostApi mutation. This gates LLM-driven plugin actions over
-    //      HOST-MEDIATED effects only. A plugin that mutates OFF the host API
-    //      (direct `node:fs`, a bare `fetch`, or a detached async frame that
-    //      escapes the tool-execute ALS scope) records NO effect → the
-    //      effect-boundary sees a read → it runs with no gate. Closed ONLY by the
-    //      OS sandbox (ASRT) FILESYSTEM-CONTAINING the host. This relaxation now
-    //      REQUIRES the active sandbox to filesystem-contain (the
-    //      `sandboxFsContainedProvider(tool)` clause above), so whenever the
-    //      relaxation is in effect this `node:fs` WRITE residual is contained
-    //      by the tool's actual worker substrate. A call path that is not
-    //      worker-backed does not relax. NOT a regression: a first-party plugin
-    //      already executes arbitrary in-process code today — this is an
-    //      LLM-action gate over mediated effects, not an in-process jail.
-    //   2. The mediated excluded writes (ENFORCEMENT_EXCLUSIONS). The relaxation
-    //      removes the pre-exec ask, so these are gated ONLY at the effect-boundary
-    //      — and the excluded paths are by definition NOT generically gated there:
-    //        • openExternalUrl (system-browser egress / exfil-class) is now GATED
-    //          at the effect-boundary (moved OUT of the exclusions) — caught;
-    //        • hostFetch self-gates INLINE in its closure (same effect-gate) —
-    //          caught; the other gated async writes are caught generically;
-    //        • the TWO remaining exclusions run UNGATED under the flag, each
-    //          BOUNDED: config.set =
-    //          the plugin's OWN config namespace (not user/external data);
-    //          agentApproval.respond = resolves HOST-OWNED approval machinery,
-    //          gating it with itself is circular (would deadlock).
-    //      This bounded-ungated set is enumerated (here + effect-enforcement.ts) —
-    //      it is NOT a hidden fail-open hole.
-    //   3. READ-SIDE exfiltration. Skipping the foreground reviewer for plugin
-    //      READ tools means a plugin read of sensitive data no longer gets a
-    //      pre-exec review. Exfiltration of what it read is contained ONLY by the
-    //      gated `hostFetch` verb chokepoint (Tier A deny-by-default network
-    //      allow-list) + the OS sandbox — NOT by a pre-exec ask. This is the UX
-    //      cost the flag deliberately buys; documented so the default-flip
-    //      decision weighs it.
-    if (
-      rationaleResumeContext === undefined &&
-      services.hostClassifiesRiskProvider() &&
-      services.sandboxFsContainedProvider(tool) &&
-      source === "plugin" &&
-      invocationPermissionContext.headless !== true &&
-      permissionResult.decision === "ask" &&
-      permissionResult.layer >= 3 &&
-      permissionResult.forceModal !== true
-    ) {
-      const relaxedPermHook = await runScriptHook(
-        services.scriptHookManager,
-        "perm",
-        toolUse.name,
-        source,
-        invocationCategory,
-        finalInput,
-        sessionId,
-        invocationPermissionContext,
-        tool.mcpServerId,
-        tool.pluginId,
-        undefined,
-        undefined,
-        tool.pluginGeneration !== undefined,
-      );
-      if (relaxedPermHook.decision === "deny") {
-        // Operator perm-hook DENY wins over the relaxation — fail closed exactly
-        // as the ask lane does on a perm-hook deny.
-        const msg = t("be_executor.hookPermissionBlock", {
-          reason: relaxedPermHook.reason,
-        });
-        const durationMs = Date.now() - startTime;
-        emitToolStart(callbacks, toolUse.name, finalInput, meta);
-        callbacks?.onToolEnd?.(
-          toolUse.name,
-          msg,
-          true,
-          meta,
-          undefined,
-          durationMs,
-        );
-        await auditCurrentToolCall(
-          sessionId,
-          toolUse.name,
-          source,
-          trust,
-          finalInput,
-          msg,
-          true,
-          startTime,
-          {
-            ...permissionResult,
-            decision: "deny",
-            reason: relaxedPermHook.reason,
-          },
-          Infinity,
-          invocationPermissionContext,
-          invocationCategory,
-          executionCwd,
-          undefined,
-          undefined,
-          hookChainFromDispatch("perm", relaxedPermHook),
-        );
-        return withHostShellExecutionPlan({
-          tool_use_id: toolUse.id,
-          content: msg,
-          is_error: true,
-          durationMs,
-        });
-      }
-      permissionResult = {
-        decision: "allow",
-        reason:
-          "plugin foreground pre-exec ask relaxed — gated at the effect boundary (hostClassifiesRisk)",
-        layer: permissionResult.layer,
-      };
-    }
-    if (
-      rationaleResumeContext === undefined &&
-      source === "plugin" &&
-      invocationPermissionContext.pluginPanelUserAction === true &&
-      invocationPermissionContext.headless !== true &&
-      permissionResult.decision === "ask" &&
-      permissionResult.layer >= 3 &&
-      permissionResult.forceModal !== true
-    ) {
-      const panelPermHook = await runScriptHook(
-        services.scriptHookManager,
-        "perm",
-        toolUse.name,
-        source,
-        invocationCategory,
-        finalInput,
-        sessionId,
-        invocationPermissionContext,
-        tool.mcpServerId,
-        tool.pluginId,
-        undefined,
-        undefined,
-        tool.pluginGeneration !== undefined,
-      );
-      if (panelPermHook.decision === "deny") {
-        const msg = t("be_executor.hookPermissionBlock", {
-          reason: panelPermHook.reason,
-        });
-        const durationMs = Date.now() - startTime;
-        emitToolStart(callbacks, toolUse.name, finalInput, meta);
-        callbacks?.onToolEnd?.(
-          toolUse.name,
-          msg,
-          true,
-          meta,
-          undefined,
-          durationMs,
-        );
-        await auditCurrentToolCall(
-          sessionId,
-          toolUse.name,
-          source,
-          trust,
-          finalInput,
-          msg,
-          true,
-          startTime,
-          {
-            ...permissionResult,
-            decision: "deny",
-            reason: panelPermHook.reason,
-          },
-          Infinity,
-          invocationPermissionContext,
-          invocationCategory,
-          executionCwd,
-          undefined,
-          undefined,
-          hookChainFromDispatch("perm", panelPermHook),
-        );
-        return withHostShellExecutionPlan({
-          tool_use_id: toolUse.id,
-          content: msg,
-          is_error: true,
-          durationMs,
-        });
-      }
-      permissionResult = {
-        decision: "allow",
-        reason:
-          "plugin panel user action - standard agent approval dock suppressed",
-        layer: permissionResult.layer,
-      };
-    }
     // #885 v6 (§5.3): the untrusted `tool.writesToOwnSandbox` self-claim is no
     // longer threaded to the reviewer — the auto-LOW keys solely on the
     // HOST-computed `ownerPluginSandboxRoot` + host-verified path containment.
@@ -988,41 +416,36 @@ export async function authorizeToolInvocation(
     const sandboxAttestation = {
       ...(ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot } : {}),
     };
-    let foregroundMemorySkipChecked = false;
-    if (
-      permissionResult.decision === "ask" &&
-      permissionResult.reviewer?.route === "foreground-auto"
-    ) {
-      if (
-        rationaleResumeContext === undefined &&
-        permissionResult.layer >= 3 &&
-        permissionResult.forceModal !== true &&
-        invocationPermissionContext.headless !== true
-      ) {
-        foregroundMemorySkipChecked = true;
-        const memorySkip = await services.tryUserApprovalMemorySkip(
-          toolUse.name,
-          source,
-          invocationCategory,
-          tool.pathFields ?? [],
-          finalInput,
-          executionCwd,
-          invocationAllowedScope.directories,
-          sensitivePathPattern ? [sensitivePathPattern] : [],
-          invocationPermissionContext,
-          approvalCacheKey,
-          sandboxAttestation,
-          reviewerInvocationId(meta),
-          tool.mcpServerId,
-          tool.workerId,
-          tool.pluginId,
-          hostShellExecutionPlan,
-          auditInput,
-          sessionId,
-        );
-        if (memorySkip) {
-          permissionResult = memorySkip;
-        }
+    // Stored grants are stage-three evidence even when the initial mode path
+    // has no human approver. The manager preserves admission, floor and ask
+    // precedence when it incorporates a matching grant.
+    const ordinaryRequest = permissionResult.pipelineRequest;
+    if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.admissionDenial &&
+        !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined &&
+        ordinaryRequest.manualRerun !== true && rationaleResumeContext === undefined &&
+        rationaleBatchContext === undefined && services.permissionManager !== undefined) {
+      const memorySkip = await services.tryUserApprovalMemorySkip(
+        toolUse.name,
+        source,
+        invocationCategory,
+        tool.pathFields ?? [],
+        finalInput,
+        executionCwd,
+        invocationAllowedScope.directories,
+        sensitivePathPattern ? [sensitivePathPattern] : [],
+        invocationPermissionContext,
+        approvalCacheKey,
+        sandboxAttestation,
+        reviewerInvocationId(meta),
+        tool.mcpServerId,
+        tool.workerId,
+        tool.pluginId,
+        hostShellExecutionPlan,
+        auditInput,
+        sessionId,
+      );
+      if (memorySkip) {
+        permissionResult = services.permissionManager.resolveRememberedPermission(permissionResult, memorySkip.reason);
       }
     }
     if (
@@ -1060,10 +483,7 @@ export async function authorizeToolInvocation(
         );
       }
       if (reviewerResult) {
-        // A reviewed floor remains per-call even when review falls back to a human.
-        permissionResult = permissionResult.layer <= 2
-          ? { ...reviewerResult, layer: permissionResult.layer }
-          : reviewerResult;
+        permissionResult = reviewerResult;
       }
     }
     const needsRationaleSecurityContext =
@@ -1202,6 +622,10 @@ export async function authorizeToolInvocation(
       rationaleResumeContext.prepared = prepared.value;
     }
     if (permissionResult.decision === "deny") {
+      if (permissionResult.reasonCode === "no-approver" && invocationPermissionContext.headless !== true &&
+          invocationPermissionContext.approvalSurface === "unavailable") {
+        return returnAuthorizationRequired(permissionResult);
+      }
       const msg = t("be_executor.permBlockDeny", {
         name: toolUse.name,
         source,
@@ -1243,14 +667,13 @@ export async function authorizeToolInvocation(
       });
     }
     if (permissionResult.decision === "ask") {
-      if (invocationPermissionContext.headless === true) {
+      if (invocationPermissionContext.headless === true || permissionResult.reviewer?.route === "headless") {
         const headlessReviewerRoute =
-          permissionResult.reviewer?.route === "headless" ||
-          services.permissionManager?.getMode() === "strict";
+          permissionResult.reviewer?.route === "headless";
         if (!headlessReviewerRoute) {
           const headlessDeny: PermissionCheckResult = {
             decision: "deny",
-            reason: `headless explicit approval unavailable (no approval surface): ${permissionResult.reason}`,
+            reason: NO_APPROVER_MESSAGE,
             layer: permissionResult.layer,
           };
           const msg = t("be_executor.permBlockHeadlessDeny", {
@@ -1311,6 +734,7 @@ export async function authorizeToolInvocation(
           abortSignal,
           auditInput,
           sessionId,
+          permissionResult,
         );
         if (abortSignal?.aborted) {
           return withHostShellExecutionPlan(
@@ -1320,6 +744,10 @@ export async function authorizeToolInvocation(
         if (reviewerResult.allowed) {
           permissionResult = reviewerResult.permissionResult;
         } else {
+          if (reviewerResult.permissionResult.reasonCode === "no-approver" && invocationPermissionContext.headless !== true &&
+              invocationPermissionContext.approvalSurface === "unavailable") {
+            return returnAuthorizationRequired(reviewerResult.permissionResult);
+          }
           const msg = reviewerResult.message;
           const durationMs = Date.now() - startTime;
           emitToolStart(callbacks, toolUse.name, finalInput, meta);
@@ -1353,132 +781,6 @@ export async function authorizeToolInvocation(
             durationMs,
           });
         }
-      }
-    }
-    // ── Store B: explicit-approval memory skip (foreground only) ──────────
-    // checkDetailed (sync) consults Store A — durable glob rules + the
-    // alwaysAllowed Map (Layers 3/5). It cannot see Store B, the exact-tuple
-    // user-approval memory written by ToolApprovalContent for DURABLE
-    // persistent choices only (allow-always; allow-once never
-    // records). Pre-fix, choosing "allow this session" still
-    // re-showed the modal on the next call because the foreground ask path
-    // never read Store B (only the reviewer lane did). Mirror the reviewer
-    // lane's lookup here so a prior session/persistent approval for the same
-    // (toolName, args, source, trustOrigin, approvalCacheKey) tuple skips the
-    // modal. Headless requests never reach here (the headless ask block above
-    // either denied or flipped the decision), so Store B stays foreground-only.
-    //
-    // Security invariant (deny > hard-ask > allow preserved): checkDetailed
-    // evaluates the immutable Layer 1-2 hard gates FIRST —
-    //   • deny rules        → decision "deny", layer 1 (never an ask)
-    //   • MCP strict         → decision "ask",  layer 2
-    //   • overlay-trigger    → decision "ask",  layer 2
-    //   • global strict mode → decision "ask",  layer 2
-    // A prior user approval must NEVER auto-skip these hard gates, so we only
-    // consult Store B for "normal" asks (layer >= 3 — the category/reviewer
-    // confirmation lanes, layer 6). Gating on the layer is the precise,
-    // route-agnostic test: overlay/strict/MCP-strict carry no reviewer route
-    // but are uniformly layer <= 2.
-    // A cross-agent Message is untrusted input. Preserve any prior deny,
-    // but force every otherwise-allowed tool through the receiver's own
-    // ApprovalGate with the DLP-masked Sub-Agent provenance label.
-    //
-    // Exception — builtin READ tools in a LOCAL mailbox turn ride the same
-    // foreground-auto reviewer lane a child's own turn gets (auto-approve
-    // with audit up to the configured threshold, ask above it, Store B
-    // honored) instead of the unconditional modal. Without this, autonomous
-    // wake turns modal-storm on the parent merely PAGING its child's own
-    // report (read_tool_result_chunk), and forceModal even voids
-    // "allow always". Reads mutate nothing; every write/shell/network/meta
-    // call and every remote one-shot stays force-modal, and
-    // deriveApprovalIsReadOnly stays pinned false so an ask from this lane
-    // still cannot take the §S4 read shortcut.
-    //
-    // The exception is keyed on the DECLARED category, so a tool that reads but
-    // says `meta` is asked about here (issue #2323: `agent_status`, the parent's
-    // own poll of its children, blocked each woken turn on a human until it was
-    // declared `read`). The remedy for the next one is the same — declare what it
-    // is — not a name-scoped exception at this line.
-    //
-    // `agent_spawn` DOES stay force-modal here, deliberately, and that is not in
-    // tension with its LOW rule: LOW is what makes it auto-approve in an ordinary
-    // turn, where the user's own text asked for the fan-out. In THIS turn the
-    // request originates in another agent's message, and starting a new agent
-    // from untrusted text is an effect no later gate re-asks about — the child's
-    // tool calls are gated, its existence is not. One approval per spawn.
-    if ((approvalReasonPrefix || requiresRemoteLocalOneShot) && permissionResult.decision !== "deny") {
-      const reviewerLaneEligible =
-        !requiresRemoteLocalOneShot &&
-        source === "builtin" &&
-        invocationCategory === "read" &&
-        invocationPermissionContext.headless !== true &&
-        services.permissionManager?.getInteractiveAutoApprove() !== "off";
-      let reviewerLaneResult: PermissionCheckResult | null = null;
-      if (reviewerLaneEligible) {
-        reviewerLaneResult = await dispatchReviewerForInteractiveAutoImpl(
-          services.permissionManager,
-          toolUse.name,
-          source,
-          invocationCategory,
-          tool.pathFields ?? [],
-          finalInput,
-          invocationAllowedScope.directories,
-          sensitivePathPattern ? [sensitivePathPattern] : [],
-          invocationPermissionContext,
-          evaluationContext,
-          sandboxAttestation,
-          callbacks,
-          meta,
-          approvalPurpose,
-          hostShellExecutionPlan,
-          abortSignal,
-          auditInput,
-          sessionId,
-        );
-        if (abortSignal?.aborted) {
-          return withHostShellExecutionPlan(
-            await returnUserAbort(abortDeps(finalInput)),
-          );
-        }
-      }
-      permissionResult = reviewerLaneResult ?? {
-        ...permissionResult,
-        decision: "ask",
-        forceModal: true,
-      };
-    }
-    if (
-      rationaleResumeContext === undefined &&
-      permissionResult.decision === "ask" &&
-      permissionResult.layer >= 3 &&
-      // Only an explicit forceModal marker is a per-invocation hard gate;
-      // reviewer-routed ask-meta calls use the normal stored-approval lane.
-      permissionResult.forceModal !== true &&
-      invocationPermissionContext.headless !== true &&
-      foregroundMemorySkipChecked !== true
-    ) {
-      const memorySkip = await services.tryUserApprovalMemorySkip(
-        toolUse.name,
-        source,
-        invocationCategory,
-        tool.pathFields ?? [],
-        finalInput,
-        executionCwd,
-        invocationAllowedScope.directories,
-        sensitivePathPattern ? [sensitivePathPattern] : [],
-        invocationPermissionContext,
-        approvalCacheKey,
-        sandboxAttestation,
-          reviewerInvocationId(meta),
-        tool.mcpServerId,
-        tool.workerId,
-        tool.pluginId,
-        hostShellExecutionPlan,
-        auditInput,
-        sessionId,
-      );
-      if (memorySkip) {
-        permissionResult = memorySkip;
       }
     }
     if (permissionResult.decision === "ask") {
@@ -1550,29 +852,35 @@ export async function authorizeToolInvocation(
           layer: permissionResult.layer,
         };
       } else if (invocationPermissionContext.approvalSurface === "unavailable") {
-        const reviewerOutcome = permissionResult.reviewer?.route === "foreground-auto"
-          ? permissionResult.reviewer.outcome
-          : undefined;
-        if (
-          reviewerOutcome !== undefined
-          && !isReviewerAutoDecisionOutcome(reviewerOutcome)
-        ) {
-          return returnReviewerInfrastructureFailure(permissionResult);
-        }
         return returnAuthorizationRequired(permissionResult);
       } else if (services.approvalGate) {
         // Layer 3: wire target.filePath + isReadOnly + mode so the
         // approval gate can apply sensitive-path and read-only checks to
         // the exact invocation shown to the user.
+        const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true
+          ? classifyApprovalRuleVerdict({
+            toolName: toolUse.name,
+            source,
+            category: invocationCategory,
+            pathFields: tool.pathFields ?? [],
+            finalInput,
+            approvalCacheKey,
+            executionCwd,
+            allowedDirectories: invocationAllowedScope.directories,
+            sensitivePathsAdjacent: sensitivePathPattern ? [sensitivePathPattern] : [],
+            context: invocationPermissionContext,
+            sandboxAttestation,
+            mcpServerId: tool.mcpServerId,
+            workerId: tool.workerId,
+            pluginId: tool.pluginId,
+            hostShellExecutionPlan,
+          }) : undefined;
+        const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         const approvalRequest = {
           id: randomUUID(),
-          ...((hostShellRequiresExplicitApproval && !isCanonicalBashTool(tool) && !isCanonicalPowerShellTool(tool)) || requiresRemoteLocalOneShot || requiresPerActionApproval
+          ...(permissionResult.forceModal === true
             ? {
-                // A host shell without a rule language, remote-controller and
-                // per-action requests retain exact one-shot consent. A bash or
-                // PowerShell card (Plan B and explicit host included) offers
-                // the full card, each save storing only that shell's rule
-                // (owner 2026-10-25).
+                // Forced floors consume consent for this invocation only.
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
@@ -1591,6 +899,7 @@ export async function authorizeToolInvocation(
                   ),
                 }),
           category: "tool" as const,
+          ownerUnattended: invocationPermissionContext.ownerUnattended === true,
           toolName: toolUse.name,
           toolCategory: invocationCategory,
           // Attribute the modal and every audit row to the conversation whose
@@ -1619,55 +928,15 @@ export async function authorizeToolInvocation(
                 scopeTargetFilePaths: targetFilePaths,
               }),
           reviewerVerdict: permissionResult.reviewer?.verdict,
-          // Issue #28 — an unreviewed shell ask is graded by the rule
-          // classifier, not a blanket HIGH. Destructive verbs stay HIGH, so
-          // they remain once-only at the gate.
-          ...(permissionResult.reviewer?.verdict === undefined && invocationCategory === "shell"
-            ? {
-                ruleVerdict: classifyApprovalRuleVerdict({
-                  toolName: toolUse.name,
-                  source,
-                  category: invocationCategory,
-                  pathFields: tool.pathFields ?? [],
-                  finalInput,
-                  executionCwd,
-                  allowedDirectories: invocationAllowedScope.directories,
-                  sensitivePathsAdjacent: sensitivePathPattern ? [sensitivePathPattern] : [],
-                  context: invocationPermissionContext,
-                  sandboxAttestation,
-                  mcpServerId: tool.mcpServerId,
-                  workerId: tool.workerId,
-                  pluginId: tool.pluginId,
-                  hostShellExecutionPlan,
-                }).verdict,
-              }
-            : {}),
+          ...(approvalRuleAssessment ? { ruleVerdict: approvalRuleAssessment.verdict, approvalRuleBasis: approvalRuleAssessment.basis } : {}),
           reviewerOutcome: permissionResult.reviewer?.outcome,
           reviewerApprovalBasis: permissionResult.reviewer?.approvalBasis,
           // Hard policy/A2A asks are per invocation. A reviewer failure alone
           // remains an ordinary human decision that may be remembered exactly.
           ...((permissionResult.layer <= 2 ||
               (permissionResult.forceModal === true && permissionResult.reviewer === undefined) ||
-              (approvalReasonPrefix !== undefined && invocationCategory !== "read"))
+              approvalReasonPrefix !== undefined)
             ? { durableApprovalRecordAllowed: false as const } : {}),
-          // The facts about this ask that only this lane can see, for the
-          // gate's tier-2 stage. Everything the GATE can observe — request
-          // kind, permission mode, remote origin, forced-explicit substrates,
-          // the verdict ceiling — it re-derives for itself, so this is a
-          // necessary condition and never a sufficient one.
-          //
-          //   layer >= 3   the layer 1-2 gates (deny rules, MCP strict,
-          //                overlay-trigger, global strict mode) are decisions
-          //                about the user's own posture, not about whether one
-          //                call serves one task.
-          //   !forceModal  policy has already said this one goes to a human.
-          //   a verdict    tier 2 refines a tier-1 judgement; with nothing to
-          //                refine there is no ceiling to check an answer
-          //                against, and no basis for a model to decide.
-          parentAdjudicationEligible:
-            permissionResult.layer >= 3 &&
-            permissionResult.forceModal !== true &&
-            permissionResult.reviewer?.verdict !== undefined,
           ...(approvalPurpose ? { approvalPurpose } : {}),
           args: finalInput,
           reason: approvalReasonPrefix
@@ -1681,8 +950,7 @@ export async function authorizeToolInvocation(
           source: source as ToolSource,
           createdAt: Date.now(),
           ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
-          isReadOnly: permissionResult.forceModal === true && services.permissionManager?.isAutomatedApprovalPaused(sessionId)
-            ? false : deriveApprovalIsReadOnly({
+          isReadOnly: permissionResult.forceModal !== true && deriveApprovalIsReadOnly({
             invocationCategory,
             approvalReasonPrefix,
             remoteControllerAuthority:
@@ -1880,8 +1148,13 @@ export async function authorizeToolInvocation(
         // This is intentionally immediately after the local decision. A P2
         // share revoke that won while the modal was visible must beat the
         // newly returned allow-once before it can reach the execution stage.
-        if (!isRemoteControllerAuthorityCurrent(invocationPermissionContext.remoteControllerAuthority)) {
-          const reason = "remote-controller-revoked";
+        const approvalInvalidationReason = services.permissionManager !== undefined &&
+            approvalPolicyEpoch !== services.permissionManager.getPolicyEpoch()
+          ? "Permission policy changed while approval was pending"
+          : !isRemoteControllerAuthorityCurrent(invocationPermissionContext.remoteControllerAuthority)
+            ? "remote-controller-revoked" : undefined;
+        if (approvalInvalidationReason !== undefined) {
+          const reason = approvalInvalidationReason;
           const msg = t("be_executor.permBlockDeny", {
             name: toolUse.name,
             source,
@@ -1904,32 +1177,8 @@ export async function authorizeToolInvocation(
             durationMs,
           });
         }
-        // Tier 2 of the sub-agent chain answered this instead of the user.
-        // Host-derived from the exact decision object the gate returned — a
-        // structural lookalike arriving from anywhere else is not in that map,
-        // so nothing a renderer or a child can build reads as a parent answer.
-        const manuallyApproved = sessionId !== undefined &&
-          services.permissionManager?.resumeAutomatedApproval(sessionId, decision) === true;
-        const parentAnswer = parentAdjudicationOf(decision);
-        if (parentAnswer !== undefined) {
-          emitPermissionReview(callbacks, {
-            status:
-              parentAnswer.outcome === "allow-once"
-                ? "parent_approved"
-                : "parent_denied",
-            toolName: toolUse.name,
-            toolCategory: invocationCategory,
-            source: source as ToolSource,
-            // The parent's own sentence. It is already sanitized and masked
-            // where the answer was parsed, and it is the only account the
-            // child's own panel will have of a decision no dock ever showed.
-            reason: parentAnswer.reason,
-            ...(permissionResult.reviewer?.verdict?.level === undefined
-              ? {}
-              : { verdictLevel: permissionResult.reviewer.verdict.level }),
-            ...meta,
-          });
-        }
+        const manuallyApproved = decision.choice.startsWith("allow") &&
+          !isHostApprovalRejectedDecision(decision);
 
         const remoteOneShotRejected =
           requiresRemoteLocalOneShot && decision.choice !== "allow-once";
@@ -1944,31 +1193,12 @@ export async function authorizeToolInvocation(
               approvalCacheKey ?? decision.rememberPattern ?? toolUse.name;
             await services.permissionManager.addAlwaysDeniedPersist(pattern);
           }
-          // A child told "the user denied this" would be told something untrue,
-          // and would have no idea what to do differently. Its parent refused,
-          // and said why — so say that, and say whose refusal it was.
-          //
-          // The third case is the one nobody refused: tier 3 reached a desk
-          // with nobody at it, so the host denied the call and queued it for
-          // review. A child that read that as a refusal would retry against a
-          // dock that is not going to appear.
           const hostFailure = approvalFailureOutcome(
             decision, toolUse.name, permissionResult,
           );
-          const msg = hostFailure?.content ?? (
-            parentAnswer?.outcome === "deny"
-              ? t("be_executor.approvalDeniedByParent", {
-                  name: toolUse.name,
-                  reason: parentAnswer.reason,
-                })
-              : deferredParentEscalationOf(decision) !== undefined
-                ? t("be_executor.approvalDeferredForReview", {
-                    name: toolUse.name,
-                  })
-                : t("be_executor.approvalDeniedByUser", {
-                    name: toolUse.name,
-                  })
-          );
+          const msg = hostFailure?.content ?? t("be_executor.approvalDeniedByUser", {
+            name: toolUse.name,
+          });
           const durationMs = Date.now() - startTime;
           // finalInput matches the args the user actually saw + denied via
           // approvalRequest — never log stale pre-hook input here.
@@ -1993,10 +1223,7 @@ export async function authorizeToolInvocation(
             hostFailure?.permission ?? {
               ...permissionResult,
               decision: "deny",
-              reason:
-                parentAnswer?.outcome === "deny"
-                  ? "parent agent denied approval request"
-                  : "user denied approval request",
+              reason: "user denied approval request",
             },
             Infinity,
             invocationPermissionContext,
@@ -2020,15 +1247,7 @@ export async function authorizeToolInvocation(
         humanApproved = manuallyApproved;
         permissionResult = {
           decision: "allow",
-          // Who actually answered. The deny branch above already says this;
-          // saying it only there would leave the per-tool-call audit asserting
-          // that a user approved a call no human was shown — wrong in the one
-          // direction that flatters the system, and on the surface a reviewer
-          // reads for the CALL rather than for the approval.
-          reason:
-            parentAnswer?.outcome === "allow-once"
-              ? `parent agent approved approval request (${decision.choice})`
-              : `user approved approval request (${decision.choice})`,
+          reason: `user approved approval request (${decision.choice})`,
           layer: permissionResult.layer,
         };
         // allow-once / allow-always: 실행 계속
@@ -2091,12 +1310,8 @@ export async function authorizeToolInvocation(
 
   const ruleProofStands = hostShellAllowRuleDecision !== undefined && permissionResult === hostShellAllowRuleDecision;
   if (hostShellExecutionPermitBinding !== undefined &&
-      hostShellApprovalDecision === undefined && !ruleProofStands && services.permissionManager !== undefined &&
-      permissionResult?.decision === "allow" && !requiresRemoteLocalOneShot &&
-      // Defense in depth for the gate above: the policy lane is the Windows
-      // Plan B only, and headless only on its exact shell allow rule (I5).
-      hostShellExecutionPlan?.executionRequest !== "host" &&
-      (invocationPermissionContext.headless !== true || isIssuedPlainShellExactRuleDecision(permissionResult, services.permissionManager))) {
+      hostShellApprovalDecision === undefined && !ruleProofStands &&
+      permissionResult?.decision === "allow") {
     recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
   }
 

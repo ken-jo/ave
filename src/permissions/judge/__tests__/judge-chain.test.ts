@@ -96,8 +96,8 @@ describe("judge chain — escalation", () => {
       [scriptedStage("jev", 0.8), scripted("jev", v("ask"))],
       [builtinStage(), scripted("llm", v("ask"))],
     ];
-    expect(await resolveJudge(UNDECIDED, judgeRequest(), chainDeps(stages()))).toMatchObject({ decision: "ask", defer: false });
-    expect(await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), chainDeps(stages()))).toMatchObject({ decision: "deny", defer: true });
+    expect(await resolveJudge(UNDECIDED, judgeRequest(), chainDeps(stages()))).toMatchObject({ decision: "ask" });
+    expect(await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), chainDeps(stages()))).toMatchObject({ decision: "deny" });
   });
 });
 
@@ -120,9 +120,9 @@ describe("judge chain — failures", () => {
   });
 
   it.each([
-    ["foreground", "ask", false],
-    ["headless", "deny", true],
-  ] as const)("last stage failing → existing fallback (%s: %s)", async (lane, decision, defer) => {
+    ["foreground", "ask"],
+    ["headless", "deny"],
+  ] as const)("last stage failing → existing fallback (%s: %s)", async (lane, decision) => {
     const out = await resolveJudge(
       UNDECIDED,
       judgeRequest({ lane }),
@@ -131,7 +131,9 @@ describe("judge chain — failures", () => {
         [builtinStage(), scripted("llm", new Error("provider down"))],
       ]),
     );
-    expect(out).toMatchObject({ judged: true, decision, defer, source: "fallback", fallback: "error" });
+    expect(out).toMatchObject({ judged: true, decision, source: "fallback", fallback: "error" });
+    if (!out.judged) throw new Error("Expected a reviewed outcome");
+    expect(Boolean(out.recentlyDenied)).toBe(lane === "headless");
   });
 
   it("every stage failing never allows", async () => {
@@ -162,9 +164,10 @@ describe("judge chain — audit model and deadline", () => {
     const llm = scripted("llm", v("allow"));
     const d = chainDeps([[scriptedStage("jev"), slow], [builtinStage(), llm]], { timeoutMs: 5_000, chainDeadlineMs: 40 });
     const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
-    expect(out).toMatchObject({ judged: true, decision: "deny", defer: true, source: "fallback", fallback: "timeout" });
+    expect(out).toMatchObject({ judged: true, decision: "deny", source: "fallback", fallback: "timeout" });
     // The engine's own timer fired on the deadline-capped budget: the audit blames the deadline.
-    expect(out.judged && out.rationale).toMatch(/deadline/);
+    expect(out.judged && out.rationale).toBe("Nobody can approve this request; do not retry.");
+    expect(judgeRecords(d)[0]?.rationale).toMatch(/deadline/);
     expect(llm.calls).toBe(0);
     const stages = judgeRecords(d)[0]!.stages as Array<Record<string, unknown>>;
     expect(stages.map((s) => s.outcome)).toEqual(["failed", "skipped"]);
@@ -229,7 +232,7 @@ describe("judge chain — breaker and shadow", () => {
     const llm = scripted("llm", v("deny"));
     const d = chainDeps([[scriptedStage("jev"), jev], [builtinStage(), llm]], { mode: "shadow" });
     const out = await resolveJudge(UNDECIDED, judgeRequest({ lane: "headless" }), d);
-    expect(out).toMatchObject({ decision: "deny", applied: false, defer: false });
+    expect(out).toMatchObject({ decision: "deny", applied: false });
     expect(jev.calls + llm.calls).toBe(2);
     expect(d.chained).toHaveLength(0);
     expect((judgeRecords(d)[0]!.stages as unknown[]).length).toBe(2);

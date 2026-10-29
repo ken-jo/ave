@@ -7,7 +7,7 @@ import { join, dirname, resolve as pathResolve } from "node:path";
 import { RuleBasedRiskClassifier } from "../reviewer/risk-classifier.js";
 import { PermissionManager } from "../permission-manager.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
-import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../sensitive-paths.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import { extractTargetFilePaths } from "../../tools/pipeline/path-extraction.js";
@@ -173,7 +173,7 @@ describe("producer wiring — the dispatch lanes thread the invocation cwd", () 
         },
       },
       cache: new VerdictCache(join(dir, "cache.jsonl")),
-      deferredQueue: new DeferredQueue(join(dir, "queue.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(dir, "queue.jsonl")),
     });
   });
 

@@ -77,6 +77,7 @@ import {
   type SubscriptionRuntimeService,
 } from "../../main/subscription-runtime-service.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { isOwnerAwayAutoSkipMinutes } from "../../shared/owner-away-permission.js";
 import { readJudgeStoredModels, type StoredJudgeModelRef } from "../../permissions/permission-settings-store.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
@@ -798,6 +799,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && ["installedThemeBundleIds", "installedLanguagePacks"].some((field) => Object.prototype.hasOwnProperty.call(marketplacePatch, field))
     ) {
       return { ok: false, error: "legacy-marketplace-lists-main-owned" };
+    }
+    const permissionsPatch = (partial as Record<string, unknown> | null | undefined)?.permissions;
+    if (permissionsPatch !== undefined && (!permissionsPatch || typeof permissionsPatch !== "object" || Array.isArray(permissionsPatch) || Object.keys(permissionsPatch).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes((permissionsPatch as Record<string, unknown>).ownerAwayAutoSkipMinutes))) {
+      return { ok: false, error: "invalid-owner-away-auto-skip", message: "Owner-away auto-skip must be a nonnegative integer." };
     }
     const llmPatch = (partial as Record<string, unknown> | null | undefined)
       ?.llm as Record<string, unknown> | undefined;

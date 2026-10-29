@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PermissionManager } from "../permission-manager.js";
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
@@ -23,7 +27,9 @@ function terminal(tabId = TAB, sessionId?: string): EgressInvocation {
 function runtime() {
   const wc = { send: vi.fn(), isDestroyed: () => false };
   const gate = new ApprovalGate(wc as never, undefined, 5_000, { log: vi.fn() } as never);
-  const callback = createEgressAskRuntimeCallback({ approvalGate: gate, shellAskEnabled: () => true });
+  const permissionManager = new PermissionManager(join(tmpdir(), `terminal-egress-policy-${randomUUID()}.json`));
+  permissionManager.setMode("strict");
+  const callback = createEgressAskRuntimeCallback({ permissionManager, approvalGate: gate, shellAskEnabled: () => true });
   const cards = () => sentApprovalCards<ApprovalRequest>(wc);
   const cardSent = async (count: number) => {
     await vi.waitFor(() => expect(cards()).toHaveLength(count));

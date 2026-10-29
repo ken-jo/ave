@@ -1,3 +1,4 @@
+import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import type { Tool } from "./base.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ToolCategory, ToolSource } from "./types.js";
@@ -69,6 +70,7 @@ export function resolveEnforcedCategory(
     finalInput,
     correlationId,
     hostClassifiesRisk: services.hostClassifiesRiskProvider(),
+    sandboxFsContained: services.sandboxFsContainedProvider(tool),
     auditLogger: services.auditLogger,
     operationFloor,
   });
@@ -109,7 +111,15 @@ export async function runScriptHook(
     ...(toolOutput !== undefined ? { toolOutput } : {}),
     ...(isError !== undefined ? { isError } : {}),
   };
-  if (hookType === "pre") return scriptHookManager.runPreToolUse(payload);
-  if (hookType === "post") return scriptHookManager.runPostToolUse(payload);
-  return scriptHookManager.runPermissionRequest(payload);
+  const inherited = turnExtensionPolicyContext.getStore();
+  return turnExtensionPolicyContext.run({
+    ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false && context.remoteControllerAuthority === undefined,
+    headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
+    remoteControllerAuthority: context.remoteControllerAuthority,
+    floor: context.floor ?? (context.otherPrincipal ? { code: "other-principal", reason: "This principal requires local approval for the action." } : inherited?.floor),
+  }, () => {
+    if (hookType === "pre") return scriptHookManager.runPreToolUse(payload);
+    if (hookType === "post") return scriptHookManager.runPostToolUse(payload);
+    return scriptHookManager.runPermissionRequest(payload);
+  });
 }

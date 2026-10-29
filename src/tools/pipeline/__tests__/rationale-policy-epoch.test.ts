@@ -56,7 +56,7 @@ describe("rationale policy epoch", () => {
     changes(() => setReviewerForTest(permissionManager, {
       classifier: { classify: vi.fn() } as never,
       cache: {} as never,
-      deferredQueue: {} as never,
+      recentlyDenied: {} as never,
     }));
     changes(() => permissionManager.setRules([
       { pattern: "bash", action: "deny" },

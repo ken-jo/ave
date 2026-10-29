@@ -22,24 +22,24 @@ function installAveApi() {
       userAdditions: [],
       effective: [],
     })),
-    deferredList: vi.fn(async () => ({
+    recentlyDeniedList: vi.fn(async () => ({
       ok: true,
       total: 1,
-      pending: [
+      entries: [
         {
-          id: "dq-1",
+          id: "denied-1",
           ts: "2026-05-10T09:00:00.000Z",
           toolName: "write_file",
           source: "builtin",
           category: "write",
           inputSummary: '{"path":"<redacted>"}',
-          verdict: { level: "high", reason: "outside allowed directory" },
-          status: "pending",
+          reason: "Nobody can approve this request; do not retry.",
+          rerunAvailable: false,
         },
       ],
     })),
-    deferredResolve: vi.fn(async () => ({ ok: true })),
-    onDeferredPending: vi.fn(() => () => {}),
+    recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
+    onRecentlyDeniedChanged: vi.fn(() => () => {}),
     reviewerDispatch: vi.fn(async () => ({
       ok: true,
       verb: "show",
@@ -78,28 +78,12 @@ beforeEach(() => {
   delete (window as unknown as { ave?: unknown }).ave;
 });
 
-describe("PermissionsTab deferred queue surface", () => {
-  it("does not mount the deferred queue approval surface inside settings", async () => {
-    installAveApi();
-
-    render(<PermissionsTab />);
-
-    await waitFor(() => {
-      expect(screen.getByText("현재 권한 정책")).toBeTruthy();
-    });
-    expect(screen.queryByTestId("deferred-queue-panel")).toBeNull();
-  });
-
-  it("leaves deferred approval actions to the chat queue modal", async () => {
+describe("PermissionsTab recently denied history", () => {
+  it("shows denied actions without granting execution", async () => {
     const permission = installAveApi();
-
     render(<PermissionsTab />);
-
-    await waitFor(() => {
-      expect(screen.getByText("현재 권한 정책")).toBeTruthy();
-    });
-
-    expect(screen.queryByText("write_file")).toBeNull();
-    expect(permission.deferredResolve).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId("recently-denied-panel")).toHaveTextContent("write_file"));
+    expect(screen.getByRole("button", { name: "다시 실행" })).toBeDisabled();
+    expect(permission.recentlyDeniedRerun).not.toHaveBeenCalled();
   });
 });

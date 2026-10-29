@@ -10,13 +10,13 @@ export interface PermissionModeBadgeProps {
   mode?: ExecutionModeDisplay;
   /** Override fetcher. Defaults to window.ave.permission.getMode(). */
   fetcher?: () => Promise<{ mode: string }>;
-  deferredFetcher?: () => Promise<{ ok: boolean; pending?: unknown[]; error?: string }>;
-  /** Override deferred approval subscription for tests/storybook. */
-  deferredSubscriber?: (handler: (summary: { pending: number }) => void) => () => void;
+  recentlyDeniedFetcher?: () => Promise<{ ok: boolean; entries?: unknown[]; error?: string }>;
+  /** Override denied-history subscription. */
+  recentlyDeniedSubscriber?: (handler: (summary: { total: number }) => void) => () => void;
   /** Optional click handler — typically opens the Settings → Permissions tab. */
   onClick?: () => void;
-  /** Opens the deferred approval queue modal. Kept separate from mode settings. */
-  onQueueClick?: () => void;
+  /** Opens the recently denied list. */
+  onHistoryClick?: () => void;
   /** Test hook for the change-event subscription. */
   subscribe?: (handler: (mode: ExecutionModeDisplay) => void) => () => void;
 }
@@ -48,25 +48,25 @@ const MODE_COLOR_CLASSES: Record<ExecutionModeDisplay, string> = {
 export function PermissionModeBadge({
   mode: modeOverride,
   fetcher,
-  deferredFetcher,
-  deferredSubscriber,
+  recentlyDeniedFetcher,
+  recentlyDeniedSubscriber,
   onClick,
-  onQueueClick,
+  onHistoryClick,
   subscribe,
 }: PermissionModeBadgeProps): ReactElement {
   const { t } = useTranslation();
   const [mode, setMode] = useState<ExecutionModeDisplay>(modeOverride ?? "unknown");
-  const [pendingPermissions, setPendingPermissions] = useState(0);
-  const [pendingError, setPendingError] = useState<string | null>(null);
+  const [deniedCount, setDeniedCount] = useState(0);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const apiFetch = useMemo(
     () => fetcher ?? (() => window.ave!.permission!.getMode()),
     [fetcher],
   );
 
-  const apiFetchDeferred = useMemo(
-    () => deferredFetcher ?? (() => window.ave?.permission?.deferredList?.() ?? Promise.resolve({ ok: false })),
-    [deferredFetcher],
+  const apiFetchRecentlyDenied = useMemo(
+    () => recentlyDeniedFetcher ?? (() => window.ave?.permission?.recentlyDeniedList?.() ?? Promise.resolve({ ok: false })),
+    [recentlyDeniedFetcher],
   );
 
   const refresh = useCallback(async () => {
@@ -93,49 +93,49 @@ export function PermissionModeBadge({
 
   useEffect(() => {
     let alive = true;
-    const refreshPending = async () => {
+    const refreshHistory = async () => {
       try {
-        const result = await apiFetchDeferred();
+        const result = await apiFetchRecentlyDenied();
         if (!alive) return;
         if (result.ok) {
-          setPendingPermissions(result.pending?.length ?? 0);
-          setPendingError(null);
+          setDeniedCount(result.entries?.length ?? 0);
+          setHistoryError(null);
         } else {
-          setPendingPermissions(0);
-          setPendingError(result.error ?? "deferred-list failed");
+          setDeniedCount(0);
+          setHistoryError(result.error ?? "recently-denied-list failed");
         }
       } catch {
         if (alive) {
-          setPendingPermissions(0);
-          setPendingError("deferred-list failed");
+          setDeniedCount(0);
+          setHistoryError("recently-denied-list failed");
         }
       }
     };
-    void refreshPending();
-    const sub = deferredSubscriber ?? window.ave?.permission?.onDeferredPending;
+    void refreshHistory();
+    const sub = recentlyDeniedSubscriber ?? window.ave?.permission?.onRecentlyDeniedChanged;
     const unsubscribe = sub?.((summary) => {
-      setPendingPermissions(Math.max(0, summary.pending));
-      setPendingError(null);
+      setDeniedCount(Math.max(0, summary.total));
+      setHistoryError(null);
     });
     return () => {
       alive = false;
       unsubscribe?.();
     };
-  }, [apiFetchDeferred, deferredSubscriber]);
+  }, [apiFetchRecentlyDenied, recentlyDeniedSubscriber]);
 
   const handleClick = useCallback(() => {
     if (onClick) onClick();
   }, [onClick]);
 
-  const queueVisible = pendingPermissions > 0 || pendingError !== null;
-  const pendingText = pendingError
-    ? t("permissionModeBadge.pendingTextError", { error: pendingError })
-    : pendingPermissions > 0
-      ? t("permissionModeBadge.pendingTextCount", { count: pendingPermissions })
+  const historyVisible = deniedCount > 0 || historyError !== null;
+  const pendingText = historyError
+    ? t("permissionModeBadge.pendingTextError", { error: historyError })
+    : deniedCount > 0
+      ? t("permissionModeBadge.pendingTextCount", { count: deniedCount })
       : "";
-  const queueLabel = pendingError
+  const historyLabel = historyError
     ? t("permissionModeBadge.queueLabelError")
-    : t("permissionModeBadge.queueLabelCount", { count: pendingPermissions });
+    : t("permissionModeBadge.queueLabelCount", { count: deniedCount });
 
   return (
     <div className="inline-flex max-w-full min-w-0 items-center gap-1" data-testid="permission-policy-controls">
@@ -154,13 +154,13 @@ export function PermissionModeBadge({
           {t(MODE_LABEL_KEYS[mode])}
         </Badge>
       </Button>
-      {queueVisible && (
+      {historyVisible && (
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          onClick={onQueueClick}
-          disabled={!onQueueClick}
+          onClick={onHistoryClick}
+          disabled={!onHistoryClick}
           className="h-auto min-w-0 rounded-full p-0 hover:bg-transparent"
           title={t("permissionModeBadge.queueButtonLabel", { pendingText })}
           aria-label={t("permissionModeBadge.queueButtonLabel", { pendingText })}
@@ -172,7 +172,7 @@ export function PermissionModeBadge({
             data-testid="permission-pending-badge"
           >
             <Inbox className="h-3 w-3" aria-hidden="true" />
-            <span className="min-w-0 truncate">{queueLabel}</span>
+            <span className="min-w-0 truncate">{historyLabel}</span>
           </Badge>
         </Button>
       )}

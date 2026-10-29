@@ -894,35 +894,35 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "plain-json",
     result: "encoded",
     lifetime: "none",
-    errors: ["plugin-storage"],
+    errors: ["effect-boundary-denied", "plugin-storage"],
   },
   "storage.readText": {
     params: ["relPath", "encoding"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
-    errors: ["plugin-storage"],
+    errors: ["effect-boundary-denied", "plugin-storage"],
   },
   "storage.readJson": {
     params: ["relPath"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
-    errors: ["plugin-storage"],
+    errors: ["effect-boundary-denied", "plugin-storage"],
   },
   "storage.list": {
     params: ["relPath"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
-    errors: ["plugin-storage"],
+    errors: ["effect-boundary-denied", "plugin-storage"],
   },
   "storage.exists": {
     params: ["relPath"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
-    errors: ["plugin-storage"],
+    errors: ["effect-boundary-denied", "plugin-storage"],
   },
   // `data: string | Uint8Array` — the bytes branch needs a tagged encoding, and
   // the tag is what stops a base64 string being written as text.
@@ -970,7 +970,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
-    errors: ["plugin-storage", "plugin-storage-encryption-unavailable"],
+    errors: ["effect-boundary-denied", "plugin-storage", "plugin-storage-encryption-unavailable"],
   },
   // ─── config.* ─────────────────────────────────────────────────────────────
   // Synchronous, and a process boundary is not. The resolved config object is
@@ -990,7 +990,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
-    errors: [],
+    errors: ["effect-boundary-denied", ],
   },
   "config.onChange": {
     params: ["key", "callback"],

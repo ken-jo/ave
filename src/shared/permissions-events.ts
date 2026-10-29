@@ -76,8 +76,9 @@ export interface ShellRuleApproval {
 export type UserApprovalDecision = "allow" | "deny";
 
 /** The target a remembered decision covers when a tool opts into target-wide memory (`Tool.approvalMemoryScope`). Host-derived from the final input, and the only source the approval card uses to say what "remember" will cover. - `origin`: every web_fetch to `scheme://host:port`
- * (public network only). - `path`: this resolved path, any content. - `paths`: this exact resolved path set, any content. - `transfer`: this tool from source to destination, with its overwrite flag. - `command`: this exact shell command (by digest) in this working directory and sandbox plan; timeout and justification may vary. */
+ * (public network only). - `mcp-tool`: this server and tool, regardless of arguments; admission rules and mandatory approvals still apply. - `path`: this resolved path, any content. - `paths`: this exact resolved path set, any content. - `transfer`: this tool from source to destination, with its overwrite flag. - `command`: this exact shell command (by digest) in this working directory and sandbox plan; timeout and justification may vary. */
 export type ApprovalMemoryScope =
+  | { readonly kind: "mcp-tool"; readonly serverId: string; readonly toolName: string }
   | { readonly kind: "origin"; readonly origin: string }
   | { readonly kind: "path"; readonly path: string }
   | { readonly kind: "paths"; readonly paths: readonly string[] }
@@ -125,7 +126,7 @@ export function isSessionOnlyApprovalMemoryScope(scope: ApprovalMemoryScope): bo
 }
 
 /** What a remembered user decision is keyed on, besides tool name, source, trust origin and working directory. - `args`: the exact canonical input (the default for every tool; an `approvalCacheKey` only narrows it). - `key`: the tool
- * opted in with a scope; `key` is the host-derived identity of that scope (including any sealed shell plan), and repeat calls with other arguments inside it may reuse the decision; after a fresh review (see approval-memory-skip.ts). */
+ * opted in with a scope; `key` is the host-derived identity of that scope (including any sealed shell plan), and repeat calls with other arguments inside it may reuse the decision; after a fresh review unless the scope explicitly grants all arguments of one external tool (see approval-memory-skip.ts). */
 export type ApprovalMemory =
   | { readonly kind: "args" }
   | { readonly kind: "key"; readonly key: string; readonly scope: ApprovalMemoryScope };

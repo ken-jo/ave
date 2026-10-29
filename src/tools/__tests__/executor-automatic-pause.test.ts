@@ -10,7 +10,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-g
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { LlmRiskClassifier, type LlmReviewerProvider, type RiskVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import * as approvals from "../../permissions/user-approval-store.js";
@@ -62,7 +62,7 @@ async function subject(sessionId = SESSION_ID) {
       maxAttempts: 1, baseDelayMs: 0, jitterPct: 0,
     }),
     cache,
-    deferredQueue: new DeferredQueue(join(root, "deferred.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(root, "deferred.jsonl")),
   });
   manager.setJudge({
     settings: {

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { PluginOperationGrantCoordinator } from "../../permissions/plugin-operation-grant.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { RuleBasedRiskClassifier } from "../../permissions/reviewer/risk-classifier.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -260,13 +260,13 @@ describe("ToolExecutor plugin operation governance", () => {
         jsonSchema: { type: "object" },
         execute,
       }));
-      const deferredQueue = new DeferredQueue(
+      const recentlyDenied = makeRecentlyDeniedStore(
         join(directory, "deferred-queue.jsonl"),
       );
       setReviewerForTest(permissions, {
         classifier: new RuleBasedRiskClassifier(),
         cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
-        deferredQueue,
+        recentlyDenied,
       });
       const invocationOptions = options(undefined, principal, false);
 
@@ -298,7 +298,7 @@ describe("ToolExecutor plugin operation governance", () => {
       expect(result.is_error).toBe(true);
       expect(result.content).toContain("허용 디렉토리 외부");
       expect(execute).not.toHaveBeenCalled();
-      const [pending] = deferredQueue.listPending();
+      const [pending] = (await recentlyDenied.list());
       expect(pending?.inputSummary).toBe('{"operation":"status"}');
       expect(pending?.inputSummary).not.toContain(
         "must-never-reach-deferred-storage",

@@ -1,3 +1,5 @@
+import type { ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
+import type { PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
 import type { A2AAgentCausalContext } from "../engine/a2a-agent-message-envelope.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import type {
@@ -77,6 +79,14 @@ export interface ToolExecutorCallbacks {
 }
 
 export interface ToolPermissionContext {
+  /** A fresh user-requested replay still passes every admission and forced floor. */
+  manualRerun?: boolean;
+  /** Host provenance; never inferred from argument text. */
+  otherPrincipal?: boolean;
+  admissionDenial?: PermissionDecisionRequest["admissionDenial"];
+  floor?: PermissionDecisionRequest["floor"];
+  paths?: PermissionDecisionRequest["paths"];
+  secretRead?: boolean;
   headless?: boolean;
   // Native --exec uses headless review but honors the local owner's explicit rules and durable grants first.
   ownerUnattended?: boolean;
@@ -147,6 +157,8 @@ export interface ExecuteOptions {
   toolOutputCaptureFactory?: ToolOutputCaptureFactory;
   permissionContext?: ToolPermissionContext;
   executionCwd?: string;
+  /** Host-issued replay invalidation check; never a permission grant or wire input. */
+  replayRootBinding?: ReplayRootBinding;
   /** Host-only lifecycle for an exact governed auth Tool; never plugin data. */
   pluginAuthLifecycle?: HostPluginAuthLifecycle;
 }

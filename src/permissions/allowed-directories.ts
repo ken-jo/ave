@@ -3,7 +3,7 @@ import { resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
-  isSensitivePath,
+  isAdmissionDeniedPath,
   isConfiguredSessionReadPath,
 } from "./sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -51,7 +51,7 @@ function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): 
     const value = foldCase ? folded : canonical;
     if (isFilesystemRootPath(folded)) continue;
     // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
-    if (isSensitivePath(folded)) continue;
+    if (isAdmissionDeniedPath(folded)) continue;
     if (seen.has(folded)) continue;
     seen.add(folded);
     out.push(value);
@@ -84,7 +84,7 @@ function sanitizeAllowedDirectoryEntries(
     const folded = caseFoldForMatch(canonical);
     const value = foldCase ? folded : canonical;
     if (isFilesystemRootPath(folded)) continue;
-    if (isSensitivePath(folded)) continue;
+    if (isAdmissionDeniedPath(folded)) continue;
     if (seen.has(folded)) continue;
     seen.add(folded);
     out.push(value);
@@ -148,13 +148,13 @@ export function pickClosestParent(
   if (!canonicalPath) return null;
   if (isDirectory) {
     if (isFilesystemRootPath(canonicalPath)) return null;
-    if (isSensitivePath(canonicalPath)) return null;
+    if (isAdmissionDeniedPath(canonicalPath)) return null;
     if (isPathAllowed(canonicalPath, { directories: currentAllowed })) return null;
     return canonicalPath;
   }
   const parent = caseFoldForMatch(canonicalizePathForMatch(pathResolve(canonicalPath, "..")));
   if (parent === canonicalPath) return null; // already at root
-  if (isSensitivePath(parent)) return null;
+  if (isAdmissionDeniedPath(parent)) return null;
   if (isPathAllowed(canonicalPath, { directories: currentAllowed })) return null;
   if (isPathAllowed(parent, { directories: currentAllowed })) return null;
   return parent;
@@ -178,7 +178,7 @@ export function validateDirectoryAddition(rawPath: string): ValidateDirectoryRes
     return { ok: false, reason: "filesystem root is not allowed", adjacencyWarnings };
   }
   // Reject Layer 0 sensitive paths.
-  const sensitive = isSensitivePath(folded);
+  const sensitive = isAdmissionDeniedPath(folded);
   if (sensitive) {
     return {
       ok: false,

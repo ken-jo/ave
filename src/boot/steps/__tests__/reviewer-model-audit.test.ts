@@ -47,7 +47,6 @@ describe("implicit reviewer model audit", () => {
         streamProviderFor: () => provider,
         networkFetch: async () => new Response("{}"),
         verdictCachePath: join(directory, "verdicts.jsonl"),
-        deferredQueuePath: join(directory, "deferred.jsonl"),
       });
       expect(reviewer.runtimeMode).toBe(mode);
       audit = new AuditLogger(join(directory, "audit"));

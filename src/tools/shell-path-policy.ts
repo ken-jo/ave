@@ -5,7 +5,7 @@ import { displayShellWord, shellWordHasSingleField, staticShellWord, type ShellW
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isSensitivePath } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, permissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { inspectSedScriptFileAccess, isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
@@ -48,9 +48,9 @@ function windowsShellPathViolation(path: string, label: string, effect: PathEffe
   }).join("/");
   const modeled = modelShellPath(normalized, { dialect: "bash" });
   const canonical = modeled.nativePath === undefined ? undefined : caseFoldForMatch(canonicalizePathForMatch(modeled.nativePath));
-  let sensitive = canonical === undefined ? null : isSensitivePath(canonical, effect);
+  let sensitive = canonical === undefined ? null : isAdmissionDeniedPath(canonical, effect);
   const sessionRead = effect === "read" && canonical !== undefined && isConfiguredSessionReadPath(canonical);
-  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isSensitivePath(caseFoldForMatch(candidate), effect);
+  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isAdmissionDeniedPath(caseFoldForMatch(candidate), effect);
   if (sensitive) return {
     kind: "sensitive-path",
     reason: `Sensitive path: command operand ${label} matches ${sensitive}`,
@@ -76,7 +76,7 @@ export function validateShellWorkingDirectory(
 ): string | null {
   const nativeViolation = windowsShellPathViolation(cwd, cwd, "write");
   if (nativeViolation) return nativeViolation.reason;
-  const sensitive = isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(cwd)));
+  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalizePathForMatch(cwd)));
   if (sensitive) {
     return `Sensitive path: cwd ${cwd} matches ${sensitive}`;
   }
@@ -95,7 +95,7 @@ export function findResolvedShellPathViolation(
   const nativeViolation = windowsShellPathViolation(absolute, label, effect);
   if (nativeViolation) return nativeViolation;
   const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(absolute));
-  const sensitive = isSensitivePath(canonicalPath, effect);
+  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(absolute), effect) ?? isAdmissionDeniedPath(canonicalPath, effect);
   if (sensitive) {
     return {
       kind: "sensitive-path",
@@ -1241,26 +1241,32 @@ export function findShellPathPolicyViolation(
   command: string, cwd: string, sandboxRoot: string, extraAllowedDirectories: readonly string[],
   blockReadsOutsideWorkingDirectories: boolean,
   facts: ShellExecutionFacts = { dialect: "bash", environment: {} },
+  evidence?: PermissionPathEvidence[],
 ): ShellPathPolicyViolation | null {
   const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
-  if (nativeCwdViolation) return nativeCwdViolation;
+  if (!evidence && nativeCwdViolation) return nativeCwdViolation;
   const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
-  if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
-  const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect): void => {
+  if (!evidence && cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
+  const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect, deleting = false): void => {
     // Public standard-stream operands identify child descriptors; host resolution would inspect different resources.
     if (SHELL_DEVICE_PATHS.has(path)) return;
     const nativeViolation = windowsShellPathViolation(path, label, effect);
-    if (nativeViolation) throw new PathPolicyError(nativeViolation);
+    if (!evidence && nativeViolation) throw new PathPolicyError(nativeViolation);
     // Check prepared HOME and OS home tilde anchors without granting either workspace authority.
-    if (label === "~" || label.startsWith("~/")) {
+    if (!evidence && (label === "~" || label.startsWith("~/"))) {
       for (const candidate of expandShellTildePaths(label)) {
-        const sensitive = isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(candidate)), effect);
+        const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalizePathForMatch(candidate)), effect);
         if (sensitive) throw new PathPolicyError({ kind: "sensitive-path", reason: `Sensitive path: command operand ${label} matches ${sensitive}`, candidate: label, path: candidate });
       }
     }
     // Drive-relative targets depend on a per-drive cwd that was not captured.
     if (process.platform === "win32" && /^[A-Za-z]:(?![\\/])/.test(path)) decline("drive-relative command operand is unresolved");
     if (!isAbsolute(path) && cwd === null) decline("working directory is unresolved");
+    if (!evidence) {
+      const lexical = isAbsolute(path) ? path : `${cwd ?? sandboxRoot}/${path}`;
+      const admission = isAdmissionDeniedPath(caseFoldForMatch(lexical), effect);
+      if (admission) throw new PathPolicyError({ kind: "sensitive-path", reason: `Sensitive path: command operand ${label} matches ${admission}`, candidate: label, path: lexical });
+    }
     let absolute: string;
     try { absolute = resolveShellFilesystemPath(path, cwd ?? sandboxRoot, { dialect: "bash" }); }
     catch (error) {
@@ -1269,6 +1275,11 @@ export function findShellPathPolicyViolation(
         kind: "dynamic-path", reason: `Shell path policy: filesystem namespace is unresolved: ${label}`, candidate: label,
       });
       throw new PathPolicyError({ kind: "invalid-path", reason: "Shell path policy: cannot resolve command operand", candidate: label });
+    }
+    if (evidence) {
+      const lexical = isAbsolute(path) ? path : `${cwd ?? sandboxRoot}/${path}`;
+      evidence.push({ ...permissionPathEvidence({ lexical, canonical: absolute, effect }, sandboxRoot), ...(deleting ? { deleteIntent: true as const } : {}) });
+      return;
     }
     const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);
     if (violation) throw new PathPolicyError(violation);
@@ -1318,7 +1329,7 @@ export function findShellPathPolicyViolation(
       }
       const leaf = commandLeaf(node, effective);
       const effect: PathEffect = verb === "cd" ? "write" : isReadOnlyShellLeaf(leaf, {ignoreRedirects:true}) ? "read" : "write";
-      if (pathEffectIsConfined(effect, blockReadsOutsideWorkingDirectories)) {
+      if (!evidence && pathEffectIsConfined(effect, blockReadsOutsideWorkingDirectories)) {
         if (RECURSIVE_TRAVERSAL_COMMANDS.has(verb) && !(verb === "tar" && parseTarListing(knownArgv) && !projectedEnvironment.TAR_OPTIONS)) {
           throw new PathPolicyError({kind:"recursive-traversal",reason:buildRecursiveBlockMessage(head,verb),candidate:head});
         }
@@ -1356,8 +1367,14 @@ export function findShellPathPolicyViolation(
             checkPath(argument,words[index]!.source.raw,projectedCwd,effect);
             continue;
           }
-          for(const path of operandPaths(argument,!optionsEnded,verb))checkPath(path,words[index]!.source.raw,projectedCwd,
-            index === 1 && hostScriptReads.includes(path) ? "read" : effect);
+          for(const path of operandPaths(argument,!optionsEnded,verb)) {
+            const copySource = evidence && verb === "cp" && (index < knownArgv.length - 1
+              || knownArgv.some((value) => value === "-t" || value.startsWith("--target-directory") || /^-[^-]*t/.test(value)));
+            const inputFile = evidence && verb === "dd" && argument.startsWith("if=");
+            checkPath(path, words[index]!.source.raw, projectedCwd,
+              copySource || inputFile || (index === 1 && hostScriptReads.includes(path)) ? "read" : effect,
+              ["rm", "rmdir", "unlink"].includes(verb) || (verb === "find" && knownArgv.includes("-delete")));
+          }
         }
         for(const path of projectedSlots.extraCandidates){
           checkPath(path.value,words[path.index]!.source.raw,projectedCwd,path.effect ?? effect);
@@ -1373,6 +1390,17 @@ export function findShellPathPolicyViolation(
     if(error instanceof ShellExecutionError)return {kind:"dynamic-path",reason:"Shell path policy: "+error.message,...(error.operand?{candidate:error.operand}:{})};
     throw error;
   }
+}
+
+/** Collect parsed operands, retaining repeated spellings and their individual effects.
+ * A non-null unproven result means paths may be partial; route that uncertainty through the pipeline. */
+export function inspectShellPermissionPaths(command: string, cwd: string, facts: ShellExecutionFacts = { dialect: "bash", environment: {} }): {
+  paths: readonly PermissionPathEvidence[];
+  unproven: ShellPathPolicyViolation | null;
+} {
+  const paths: PermissionPathEvidence[] = [];
+  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths);
+  return { paths, unproven };
 }
 
 function operandPaths(value: string, option: boolean, verb: string): string[] {

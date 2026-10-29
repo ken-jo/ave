@@ -28,9 +28,6 @@ import { formatIpcError, resolveIpcErrorKey } from "../format-ipc-error.js";
 import type {
   ExecutionMode,
   HookTrustRow,
-  ParentAdjudicationBackgroundEscalation,
-  ParentAdjudicationMaxVerdict,
-  ParentAdjudicationModelSource,
   PermissionReviewerMode,
   PermissionReviewerInteractiveAutoApprove,
   PermissionReviewerSettings,
@@ -42,15 +39,9 @@ import type {
   SandboxMxcUnavailableReason,
   SandboxWindowsStatusInfo,
 } from "../../../shared/sandbox-capability-info.js";
-import {
-  PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
-  PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
-  PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MAX,
-  PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MIN,
-  PARENT_ADJUDICATION_TIMEOUT_MS_MAX,
-  PARENT_ADJUDICATION_TIMEOUT_MS_MIN,
-} from "../../../shared/parent-adjudication-bounds.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
+import { RecentlyDeniedPanel } from "../components/permissions/RecentlyDeniedPanel.js";
+import { isOwnerAwayAutoSkipMinutes } from "../../../shared/owner-away-permission.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
@@ -79,8 +70,6 @@ const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
     model: "reviewer",
   },
 };
-
-const MS_PER_SECOND = 1_000;
 
 /** What the Windows install click led to, as the panel shows it. */
 interface WindowsInstallOutcomeView {
@@ -331,6 +320,9 @@ export function PermissionsTab({
   // "unknown" until the first host read lands, and whenever the host reports a mode this tab cannot name: no radio is selected rather than a wrong one.
   const [mode, setMode] = useState<ExecutionModeDisplay>("unknown");
   const [modeBusy, setModeBusy] = useState(false);
+  const [ownerAwayAutoSkipMinutes, setOwnerAwayAutoSkipMinutes] = useState(0);
+  const [ownerAwayBusy, setOwnerAwayBusy] = useState(false);
+  const [ownerAwayRevision, setOwnerAwayRevision] = useState(0);
 
   // ── Explicit Approval Policy ──────────────────────
   const [requireExplicit, setRequireExplicit] = useState(true);
@@ -397,14 +389,6 @@ export function PermissionsTab({
   const windowsInstallBusy = windowsInstallPhase !== null;
   const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
-  // The master switch is a feature flag in app settings; the ceilings below it live in the permission settings
-  // file and travel over the reviewer slash dispatcher, so the two have separate busy flags and separate write paths.
-  const [adjudicationEnabled, setAdjudicationEnabled] = useState(true);
-  const [adjudicationBusy, setAdjudicationBusy] = useState(false);
-  // Bumped whenever a write is refused. The numeric fields are uncontrolled and keyed on the persisted value, so a rejection;
-  // which by definition leaves that value unchanged; would otherwise leave the refused number on screen as if it had been stored.
-  const [adjudicationRevision, setAdjudicationRevision] = useState(0);
-
   // True once the panel has content on screen. After that, a refresh must not reach for the blank/error surface: `loading` replaces the WHOLE panel with one line, the scroll container collapses from ~4000px to
   // one viewport, and the browser clamps scrollTop to the new maximum. When the content comes back the scroll position is gone; which is why removing a rule at the bottom of the page threw the user back to the top.
   const hasLoadedRef = useRef(false);
@@ -429,6 +413,7 @@ export function PermissionsTab({
         throw new Error(reviewerRes.error);
       }
       setMode(normalizeExecutionMode(modeRes.mode));
+      setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
       setRequireExplicit(policyRes.requireExplicitApproval);
       // Host-derived: `managed` alone misses an admin-dir file that does not set managed:true, which savePolicy still refuses to overwrite.
       setPolicyManaged(!policyRes.editable);
@@ -444,8 +429,6 @@ export function PermissionsTab({
       setSandboxEnabled(osSandboxOn);
       const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
       setWorkerConfinementEnabled(workerConfinementOn);
-      // Mirrors the store default (ON) for a settings file written before the flag existed; normalization stamps it on the next write.
-      setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
     } catch (e) {
       console.warn("[ave] permissions: load failed:", errorMessage(e));
       const message = t("permissionsTab.errorLoadFailed");
@@ -683,62 +666,25 @@ export function PermissionsTab({
     }
   };
 
-  const handleAdjudicationToggle = async () => {
-    if (adjudicationBusy) return;
-    const next = !adjudicationEnabled;
-    setAdjudicationBusy(true);
-    setAdjudicationEnabled(next);
-    try {
-      const res = await getApi().updateSettings({
-        features: { subAgentParentAdjudication: next },
-      });
-      if (isIpcErrorResult(res)) {
-        setAdjudicationEnabled(!next);
-        showBanner("error", ipcFailureText("adjudication toggle", res, t("permissionsTab.adjudicationToggleFailed")));
-      }
-    } catch (e) {
-      setAdjudicationEnabled(!next);
-      showBanner(
-        "error",
-        t("permissionsTab.adjudicationToggleError", { message: thrownErrorText("adjudication toggle", e) }),
-      );
-    } finally {
-      setAdjudicationBusy(false);
+  const handleOwnerAwayAutoSkip = async (value: number) => {
+    if (ownerAwayBusy || value === ownerAwayAutoSkipMinutes) return;
+    if (!isOwnerAwayAutoSkipMinutes(value)) {
+      setOwnerAwayRevision((revision) => revision + 1);
+      return;
     }
-  };
-
-  /** Write one ceiling of the parent-adjudication block. Every field goes through the reviewer slash dispatcher, which is the single writer for
-   * the permission settings file and rejects an out-of-range value rather than clamping it; so the form offers only values the store accepts. */
-  const handleAdjudicationChange = async (
-    field:
-      | "maxVerdict"
-      | "timeoutMs"
-      | "maxPerChildRun"
-      | "includeParentContextTurns"
-      | "backgroundEscalation"
-      | "model",
-    value: string | number,
-  ) => {
-    if (adjudicationBusy) return;
-    setAdjudicationBusy(true);
+    setOwnerAwayBusy(true);
     try {
-      const result = await window.ave.permission.reviewerDispatch(
-        `adjudication ${field} ${value}`,
-      );
-      if (result.ok) {
-        setReviewer(result.settings);
+      const result = await getApi().updateSettings({ permissions: { ownerAwayAutoSkipMinutes: value } });
+      if (isIpcErrorResult(result)) {
+        showBanner("error", ipcFailureText("owner-away auto-skip", result, t("permissionsTab.ownerAwaySaveFailed")));
       } else {
-        setAdjudicationRevision((revision) => revision + 1);
-        showBanner("error", formatReviewerDispatchError(result.error));
+        setOwnerAwayAutoSkipMinutes(value);
       }
-    } catch (error) {
-      setAdjudicationRevision((revision) => revision + 1);
-      showBanner(
-        "error",
-        t("permissionsTab.adjudicationToggleError", { message: thrownErrorText("adjudication ceiling", error) }),
-      );
+    } catch {
+      showBanner("error", t("permissionsTab.ownerAwaySaveFailed"));
     } finally {
-      setAdjudicationBusy(false);
+      setOwnerAwayRevision((revision) => revision + 1);
+      setOwnerAwayBusy(false);
     }
   };
 
@@ -1261,6 +1207,23 @@ export function PermissionsTab({
             <span className="text-sm">{requireExplicit ? t("permissionsTab.policyEnabled") : t("permissionsTab.policyDisabled")}</span>
             {policyManaged && <span className="text-base" title={t("permissionsTab.adminManagedTitle")}>🔒</span>}
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="owner-away-auto-skip">{t("permissionsTab.ownerAwayAutoSkipLabel")}</Label>
+            <p className="text-xs text-muted-foreground">{t("permissionsTab.ownerAwayAutoSkipHint")}</p>
+            <Input
+              key={ownerAwayRevision}
+              id="owner-away-auto-skip"
+              data-testid="owner-away-auto-skip"
+              type="number"
+              min={0}
+              step={1}
+              defaultValue={ownerAwayAutoSkipMinutes}
+              disabled={ownerAwayBusy}
+              aria-label={t("permissionsTab.ownerAwayAutoSkipLabel")}
+              className="w-32"
+              onBlur={(event) => void handleOwnerAwayAutoSkip(event.currentTarget.value === "" ? Number.NaN : Number(event.currentTarget.value))}
+            />
+          </div>
           {policyManaged && (
             <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
               {policyAdminReason
@@ -1271,6 +1234,8 @@ export function PermissionsTab({
             </p>
           )}
         </SettingsSection>
+
+        <RecentlyDeniedPanel showEmpty />
 
         {/* ── OS Tool Sandbox ── */}
         <SettingsSection
@@ -1576,232 +1541,6 @@ export function PermissionsTab({
         >
           <EgressGrantsList />
           <EgressDenialsList />
-        </SettingsSection>
-
-        {/* ── Sub-agent parent adjudication (tier 2 of the approval chain) ── */}
-        <SettingsSection
-          data-settings-section="permissions-adjudication"
-          title={t("permissionsTab.adjudicationTitle")}
-          description={t("permissionsTab.adjudicationDescription")}
-        >
-          <div className="flex items-center gap-3">
-            <Checkbox
-              checked={adjudicationEnabled}
-              data-testid="parent-adjudication-toggle"
-              aria-label={t("permissionsTab.adjudicationCheckboxAriaLabel")}
-              disabled={adjudicationBusy}
-              className="size-5"
-              onCheckedChange={() => void handleAdjudicationToggle()}
-            />
-            <span className="text-sm">
-              {adjudicationEnabled
-                ? t("permissionsTab.adjudicationEnabled")
-                : t("permissionsTab.adjudicationDisabled")}
-            </span>
-          </div>
-          <p className="text-[11px] text-muted-foreground" data-testid="parent-adjudication-chain-note">
-            {t("permissionsTab.adjudicationChainNote")}
-          </p>
-
-          <div className="grid gap-2 sm:grid-cols-2">
-            <div className="flex min-w-0 flex-col gap-1.5 rounded-md border px-3 py-2">
-              <span className="text-[11px] font-semibold">
-                {t("permissionsTab.adjudicationMaxVerdictLabel")}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {t("permissionsTab.adjudicationMaxVerdictHint")}
-              </span>
-              <Select
-                value={reviewer.parentAdjudication.maxVerdict}
-                disabled={adjudicationBusy || !adjudicationEnabled}
-                onValueChange={(value) =>
-                  void handleAdjudicationChange(
-                    "maxVerdict",
-                    value as ParentAdjudicationMaxVerdict,
-                  )
-                }
-              >
-                <SelectTrigger
-                  className="h-8 w-full text-[11px]"
-                  aria-label={t("permissionsTab.adjudicationMaxVerdictLabel")}
-                  data-testid="parent-adjudication-max-verdict-select"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className={DENSE_SELECT_POPUP}>
-                  <SelectItem value="low">{t("permissionsTab.adjudicationMaxVerdictLow")}</SelectItem>
-                  <SelectItem value="medium">
-                    {t("permissionsTab.adjudicationMaxVerdictMedium")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex min-w-0 flex-col gap-1.5 rounded-md border px-3 py-2">
-              <span className="text-[11px] font-semibold">
-                {t("permissionsTab.adjudicationModelLabel")}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {t("permissionsTab.adjudicationModelHint")}
-              </span>
-              <Select
-                value={reviewer.parentAdjudication.model}
-                disabled={adjudicationBusy || !adjudicationEnabled}
-                onValueChange={(value) =>
-                  void handleAdjudicationChange("model", value as ParentAdjudicationModelSource)
-                }
-              >
-                <SelectTrigger
-                  className="h-8 w-full text-[11px]"
-                  aria-label={t("permissionsTab.adjudicationModelLabel")}
-                  data-testid="parent-adjudication-model-select"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className={DENSE_SELECT_POPUP}>
-                  <SelectItem value="reviewer">
-                    {t("permissionsTab.adjudicationModelReviewer")}
-                  </SelectItem>
-                  <SelectItem value="parent-session">
-                    {t("permissionsTab.adjudicationModelParentSession")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex min-w-0 flex-col gap-1.5 rounded-md border px-3 py-2">
-              <span className="text-[11px] font-semibold">
-                {t("permissionsTab.adjudicationBackgroundEscalationLabel")}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {t("permissionsTab.adjudicationBackgroundEscalationHint")}
-              </span>
-              <Select
-                value={reviewer.parentAdjudication.backgroundEscalation}
-                disabled={adjudicationBusy || !adjudicationEnabled}
-                onValueChange={(value) =>
-                  void handleAdjudicationChange(
-                    "backgroundEscalation",
-                    value as ParentAdjudicationBackgroundEscalation,
-                  )
-                }
-              >
-                <SelectTrigger
-                  className="h-8 w-full text-[11px]"
-                  aria-label={t("permissionsTab.adjudicationBackgroundEscalationLabel")}
-                  data-testid="parent-adjudication-background-escalation-select"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className={DENSE_SELECT_POPUP}>
-                  <SelectItem value="deferred">
-                    {t("permissionsTab.adjudicationBackgroundEscalationDeferred")}
-                  </SelectItem>
-                  <SelectItem value="modal">
-                    {t("permissionsTab.adjudicationBackgroundEscalationModal")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex min-w-0 flex-col gap-1.5 rounded-md border px-3 py-2">
-              <span className="text-[11px] font-semibold">
-                {t("permissionsTab.adjudicationTimeoutLabel")}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {t("permissionsTab.adjudicationTimeoutHint", {
-                  min: PARENT_ADJUDICATION_TIMEOUT_MS_MIN / MS_PER_SECOND,
-                  max: PARENT_ADJUDICATION_TIMEOUT_MS_MAX / MS_PER_SECOND,
-                })}
-              </span>
-              {/* Commit on blur, not per keystroke: typing "30" passes through
-                  "3", and a per-keystroke write would persist that. `key`
-                  remounts the field when the stored value changes, so a value
-                  the store refused is reflected back. */}
-              <Input
-                type="number"
-                min={PARENT_ADJUDICATION_TIMEOUT_MS_MIN / MS_PER_SECOND}
-                max={PARENT_ADJUDICATION_TIMEOUT_MS_MAX / MS_PER_SECOND}
-                key={`${adjudicationRevision}-${reviewer.parentAdjudication.timeoutMs}`}
-                defaultValue={reviewer.parentAdjudication.timeoutMs / MS_PER_SECOND}
-                disabled={adjudicationBusy || !adjudicationEnabled}
-                aria-label={t("permissionsTab.adjudicationTimeoutLabel")}
-                data-testid="parent-adjudication-timeout-input"
-                className="h-8 w-24 text-[11px]"
-                onBlur={(e) => {
-                  const seconds = Number.parseInt(e.target.value, 10);
-                  if (!Number.isFinite(seconds)) return;
-                  const ms = seconds * MS_PER_SECOND;
-                  if (ms === reviewer.parentAdjudication.timeoutMs) return;
-                  void handleAdjudicationChange("timeoutMs", ms);
-                }}
-              />
-            </div>
-
-            <div className="flex min-w-0 flex-col gap-1.5 rounded-md border px-3 py-2">
-              <span className="text-[11px] font-semibold">
-                {t("permissionsTab.adjudicationMaxPerChildRunLabel")}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {t("permissionsTab.adjudicationMaxPerChildRunHint", {
-                  min: PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MIN,
-                  max: PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MAX,
-                })}
-              </span>
-              <Input
-                type="number"
-                min={PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MIN}
-                max={PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MAX}
-                key={`${adjudicationRevision}-${reviewer.parentAdjudication.maxPerChildRun}`}
-                defaultValue={reviewer.parentAdjudication.maxPerChildRun}
-                disabled={adjudicationBusy || !adjudicationEnabled}
-                aria-label={t("permissionsTab.adjudicationMaxPerChildRunLabel")}
-                data-testid="parent-adjudication-max-per-child-run-input"
-                className="h-8 w-24 text-[11px]"
-                onBlur={(e) => {
-                  const parsed = Number.parseInt(e.target.value, 10);
-                  if (!Number.isFinite(parsed)) return;
-                  if (parsed === reviewer.parentAdjudication.maxPerChildRun) return;
-                  void handleAdjudicationChange("maxPerChildRun", parsed);
-                }}
-              />
-            </div>
-
-            <div className="flex min-w-0 flex-col gap-1.5 rounded-md border border-warning/(--opacity-medium) px-3 py-2">
-              <span className="text-[11px] font-semibold">
-                {t("permissionsTab.adjudicationContextTurnsLabel")}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {t("permissionsTab.adjudicationContextTurnsHint", {
-                  min: PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
-                  max: PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
-                })}
-              </span>
-              <Input
-                type="number"
-                min={PARENT_ADJUDICATION_CONTEXT_TURNS_MIN}
-                max={PARENT_ADJUDICATION_CONTEXT_TURNS_MAX}
-                key={`${adjudicationRevision}-${reviewer.parentAdjudication.includeParentContextTurns}`}
-                defaultValue={reviewer.parentAdjudication.includeParentContextTurns}
-                disabled={adjudicationBusy || !adjudicationEnabled}
-                aria-label={t("permissionsTab.adjudicationContextTurnsLabel")}
-                data-testid="parent-adjudication-context-turns-input"
-                className="h-8 w-24 text-[11px]"
-                onBlur={(e) => {
-                  const parsed = Number.parseInt(e.target.value, 10);
-                  if (!Number.isFinite(parsed)) return;
-                  if (parsed === reviewer.parentAdjudication.includeParentContextTurns) return;
-                  void handleAdjudicationChange("includeParentContextTurns", parsed);
-                }}
-              />
-              <span
-                className="text-[10px] text-warning"
-                data-testid="parent-adjudication-context-turns-privacy-note"
-              >
-                {t("permissionsTab.adjudicationContextTurnsPrivacyNote")}
-              </span>
-            </div>
-          </div>
         </SettingsSection>
 
         {/* ── Section C: Rule Editor ── */}

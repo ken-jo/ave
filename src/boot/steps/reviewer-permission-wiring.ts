@@ -24,6 +24,7 @@ import {
 } from "../../permissions/manifest-integrity.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import { createRecentlyDeniedReplayResolver } from "../../permissions/reviewer/recently-denied-replay.js";
 import { errorMessage } from "../../shared/error-message.js";
 
 const log = createLogger("ave");
@@ -40,10 +41,16 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     subscriptionProviderFactory,
   } = ctx;
 
+  const applyOwnerAwayAutoSkip = () => ctx.approvalGate.setOwnerAwayAutoSkipMinutes(
+    settingsService.get("permissions")?.ownerAwayAutoSkipMinutes ?? 0,
+  );
+  applyOwnerAwayAutoSkip();
+  settingsService.onChanged("permissions", applyOwnerAwayAutoSkip);
+
   // Apply visibility deny rules after the registry exists; permission services must already exist for plugin construction.
   toolRegistry.setDenyRules(permissionManager.getVisibilityDenyRules());
 
-  // Bind the classifier, verdict cache, and deferred queue; streaming providers are adapted to one-shot review calls.
+  // Bind the classifier, verdict cache, and denial history; streaming providers are adapted to one-shot review calls.
   const reviewerStreamProviderFor = (vendor: string, selectedModel?: string): LLMProvider | null => {
     const llmSettings = settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
@@ -222,10 +229,16 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
         : reviewerStreamProviderFor,
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
       resolveParentSessionAdjudicationTarget,
-      onDeferredPendingChange: (summary) => {
-        sendToWindow(getMainWindow(), PERMISSIONS.deferredPending, summary, log);
+      onRecentlyDeniedChanged: (summary) => {
+        for (const window of ctx.host.desktop?.getAppWindows() ?? [getMainWindow()]) {
+          sendToWindow(window, PERMISSIONS.recentlyDeniedChanged, summary, log);
+        }
       },
     });
+    reviewerResult.recentlyDenied.setReplayResolver(createRecentlyDeniedReplayResolver({
+      memoryManager: ctx.memoryManager, toolRegistry,
+      executeAll: (...args) => ctx.conversationLoop.toolExecutor.executeAll(...args),
+    }));
     wireJudgeAgent({
       permissionManager,
       reviewer: reviewerResult,

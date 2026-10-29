@@ -5,6 +5,7 @@ import {
 } from "../../permissions/host-shell-execution-plan.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
 import type { ApprovalMemory } from "../../shared/permissions-events.js";
+import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { parsePatchEnvelope } from "../../shared/patch-envelope.js";
 import type { Tool } from "../base.js";
@@ -98,10 +99,16 @@ export async function approvalIdentityFor(
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
   sessionId?: string,
 ): Promise<InvocationApprovalIdentity> {
-  return {
+  const identity = {
     approvalCacheKey: approvalCacheKeyFor(tool, input, cwd, hostShellExecutionPlan),
     approvalMemory: await approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan, sessionId),
   };
+  if (identity.approvalMemory.kind === "key" && identity.approvalMemory.scope.kind === "mcp-tool" &&
+      (!matchesMcpToolApprovalMemory({ source: tool.source, toolName: tool.name, mcpServerId: tool.mcpServerId, ...identity }) ||
+       tool.mcpRuleIdentity?.tool !== identity.approvalMemory.scope.toolName)) {
+    throw new Error("Tool approval scope does not match the registered tool");
+  }
+  return identity;
 }
 
 export function approvalCacheKeyFor(

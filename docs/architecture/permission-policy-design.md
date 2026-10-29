@@ -1,7 +1,7 @@
 # Permission Policy Design
 
 This document describes the current permission-policy contract for Ave tool
-execution. Korean source history is preserved at
+execution. A Korean summary is available at
 [docs/ko/architecture/permission-policy-design.md](../ko/architecture/permission-policy-design.md).
 
 ## Purpose
@@ -17,8 +17,8 @@ system-admin `policy.json` files. For the permission reader, a valid file is a
 JSON object with numeric `version:1`. Mistyped `requireExplicitApproval` and
 `managed` booleans are normalized to their safe value, `true`.
 The numeric top-level `version:1` is required even when the managed file only
-configures `marketplaces` or `service`. Without it, the permission reader forces
-explicit approval and locks user editing; the section readers remain independent.
+configures `marketplaces` or `service`. Without it, permission admission denies and user editing locks;
+the section readers remain independent.
 A valid admin file takes precedence for each field it states. Unstated admin
 fields fall through to the user value or the default. In particular, a valid
 admin file that omits `requireExplicitApproval`
@@ -38,7 +38,8 @@ instead of falling back to the public endpoint.
 For the permission reader, unreadable files, invalid JSON, non-object JSON,
 or a missing, mistyped, or unsupported version produce a
 conservative permission policy: `requireExplicitApproval:true`, `managed:true`,
-and user edits locked. Loading does not fall back to a permissive user policy,
+and user edits locked. Tool admission denies while the policy is untrusted;
+a reviewer, mode or card cannot authorize past unread deny rules. Loading does not fall back to a permissive user policy,
 and saving rejects before creating or opening user state. Diagnostics record
 the path and failure reason without policy contents or parser exception text.
 Any valid admin file also locks app-mediated user-policy edits, including one
@@ -48,8 +49,8 @@ on the file and its parent using pinned, non-following handles. The
 [architecture contract](architecture.md#tool-governance) describes that trust
 boundary. Untrusted input follows the invalid-file path; Settings displays the
 path and sanitized cause, and audit records the failure.
-An invalid user file contributes no permission fields and does not create an
-administrative edit lock when the admin file is absent.
+An invalid user file cannot supply grants or bypass admission denial.
+Administrative edit locking remains separate from tool admission.
 
 ### Project Rule Scope
 
@@ -67,28 +68,18 @@ Existing rule files are retained unchanged. Rules previously keyed to home or an
 | Tool category | Read, write, shell, network, browser, meta, or other declared categories. |
 | Trust origin | User keyboard, LLM tool argument, plugin UI, local API, routine, or headless task. |
 | Project context | Normalized project root/name used for scope and audit. |
-| Policy mode | Default, strict, auto-review, or allow mode. |
+| Policy mode | Stored `strict`, `default`, `auto` or `allow`, displayed as Default, Allow writes, auto and Allow. |
 | Execution surface | Foreground chat, background routine, inline plugin/MCP surface, or local API. |
 
 ## Decision Order
 
-1. Validate the tool exists in the registry.
-2. Validate the schema, category, and path fields declared by the provider.
-3. Apply hard-deny rules: denied sensitive-path operations, invalid manifests,
-   sandbox limits, explicit deny policies, and unsafe origin combinations.
-4. Resolve policy mode.
-5. Apply mandatory per-call gates, user ask/allow rules and saved grants, then
-   the category-level mode matrix. Default and auto-review allow eligible,
-   checkpoint-backed project file writes here, before reviewer routing. An
-   eligible call still undecided may enter the configured judge chain; existing
-   auto-review uses the builtin judge adapter.
-6. Route to user approval, inline allow, deferred queue, or deny.
-7. Execute only after the decision is resolved.
-8. Write audit data for allow, ask, deny, deferred, reviewer unavailable, and
-   reviewer failure outcomes.
+The [owner-approved permission decision tree](permission-decision-tree.md) is the sole source of decision order and the action-by-mode matrix. This document specifies evidence, execution boundaries and approval delivery; it does not define a second decision sequence.
 
-Hard-deny rules always run before reviewer or user approval. A user approval
-does not make an invalid tool definition valid.
+The normalized request carries the tool/source, effective kind, lexical and canonical effect paths, trusted principal, mode, human availability and applicable rules/grants. Admission denial is terminal: an invalid manifest, corrupt policy store or protected host credential store cannot be repaired by a reviewer or approval. Forced one-shot requests never enter automatic review or approval memory. User-configured outside-read restrictions remain explicit rules.
+
+Argument rewriting finishes before authorization. User script `PreToolUse` runs before any target approval and can only block; an allow result means no objection. Exact effect identity, cancellation, audit integrity, manifest capabilities, SSRF and execution-time path checks remain enforced after a permission result.
+
+Shell analysis below supplies evidence. Historical L2/L6, exact-only host-shell and human-only unproven dispositions are superseded by the decision tree; static proof does not itself grant authority.
 
 Shell policy consumes the canonical [typed analysis and prepared execution
 contract](architecture.md#process-boundaries). One parse of the original command
@@ -133,7 +124,7 @@ those constructs.
 
 The static pass does not follow command text supplied through a child shell's
 `-c`, an evaluation command, heredoc or here-string. A fully literal `-c` or
-evaluation-command payload has the narrow exact-rule exception defined below;
+evaluation-command payload has the narrow literal-evaluator evidence described below;
 heredoc and here-string code payloads remain unproven. The pass does not read a
 script file or infer its contents from an earlier write. File-, stdin- and
 network-backed content is an accepted indirection limit only after a registered
@@ -237,33 +228,9 @@ lifecycle coverage are described in the architecture contract.
 
 ## Shell Credential And Sink Classification
 
-Host-shell credential/sink classification is separate from exact raw-word
-identity. Unsandboxed input over 2,000 characters asks, or denies headless,
-before command-dependent work. In Lane B, an input-length or structural-cap
-refusal reached before static analysis returns the ordinary unsandboxed L6 ask,
-or denies headless. Lane A retains an 8,000-character executable envelope limit.
-Bash heredoc bodies receive a separate aggregate 65,536-byte data allowance only
-when every heredoc operator in the original command has a quoted delimiter and
-no known code-consuming receiver is present. A total executable-token limit
-applies across the whole command, including nested commands and assignment
-values. It never resets at simple-command boundaries; operators and separators
-remain bounded by source length. A Lane A character, data, token or structural
-limit stops analysis with a foreground modal/L2 or headless deny. No rule, saved
-grant, mode or reviewer satisfies either refusal. Identified floors retain their
-precedence over ordinary reasons.
-Hard denies, credential-exfiltration and sensitive-path floors, analysis limits,
-scoped floors, explicit ask rules, origin and explicit host-execution requirements
-retain their authority. When the invocation actually uses a host shell confinement plan,
-auto mode with an enabled judging foreground reviewer routes destructive and runtime
-unproven floors to foreground review at L2. Other modes, auto approval set to off,
-and unsandboxed execution retain per-call human approval; headless unproven input
-denies. Disabled review and disposable guests retain human-only floors. The
-host shell sandbox confines writes to the workspace's admitted write scope and
-egress to the proxy, so the reviewer can assess the full command within those
-boundaries. Disposable guests have their own network policy; their egress is not
-claimed as proxy-confined and does not qualify for this route. The recursive
-container-traversal gate still requires a person before any floor review. This
-does not establish static proof or a reusable allow rule.
+Host-shell credential/sink classification supplies evidence separate from raw-word rule identity. Lane B input is bounded at 2,000 characters; Lane A retains an 8,000-character executable envelope. Quoted, non-code-consuming heredoc bodies may use the separate aggregate 65,536-byte data allowance. Global executable-token and structural limits bound analysis. A refusal leaves no static proof.
+
+The [decision tree](permission-decision-tree.md) alone routes that evidence: unproven/destructive signals use ordinary mode/human handling unless they identify a forced floor. Host credential stores remain admission-denied. Protected control paths, critical delete, project escape, exfiltration and other-principal requests require forced one-shot approval. Ordinary secret reads are not blanket admission denials. A reviewer cannot turn incomplete parsing into execution proof or relax native confinement.
 
 Decision cost is bounded by structural limits, not elapsed time or a work-step
 verdict. The floor derives immutable facts for each source node and literal token
@@ -319,17 +286,13 @@ ordinary data.
 
 The pass returns exactly one of these outcomes:
 
-| Outcome | Evidence | Permission behavior |
+| Outcome | Evidence | Permission use |
 | --- | --- | --- |
-| `visible-floor` | A sensitive path, credential source, upload sink or retained catalogue effect is directly visible in the literal outer command | Per-call L2 ask with `forceModal`, before every allow rule or saved grant; headless denies; never remembered |
-| `unproven` | Lane B refuses the input length or a structural cap before static analysis | Foreground L6 ask under the ordinary unsandboxed exact-rule requirement; headless denies; no rule, mode or reviewer repairs it |
-| `unproven` | Lane A exceeds a cap, or either lane has a within-cap syntax refusal, an unknown command or argument grammar, an unconsumed operand, runtime argv, or a callee or argument that depends on expansion, substitution, a splat, loop, callback, generated text, prior mutation or other runtime state | Per-call L2 ask with `forceModal`; headless denies; no broad rule, mode, reviewer or exact rule repairs it except the positively parsed literal-evaluation case below |
-| `static-complete` | A registered argv grammar consumes the known command and every literal argument in the original parse, with no runtime-state or prior-effect dependency | Sandboxed execution, including headless, follows its normal route; unsandboxed automatic allowance requires a current-format exact raw-word rule, and unsandboxed headless denies without it |
+| `visible-floor` | Literal path, credential source, upload sink or catalogue effect | Normalize into admission denial, a contract-defined forced floor or ordinary evidence; the label alone does not force every request. |
+| `unproven` | Input/structural limit, unsupported syntax, unresolved argv or runtime state | No static proof; route through the tree's shell mode/human decision. |
+| `static-complete` | A registered grammar consumes every original literal operand | Evidence only. Confined safe shells may use sandbox-auto; host/escalated shells use mode/human even if read-only. |
 
-A `visible-floor` wins over the other outcomes. Hard denies and independent
-execution gates retain their existing precedence. Character, data, total-token
-and structural limits close the request immediately and never qualify for an
-exception; their lane-specific L6/L2 routing is defined above.
+Actual effect identity and independent execution preparation remain enforced. No analysis label grants broader filesystem or network authority.
 
 The visible floor inspects only literal structure from the outer command.
 Literal paths and redirects receive the existing canonical sensitive-path
@@ -357,37 +320,31 @@ predict effects. An unknown command or argument grammar remains unproven; there
 is no fallback for a script or build form outside its registered grammar.
 Runtime argv producers,
 including `xargs`, command-launching `find` forms, parallel runners and a
-PowerShell pipeline into `&` or `Start-Process`, are always unproven. They cannot
-use an exact rule, broad rule or the literal-evaluation exception. There is no
-same-input file-provenance or execution-state model.
+PowerShell pipeline into `&` or `Start-Process`, are always unproven.
+A matching rule is not static execution proof. There is no same-input
+file-provenance or execution-state model.
 
 Literal-payload dynamic evaluation has one narrow exception. A registered,
 closed evaluator grammar must recognize a single outer simple command, consume
 every option and operand, and identify a fully literal payload. This covers the
 supported direct builtin `eval "ls"` and `Invoke-Expression 'dir'` forms on an
 independently proven outer host; the names alone are not enough. The verified
-nested-launcher recipe below uses this same exact-rule exception. An
+nested-launcher recipe below uses this same literal-evaluator evidence. An
 unknown option, including an unsupported common parameter, makes the request
-unproven and ineligible for every allow rule. For example, a common parameter on
+unproven; mode/rule routing remains owned by the decision tree. For example, a common parameter on
 `Invoke-Expression` is unsupported unless the evaluator grammar lists it.
 Every payload and other operand must be literal, with no variable, substitution,
 splat, concatenation, block, callback or generated string.
 
-When the evaluator grammar succeeds, a current-format exact rule for the
-complete original command may authorize it. The payload is opaque: the floor
-does not parse it, inspect paths inside it, or infer its effects. Without that
-exact rule the request remains `unproven`, so foreground asks at L2 and headless
-denies even when the shell itself is sandboxed. A wildcard, prefix or tool-wide
-rule cannot satisfy the exception.
+When the evaluator grammar succeeds, the payload remains opaque: analysis does not parse it, inspect paths inside it or infer its effects. It supplies literal-evaluation evidence without granting execution. The permission pipeline applies applicable rules, forced floors and mode/human behavior to the complete original request.
 
 The exact key preserves the complete outer command's raw words: quote style,
 raw content, program spelling, case, module qualifier and paths. Only whitespace
 between words is canonicalized. The exact rule is the user's approval of that
-literal text, not a proof about the payload. A sensitive path, credential or
-upload sink directly visible outside the payload still returns `visible-floor`
-and forces per-call consent even when the exact rule matches.
+literal text, not a proof about the payload. A visible path, credential or
+upload sink remains independently classified under the decision tree.
 
-Every other dynamic form remains `unproven` and is never exact-rule eligible.
+Every other dynamic form remains `unproven`; a rule cannot mint static proof.
 This includes `Invoke-Expression $code`, `& $command`, `bash -c "$code"`,
 PowerShell splats, script-block invocation, `InvokeScript`,
 `AddScript().Invoke()`, `[ScriptBlock]::Create`, shell functions, loops,
@@ -397,7 +354,7 @@ any of these constructs to recover an allow result.
 
 `make` has no positive command grammar. Its variable assignments, evaluation
 options and build files can select executable code, so even a literal invocation
-is unproven. It has no literal-evaluation exact-rule exception.
+is unproven. It receives no literal-evaluation proof.
 
 Verified launcher admission is available only to the canonical host Bash
 and PowerShell tools. The host issues a sealed in-process handle bound to the
@@ -408,7 +365,7 @@ and execution must use that matching identity. Execution renders only the owned
 absolute image and argv; it never resolves the admitted program through PATH.
 The original command remains the exact-rule and cache identity. Serialized input,
 other classifier consumers and manually typed terminal commands cannot mint the
-handle and receive no native proof or exact-rule upgrade.
+handle and receive no native proof from a matching rule.
 
 This admission accepts one fully literal simple outer command only. Assignments,
 unregistered wrappers, compound commands, pipelines, redirects and preceding
@@ -475,8 +432,8 @@ is excluded because attributes and clean filters lack a complete no-execution,
 no-write proof. Cached/staged diff reads can refresh a shared split-index file's
 mtime even with optional locks disabled. A check-time index inspection cannot
 exclude a later split-index swap, so index comparisons remain unproven.
-Unsupported input offers no exact-rule upgrade: foreground asks per call and
-headless denies.
+Unsupported input offers no checked repository-read proof. Permission routing
+still follows the decision tree, including auto review before headless fallback.
 
 Before issuing a plan, the host inspects the authorized real cwd without
 launching Git against repository configuration. That exact directory must contain
@@ -562,15 +519,7 @@ object-id line, with or without a trailing newline, is not an accepted key
 file. Its configured and canonical paths retain the existing sensitive-path
 and sandbox deny floors; this format check makes no claim about other secrets.
 
-Visible path, credential and sink floors still win. A checked plan follows the
-normal sandboxed route, including headless; unsandboxed automatic execution
-still requires a current-format exact raw-word rule and denies headless without
-one. This rule authorizes the unsandboxed route only after the checked proof
-succeeds; it cannot turn a refused command into a checked one. Broad rules,
-saved grants, modes and judges cannot substitute for that rule. Separately
-governed host services retain their own controls. Opaque
-exact-approved evaluator payloads retain their existing semantics and are not
-inspected to discover Git or mint this proof.
+Visible path, credential and sink evidence still enters the decision tree. A checked plan does not turn a refused command into a checked one and supplies no extra grant. Host execution uses the mode/human route; confined execution uses its actual plan. Opaque literal-evaluator payloads are not inspected to discover repository operations or mint checked proof. Separately governed host services retain their own controls.
 
 ### Implicit Configuration And Launcher Startup
 
@@ -585,8 +534,8 @@ reliable across supported versions. Native `curl` requires exactly `-q` or
 `--disable` as its first argument. A later or grouped `-q` is insufficient;
 `-K` and `--config` are outside its positive grammar even after suppression.
 Unknown options still refuse, and visible upload, destructive and sensitive-path
-floors still win. These refusals offer no exact rule and cannot be repaired by
-an existing exact or broad allow. A case-insensitive command-shell alias that
+evidence remains independent. A matching exact or broad allow cannot turn
+these refusals into a positive grammar proof. A case-insensitive command-shell alias that
 also names a known native program must satisfy both grammars, since editions
 can resolve it differently. A missing native grammar refuses the alias too.
 Thus direct `curl` and `wget` aliases remain unproven; use a supported explicit
@@ -652,8 +601,8 @@ configuration has not been proven ignored under the launch flags; this is an
 evidence gap, not an assertion of a verified exploit on that edition. Modern
 Windows user JSON can select an endpoint before the prelude. Ordinary
 CurrentUser execution policy alone is not the reason for refusal. No exact
-rule, saved grant or broad allow upgrades an unproven startup path; foreground
-requires per-call consent and headless denies. Executable admission remains
+rule, saved grant or broad allow upgrades an unproven startup path into proof.
+The permission tree routes unproven execution separately from that proof. Executable admission remains
 independent and required before any parser spawn. Administrative policy is host
 trust only where user or agent mutation is excluded. Elevated processes cannot
 prove an installation immutable to themselves.
@@ -687,10 +636,9 @@ The outer host's startup proof does not transfer to a child runtime.
 The Bash recipe suppresses profile/rc loading and inherited startup files,
 functions and shell-option imports. The simple-command restriction governs
 the outer launcher; payload syntax stays opaque and its effects are not
-inferred. It uses only the literal-evaluation exact-rule
-exception: a current-format exact rule for the complete original raw command
-is required, including in a sandbox; broad allows cannot satisfy it. No other
-nested form receives an exact upgrade. Script-file, module, stdin, interactive,
+inferred. Literal-evaluation evidence describes the complete original command;
+applicable rules and modes are evaluated by the permission pipeline. No nested
+form gains static proof merely from an approval. Script-file, module, stdin, interactive,
 encoded, abbreviated and alternative startup modes remain unproven.
 Visible outer path, credential and sink operands retain their floors; payload
 contents do not supply operands to that inspection.
@@ -734,13 +682,7 @@ reconstructed; a fresh user-authored rule is required to grant current-format
 authority. Deny and ask rules retain their narrowing authority regardless of
 version.
 
-Wildcard and other broad shell allows apply only to `static-complete` sandboxed
-requests. An unsandboxed request runs without asking only under a current-format
-exact rule. A headless unsandboxed request likewise requires that exact rule or
-denies; a sandboxed `static-complete` request follows the normal headless route.
-The literal-evaluation exception is the sole case in which a current-format
-exact rule may satisfy `unproven`; every other `unproven` request asks or denies
-as described above.
+Applicable exact, prefix and other shell rules retain deny-before-ask-before-allow precedence under the [decision tree](permission-decision-tree.md). Rule matching never supplies static proof. Host-shell execution and escalation use ordinary mode/human routing; there is no separate exact-only host-shell authorization matrix.
 
 PowerShell launcher detection checks the whole command, including launcher
 names inside quoted strings and across pipelines or sequences. Once a launcher
@@ -758,8 +700,8 @@ operand, and uses no wrapper list or recursive dialect parser. Module/basename,
 executable-extension and case normalization are detection-only. Visible literal
 file/stdin/network indirection for a simple invocation otherwise remains
 eligible under the static contract above; runtime argv production remains
-unproven. Literal evaluation payloads use only the narrow exact-rule exception;
-other dynamic forms remain unproven.
+unproven. Literal evaluation payloads retain their limited opaque-payload
+evidence; other dynamic forms remain unproven.
 
 PowerShell cmdlet argv uses its own closed parameter grammar. Unsupported
 parameters, including non-ASCII dash spellings, are unproven. The registered
@@ -856,6 +798,10 @@ cache identity. Permission consumers receive the plan before deciding; neither
 a renderer flag nor a process-wide capability can establish that a particular
 command will run sandboxed. This state contract does not redefine command-rule
 matching or approval precedence.
+
+A failed native filesystem sandbox attempt may have partially changed state. Only a host-branded, per-command attributed filesystem denial bound to the exact command and cwd can request escalation. The executor creates a distinct host invocation, reruns admission/rules/floors/mode/review and obtains any required normal approval before a single host effect. The card warns that the first attempt may have partially executed. No host replay occurs on cancellation, timeout, a newly applicable deny or a mismatched command. A headless ordinary request reviews first in auto; a human fallback denies with no-retry guidance.
+
+Stderr text, copied/serialized evidence, arbitrary metadata, unrelated native records and plugin/MCP results cannot mint escalation authority. Trusted native filesystem-denial attribution is currently supported only by the macOS monitor. The installed Linux monitor reports diagnostic attempts that are deliberately rejected as escalation authority; Windows also supplies no trusted record for this bridge. On those paths the original failure remains. The controlled executor tests exercise policy orchestration with issued evidence and do not demonstrate native Linux attribution. Worker capability grants and native protected-path denies are not relaxed in place; the host request is a fresh decision for a distinct execution plan. See the [executor escalation tests](../../src/tools/__tests__/executor-sandbox-escalation.test.ts) for request/result identity and effect-count coverage.
 
 Host-shipped JavaScript scripts use the [host runtime descriptor](../../src/main/host-script-runtime.ts), exposed as `javascriptRuntime` and `bundledScriptsDirectory` in the model's **Application paths (JSON)**. With `ELECTRON_RUN_AS_NODE=1`, only the exact host runtime and a verified direct first script operand receive read roles. The script must be a direct bundled CommonJS file matching the build manifest's SHA-256; arbitrary interpreters, traversal/namespace aliases and later data operands receive no such exemption. Workbook/request paths and redirections still pass ordinary path policy, permission and approval gates. Runtime directory reads are bound only for the admitted runtime/script pair, add no write roots and do not pierce protected read floors. The host script directory is write-denied in both host policy and native confinement, including beneath an admitted workspace. User-shadowable skill instructions cannot supply these trusted paths. The [workbook editing design](xlsx-skill-editing.md#execution-and-delivery) owns its script delivery and command examples.
 
@@ -1414,8 +1360,8 @@ process confined, network not claimed) ahead of the host-shell plan, whose
 then grades guest-scoped effects as such. A read or write of any guest path
 is LOW. A guest shell is graded first match wins:
 
-1. **Destructive → MEDIUM** (a structured denial on the headless lane, an ask
-   in the foreground). Matched on raw text and on tokens, so quoted command
+1. **Destructive → MEDIUM** (risk evidence for the permission pipeline;
+   critical deletion remains a forced floor). Matched on raw text and on tokens, so quoted command
    names, long options and `--` count; a dangerous long option matches when
    its spelling is a prefix of the dangerous name, the way GNU and git resolve
    abbreviations. This covers `rm`/`unlink`/`shred`/`truncate`/`dd`,
@@ -1603,29 +1549,7 @@ check; directory rename/replacement after the host check remains a limitation
 on that platform. Their final policy validation and native spawn share the same
 serial queue.
 
-A sandbox that is requested but unavailable (missing `bwrap` or `socat`, or a
-start failure) is not a one-shot route. The shell runs as a plain child under
-the same policy as sandbox-off, while its plan keeps
-`fallbackReason: "requested-sandbox-unavailable"`: the approval card, the
-model's shell-environment description and the tool result say the sandbox is
-unavailable. By owner decision 2026-10-25 (unsandboxed shell exact-rule requirement) every plain shell — sandbox off,
-unavailable or not covering the command, an explicit host request, and the
-Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`) — runs unasked
-only on a current-format exact allow rule for that proven literal command,
-`Bash(<command>)` or `PowerShell(<command>)`, matched on the command's literal
-raw words with the same strictness and only after the static floor permits that
-reuse (owner decision 2026-10-25). Otherwise it asks on the shared
-decision row of the approval card (owner decision 2026-10-25, unified approval
-card) in every mode. Headless, a matching exact rule runs it — for the Plan B
-and an explicit host request too — and without one it is denied and audited.
-The reviewer and the judge are not consulted for it. Wildcard allow rules apply
-only to sandboxed runs; deny rules may be wildcards. Remembered approvals saved
-for plain shells before this decision stay inert, without migration or a card
-marker. The parser and plan in
-[host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
-the [approval gate](../../src/permissions/approval-gate.ts) and
-[execution permit](../../src/permissions/host-shell-execution-permit.ts) own this
-contract.
+A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"` and `sandboxed: false` in its host execution plan. The card, model environment and tool result disclose the missing isolation. Explicit environment activation failures retain the startup refusal described above. When a plain host route is available, it uses the decision tree's host-shell mode/human path; ordinary approval may offer prefix rules. Protected floors and host credential-store admission denial remain authoritative. Plan issuance, approval and execution permits must describe the same exact route.
 
 Inside a live operator-attested disposable one-shot, `executionMode: "host"`
 means the strongest shell authority reachable by that process, which is still
@@ -2304,8 +2228,8 @@ does not treat depth below the verified scratch root as a signal, so a staged
 build tree there is graded like any other scratch write. The platform temp roots themselves are not a Layer 1 default; the
 conversation loop adds them to its per-turn base set
 ([base-allowed-directories.ts](../../src/permissions/base-allowed-directories.ts)),
-where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
-sensitive leaves beneath any default root, and `permissions.additionalDirectories`
+where the world-writable `/tmp` tradeoff is stated. Protected credential/control
+paths retain their admission or forced-floor behavior, and `permissions.additionalDirectories`
 extends the list rather than replacing it.
 
 The pinned `@anthropic-ai/sandbox-runtime` patch removes unconditional write
@@ -2405,12 +2329,14 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 
 ## Policy Modes
 
-| Mode | Behavior |
-| --- | --- |
-| Default | Allows low-risk workspace reads and eligible, checkpoint-backed project file writes. Other writes and out-of-scope access ask; network and shell retain their own permission rules. A configured active judge chain may decide eligible calls left undecided after rules and mandatory gates. |
-| Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
-| Auto-review | Allows the same eligible, checkpoint-backed project file writes before review. Uses the reviewer for remaining eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to reviewed calls; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
-| Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. Within-cap runtime-dependent, syntactically unproven or unknown/incompletely consumed argv asks at L2 or denies headless; a Lane B pre-analysis cap refusal follows the L6 unsandboxed path. Only a qualifying within-cap literal-evaluation request whose closed grammar consumes every option and operand can use the documented exact-rule exception; a cap refusal never can. Unsandboxed shell execution still requires a current-format exact rule after positive proof. |
+| Stored ID | Display name | Behavior |
+| --- | --- | --- |
+| `strict` | Default / 기본 | New-install default. Ordinary reads and proven sandboxed read-only shells pass; writes and other shells ask. Secret reads, network and non-read-only MCP tools ask. |
+| `default` | Allow writes / 쓰기 허용 | Allows eligible checkpoint-backed project writes and safe confined shells. Other requests use approval. |
+| `auto` | auto | Allow writes behavior plus automatic review for ordinary requests that would ask. LOW/MEDIUM allow; HIGH, error, abort or breaker fallback use a normal card. |
+| `allow` | Allow / 허용 | Allows ordinary requests; admission denies, explicit deny rules and forced one-shot floors remain authoritative. Safe mutating confined shells retain the sandbox-auto outcome. |
+
+Stored IDs are stable. Existing users with persisted `default` keep Allow writes behavior; no existing mode is reset to the new-install default. The complete matrix and precedence live in the [decision tree](permission-decision-tree.md#mode-behaviour-matrix-owner-clarification-2026-10-30). Host/escalated shell state wins over read-only evidence.
 
 ### Project file writes
 
@@ -2455,12 +2381,12 @@ captures and validates before-images. Automatically allowed execution also
 re-resolves canonical paths against the project roots, failing if a parent
 symlink swap has moved a target outside those roots.
 
-This category rule runs after sensitive-path denial, explicit deny and ask
+This category rule runs after credential-store admission denial, explicit deny and ask
 rules, corrupt-store handling, remote-controller one-shot consent, the scoped
 Edit protected-control-path and project-escape floors, staged/overlay origin
-checks, and strict mode. It does not open a new lane for a headless turn without
-a user. These gates cannot be replaced by the checkpoint or an existing grant.
-Strict mode still asks for all tools. Shell policy is unchanged.
+checks, and strict mode. Checkpoint eligibility does not replace admission or forced one-shot gates.
+Strict mode asks for writes; ordinary reads remain allowed. Headless requests
+that resolve to allow or sandbox-auto can run; only a required human card denies.
 
 For an ordinary write outside the project, the directory approval card also
 approves that invocation, avoiding a second category-level card for the same
@@ -2480,64 +2406,28 @@ the exact sorted set of touched paths. Its card names only `apply_patch`. Other 
 and other tools retain their own memory identities. Reuse still requires the
 existing risk check and re-prompts on escalation.
 
-Real secrets such as `.env`, `.env.local` and `.env.production` remain
-hard-denied. The exact template names `.env.example`, `.env.sample`,
+Ordinary secret reads, including `.env`, `.env.local` and `.env.production`,
+use the mode/rule decision; secret writes follow ordinary file-write rules.
+Host encryption keys, credential databases and cookie/token stores remain
+admission-denied because raw access bypasses the host credential-use protocol. The exact template names `.env.example`, `.env.sample`,
 `.env.template` and `.env.dist` are excluded from the environment-file
 sensitive set for reads and writes; other sensitive rules still apply. Existing
 read-before-write observation and unchanged-since-read hash checks remain
 mandatory. A stale observation instructs the agent to re-read the file.
 
-For actually confined shell invocations, destructive and runtime-evaluation floor
-asks use the same foreground reviewer eligibility and configured threshold as
-other auto-mode calls. The original permission decision supplies the floor reason through the existing
-rule-verdict context
-alongside the full command; review assesses the text without executing runtime
-expansions. Destructive compounds are at least MEDIUM in rule review, including
-when model review degrades to rules. LOW/MEDIUM verdicts pass only through the configured
-threshold; HIGH asks a person. These confined builtin shell floor calls bypass remembered approvals and
-verdict-cache reuse, never seed a verdict cache or reusable rule, and retain
-per-call approval when review asks a person or is unavailable. Credential and
-sensitive-path floors remain mandatory human decisions.
+For confined shell invocations, unproven or destructive evidence uses the ordinary mode/human route unless it establishes a forced floor from the decision tree. Critical deletion, project escape, exfiltration and protected control paths remain forced one-shot requests, without reviewer or remembered-grant reuse. Host or escalated execution uses the ordinary mode/human route and may offer prefix rules.
 
 ## Foreground And Headless Behavior
 
-Foreground requests use one bottom-floating, non-modal approval dock because the user is present.
-The dock shares the routed canvas, does not create a backdrop or focus trap, and
-keeps the surrounding page readable and operable while execution remains
-blocked on an explicit decision. Headless requests must not interrupt the user
-with a surprise foreground surface. Non-low headless requests move to the
-deferred queue and surface through a queue button or history view.
+Foreground requests use the bottom-floating, non-modal approval dock. The host binds the answer to the exact live request, registered app surface and principal. Normal cards offer once/session/always/folder/prefix choices only where the request permits them. Forced cards offer this invocation only.
 
-Process-level approval availability is a separate host capability. Native
-`--exec` keeps the normal main-chat tool and egress scope rather than setting
-the routine `headless` loop flag. Instead, exec-mode mints a host-issued
-unattended turn authority (`UnattendedTurnAuthority`) for each turn it runs,
-and the query loop projects that authority onto the turn's tool permission
-context as the unattended (`headless`) policy lane marked `ownerUnattended`.
-The owner started the turn with nobody to ask, so an ask on that lane follows
-the routine contract: mutating builtin calls route to the reviewer (LOW allows;
-MEDIUM and HIGH deny with a structured tool error the model sees), an
-out-of-directory request is recorded in the deferred queue and denied for the
-turn, and explicit host execution fails closed. Unlike a background routine,
-the turn is the owner's own gesture, so their allow rules (layer 3) and "Allow
-always" grants (layer 5) still apply before the reviewer lane does. The
-authority is never parsed from chat input, is minted per turn, and is spent by
-the turn that carries it, so a retained session's later turns, which arrive
-through remote surfaces, cannot inherit or replay it. A turn without that authority that still
-requires explicit authorization ends with the typed `authorization-required`
-terminal, which the model cannot retry; that remains the outcome for an
-attached client's turn and for a child agent boundary re-issued through
-`agent_spawn`. Routine loops keep their existing `headless` deny/defer/reviewer
-semantics even when the containing process also lacks an approval surface.
+An owner-away turn with an app approval surface is not headless. Its card waits without a timeout by default. `permissions.ownerAwayAutoSkipMinutes` is a nonnegative integer: `0` means unlimited; a configured positive value denies the unanswered request after that many minutes. Skip is never approval.
 
-Closing a deferred modal does not grant permission and does not delete the audit
-record. It leaves the item pending or closed according to the queue state.
+True headless execution has no human approver. In auto mode ordinary requests reach the reviewer first; only fallback to a human card denies. Forced one-shot requests deny without reviewer dispatch. A no-approver or configured auto-skip denial tells the model: **Nobody can approve this request; do not retry.** Host-created turn provenance remains unforgeable and cannot be inherited by a later remote turn.
 
-An unanswered approval that expires is distinct from a user or parent refusal.
-Host-owned expiration and rejected-request outcomes propagate through
-[approval-outcome.ts](../../src/tools/pipeline/approval-outcome.ts) to tool and
-directory approval results and audit reasons. Expiration does not grant access,
-change the approval deadline or alter command timeouts and cancellation.
+There is no deferred approval queue. Recently denied stores bounded, DLP-redacted summaries, never raw executable arguments or grants. Legacy `deferred-queue.jsonl` does not authorize anything. A reconstructable entry can be manually rerun with the user as approver: it starts admission again and requires a fresh card, skipping remembered approvals and reviewer automation. Bounded live callbacks are one-use and do not survive restart. A persisted non-executable reference may instead resolve the original call from its existing saved transcript after restart; the denial record stores only tool-use identity and input/root digests, not a second copy of executable arguments. The [replay resolver](../../src/permissions/reviewer/recently-denied-replay.ts) requires one matching call, unchanged project-root identity and input digest, matching tool/source/provider identity, and validation against the current tool schema without coercion. Missing, ambiguous, changed or invalid references make rerun unavailable. A stored denial or digest never becomes permission.
+
+Cancellation and host-owned expiry remain distinct from a human refusal. Approval outcome reasons propagate to tool/directory results and audit; changing approval waiting does not change execution ceilings.
 
 ### Headless operator container attestation
 
@@ -2750,190 +2640,21 @@ claim a benchmark score or task correctness.
 
 ## Automated Judge Chain
 
-[`PermissionJudge`](../../src/permissions/judge/judge-contract.ts) is the shared
-automated-decision seam. Auto mode, foreground LOW/MEDIUM review, headless review
-and the authoritative shadow baseline all enter the judge engine. The default
-chain contains the `builtin-llm` adapter around the existing classifier, retaining
-its risk composition, tracing, cancellation, cache, approval provenance and
-failure outcomes, including eligible host-built-in `meta` calls. Absent judge
-settings or a valid empty configured `permissions.judge.chain` use that default
-builtin reviewer chain. The shared pause and resume behavior below applies to
-every automated lane.
-Automated review requires a conversation or task session identity and a
-host-created invocation identity. Either missing identity fails clearly instead
-of sharing an unscoped counter or inventing a new invocation.
+The [decision tree](permission-decision-tree.md) owns reviewer eligibility and outcome routing. Review runs only in auto mode for ordinary requests that require assessment; protected floors never reach it. LOW/MEDIUM allow. HIGH, unavailable provider, malformed output, timeout or live abort falls back to a normal card; without a human, that fallback denies and includes the no-retry message. A corrupt policy store is an admission denial before review.
 
-The [judge settings contract](../design/permissions-always-allow-and-judge.md#p2-judge-slot)
-defines the persisted ordered chain, transports and model syntax. A configured
-chain defaults to `shadow`: stages run and are audited, but their results do not
-replace the authoritative builtin reviewer chain's result or create deferred
-entries. Shadow observations do not change breaker counters; the authoritative
-baseline counts once per request and observes the same pause and resume state.
-Selecting `active` applies the chain result to eligible calls. Shell and write
-categories default on; network defaults off.
+The judge settings and transport contract remains in the [judge design](../design/permissions-always-allow-and-judge.md#p2-judge-slot). Configuration and shadow observations cannot override this permission contract. Shadow stages do not grant authority or count breaker denials. Explicit model selections do not silently switch providers; unset reviewer selection follows the active chat model. Invalid settings writes fail before persistence and valid writes preserve unrelated settings, with compare-and-swap rollback on refresh failure. The judge subtree remains user-only configuration under the protected-path floor.
 
-The host dispatches only after earlier permission layers leave a request
-undecided. Explicit deny, ask and allow rules, mandatory per-call floors, saved
-grants and mode decisions keep their authority. Strict mode, capability grants
-and remote-controller requests never enter the chain. Existing trust-based
-requirements for explicit approval cannot be lowered by a judge.
+Review requires a host-created invocation identity and conversation/task identity. The host supplies normalized input and host policy facts; external projections are DLP-redacted. Tool results are not review instructions. Audit records the redacted request, final outcome, model, invocation identity, reason and fallback. Review cannot persist a rule. Required audit failures remain terminal.
 
-Stages execute in configured order. A final `allow` or `deny` ends the chain;
-`ask`, insufficient confidence or a stage failure advances to the next stage.
-When an external stage has `escalateBelow`, missing confidence also escalates.
-Builtin stages report risk rather than confidence and reject that threshold.
-The last ambiguous stage asks the user. A builtin foreground `ask` also advances
-to the next stage, while builtin headless MEDIUM/HIGH becomes a final `deny`.
-An exhausted chain deadline or failed last stage uses the failure path, never an
-allow. The [settings parser](../../src/permissions/judge/judge-settings.ts),
-[shared contract](../../src/permissions/judge/judge-contract.ts) and
-[engine](../../src/permissions/judge/judge-engine.ts) own complete fields/defaults,
-request/verdict types and chain semantics respectively.
-The implicit builtin chain imposes no additional stage or whole-chain timeout:
-the classifier retains its existing retry, streaming and transport limits.
-Explicit configured chains retain their budgets, and caller cancellation
-propagates in both cases.
+The breaker counts each successfully completed classifier non-allow assessment once per invocation within the active root turn; errors, aborted assessments and shadow observations do not count: three consecutive denials or twenty total denials send the rest of that turn to normal human cards. An allowed assessment resets only the consecutive count. Human consent does not reopen automation during that turn; a fresh turn resets the breaker. Parent/child identity, settings refresh and shadow observation must not reset or double-count the active turn.
 
-The model picker offers configured providers and their model options using the
-same source as chat selection. `permissions.judge.model` selects the permission
-reviewer model with the chat model chooser; stored `null` (unset) resolves at
-each reviewer re-wire to the active chat model, so the reviewer follows chat.
-The `permissions.reviewer` block no longer stores a provider or model: the
-`provider`/`model` keys older builds wrote are dropped on load and leave the
-file on the next save, and a reviewer patch that names them is rejected.
-A builtin stage without `model` follows the permission reviewer model. An
-explicit `<provider>/<model>` selection uses that exact model; an unavailable
-selection fails rather than switching providers or models, and an unavailable
-reviewer model fails each review as `unavailable` rather than degrading to rule. Settings read issues are visible. A rejected chain retains typed
-`chainRejected` metadata and uses the existing unavailable fallback, without
-becoming explicit off or an implicit builtin provider. With normalized active
-mode it asks with forced approval in the foreground and denies plus defers
-headless. Shadow rejection only records the observation and preserves the
-authoritative auto/headless baseline without a judge-induced queue entry.
-Warnings for non-chain fields keep their normalizer defaults and do not block an
-otherwise valid chain.
+### Approval delivery and execution binding
 
-A fatal settings-file read, JSON parse, root-object or permissions-structure
-failure leaves no trustworthy mode. The host carries `settingsUnreadable` and
-conservatively applies the existing unavailable fallback to judgeable categories:
-forced foreground approval or headless deny plus defer, without legacy/provider
-fallback. Persisted mode and normalizer defaults remain unchanged. A missing file
-or block leaves the configured chain off and uses the default builtin reviewer
-chain; a parsed rejected shadow chain keeps the baseline above.
+Only a registered application window's exact main frame can answer its currently delivered card. Subframes, webviews, plugin origins and unrelated app windows cannot mint consent. The explicit approval-owner registry controls delivery through attachment, adoption, detachment and parent links; ownership is never inferred from focus or persisted ancestry. User-driven attachment may transfer delivery. An app renderer remains part of the application's trust level; delivery binding does not defend against a compromised app renderer.
 
-Invalid writes fail before changing the file, and valid writes preserve unrelated
-settings. If runtime refresh fails, the write receipt restores the original raw
-judge subtree, including absence, only if it still equals the just-written
-subtree. This compare-and-swap preserves a later manual change and reports the
-conflict instead of overwriting it. The [settings store](../../src/permissions/permission-settings-store.ts)
-owns persistence and rollback.
+The host verifies native human consent once for the exact request. Rules, peers, parent agents, away automation and remembered approvals are not fresh human consent. Losing an owner never approves a card; owner-away waiting follows the setting above. A forced other-principal request cannot be answered by parent adjudication or away automation.
 
-The `permissions.judge` subtree is a user-only write floor. The Settings UI and
-manual user edits may change it; agent settings tools, rules, saved approvals
-and judge decisions cannot. The dedicated settings transport retains the normal
-renderer sender guards. Configuration-path protections apply independently to
-file and shell writes.
-
-The host supplies user messages and the normalized invocation with cwd, project
-root, effective sandbox state, rule verdict and policy. No tool results enter
-the request. External transport and audit use the canonical DLP-redacted
-projection. External commands use absolute executable argv without a shell and
-a minimal environment allow-list; URLs use HTTPS or loopback HTTP. Diagnostics
-are bounded, redacted and audited rather than treated as decisions.
-
-An active foreground `deny` blocks execution; `ask` requests approval. An
-unavailable or failed final stage asks through the forced approval surface.
-In headless execution, an active non-allow denies the current invocation and
-appends to the existing `DeferredQueue`. A paused breaker uses the normal user
-approval card for interactive requests and denies with a reason naming the
-threshold when no user is available. Existing approval-card and notification
-surfaces explain the pause in English and Korean. Caller cancellation is
-terminal, and internal contract or active-audit failures propagate.
-Every allow is treated as automated for pause checks unless the host consumed
-verified fresh native human consent for that exact action. Policy grants,
-remembered approvals, reviewer and parent decisions, and sealed rationale
-receipts do not establish fresh human consent.
-Fresh native consent is a gate-verified response to the current signed approval
-card, [consumed once by the host](../../src/permissions/judge/manual-approval.ts).
-The renderer supplies the answer; the host verifies an allow answer and mints
-the one-use consent provenance. Rules, peers, agents and headless outcomes cannot
-resume a paused breaker. Renderers never author host-only provenance,
-`remoteControllerOrigin` or parent-adjudication facts, as defined by the
-[sub-agent approval chain](architecture.md#sub-agent-approval-chain-three-tiers).
-Only a registered application window's exact main frame can answer a card.
-Subframes, webviews, plugin, `render_html`, MCP-app and other non-app origins
-or partitions are rejected.
-
-The explicit owner registry controls delivery: the card reaches the surface
-currently hosting its session or terminal. Every attachment and lifecycle
-update uses `updateApprovalSurface`; the exported registry view only resolves
-owners. Main chat adoption and restore, side-panel load, tab detachment, work
-panes and Work Board runs register their current surface. Fresh and resumed
-sub-agents register live parent links; scheduled and background runs register
-their trusted surface or no surface. The resolver never infers a missing owner
-from chat holders, persisted ancestry or focused windows.
-Listing and answers use the current registration. A user-driven attach may
-transfer it to another app window, including when a replacement primary adopts
-a cached conversation; existing children follow their parent's registration.
-An answer from a currently unattached window is rejected and audited without
-settling the card or minting fresh consent. A new request with no registered
-live surface follows the headless deny path and names `no approval surface`.
-
-App windows are one trust level. An app renderer may perform an allowed attach
-and then answer that session's card, so per-window delivery binding does not
-defend against a compromised app renderer. That defense would need a
-trusted-chrome approval surface: a main-process-drawn prompt plus native input
-proof. The current approval surface does not provide that protection.
-If an owner closes without aborting the turn, an already pending card remains
-pending until the normal five-minute deny timeout. Losing its owner never
-auto-approves it; a registered replacement owner can answer before timeout.
-Remembering exact approvals or shell rules and requesting scope proposals use
-the same registered-frame and current-delivery checks; knowing a card id grants
-neither operation.
-After all asynchronous hooks and route admission, one synchronous final gate
-rechecks cancellation, required audit integrity and writability, the shared
-breaker and plugin/remote authority immediately before entering the handler.
-No await separates that gate from handler entry. A paused invocation requires
-the normal forced one-shot native approval card interactively or denies when
-no user is available. Returning from a card or renewed route admission re-enters
-the same gate; fresh human consent bypasses only the pause requirement.
-Permission-request hooks and signed ask-audit preparation remain within a
-bounded, cancellable attempt. Only waiting for the user moves outside the tool
-execution ceiling and uses the ordinary five-minute card timeout. Actual
-execution keeps its bounded timeout and cancellation semantics.
-
-One chain-owned circuit breaker counts successful classifier blocks per root
-conversation. A final non-allow verdict counts once per host invocation
-identity, including a builtin foreground `ask`. Scope review, ordinary review
-and cache assessments reuse that identity and cannot count the same invocation
-again. Distinct invocations count separately even with identical arguments.
-Intermediate verdicts, shadow observations, failures, timeouts
-and separate host safety rejections do not count. Thresholds are fixed at 3
-consecutive or 20 total blocks. An allowed action resets only the consecutive
-count. The total persists for the session and resets only when the total
-threshold itself triggers a fallback.
-Counting happens after the provider and host hook complete, before audit
-append. A stop during append retains the completed block; a stop before review
-completion counts nothing.
-
-Reaching either threshold pauses automation for the triggering request and
-every subsequent request. Authenticated human approval of a prompted action
-resumes automation and clears the consecutive count, preserving the total
-unless its threshold already triggered the reset. Parent-agent, away-authority
-and remembered automatic approvals cannot resume automation. The host resolves
-a child session to its root conversation before judge dispatch, so parent and
-subagents share breaker and judge audit identity. Settings rewiring retains the
-counter. Deferred entries keep the requesting session's identity to route later
-approval correctly.
-
-The existing audit writer records each stage's provider/version, resolved model,
-verdict and latency alongside the root session, invocation identity, argument
-hash, redacted request, final decision, rationale and fallback. Active decisions
-require a successful write to the HMAC-protected permission audit. Shadow records use the shadow
-channel. Normal builtin review and the authoritative shadow baseline preserve
-the resolved reviewer model in their stage audit. A judge may suggest a rule
-but cannot persist it. Hooks may redact or short-circuit to ask/deny before
-judging and may only retain or downgrade the result afterward.
+Immediately before handler entry, a synchronous gate rechecks cancellation, required audit integrity, active-turn breaker state and plugin/remote authority. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain block-only and cancellable. Execution retains its existing ceilings and current effect identity.
 
 ## Reviewer Failure
 
@@ -2954,7 +2675,7 @@ Reviewer failure is not a silent allow. If the provider is missing, times out, o
 returns malformed output, the host fails closed:
 
 - foreground calls ask the user with explicit reviewer-unavailable context;
-- headless calls defer or deny according to configured failure behavior;
+- headless calls deny only after review falls back to a human card, with no-retry guidance;
 - audit records include the reviewer failure path.
 
 A windowless host reports `authorization-required` only after a completed
@@ -2969,7 +2690,7 @@ exact-input-bound evidence from its existing raw-input rule trace; the gate
 uses this evidence without reclassifying display data. A conservative HIGH
 display during assessment failure is separate from a completed HIGH judgment.
 Completed HIGH judgments, changed sandbox state and mandatory one-shot requests
-retain their restrictions, including explicit host execution, remote controllers
+retain their restrictions, including forced other-principal requests
 and sealed rationale approvals.
 
 “Always allow” stores the exact tool, canonical arguments, source, trust origin
@@ -2992,8 +2713,10 @@ must declare schemas. Manifest categories are optional provider metadata; the
 host derives the effective category per invocation and policy logic remains
 host category- and origin-driven.
 
-Low-trust MCP tools cannot lower their risk solely through a reviewer verdict
-when hard policy requires explicit approval.
+MCP tools with `readOnlyHint` follow the read lane. Other MCP tools use the
+mode/human route and may remember approval per tool. Host capability and manifest
+checks remain independent. Each plugin effect enters the same pipeline with its
+actual effect identity; a tool-level allow never authorizes unrelated effects.
 
 ## Local API Permission Mutation
 
@@ -3011,7 +2734,7 @@ Audit records should include:
 - project identity when available;
 - decision and decision reason;
 - reviewer verdict or reviewer failure state;
-- deferred queue state for headless requests.
+- recently denied summaries and manual rerun availability.
 
 Audit records must not contain raw secrets or unnecessary private payload data.
 
@@ -3020,11 +2743,11 @@ Audit records must not contain raw secrets or unnecessary private payload data.
 The permission scenario board and unit tests under `src/permissions/__tests__`
 encode the expected behavior for default, strict, auto-review, reviewer
 failures, invalid plugin manifests, MCP tools, overlay prompt imports, and
-headless deferred queue behavior.
+headless review-first denial and no-retry behavior.
 
 Judge coverage must include the real foreground and headless dispatch lanes,
 trace/cancellation and failure parity, both block thresholds and resume on human
 approval, chain escalation, settings/model validation,
-the settings write floor, root-session breaker sharing and deferred routing.
+the settings write floor, active-turn breaker sharing and recently denied routing.
 Module or mocked-classifier tests alone do not prove dispatch parity, Settings
 interaction or live-provider behavior; those require their own observed checks.

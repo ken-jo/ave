@@ -16,15 +16,11 @@ import {
 import { SettingsSection, type SettingsSectionFeedback } from "../components/PageShell.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { formatMediumDateTime } from "../../../shared/format-time.js";
-import { AwayAuthorityContent } from "./AwayAuthorityContent.js";
 import type { AveApi } from "../types.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 
 export interface TelegramConnectionContentProps {
   api: AveApi;
-  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
-   * has no conversation of its own, and main refuses a grant that names no tile. */
-  chatGroupId: string;
   /** Report only completed successful mutations so embedding rows can collapse; pairing-code creation stays open until the
    * owner uses it. */
   onCompleted?: () => void;
@@ -83,7 +79,7 @@ function sharedConversationIsOpen(snapshot: TelegramConnectionSnapshot): boolean
  * freshly minted pairing code, which main returns exactly once and which no
  * snapshot can reproduce.
  */
-export function TelegramConnectionContent({ api, chatGroupId, onCompleted }: TelegramConnectionContentProps) {
+export function TelegramConnectionContent({ api, onCompleted }: TelegramConnectionContentProps) {
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<TelegramConnectionSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -399,20 +395,6 @@ export function TelegramConnectionContent({ api, chatGroupId, onCompleted }: Tel
 
             {snapshot.state === "active" && sharedConversationIsOpen(snapshot) ? (
               <p className="text-[11px] text-muted-foreground">{t("telegramConnection.sendFirstMessage")}</p>
-            ) : null}
-
-            {/*
-              Arming lives here rather than in its own tab because it is only
-              meaningful once something is shared: the answerer refuses every
-              turn that is not a paired-platform turn, so a control for it on a
-              disconnected desktop would offer an authority over nothing.
-            */}
-            {snapshot.approval !== null && !readOnly ? (
-              <AwayAuthorityContent
-                api={api}
-                chatGroupId={chatGroupId}
-                shareIsLive={snapshot.state === "active" && sharedConversationIsOpen(snapshot)}
-              />
             ) : null}
 
             {connected ? (

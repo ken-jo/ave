@@ -1,9 +1,10 @@
-// Keep durable glob rules separate from exact decision memory. Identity binds tool/source/trust/cwd and canonical args or an opted-in target; changed target-wide args require re-review, and exact denies block both reviewer and foreground skip paths (docs/research/sandbox-isolation.md).
+// Keep durable glob rules separate from exact decision memory. Identity binds tool/source/trust/cwd and canonical args or an opted-in target; changed target-wide args require re-review except explicit per-tool authority, and exact denies block both reviewer and foreground skip paths (docs/research/sandbox-isolation.md).
 // The live gate controls persistence: completed HIGH and mandatory one-shot allows cannot persist, exact denies may. Session decisions stay in memory, persistent decisions use private namespace files and atomic exclusive staging/fsync/rename writes; legacy session rows retain process lifetime.
 import { mkdir, readFile, access, constants, stat, chmod } from "node:fs/promises";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { aveHome } from "../shared/ave-home.js";
+import { matchesMcpToolApprovalMemory, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { createLogger } from "../lib/logger.js";
 import type {
@@ -93,6 +94,8 @@ export function captureApprovalWorkingDirectory(executionCwd: string): { path: s
 export interface ApprovalCacheKeyIdentity {
   readonly key?: string;
   readonly memoryKey?: string;
+  /** Retains restrictive argument decisions written before this scope had a policy key. */
+  readonly scopeKind?: "mcp-tool";
 }
 
 // Build the Store B identity from host-derived values. Every caller goes through this, so a site that carries a policy key but forgot to say what memory does fails here instead of being guessed.
@@ -109,7 +112,17 @@ export function approvalCacheKeyIdentity(
   if (memory.kind !== "key" || typeof memory.key !== "string" || memory.key.length === 0) {
     throw new Error("Approval memory key must be non-empty");
   }
-  return Object.freeze({ ...(key === undefined ? {} : { key }), memoryKey: memory.key });
+  if (memory.scope.kind === "mcp-tool") {
+    if (!isMcpToolApprovalScope(memory.scope)) throw new Error("Invalid tool approval scope");
+    const suffix = ":" + mcpToolApprovalCacheKey(memory.scope);
+    const toolName = key?.endsWith(suffix) ? key.slice(0, -suffix.length) : "";
+    if (!matchesMcpToolApprovalMemory({ source: "mcp", toolName, mcpServerId: memory.scope.serverId, approvalCacheKey: key, approvalMemory: memory })) {
+      throw new Error("Tool approval memory identity does not match its scope");
+    }
+  }
+  return Object.freeze({ ...(key === undefined ? {} : { key }), memoryKey: memory.key,
+    ...(memory.scope.kind === "mcp-tool" ? { scopeKind: "mcp-tool" as const } : {}),
+  });
 }
 
 // Exact input also requires the same tool: different native edits may interpret identical input fields differently.
@@ -370,15 +383,21 @@ export async function lookupUserDecision(
         denyOnlyKeys.add(conversationEntryKey(legacyUnscopedKey, approvalConversationRoot(sessionId)));
       }
     }
-    const legacyArgsUnscopedKey = argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key);
-    denyOnlyKeys.add(legacyArgsUnscopedKey);
-    denyOnlyKeys.add(globalEntryKey(legacyArgsUnscopedKey));
-    if (workingDirectoryIdentity !== undefined) {
-      const legacyArgsProjectKey = argsEntryKey(toolName, args, source, trustOrigin, approvalCacheKey.key, workingDirectoryIdentity);
-      denyOnlyKeys.add(legacyArgsProjectKey);
-      if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyArgsProjectKey, approvalConversationRoot(sessionId)));
-    } else if (sessionId !== undefined) {
-      denyOnlyKeys.add(conversationEntryKey(legacyArgsUnscopedKey, approvalConversationRoot(sessionId)));
+    // Server tools had no policy key before per-tool scopes. Keep those exact
+    // denials restrictive without migrating an old exact allow into broad consent.
+    const legacyPolicyKeys = source === "mcp" && approvalCacheKey.scopeKind === "mcp-tool"
+      ? [approvalCacheKey.key, undefined] : [approvalCacheKey.key];
+    for (const policyKey of legacyPolicyKeys) {
+      const legacyArgsUnscopedKey = argsEntryKey(toolName, args, source, trustOrigin, policyKey);
+      denyOnlyKeys.add(legacyArgsUnscopedKey);
+      denyOnlyKeys.add(globalEntryKey(legacyArgsUnscopedKey));
+      if (workingDirectoryIdentity !== undefined) {
+        const legacyArgsProjectKey = argsEntryKey(toolName, args, source, trustOrigin, policyKey, workingDirectoryIdentity);
+        denyOnlyKeys.add(legacyArgsProjectKey);
+        if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyArgsProjectKey, approvalConversationRoot(sessionId)));
+      } else if (sessionId !== undefined) {
+        denyOnlyKeys.add(conversationEntryKey(legacyArgsUnscopedKey, approvalConversationRoot(sessionId)));
+      }
     }
   }
   const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));

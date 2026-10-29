@@ -26,6 +26,13 @@ import {
   type PowerShellTraversalValue,
 } from "../../shared/powershell-recursive-traversal.js";
 
+import { permissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
+import { modelShellPath } from "../../shared/shell-native-path.js";
+import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
+import { inspectShellPermissionPaths } from "../../tools/shell-path-policy.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
+import { homedir } from "node:os";
+
 class SharedPowerShellContext extends PowerShellAnalysisContext {
   readonly floor = new ShellFloorContext("powershell");
 }
@@ -898,6 +905,67 @@ function applyStartupPolicy(signals: ShellFloorSignals): ShellFloorSignals {
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return signals;
   if (isPowerShellStartupPinned()) return signals;
   return { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
+}
+
+/** Report parsed filesystem bindings, retaining repeated targets and their individual effects.
+ * When unproven is true, paths may be partial; route uncertainty through the pipeline. */
+export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, cwd: string): {
+  paths: readonly PermissionPathEvidence[];
+  unproven: boolean;
+  credentialStore: string | null;
+} {
+  const parsed = asPowerShellCommand(input);
+  const paths: PermissionPathEvidence[] = [];
+  if (parsed.syntax.pipelines === null) {
+    const visible = inspectShellPermissionPaths(parsed.command, cwd);
+    return { paths: visible.paths, unproven: true, credentialStore: null };
+  }
+  const program = staticProgramFor(parsed);
+  let unproven = parsed.analysisLimited || parsed.syntax.pipelines === null || program.dynamic || program.encodedReason !== null;
+  let credentialStore: string | null = null;
+  const add = (value: string, effect: "read" | "write", deleting = false) => {
+    value = value.replace(/^(?:~|\$HOME|\$env:USERPROFILE)(?=[\\/]|$)/i, homedir());
+    if (/[*?\[\]]/.test(value)) unproven = true;
+    const modeled = modelShellPath(value, { dialect: "powershell", location: cwd });
+    let canonical = modeled.normalizedPath;
+    if (modeled.nativePath !== undefined) {
+      try { canonical = resolveShellFilesystemPath(modeled.nativePath, cwd); }
+      catch { unproven = true; }
+    } else unproven = true;
+    const absolute = /^(?:[a-z]:[\\/]|[\\/])/i.test(value);
+    const lexical = absolute ? value : cwd + "/" + value;
+    paths.push({ ...permissionPathEvidence({ lexical, canonical, effect }, cwd), ...(deleting ? { deleteIntent: true as const } : {}) });
+  };
+  for (const stage of program.stages) {
+    const policy = stage.name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[stage.name];
+    const credential = policy?.credential;
+    if (credential === true || (credential instanceof RegExp && credential.test(stage.visible.filter((value): value is string => value !== undefined).join(" ")))) {
+      credentialStore ??= "Host credential store access";
+    }
+    if (stage.proof.kind === "static-complete" && stage.proof.dataOnly) continue;
+    if (policy === undefined || policy.native) {
+      if (stage.argv.every((value): value is string => value !== undefined)) {
+        const native = inspectShellPermissionPaths(stage.argv.map((value) => shellQuote(value)).join(" "), cwd);
+        paths.push(...native.paths);
+        unproven ||= native.unproven !== null;
+      } else unproven = true;
+      continue;
+    }
+    const effects = policy.effects;
+    if (!effects.some((effect) => ["read", "file-write", "provider-write", "cwd-write"].includes(effect))) continue;
+    const effect = effects.some((effect) => ["file-write", "provider-write", "cwd-write"].includes(effect)) ? "write" : "read";
+    const parameters = new Set(["path", "literalpath", "filepath", "destination", "newname", "workingdirectory", ...(policy.destination?.parameters ?? [])]);
+    for (const name of parameters) {
+      const value = parameterValue(stage.visible, name);
+      if (value !== undefined) add(value, stage.name === "copy-item" && ["path", "literalpath"].includes(name) ? "read" : effect, stage.name === "remove-item");
+    }
+    const positional = positionalValues(stage);
+    const values = stage.name === "select-string" ? positional.slice(1) : positional;
+    const count = ["copy-item", "move-item", "rename-item"].includes(stage.name!) ? 2 : 1;
+    for (const [index, value] of values.slice(0, count).entries()) add(value, stage.name === "copy-item" && index === 0 ? "read" : effect, stage.name === "remove-item");
+    if (stage.argv.some((value) => value === undefined)) unproven = true;
+  }
+  return { paths, unproven, credentialStore };
 }
 
 export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd)); }

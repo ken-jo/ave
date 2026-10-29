@@ -5,7 +5,7 @@ import { buildPermissionEvaluationContext } from "../../../permissions/evaluatio
 import { JudgeContractError, JudgeFailure, type JudgeDecision, type JudgeFailureKind, type PermissionJudge } from "../../../permissions/judge/judge-contract.js";
 import { collectingAudit, judgeSettings, scriptedStage } from "../../../permissions/judge/__tests__/judge-request-fixture.js";
 import { PermissionManager, type PermissionCheckResult } from "../../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { RuleBasedRiskClassifier, type RiskClassifier } from "../../../permissions/reviewer/risk-classifier.js";
 import type { ToolExecutorCallbacks } from "../../executor.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "../reviewer-dispatch.js";
@@ -21,11 +21,11 @@ afterEach(async () => {
 function subject(judge?: PermissionJudge | null, classifier: RiskClassifier = new RuleBasedRiskClassifier()) {
   const root = resources.makeTmpDir("ave-reviewer-delegation-");
   const manager = new PermissionManager(join(root, "permissions.json"));
-  const queue = new DeferredQueue(join(root, "deferred.jsonl"));
+  const queue = makeRecentlyDeniedStore(join(root, "deferred.jsonl"));
   const audit = collectingAudit();
   manager.setMode("auto");
   manager.setInteractiveAutoApprove("low");
-  manager.setReviewer({ classifier, cache: resources.makeVerdictCache(join(root, "cache.jsonl")), deferredQueue: queue });
+  manager.setReviewer({ classifier, cache: resources.makeVerdictCache(join(root, "cache.jsonl")), recentlyDenied: queue });
   const stage = scriptedStage("decision-provider");
   const settings = judgeSettings({ chain: judge === undefined ? [] : [stage] });
   manager.setJudge({
@@ -79,9 +79,9 @@ describe("reviewer dispatch consumes chain decisions", () => {
       expect(current.audit.chained).toEqual([expect.objectContaining({
         decision: "judge", judgeRecord: expect.objectContaining({ decision, source: "judge" }),
       })]);
-      expect(current.queue.listPending()).toHaveLength(lane === "headless" && decision === "deny" ? 1 : 0);
+      expect((await current.queue.list())).toHaveLength(lane === "headless" && decision === "deny" ? 1 : 0);
       if (lane === "headless" && decision === "deny") {
-        expect(result.deferred?.queueId).toBe(current.queue.listPending()[0].id);
+        expect(result.reason).toContain("do not retry");
       }
     });
 
@@ -96,7 +96,7 @@ describe("reviewer dispatch consumes chain decisions", () => {
       expect(current.audit.chained).toEqual([expect.objectContaining({
         judgeRecord: expect.objectContaining({ fallback: kind, source: "fallback" }),
       })]);
-      expect(current.queue.listPending()).toHaveLength(lane === "headless" ? 1 : 0);
+      expect((await current.queue.list())).toHaveLength(lane === "headless" ? 1 : 0);
       expect(current.manager.getJudgeBreaker().snapshot(SESSION_ID)).toEqual({ consecutive: 0, total: 0, open: false });
     });
 
@@ -123,7 +123,7 @@ describe("reviewer dispatch consumes chain decisions", () => {
         onPermissionReview: (event) => statuses.push(event.status),
       }, abort.signal);
       expect(result.decision).toBe("deny");
-      expect(current.queue.listPending()).toHaveLength(0);
+      expect((await current.queue.list())).toHaveLength(0);
       expect(statuses).toEqual(["reviewing", "failed"]);
       if (lane === "foreground-auto") expect(result.reviewer).toBeUndefined();
     });

@@ -8,7 +8,7 @@ import { validateSandboxPath } from "../sandbox/path-validator.js";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
-  isSensitivePath,
+  isAdmissionDeniedPath,
   isConfiguredSessionReadPath,
 } from "../permissions/sensitive-paths.js";
 
@@ -46,7 +46,8 @@ export function assertReadableFilePath(
     resolved = lexical;
   }
   const canonical = canonicalizePathForMatch(resolved);
-  const sensitive = isSensitivePath(caseFoldForMatch(canonical), "read");
+  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(lexical), "read")
+    ?? isAdmissionDeniedPath(caseFoldForMatch(canonical), "read");
   if (sensitive) return { ok: false, error: "sensitive-path" };
   if (isConfiguredSessionReadPath(canonical)) return { ok: true, resolved };
   const check = validateSandboxPath(resolved, cwd, [...extraAllowed]);

@@ -2,6 +2,7 @@
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
+import { selectDecision } from "./support/decision-bar.js";
 import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import type { ApprovalMemory } from "../../../../shared/permissions-events.js";
@@ -101,6 +102,24 @@ describe("ToolApprovalContent remember scope", () => {
     cleanup();
     expect(scopeLine(request("move_file", { kind: "key", key: "k", scope: { ...scope, overwrite: true } })))
       .toContain("대상 덮어쓰기와 함께");
+  });
+
+  it("discloses that a server tool approval covers all arguments", () => {
+    const line = scopeLine({ ...request("mcp_catalog_update", {
+      kind: "key", key: "tool-memory", scope: { kind: "mcp-tool", serverId: "catalog", toolName: "update" },
+    }), source: "mcp" });
+    expect(line).toContain("catalog 서버의 이 도구(update)를 모든 인자에 대해");
+    expect(line).toContain("/workspace/project");
+    expect(line).toContain("한 번 허용은 현재 호출에만 적용");
+    expect(line).toContain("거부·확인 규칙과 필수 승인은 유지");
+    expect(line).not.toContain("동일한 인자만");
+  });
+
+  it("discloses the same tool-wide scope when remembered across projects", () => {
+    scopeLine({ ...request("mcp_catalog_update", { kind: "key", key: "tool-memory", scope: { kind: "mcp-tool", serverId: "catalog", toolName: "update" } }), source: "mcp" });
+    selectDecision("allow-everywhere");
+    expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("모든 인자와 작업 경로에서 기억");
+    expect(screen.getByTestId("allow-always-exact-scope")).not.toHaveTextContent("동일한 인자만");
   });
 
   it("says this exact command for a shell command scope", () => {

@@ -6,7 +6,6 @@ import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
 export function SettingsInlineView({
   api,
-  chatGroupId,
   initialTab,
   sectionTarget = null,
   onSectionApplied,
@@ -17,9 +16,6 @@ export function SettingsInlineView({
   onDiscardExactDeny,
 }: {
   api: AveApi;
-  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
-   * has no conversation of its own, and main refuses a grant that names no tile. */
-  chatGroupId: string;
   initialTab: string;
   /** The section inside `initialTab` a deep link named, or `null`. One-shot: the panel reports back through
    * `onSectionApplied` and the window drops it. */
@@ -38,7 +34,7 @@ export function SettingsInlineView({
   return (
     <SettingsContent
       api={api}
-      chatGroupId={chatGroupId}
+
       onSaved={onSaved}
       initialTab={initialTab}
       sectionTarget={sectionTarget}

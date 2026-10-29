@@ -293,11 +293,6 @@ export const CHANNELS = {
   // gesture that lets an approval be answered while nobody is watching: it is a
   // decision the owner makes at this keyboard, in advance, and nothing reachable
   // from a message may create, extend, or widen it.
-  awayAuthority: {
-    status: "ave:away-authority:status",
-    arm: "ave:away-authority:arm",
-    disarm: "ave:away-authority:disarm",
-  },
   marketplace: {
     /** Legacy main-to-renderer update notification; kept byte-identical on wire. */
     updatesAvailable: "marketplace:updates-available",
@@ -926,7 +921,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.dirDispatch]: "required",
   [PERMISSIONS.reviewerDispatch]: "required",
   [PERMISSIONS.judgeSet]: "required",
-  [PERMISSIONS.deferredResolve]: "required",
+  [PERMISSIONS.recentlyDeniedRerun]: "required",
   [PERMISSIONS.approvalSentenceSelect]: "required",
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",
@@ -962,12 +957,6 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [CHANNELS.telegramConnection.revokePairing]: "required",
   [CHANNELS.telegramConnection.approveCurrentConversation]: "required",
   [CHANNELS.telegramConnection.revokeApproval]: "required",
-  // Away authority: arming is the gesture, so it needs the gesture. Disarming
-  // is listed too — not because withdrawing authority is dangerous, but because
-  // a caller that could disarm without a keyboard could disarm the owner's
-  // grant out from under them and time the gap.
-  [CHANNELS.awayAuthority.arm]: "required",
-  [CHANNELS.awayAuthority.disarm]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────

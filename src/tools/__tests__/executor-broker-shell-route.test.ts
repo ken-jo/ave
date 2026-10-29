@@ -273,14 +273,14 @@ describe("broker shell floor consent", () => {
   it("asks on every destructive guest call without consulting or storing review cache", async () => {
     const { setReviewerForTest } = await import("../../__tests__/support/reviewer-judge.js");
     const { VerdictCache } = await import("../../permissions/reviewer/verdict-cache.js");
-    const { DeferredQueue } = await import("../../permissions/reviewer/deferred-queue.js");
+    const { makeRecentlyDeniedStore } = await import("../../__tests__/support/recently-denied.js");
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("auto"); manager.setInteractiveAutoApprove("medium");
     const classify = vi.fn(() => ({ level: "medium" as const, reason: "reviewed guest" }));
     const cache = new VerdictCache(join(root, "guest-cache.jsonl"));
     const lookup = vi.spyOn(cache, "lookup");
     const store = vi.spyOn(cache, "store");
-    setReviewerForTest(manager, { classifier: { classify }, cache, deferredQueue: new DeferredQueue(join(root, "guest-queue.jsonl")) });
+    setReviewerForTest(manager, { classifier: { classify }, cache, recentlyDenied: makeRecentlyDeniedStore(join(root, "guest-queue.jsonl")) });
     const check = vi.spyOn(manager, "checkDetailed");
     const registry = new ToolRegistry(); registry.register(new BashTool());
     const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once", approved: false }));

@@ -234,7 +234,7 @@ export class AuditWriter {
           executionTimeMs: Date.now() - startTime,
           ...(audit?.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
           ...(audit?.executionPlan !== undefined ? { executionPlan: audit.executionPlan } : {}),
-          permissionDecision: permission?.deferred ? "deferred" : permission?.decision ?? "allow",
+          permissionDecision: permission?.decision ?? "allow",
           permissionReason: permission?.reason,
           rateLimitRemaining,
           ...(terminationReason ? { terminationReason } : {}),

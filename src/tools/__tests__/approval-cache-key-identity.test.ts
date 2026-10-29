@@ -9,7 +9,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { RuleBasedRiskClassifier, type ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import {
@@ -30,7 +30,7 @@ import { createRoutineScheduleTool } from "../routine-schedule.js";
 import { createWebFetchTool } from "../web-fetch.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
-type CardAnswer = "allow-session" | "deny-exact";
+type CardAnswer = "allow-once" | "allow-session" | "deny-exact";
 
 describe("remembered decisions keyed on the tool's opted-in memory scope", () => {
   let dir: string;
@@ -69,21 +69,21 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     const registry = new ToolRegistry();
     for (const tool of tools) registry.register(tool);
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.setMode("auto");
+    // These tests need an actual human grant before examining its later identity.
+    // The conservative mode asks even when a recoverable project write is eligible.
+    manager.setMode("strict");
     const rules = new RuleBasedRiskClassifier();
     const classify = vi.fn((ctx: ToolInvocationContext) => rules.classify(ctx));
     if (options.reviewer === false) {
       wireJudgeForTest(manager);
       // No reviewer: every card is an unassessed ask, which may be remembered exactly; the lane a tool without a memory scope always uses.
-      manager.setInteractiveAutoApprove("low");
     } else {
-      // Every call reaches the card; nothing is auto-approved by threshold.
-      manager.setInteractiveAutoApprove("off");
+      // Fresh target-wide inputs still use this reviewer before reusing consent.
       reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
       setReviewerForTest(manager, {
         classifier: { classify },
         cache: reviewerCache,
-        deferredQueue: new DeferredQueue(join(aveHomeDir, "deferred.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(aveHomeDir, "deferred.jsonl")),
       });
     }
     const cards: ApprovalRequest[] = [];
@@ -96,7 +96,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
         recordings.push((async () => {
           const snapshot = gate.getRequestSnapshot(request.id)!;
           const choice = answer();
-          const remember = choice === "deny-exact" || snapshot.persistentAllowAllowed;
+          const remember = choice === "deny-exact" || (choice === "allow-session" && snapshot.persistentAllowAllowed);
           if (remember) await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
             decision: choice === "deny-exact" ? "deny" : "allow",
             scope: choice === "deny-exact" ? "persistent" : "session",
@@ -147,7 +147,8 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
   /** The real web_fetch identity (keys + schema), with the network stubbed out. */
   function webFetch(execute = vi.fn(async () => ({ output: "ok", isError: false }))) {
     const real = createWebFetchTool(vi.fn() as unknown as typeof fetch);
-    return { tool: { ...real, execute } as Tool, execute };
+    const execution = vi.spyOn(real, "execute").mockImplementation(execute);
+    return { tool: real, execute: execution };
   }
 
   it("shares one path memory identity across native text write tools", async () => {
@@ -274,21 +275,15 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     expect(cards).toHaveLength(2);
   });
 
-  it("a new exfil-looking query on an approved host is screened and asks again", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const { tool } = webFetch();
-      const { cards, run } = harness([tool]);
-      await run("web_fetch", { url: "https://a.example/x" });
-      await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
-      expect(cards).toHaveLength(2);
-      // The egress screen graded the credential-bearing request above the remembered verdict, so the grant did not stand in for the card.
-      expect(warn.mock.calls.some(([, marker]) =>
-        (marker as { event?: string; ruleVerdict?: string } | undefined)?.event === "memory-skip-escalation" &&
-        (marker as { ruleVerdict?: string }).ruleVerdict === "high")).toBe(true);
-    } finally {
-      warn.mockRestore();
-    }
+  it("forces a one-time card for a recognized exfiltration query despite origin approval", async () => {
+    const { tool } = webFetch();
+    const { cards, run } = harness([tool]);
+    await run("web_fetch", { url: "https://a.example/x" });
+    await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
+    expect(cards).toHaveLength(2);
+    expect(cards[1].allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(cards[1].reason).toContain("exfiltration");
+    expect(cards[1].persistentAllowAllowed).toBe(false);
   });
 
   describe("without a configured reviewer", () => {
@@ -297,8 +292,8 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
       const { cards, run } = harness([tool], undefined, { reviewer: false });
       await run("web_fetch", { url: "https://a.example/x" });
       expect(cards).toHaveLength(1);
-      // Unassessed (no reviewer): the gate records the rule verdict as the row's ceiling, which is what makes a rules-only reuse eligible.
-      expect(cards[0].reviewerVerdict?.reason).toMatch(/reviewer not wired/);
+      // An unreviewed prompt must not invent a completed reviewer assessment.
+      expect(cards[0].reviewerVerdict).toBeUndefined();
       await run("web_fetch", { url: "https://a.example/docs/y" });
       expect(cards).toHaveLength(1);
       expect(execute).toHaveBeenCalledTimes(2);
@@ -326,7 +321,8 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
         approvalCacheKey: approvalCacheKeyIdentity(identity.approvalCacheKey, identity.approvalMemory),
         workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
       });
-      const { cards, run } = harness([tool], undefined, { reviewer: false });
+      // A one-shot answer to the new input leaves the original remembered row intact.
+      const { cards, run } = harness([tool], () => "allow-once", { reviewer: false });
       await run("web_fetch", { url: "https://a.example/y" });
       expect(cards).toHaveLength(1);
       // The exact approved request is still its own decision.

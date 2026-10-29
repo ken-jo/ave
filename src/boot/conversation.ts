@@ -18,7 +18,6 @@ import { PermissionManager } from "../permissions/permission-manager.js";
 import {
   ApprovalGate,
   type ApprovalSurfaceResolver,
-  type ParentAdjudicationGateDeps,
 } from "../permissions/approval-gate.js";
 import { loadPolicy } from "../permissions/policy-store.js";
 import { registerStandardCategories } from "../permissions/category-registry.js";
@@ -110,8 +109,6 @@ export async function createApprovalGate(
   surface: ApprovalSurfaceResolver | null,
   auditLogger: AuditLogger,
   notificationService?: NotificationService,
-  /** Without a reviewer, eligible sub-agent approval requests go directly to the user. */
-  parentAdjudication?: ParentAdjudicationGateDeps,
 ): Promise<ApprovalGate> {
 
   const bootPolicy = await loadPolicy();
@@ -121,7 +118,6 @@ export async function createApprovalGate(
     5 * 60 * 1000,
     auditLogger,
     notificationService,
-    parentAdjudication,
     surface === null ? {
       onDenied: (requestId, toolName) => {
         process.stderr.write(`exec: auto-denied approval ${requestId} tool=${toolName}\n`);

@@ -1,7 +1,5 @@
 import "../../__tests__/support/trusted-powershell.js";
-import { randomUUID } from "node:crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import {
   ApprovalGate,
   approvalAnswererAuditToken,
@@ -38,8 +36,6 @@ import {
   auditRowStartingWith,
 } from "./test-helpers.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
-import { PermissionManager } from "../permission-manager.js";
-import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 
 // Mock WebContents
 
@@ -251,7 +247,12 @@ describe("ApprovalGate", () => {
     expect(gate.listPendingRendererRequests(wc as never)).toEqual([]);
   });
 
-  it("issues a private one-shot receipt only after an HMAC-verified allow-once", async () => {
+  it.each([
+    { choice: "allow-once", forced: true },
+    { choice: "allow-once", forced: false },
+    { choice: "allow-session", forced: false },
+    { choice: "allow-always", forced: false },
+  ] as const)("issues one exact-action receipt for authenticated $choice with forced=$forced", async ({ choice, forced }) => {
     const wc = makeMockWebContents();
     const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(
@@ -295,8 +296,7 @@ describe("ApprovalGate", () => {
         cwd: binding.requestedCwd,
         timeoutSeconds: binding.timeoutSeconds,
       },
-      allowedChoices: ["allow-once", "deny-once"],
-      forceExplicit: true,
+      ...(forced ? { allowedChoices: ["allow-once", "deny-once"] as const, forceExplicit: true as const } : {}),
       hostShellExecutionPermitBinding: binding,
     });
 
@@ -304,9 +304,9 @@ describe("ApprovalGate", () => {
     const sent = (wc.send.mock.calls[0] as unknown as [string, ApprovalRequest])[1];
     expect(sent).toMatchObject({
       executionPlan: getHostShellExecutionPlanAuditProjection(plan),
-      allowedChoices: ["allow-once", "deny-once"],
       requireExplicit: true,
     });
+    expect(sent.allowedChoices).toEqual(forced ? ["allow-once", "deny-once"] : undefined);
     expect(sent.sandboxCapability).toBeUndefined();
     expect(JSON.stringify(sent.executionPlan)).not.toContain(binding.command);
     expect(JSON.stringify(sent.executionPlan)).not.toContain(binding.executionCwd);
@@ -315,7 +315,7 @@ describe("ApprovalGate", () => {
 
     gate.resolve(req.id, {
       requestId: req.id,
-      choice: "allow-once",
+      choice,
       nonce: sent.nonce,
       hmac: sent.hmac,
     });
@@ -331,8 +331,17 @@ describe("ApprovalGate", () => {
     expect(auditText).not.toContain(binding.executionCwd);
     expect(auditText).not.toContain(binding.resolvedCwd);
     expect(auditText).not.toContain("test-only reason that must not enter the audit log");
+    expect(consumeHostApprovedOneShotExecutionBinding({ ...decision }, binding)).toBe(false);
     expect(consumeHostApprovedOneShotExecutionBinding(decision, binding)).toBe(true);
     expect(consumeHostApprovedOneShotExecutionBinding(decision, binding)).toBe(false);
+
+    const wrongActionRequest = { ...req, id: "req-wrong-action" };
+    const wrongActionPending = gate.requestAndWait(wrongActionRequest);
+    const wrongActionCard = sentApprovalCards<ApprovalRequest>(wc).at(-1)!;
+    gate.resolve(wrongActionRequest.id, { requestId: wrongActionRequest.id, choice, nonce: wrongActionCard.nonce, hmac: wrongActionCard.hmac });
+    const wrongActionDecision = await wrongActionPending;
+    expect(consumeHostApprovedOneShotExecutionBinding(wrongActionDecision, { ...binding, command: "echo different action" })).toBe(false);
+    expect(consumeHostApprovedOneShotExecutionBinding(wrongActionDecision, binding)).toBe(false);
   });
 
   it("fails closed before renderer IPC when a Plan-B binding differs from the displayed shell request", async () => {
@@ -704,115 +713,17 @@ describe("ApprovalGate", () => {
     expect(r2.requestId).toBe("req-b");
   });
 
-  it("seals HIGH requests to explicit one-shot choices at the host boundary", async () => {
+  it.each(["fresh", "unavailable", "error", "timeout", "malformed"] as const)("keeps a normal approval card after reviewer outcome %s", async (reviewerOutcome) => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const req = makeRequest({
-      id: "req-high-one-shot",
-      toolCategory: "shell",
-      reviewerVerdict: { level: "high", reason: "permission audit summary" },
-    });
-
-    const promise = gate.requestAndWait(req);
-    const sent = (wc.send.mock.calls[0] as [string, ApprovalRequest])[1];
-    expect(sent.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    // Restrictive exact deny remains available through Settings even though the foreground approval itself is one-shot.
-    expect(gate.getRequestSnapshot(req.id)?.durableApprovalRecordAllowed).toBe(true);
-
-    const resolved = gate.resolve(req.id, {
-      requestId: req.id,
-      choice: "allow-always",
-      nonce: sent.nonce,
-      hmac: sent.hmac,
-    });
-    expect(resolved).toMatchObject({
-      choice: "deny-once",
-      rememberPattern: "approval choice not allowed",
-    });
-    await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-  });
-
-  it.each(["unavailable"] as const)(
-    "allows an exact scoped decision when the reviewer assessment is %s", async (outcome) => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRequest({
-        id: `req-assessment-${outcome}`,
-        toolName: "bash", toolCategory: "shell",
-        trustOrigin: "user-keyboard",
-        args: { command: "printf hello" },
-        reviewerOutcome: outcome,
-        reviewerVerdict: { level: "high", reason: "assessment unavailable" },
-        approvalCacheKey: "scoped-exact-request",
-        evaluationContext: buildPermissionEvaluationContext({
-          policyMode: "auto_review", headless: false, source: "builtin", category: "shell",
-          trustOrigin: "user-keyboard", executionCwd: "/workspace/project", allowedDirectories: ["/workspace/project"],
-          pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
-        }),
-      });
-      const manager = new PermissionManager("/workspace/permissions.json");
-      wireJudgeForTest(manager);
-      const reviewer = await manager.dispatchReviewer(req.toolName, {
-        invocationId: randomUUID(),
-        sessionId: "approval-gate-review-session",
-        source: "builtin", category: "shell", finalInput: req.args as Record<string, unknown>,
-        pathFields: [], executionCwd: req.evaluationContext!.executionCwd,
-        allowedDirectories: ["/workspace/project"], sensitivePathsAdjacent: [],
-        trustOrigin: "user-keyboard", approvalCacheKey: req.approvalCacheKey,
-      }, undefined, { defer: "none" });
-      const pending = gate.requestAndWait({ ...req, reviewerApprovalBasis: reviewer.approvalBasis });
-      const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
-      expect(sent.persistentAllowAllowed).toBe(true);
-      expect(sent.allowedChoices).toBeUndefined();
-      expect(sent).not.toHaveProperty("reviewerOutcome");
-      expect(gate.getRequestSnapshot(req.id)).toMatchObject({ persistentAllowAllowed: true, verdictAtApproval: "high", riskCeilingAtApproval: reviewer.approvalBasis!.ruleVerdict });
-      gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "allow-always", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
-      await expect(pending).resolves.toMatchObject({ choice: "allow-always" });
-    },
-  );
-
-  it.each([
-    { reviewerOutcome: "fresh" as const },
-    { reviewerOutcome: "error" as const },
-    { reviewerOutcome: "host-determined" as const },
-    { reviewerOutcome: "sandbox-state-changed" as const },
-    { reviewerOutcome: undefined, reviewerVerdict: undefined },
-    { evaluationContext: undefined },
-    { allowedChoices: ["allow-once", "deny-once"] as const },
-    { forceExplicit: true as const },
-    { mode: "ask_all" as const },
-    { kind: "agent-action" as const, category: "agent-action" as const },
-  ])("retains one-shot eligibility for %j despite failed-assessment input", async (restriction) => {
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
-    const req = makeRequest({
-      toolName: "bash", toolCategory: "shell", reviewerOutcome: "unavailable",
-      trustOrigin: "user-keyboard",
-      args: { command: "printf hello" },
-      reviewerVerdict: { level: "high", reason: "assessment unavailable" },
-      approvalCacheKey: "scoped-exact-request",
-      evaluationContext: buildPermissionEvaluationContext({
-        policyMode: "auto_review", headless: false, source: "builtin", category: "shell",
-        trustOrigin: "user-keyboard", executionCwd: "/workspace/project", allowedDirectories: ["/workspace/project"],
-        pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
-      }),
-      ...restriction,
-    });
-    const manager = new PermissionManager("/workspace/permissions.json");
-    wireJudgeForTest(manager);
-    const reviewer = await manager.dispatchReviewer("bash", {
-      invocationId: randomUUID(),
-      sessionId: "approval-gate-review-session",
-      source: "builtin", category: "shell", finalInput: { command: "printf hello" },
-      pathFields: [], executionCwd: "/workspace/project", allowedDirectories: ["/workspace/project"],
-      sensitivePathsAdjacent: [], trustOrigin: "user-keyboard", approvalCacheKey: "scoped-exact-request",
-    }, undefined, { defer: "none" });
-    const pending = gate.requestAndWait({ ...req, reviewerApprovalBasis: reviewer.approvalBasis });
+    const req = makeRequest({ reviewerOutcome, reviewerVerdict: { level: "high", reason: "Needs a human decision" } });
+    const pending = gate.requestAndWait(req);
     const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
-    expect(sent.persistentAllowAllowed).toBe(false);
-    expect(gate.getRequestSnapshot(req.id)?.persistentAllowAllowed).toBe(false);
-    gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "deny-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
-    await pending;
+    expect(sent.allowedChoices).toBeUndefined();
+    expect(sent.exactRecordAllowed).toBe(true);
+    expect(sent).not.toHaveProperty("reviewerOutcome");
+    gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "allow-session", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
+    await expect(pending).resolves.toMatchObject({ choice: "allow-session" });
   });
 
   // The card offers an exact Always deny only where the record handler would accept one (`one-shot-not-recordable` otherwise).
@@ -971,7 +882,7 @@ describe("ApprovalGate", () => {
   it("attributes unattended denials and notifies without exposing an approval surface", async () => {
     const log = vi.fn();
     const onDenied = vi.fn(() => { throw new Error("stderr unavailable"); });
-    const gate = new ApprovalGate(null, undefined, undefined, { log } as never, undefined, undefined, { onDenied });
+    const gate = new ApprovalGate(null, undefined, undefined, { log } as never, undefined, { onDenied });
     const onPending = vi.fn();
     const dispose = gate.observePendingApprovals({ onPending, onSettled: vi.fn() });
     const request = makeRequest({ category: "agent-action", kind: "agent-action", toolCategory: "meta" });
@@ -1033,183 +944,55 @@ describe("ApprovalGate", () => {
     expect(gate.pendingCount).toBe(0);
   });
 
-  // S1: Sensitive path hard-block
-
-  it("sensitive path is hard-blocked even with mode=full_auto — dialog never shown", async () => {
-    const wc = makeMockWebContents();
-    // Even a permissive policy cannot unblock a sensitive path
-    const permissive = makeTestPolicy({ requireExplicitApproval: false });
-    const gate = new ApprovalGate(wc as never, permissive);
-    const req = makeRequest({
-      id: "req-sensitive",
-      toolName: "file_read",
-      target: { filePath: "/Users/example/.ssh/id_rsa" },
-      mode: "full_auto",
-      // Even if tool lies and claims read-only, sensitive block wins
-      isReadOnly: true,
-    });
-
-    const result = await gate.requestAndWait(req);
-
-    expect(result.choice).toBe("deny-once");
-    expect(result.requestId).toBe("req-sensitive");
-    // Dialog must NOT have been shown to the user
-    expect(wc.send).not.toHaveBeenCalled();
-    expect(gate.pendingCount).toBe(0);
-    // The pattern that triggered the block is surfaced to the caller
-    expect(result.rememberPattern).toContain(
-      "Sensitive credential path blocked",
-    );
-    expect(result.rememberPattern).toContain("**/.ssh/**");
-  });
-
-  it("sensitive path hard-block audit preserves agent-action plugin and scope provenance", async () => {
-    const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(
-      wc as never,
-      undefined,
-      1_000,
-      auditLogger as never,
-    );
-    const req = makeRequest({
-      id: "req-sensitive-agent-action",
-      category: "agent-action",
-      kind: "agent-action",
-      toolName: "plugin_file_review",
-      toolCategory: "meta",
-      source: "plugin",
-      sourcePluginId: "sample-plugin",
-      approvalScope: "agent_external_api_call",
-      target: { filePath: "/Users/example/.ssh/id_rsa" },
-    });
-
-    const result = await gate.requestAndWait(req);
-
-    expect(result.choice).toBe("deny-once");
-    expect(wc.send).not.toHaveBeenCalled();
-    const auditEntry = auditLogger.log.mock.calls[0]?.[0] as
-      { output?: string } | undefined;
-    expect(auditEntry?.output).toContain("[approval:sensitive-path-blocked]");
-    expect(auditEntry?.output).toContain("category=agent-action");
-    expect(auditEntry?.output).toContain("kind=agent-action");
-    expect(auditEntry?.output).toContain("sourcePluginId=sample-plugin");
-    expect(auditEntry?.output).toContain(
-      "approvalScope=agent_external_api_call",
-    );
-  });
-
-  // S4: isReadOnly short-circuit
-
-  it("isReadOnly=true + mode=default → auto-approve, dialog skipped", async () => {
+  it.each([
+    { isReadOnly: true, target: { filePath: "/workspace/.env" }, mode: "default" as const },
+    { isReadOnly: true, target: { filePath: "/workspace/.env" }, mode: "full_auto" as const },
+    { target: { filePath: "/workspace/../outside/.git/config" } },
+  ])("presents the pipeline-selected card without reclassifying %j", async (input) => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const req = makeRequest({
-      id: "req-readonly",
-      toolName: "index_search",
-      isReadOnly: true,
-      mode: "default",
-    });
-
-    const result = await gate.requestAndWait(req);
-
-    expect(result.choice).toBe("allow-once");
-    expect(result.requestId).toBe("req-readonly");
-    expect(result.rememberPattern).toBe("read-only auto-approve");
-    // Dialog must NOT have been shown to the user
-    expect(wc.send).not.toHaveBeenCalled();
-    expect(gate.pendingCount).toBe(0);
-  });
-
-  it("isReadOnly=true + mode=ask_all → still shows the dialog", async () => {
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
-    const req = makeRequest({
-      id: "req-readonly-ask-all",
-      toolName: "index_search",
-      isReadOnly: true,
-      mode: "ask_all",
-    });
-
-    const promise = gate.requestAndWait(req);
-
-    // ask_all must NOT short-circuit — dialog must be sent
-    expect(wc.send).toHaveBeenCalledTimes(1);
-    const [channel, payload] = wc.send.mock.calls[0] as [
-      string,
-      ApprovalRequest,
-    ];
-    expect(channel).toBe("ave:approval:request");
-    expect(payload.id).toBe("req-readonly-ask-all");
-    expect(payload.mode).toBe("ask_all");
-    expect(payload.isReadOnly).toBe(true);
+    const req = makeRequest(input);
+    const pending = gate.requestAndWait(req);
+    const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
     expect(gate.pendingCount).toBe(1);
-
-    gate.resolve("req-readonly-ask-all", {
-      requestId: "req-readonly-ask-all",
-      choice: "deny-once",
-    });
-    const result = await promise;
-    expect(result.choice).toBe("deny-once");
+    expect(sent.target).toEqual(input.target);
+    gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "deny-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
+    await expect(pending).resolves.toMatchObject({ choice: "deny-once" });
   });
 
-  // Path canonicalization before sensitive-path check
-
-  it("path with '..' segments is canonicalized and still blocked", async () => {
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
-    const req = makeRequest({
-      id: "req-dotdot",
-      toolName: "file_read",
-      // Traversal that resolves to /Users/test/.ssh/id_rsa
-      target: { filePath: "/work/project/../../Users/test/.ssh/id_rsa" },
-    });
-
-    const result = await gate.requestAndWait(req);
-
-    expect(result.choice).toBe("deny-once");
-    expect(result.rememberPattern).toContain(
-      "Sensitive credential path blocked",
-    );
-    expect(result.rememberPattern).toContain("**/.ssh/**");
-    expect(wc.send).not.toHaveBeenCalled();
+  it("waits without a timer for an owner-away card by default", async () => {
+    vi.useFakeTimers();
+    try {
+      const wc = makeMockWebContents();
+      const gate = new ApprovalGate(wc as never, undefined, 100);
+      const req = makeRequest({ ownerUnattended: true });
+      const pending = gate.requestAndWait(req);
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+      expect(gate.pendingCount).toBe(1);
+      const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+      expect(sent).not.toHaveProperty("ownerUnattended");
+      gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "allow-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
+      await expect(pending).resolves.toMatchObject({ choice: "allow-once" });
+    } finally { vi.useRealTimers(); }
   });
 
-  it("NFD-decomposed path is NFC-normalized and still blocked", async () => {
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
-    // ".\u0073\u0073h" is already composed (".ssh") — use a real NFD vector: "é" decomposed is "e\u0301". We craft a path that only matches the pattern after NFC normalization. The sensitive set itself is ASCII, so we exercise the normalize call by feeding a no-op path that still must be accepted. Absent an NFD sensitive pattern we assert via a path whose normalize leaves it identical — the key guarantee is that normalize does NOT corrupt the match for ASCII paths.
-    const req = makeRequest({
-      id: "req-nfc",
-      toolName: "file_read",
-      target: { filePath: "/Users/test/.ssh/id_rsa".normalize("NFD") },
-    });
-
-    const result = await gate.requestAndWait(req);
-
-    expect(result.choice).toBe("deny-once");
-    expect(result.rememberPattern).toContain("**/.ssh/**");
-    expect(wc.send).not.toHaveBeenCalled();
+  it("auto-skips an owner-away card only after the configured interval with no-retry feedback", async () => {
+    vi.useFakeTimers();
+    try {
+      const wc = makeMockWebContents();
+      const gate = new ApprovalGate(wc as never, undefined, 100);
+      gate.setOwnerAwayAutoSkipMinutes(2);
+      const pending = gate.requestAndWait(makeRequest({ ownerUnattended: true }));
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(gate.pendingCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({ choice: "deny-once", rememberPattern: "Nobody can approve this request; do not retry." });
+      expect(gate.pendingCount).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 
-  it("mixed-case path on macOS is case-folded and still blocked", async () => {
-    // Case-fold only kicks in on darwin/win32; on linux runners this test still exercises the canonicalization path but the underlying assertion only makes sense when the folder matches after toLowerCase. We gate on process.platform to keep linux CI green.
-    if (process.platform !== "darwin" && process.platform !== "win32") {
-      return;
-    }
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
-    const req = makeRequest({
-      id: "req-case",
-      toolName: "file_read",
-      target: { filePath: "/Users/Example/.SSH/ID_rsa" },
-    });
-
-    const result = await gate.requestAndWait(req);
-
-    expect(result.choice).toBe("deny-once");
-    expect(result.rememberPattern).toContain("**/.ssh/**");
-    expect(wc.send).not.toHaveBeenCalled();
+  it.each([-1, 0.5, Infinity, NaN])("rejects invalid owner-away skip interval %s", (minutes) => {
+    expect(() => new ApprovalGate(null).setOwnerAwayAutoSkipMinutes(minutes)).toThrow("nonnegative integer");
   });
 
   // D1: args DLP masking for UI payload
@@ -1405,22 +1188,6 @@ describe("ApprovalGate", () => {
     expect(n1).toBeTruthy();
     expect(n2).toBeTruthy();
     expect(n1).not.toBe(n2);
-  });
-
-  it("duplicate slashes are collapsed and still blocked", async () => {
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
-    const req = makeRequest({
-      id: "req-slash",
-      toolName: "file_read",
-      target: { filePath: "//Users/test//.ssh//id_rsa" },
-    });
-
-    const result = await gate.requestAndWait(req);
-
-    expect(result.choice).toBe("deny-once");
-    expect(result.rememberPattern).toContain("**/.ssh/**");
-    expect(wc.send).not.toHaveBeenCalled();
   });
 
   it("auto-injects sandboxCapability for tool-kind requests (round-4 test-engineer MAJOR)", () => {
@@ -1718,23 +1485,6 @@ describe("ApprovalGate", () => {
         hmac,
       });
       await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    it("keeps sensitive-path enforcement on the full rationale request before IPC narrowing", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRationaleRequest({
-        id: "req-rationale-sensitive-target",
-        target: { filePath: "/Users/test/.ssh/id_rsa" },
-      });
-
-      const result = await gate.requestAndWait(req);
-      expect(result).toMatchObject({ choice: "deny-once" });
-      expect(result.rememberPattern).toContain(
-        "Sensitive credential path blocked",
-      );
-      expect(wc.send).not.toHaveBeenCalled();
-      expect(gate.pendingCount).toBe(0);
     });
 
     it("rejects a rationale display with extra data before modal or HMAC issuance", async () => {
@@ -2187,13 +1937,13 @@ describe("ApprovalGate", () => {
       const wc = makeMockWebContents();
       const auditLogger = { log: vi.fn() };
       const gate = new ApprovalGate(
-        wc as never,
+        null,
         undefined,
         1_000,
         auditLogger as never,
       );
 
-      // Sensitive-path hard-block resolves before any nonce is minted, so its audit row is the only record that the conversation was denied.
+      // Missing approval transport denies before a card is parked.
       await expect(
         gate.requestAndWait(
           makeRequest({
@@ -2205,7 +1955,7 @@ describe("ApprovalGate", () => {
       ).resolves.toMatchObject({ choice: "deny-once" });
 
       const blocked = auditRows(auditLogger).find((row) =>
-        row.text.includes("[approval:sensitive-path-blocked] attr-blocked"),
+        row.text.includes("[approval:send-failed] attr-blocked"),
       );
       expect(blocked?.sessionId).toBe("conv-blocked");
     });
@@ -2462,7 +2212,8 @@ describe("ApprovalGate", () => {
     });
 
     it("names the controller on a request the host refused before the renderer saw it", async () => {
-      const { wc, auditLogger, gate } = makeAuditingGate();
+      const { wc, auditLogger } = makeAuditingGate();
+      const gate = new ApprovalGate(null, undefined, undefined, auditLogger as never);
 
       await expect(
         gate.requestAndWait(
@@ -2476,7 +2227,7 @@ describe("ApprovalGate", () => {
 
       expect(wc.send).not.toHaveBeenCalled();
       const blocked = rowsFor(auditLogger, "origin-blocked").find((row) =>
-        row.startsWith("[approval:sensitive-path-blocked]"),
+        row.startsWith("[approval:send-failed]"),
       );
       // The hard-block resolves before a nonce is minted, so this row is the only record that a bridged turn tried it at all.
       expect(originOf(blocked as string)).toBe("platform-bridge");
@@ -2552,338 +2303,15 @@ describe("ApprovalGate", () => {
     });
   });
 
-  // Away Authority The desk-armed second answerer, exercised through the gate. Two things are being proved here and nothing else: that an away answer is reachable and fully recorded, and that its position in `requestAndWait` leaves every hard gate above it intact. Per-condition eligibility lives in `away-authority.test.ts`, which drives the answerer directly.
-  describe("away authority", () => {
-    const AWAY_CONVERSATION = "conv-away";
-    const AWAY_DIR = "/srv/away-gate-scope";
-    const AWAY_FILE = "/srv/away-gate-scope/report.md";
-
-    // A request the armed grant below would answer, before any test flips it.
-    function makeAwayRequest(overrides?: Partial<RequestInput>): RequestInput {
-      return makeRequest({
-        id: "away-1",
-        toolName: "fs_write",
-        toolCategory: "write",
-        sessionId: AWAY_CONVERSATION,
-        source: "builtin",
-        allowedChoices: ["allow-once", "deny-once"],
-        durableApprovalRecordAllowed: false,
-        forceExplicit: true,
-        remoteControllerOrigin: "platform-bridge",
-        remoteControllerAuthority: makePlatformBridgeAuthority(),
-        target: { filePath: AWAY_FILE },
-        // The host-only scope list. `target` is the display path; the answerer reads this, so a fixture that set only `target` would test a request the real producer never builds.
-        scopeTargetFilePaths: [AWAY_FILE],
-        isReadOnly: false,
-        ...overrides,
-      });
-    }
-
-    function armedGate(
-      overrides: Partial<Parameters<ApprovalGate["armAwayAuthority"]>[0]> = {},
-    ): ReturnType<typeof makeAuditingGate> {
-      const harness = makeAuditingGate();
-      const armed = harness.gate.armAwayAuthority({
-        conversationId: AWAY_CONVERSATION,
-        categories: ["read", "write"],
-        directories: [AWAY_DIR],
-        ttlMs: 60 * 60 * 1000,
-        budget: 5,
-        ...overrides,
-      });
-      expect(armed).toBe(true);
-      return harness;
-    }
-
-    it("answers an armed, in-scope paired-platform write without a modal", async () => {
-      const { wc, auditLogger, gate } = armedGate();
-
-      await expect(gate.requestAndWait(makeAwayRequest())).resolves.toEqual({
-        requestId: "away-1",
-        choice: "allow-once",
-      });
-
-      // Nobody was asked. No modal, and no OS toast to wake a room the owner is not in — the answer is the whole point.
-      expect(wc.send).not.toHaveBeenCalled();
-      const answered = auditRowStartingWith(auditLogger, "[approval:away-answered]");
-      expect(answered).toContain("away-1");
-      expect(answered).toContain("answeredBy=away-authority");
-      expect(answered).toContain("remoteControllerOrigin=platform-bridge");
-      expect(answered).toContain("toolName=fs_write");
-      // Below the requested row, so an away-answered call still has the full pair a reviewer replays.
-      expect(auditRowStartingWith(auditLogger, "[approval:requested]")).toContain("away-1");
-    });
-
-    it("leaves nothing an answer could be widened through", async () => {
-      const { gate } = armedGate();
-
-      await expect(gate.requestAndWait(makeAwayRequest())).resolves.toMatchObject(
-        { choice: "allow-once" },
-      );
-
-      // It returns before a pending entry exists. There is no entry for `resolve` to accept a later `allow-always` against, and none for `getRequestSnapshot` to bind a user-approval record to.
-      expect(gate.pendingCount).toBe(0);
-      expect(gate.getRequestSnapshot("away-1")).toBeNull();
-      expect(
-        gate.resolve("away-1", {
-          requestId: "away-1",
-          choice: "allow-always",
-          nonce: "x",
-          hmac: "y",
-        }),
-      ).toBeNull();
-    });
-
-    it("spends the grant it answered from", async () => {
-      const { auditLogger, gate } = armedGate({ budget: 1 });
-
-      await expect(gate.requestAndWait(makeAwayRequest())).resolves.toMatchObject(
-        { choice: "allow-once" },
-      );
-      // Spent in the same step that answered. The row says so, because from the next call on there is no grant left to explain the silence.
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toContain(
-        "remaining=0",
-      );
-      expect(auditRowStartingWith(auditLogger, "[approval:away-retired]")).toContain(
-        "reason=budget-spent",
-      );
-      expect(gate.awayAuthoritySnapshot()).toBeNull();
-
-      // The second call finds no grant and falls through to a desk nobody is at, exactly as it would have before anything was ever armed.
-      const second = gate.requestAndWait(makeAwayRequest({ id: "away-2" }));
-      expect(auditRowTexts(auditLogger).filter((row) =>
-        row.startsWith("[approval:away-answered]"),
-      )).toHaveLength(1);
-      expect(gate.pendingCount).toBe(1);
-      gate.disposeAll();
-      await expect(second).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    it("keeps answering while budget remains", async () => {
-      const { auditLogger, gate } = armedGate({ budget: 2 });
-
-      await expect(gate.requestAndWait(makeAwayRequest())).resolves.toMatchObject(
-        { choice: "allow-once" },
-      );
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toContain(
-        "remaining=1",
-      );
-      // Non-vacuous companion to the test above: with budget left, the grant survives and no retirement row is written.
-      expect(gate.awayAuthoritySnapshot()?.remaining).toBe(1);
-      expect(auditRowStartingWith(auditLogger, "[approval:away-retired]")).toBeUndefined();
-    });
-
-    it("re-checks the controller authority at the moment it answers", async () => {
-      const { wc, auditLogger, gate } = armedGate();
-
-      // Same grant, same conversation, same scope — only the live guard has gone stale, which is what a revoke mid-turn looks like.
-      const promise = gate.requestAndWait(
-        makeAwayRequest({ remoteControllerAuthority: makePlatformBridgeAuthority(false) }),
-      );
-
-      expect(auditRowStartingWith(auditLogger, "[approval:away-declined]")).toContain(
-        "reason=authority-not-current",
-      );
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-      // It fell through to the desk rather than being denied outright: the answerer declining is not a decision about the request.
-      expect(wc.send).toHaveBeenCalledTimes(1);
-      gate.disposeAll();
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    it("retires the grant when the share lifecycle changes", async () => {
-      const { auditLogger, gate } = armedGate();
-
-      expect(gate.retireAwayAuthority("share-lifecycle")).toBe(true);
-      expect(gate.awayAuthoritySnapshot()).toBeNull();
-      expect(auditRowStartingWith(auditLogger, "[approval:away-retired]")).toContain(
-        "reason=share-lifecycle",
-      );
-
-      const promise = gate.requestAndWait(makeAwayRequest());
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-      // A retired grant is not this answerer's business any more, so it is also not worth a declined row on every later approval.
-      expect(auditRowStartingWith(auditLogger, "[approval:away-declined]")).toBeUndefined();
-      gate.disposeAll();
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    it("stays quiet about approvals that were never its business", async () => {
-      const { auditLogger, gate } = armedGate();
-
-      // An ordinary desk approval while armed. If this wrote a declined row, every approval in the app would write one.
-      const promise = gate.requestAndWait(
-        makeRequest({ id: "desk-while-armed", sessionId: AWAY_CONVERSATION }),
-      );
-      expect(auditRowStartingWith(auditLogger, "[approval:away-declined]")).toBeUndefined();
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-      gate.disposeAll();
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    it("refuses to arm a gesture outside the grant bounds", () => {
-      const { auditLogger, gate } = makeAuditingGate();
-
-      expect(
-        gate.armAwayAuthority({
-          conversationId: AWAY_CONVERSATION,
-          // Arming shell would make an away answer arbitrary code execution.
-          categories: ["shell"],
-          directories: [AWAY_DIR],
-          ttlMs: 60 * 60 * 1000,
-          budget: 5,
-        }),
-      ).toBe(false);
-      expect(gate.awayAuthoritySnapshot()).toBeNull();
-      expect(auditRowStartingWith(auditLogger, "[approval:away-armed]")).toBeUndefined();
-    });
-
-    it("keeps local paths out of the armed row", () => {
-      const { auditLogger } = armedGate();
-
-      const armedRow = auditRowStartingWith(auditLogger, "[approval:away-armed]") as string;
-      expect(armedRow).toContain("categories=read,write");
-      expect(armedRow).toContain("directories=1");
-      expect(armedRow).toContain("budget=5");
-      // The count, not the paths. Keeping local paths off a remote transport is the reason this feature is a desk gesture rather than a relay; an audit row is not an exception to it.
-      expect(armedRow).not.toContain("away-gate-scope");
-    });
-
-    it("never sends the authority object to the renderer", async () => {
-      const { wc, gate } = armedGate();
-
-      // Declined (wrong conversation) so the request actually reaches the send.
-      const promise = gate.requestAndWait(
-        makeAwayRequest({ id: "away-not-sent", sessionId: "conv-other" }),
-      );
-
-      const [, sent] = wc.send.mock.calls[0] as unknown as [
-        string,
-        ApprovalRequest,
-      ];
-      expect(sent.id).toBe("away-not-sent");
-      expect(sent.nonce).toEqual(expect.any(String));
-      expect(sent).not.toHaveProperty("remoteControllerAuthority");
-      expect(sent).not.toHaveProperty("remoteControllerOrigin");
-      gate.disposeAll();
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    // Hard gates above the injection point Each row below is an otherwise-eligible away request that one hard gate rejects first. They are the reason the answerer sits where it does: move its block above any of these and the matching row fails.
-    it("cannot re-open the sensitive-path hard block", async () => {
-      const { wc, auditLogger, gate } = armedGate();
-
-      await expect(
-        gate.requestAndWait(
-          makeAwayRequest({ target: { filePath: `${AWAY_DIR}/.ssh/id_rsa` } }),
-        ),
-      ).resolves.toMatchObject({ choice: "deny-once" });
-
-      expect(auditRowStartingWith(auditLogger, "[approval:sensitive-path-blocked]")).toContain(
-        "away-1",
-      );
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-      // Not even a declined row: the request never reached the answerer.
-      expect(auditRowStartingWith(auditLogger, "[approval:away-declined]")).toBeUndefined();
-      expect(wc.send).not.toHaveBeenCalled();
-    });
-
-    it("cannot re-open a host-shell binding mismatch", async () => {
-      const { auditLogger, gate } = armedGate();
-      const plan = buildHostShellExecutionPlan({
-        platform: "linux",
-        requestedSandbox: false,
-        activeCapability: {
-          kind: "none",
-          confidence: "verified",
-          platform: "linux",
-          reason: "test-only",
-        },
-      });
-
-      await expect(
-        gate.requestAndWait(
-          makeAwayRequest({
-            // A binding that does not describe the displayed request — the request is an `fs_write`, the binding a shell spawn. The gate rejects it before the answerer is consulted.
-            hostShellExecutionPermitBinding: Object.freeze({
-              plan,
-              planIdentity: plan.identity,
-              toolName: "bash",
-              toolUseId: "away-binding",
-              command: "echo away",
-              requestedCwd: undefined,
-              executionCwd: "/repo",
-              resolvedCwd: "/repo",
-              timeoutSeconds: 30,
-      executionMode: "default",
-      justification: undefined,
-      runInBackground: false,
-              allowedDirectories: Object.freeze([AWAY_DIR]),
-            }) satisfies HostShellExecutionPermitBinding,
-          }),
-        ),
-      ).resolves.toMatchObject({ choice: "deny-once" });
-
-      expect(
-        auditRowStartingWith(auditLogger, "[approval:host-shell-binding-mismatch]"),
-      ).toContain("away-1");
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-    });
-
-    it("cannot re-open an unissued execution plan", async () => {
-      const { auditLogger, gate } = armedGate();
-
-      await expect(
-        gate.requestAndWait(
-          makeAwayRequest({
-            executionPlan: { version: 1 } as never,
-          }),
-        ),
-      ).resolves.toMatchObject({ choice: "deny-once" });
-
-      expect(auditRowStartingWith(auditLogger, "[approval:execution-plan-invalid]")).toContain(
-        "away-1",
-      );
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-    });
-
-    it("cannot answer for a destroyed window", async () => {
-      const wc = makeMockWebContents({ isDestroyed: true });
-      const auditLogger = { log: vi.fn() };
-      const gate = new ApprovalGate(wc as never, undefined, 1_000, auditLogger as never);
-      expect(
-        gate.armAwayAuthority({
-          conversationId: AWAY_CONVERSATION,
-          categories: ["read", "write"],
-          directories: [AWAY_DIR],
-          ttlMs: 60 * 60 * 1000,
-          budget: 5,
-        }),
-      ).toBe(true);
-
-      await expect(gate.requestAndWait(makeAwayRequest())).resolves.toMatchObject(
-        { choice: "deny-once" },
-      );
-
-      expect(auditRowStartingWith(auditLogger, "[approval:send-failed]")).toContain("away-1");
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-    });
-
-    it("does not reach the read-only fail-open", async () => {
-      const { auditLogger, gate } = armedGate();
-
-      // A read-only request short-circuits above the answerer. The point is that the away answerer is not the thing that approved it: the row names no answerer at all, because the host reached that outcome on its own.
-      await expect(
-        gate.requestAndWait(
-          makeAwayRequest({ toolCategory: "read", isReadOnly: true }),
-        ),
-      ).resolves.toMatchObject({ choice: "allow-once" });
-
-      const autoApproved = auditRowStartingWith(auditLogger, "[approval:read-only-auto-approve]");
-      expect(autoApproved).toContain("away-1");
-      expect(autoApproved).not.toContain("answeredBy=");
-      expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-    });
+  it("keeps a remote-controller read request on a one-shot human card", async () => {
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const request = makeRequest({ sessionId: "away-session", remoteControllerOrigin: "platform-bridge", remoteControllerAuthority: makePlatformBridgeAuthority(), toolCategory: "read", isReadOnly: true, durableApprovalRecordAllowed: false });
+    const pending = gate.requestAndWait(request);
+    const card = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, wc as never);
+    await expect(pending).resolves.toMatchObject({ choice: "deny-once" });
   });
 
   describe("turn abort", () => {

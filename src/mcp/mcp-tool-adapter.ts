@@ -8,6 +8,8 @@ import {
 } from "../plugins/runtime/tool-visibility.js";
 import type { McpToolCallOutput, McpToolSchema } from "./types.js";
 import { prepareMcpContentImage } from "./mcp-tool-content.js";
+import { createMcpToolApprovalScope, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
+import { authorizedApprovalMemoryScope } from "../tools/approval-memory-context.js";
 import { errorMessage } from "../shared/error-message.js";
 
 /** MCP Apps spec default when a server declares no `_meta.ui.visibility`: `["model","app"]`; visible to the agent AND callable by the server's own app. */
@@ -29,6 +31,8 @@ export function mcpToolToTool(
   schema: McpToolSchema,
   callTool: (name: string, args: Record<string, unknown>) => Promise<McpToolCallOutput>,
 ): Tool {
+  const remoteToolName = schema.name;
+  const approvalScope = createMcpToolApprovalScope(serverId, remoteToolName);
   const surfaces = toolSurfaces(schema);
   const readOnlyHint = schema.annotations?.readOnlyHint;
   const destructiveHint = schema.annotations?.destructiveHint;
@@ -42,8 +46,11 @@ export function mcpToolToTool(
     // Host-derived default-strict for foreign MCP peers; see file header.
     category: "network",
     mcpServerId: serverId,
+    approvalCacheKey: () => mcpToolApprovalCacheKey(approvalScope),
+    approvalMemoryScope: () => approvalScope,
+    mcpReadOnlyHint: hasValidHints && readOnlyHint === true,
     mcpRuleIdentity: {
-      tool: schema.name,
+      tool: remoteToolName,
       nonDestructive: hasValidHints && destructiveHint !== true
         && (readOnlyHint === true || destructiveHint === false),
     },
@@ -60,7 +67,11 @@ export function mcpToolToTool(
     execute: async (rawInput, ctx) => {
       const args = (rawInput ?? {}) as Record<string, unknown>;
       try {
-        const { text, uiPayload, images } = await callTool(schema.name, args);
+        const authorizedScope = authorizedApprovalMemoryScope(ctx);
+        if (authorizedScope !== undefined && (!isMcpToolApprovalScope(authorizedScope) || authorizedScope.serverId !== serverId || authorizedScope.toolName !== remoteToolName)) {
+          throw new Error("Tool approval scope does not match the execution target");
+        }
+        const { text, uiPayload, images } = await callTool(remoteToolName, args);
         const { image, note } = await prepareMcpContentImage(images ?? [], ctx?.abortSignal);
         return {
           output: note ? `${text}\n${note}` : text,

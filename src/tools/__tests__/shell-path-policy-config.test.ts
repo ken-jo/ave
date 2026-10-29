@@ -45,15 +45,15 @@ describe("transfer configuration authority", () => {
     ["uv run wget --config=", ""],
   ])("checks configuration read authority before refusing %s", (option, suffix) => {
     const command = (path: string) => `${option}${option.endsWith("K") ? " " : ""}${path}${suffix}`;
-    expect(check(command(".env"))?.kind).toBe("sensitive-path");
+    expect(check(command("ave-secrets.json"))?.kind).toBe("sensitive-path");
     expect(check(command("../config.cfg"), true)?.kind).toBe("sandbox-boundary");
     expect(check(command("../config.cfg"))?.reason).toContain("ambiguous");
   });
 
   it.each([".curlrc", "_curlrc", ".wgetrc", "wget.ini", "curlrc", ".config/curlrc", "etc/wgetrc", "usr/local/etc/wgetrc"])(
-    "denies writing automatic configuration %s inside an allowed root", path => {
+    "admits configuration writes inside the execution root after permission checks: %s", path => {
       for (const command of [`echo 'output=x' > ~/${path}`, `tee ~/${path}`, `cp x ~/${path}`]) {
-        expect(check(command)?.kind, command).toBe("sensitive-path");
+        expect(check(command), command).toBeNull();
       }
     },
   );
@@ -62,8 +62,10 @@ describe("transfer configuration authority", () => {
     "echo 'output=x' > bin/.curlrc", "cp x bin/_curlrc",
     "echo 'output_document=x' > bin/wget.ini", "cp x bin/wget.ini", "tee C:/tools/wget/wget.ini",
     "tee \"$APPDATA/_curlrc\"", "cp x \"$USERPROFILE/.curlrc\"",
-  ])("denies automatic configuration in executable and profile locations: %s", command => {
-    expect(check(command, false, { APPDATA: ".", USERPROFILE: "." })?.kind).toBe("sensitive-path");
+  ])("keeps configuration writes subject to directory confinement: %s", command => {
+    const result = check(command, false, { APPDATA: ".", USERPROFILE: "." });
+    if (command.includes("C:/") && process.platform === "win32") expect(result?.kind).toBe("sandbox-boundary");
+    else expect(result).toBeNull();
   });
 
   it.each([

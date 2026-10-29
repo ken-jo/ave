@@ -1,3 +1,15 @@
+import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
+import { makeRecentlyDeniedInvocationRef } from "../permissions/reviewer/recently-denied-replay.js";
+import { sandboxBlockForResult } from "../shared/sandbox-block.js";
+import { isAbsolute } from "node:path";
+import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { selectDeclaredPathValues } from "../shared/dotted-field-value.js";
+import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
+import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
+import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
+import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
+import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
+import { runScriptHook } from "./invocation-services.js";
 import { isCodeCheckpointAvailable, withRequiredCodeCheckpoint } from "../memory/code-checkpoints.js";
 import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js";
 import { areProjectWriteTargetsInside } from "./project-write-scope.js";
@@ -66,7 +78,6 @@ import {
   type PermissionDirectoryLifecycle,
 } from "../permissions/permission-slash.js";
 import type { HookResult, ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
-import type { RiskVerdict } from "../permissions/reviewer/risk-classifier.js";
 import type { EffectLedger } from "../permissions/effect-ledger.js";
 import { currentToolExecutionCwd } from "./execution-context.js";
 import { withShellSessionCwd } from "./shell-session-cwd.js";
@@ -110,7 +121,6 @@ import {
   approvalIdentityFor,
   ARGS_APPROVAL_MEMORY,
   emitToolStart,
-  summarizeInputForDeferred,
 } from "./pipeline/display-mask.js";
 import {
   auditSafeToolInput,
@@ -400,7 +410,34 @@ export async function runToolInvocation(
           }
         : {}),
     });
-    const auditCurrentToolCall = (...args: AuditToolCallArgs): Promise<void> => {
+    let denialRecorded = false;
+    const auditCurrentToolCall = async (...args: AuditToolCallArgs): Promise<void> => {
+      const denied = args[8];
+      const history = services.permissionManager?.getRecentlyDenied();
+      if (denied?.decision === "deny" && history && !denialRecorded) {
+        denialRecorded = true;
+        const registeredTool = services.toolRegistry.findByName(toolUse.name);
+        const invocationRef = registeredTool && makeRecentlyDeniedInvocationRef(toolUse.input, {
+          cwd: executionCwd, toolUseId: toolUse.id,
+          pluginId: registeredTool.pluginId, mcpServerId: registeredTool.mcpServerId,
+        });
+        const inputSnapshot = invocationRef ? structuredClone(toolUse.input) : undefined;
+        await history.append({
+          sessionId, toolName: toolUse.name, source: args[2], category: meta.category ?? "write",
+          inputSummary: JSON.stringify(args[4]), reason: denied.reason,
+          ...(invocationRef ? { invocationRef } : {}),
+          ...(inputSnapshot && invocationRef ? { rerun: async () => {
+            const replayRootBinding = issueReplayRootBinding(executionCwd, invocationRef.rootDigest);
+            if (!replayRootBinding) throw new Error("The replay project root changed");
+            const result = await runToolInvocation(services, { ...toolUse, id: randomUUID(), input: structuredClone(inputSnapshot) }, randomUUID(), 0, {
+              executionCwd, replayRootBinding,
+              permissionContext: { headless: false, manualRerun: true, trustOrigin: "user-keyboard" },
+            });
+            if ("is_error" in result && result.is_error) throw new Error("The manual rerun was denied or failed");
+            return result;
+          } } : {}),
+        });
+      }
       args[16] = currentAuditMetadata(args[4]);
       return services.auditWriter.auditToolCall(...args);
     };
@@ -885,6 +922,45 @@ export async function runToolInvocation(
     if (abortSignal?.aborted) {
       return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
     }
+  const scriptPre = resolvedPluginOperation
+    ? {
+        decision: "allow" as const,
+        reason: "governed operation hooks are disabled",
+        results: [],
+      }
+    : await runScriptHook(
+        services.scriptHookManager,
+        "pre",
+        toolUse.name,
+        source,
+        invocationCategory,
+        finalInput,
+        sessionId,
+        permissionContext,
+        tool.mcpServerId,
+        tool.pluginId,
+        undefined,
+        undefined,
+        tool.pluginGeneration !== undefined,
+      );
+  if (scriptPre.decision === "deny") {
+    if (rationaleResumeContext) {
+      return returnRationaleResumeBlock(
+        "script PreToolUse hook denied the sealed action: " + scriptPre.reason,
+        finalInput,
+        { decision: "deny", reason: scriptPre.reason, layer: 6 },
+        hookChainFromDispatch("pre", scriptPre),
+      );
+    }
+    const msg = t("be_executor.hookBlockScript", { reason: scriptPre.reason });
+    const durationMs = Date.now() - startTime;
+    emitToolStart(callbacks, toolUse.name, finalInput, meta);
+    callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
+    await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: scriptPre.reason, layer: 6 }, Infinity, permissionContext, invocationCategory, executionCwd, undefined, undefined, hookChainFromDispatch("pre", scriptPre));
+    return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+  }
+
+
     // ── Initial per-invocation state (see ./pipeline/invocation-context.ts).
     // The factory builds the Layer-1 allowed scope + runtime allowed dirs + the
     // parent/own effect ledgers, including the within-round freshness read of
@@ -1251,6 +1327,7 @@ export async function runToolInvocation(
           : undefined;
     const invocationPermissionContext: ToolPermissionContext = {
       ...permissionContext,
+      headless: permissionContext.headless === true,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       approvalMemory,
       disposableSubstrate,
@@ -1285,16 +1362,63 @@ export async function runToolInvocation(
       sensitivePathsAdjacent: input.sensitivePathsAdjacent ?? [],
     });
 
+    let directoryAuthorization: { permission: PermissionCheckResult; humanApproved: boolean } | undefined;
     const requestOutOfAllowedDirectoryAccess = async (
       outOfAllowedTarget: { filePath: string; canonicalPath: string },
       dirLayerResult: PermissionCheckResult,
       requestSensitivePathPattern: string | null,
       reviewerPathFields: readonly string[],
     ): Promise<
-      | { allowed: true; approvedDirectory: string; scope: "turn" | "session" | "always"; permissionResult?: PermissionCheckResult }
+      | { allowed: true; approvedDirectory: string; scope: "turn" | "session" | "always"; permissionResult?: PermissionCheckResult; humanApproved?: boolean }
       | { allowed: false; result: ToolResult }
     > => {
       const headless = invocationPermissionContext.headless === true;
+      const manager = services.permissionManager;
+      if (!manager) throw new Error("Directory authorization requires the permission manager");
+      const command = typeof finalInput.command === "string" ? finalInput.command : undefined;
+      const shellSubject = command !== undefined && (isCanonicalBashTool(tool) || isCanonicalPowerShellTool(tool))
+        ? { kind: "shell" as const, dialect: isCanonicalBashTool(tool) ? "bash" as const : "powershell" as const, command,
+            cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }
+        : undefined;
+      await manager.ensureProjectRulesLoaded(shellSubject?.cwd ?? executionCwd);
+      let directoryPermission = manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
+        ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
+        ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
+        ...(shellSubject ? { ruleSubject: shellSubject, hostShellExecutionPlan,
+          shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate) } } : {
+          ruleSubject: scopedRuleSubjectFor(tool, finalInput, executionCwd),
+          fileWritePolicy: { insideProject: false, checkpointAvailable: false, directoryApproved: false },
+        }),
+        ...(approvalReasonPrefix || invocationPermissionContext.otherPrincipal ? { floor: { code: "other-principal" as const, reason: "This action requires the user's approval." } } : {}),
+      });
+      const memoryRequest = directoryPermission.pipelineRequest;
+      if (directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.admissionDenial && !memoryRequest.floor
+        && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !rationaleResumeContext) {
+        const remembered = await services.tryUserApprovalMemorySkip(toolUse.name, source, invocationCategory, reviewerPathFields,
+          finalInput, executionCwd, invocationAllowedScope.directories, [], invocationPermissionContext, approvalCacheKey, {},
+          JSON.stringify([meta.groupId, meta.toolUseId]), tool.mcpServerId, tool.workerId, tool.pluginId, hostShellExecutionPlan, auditInput, sessionId);
+        if (remembered) directoryPermission = manager.resolveRememberedPermission(directoryPermission, remembered.reason);
+      }
+      if (directoryPermission.reviewer) {
+        const reviewerArgs = [manager, toolUse.name, source, invocationCategory, reviewerPathFields, finalInput,
+          invocationAllowedScope.directories, [] as string[], invocationPermissionContext,
+          makeEvaluationContext({ pathFields: reviewerPathFields, targetFilePaths: [outOfAllowedTarget.filePath] }),
+          {}, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, directoryPermission] as const;
+        if (headless) directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
+        else directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
+      }
+      if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.canonicalPath, scope: "turn", permissionResult: directoryPermission };
+      if (directoryPermission.decision === "deny") {
+        const msg = directoryPermission.reason;
+        await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, directoryPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+        return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs: Date.now() - startTime,
+          ...(directoryPermission.reasonCode === "no-approver" && !headless && invocationPermissionContext.approvalSurface === "unavailable"
+            ? { authorizationRequired: issueAuthorizationRequiredControl({ kind: "tool", toolName: toolUse.name, source, category: invocationCategory, reason: "approval-surface-unavailable" }) } : {}),
+        }) };
+      }
+      dirLayerResult = directoryPermission;
+      const directoryPolicyEpoch = manager.getPolicyEpoch();
+
       const trustOrigin = invocationPermissionContext.trustOrigin;
       // A directory grant is itself an authority expansion, even when the
       // underlying tool is read-only. Tailnet may never make it session-wide.
@@ -1350,71 +1474,16 @@ export async function runToolInvocation(
         isDirectoryTarget,
       );
 
-      const deferDirectoryAuthorization = async (terminal: boolean): Promise<{
-        permissionResult: PermissionCheckResult;
-        message: string;
-        deferredId?: string;
-      }> => {
-        const deferredQueue = services.permissionManager?.getDeferredQueue();
-        const verdict: RiskVerdict = {
-          level: "high",
-          reason: headless
-            ? "headless out-of-allowed-dir requires manual directory approval"
-            : "out-of-allowed-dir requires manual directory approval",
-        };
-        const deferredGrantPath = suggestedParent ?? outOfAllowedTarget.filePath;
-        const deferredId = deferredQueue
-          ? await deferredQueue.append({
-            ...(sessionId === undefined ? {} : { sessionId }),
-            toolName: toolUse.name,
-            source,
-            category: invocationCategory,
-            inputSummary: summarizeInputForDeferred(auditInput),
-            evaluationContext: makeEvaluationContext({
-              pathFields: reviewerPathFields,
-              targetFilePaths: [outOfAllowedTarget.filePath],
-              sensitivePathsAdjacent: validation.adjacencyWarnings,
-            }),
-            verdict,
-            ...(deferredGrantPath
-              ? { grant: { kind: "directory" as const, path: deferredGrantPath } }
-              : {}),
-          })
-          : undefined;
-        const reason = terminal
-          ? "approval surface unavailable for out-of-allowed-dir request"
-          : "headless out-of-allowed-dir requires manual directory approval";
-        return {
-          permissionResult: {
-            decision: "deny",
-            reason,
-            layer: 1,
-            ...(terminal ? {} : { reviewer: { route: "headless" as const, verdict } }),
-            ...(deferredId
-              ? { deferred: { queueId: deferredId, reviewerVerdict: verdict } }
-              : {}),
-          },
-          message: terminal
-            ? "Authorization required: this tool needs a directory grant, but this host has no approval surface. The turn has stopped and will not retry automatically."
-            : t("be_executor.permHoldHeadlessDirectory", { name: toolUse.name, source })
-              + (deferredId ? ` (deferredId=${deferredId})` : "")
-              + buildPolicyDenialGuidance({
-                rule: "allowed-directories/headless-hold",
-                operand: outOfAllowedTarget.filePath,
-                retry: "grant",
-                alternative: "retarget-under-authorized-directory",
-                allowedDirectories: invocationAllowedScope.directories,
-                readsUnfenced: !blockReadsOutsideWorkingDirectories,
-              }),
-          ...(deferredId ? { deferredId } : {}),
-        };
-      };
+      const denyDirectoryAuthorization = async (_terminal: boolean): Promise<{ permissionResult: PermissionCheckResult; message: string }> => ({
+        permissionResult: { decision: "deny", reason: NO_APPROVER_MESSAGE, reasonCode: "no-approver", layer: 5 },
+        message: NO_APPROVER_MESSAGE,
+      });
 
       if (
         !headless
         && invocationPermissionContext.approvalSurface === "unavailable"
       ) {
-        const deferred = await deferDirectoryAuthorization(true);
+        const deferred = await denyDirectoryAuthorization(true);
         const durationMs = Date.now() - startTime;
         log.warn(deferred.message);
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
@@ -1453,9 +1522,6 @@ export async function runToolInvocation(
               source,
               category: invocationCategory,
               reason: "directory-authorization-required",
-              ...(deferred.deferredId
-                ? { deferredRequestId: deferred.deferredId }
-                : {}),
               // Same rule as the sibling controls: a guest-routed shell does
               // not carry the host plan of a child that never spawns.
               ...(hostShellExecutionPlanAudit &&
@@ -1471,7 +1537,7 @@ export async function runToolInvocation(
       if (services.approvalGate && !headless) {
         const approvalRequest = {
           id: randomUUID(),
-          ...(requiresRemoteDirectoryOneShot
+          ...((requiresRemoteDirectoryOneShot || dirLayerResult.forceModal === true)
             ? {
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
@@ -1496,6 +1562,8 @@ export async function runToolInvocation(
           source: source as ToolSource,
           createdAt: Date.now(),
           target: { filePath: outOfAllowedTarget.filePath },
+          ownerUnattended: invocationPermissionContext.ownerUnattended,
+          ...(dirLayerResult.forceModal === true ? { forceExplicit: true as const } : {}),
           isReadOnly: deriveApprovalIsReadOnly({
             invocationCategory,
             approvalReasonPrefix,
@@ -1629,6 +1697,12 @@ export async function runToolInvocation(
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostFailure?.permission ?? { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
         }
+        if (directoryPolicyEpoch !== manager.getPolicyEpoch()) {
+          const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", layer: 1 };
+          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+          return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
+        }
+        const approvedPermissionResult: PermissionCheckResult = { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
         const approvedDirectory = decision.choice === "allow-always"
           ? (typeof decision.rememberPattern === "string" && decision.rememberPattern.length > 0
               ? decision.rememberPattern
@@ -1657,7 +1731,7 @@ export async function runToolInvocation(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvedDirectory, scope: "always" };
+          return { allowed: true, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: true };
         }
         if (decision.choice === "allow-session") {
           // Mirror allow-always' persist convention so the permission
@@ -1684,14 +1758,14 @@ export async function runToolInvocation(
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvedDirectory: sessionScopePath, scope: "session" };
+          return { allowed: true, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: true };
         }
         // allow-once: turn-scope, no persistence, narrowest path.
-        return { allowed: true, approvedDirectory, scope: "turn" };
+        return { allowed: true, approvedDirectory, scope: "turn", permissionResult: approvedPermissionResult, humanApproved: true };
       }
 
       if (headless) {
-        const deferred = await deferDirectoryAuthorization(false);
+        const deferred = await denyDirectoryAuthorization(false);
         const permissionResult = deferred.permissionResult;
         const msg = deferred.message;
         const durationMs = Date.now() - startTime;
@@ -1711,7 +1785,9 @@ export async function runToolInvocation(
       return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
     };
 
+    const invocationDirectoryGrants = new Set<string>();
     const applyApprovedDirectory = (approvedDirectory: string): void => {
+      invocationDirectoryGrants.add(approvedDirectory);
       // Re-read fresh: an earlier tool in the same ordered executeAll run may
       // have just resolved its own out-of-allowed-dir dialog and mutated the
       // conversation loop's session/turn lists. Spreading from
@@ -1721,9 +1797,9 @@ export async function runToolInvocation(
       const fresh: readonly string[] =
         invocationPermissionContext.getAdditionalDirectories?.()
         ?? baseAdditionalDirectories;
-      invocationAllowedScope = buildAllowedScope([...fresh, approvedDirectory], executionCwd);
+      invocationAllowedScope = buildAllowedScope([...fresh, ...invocationDirectoryGrants], executionCwd);
       invocationRuntimeAllowedDirectories = buildRuntimeAllowedDirectories(
-        [...fresh, approvedDirectory],
+        [...fresh, ...invocationDirectoryGrants],
         executionCwd,
       );
     };
@@ -1853,17 +1929,8 @@ export async function runToolInvocation(
           );
         }
         if (!shellPathViolation) break;
+        if (shellPathViolation.kind === "dynamic-path" || shellPathViolation.kind === "recursive-traversal") break;
 
-        if (
-          shellPathViolation.kind === "dynamic-path" ||
-          shellPathViolation.kind === "recursive-traversal"
-        ) {
-          try {
-            await updateExecutionRoute(shellPathViolation.kind);
-          } catch (error) {
-            return await returnExecutionRouteFailure(error);
-          }
-        }
 
         if (
           executionRoutePlan?.route === "disposable-container" &&
@@ -2034,6 +2101,20 @@ export async function runToolInvocation(
       }
       canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(runtimePath), runtimePath });
     }
+    const declaredPaths = (tool.pathFields ?? []).flatMap((field) => selectDeclaredPathValues(finalInput, field)).filter((path): path is string => typeof path === "string");
+    invocationPermissionContext.paths = canonicalTargets.flatMap((target) => {
+      const operands = declaredPaths.filter((path) => resolveToolPathForPermission(path, executionCwd) === target.filePath);
+      return (operands.length > 0 ? operands : [target.filePath]).map((path) => {
+        const expanded = expandLeadingTilde(path);
+        return { lexical: isAbsolute(expanded) ? expanded : executionCwd + "/" + expanded, canonical: target.canonicalPath,
+          effect: canonicalFileTool !== undefined && ["copy_path", "extract_archive"].includes(canonicalFileTool.name) && typeof finalInput.sourcePath === "string" && resolveToolPathForPermission(finalInput.sourcePath, executionCwd) === target.filePath ? "read" as const : requiredTier(invocationCategory) };
+      });
+    });
+    if (canonicalFileTool?.name === "delete_file") {
+      const criticalTarget = canonicalTargets.map((target) => criticalDeleteTargetFor({ lexical: target.filePath, canonical: target.canonicalPath }, [executionCwd])).find((target) => target !== undefined);
+      if (criticalTarget) invocationPermissionContext.floor = { code: "critical-delete", reason: "Deleting this root requires a fresh human approval." };
+    }
+
     // Layer 0/1 path-scope predicate lives in PermissionManager (SOT V2).
     // The executor keeps canonicalization (above) + the layer-0 deny and
     // layer-1 modal wiring below; PM only answers "which target is sensitive
@@ -2208,10 +2289,16 @@ export async function runToolInvocation(
           tool.pathFields ?? [],
         );
         if (!resolution.allowed) return resolution.result;
-        if (resolution.permissionResult) permissionResult = resolution.permissionResult;
+        if (resolution.permissionResult) {
+          permissionResult = resolution.permissionResult;
+          directoryAuthorization = { permission: resolution.permissionResult, humanApproved: resolution.humanApproved === true };
+        }
         applyApprovedDirectory(resolution.approvedDirectory);
-        propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+        if (resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+        // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
+        for (const target of canonicalTargets) applyApprovedDirectory(target.canonicalPath);
         if (fileWritePolicy && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;
+        break;
         // allow-once / allow-session / allow-always — fall through to Step 3
         // (full Layer 3 check still runs; Layer 1 is necessary, not
         // sufficient).
@@ -2238,6 +2325,11 @@ export async function runToolInvocation(
     });
 
     const authorization = await authorizeToolInvocation({
+      directoryAuthorization,
+      paths: invocationPermissionContext.paths,
+      secretRead: invocationPermissionContext.secretRead,
+      floor: invocationPermissionContext.floor,
+      admissionDenial: invocationPermissionContext.admissionDenial,
       fileWritePolicy,
       services,
       tool,
@@ -2378,6 +2470,7 @@ export async function runToolInvocation(
       withHostShellExecutionPlan,
       permissionResult,
       humanApproved: authorization.humanApproved,
+      replayRootBinding: opts.replayRootBinding,
       abortSignal,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,
@@ -2400,13 +2493,27 @@ export async function runToolInvocation(
       effectLedger,
       targetFilePath,
       preResult,
+      scriptPre,
       resolvedPluginOperation,
       pluginOperationPrincipal,
       pluginAuthLifecycle,
     });
-    return permissionResult?.requiresCodeCheckpoint === true
+    const executedResult = permissionResult?.requiresCodeCheckpoint === true
       ? await withProjectWriteRoots(projectRoots, () => withRequiredCodeCheckpoint(executeAuthorized))
       : await executeAuthorized();
+    const blockedSandbox = sandboxBlockForResult(executedResult);
+    if (blockedSandbox !== undefined && hostShellToolName !== undefined && hostShellExecutionPlan?.mode === "asrt"
+      && executedResult.is_error === true && blockedSandbox.command === finalInput.command && !abortSignal?.aborted
+      && rationaleBatchContext === undefined && rationaleResumeContext === undefined) {
+      // A recorded filesystem refusal creates a new exact host request. Every permission stage runs again.
+      const retryResult = await runToolInvocation(services, {
+        ...toolUse, id: randomUUID(), input: { ...structuredClone(finalInput), cwd: blockedSandbox.cwd, executionMode: "host",
+          justification: "The filesystem sandbox blocked this command. It may already have performed part of the operation; this approval retries the same command without filesystem isolation." },
+      }, randomUUID(), displayOrder, { ...opts, executionCwd, permissionContext: { ...invocationPermissionContext } });
+      if ("tool_use_id" in retryResult) return { ...retryResult, tool_use_id: toolUse.id };
+      throw new Error("A sandbox retry cannot suspend a rationale batch");
+    }
+    return executedResult;
     };
     try {
       return generationAccess && generationLease

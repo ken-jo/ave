@@ -142,14 +142,6 @@ export function permissionAuditEntryFromToolCall(args: {
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
   const base = permissionAuditBase(args);
-  if (args.permission?.deferred) {
-    return {
-      ...base,
-      decision: "deferred",
-      reviewerVerdict: args.permission.deferred.reviewerVerdict,
-      queueId: args.permission.deferred.queueId,
-    };
-  }
   if (args.permission?.decision === "deny") {
     const denyReasons = args.permission.denyReasons?.length
       ? args.permission.denyReasons

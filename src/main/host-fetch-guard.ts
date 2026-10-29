@@ -201,6 +201,8 @@ export interface HostFetchHopOptions {
     headersFor(url: URL, hop: number): Headers;
     finish(): void;
   };
+  // Authorize the exact actual hop after destination and credential checks, before any transport send.
+  authorizeHop?: (hop: { url: URL; method: string; body: BodyInit | null | undefined; headers: Headers; index: number }) => Promise<void>;
   // Audit sink for an allowed hop (hop >= 1; the caller logged hop 0).
   auditHop?: (line: string) => void;
   // Audit sink for a denied hop — same shape the caller uses for hop 0.
@@ -231,6 +233,7 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     resolvePrivateOnly,
     injectSessionCookie,
     credentialUse,
+    authorizeHop,
   } = options;
   const requestedPolicy = init.redirect;
   const policy: "error" | "manual" | "follow" =
@@ -278,6 +281,8 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
   for (let hop = 0; ; hop++) {
     credentialUse?.assertLive(hop === 0 ? "after-await" : "redirect");
     for (const [key, value] of credentialUse?.headersFor(url, hop) ?? []) headers.set(key, value);
+    await authorizeHop?.({ url: new URL(url), method, body, headers: new Headers(headers), index: hop });
+    credentialUse?.assertLive("after-await");
     // Bound each hop until response headers arrive, then clear the timer; body consumption belongs to the caller.
     const hopDeadline = new AbortController();
     const hopTimer = setTimeout(() => hopDeadline.abort(), TOOL_TIMEOUT_POLICY.pluginFetchResponseCeilingMs);

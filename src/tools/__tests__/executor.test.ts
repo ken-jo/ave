@@ -31,7 +31,7 @@ import {
   recordApproval,
 } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import {
   RuleBasedRiskClassifier,
@@ -544,13 +544,13 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      const deferredQueue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const recentlyDenied = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       setReviewerForTest(permMgr, {
         classifier: {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer would otherwise allow" })),
         },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue,
+        recentlyDenied,
       });
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
@@ -579,19 +579,15 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       );
 
       expect(result[0].is_error).toBe(true);
-      expect(result[0].content).toContain("권한 보류");
-      expect(result[0].content).toContain("허용 디렉토리 외부 경로 접근");
+      expect(result[0].content).toContain("do not retry");
       expect(executeSpy).not.toHaveBeenCalled();
-      const pending = deferredQueue.listPending();
+      const pending = (await recentlyDenied.list());
       expect(pending).toHaveLength(1);
       expect(pending[0]).toMatchObject({
         toolName: "bash",
         source: "builtin",
         category: "shell",
-        verdict: expect.objectContaining({
-          level: "high",
-          reason: "headless out-of-allowed-dir requires manual directory approval",
-        }),
+        reason: expect.any(String),
       });
     } finally {
       await cleanupTmpDir(dir);
@@ -878,7 +874,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
         },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
@@ -972,7 +968,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const auditLogger = {
         log: vi.fn(),
@@ -1043,7 +1039,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1139,7 +1135,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       // Persist the exact tuple with the host-captured frozen directory before resolving allow-always.
       const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
@@ -1247,11 +1243,11 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         level: "medium" as const,
         reason: "headless data egress",
       }));
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1280,8 +1276,8 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       expect(result[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(requestAndWait).not.toHaveBeenCalled();
-      expect(queue.listPending()).toHaveLength(1);
-      expect(queue.listPending()[0].verdict.level).toBe("medium");
+      expect((await queue.list())).toHaveLength(1);
+      expect((await queue.list())[0].reason).toBeTruthy();
     } finally {
       await cleanupTmpDir(dir);
     }
@@ -1317,7 +1313,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -1387,7 +1383,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
         },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
@@ -1836,7 +1832,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     setReviewerForTest(permMgr, {
       classifier: new RuleBasedRiskClassifier(),
       cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-      deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
     });
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
@@ -3461,13 +3457,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const classifier: RiskClassifier = {
         classify: vi.fn(() => ({ level: "low", reason: "reviewer would allow" })),
       };
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("strict");
       setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
 
       const wc = makeMockWebContents();
@@ -3492,13 +3488,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect(results[0].is_error).toBe(true);
       expect(results[0].content).toContain("headless");
       expect(results[0].content).toContain("strict 모드");
-      expect(queue.listPending()).toHaveLength(1);
+      expect((await queue.list())).toHaveLength(1);
     } finally {
       await cleanupTmpDir(dir);
     }
   });
 
-  it("audits headless reviewer queue decisions as deferred with queue id", async () => {
+  it("audits headless reviewer fallback as terminal denial", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-headless-audit-"));
     try {
       const executeSpy = vi.fn(async () => ({ output: "sent", isError: false }));
@@ -3523,13 +3519,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const classifier: RiskClassifier = {
         classify: vi.fn(() => ({ level: "medium", reason: "headless graph data operation" })),
       };
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
       setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
 
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
@@ -3571,19 +3567,18 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         },
       );
 
-      const pending = queue.listPending();
+      const pending = (await queue.list());
       expect(results[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(pending).toHaveLength(1);
       expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-        toolCalls: [expect.objectContaining({ permissionDecision: "deferred" })],
+        toolCalls: [expect.objectContaining({ permissionDecision: "deny" })],
       }));
       expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
-        decision: "deferred",
+        decision: "deny",
         tool: "teams_send",
         source: "plugin",
         category: "network",
-        queueId: pending[0].id,
         reviewerVerdict: expect.objectContaining({
           level: "medium",
           reason: "headless graph data operation",
@@ -3628,13 +3623,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
           return { level: "low", reason: "wrapped plugin worker allowed" };
         }),
       };
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
       setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
       const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -3695,13 +3690,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const classify = vi.fn(() => ({ level: "low" as const, reason: "reviewer would allow" }));
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
       setReviewerForTest(permMgr, {
         classifier: { classify },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
       const approvalGate = {
         requestAndWait: vi.fn(async (req: { id: string }) => ({
@@ -3746,7 +3741,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect(mcpHeadlessResult[0].content).toContain("headless explicit approval unavailable");
       expect(executeSpy).not.toHaveBeenCalled();
       expect(classify).not.toHaveBeenCalled();
-      expect(queue.listPending()).toHaveLength(0);
+      expect((await queue.list())).toHaveLength(0);
       expect(approvalGate.requestAndWait).toHaveBeenCalledOnce();
       expect(approvalGate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
         reason: expect.stringContaining("overlay trigger 출처"),
@@ -4681,7 +4676,7 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,

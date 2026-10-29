@@ -3,7 +3,7 @@ import "../../__tests__/support/trusted-powershell.js";
 import { buildHostShellExecutionPlan, isConfinedHostShellExecution } from "../host-shell-execution-plan.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionTestResources } from "./test-resources.js";
-import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,7 +24,7 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", cwd);
   manager = new PermissionManager(join(cwd, "permissions.json"));
   setReviewerForTest(manager, { classifier: new RuleBasedRiskClassifier(),
-    cache: resources.makeVerdictCache(join(cwd, "cache.jsonl")), deferredQueue: new DeferredQueue(join(cwd, "queue.jsonl")) });
+    cache: resources.makeVerdictCache(join(cwd, "cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(cwd, "queue.jsonl")) });
   manager.setMode("auto");
   manager.setInteractiveAutoApprove("medium");
 });
@@ -115,7 +115,7 @@ describe("shell floor judgment boundaries", () => {
   });
   it("keeps disabled judgment human", () => {
     setReviewerForTest(manager, { classifier: new DisabledRiskClassifier(),
-      cache: resources.makeVerdictCache(join(cwd, "disabled-cache.jsonl")), deferredQueue: new DeferredQueue(join(cwd, "disabled-queue.jsonl")) });
+      cache: resources.makeVerdictCache(join(cwd, "disabled-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(cwd, "disabled-queue.jsonl")) });
     expect(check("rm -rf ./build")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(check("rm -rf ./build").reviewer).toBeUndefined();
   });
@@ -148,7 +148,7 @@ describe("shell floor judgment boundaries", () => {
     });
     setReviewerForTest(manager, { classifier: { classify },
       cache: resources.makeVerdictCache(join(cwd, "powershell-cache.jsonl")),
-      deferredQueue: new DeferredQueue(join(cwd, "powershell-queue.jsonl")) });
+      recentlyDenied: makeRecentlyDeniedStore(join(cwd, "powershell-queue.jsonl")) });
     const command = "Remove-Item -Force ./build.txt";
     const permissionDecision = manager.checkDetailed("powershell", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "powershell", command, cwd },
@@ -172,7 +172,7 @@ describe("original shell floor dispatch authority", () => {
     const permissionDecision = check("rm -rf ./build");
     if (change === "disabled") {
       setReviewerForTest(manager, { classifier: new DisabledRiskClassifier(),
-        cache: resources.makeVerdictCache(join(cwd, "stale-cache.jsonl")), deferredQueue: new DeferredQueue(join(cwd, "stale-queue.jsonl")) });
+        cache: resources.makeVerdictCache(join(cwd, "stale-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(cwd, "stale-queue.jsonl")) });
     }
     await expect(manager.dispatchReviewer("bash", {
       invocationId: "stale-floor", sessionId: "shell-review-session", source: "builtin", category: "shell",

@@ -7,7 +7,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import { HookRunner } from "../../hooks/hook-runner.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { createDynamicTool } from "../base.js";
 import {
@@ -150,7 +150,7 @@ function reviewerPermissionManager(directory: string, classify = vi.fn(() => ({
   setReviewerForTest(manager, {
     classifier: { classify },
     cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
-    deferredQueue: new DeferredQueue(join(directory, "deferred-queue.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(directory, "deferred-queue.jsonl")),
   });
   return manager;
 }

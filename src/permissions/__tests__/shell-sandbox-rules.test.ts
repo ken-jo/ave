@@ -15,7 +15,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { BashTool } from "../../tools/shell-tools.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
-import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
@@ -378,7 +378,7 @@ describe("plain-shell invocation authorization", () => {
     manager.setInteractiveAutoApprove("medium");
     const classifier = { classify: vi.fn(async (): Promise<{ level: "low" | "high"; reason: string }> => ({ level: "low", reason: "bounded host effect" })) };
     const cache = new VerdictCache(join(dir, "review-cache.jsonl"));
-    setReviewerForTest(manager, { classifier, cache, deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
+    setReviewerForTest(manager, { classifier, cache, recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred.jsonl")) });
     return { classifier, cache };
   }
 

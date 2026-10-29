@@ -5,7 +5,7 @@ import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.j
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { validateDirectoryAddition } from "../allowed-directories.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { projectRootFor } from "./project-rule-files.js";
@@ -39,11 +39,8 @@ function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: 
       throw new Error("Write path cannot be represented by normalized rules");
     }
     const canonical = foldCanonicalPathSeparators(resolved);
-    const sensitive = isSensitivePath(caseFoldForMatch(lexical), "write") ?? isSensitivePath(caseFoldForMatch(canonical), "write");
     const control = protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical);
-    return { lexical, canonical, floor: sensitive
-      ? `Sensitive write path: ${sensitive}`
-      : control !== undefined ? `Protected control path: ${control}`
+    return { lexical, canonical, floor: control !== undefined ? `Protected control path: ${control}`
       : (isWithinRoot(root, lexical) || path.split(/[\\/]/).includes("..")) && !isWithinRoot(root, canonical) ? "Write path escapes the project" : undefined };
   });
 }
@@ -146,7 +143,7 @@ export function editDepthCandidates(path: string, cwd: string): EditDepthCandida
     if (paths[0]?.floor) return [];
     target = paths[0]!.canonical;
   } catch { return []; }
-  if (containsGlobMetacharacter(target) || isSensitivePath(caseFoldForMatch(target), "write")) return [];
+  if (containsGlobMetacharacter(target) || isAdmissionDeniedPath(caseFoldForMatch(target), "write")) return [];
   try { parseRuleSpecifier(formatRuleSpecifier({ kind: "edit", path: target, recursive: false })); }
   catch { return []; }
   let directory = false;

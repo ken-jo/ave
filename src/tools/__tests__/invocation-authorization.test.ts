@@ -1,7 +1,7 @@
 import { DisabledRiskClassifier, RuleBasedRiskClassifier, _internal } from "../../permissions/reviewer/risk-classifier.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { listApprovals, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,7 +42,7 @@ afterEach(async () => {
 describe("host shell invocation authorization", () => {
   it.each(["remove allow", "add deny"])("requires normal authorization again after %s invalidates a decision", async (change) => {
     const manager = new PermissionManager(join(directory, "permissions.json"));
-    // No sandbox here, so only an exact allow rule can authorize the host run.
+    // An exact allow rule authorizes this host run in the ordinary mode.
     manager.setRules([{ pattern: "Bash(printf authorized)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const check = vi.spyOn(manager, "checkDetailed");
     const tool = new BashTool();
@@ -89,7 +89,7 @@ describe("host shell invocation authorization", () => {
     expect(execute).not.toHaveBeenCalled();
     if (change === "remove allow") {
       expect(cards).toHaveLength(1);
-      // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, five-choice shell card).
+      // Ordinary shell approval retains reusable rule choices.
       expect(cards[0]?.allowedChoices).toBeUndefined();
       expect(cards[0]).toMatchObject({ requireExplicit: true });
     } else {
@@ -100,7 +100,7 @@ describe("host shell invocation authorization", () => {
 });
 
 describe("confined shell reviewer invocation", () => {
-  it.each(['echo "$TARGET"', "rm -rf ./build", "env git reset --hard"])("reviews each call without remembered authority: %s", async (command) => {
+  it.each(['node -e "process.stdout.write(process.version)"', 'printf "%s" "$(workspace_tool)"'])("reuses scoped review evidence and rechecks changed input: %s", async (command) => {
     vi.stubEnv("AVE_HOME", directory);
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
@@ -110,7 +110,7 @@ describe("confined shell reviewer invocation", () => {
     manager.setMode("auto");
     setReviewerForTest(manager, { classifier: { classify },
       cache: reviewResources.makeVerdictCache(join(directory, "reviewer-cache.jsonl")),
-      deferredQueue: new DeferredQueue(join(directory, "deferred.jsonl")) });
+      recentlyDenied: makeRecentlyDeniedStore(join(directory, "deferred.jsonl")) });
     manager.setInteractiveAutoApprove("medium");
     const check = vi.spyOn(manager, "checkDetailed");
     const tool = new BashTool();
@@ -124,31 +124,32 @@ describe("confined shell reviewer invocation", () => {
       const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
         { id: `shell-review-${index}`, name: "bash", input },
       ], { sessionId, permissionContext: userPermissionContext({ userIntent: "Review this workspace command" }) }));
-      expect(result?.is_error).not.toBe(true);
-      const reviewed = classify.mock.calls[index]?.[0];
+      expect(result?.is_error, result?.content).not.toBe(true);
+      const reviewed = classify.mock.calls[0]?.[0];
       expect(reviewed?.permissionReason).toBe(check.mock.results[index]?.value.reason);
       expect(_internal.buildUserPrompt(reviewed!)).toContain(reviewed!.permissionReason!);
     }
-    expect(classify).toHaveBeenCalledTimes(2);
+    expect(classify).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(await manager.listPersistedRules()).toEqual([]);
     expect(await listApprovals()).toEqual([]);
     classify.mockReturnValue({ level: "high", reason: "needs a person" });
     const [blocked] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
-      { id: "shell-review-high", name: "bash", input },
+      { id: "shell-review-high", name: "bash", input: { command: `${command}; printf changed` } },
     ], { sessionId, permissionContext: userPermissionContext({ userIntent: "Review this workspace command" }) }));
     expect(blocked?.is_error).toBe(true);
-    expect(classify).toHaveBeenCalledTimes(3);
+    expect(classify).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(requestAndWait).toHaveBeenCalledOnce();
-    expect(requestAndWait.mock.calls[0]?.[0]).toMatchObject({ durableApprovalRecordAllowed: false });
+    expect(requestAndWait.mock.calls[0]?.[0]).not.toMatchObject({ durableApprovalRecordAllowed: false });
   });
 });
 
 describe("shell review requires a risk judgment", () => {
   it.each([
     { command: "rm -rf ./build", disabled: true },
+    { command: "workspace_tool inspect", disabled: false },
     { command: "echo ok; git reset --hard", disabled: false },
     { command: "env git reset --hard", disabled: false },
     { command: "echo ok && git push --force", disabled: false },
@@ -161,7 +162,7 @@ describe("shell review requires a risk judgment", () => {
     manager.setMode("auto"); manager.setInteractiveAutoApprove(disabled ? "medium" : "low");
     setReviewerForTest(manager, { classifier: disabled ? new DisabledRiskClassifier() : new RuleBasedRiskClassifier(),
       cache: reviewResources.makeVerdictCache(join(directory, "judgment-cache.jsonl")),
-      deferredQueue: new DeferredQueue(join(directory, "judgment-queue.jsonl")) });
+      recentlyDenied: makeRecentlyDeniedStore(join(directory, "judgment-queue.jsonl")) });
     const tool = new BashTool();
     const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "executed", isError: false });
     const registry = new ToolRegistry(); registry.register(tool);

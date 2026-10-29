@@ -9,7 +9,7 @@ import {
   PermissionManager,
   type ReviewerDispatchOutcome,
 } from "../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -214,7 +214,7 @@ describe("ToolExecutor authorization-required control", () => {
     expect(result.authorizationRequired).toBeUndefined();
   });
 
-  it("keeps a completed routine reviewer verdict on the existing deferred denial lane", async () => {
+  it("keeps a completed routine reviewer verdict on the terminal denial lane", async () => {
     const execute = vi.fn(async () => ({ output: "executed", isError: false }));
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -232,7 +232,7 @@ describe("ToolExecutor authorization-required control", () => {
     setReviewerForTest(permissionManager, {
       classifier: {} as never,
       cache: {} as never,
-      deferredQueue: new DeferredQueue(join(permissionDirectory, "deferred.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(permissionDirectory, "deferred.jsonl")),
     });
     permissionManager.checkDetailed = () => ({
       decision: "ask",
@@ -405,7 +405,7 @@ describe("ToolExecutor authorization-required control", () => {
         setReviewerForTest(permissionManager, {
           classifier: {} as never,
           cache: {} as never,
-          deferredQueue: new DeferredQueue(join(permissionDirectory, "deferred.jsonl")),
+          recentlyDenied: makeRecentlyDeniedStore(join(permissionDirectory, "deferred.jsonl")),
         });
         permissionManager.dispatchReviewer = vi.fn(async () => ({
           verdict: { level: "high" as const, reason: "fallback after timeout" },
@@ -502,14 +502,14 @@ describe("ToolExecutor authorization-required control", () => {
     }));
     const requestAndWait = vi.fn();
     const permissionDirectory = tempDirectory("ave-auth-dir-");
-    const deferredQueue = new DeferredQueue(join(permissionDirectory, "deferred.jsonl"));
+    const recentlyDenied = makeRecentlyDeniedStore(join(permissionDirectory, "deferred.jsonl"));
     const permissionManager = new PermissionManager(
       join(permissionDirectory, "permissions.json"),
     );
     setReviewerForTest(permissionManager, {
       classifier: {} as never,
       cache: {} as never,
-      deferredQueue,
+      recentlyDenied,
     });
     const executor = new ToolExecutor(
       registry,
@@ -537,14 +537,14 @@ describe("ToolExecutor authorization-required control", () => {
       toolName: "out_of_scope_write",
       reason: "directory-authorization-required",
     });
-    const pending = deferredQueue.listPending();
+    const pending = (await recentlyDenied.list());
     expect(pending).toHaveLength(1);
-    expect(terminalState?.deferredRequestId).toBe(pending[0]?.id);
-    expect(pending[0]?.grant).toMatchObject({ kind: "directory" });
+    expect(pending[0]?.toolName).toBe("out_of_scope_write");
+    expect(pending[0]).not.toHaveProperty("grant");
     expect(JSON.stringify(terminalState)).not.toContain(outside);
   });
 
-  it("keeps a routine out-of-directory request in the existing deferred denial flow", async () => {
+  it("keeps a routine out-of-directory request in the terminal denial flow", async () => {
     const execute = vi.fn(async () => ({ output: "executed", isError: false }));
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -562,14 +562,14 @@ describe("ToolExecutor authorization-required control", () => {
     }));
     const requestAndWait = vi.fn();
     const permissionDirectory = tempDirectory("ave-routine-auth-dir-");
-    const deferredQueue = new DeferredQueue(join(permissionDirectory, "deferred.jsonl"));
+    const recentlyDenied = makeRecentlyDeniedStore(join(permissionDirectory, "deferred.jsonl"));
     const permissionManager = new PermissionManager(
       join(permissionDirectory, "permissions.json"),
     );
     setReviewerForTest(permissionManager, {
       classifier: {} as never,
       cache: {} as never,
-      deferredQueue,
+      recentlyDenied,
     });
     const executor = new ToolExecutor(
       registry,
@@ -596,8 +596,8 @@ describe("ToolExecutor authorization-required control", () => {
     expect(result.is_error).toBe(true);
     expect(result.authorizationRequired).toBeUndefined();
     expect(result.content).not.toContain("Authorization required");
-    expect(result.content).toContain("deferredId=");
-    expect(deferredQueue.listPending()).toHaveLength(1);
+    expect(result.content).toContain("do not retry");
+    expect((await recentlyDenied.list())).toHaveLength(1);
   });
 
   it("returns ordinary authorization, carrying the fallback reason, for a requested-sandbox plain fallback", async () => {

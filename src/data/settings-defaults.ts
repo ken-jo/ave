@@ -15,6 +15,7 @@ import {
 } from "../shared/llm-vendor-defaults.js";
 import { DEFAULT_BUNDLE_ID } from "../shared/theme-bundles.js";
 import { DEFAULT_LOCALE } from "../i18n/index.js";
+import { DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-level.js";
 import { DEFAULT_SIDEBAR_TAB } from "../shared/sidebar-tab.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
@@ -78,6 +79,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // Off is the pre-existing behavior: a packaged update is offered as an upgrade marker and the user's live doc is never moved unprompted.
     keepLatest: false,
   },
+  permissions: { ownerAwayAutoSkipMinutes: DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES },
   privacy: {
     piiRedactEnabled: false,
   },

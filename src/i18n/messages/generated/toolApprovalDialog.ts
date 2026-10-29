@@ -46,6 +46,8 @@ export const en = {
   "toolApprovalDialog.decisionPendingInSettings": "Finish or cancel the exact rejection in Settings before choosing another action.",
   "toolApprovalDialog.exactDecisionSaveFailed": "Could not save the exact permission decision.",
   "toolApprovalDialog.exactPersistentScope": "Remember only this tool and these exact arguments in this working directory: {path}",
+  "toolApprovalDialog.rememberScopeMcpTool": "Remember this tool ({toolName}) on server {serverId} with any arguments in this working directory: {path}. Allow once covers only this call; remembered approvals still respect deny/ask rules and mandatory approval.",
+  "toolApprovalDialog.rememberScopeMcpToolGlobal": "Remember this tool ({toolName}) on server {serverId} with any arguments in every working directory. Deny/ask rules and mandatory approval still apply.",
   "toolApprovalDialog.rememberScopeOrigin": "Remember for {toolName} requests to {origin} in this working directory: {path}. A new path or query is risk-checked first and asks again if it looks riskier.",
   "toolApprovalDialog.rememberScopePath": "Remember {toolName} operations on {target} in this working directory: {path}. Different content is risk-checked first and asks again if it looks riskier.",
   "toolApprovalDialog.rememberScopeTransfer": "Remember {toolName} from {source} to {destination}, without overwriting, in this working directory: {path}",
@@ -139,7 +141,7 @@ export const en = {
   "toolApprovalDialog.networkScopeNotOffered": "This connection is not offered for that lifetime.",
   "toolApprovalDialog.networkLocalScopeNotOffered": "A local or unverified destination cannot be allowed for good.",
   "toolApprovalDialog.pathGrantOnlyFolder": "A folder is allowed once or for good.",
-  "toolApprovalDialog.folderAddsProject": "Always allow adds this folder to the project. Eligible later file writes there run without asking in default and auto-review modes; protected paths and other mandatory checks still apply.",
+  "toolApprovalDialog.folderAddsProject": "Always allow adds this folder to the project. Eligible later file writes there run without asking in Allow writes and auto modes; protected paths and other mandatory checks still apply.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.agentActionTitle": "에이전트 작업 승인",
@@ -188,6 +190,8 @@ export const ko: Record<keyof typeof en, string> = {
   "toolApprovalDialog.decisionPendingInSettings": "다른 결정을 선택하기 전에 설정에서 이 정확한 거부를 저장하거나 취소하세요.",
   "toolApprovalDialog.exactDecisionSaveFailed": "정확 일치 권한 결정을 저장하지 못했습니다.",
   "toolApprovalDialog.exactPersistentScope": "이 도구와 동일한 인자만 다음 작업 경로에서 기억합니다: {path}",
+  "toolApprovalDialog.rememberScopeMcpTool": "{serverId} 서버의 이 도구({toolName})를 모든 인자에 대해 다음 작업 경로에서 기억합니다: {path}. 한 번 허용은 현재 호출에만 적용되며, 기억해도 거부·확인 규칙과 필수 승인은 유지됩니다.",
+  "toolApprovalDialog.rememberScopeMcpToolGlobal": "{serverId} 서버의 이 도구({toolName})를 모든 인자와 작업 경로에서 기억합니다. 거부·확인 규칙과 필수 승인은 유지됩니다.",
   "toolApprovalDialog.rememberScopeOrigin": "{origin}에 대한 {toolName} 요청을 다음 작업 경로에서 기억합니다: {path}. 새 경로나 쿼리는 먼저 위험도를 확인하고, 더 위험해 보이면 다시 묻습니다.",
   "toolApprovalDialog.rememberScopePath": "{target}에 대한 {toolName} 작업을 다음 작업 경로에서 기억합니다: {path}. 내용이 다르면 먼저 위험도를 확인하고, 더 위험해 보이면 다시 묻습니다.",
   "toolApprovalDialog.rememberScopeTransfer": "{source}에서 {destination}(으)로의 {toolName}을(를) 덮어쓰기 없이 다음 작업 경로에서 기억합니다: {path}",

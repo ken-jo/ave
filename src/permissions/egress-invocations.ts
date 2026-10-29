@@ -1,5 +1,6 @@
 // Client proxy usernames are labels, never credentials; trust the kernel-bound per-invocation listener. Mint 16 random bytes rather than provider IDs to satisfy length/secrecy bounds. Release at process exit; unknown or late keys become unattributed.
 import { randomBytes } from "node:crypto";
+import type { ToolApprovalWait } from "../tools/executor-ceiling.js";
 
 // A Bash or PowerShell tool call.
 export interface ShellEgressOwner {
@@ -13,6 +14,9 @@ export interface ShellEgressOwner {
 
 // Where a shell call runs, for the egress ask and its grants.
 export interface ShellEgressContext {
+  readonly headless?: boolean;
+  readonly ownerUnattended?: boolean;
+  readonly toolApprovalWait?: ToolApprovalWait;
   // The conversation the call belongs to; undefined outside a conversation.
   readonly sessionId: string | undefined;
   // The conversation's working directory: what "This workspace" grants key on.

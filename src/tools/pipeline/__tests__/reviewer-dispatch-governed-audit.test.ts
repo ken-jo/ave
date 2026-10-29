@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { RuleBasedRiskClassifier } from "../../../permissions/reviewer/risk-classifier.js";
 import { VerdictCache } from "../../../permissions/reviewer/verdict-cache.js";
 import { dispatchReviewerForHeadless } from "../reviewer-dispatch.js";
@@ -17,14 +17,14 @@ describe("headless reviewer governed audit projection", () => {
       const permissionManager = new PermissionManager(
         join(directory, "permissions.json"),
       );
-      const deferredQueue = new DeferredQueue(
+      const recentlyDenied = makeRecentlyDeniedStore(
         join(directory, "deferred-queue.jsonl"),
       );
       permissionManager.setMode("strict");
       setReviewerForTest(permissionManager, {
         classifier: new RuleBasedRiskClassifier(),
         cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
-        deferredQueue,
+        recentlyDenied,
       });
 
       await dispatchReviewerForHeadless(
@@ -55,7 +55,7 @@ describe("headless reviewer governed audit projection", () => {
         "reviewer-governed-audit-session",
       );
 
-      const [pending] = deferredQueue.listPending();
+      const [pending] = (await recentlyDenied.list());
       expect(pending?.inputSummary).toBe('{"operation":"status"}');
       expect(pending?.inputSummary).not.toContain(
         "must-never-reach-deferred-storage",

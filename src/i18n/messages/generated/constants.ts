@@ -16,14 +16,14 @@ export const en = {
   "constants.vendorOpenAiCompatiblePlaceholder": "API key (or any value if unauthenticated)",
 
   // EXEC_MODE_OPTIONS
-  "constants.execModeDefaultLabel": "Confirm writes outside the project",
-  "constants.execModeDefaultDesc": "Reads and recoverable project file edits are allowed; writes outside the project and protected paths require approval. Other tools follow their own permission rules",
-  "constants.execModeStrictLabel": "Confirm all",
-  "constants.execModeStrictDesc": "Approval required for all tools including reads",
-  "constants.execModeAutoLabel": "Auto-verify",
-  "constants.execModeAutoDesc": "Recoverable project file edits are allowed; other eligible interactive calls use the reviewer threshold, and headless execution uses its separate fail-closed reviewer queue",
-  "constants.execModeAllowLabel": "Allow all",
-  "constants.execModeAllowDesc": "Tools outside hard blocks are auto-allowed; access outside allowed directories requires separate approval",
+  "constants.execModeDefaultLabel": "Allow writes",
+  "constants.execModeDefaultDesc": "Allows ordinary reads, recoverable project file edits, and safe sandboxed commands. Other actions ask; protected actions always require approval.",
+  "constants.execModeStrictLabel": "Default",
+  "constants.execModeStrictDesc": "Allows ordinary reads and proven read-only sandboxed commands. File changes and other actions require approval.",
+  "constants.execModeAutoLabel": "auto",
+  "constants.execModeAutoDesc": "Allows the same project edits and safe sandboxed commands as Allow writes; the reviewer checks other actions. Protected actions always require approval.",
+  "constants.execModeAllowLabel": "Allow",
+  "constants.execModeAllowDesc": "Allows actions after admission and deny rules. Protected actions still require one-time approval.",
 
   // REASONING_DEPTHS
   "constants.reasoningEffortLow": "Low",
@@ -49,14 +49,14 @@ export const ko: Record<keyof typeof en, string> = {
   "constants.vendorOpenAiCompatiblePlaceholder": "API 키 (인증이 없으면 임의 값 가능)",
 
   // EXEC_MODE_OPTIONS
-  "constants.execModeDefaultLabel": "프로젝트 밖 쓰기 확인",
-  "constants.execModeDefaultDesc": "읽기와 복구 가능한 프로젝트 파일 변경은 허용하고, 프로젝트 밖 쓰기·보호 경로는 승인 요청. 나머지 도구는 해당 권한 규칙을 적용",
-  "constants.execModeStrictLabel": "전체 확인",
-  "constants.execModeStrictDesc": "읽기까지 포함해 모든 도구 실행 전 승인 요청",
-  "constants.execModeAutoLabel": "자동 검증",
-  "constants.execModeAutoDesc": "복구 가능한 프로젝트 파일 변경은 허용하고, 나머지 대화형 검증 대상은 리뷰어 임계값을 적용하며 헤드리스 실행은 별도의 실패 폐쇄형 리뷰 대기열을 사용",
-  "constants.execModeAllowLabel": "모두 허용",
-  "constants.execModeAllowDesc": "하드 차단 밖 도구는 자동 허용하고 허용 디렉터리 밖 접근은 별도 승인",
+  "constants.execModeDefaultLabel": "쓰기 허용",
+  "constants.execModeDefaultDesc": "일반 읽기, 복구 가능한 프로젝트 파일 변경, 안전한 샌드박스 명령을 허용합니다. 나머지는 승인 요청하며 보호 대상은 항상 확인합니다.",
+  "constants.execModeStrictLabel": "기본",
+  "constants.execModeStrictDesc": "일반 읽기와 읽기 전용으로 입증된 샌드박스 명령을 허용합니다. 파일 변경과 나머지 작업은 승인을 요청합니다.",
+  "constants.execModeAutoLabel": "auto",
+  "constants.execModeAutoDesc": "쓰기 허용과 같은 프로젝트 변경·안전한 샌드박스 명령을 허용하고 나머지는 리뷰어가 검증합니다. 보호 대상은 항상 확인합니다.",
+  "constants.execModeAllowLabel": "허용",
+  "constants.execModeAllowDesc": "입장 검사와 거부 규칙을 통과한 작업을 허용합니다. 보호 대상은 계속 이번 한 번 승인이 필요합니다.",
 
   // REASONING_DEPTHS
   "constants.reasoningEffortLow": "낮음",

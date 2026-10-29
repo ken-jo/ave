@@ -90,7 +90,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readActiveLlm: () => ({ provider: "openai", model: "" }),
       streamProviderFor,
       verdictCachePath: join(tmpDir, "cache.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue.jsonl"),
     });
     expect(result.effectiveSettings.model).toBe("");
     expect(result.runtimeMode).toBe("llm-degraded-to-rule");
@@ -111,7 +110,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue.jsonl"),
     });
     expect(result.classifier).toBeInstanceOf(RuleBasedRiskClassifier);
     expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
@@ -139,7 +137,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: settingsFor("rule"),
       resolveParentSessionAdjudicationTarget: () => target,
       verdictCachePath: join(tmpDir, "cache-parent-session.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-parent-session.jsonl"),
     });
     expect(ruled.parentSessionAdjudicator).toBeInstanceOf(LlmParentAdjudicator);
     // Reviewer and parent-session adjudicator availability are independent.
@@ -152,7 +149,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: settingsFor("disabled"),
       resolveParentSessionAdjudicationTarget: () => target,
       verdictCachePath: join(tmpDir, "cache-parent-session-off.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-parent-session-off.jsonl"),
     });
     expect(disabled.parentSessionAdjudicator).toBeInstanceOf(
       UnavailableParentAdjudicator,
@@ -172,7 +168,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue.jsonl"),
     });
     expect(result.classifier).toBeInstanceOf(DisabledRiskClassifier);
     expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
@@ -203,7 +198,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       }),
       streamProviderFor: factorySpy,
       verdictCachePath: join(tmpDir, "cache.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue.jsonl"),
     });
     expect(result.classifier).toBeInstanceOf(LlmRiskClassifier);
     expect(result.rationaleScopeReviewer).toBeInstanceOf(LlmRationaleScopeReviewer);
@@ -253,7 +247,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       }),
       streamProviderFor: factorySpy,
       verdictCachePath: join(tmpDir, "cache-active-llm.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-active-llm.jsonl"),
     });
 
     expect(result.effectiveSettings.provider).toBe("openai-compatible");
@@ -300,7 +293,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       }),
       streamProviderFor: factorySpy,
       verdictCachePath: join(tmpDir, "cache-active-vertex.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-active-vertex.jsonl"),
     });
 
     expect(result.effectiveSettings.provider).toBe("vertex-ai");
@@ -328,7 +320,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
           parentAdjudication: PARENT_ADJUDICATION,
         }),
         verdictCachePath: join(tmpDir, "cache-degrade.jsonl"),
-        deferredQueuePath: join(tmpDir, "queue-degrade.jsonl"),
       }),
     ).toThrow(/no streamProviderFor supplied/);
   });
@@ -342,7 +333,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmDenySettings,
       streamProviderFor: () => null,
       verdictCachePath: join(tmpDir, "cache-degrade-null.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-degrade-null.jsonl"),
     });
     expect(result.classifier).toBeInstanceOf(RuleBasedRiskClassifier);
     expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
@@ -360,7 +350,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmDenySettings,
       streamProviderFor: () => null,
       verdictCachePath: join(tmpDir, "cache-degrade-fa.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-degrade-fa.jsonl"),
     });
     expect(result.runtimeMode).toBe("llm-degraded-to-rule");
     expect(pm.hasReviewer()).toBe(true);
@@ -383,7 +372,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         }),
         streamProviderFor: () => null,
         verdictCachePath: join(tmpDir, "cache-degrade-warn.jsonl"),
-        deferredQueuePath: join(tmpDir, "queue-degrade-warn.jsonl"),
       });
       const fired = warnSpy.mock.calls.some((args) =>
         args.some((a) => typeof a === "string" && a.includes("degrading to rule classifier")),
@@ -403,7 +391,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmDenySettings,
       streamProviderFor: () => null,
       verdictCachePath: join(tmpDir, "cache-heal-1.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-heal-1.jsonl"),
     });
     expect(degraded.runtimeMode).toBe("llm-degraded-to-rule");
     expect(pm.isReviewerDegradedToRule()).toBe(true);
@@ -418,7 +405,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmDenySettings,
       streamProviderFor: () => provider,
       verdictCachePath: join(tmpDir, "cache-heal-2.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-heal-2.jsonl"),
     });
     expect(healed.classifier).toBeInstanceOf(LlmRiskClassifier);
     expect(healed.runtimeMode).toBe("llm");
@@ -464,7 +450,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmReviewerSettings,
       streamProviderFor: () => null,
       verdictCachePath: cachePath,
-      deferredQueuePath: join(tmpDir, "queue-mode-flip.jsonl"),
     });
     expect(degraded.runtimeMode).toBe("llm-degraded-to-rule");
     const degradedScope = setReviewerSpy.mock.calls[0][0].cacheScope!;
@@ -486,7 +471,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmReviewerSettings,
       streamProviderFor: () => provider,
       verdictCachePath: cachePath,
-      deferredQueuePath: join(tmpDir, "queue-mode-flip.jsonl"),
     });
     expect(healed.runtimeMode).toBe("llm");
     const healedScope = setReviewerSpy.mock.calls[1][0].cacheScope!;
@@ -515,7 +499,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmReviewerSettings,
       streamProviderFor: () => provider,
       verdictCachePath: cachePath,
-      deferredQueuePath: join(tmpDir, "queue-mode-flip-rev.jsonl"),
     });
     expect(healthy.runtimeMode).toBe("llm");
     const llmScope = setReviewerSpy.mock.calls[0][0].cacheScope!;
@@ -534,7 +517,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
       readSettings: llmReviewerSettings,
       streamProviderFor: () => null,
       verdictCachePath: cachePath,
-      deferredQueuePath: join(tmpDir, "queue-mode-flip-rev.jsonl"),
     });
     expect(degraded.runtimeMode).toBe("llm-degraded-to-rule");
     const degradedScope = setReviewerSpy.mock.calls[1][0].cacheScope!;
@@ -575,7 +557,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue.jsonl"),
     });
     expect(result.appliedSettings.mode).toBe("rule");
     expect(result.appliedSettings.fallbackOnError).toBe("deny");
@@ -594,7 +575,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
         parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue.jsonl"),
     });
     // Rewiring must apply persisted auto-approval policy to the live manager without a restart.
     expect(pm.getInteractiveAutoApprove()).toBe("low");
@@ -616,7 +596,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
           parentAdjudication: PARENT_ADJUDICATION,
         }),
         verdictCachePath: join(tmpDir, "cache-warn-auto-off.jsonl"),
-        deferredQueuePath: join(tmpDir, "queue-warn-auto-off.jsonl"),
       });
       const fired = warnSpy.mock.calls.some((args) =>
         args.some((a) => typeof a === "string" && a.includes("legacy exec mode=auto")),
@@ -643,7 +622,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
           parentAdjudication: PARENT_ADJUDICATION,
         }),
         verdictCachePath: join(tmpDir, "cache-warn-strict.jsonl"),
-        deferredQueuePath: join(tmpDir, "queue-warn-strict.jsonl"),
       });
       const fired = warnSpy.mock.calls.some((args) =>
         args.some((a) => typeof a === "string" && a.includes("exec mode=strict")),
@@ -667,9 +645,10 @@ describe("Permission policy P4 reviewer-wiring", () => {
         parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache-1.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-1.jsonl"),
     });
     expect(pm.getInteractiveAutoApprove()).toBe("low");
+    const history = pm.getRecentlyDenied();
+    expect(history).not.toBeNull();
     wireReviewerAgent({
       readActiveLlm: CHAT_LLM,
       networkFetch: unusedNetworkFetch,
@@ -681,9 +660,9 @@ describe("Permission policy P4 reviewer-wiring", () => {
         parentAdjudication: PARENT_ADJUDICATION,
       }),
       verdictCachePath: join(tmpDir, "cache-2.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-2.jsonl"),
     });
     expect(pm.getInteractiveAutoApprove()).toBe("off");
+    expect(pm.getRecentlyDenied()).toBe(history);
   });
 });
 
@@ -702,8 +681,8 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
     const rewiredRationaleScopeReviewer = { reevaluate: vi.fn() };
     const wireReviewerAgentMock = vi
       .fn()
-      .mockReturnValueOnce({ rationaleScopeReviewer: initialRationaleScopeReviewer })
-      .mockReturnValue({ rationaleScopeReviewer: rewiredRationaleScopeReviewer });
+      .mockReturnValueOnce({ rationaleScopeReviewer: initialRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } })
+      .mockReturnValue({ rationaleScopeReviewer: rewiredRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } });
     vi.doMock("electron", () => ({
       BrowserWindow: { getAllWindows: () => [] },
     }));
@@ -720,6 +699,7 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
 
     const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
     const settingsService = {
+      onChanged: vi.fn(),
       get: vi.fn((key: string) => {
         if (key === "llm") {
           return {
@@ -768,6 +748,7 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
     const permissionManager = new PermissionManager(join(tmpDir, "boot-permissions.json"));
 
     const bootContext = {
+      approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
       host: createBootHostFixture(),
       toolRegistry: { setDenyRules: vi.fn() },
       permissionManager,
@@ -850,8 +831,8 @@ describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () =>
     const rewiredRationaleScopeReviewer = { reevaluate: vi.fn() };
     const wireReviewerAgentMock = vi
       .fn()
-      .mockReturnValueOnce({ rationaleScopeReviewer: initialRationaleScopeReviewer })
-      .mockReturnValue({ rationaleScopeReviewer: rewiredRationaleScopeReviewer });
+      .mockReturnValueOnce({ rationaleScopeReviewer: initialRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } })
+      .mockReturnValue({ rationaleScopeReviewer: rewiredRationaleScopeReviewer, recentlyDenied: { setReplayResolver: vi.fn() } });
     vi.doMock("electron", () => ({
       BrowserWindow: { getAllWindows: () => [] },
     }));
@@ -868,6 +849,7 @@ describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () =>
 
     const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
     const settingsService = {
+      onChanged: vi.fn(),
       get: vi.fn((key: string) => {
         if (key === "llm") {
           // A saved self-hosted openai-compatible endpoint with NO marketplace preset; the isSelfHostedDirectEndpoint branch of the fetch ladder.
@@ -906,6 +888,7 @@ describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () =>
     );
 
     const bootContext = {
+      approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
       host: createBootHostFixture(),
       toolRegistry: { setDenyRules: vi.fn() },
       permissionManager,
@@ -1067,7 +1050,6 @@ describe("user-selected permission reviewer model", () => {
       streamProviderFor,
       selectedModel,
       verdictCachePath: join(tmpDir, "cache-selected.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-selected.jsonl"),
     });
     expect(result.runtimeMode).toBe("llm-model-unavailable");
     expect(pm.isReviewerDegradedToRule()).toBe(false);
@@ -1090,7 +1072,6 @@ describe("user-selected permission reviewer model", () => {
       streamProviderFor: () => stubProvider([{ type: "message_complete", stopReason: "end_turn" }]),
       selectedModel: { label: "claude/selected-model", available: true },
       verdictCachePath: join(tmpDir, "cache-selected-ok.jsonl"),
-      deferredQueuePath: join(tmpDir, "queue-selected-ok.jsonl"),
     });
     expect(result.runtimeMode).toBe("llm");
     expect(result.classifier).toBeInstanceOf(LlmRiskClassifier);

@@ -1,3 +1,6 @@
+import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
+import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
+import { isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
 import type { ApprovalDecision, ApprovalRequestInput } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
@@ -170,6 +173,7 @@ export interface ExecutionStageContext {
   withHostShellExecutionPlan: (result: ToolResult) => ToolResult;
   permissionResult: PermissionCheckResult | undefined;
   humanApproved: boolean;
+  replayRootBinding?: ReplayRootBinding;
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
@@ -192,6 +196,7 @@ export interface ExecutionStageContext {
   effectLedger: EffectLedger;
   targetFilePath: string | undefined;
   preResult: Awaited<ReturnType<HookRunner["runPreHooks"]>>;
+  scriptPre: Awaited<ReturnType<typeof runScriptHook>>;
   resolvedPluginOperation: ResolvedPluginOperation | undefined;
   pluginOperationPrincipal: PluginOperationPrincipal | undefined;
   pluginAuthLifecycle: HostPluginAuthLifecycle | undefined;
@@ -247,50 +252,13 @@ export async function executeAuthorizedToolInvocation(
     pluginOperationPrincipal,
     pluginAuthLifecycle,
   } = context;
+  let sandboxBlock: SandboxBlock | undefined;
   let permissionResult = context.permissionResult;
   if (typeof initialHumanApproved !== "boolean") {
     throw new Error("Handler admission is missing human approval provenance");
   }
   let humanApproved = initialHumanApproved;
 
-
-  const scriptPre = resolvedPluginOperation
-    ? {
-        decision: "allow" as const,
-        reason: "governed operation hooks are disabled",
-        results: [],
-      }
-    : await runScriptHook(
-        services.scriptHookManager,
-        "pre",
-        toolUse.name,
-        source,
-        invocationCategory,
-        finalInput,
-        sessionId,
-        invocationPermissionContext,
-        tool.mcpServerId,
-        tool.pluginId,
-        undefined,
-        undefined,
-        tool.pluginGeneration !== undefined,
-      );
-  if (scriptPre.decision === "deny") {
-    if (rationaleResumeContext) {
-      return returnRationaleResumeBlock(
-        "script PreToolUse hook denied the sealed action: " + scriptPre.reason,
-        finalInput,
-        { decision: "deny", reason: scriptPre.reason, layer: 6 },
-        hookChainFromDispatch("pre", scriptPre),
-      );
-    }
-    const msg = t("be_executor.hookBlockScript", { reason: scriptPre.reason });
-    const durationMs = Date.now() - startTime;
-    emitToolStart(callbacks, toolUse.name, finalInput, meta);
-    callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-    await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: scriptPre.reason, layer: 6 }, Infinity, invocationPermissionContext, invocationCategory, executionCwd, undefined, undefined, hookChainFromDispatch("pre", scriptPre));
-    return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
-  }
 
   // ── Step 5: Rate Limit (trust별) ────────────────
   const rateResult = services.rateLimiter.check(toolUse.name, trust);
@@ -730,9 +698,9 @@ export async function executeAuthorizedToolInvocation(
     ...(isCanonicalWebFetchTool(tool) && services.permissionManager && typeof finalInput.url === "string" ? {
       authorizeNetworkTarget: (() => {
         const initialUrl = new URL(finalInput.url as string);
-        // Completed per-call asks retain their mandatory layer after the
-        // authorization stage changes the decision to allow.
-        const hasPerCallApproval = permissionResult?.decision === "allow" && permissionResult.layer <= 2;
+        // The authorization stage decided this exact initial request.
+        // Redirects retain destination and credential checks below.
+        const hasPerCallApproval = humanApproved || (permissionResult?.decision === "allow" && permissionResult.reasonCode !== "allow-mode");
         let scopedFetch = false;
         let first = true;
         return async (url: URL): Promise<void> => {
@@ -885,7 +853,7 @@ export async function executeAuthorizedToolInvocation(
     const reason = t(pause === "consecutive"
       ? userAvailable ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedNoUserConsecutive"
       : userAvailable ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal");
-    permissionResult = { decision: userAvailable ? "ask" : "deny", reason, layer: 5, forceModal: true };
+    permissionResult = { decision: userAvailable ? "ask" : "deny", reason, layer: 5, forceModal: false };
     emitPermissionReview(callbacks, {
       status: userAvailable ? "needs_approval" : "failed", toolName: toolUse.name,
       toolCategory: invocationCategory, source, reason, ...meta,
@@ -922,7 +890,7 @@ export async function executeAuthorizedToolInvocation(
     abortSignal?.throwIfAborted();
     const decision = await services.approvalGate!.requestAndWait(request);
     abortSignal?.throwIfAborted();
-    humanApproved = services.permissionManager!.resumeAutomatedApproval(request.sessionId, decision);
+    humanApproved = decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
     if (!humanApproved) {
       permissionResult = { decision: "deny", reason: request.reason, layer: 5, forceModal: true };
       throw new Error(request.reason);
@@ -947,12 +915,19 @@ export async function executeAuthorizedToolInvocation(
           runWithEffectGateContext(
             {
               headless: invocationPermissionContext.headless === true,
+              executionCwd,
+              abortSignal: signal,
+              permissionContext: { admissionDenial: permissionResult?.pipelineRequest?.admissionDenial, floor: permissionResult?.pipelineRequest?.floor, manualRerun: invocationPermissionContext.manualRerun, ownerUnattended: invocationPermissionContext.ownerUnattended, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, permissionStoreError: invocationPermissionContext.permissionStoreError },
               approvalSurface: invocationPermissionContext.approvalSurface,
               toolName: toolUse.name,
               ...(sessionId === undefined ? {} : { sessionId }),
             },
             () => {
               assertHandlerAdmission(signal);
+              if (context.replayRootBinding) {
+                const replayRoot = checkReplayRootBinding(context.replayRootBinding);
+                if (!replayRoot.valid) throw new Error(replayRoot.reason);
+              }
               handlerAdmissionBlocked = false;
               return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },
                 () => tool.execute(finalInput, ctx),
@@ -1071,6 +1046,7 @@ export async function executeAuthorizedToolInvocation(
     terminationReason = "error";
   } else if (outcome.ok) {
     const result = outcome.value;
+    sandboxBlock = sandboxBlockForResult(result);
     content = result.output;
     isError = result.isError;
     if (authorizationRequiredStateOf(result.authorizationRequired)) {
@@ -1464,7 +1440,7 @@ export async function executeAuthorizedToolInvocation(
   // fired (keeps non-hook rows clean). config-hook vs `.sh`-hook is now
   // distinguishable via each row's `source`.
   const successHookChain = mergeHookChains(
-    hookChainFromDispatch("pre", scriptPre),
+    hookChainFromDispatch("pre", context.scriptPre),
     hookChainFromDispatch("post", scriptPost),
     latePermissionHookChain,
   );
@@ -1515,7 +1491,7 @@ export async function executeAuthorizedToolInvocation(
   }
 
   outputArtifactDelivered = outputArtifact !== undefined;
-  return withHostShellExecutionPlan({
+  const completedResult = withHostShellExecutionPlan({
     tool_use_id: toolUse.id,
     content,
     ...(isError && { is_error: true }),
@@ -1526,6 +1502,8 @@ export async function executeAuthorizedToolInvocation(
     ...(outputArtifact ? { outputArtifact } : {}),
     durationMs,
   });
+  if (sandboxBlock !== undefined) attachSandboxBlock(completedResult, sandboxBlock);
+  return completedResult;
   } catch (error) {
     completePluginAuthFailure(error);
     if (operationExecutionDomain && resolvedPluginOperation) {

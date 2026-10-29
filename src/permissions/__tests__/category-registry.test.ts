@@ -26,47 +26,21 @@ describe("Category Registry — registerStandardCategories", () => {
     expect(known).toEqual(["meta", "network", "read", "shell", "write"].sort());
   });
 
-  it("read descriptor allows in default/auto/allow, asks in strict", () => {
-    const d = getToolCategoryDescriptor("read");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: false })).toBe("ask");
+  it.each(["strict", "default", "auto", "allow"] as const)("allows ordinary reads in %s mode", (mode) => {
+    expect(getToolCategoryDescriptor("read").decisionFor({ mode, source: "builtin", headless: false })).toBe("allow");
+    expect(getToolCategoryDescriptor("read").decisionFor({ mode, source: "builtin", headless: true })).toBe("allow");
   });
 
-  it("write descriptor asks in default/strict/auto, allows in allow, and defers default/auto headless to reviewer", () => {
-    const d = getToolCategoryDescriptor("write");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: true })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: true })).toBe("allow");
-  });
-
-  it("shell descriptor asks in default/auto/strict, allows in allow mode, and routes non-strict headless to reviewer", () => {
-    const d = getToolCategoryDescriptor("shell");
-    for (const mode of ["default", "auto", "strict"] as const) {
-      expect(d.decisionFor({ mode, source: "builtin", headless: false })).toBe("ask");
+  it.each(["write", "shell", "network"] as const)("delegates %s approval policy to the decision pipeline", (kind) => {
+    const descriptor = getToolCategoryDescriptor(kind);
+    for (const mode of ["strict", "default"] as const) {
+      expect(descriptor.decisionFor({ mode, source: "builtin", headless: false })).toBe("ask");
+      expect(descriptor.decisionFor({ mode, source: "builtin", headless: true })).toBe("deny");
     }
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: true })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: true })).toBe("allow");
-  });
-
-  it("network descriptor asks in default/auto, allows in allow, and defers default/auto headless to reviewer", () => {
-    const d = getToolCategoryDescriptor("network");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: true })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: true })).toBe("allow");
+    for (const headless of [false, true]) {
+      expect(descriptor.decisionFor({ mode: "auto", source: "builtin", headless })).toBe("reviewer");
+      expect(descriptor.decisionFor({ mode: "allow", source: "builtin", headless })).toBe("allow");
+    }
   });
 
   it("meta descriptor keeps override host-only and denies external sources", () => {

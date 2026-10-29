@@ -205,10 +205,6 @@ export async function initPluginRuntime(
   // Read public preferences live so settings edits take effect without plugin reload.
   const readAppPreference = buildAppPreferenceReader(settingsService, log);
 
-  // Read effect enforcement on each HostApi call; settings changes apply without reload.
-  const hostClassifiesRiskEnabled = (): boolean =>
-    settingsService.get("features")?.hostClassifiesRisk ?? false;
-
   const pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void>;
   }> = [];
   let pluginShutdownRan = false;
@@ -327,7 +323,6 @@ export async function initPluginRuntime(
     getRegistryEntry,
     refreshRegistryEntryCacheIfChanged,
     grantEvidence: grantEvidenceReader({ paths: pluginPaths, marketplacesRoot: join(aveHome(), "marketplaces") }),
-    hostClassifiesRiskEnabled,
     pluginShutdownHandlers,
     readAppPreference,
     settingsService,

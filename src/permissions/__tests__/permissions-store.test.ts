@@ -87,6 +87,18 @@ describe("readPermissionsFile", () => {
     await expect(readPermissionsFile("/tmp/permissions.json")).resolves.toEqual(tiered);
   });
 
+  it("uses the conservative mode for a newly created policy", async () => {
+    readFileMock.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+    await updatePermissionsFile("/tmp/permissions.json", () => undefined);
+    expect(JSON.parse(atomicWriteMock.mock.calls[0][1])).toMatchObject({ mode: "strict" });
+  });
+
+  it("preserves the stored write-permitting mode during updates", async () => {
+    readFileMock.mockResolvedValue(JSON.stringify({ version: 1, mode: "default", rules: [], updatedAt: "2026-01-01T00:00:00.000Z" }));
+    await updatePermissionsFile("/tmp/permissions.json", () => undefined);
+    expect(JSON.parse(atomicWriteMock.mock.calls[0][1])).toMatchObject({ mode: "default" });
+  });
+
   it("publishes grant mutations through the atomic writer", async () => {
     readFileMock.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
 

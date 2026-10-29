@@ -362,7 +362,7 @@ describe("pendingAnswers", () => {
     { id: "s-board", family: "work-board" as const },
     { id: "s-side", family: "side-chat" as const, originSessionId: "s-main" },
   ];
-  const empty = { approvals: [], deferredSessionIds: [], overlayCards: [], sessions, isClaimed: () => false };
+  const empty = { approvals: [], overlayCards: [], sessions, isClaimed: () => false };
 
   it("marks the row, and no control, for a card drawn where the user is", () => {
     // Over a drawn pane's composer: the conversation is interrupted, so its row says so — but nothing is hidden, so no control
@@ -382,13 +382,12 @@ describe("pendingAnswers", () => {
     expect(result.hiddenPaneIds.size).toBe(0);
   });
 
-  it("marks the row and the pane of a conversation the tree hides — approval, question, child, deferred, overlay", () => {
+  it("marks the row and the pane of a conversation the tree hides — approval, question, child, overlay", () => {
     const hidden = { hidden: true, paneHidden: true };
     const cases: Array<[string, Parameters<typeof pendingAnswers>[0]]> = [
       ["approval", { ...empty, tiles: [tile("g2", "s-other", hidden)], approvals: [approval("a1", { sessionId: "s-other" })] }],
       ["question", { ...empty, tiles: [tile("g2", "s-other", { ...hidden, askQuestions: [question("q1", "s-other")] })] }],
       ["child approval", { ...empty, tiles: [tile("g2", "s-other", { ...hidden, childSessionIds: new Set(["s-child"]) })], approvals: [approval("a1", { sessionId: "s-child" })] }],
-      ["deferred", { ...empty, tiles: [tile("g2", "s-other", hidden)], deferredSessionIds: ["s-other"] }],
       ["overlay", { ...empty, tiles: [tile("g2", "s-other", hidden)], overlayCards: [{ originSessionId: "s-other" }] }],
     ];
     for (const [name, input] of cases) {

@@ -12,7 +12,7 @@ import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import {
@@ -67,7 +67,7 @@ function harness(
   setReviewerForTest(permMgr, {
     classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "needs confirmation" })) },
     cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-    deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
   });
 
   const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {

@@ -23,7 +23,7 @@ export interface InputStatusRow {
   billingRoute?: ModelBillingRoute;
   /** Permission policy mode for per-mode text color + label. */
   permissionMode: ExecutionModeDisplay;
-  /** Pending deferred-approval count (appended to the permission cell). */
+  /** Recent denial count (appended to the permission cell). */
   pendingApprovals: number;
   /** Host-issued shell execution status, independent of the desired setting. */
   sandboxCapability?: SandboxCapabilityInfo | null;
@@ -115,20 +115,15 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
 
     void (async () => {
       try {
-        const result = await perm.deferredList?.();
-        if (!cancelled && result?.ok) setPendingApprovals(result.pending?.length ?? 0);
-      } catch {
-        if (!cancelled) setPendingApprovals(0);
-      }
+        const result = await perm.recentlyDeniedList();
+        if (!cancelled && result.ok) setPendingApprovals(result.entries.length);
+      } catch { if (!cancelled) setPendingApprovals(0); }
     })();
-
     const unsubs: Array<() => void> = [];
+    const offHistory = perm.onRecentlyDeniedChanged((summary) => setPendingApprovals(summary.total));
+    unsubs.push(offHistory);
     const offMode = perm.onModeChanged?.((next) => setPermissionMode(normalizeExecutionMode(next)));
     if (offMode) unsubs.push(offMode);
-    const offPending = perm.onDeferredPending?.((summary) =>
-      setPendingApprovals(Math.max(0, summary.pending)),
-    );
-    if (offPending) unsubs.push(offPending);
 
     return () => {
       cancelled = true;

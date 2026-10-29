@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 189
+ * Fragments: 187
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";
@@ -18,7 +18,6 @@ import { en as en_assistantCard } from "./assistantCard.js";
 import { en as en_attachmentChip } from "./attachmentChip.js";
 import { en as en_auditPanel } from "./auditPanel.js";
 import { en as en_auditTab } from "./auditTab.js";
-import { en as en_awayAuthority } from "./awayAuthority.js";
 import { en as en_be_a2aSubAgentMessage } from "./be_a2aSubAgentMessage.js";
 import { en as en_be_agentList } from "./be_agentList.js";
 import { en as en_be_agentModeMap } from "./be_agentModeMap.js";
@@ -100,8 +99,6 @@ import { en as en_composerProjectSelector } from "./composerProjectSelector.js";
 import { en as en_constants } from "./constants.js";
 import { en as en_customTitleBar } from "./customTitleBar.js";
 import { en as en_defaultTourScenarios } from "./defaultTourScenarios.js";
-import { en as en_deferredQueueDialog } from "./deferredQueueDialog.js";
-import { en as en_deferredQueuePanel } from "./deferredQueuePanel.js";
 import { en as en_devToolsPanel } from "./devToolsPanel.js";
 import { en as en_dockedApprovalCard } from "./dockedApprovalCard.js";
 import { en as en_egressApprovalCard } from "./egressApprovalCard.js";
@@ -144,6 +141,7 @@ import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
 import { en as en_privacyTab } from "./privacyTab.js";
 import { en as en_ptyTerminal } from "./ptyTerminal.js";
 import { en as en_reasoningCard } from "./reasoningCard.js";
+import { en as en_recentlyDenied } from "./recentlyDenied.js";
 import { en as en_remoteA2aActionButton } from "./remoteA2aActionButton.js";
 import { en as en_remoteSurfacesTab } from "./remoteSurfacesTab.js";
 import { en as en_rolesTab } from "./rolesTab.js";
@@ -209,7 +207,6 @@ export const generatedEn: Record<string, string> = {
   ...en_attachmentChip,
   ...en_auditPanel,
   ...en_auditTab,
-  ...en_awayAuthority,
   ...en_be_a2aSubAgentMessage,
   ...en_be_agentList,
   ...en_be_agentModeMap,
@@ -291,8 +288,6 @@ export const generatedEn: Record<string, string> = {
   ...en_constants,
   ...en_customTitleBar,
   ...en_defaultTourScenarios,
-  ...en_deferredQueueDialog,
-  ...en_deferredQueuePanel,
   ...en_devToolsPanel,
   ...en_dockedApprovalCard,
   ...en_egressApprovalCard,
@@ -335,6 +330,7 @@ export const generatedEn: Record<string, string> = {
   ...en_privacyTab,
   ...en_ptyTerminal,
   ...en_reasoningCard,
+  ...en_recentlyDenied,
   ...en_remoteA2aActionButton,
   ...en_remoteSurfacesTab,
   ...en_rolesTab,

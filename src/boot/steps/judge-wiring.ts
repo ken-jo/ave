@@ -46,7 +46,6 @@ export function wireJudgeAgent(deps: WireJudgeDeps): JudgeEngineDeps {
         : null;
     },
     cacheScopeForModel: deps.selectedModelCacheScope,
-    autoApprove: () => reviewer.appliedSettings.interactive.autoApprove,
     fetch: deps.networkFetch,
   });
   const engine: JudgeEngineDeps = {

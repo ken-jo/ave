@@ -33,9 +33,9 @@ function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
       removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
-      deferredList: vi.fn(async () => ({ ok: true as const, pending: [], total: 0 })),
-      deferredResolve: vi.fn(async () => ({ ok: true })),
-      onDeferredPending: vi.fn(() => () => undefined),
+      recentlyDeniedList: vi.fn(async () => ({ ok: true as const, entries: [], total: 0 })),
+      recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
+      onRecentlyDeniedChanged: vi.fn(() => () => undefined),
       hookTrustList: vi.fn(async () => ({
         ok: true as const,
         active: [],

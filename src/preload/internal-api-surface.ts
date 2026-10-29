@@ -36,7 +36,6 @@ import { buildPluginStudioApiSurface } from "./plugin-studio-api-surface.js";
 import { buildGitRuntimeApiSurface } from "./git-runtime-api-surface.js";
 import { buildInstalledContentApiSurface } from "./installed-content-api-surface.js";
 import { buildTailnetSharingApiSurface } from "./tailnet-sharing-api-surface.js";
-import { buildAwayAuthorityApiSurface } from "./away-authority-api-surface.js";
 import { buildDocumentEngineApiSurface } from "./document-engine-api-surface.js";
 import { classifySubscription } from "../plugins/capabilities.js";
 import type {
@@ -46,7 +45,6 @@ import type {
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
-import type { DeferredApprovalSource } from "../shared/permission-review-status.js";
 import {
   type ActiveWorkspaceSurface,
 } from "../shared/browser-surface.js";
@@ -207,7 +205,6 @@ export function buildInternalApiSurface() {
   pluginStudio: buildPluginStudioApiSurface(),
   installedContent: buildInstalledContentApiSurface(),
   telegramConnection: buildTelegramConnectionApiSurface(),
-  awayAuthority: buildAwayAuthorityApiSurface(),
   documentEngine: buildDocumentEngineApiSurface(),
   onSettingsUpdated: (handler: Parameters<AveApi["onSettingsUpdated"]>[0]) => {
     const listener = (_event: unknown, settings: Parameters<typeof handler>[0]) => handler(settings);
@@ -799,40 +796,19 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(PERMISSIONS.addRule, { pattern, action, intent: ipcUserKeyboardIntent() }),
     removeRule: async (pattern: string, action: string) =>
       ipcRenderer.invoke(PERMISSIONS.removeRule, { pattern, action, intent: ipcUserKeyboardIntent() }),
-    /** Permission policy; deferred queue for reviewer HIGH verdicts. */
-    deferredList: async () => ipcRenderer.invoke(PERMISSIONS.deferredList),
+    recentlyDeniedList: async () => ipcRenderer.invoke(PERMISSIONS.recentlyDeniedList),
     /** Permission policy hook quarantine state for non-modal settings badge. */
     hookTrustList: async () => ipcRenderer.invoke(PERMISSIONS.hookTrustList),
     /** Permission policy; `/permission dir ...` slash dispatch via IPC. */
     dirDispatch: async (rawArgs: string) =>
       ipcRenderer.invoke(PERMISSIONS.dirDispatch, { rawArgs, intent: ipcUserKeyboardIntent() }),
-    deferredResolve: async (
-      id: string,
-      decision: "approved" | "rejected",
-      reason: string | undefined,
-      // Required: callers must explicitly opt into a provenance value before main writes the HMAC-chained audit row.
-      approvalSource: DeferredApprovalSource,
-      // Grant breadth + adjacency acknowledgement for an approval. Omitting `scope` grants the narrowest breadth; main never widens on its own.
-      options?: { scope?: "session" | "always"; acknowledgeWarnings?: boolean },
-    ) =>
-      ipcRenderer.invoke(PERMISSIONS.deferredResolve, {
-        id,
-        decision,
-        reason,
-        approvalSource,
-        ...(options?.scope ? { scope: options.scope } : {}),
-        ...(options?.acknowledgeWarnings
-          ? { acknowledgeWarnings: true }
-          : {}),
-        intent: ipcUserKeyboardIntent(),
-      }),
-    /** Foreground-entry pending notification; main→renderer event. */
-    onDeferredPending: (cb: (summary: { pending: number }) => void) => {
-      const listener = (_event: unknown, summary: { pending: number }) =>
-        cb(summary);
-      ipcRenderer.on(PERMISSIONS.deferredPending, listener);
-      return () =>
-        ipcRenderer.removeListener(PERMISSIONS.deferredPending, listener);
+    recentlyDeniedRerun: async (id: string) => ipcRenderer.invoke(PERMISSIONS.recentlyDeniedRerun, {
+      id, intent: ipcUserKeyboardIntent(),
+    }),
+    onRecentlyDeniedChanged: (cb: (summary: { total: number }) => void) => {
+      const listener = (_event: unknown, summary: { total: number }) => cb(summary);
+      ipcRenderer.on(PERMISSIONS.recentlyDeniedChanged, listener);
+      return () => ipcRenderer.removeListener(PERMISSIONS.recentlyDeniedChanged, listener);
     },
     /** Memory-hit auto-approve disclosure; main→renderer event. */
     onUserApprovalHit: (cb: (payload: UserApprovalHitPayload) => void) => {

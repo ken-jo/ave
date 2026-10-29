@@ -9,7 +9,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import {
   __resetSessionStoreForTest,
@@ -66,7 +66,7 @@ describe("per-action approval and the authorized scope", () => {
     setReviewerForTest(manager, {
       classifier: { classify },
       cache: reviewerCache,
-      deferredQueue: new DeferredQueue(join(aveHomeDir, "deferred.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(aveHomeDir, "deferred.jsonl")),
     });
     const cards: ApprovalRequest[] = [];
     const recorded: string[] = [];

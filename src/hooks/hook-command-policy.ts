@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { PermissionManager } from "../permissions/permission-manager.js";
-import type { ApprovalGate } from "../permissions/approval-gate.js";
+import type { PermissionCheckResult, PermissionManager } from "../permissions/permission-manager.js";
+import type { ApprovalDecision, ApprovalGate } from "../permissions/approval-gate.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
+import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
+import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
+import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
+import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import type { RunnableHook } from "./script-hook-runner.js";
@@ -17,70 +20,103 @@ export type HookCommandAuthorizer = (
   cwd: string,
 ) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void }>;
 
-// Trusted user scripts still pass the host's shell rules and interactive approval.
+// Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
-  permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed">;
+  permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getMode">;
   approvalGate: Pick<ApprovalGate, "requestAndWait">;
 }): HookCommandAuthorizer {
   return async (hook, payload, cwd) => {
-    // This is a rules-language subject for a literal argv, never shell execution.
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
+    const turnPolicy = turnExtensionPolicyContext.getStore();
+    const abortSignal = turnPolicy?.abortSignal;
+    if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
+    if (turnPolicy?.allowExternalHooks === false) return { decision: "deny", reason: "External hooks are disabled for this turn" };
+    const cwdIdentity = captureShellWorkingDirectoryIdentity(cwd);
+    if (!cwdIdentity) return { decision: "deny", reason: "Hook working directory is unavailable" };
+    const plan = getHostShellExecutionPlan();
     await deps.permissionManager.ensureProjectRulesLoaded(cwd);
     const context = {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
       projectRulesCwd: cwd,
-      headless: turnExtensionPolicyContext.getStore()?.headless === true,
+      sessionId: payload.sessionId,
+      headless: turnPolicy?.headless,
+      ownerUnattended: turnPolicy?.ownerUnattended,
+      approvalSurface: turnPolicy?.approvalSurface,
+      remoteControllerAuthority: turnPolicy?.remoteControllerAuthority,
+      floor: turnPolicy?.floor,
+      ...(plan.mode === "blocked" ? { admissionDenial: { code: "shell-execution-unavailable", reason: "Host shell execution is blocked" } } : {}),
+      hostShellExecutionPlan: plan,
+      shellExecution: { runsSandboxed: plan.sandboxed },
     } as const;
-    // Matched as a plain host shell: a hook runs without a sandbox, so only an exact Bash(<command>) allow rule applies (owner 2026-10-25, unsandboxed shell exact-rule requirement).
-    const check = () => deps.permissionManager.checkDetailed("bash", "builtin", "shell", undefined, {
-      ...context,
-      shellExecution: { runsSandboxed: false },
-    });
-    const assertAllowed = (approved: boolean) => (): void => {
-      const current = check();
-      if (current.decision === "deny" || (!approved && current.decision !== "allow")) {
-        throw new Error(`Hook command permission changed: ${current.reason}`);
-      }
-    };
-    const result = check();
+    const check = () => deps.permissionManager.checkDetailed("bash", "builtin", "shell", turnPolicy?.overlayTriggerOrigin, context);
+    let result = check();
     if (result.decision === "deny") return { decision: "deny", reason: result.reason };
-    const plan = getHostShellExecutionPlan();
-    if (plan.mode === "blocked") return { decision: "deny", reason: "Host shell execution is blocked" };
-    if (result.decision === "allow" && !plan.requiresExplicitUserApproval) {
-      return { decision: "allow", reason: result.reason, plan, assertAllowed: assertAllowed(false) };
-    }
+    const effectIdentity = (permission: PermissionCheckResult): string => JSON.stringify({
+      paths: permission.pipelineRequest?.paths, floor: permission.pipelineRequest?.floor,
+      secretRead: permission.pipelineRequest?.secretRead, shell: permission.pipelineRequest?.shell,
+    });
+    const requestedEffect = effectIdentity(result);
     const id = randomUUID();
-    const args = { command, cwd, timeoutSeconds: Math.ceil((hook.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS) / 1000) };
+    const args = { command, cwd, timeoutSeconds: Math.ceil((hook.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS) / 1000),
+      ...(hook.env ? { env: { ...hook.env } } : {}) };
+    const trustOrigin = payload.trustOrigin === "unknown" ? "llm-tool-arg" : payload.trustOrigin;
+    const evaluationContext = buildPermissionEvaluationContext({
+      policyMode: result.pipelineRequest?.mode ?? deps.permissionManager.getMode(),
+      headless: result.pipelineRequest?.headless === true,
+      source: "builtin", category: "shell", trustOrigin, executionCwd: cwd,
+      allowedDirectories: [cwd], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
+    });
+    if (result.reviewer) {
+      const review = await deps.permissionManager.dispatchReviewer("bash", {
+        invocationId: id, sessionId: payload.sessionId, source: "builtin", category: "shell", pathFields: [],
+        finalInput: args, executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
+        trustOrigin, permissionDecision: result, evaluationContext, hostShellExecutionPlan: plan,
+      }, { hookId: hook.id, event: payload.hookType }, { lane: result.reviewer.route, abortSignal });
+      result = deps.permissionManager.resolveReviewedPermission(result, review);
+    }
+    if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
+    if (result.decision === "deny") return { decision: "deny", reason: result.reason };
     const binding = plan.requiresExplicitUserApproval ? buildHostShellExecutionPermitBinding({
       plan, toolName: "bash", toolUseId: id, rawInput: args, executionCwd: cwd, extraAllowedDirectories: [],
     }) : undefined;
     if (plan.requiresExplicitUserApproval && !binding) return { decision: "deny", reason: "Hook host execution binding is invalid" };
-    const approval = await deps.approvalGate.requestAndWait({
-      id,
-      category: "tool",
-      toolName: "bash",
-      toolCategory: "shell",
-      args: { ...args, hook: hook.id, event: payload.hookType },
-      reason: plan.requiresExplicitUserApproval ? "User hook requires explicit host execution approval" : result.reason,
-      source: "builtin",
-      createdAt: Date.now(),
-      sessionId: payload.sessionId,
-      trustOrigin: payload.trustOrigin,
-      forceExplicit: true,
-      allowedChoices: ["allow-once", "deny-once"],
-      durableApprovalRecordAllowed: false,
-      executionPlan: getHostShellExecutionPlanAuditProjection(plan),
-      ...(binding ? { hostShellExecutionPermitBinding: binding } : {}),
-    });
-    if (approval.choice !== "allow-once") return { decision: "deny", reason: "user denied hook command" };
+    let approval: ApprovalDecision | undefined;
+    const humanApproved = result.decision === "ask";
+    if (humanApproved) {
+      approval = await deps.approvalGate.requestAndWait({
+        id, category: "tool", toolName: "bash", toolCategory: "shell",
+        args: { ...args, hook: hook.id, event: payload.hookType }, reason: result.reason,
+        source: "builtin", createdAt: Date.now(), sessionId: payload.sessionId, trustOrigin: payload.trustOrigin,
+        evaluationContext, ownerUnattended: turnPolicy?.ownerUnattended, abortSignal,
+        reviewerVerdict: result.reviewer?.verdict, reviewerOutcome: result.reviewer?.outcome,
+        reviewerApprovalBasis: result.reviewer?.approvalBasis,
+        ...(result.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false } : {}),
+        executionPlan: getHostShellExecutionPlanAuditProjection(plan),
+        ...(binding ? { hostShellExecutionPermitBinding: binding } : {}),
+      });
+      if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
+      if (approval.choice !== "allow-once" && approval.choice !== "allow-session" && approval.choice !== "allow-always") {
+        return { decision: "deny", reason: approval.rememberPattern === NO_APPROVER_MESSAGE ? NO_APPROVER_MESSAGE : "user denied hook command" };
+      }
+    }
     const current = check();
     if (current.decision === "deny") return { decision: "deny", reason: current.reason };
+    if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
+    if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
     if (binding) {
+      if (!humanApproved) recordHostShellPolicyAuthorization(binding);
       const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, binding });
       if (!consumeHostShellExecutionPermit({ ...binding, permit })) {
         return { decision: "deny", reason: "Hook host execution approval receipt is invalid" };
       }
     }
-    return { decision: "allow", reason: "user approved hook command", plan, assertAllowed: assertAllowed(true) };
+    const policyEpoch = deps.permissionManager.getPolicyEpoch();
+    const assertAllowed = (): void => {
+      const current = check();
+      if (abortSignal?.aborted || current.decision === "deny" || effectIdentity(current) !== requestedEffect || deps.permissionManager.getPolicyEpoch() !== policyEpoch || !matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) {
+        throw new Error(`Hook command permission changed: ${current.reason}`);
+      }
+    };
+    return { decision: "allow", reason: humanApproved ? "user approved hook command" : result.reason, plan, assertAllowed };
   };
 }

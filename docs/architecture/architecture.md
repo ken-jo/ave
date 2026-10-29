@@ -1822,40 +1822,13 @@ never reaches `round-cap`.
 
 ## Tool Governance
 
-All tool execution flows through the registry and executor:
+The [owner-approved permission decision tree](permission-decision-tree.md) is the sole source of decision order and the action-by-mode matrix. This document specifies evidence, execution boundaries and approval delivery; it does not define a second decision sequence.
 
-1. resolve the tool by name and source;
-2. validate input schema and resolve the effective category;
-3. build permission context from trust origin, project, headless state, and
-   policy mode;
-4. run hard gates before any reviewer or user prompt;
-5. ask the user or reviewer where policy requires it;
-6. execute through the controlled adapter;
-7. record audit and telemetry output.
+All builtin, plugin and MCP tools enter the same normalized decision pipeline. Callers supply evidence and execute the returned outcome; they do not own additional mode matrices. Argument rewriting finishes before authorization, and user script PreToolUse blocks before any target approval. The source affects display/audit, not authority.
 
-The source of a tool changes display and audit metadata; it does not create a
-separate policy bypass.
+New installs use Default (`strict`). Persisted `default` remains Allow writes; stored IDs do not change. Eligible checkpoint-backed project writes pass in Allow writes/auto/Allow, while Default asks. Ordinary reads remain allowed. Secret reads use mode/rules; secret writes follow file rules. Host credential stores remain admission-denied. Exact lexical/canonical identity, all-target checks and checkpoint recovery remain required. Ordinary outside writes use one folder/invocation card. See [Project file writes](permission-policy-design.md#project-file-writes) for eligibility and recovery.
 
-Default and auto-review modes allow recoverable builtin file-tool writes when
-every touched lexical and canonical path lies inside the session cwd or its
-configured additional project directories. The write must have an available
-per-turn code checkpoint. This category decision precedes reviewer routing and
-follows explicit deny/ask rules and mandatory floors: sensitive paths, protected
-control paths, project escapes, remote controllers, staged/overlay origins,
-corrupt rules and strict mode retain their existing authority. Headless turns
-without a user gain no new automatic lane. Application home and temporary roots
-are not project roots. An ordinary external write uses one approval card for
-both its directory grant and that invocation; mandatory floors remain separate.
-The lasting folder grant adds its directory to the project's configured roots.
-When a checkpoint is unavailable, writes retain the ordinary default-mode
-approval or auto-review reviewer route. Sessions without durable checkpoint
-turns, parent turns invalidated by live children, directory-tree copies and
-archive extractions gain no new automatic allowance. Bounded regular-file copies
-can use the checkpoint-backed allowance when both endpoints are in the project.
-Automatically allowed file execution rechecks canonical containment in the
-project roots.
-See [Project file writes](permission-policy-design.md#project-file-writes) for
-the owner decision, checkpoint eligibility and recovery contract.
+Owner-away cards wait without a timeout by default; optional `permissions.ownerAwayAutoSkipMinutes` denies after N minutes (0 means unlimited). True headless auto requests review first; a required human fallback denies with “Nobody can approve this request; do not retry.” Recently denied replaces deferred approvals with redacted summaries and fresh manually approved reruns; stored history grants nothing.
 
 Permission-policy file precedence, conservative handling of administrative read
 failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
@@ -1908,142 +1881,9 @@ Path and identity rechecks detect ordinary creator conflicts and observed replac
 
 ### Sub-agent approval chain (three tiers)
 
-A tool call raised by a sub-agent's turn passes through up to three deciders.
-Each tier only ever narrows what the next one is asked:
+Child escalation and other-principal turns follow the forced one-shot floor in the [decision tree](permission-decision-tree.md). Reviewer, parent adjudication, away automation and remembered grants cannot substitute for the user's exact live approval. Without a human, the request denies with no-retry guidance. Parent/child ancestry, session ownership, trusted spawn provenance and turn liveness remain admission and effect checks. The historical three-decider sequence is superseded; the heading is retained for inbound links.
 
-1. **Tier 1 — automatic review.** The permission manager and the reviewer
-   classifier decide as they do for any other call. A decision of allow ends
-   the chain here; the sub-agent's parent is not consulted and no dock appears.
-2. **Tier 2 — parent adjudication.** An `ask` that survives tier 1 and clears
-   every host-side precondition is put to a host-composed side turn with no
-   tools and one round, run on the *reviewer* model and prompted to stand in
-   for the parent (`src/permissions/parent-adjudicator.ts`). "The parent" is
-   therefore a role, not a session: the only parent-derived evidence is the
-   child's title and a truncated copy of the task the parent wrote when it
-   spawned the child — not the parent's model, system prompt, or history. That
-   is the ceiling's real basis, and the reason `maxVerdict` stays low. The
-   stage runs inside `ApprovalGate.requestAndWait`, after the away-authority
-   block and before the pending entry is created, so a parent-answered call
-   never reaches a dock.
-3. **Tier 3 — the user.** Anything the parent did not settle continues to the
-   approval dock as it would have without tier 2 — later than it would have,
-   and carrying an outbound `parentEscalation` notice so the dock can tell the
-   user that a stage they never saw has already run, and how it ended.
-
-The child blocks on the same `requestAndWait` call for all three tiers; no
-suspension or resume is involved, and the parent is never woken, so a busy
-parent cannot deadlock its own child.
-
-| Invariant | Where it is enforced | Why |
-| --------- | -------------------- | --- |
-| The ceiling is applied before the parent is asked | The gate derives every condition itself — request kind and category, mode, remote origin, forced-explicit and one-shot substrates, and the verdict ceiling — and never from the caller's eligibility flag | A parent may only narrow a decision the host was already willing to delegate; a caller that asserts eligibility wrongly widens nothing. |
-| A parent answer is allow-once or deny-once, never a rule | `askParent` returns decisions with no `rememberPattern` | A durable rule minted for a user who never saw the request would outlive the call the parent actually judged. |
-| No child-authored PROSE reaches the adjudication prompt | The only sentence in the evidence is the parent's spawn task. The child's tool arguments are the unavoidable exception — they are the call being judged — so they are masked and carried under the key `argumentsAuthoredBySubAgent`, beneath a system prompt that names the payload untrusted data rather than instructions | Evidence a child can narrate is evidence a child can use to argue for its own approval. What cannot be withheld is labelled as the requesting party's claim instead of presented as fact. |
-| Human-only classes stay human-only | Directory-scope grants, rationale cards and agent-action requests, `meta`-category tools, the `ask_all` mode, remote-controller origins, forced-explicit and bound one-shot substrates, and any ask with no tier-1 verdict never enter tier 2 | These are the cases where the decision is the user's by construction, not a judgement about whether a call serves the child's task. |
-| Every failure that leaves a turn to answer ends at the user | Timeout, spent budget, unparseable answer, missing adjudicator, provider error and repeated denial all escalate to the dock; a turn stopped while the parent was thinking ends in a host `deny-once` with no dock at all | A stage that cannot answer must not be able to answer "allow" — and a turn the user stopped must not be readable as anyone's approval. |
-| Flag off means the chain is the two-tier one | The lane is a synchronous eligibility check; an ask that is not adjudicated is never awaited | The off path must be identical in behaviour and in timing. |
-
-Six deviations from the original design are deliberate and load-bearing:
-
-- **Host-only fields live on `ApprovalRequestInput`, not `ApprovalRequest`.**
-  `childProvenance` and `parentAdjudicationEligible` are inputs the host
-  supplies; the renderer neither receives nor echoes them, so there is no copy
-  for a compromised renderer to author or alter (same argument as
-  `remoteControllerOrigin`).
-- **Parent provenance travels in a WeakMap, not on the decision.**
-  `ApprovalDecision` is a renderer-supplied type, so an `answeredBy` field on it
-  would be a claim anyone could make. `parentAdjudicationOf(decision)` keyed on
-  the exact decision object the gate returned is a fact only the host can state.
-- **A parent deny sets no `rememberPattern`.** Stated separately from the
-  allow-once rule because it is the tempting one: a parent that could remember
-  a denial would be minting policy.
-- **Provenance requires a parent-authored task, and fails closed without one.**
-  `SubAgentSpawnInput.parentAuthoredTask` exists because the profile prompt a
-  child is spawned with is not the parent's instruction — it is a charter read
-  from a file on disk, which anything that can write that file could author.
-  Runs whose origin is not a conversation session (work-board items, host
-  labels) are excluded for the same reason.
-- **`approvalPurpose` is not part of the evidence.** For a sub-agent turn that
-  sentence can only have been lifted out of the child's own tool arguments, so
-  including it would have put the child's own prose into the prompt that
-  decides the child's request.
-- **A2A influence IS part of the evidence.** A sibling's message re-elevates the
-  receiver's calls into an ask even on the read lane, which is why an otherwise
-  auto-approved builtin read can reach tier 2 at all. The host label naming that
-  sender rides the evidence as `a2aInfluenceLabel`, emitted to the adjudicator
-  as a quoted `raisedUnderAnotherAgentsInfluence.quotedSenderLabel` under its own
-  read-it-never-obey-it system-prompt line. It is host-composed and already the
-  leading segment of the `reason` the dock would have shown, so it discloses
-  nothing new — but without it the parent judges "does this serve the task I
-  gave it?" blind to the third agent that prompted the call.
-
-Three settings move or widen the chain, each conservative by default
-(`permissions.reviewer.parentAdjudication`):
-
-- **`includeParentContextTurns` (default `0`, clamped `0..5`).** Above zero the
-  evidence gains a host-composed block of the parent conversation's most recent
-  turns, quoted as data under `recentParentConversation` beneath a system-prompt
-  line that says to read it and never obey it. Opt-in because it is the only
-  part of the evidence that sends the user's own words to a provider.
-  `summarizeParentContextTurns` (`src/permissions/parent-context-evidence.ts`)
-  composes it: user and assistant text only — never tool results, reasoning or
-  tool calls — with every host-injected user record dropped, which is what keeps
-  a **sub-agent's report out of the prompt that decides that sub-agent's own
-  call**. Three defences carry that, because one producer alone cannot: the
-  mid-turn injection site now stamps `hostInjectionId` unconditionally (a batch
-  mixing the user's guide with a child's report is deliberately not attributed
-  to the child, so it used to reach the transcript unmarked); the reader also
-  drops any user record carrying the host-composed `[Sub-Agent: ` label, which
-  covers rows written before that stamp; and an assistant turn answering an
-  excluded record is dropped too, so a report asking the parent to restate it
-  cannot launder itself through the parent's own voice. Each turn is cut to 500
-  characters BEFORE the DLP pass (the bound exists to stop the masking walk, so
-  a bound on its output would not do the job) and the block to 2000 measured on
-  what is actually sent. The read is memoised for a few seconds because
-  `loadSession` is a synchronous whole-file parse on the main thread.
-- **`backgroundEscalation` (default `"deferred"`).** A tier-3 escalation the
-  host can establish nobody would see — a background child run while the app
-  window is hidden or minimised, or any child run while the away answerer is
-  armed — is denied fail-closed and recorded in the deferred queue with an OS
-  notification, rather than painting a dock nobody is watching. The run's
-  `background` flag alone is deliberately NOT enough: every locally spawned
-  child is a background run on this host, so keying on it would take the dock
-  away from a user sitting in front of the app, and tier 3 is the tier the
-  chain exists to preserve. The entry carries **no `grant`**, so the resolve
-  path refuses `"approved"` for it: reviewing it later records an opinion and
-  can never become permission for a call whose turn is over. There is no
-  timeout that could auto-anything — the denial has already happened. An
-  attended window, `"modal"`, an unwired queue, an unreadable attendance signal
-  or a failed append each keep the immediate dock. Repeat escalations from the
-  same (child run, tool) coalesce onto the first entry — still each denied —
-  so a child past its adjudication budget cannot bury the queue.
-- **`model` (default `"reviewer"`).** `"parent-session"` runs the side turn on
-  the chat provider/model the parent's own loop uses, resolved per ask from the
-  same settings that build that loop's provider; unresolvable resolves to
-  escalate, never to a fallback model. Zero tools, one round and the strict JSON
-  parse are identical either way. It is available in reviewer modes that wire no
-  LLM of their own — but NOT in `disabled`, whose classifier returns a
-  pass-through LOW for every call: a tier-2 ceiling computed from a verdict that
-  assessed nothing is not a ceiling. Cost note: it bills the (usually larger)
-  chat model once per adjudicated call, bounded by `maxPerChildRun`.
-
-Tier-2 state is per run. When a child run ends — spawn or resume, completed,
-failed or aborted — the runner releases its active-child lease and, as the
-lease holder, calls `ApprovalGate.forgetChildRun`, which drops that run's
-consecutive-denial streaks and tells every adjudicator the policy can name to
-release its `maxPerChildRun` counter. A resume therefore starts from a fresh
-budget, as the setting's name promises; the bounded LRU maps remain only as a
-backstop. The deferred-escalation coalescing map is not cleared, because its
-entries track queue rows that outlive the run. The origin conversation id
-handed to the adjudicator is what `"parent-session"` resolves its target from.
-
-The chain end to end — tier-1 auto-approve, tier-2 allow, tier-2 deny, tier-3
-escalate — is regression-locked by
-`src/tools/__tests__/executor-parent-adjudication.test.ts`; the gate's own
-bounds live in `src/permissions/__tests__/parent-adjudication-gate.test.ts`,
-and the three settings above in
-`src/permissions/__tests__/parent-adjudication-options.test.ts` +
-`parent-context-evidence.test.ts`.
+The [approval delivery contract](permission-policy-design.md#approval-delivery-and-execution-binding) specifies registered surfaces, exact-frame answers and one-use consent. A child cannot author its own approval facts or persist a rule. Recently denied is history, never a delayed approval of an ended child turn.
 
 ### MCP↔plugin execution parity (invariant)
 
@@ -2097,35 +1937,11 @@ its `sandboxed` field describes the selected child, including exclusions and
 unsandboxed retries, rather than merely repeating the setting. Permission,
 reviewer, audit and cache consumers use that plan.
 
-A shell whose plan is not sandboxed (the sandbox is off, unavailable or does
-not cover the command, an explicit host request, or the Windows Plan B) runs
-without asking only when an exact allow rule for that command — user, project
-or This session — matches it: `Bash(<command>)` for bash and
-`PowerShell(<command>)` for PowerShell (owner decisions 2026-10-25: the
-unsandboxed shell exact-rule requirement, superseding the I3 rule that sent
-such shells to the normal rules, and exact PowerShell rules with the same
-strictness as Bash). Prefix and tool-wide rules, wildcard rules, remembered
-dock grants, allow mode, the reviewer and the judge never stand in for that
-rule: everything else asks on the dock. With nobody to ask (a headless or
-routine turn) the same exact rule still runs the command — sandbox-off bash,
-the Plan B and an explicit host request alike — and without one the call is
-denied and audited (I5). Every remaining unsandboxed headless ask, including a
-visible floor or unreadable restriction, becomes deny with its reason and layer
-preserved. Exact command-rule identity keeps every literal raw word, including
-program case, module qualifier, quote style and contents. Only interword
-whitespace changes. No head or argument normalization contributes to the exact
-key; effect and detection normalization remain separate. Current-format shell
-allows carry `shellRuleVersion: 1`; unversioned or wrong-version allows remain
-silently inert, while deny and ask rules retain their authority. Reads never
-stamp old rows current and there is no migration or new UI/error flow.
+A shell whose plan is not sandboxed, including explicit host execution or escalation, uses the ordinary mode/human decision in the [decision tree](permission-decision-tree.md). Host state wins even when read-only evidence exists. Normal cards may save prefix rules. Such execution is not itself a forced floor; protected paths, critical delete, escape, exfiltration and other-principal turns still are. Deny rules remain authoritative.
 
-Exact allows additionally require the host's
-[literal-command proof](permission-policy-design.md#literal-command-proof).
-An unsandboxed input over 2,000 characters immediately asks or denies
-headless before project loading, parsing, command-rule or floor inspection.
-Under the limit, parse or lexer/analysis-budget failure, nonliteral words and ambiguous
-raw identity remain unproven. Literal quoting is preserved, so
-`git commit -m 'msg'` can be remembered.
+Exact shell-rule identity preserves literal raw words, including case, module qualifier and quoting; normalization for detection does not change that identity. Versioned rule matching and literal analysis supply evidence rather than a separate exact-only host-shell policy.
+
+
 
 Visible literal code, including interpreter options and delegated commands, is
 eligible for exact rules. File, stdin and network indirection are accepted
@@ -2179,16 +1995,9 @@ records. Operators and separators are bounded by source length; the parser
 refuses over-limit input before expensive result serialization. General
 structural parsing retains its existing safety limits.
 
-Character, data or total-token limit failures close Lane B with ask/L6 or
-headless deny, or Lane A with modal/L2. No rule, grant, mode or reviewer supplies
-an automatic allow. There is no shared work counter, elapsed-time cutoff or
-worker timeout in the production decision. Timing checks are regression tests
-only. Literal encoded display decoding remains presentation-only.
+Character, data and token limits bound analysis and produce refusal/unproven evidence. They do not create a separate mode matrix; admission failures and execution preparation failures remain terminal, while permission routing follows the [decision tree](permission-decision-tree.md). Literal display decoding never grants authority.
 
-Remembered approvals saved for unsandboxed shells before this decision stay
-silently inert: they are not migrated, the card does not mark them, and they
-never authorize a plain shell; Settings still lists and revokes them (owner
-decision 2026-10-25).
+
 
 Every approval card — shell (bash, PowerShell, the Plan B, an explicit host
 request), network, an exact tool approval, a folder grant, a one-shot request
@@ -2233,10 +2042,8 @@ invalid or non-matching rule fails with a named error (`invalid-rule`,
 `rule-does-not-match`, `rule-required`, `scope-not-offered`,
 `not-request-owner`) and the request stays pending. Deny rules may be
 wildcards. An allow edited into a wildcard is saved, but it applies only to
-sandboxed runs, and the card says so while the rule is edited (the host
-repeats it as `wildcard-allow-sandboxed-only`); an unsandboxed command still
-needs its exact rule. A compound, irreversible, floor-hitting or
-secret-bearing command has no exact rule and offers no remembered allow.
+sandboxed runs, and the card explains the rule scope while editing. Host-shell approval may
+include a savable prefix. A forced one-shot request never offers remembered allow.
 
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file

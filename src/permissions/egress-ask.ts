@@ -1,5 +1,7 @@
 // Unknown/unvouched identities deny; workers reach only declared/model endpoints, never prompt or inherit shell grants. Shells require a matching grant or explicit foreground approval; disabled asks and unattended calls deny. Terminal asks use their tab and deny when unanswered.
 // Decide by name before DNS/routing, then recheck the resolved destination class; changed classes require fresh consent. Match origin in both phases so shell/tab grants cannot cross. Exceptions and every value except literal true deny; audit each final decision with its reason.
+import type { ToolApprovalWait } from "../tools/executor-ceiling.js";
+import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
@@ -29,6 +31,10 @@ export type EgressApprovalRequest = EgressShellApprovalRequest | EgressTerminalA
 
 // A Bash or PowerShell tool call's ask, on the approval dock.
 export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon {
+  readonly headless?: boolean;
+  readonly ownerUnattended?: boolean;
+  readonly toolApprovalWait?: ToolApprovalWait;
+  readonly approvalSurface?: "interactive" | "unavailable";
   readonly origin: "shell";
   readonly sessionId: string | undefined;
   readonly toolName: ShellEgressOwner["toolName"];
@@ -97,7 +103,7 @@ export const EGRESS_DENY_REASONS = {
   offline: "outbound network is disabled for this service",
   terminalTimeout: "network approval timed out: nobody answered the terminal approval card within 120 seconds",
   askOff: "host is not on the allow list (network asks are off)",
-  headless: "host needs approval; unavailable in background run",
+  headless: NO_APPROVER_MESSAGE,
   noSurface: "host needs approval; no approval surface is available",
   failed: "network approval failed",
   reserved: "link-local, metadata, unspecified, multicast and broadcast addresses are never reachable from the sandbox",
@@ -222,7 +228,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     strength: EgressIdentityStrength,
   ): Promise<AskAnswer> => {
     const requester = deps.requester();
-    if (requester === undefined) return { allow: false, decision: deny("prompt", EGRESS_DENY_REASONS.noSurface) };
+    if (requester === undefined) return { allow: false, decision: deny("prompt", owner.kind === "shell" && (owner.context.headless || owner.context.approvalSurface === "unavailable") ? NO_APPROVER_MESSAGE : EGRESS_DENY_REASONS.noSurface) };
     const subject = grantSubject(token, owner);
     const origin: EgressAskOrigin = owner.kind;
     const scopes = egressScopesForNetwork(egressGrantScopesFor(strength, origin), network).filter((scope) =>
@@ -238,6 +244,10 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         sessionId: owner.context.sessionId,
         toolName: owner.toolName,
         toolUseId: owner.toolUseId,
+        headless: owner.context.headless === true,
+        ownerUnattended: owner.context.ownerUnattended === true,
+        ...(owner.context.toolApprovalWait ? { toolApprovalWait: owner.context.toolApprovalWait } : {}),
+        approvalSurface: owner.context.approvalSurface,
         destination,
         scopes,
         network,
@@ -378,10 +388,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
             return { owner, decision: pass(allow("grant", granted)) };
           }
           if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
-          // A terminal is always in the foreground lane; a shell call says.
-          if (owner.kind === "shell" && owner.context.approvalSurface !== "interactive") {
-            return { owner, decision: deny("policy", EGRESS_DENY_REASONS.headless) };
-          }
+          // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
           const answer = await ask(token, owner, destination, network, strength);
           if (answer === ASK_AGAIN) continue;
           if (!answer.allow) return { owner, decision: answer.decision };

@@ -1,5 +1,6 @@
 
 
+import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { spawn } from "node:child_process";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
@@ -2615,6 +2616,17 @@ export async function annotateWithSandboxViolations(
       + 'Use the existing shell request with executionMode: "host" and a justification; host approval is required.';
   }
   return annotated;
+}
+
+/** Only per-command native filesystem denial records establish escalation evidence.
+ * Proxy denials and transport errors are separate policy decisions, never a host retry signal. */
+export async function filesystemSandboxBlockForCommand(commandId: string, command: string, cwd: string): Promise<SandboxBlock | undefined> {
+  assertCommandId("filesystemSandboxBlockForCommand", commandId);
+  const SandboxManager = await loadSandboxManager();
+  const records = SandboxManager.getSandboxViolationStore().getViolationsForCommand(commandId);
+  const denied = records.some(({ line }) => !/^(?:deny|fail)\s/u.test(line)
+    && /^[^()\r\n]+\([1-9]\d*\) deny\([1-9]\d*\) file-(?:read|write)(?:-[a-z0-9-]+)?(?:\s|$)/u.test(line));
+  return denied ? issueFilesystemSandboxBlock(command, cwd) : undefined;
 }
 
 // One violation as ASRT's store reports it.

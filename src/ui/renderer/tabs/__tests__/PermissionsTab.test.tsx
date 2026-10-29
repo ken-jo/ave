@@ -69,6 +69,8 @@ function installApi(
   const ave = {
     relaunchApp: vi.fn<() => Promise<import("../../../../shared/app-relaunch.js").AppRelaunchResult>>(async () => ({ ok: true })),
     permission: {
+      recentlyDeniedList: vi.fn(async () => ({ ok: true as const, entries: [], total: 0 })),
+      onRecentlyDeniedChanged: vi.fn(() => () => undefined),
       egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
       egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "default" })),
@@ -81,9 +83,7 @@ function installApi(
       removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
-      deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
-      deferredResolve: vi.fn(async () => ({ ok: true })),
-      onDeferredPending: vi.fn(() => () => undefined),
+      recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
       auditShow: vi.fn(async () => ({ ok: true as const, entries: [], total: 0, summary: { files: 0, bytes: 0 } })),
       auditVerify: vi.fn(async () => ({ ok: true as const, intact: true, totalFiles: 0, totalEntries: 0, perDay: [] })),
       hookTrustList,
@@ -367,13 +367,13 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     await renderPermissionsTab();
 
-    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("프로젝트 밖 쓰기 확인");
-    expect(screen.getByText(/읽기와 복구 가능한 프로젝트 파일 변경은 허용/)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("전체 확인");
-    expect(screen.getByText(/읽기까지 포함해 모든 도구/)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("자동 검증");
-    expect(screen.getByText(/나머지 대화형 검증 대상은 리뷰어 임계값/)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("allow"))).toHaveTextContent("모두 허용");
+    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("쓰기 허용");
+    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("복구 가능한 프로젝트 파일 변경");
+    expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("기본");
+    expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("일반 읽기와 읽기 전용으로 입증된 샌드박스 명령을 허용");
+    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("auto");
+    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("나머지는 리뷰어가 검증");
+    expect(screen.getByTestId(execModeTestId("allow"))).toHaveTextContent("허용");
   });
 
   it("keeps the rendered mode unchanged when durable mode confirmation fails", async () => {
@@ -510,7 +510,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.queryByTestId("reviewer-llm-degraded-banner")).toBeNull();
   });
 
-  it("keeps hidden reviewer auto-wiring and shows only the prompt collapse inside 자동 검증", async () => {
+  it("keeps hidden reviewer auto-wiring and shows only the prompt collapse inside auto", async () => {
     const api = installApi([[]]);
 
     await renderPermissionsTab();
@@ -854,7 +854,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
   });
 
-  // The reviewer config only exists under 자동 검증, so other modes show none of its panels or banners.
+  // The reviewer config only exists under auto, so other modes show none of its panels or banners.
   function hiddenReviewerCase(mode: "strict" | "allow") {
     return async () => {
       const api = installApi([[]]);
@@ -1227,9 +1227,9 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       removeScopedRule: vi.fn(async () => ({ ok: true })),
         addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
         removeRule: vi.fn(async () => ({ ok: true })),
-        deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
-        deferredResolve: vi.fn(async () => ({ ok: true })),
-        onDeferredPending: vi.fn(() => () => undefined),
+        recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [], total: 0 })),
+        recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
+        onRecentlyDeniedChanged: vi.fn(() => () => undefined),
         hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
         dirDispatch: vi.fn(async () => ({
           ok: true as const,
@@ -1924,7 +1924,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         const { registerPermissionsHandlers } = await import("../../../../ipc/domains/permissions.js");
         mainHandlers.clear();
         registerPermissionsHandlers({
-          conversationLoop: { permissionManager: { getMode: () => "default", setDeferredEntryAsk: vi.fn() } },
+          conversationLoop: { permissionManager: { getMode: () => "default" } },
           approvalGate: {}, auditLogger: { log: vi.fn() }, toolRegistry: { setDenyRules: vi.fn() },
           settingsService: { get: () => ({ osToolSandbox: false }) }, getAppWindows: () => [],
         } as never);
@@ -2320,5 +2320,41 @@ describe("PermissionsTab unified permission rules", () => {
     expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.unifiedRulesLoadError"));
     expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("/ave-home/permissions/projects/project.json");
     expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+  });
+});
+
+
+describe("owner-away approval auto-skip", () => {
+  function settingsApi() {
+    return window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn>; updateSettings: ReturnType<typeof vi.fn> };
+  }
+
+  it("shows unlimited by default and saves the chosen number of minutes", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 0 } });
+    settingsApi().updateSettings.mockResolvedValue({ ok: true });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    expect(input).toHaveValue(0);
+    fireEvent.change(input, { target: { value: "7" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(settingsApi().updateSettings).toHaveBeenCalledWith({ permissions: { ownerAwayAutoSkipMinutes: 7 } }));
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(7));
+  });
+
+  it("restores the saved value after an invalid edit or rejected save", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    settingsApi().updateSettings.mockResolvedValue({ ok: false, error: "invalid-owner-away-auto-skip" });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    fireEvent.change(input, { target: { value: "-1" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+    expect(settingsApi().updateSettings).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId("owner-away-auto-skip"), { target: { value: "9" } });
+    fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
+    await waitFor(() => expect(settingsApi().updateSettings).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
   });
 });

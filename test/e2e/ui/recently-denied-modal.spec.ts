@@ -25,7 +25,7 @@ const LONG_INPUT_SUMMARY = JSON.stringify({
     "routine_schedule_write_payload_with_a_very_long_unbroken_identifier_".repeat(7),
 });
 
-test.describe("deferred queue modal", () => {
+test.describe("recent denial history modal", () => {
   test.skip(!existsSync(MAIN_ENTRY), "dist/src/main/main.js not built; run bun run build first");
 
   let app: ElectronApplication;
@@ -34,8 +34,8 @@ test.describe("deferred queue modal", () => {
   let tempHome: string;
 
   test.beforeEach(async () => {
-    userDataDir = mkdtempSync(resolve(tmpdir(), "ave-deferred-modal-user-data-"));
-    tempHome = mkdtempSync(resolve(tmpdir(), "ave-deferred-modal-home-"));
+    userDataDir = mkdtempSync(resolve(tmpdir(), "ave-denial-history-modal-user-data-"));
+    tempHome = mkdtempSync(resolve(tmpdir(), "ave-denial-history-modal-home-"));
     writeFileSync(
       resolve(userDataDir, "ave-settings.json"),
       JSON.stringify(buildE2eBaseSettings(true), null, 2) + "\n",
@@ -45,17 +45,16 @@ test.describe("deferred queue modal", () => {
     const queueDir = resolve(aveHome, "permissions");
     mkdirSync(queueDir, { recursive: true });
     writeFileSync(
-      resolve(queueDir, "deferred-queue.jsonl"),
-      JSON.stringify({
-        id: "dq-e2e-long-input",
+      resolve(queueDir, "recently-denied.json"),
+      JSON.stringify([{
+        id: "12345678-1234-1234-1234-123456789abc",
         ts: "2026-05-11T09:00:00.000Z",
         toolName: "routine_schedule",
         source: "builtin",
         category: "write",
         inputSummary: LONG_INPUT_SUMMARY,
-        verdict: { level: "high", reason: "reviewer disabled - defer all" },
-        status: "pending",
-      }) + "\n",
+        reason: "Nobody can approve this request; do not retry.",
+      }]) + "\n",
       "utf-8",
     );
 
@@ -86,20 +85,23 @@ test.describe("deferred queue modal", () => {
     if (tempHome) rmSync(tempHome, { recursive: true, force: true });
   });
 
-  test("keeps long queued input inside the modal without horizontal page overflow", async () => {
+  test("keeps long denied input inside the modal without horizontal page overflow", async () => {
     await page.setViewportSize({ width: 460, height: 840 });
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+Shift+B" : "Control+Shift+B");
+    await expect(page.getByTestId("primary-sidebar")).toHaveCount(0);
     const queueButton = page.getByTestId("permission-pending-badge");
     await queueButton.waitFor({ state: "visible", timeout: 20_000 });
     await expect(queueButton).toContainText(t("permissionModeBadge.queueLabelCount", { count: 1 }));
     await queueButton.click();
 
-    const dialog = page.getByTestId("deferred-queue-dialog");
+    const dialog = page.getByTestId("recently-denied-dialog");
     await expect(dialog).toBeVisible();
-    const entry = dialog.getByTestId("deferred-entry-dq-e2e-long-input");
+    const entry = dialog.getByTestId("recently-denied-entry-12345678-1234-1234-1234-123456789abc");
     await expect(entry.locator("code", { hasText: "routine_schedule" }).first()).toBeVisible();
-    await expect(dialog.getByRole("button", { name: t("deferredQueuePanel.approveButton") })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: t("deferredQueuePanel.rejectButton") })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: t("recentlyDenied.rerun") })).toBeDisabled();
+    await expect(dialog.getByText(t("recentlyDenied.unavailable"))).toBeVisible();
 
+    await page.screenshot({ path: test.info().outputPath("recently-denied.png") });
     const metrics = await collectModalMetrics(page);
     expect(metrics.documentOverflowX).toBeLessThanOrEqual(1);
     expect(metrics.dialogOverflowX).toBeLessThanOrEqual(1);
@@ -117,10 +119,10 @@ async function collectModalMetrics(page: Page) {
       return Math.max(0, target.scrollWidth - target.clientWidth);
     };
     const doc = document.documentElement;
-    const dialog = document.querySelector('[data-testid="deferred-queue-dialog"]');
-    const panel = document.querySelector('[data-testid="deferred-queue-panel"]');
-    const entry = document.querySelector('[data-testid="deferred-entry-dq-e2e-long-input"]');
-    const inputPreview = document.querySelector('[data-testid="deferred-entry-input"]') ?? entry?.querySelector("pre") ?? null;
+    const dialog = document.querySelector('[data-testid="recently-denied-dialog"]');
+    const panel = document.querySelector('[data-testid="recently-denied-panel"]');
+    const entry = document.querySelector('[data-testid="recently-denied-entry-12345678-1234-1234-1234-123456789abc"]');
+    const inputPreview = document.querySelector('[data-testid="recently-denied-input"]') ?? entry?.querySelector("pre") ?? null;
     return {
       documentOverflowX: Math.max(0, doc.scrollWidth - window.innerWidth),
       dialogOverflowX: overflowX(dialog),

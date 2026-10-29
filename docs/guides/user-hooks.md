@@ -26,11 +26,11 @@ Commands use argv. Ave explicitly expands a leading `~` in each argument; it doe
 
 New or changed scripts and configuration are quarantined at discovery. Review them with `/permission hooks list`, then enroll the reviewed file with `/permission hooks accept hooks.json` or `/permission hooks accept pre-check.sh`. Accepting `hooks.json` approves that configuration and its local script anchors: argv[0] when it is a file path, otherwise the first later path-like argument. Use one explicit script path before other file arguments. PATH-resolved interpreters are not content-pinned. Discovery runs at startup and when hook trust commands refresh the registry; hashes are not rechecked before every invocation. Enrollment requires local user input.
 
-Enrollment does not grant shell authority. Production user commands also pass the existing shell permission rules and approval gate before spawning. Matching shell allow rules alone do not authorize interpreter scripts; the existing permission mode and approval policy still apply. A deny rule refuses execution; an ask requires an explicit allow-once response. An unavailable approval surface cannot authorize execution. Hooks never override a tool permission denial or dispatch privileged chat commands. Remote-controller turns suppress external hooks.
+Enrollment does not grant shell authority. Hook commands enter the central permission pipeline with their actual argv, cwd, sandbox plan and trusted turn context. Auto requests consume reviewer evidence before any human fallback; ordinary cards may offer their supported rule and scope choices. Forced floors remain one-shot. Headless requests that require a human deny with no-retry guidance. Policy, normalized effect and physical cwd identity are rechecked before spawn. Hooks never override target-tool permission or dispatch privileged chat commands. Remote-controller turns suppress external hooks.
 
 Launch assumes host-side hook files remain stable during admission and sandbox preparation. File identity is not pinned against concurrent replacement by another host process; discovery-time hashes and path checks do not provide that guarantee.
 
-When OS isolation is active on macOS or Linux, user hooks use the existing sandbox wrapper, sensitive-path floors, network policy, disposable HOME, and a separate hook temporary directory. Only the hook's cwd is added as a write scope. An exact canonical script beneath the protected hook configuration directory can be re-allowed for reading; anchors in other protected locations, including links escaping the hook directory, do not receive a read exception. The hooks configuration directory stays write-protected. A wrap failure refuses execution. User hooks follow the existing host shell execution plan: an unavailable requested sandbox or a partially confined Windows backend requires an exact, gate-authenticated allow-once receipt for host execution. The runner rechecks the admitted sandbox generation before spawning. Bundled plugin hooks retain their existing confined relay. With OS isolation disabled, shell permission checks still apply and no OS confinement is claimed.
+When OS isolation is active on macOS or Linux, user hooks use the existing sandbox wrapper, sensitive-path floors, network policy, disposable HOME, and a separate hook temporary directory. Only the hook's cwd is added as a write scope. An exact canonical script beneath the protected hook configuration directory can be re-allowed for reading; anchors in other protected locations, including links escaping the hook directory, do not receive a read exception. The hooks configuration directory stays write-protected. A wrap failure refuses execution. User hooks follow the actual host shell execution plan and ordinary mode/human routing. Host execution consumes a one-use exact-action receipt: a policy/reviewer allow binds that exact action, while any supported authenticated human allow choice supplies the same native receipt. Remembering a rule does not make the spawn receipt reusable. The runner rechecks the admitted sandbox generation before spawning. Bundled plugin hooks retain their existing confined relay. With OS isolation disabled, shell permission checks still apply and no OS confinement is claimed.
 
 Matchers follow the [hooks reference](https://code.claude.com/docs/en/hooks#matcher-patterns) (accessed 2026-10-25). Omit the matcher, or use `""` or `"*"`, to match all. A pattern containing only letters, digits, `_`, `-`, spaces, `,` and `|` is a case-sensitive exact name or list of exact names: `Edit|Write` and `Edit, Write` match either name exactly. Any other pattern is a case-sensitive, unanchored JavaScript regular expression: `Edit.*` also matches `NotebookEdit`; `^Edit$` matches only `Edit`. Script `# ave-hook-matcher:` headers use the same syntax, including lists with spaces. Matchers compile once per registry build.
 
@@ -50,7 +50,7 @@ Existing camelCase fields remain available alongside the public fields. All inpu
 
 | Event | Additional input | Effect of denial |
 | --- | --- | --- |
-| `PreToolUse` | `tool_name: string`, `tool_input: object` | Refuses the tool |
+| `PreToolUse` | `tool_name: string`, `tool_input: object` | Refuses the tool before target approval |
 | `PostToolUse` | Tool input plus optional `tool_response: string`, `is_error: boolean` | Feedback; the tool already ran |
 | `PermissionRequest` | `tool_name: string`, `tool_input: object` | Refuses the pending permission request |
 | `UserPromptSubmit` | `prompt: string`; legacy optional `inputOrigin`, `route`, `classification` | Refuses the turn |
@@ -66,6 +66,12 @@ Existing camelCase fields remain available alongside the public fields. All inpu
 | `SubagentStop` | Optional `agent_id: string`, `agent_type: string`, `stop_reason: string`, `stop_hook_active: boolean` | A block at a clean end continues the sub-agent run; see below |
 
 Fields depend on the dispatch site; an unavailable optional field is omitted. Prompt text, top-level tool input strings and string-array items, tool output, error text, denial text, and notification text are DLP-redacted before dispatch. Nested tool objects and session metadata retain the existing caller-owned redaction responsibility. No transcript path or permission-mode field is promised by this contract.
+
+## PreToolUse authorization boundary
+
+The [permission decision tree](../architecture/permission-decision-tree.md) owns ordering. In-process argument hooks finish rewriting before authorization. The user script `PreToolUse` hook runs in admission before the target tool's permission checks and approval card. A blocked target creates no target approval card. The hook command's own shell authority remains separately enforced.
+
+Script decisions are block-only: `allow` means no objection and cannot grant the target tool permission, bypass a card or change its input. Permission-request hooks can also block, never elevate a decision.
 
 ## Results and failures
 
@@ -133,26 +139,6 @@ For example, stdin includes `{"schema_version":1,"hook_event_name":"PreToolUse",
 
 HTTP, model, input-mutation, and background hooks are outside the supported contract.
 
-## Differences from Claude Code hooks
+## Contract limits
 
-Compared with the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks), accessed 2026-10-25. **Intended** marks a deliberate security or design choice; **gap** marks a difference that could be closed; **owner decision** marks a behavior change still awaiting the owner.
-
-| Area | Claude Code | Ave | Status |
-| --- | --- | --- | --- |
-| Events | 33 events, including `Setup`, `PostToolBatch`, `StopFailure`, `ConfigChange`, `FileChanged`, `WorktreeCreate`, and model-switch events | The 14 events above | Intended for now |
-| Common input | `transcript_path`, `permission_mode`, `prompt_id`, `scratchpad_dir`, `effort`, and `agent_id`/`agent_type` in agent contexts | `schema_version`, `hook_event_name`, `session_id`, `cwd` only | Gap |
-| `SessionStart` | `source`: `startup`, `resume`, `clear`, `compact`, `fork` | `source`: `startup`, `resume`, `clear`; `session_meta`; compaction does not start a session and no fork event exists | Implemented for available session transitions |
-| `SessionEnd` | `reason`: `clear`, `resume`, `logout`, `prompt_input_exit`, `other` | `reason`: `new-conversation`, `load-session` | Gap (value set) |
-| `PreCompact` / `PostCompact` | `trigger` (`manual`/`auto`), `custom_instructions`; `compact_summary` after | Same `trigger`; legacy `reason` on PreCompact and token/message counts; no instructions or summary | Implemented trigger; remaining fields are gaps |
-| `Notification` | Fires per notification with `message`, `title`, `notification_type` | Fires once at turn end with assistant text and `notification_type: "agent_completed"` | Gap (notification coverage) |
-| `Stop` / `SubagentStop` | `stop_hook_active`, `last_assistant_message`; `decision: "block"` or exit 2 continues the turn, capped at 8 | Same continuation and cap with `stop_hook_active`; no `last_assistant_message` | Implemented; `last_assistant_message` is a gap |
-| Matchers | `\|`/`,` exact-name lists, otherwise an unanchored JavaScript regex; `if` on tool events | Same matching rules within 256-unit pattern/subject caps and restricted repetition; invalid pre/permission guards deny their event; no `if` | Intended bounds and fail-closed guards; `if` is a gap |
-| Lifecycle matcher subject | Source, trigger, notification type, agent type, or error type; ignored on `UserPromptSubmit` and `Stop` | Source, compaction trigger, turn-end notification category, agent type (including SubagentStop), or Ave SessionEnd reason; prompt/Stop matchers ignored with notice | Implemented for available event values |
-| Other nonzero exit | Non-blocking error unless `onFailure: "block"` | Fails closed on blocking events | Intended |
-| Exit 2 on non-blocking events | Ignored on `PostToolUse` and `Notification` | Denial result; observe-only events log it | Intended |
-| Plain stdout on exit 0 | Added as context on `UserPromptSubmit` and `SessionStart` | Non-JSON output is an explicit failure | Intended |
-| Decision output | `ask`, `defer`, `updatedInput`, `updatedPermissions`, `updatedToolOutput`, `additionalContext`, `systemMessage`, `suppressOutput`, `terminalSequence` | Rejected as unsupported output; only allow/deny | Intended |
-| Handler types | `command`, `http`, `mcp_tool`, `prompt`, `agent`; `async` and `asyncRewake` | Trusted local argv `command` only | Intended |
-| Execution | Matching hooks run in parallel; identical handlers deduplicated | Sequential; the chain stops at the first denial | Intended |
-| Timeouts | 600 s default; 30 s on `UserPromptSubmit`; 1.5 s `SessionEnd` budget | 5 s ceiling | Intended |
-| Configuration | User, project, local, and managed settings; plugin `hooks/hooks.json`; skill and subagent frontmatter | `~/.config/ave/hooks/hooks.json` with hash enrollment; bundled plugin hooks run in their own relay | Intended |
+The supported events and inputs are listed above. Hooks run sequentially and stop at the first denial. Only trusted local argv commands are supported. Input mutation, permission updates, context injection and asynchronous handlers are rejected; the hook cannot widen authority. Matcher bounds, hash enrollment and fail-closed blocking failures protect admission. The [permission decision tree](../architecture/permission-decision-tree.md) owns approval ordering.

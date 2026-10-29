@@ -82,9 +82,17 @@ afterEach(() => {
 });
 
 describe("TelegramConnectionContent", () => {
+  it("keeps remote sharing available without an automatic approval grant", async () => {
+    const { api } = makeApi(snapshotOf({ state: "active", botUsername: "assistant_bot", pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" }, approval: { id: APPROVAL_ID, expiresAt: 1_800_000_000_000, matchesCurrentConversation: true } }));
+    render(<TelegramConnectionContent api={api} />);
+    expect(await screen.findByTestId("telegram-connection-pause")).toBeVisible();
+    expect(screen.queryByTestId("away-authority-content")).toBeNull();
+    expect(screen.queryByTestId("away-authority-open-arm-dialog")).toBeNull();
+  });
+
   it("offers no way to connect when this machine cannot store the token", async () => {
     const { api, connect } = makeApi(snapshotOf({ state: "unsupported" }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     expect(await screen.findByTestId("telegram-connection-state")).toHaveTextContent(
       "Not available on this machine",
@@ -96,7 +104,7 @@ describe("TelegramConnectionContent", () => {
 
   it("discloses the continuous connection before the token is submitted", async () => {
     const { api, connect } = makeApi(snapshotOf());
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     fireEvent.click(await screen.findByTestId("telegram-connection-connect"));
     const form = await screen.findByTestId("telegram-connection-connect-form");
@@ -118,7 +126,7 @@ describe("TelegramConnectionContent", () => {
 
   it("masks the bot token field so it is never rendered as readable text", async () => {
     const { api } = makeApi(snapshotOf());
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
     fireEvent.click(await screen.findByTestId("telegram-connection-connect"));
 
     expect(await screen.findByTestId("telegram-connection-bot-token")).toHaveAttribute(
@@ -129,7 +137,7 @@ describe("TelegramConnectionContent", () => {
 
   it("shows a minted pairing code once and drops it when it is no longer pending", async () => {
     const harness = makeApi(snapshotOf({ state: "connected-unpaired", botUsername: "my_assistant_bot" }));
-    render(<TelegramConnectionContent api={harness.api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={harness.api} />);
 
     expect(screen.queryByTestId("telegram-connection-issued-code")).toBeNull();
     harness.setSnapshot(snapshotOf({
@@ -161,7 +169,7 @@ describe("TelegramConnectionContent", () => {
       pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" },
       approval: { id: APPROVAL_ID, expiresAt: 1_800_000_000_000, matchesCurrentConversation: true },
     }));
-    const first = render(<TelegramConnectionContent api={paired.api} chatGroupId="main" />);
+    const first = render(<TelegramConnectionContent api={paired.api} />);
     expect(await screen.findByTestId("telegram-connection-pairing")).toHaveTextContent("abc123def456");
     expect(screen.queryByTestId("telegram-connection-pairing-unrecognized")).toBeNull();
     first.unmount();
@@ -170,7 +178,7 @@ describe("TelegramConnectionContent", () => {
       state: "pairing-unrecognized",
       botUsername: "my_assistant_bot",
     }));
-    render(<TelegramConnectionContent api={harness.api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={harness.api} />);
 
     // No fingerprint, an explanation, and the one repair that works.
     expect(await screen.findByTestId("telegram-connection-pairing-unrecognized")).toBeInTheDocument();
@@ -186,7 +194,7 @@ describe("TelegramConnectionContent", () => {
       botUsername: "my_assistant_bot",
       pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" },
     }));
-    render(<TelegramConnectionContent api={harness.api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={harness.api} />);
 
     // Paired but nothing shared: the pairing summary is visible and the share action is a separate, still-unclicked control.
     expect(await screen.findByTestId("telegram-connection-pairing")).toHaveTextContent("abc123def456");
@@ -207,7 +215,7 @@ describe("TelegramConnectionContent", () => {
         matchesCurrentConversation: false,
       },
     }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     const content = await screen.findByTestId("telegram-connection-content");
     expect(await screen.findByTestId("telegram-connection-shared-conversation-closed"))
@@ -234,7 +242,7 @@ describe("TelegramConnectionContent", () => {
         matchesCurrentConversation: false,
       },
     }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     expect(await screen.findByTestId("telegram-connection-shared-conversation-missing"))
       .toHaveTextContent("has been deleted");
@@ -258,7 +266,7 @@ describe("TelegramConnectionContent", () => {
         matchesCurrentConversation: true,
       },
     }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     expect(await screen.findByTestId("telegram-connection-state"))
       .toHaveTextContent("Sharing this conversation");
@@ -277,7 +285,7 @@ describe("TelegramConnectionContent", () => {
         matchesCurrentConversation: true,
       },
     }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     const content = await screen.findByTestId("telegram-connection-content");
     expect(content).toHaveTextContent("cannot be recalled");
@@ -287,7 +295,7 @@ describe("TelegramConnectionContent", () => {
 
   it("surfaces a provider conflict as a localized message, not a raw code", async () => {
     const { api } = makeApi(snapshotOf({ state: "error", lastErrorCode: "telegram-poll-conflict" }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     const error = await screen.findByTestId("telegram-connection-last-error");
     expect(error).toHaveTextContent("Another app or machine is already receiving");
@@ -302,7 +310,7 @@ describe("TelegramConnectionContent", () => {
       pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" },
       lastErrorCode: "telegram-connection-unavailable",
     }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     const retry = await screen.findByTestId("telegram-connection-retry");
     expect(retry).toHaveTextContent("Try again");
@@ -321,7 +329,7 @@ describe("TelegramConnectionContent", () => {
       pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" },
       lastErrorCode: "telegram-provider-unreachable",
     }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     expect(await screen.findByTestId("telegram-connection-state")).toHaveTextContent("Reconnecting");
     expect(screen.getByTestId("telegram-connection-last-error")).not.toHaveTextContent("telegram-provider-unreachable");
@@ -338,7 +346,7 @@ describe("TelegramConnectionContent", () => {
       botUsername: "my_assistant_bot",
       pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" },
     }));
-    render(<TelegramConnectionContent api={api} chatGroupId="main" />);
+    render(<TelegramConnectionContent api={api} />);
 
     expect(await screen.findByTestId("telegram-connection-pause")).toBeTruthy();
     expect(screen.queryByTestId("telegram-connection-retry")).toBeNull();

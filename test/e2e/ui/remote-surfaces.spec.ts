@@ -2,17 +2,19 @@ import { test, expect } from './fixtures.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 
 // Verify the desktop composition with no remote share, where component-only snapshots cannot prove the guard.
-test('renders no away-authority control while nothing is shared', async ({
+test('keeps connection settings available without automatic approval grants', async ({
   app,
   mainWindow,
 }) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'remote-surfaces');
 
-  // Prove the tab rendered before asserting controls are absent.
+  await settingsPage.getByTestId("connection:telegram:toggle").click();
+
+  // Prove the connection rendered before asserting controls are absent.
   await expect(settingsPage.getByTestId('telegram-connection-content')).toBeVisible();
   await expect(settingsPage.getByTestId('telegram-connection-connect')).toBeVisible();
 
-  // Withhold the whole arming surface when no share exists.
+  // Remote requests always use the owner's one-shot human approval.
   await expect(settingsPage.getByTestId('away-authority-content')).toHaveCount(0);
   await expect(settingsPage.getByTestId('away-authority-open-arm-dialog')).toHaveCount(0);
   await expect(settingsPage.getByTestId('away-authority-arm-dialog')).toHaveCount(0);

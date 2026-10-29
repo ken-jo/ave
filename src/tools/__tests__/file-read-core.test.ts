@@ -54,10 +54,16 @@ describe("assertReadableFilePath", () => {
     expect(verdict).toEqual({ ok: false, error: "not-a-file" });
   });
 
-  it("rejects Layer 0 sensitive paths even when the parent root is allowed", () => {
-    const sshKey = join(homedir(), ".ssh", "id_rsa");
+  it("rejects host credential stores even when the parent root is allowed", () => {
+    const sshKey = join(homedir(), ".ave", "secrets", "token");
     const verdict = assertReadableFilePath(sshKey, root, [homedir()]);
     expect(verdict).toEqual({ ok: false, error: "sensitive-path" });
+  });
+
+  it("reads an admitted ordinary secret inside the file scope", () => {
+    const path = join(root, ".env");
+    writeFileSync(path, "SYNTHETIC=value");
+    expect(assertReadableFilePath(path, root, [])).toMatchObject({ ok: true });
   });
 
   it("rejects a path outside cwd and the extra roots", () => {

@@ -40,7 +40,7 @@ import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { PATCH_ENVELOPE_PATH_FIELD_SUFFIX } from "../shared/dotted-field-value.js";
 import { globToRegExp } from "../lib/glob-matcher.js";
 import { writeDiffSidecar, WRITE_DIFF_PREVIEW_LIMIT } from "./write-diff-cache.js";
-import { ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
+import { admissionDeniedFilePattern, ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
 import {
   GREP_FILES_DESCRIPTION,
   GrepFilesInputSchema,
@@ -1892,7 +1892,7 @@ async function listEntries(
     }
     const entries: ListedEntry[] = [];
     const state = { visited: 0, truncated: false };
-    await walk(root, root, depth, limit, entries, { filesOnly: false }, state);
+    await walk(root, root, depth, limit, entries, { filesOnly: false, secretRoot: sensitiveFilePattern(root) !== null }, state);
     const truncated = entries.length >= limit || state.truncated;
     return { ok: true, value: { entries, truncated } };
   } catch (err) {
@@ -1908,7 +1908,7 @@ export async function collectFiles(
     const rootStat = await stat(root);
     const files: ListedEntry[] = [];
     const state = { visited: 0, truncated: false };
-    if (sensitiveFilePattern(root)) {
+    if (admissionDeniedFilePattern(root)) {
       return { ok: true, value: { files, truncated: false } };
     }
     if (rootStat.isFile()) {
@@ -1920,7 +1920,7 @@ export async function collectFiles(
         mtimeMs: rootStat.mtimeMs,
       });
     } else if (rootStat.isDirectory()) {
-      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true }, state);
+      await walk(root, root, MAX_LIST_DEPTH, limit, files, { filesOnly: true, secretRoot: sensitiveFilePattern(root) !== null }, state);
     } else {
       return { ok: false, error: toolError(`file search requires a file or directory: ${root}`) };
     }
@@ -1936,7 +1936,7 @@ async function walk(
   remainingDepth: number,
   limit: number,
   output: ListedEntry[],
-  opts: { filesOnly: boolean },
+  opts: { filesOnly: boolean; secretRoot: boolean },
   state: { visited: number; truncated: boolean },
 ): Promise<void> {
   if (output.length >= limit || remainingDepth < 1 || state.truncated) return;
@@ -1950,7 +1950,7 @@ async function walk(
       return;
     }
     const full = join(current, dirent.name);
-    if (sensitiveFilePattern(full)) {
+    if (admissionDeniedFilePattern(full) || (!opts.secretRoot && sensitiveFilePattern(full))) {
       continue;
     }
     const rel = normalizeRelativePath(relative(root, full));

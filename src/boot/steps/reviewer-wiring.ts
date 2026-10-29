@@ -13,7 +13,7 @@ import {
   type ApprovalSentenceSelector,
 } from "../../permissions/reviewer/approval-sentence-selector.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { RecentlyDeniedStore } from "../../permissions/reviewer/recently-denied.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   readPermissionSettings,
@@ -96,10 +96,9 @@ export interface WireReviewerDeps {
   streamProviderFor?: (vendor: string) => LLMProvider | null;
   /** Test-only cache path override. */
   verdictCachePath?: string;
-  /** Test-only queue path override. */
-  deferredQueuePath?: string;
-  /** Notify the foreground renderer whenever pending deferred entries change. */
-  onDeferredPendingChange?: (summary: { pending: number }) => void;
+  /** Optional display-history store; retained across reviewer rewiring. */
+  recentlyDenied?: RecentlyDeniedStore;
+  onRecentlyDeniedChanged?: (summary: { total: number }) => void;
   /** Resolve the parent session target per ask so newly configured providers work; absent targets escalate to the user. */
   resolveParentSessionAdjudicationTarget?: ParentAdjudicationTargetResolver;
 }
@@ -123,7 +122,7 @@ export interface WireReviewerResult {
   /** Parent-session adjudication follows chat independently of reviewer mode; missing targets escalate per ask. */
   parentSessionAdjudicator: ParentAdjudicator;
   cache: VerdictCache;
-  deferredQueue: DeferredQueue;
+  recentlyDenied: RecentlyDeniedStore;
   /** Settings after normalization. */
   appliedSettings: ReviewerSettingsBlock;
   /** Runtime provider and model after following the active identity. */
@@ -151,17 +150,13 @@ type EffectiveReviewerSettings = ReviewerSettingsBlock & {
   vertexLocation?: string;
 };
 
-/** Rewiring replaces the classifier while reusing lock-protected backing files and renderer notifications; no persistent handles or queue state are lost. */
+/** Rewiring replaces the classifier while reusing lock-protected backing files and renderer notifications; live rerun closures remain attached to their history store. */
 export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   const settings = (deps.readSettings ?? defaultReadSettings)();
   const effectiveSettings = resolveEffectiveSettings(settings, deps);
   const cache = new VerdictCache(deps.verdictCachePath);
-  const deferredQueue = new DeferredQueue(
-    deps.deferredQueuePath,
-    deps.onDeferredPendingChange,
-    // Route through the surviving manager because rewiring replaces the deferred queue.
-    (entry) => deps.permissionManager.onDeferredEntryPending(entry),
-  );
+  const recentlyDenied = deps.recentlyDenied ?? deps.permissionManager.getRecentlyDenied()
+    ?? new RecentlyDeniedStore(undefined, deps.onRecentlyDeniedChanged);
 
   let classifier: RiskClassifier;
   let rationaleScopeReviewer: RationaleScopeReviewer =
@@ -249,7 +244,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   deps.permissionManager.setReviewer({
     classifier,
     cache,
-    deferredQueue,
+    recentlyDenied,
     degradedToRule,
     ...(runtimeMode === "llm" ? { model: `${effectiveSettings.provider}/${effectiveSettings.model}` } : {}),
     ...(unavailableReason !== undefined ? { unavailableReason } : {}),
@@ -287,7 +282,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     parentAdjudicator,
     parentSessionAdjudicator,
     cache,
-    deferredQueue,
+    recentlyDenied,
     appliedSettings: settings,
     effectiveSettings,
     runtimeMode,

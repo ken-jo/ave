@@ -530,6 +530,8 @@ function rememberScopeText(
     ? "write_file, edit_file, multi_edit, apply_patch"
     : toolName;
   switch (memory.scope.kind) {
+    case "mcp-tool":
+      return t("toolApprovalDialog.rememberScopeMcpTool", { serverId: memory.scope.serverId, toolName: memory.scope.toolName, path });
     case "origin":
       return t("toolApprovalDialog.rememberScopeOrigin", { toolName, origin: memory.scope.origin, path });
     case "path":
@@ -1619,7 +1621,9 @@ export function ToolApprovalContent({
             {decisionModel.variant === "exact" && allowRefusal === null && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
                 {decision.selected === "allow-everywhere"
-                  ? tHook("toolApprovalDialog.exactScopeEverywhere")
+                  ? request.approvalMemory?.kind === "key" && request.approvalMemory.scope.kind === "mcp-tool"
+                    ? tHook("toolApprovalDialog.rememberScopeMcpToolGlobal", { serverId: request.approvalMemory.scope.serverId, toolName: request.approvalMemory.scope.toolName })
+                    : tHook("toolApprovalDialog.exactScopeEverywhere")
                   : rememberScopeText(tHook, request, request.persistentApprovalCwd)}
               </p>
             ) : null}

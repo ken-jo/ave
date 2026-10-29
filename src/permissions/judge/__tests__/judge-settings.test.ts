@@ -345,7 +345,7 @@ describe("JudgeCircuitBreaker", () => {
     expect(b.isOpen("s")).toBe(false);
     b.record("s", "deny", randomUUID());
     expect(b.isOpen("s")).toBe(true);
-    expect(b.snapshot("s").total).toBe(0);
+    expect(b.snapshot("s").total).toBe(20);
   });
 });
 
@@ -355,7 +355,6 @@ describe("createJudgeChain", () => {
     reviewerClassifier: null,
     reviewerModel: null,
     classifierForModel: () => null,
-    autoApprove: () => "medium",
     fetch: async () => new Response("{}"),
   };
 
