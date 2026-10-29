@@ -268,6 +268,35 @@ describe("preload — plugin webview asset URLs", () => {
     }
   });
 
+  it("consumes a branch click's token as the branch request leaves, so a slow fork cannot expire its auto-continue", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => UserKeyboardIntentSnapshot;
+    const branch = api["chatBranchFromCheckpoint"] as (sessionId: string, compactNum: number, userIntent?: unknown) => Promise<unknown>;
+    const continueLastUser = api["chatContinueLastUser"] as (sessionId: string, authority?: unknown) => Promise<unknown>;
+    vi.useFakeTimers();
+    mockUserActivation.isActive = true;
+    try {
+      const click = capture();
+      mockUserActivation.isActive = false;
+      await branch("source-session", 2, click);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:branch-from-checkpoint", {
+        sessionId: "source-session", compactNum: 2, intent: { inputOrigin: "user-keyboard", userActivation: true },
+      }, "main");
+      // The fork and load take longer than the token's lifetime; the continue spends main's grant, not the token.
+      vi.advanceTimersByTime(6_000);
+      await continueLastUser("branch-session", { branchContinuation: "grant-1" });
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:continue-last-user", { sessionId: "branch-session", branchContinuation: "grant-1" }, "main");
+      // The token itself was spent by the branch request.
+      await branch("source-session", 2, click);
+      expect(mockInvoke).toHaveBeenLastCalledWith("ave:chat:branch-from-checkpoint", expect.objectContaining({
+        intent: { inputOrigin: "user-keyboard", userActivation: false },
+      }), "main");
+    } finally {
+      vi.useRealTimers();
+      mockUserActivation.isActive = false;
+    }
+  });
+
   it("carries each replay's gesture token to main once: edit-resend, continue and retry", async () => {
     const api = await loadAveApi();
     const capture = api["captureUserKeyboardIntent"] as () => unknown;

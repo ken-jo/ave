@@ -90,7 +90,7 @@ export interface ChatViewProps {
   onToggleStar: (idx: number) => void | Promise<void>;
   onRetryEffort: () => void | Promise<void>;
   /** userBubble is present only when Continue appends a new user row instead of rerunning the existing one. */
-  onContinueFromLastUser?: (sessionId: string, opts?: { userBubble?: string; userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot }) => void | Promise<void>;
+  onContinueFromLastUser?: (sessionId: string, opts?: { userBubble?: string; authority?: import("../../shared/chat-origin.js").ContinueAuthority }) => Promise<boolean>;
   isEntryStarred: (idx: number) => string | null;
   onAbort: () => void | Promise<void>;
   /** Mid-stream "guide" utterance — non-interrupting direction adjustment. Returns IPC result so caller can preserve typed text on rejection. */

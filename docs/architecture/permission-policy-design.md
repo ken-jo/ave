@@ -1927,11 +1927,18 @@ one command into that terminal. Main owns the boundary
   origin without it fails the turn. Main sees preload's consumed-token
   report (`userActivation: true`), not the token. Chat send, guide,
   side-chat and pane-chat send, edit-resend, continue and retry each carry
-  their click's token; a queued auto-send stays `queue-auto`. The headless
-  `ave exec` prompt is the owner's via its unattended authority and never
-  gets the capability. The inventory of entry points and their
-  classification is a test
+  their click's token; a queued auto-send stays `queue-auto`. A
+  checkpoint branch consumes its click's token as the request leaves; main
+  holds the minted intent as a single-use grant bound to that branch's
+  source and target sessions, so a slow fork or load cannot outlive the
+  click. The auto-continue spends the grant. A second use, another session,
+  a newer branch, a new chat, a fork or opening another session refuses or
+  revokes it, and an unredeemed grant lapses ten minutes after the fork.
+  The headless `ave exec` prompt is the owner's via its unattended
+  authority and never gets the capability. The inventory of entry points and
+  their classification is a test over the compiler's syntax tree
   ([turn-entry-classification.test.ts](../../src/engine/turn/__tests__/turn-entry-classification.test.ts)).
+  It follows aliases and counts computed calls.
   A routine, plugin or app message, or any other turn, is refused
   before a card. The turn id is sealed into the approval; the authorization
   step also requires that same turn, still speaking for the user. Both turn

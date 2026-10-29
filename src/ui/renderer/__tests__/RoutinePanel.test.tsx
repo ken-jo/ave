@@ -70,6 +70,21 @@ describe("RoutinePanel scope payload mapping", () => {
     });
   });
 
+  it("sends a natural-language routine as the user's turn with the click's gesture token", async () => {
+    const intent = { inputOrigin: "user-keyboard" as const, token: "click-token" };
+    const api = {
+      ...makeStubApi({ addRoutine: vi.fn() }),
+      captureUserKeyboardIntent: vi.fn(() => intent),
+      chatSend: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as AveApi;
+    const view = render(<AddRoutineModal api={api} onClose={vi.fn()} onAdded={vi.fn()} />);
+    fireEvent.click(view.getByText("자연어"));
+    fireEvent.change(view.getByTestId("natural-input"), { target: { value: "매일 아침 9시에 리포트" } });
+    await act(async () => { fireEvent.click(view.getByText("등록")); });
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledOnce());
+    expect(api.chatSend).toHaveBeenCalledWith(expect.stringContaining("매일 아침 9시에 리포트"), undefined, "user-keyboard", intent);
+  });
+
   it("empty plugin selection submits scope.pluginIds = { mode: 'deny-all' }", async () => {
     const addRoutine = vi.fn().mockResolvedValue({ ok: true, routine: makeRoutineRecord() });
     const api = makeStubApi({

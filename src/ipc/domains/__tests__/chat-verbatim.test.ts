@@ -1,5 +1,5 @@
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
-import { beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
 import path from "node:path";
 import os from "node:os";
@@ -7,7 +7,7 @@ beforeAll(() => configureHostResources({ resourcePath: path.resolve("resources")
 import { mkdirSync, realpathSync } from "node:fs";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
-import { USER_KEYBOARD_REQUIRED } from "../../../shared/chat-origin.js";
+import { BRANCH_CONTINUATION_REFUSED, USER_KEYBOARD_REQUIRED } from "../../../shared/chat-origin.js";
 import * as shellTasks from "../../../tools/shell-tools.js";
 import {
   MCP_RESOURCE_ATTACHMENTS_PER_TURN,
@@ -876,6 +876,101 @@ describe("ave:chat:fork", () => {
       ok: true,
       sessionId: expect.any(String),
     });
+  });
+});
+
+describe("branch auto-continue grant", () => {
+  const SOURCE = "6f1d3c2a-8b4e-4a7f-9c15-3e2d1b0a9f87";
+  const TARGET = "b2a9e7c4-1d3f-4e8a-a6b5-7c9d0e1f2a3b";
+  const OTHER = "d4c3b2a1-9e8f-4a7b-8c6d-5e4f3a2b1c0d";
+  const BRANCH = "ave:chat:branch-from-checkpoint";
+  const CONTINUE = "ave:chat:continue-last-user";
+
+  /** A branch click whose fork takes `forkMs`, then the renderer's load of the branch it created. */
+  async function branchClick(options: { gesture?: boolean; forkMs?: number } = {}) {
+    let current = SOURCE;
+    const loop = makeConversationLoop(SOURCE, [{ role: "user", content: "question", meta: { messageId: "row-1" } }]);
+    loop.getSessionId.mockImplementation(() => current);
+    loop.runTurn.mockResolvedValue({ text: "answer", toolCalls: [], stopReason: "end_turn" });
+    Object.assign(loop, {
+      branchFromCheckpoint: vi.fn(async () => {
+        // A large conversation or a slow disk: the fork outlasts the preload token's 5 s lifetime.
+        if (options.forkMs !== undefined) vi.setSystemTime(Date.now() + options.forkMs);
+        return { newSessionId: TARGET, lastMessageRole: "user", shouldAutoContinue: true };
+      }),
+    });
+    const deps = await setupHandlers(loop);
+    deps.memoryManager.loadSessionMetadata.mockImplementation((id: string) => (id === TARGET ? { parentSessionId: SOURCE } : null));
+    const branched = await invokeRegisteredHandler(handlers, BRANCH, {
+      sessionId: SOURCE, compactNum: 1, intent: options.gesture === false ? { inputOrigin: "user-keyboard", userActivation: false } : KEYBOARD_GESTURE,
+    }, "main") as { branchContinuation?: string; newSessionId?: string };
+    current = TARGET;
+    const continueWith = (grant: unknown, sessionId = TARGET) =>
+      invokeRegisteredHandler(handlers, CONTINUE, { sessionId, branchContinuation: grant }, "main");
+    return { loop, branched, continueWith, setSession: (id: string) => { current = id; } };
+  }
+
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("continues as the user's turn after a fork and load that took longer than the click token's 5 s", async () => {
+    const { loop, branched, continueWith } = await branchClick({ forkMs: 6_000 });
+    expect(typeof branched.branchContinuation).toBe("string");
+    vi.setSystemTime(Date.now() + 4_000);
+    await expect(continueWith(branched.branchContinuation)).resolves.toMatchObject({ ok: true });
+    const options = loop.runTurn.mock.calls[0]?.[3] as Record<string, unknown>;
+    expect(options).toMatchObject({ inputOrigin: "user-keyboard" });
+    expect(options.userKeyboardIntent).toBeDefined();
+  });
+
+  it("issues no grant for a branch whose click was not a consumed gesture", async () => {
+    const { loop, branched, continueWith } = await branchClick({ gesture: false });
+    expect(branched).not.toHaveProperty("branchContinuation");
+    await expect(continueWith("guessed")).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("spends the grant once: a second continue with it is refused", async () => {
+    const { loop, branched, continueWith } = await branchClick();
+    await expect(continueWith(branched.branchContinuation)).resolves.toMatchObject({ ok: true });
+    loop.getHistory().getMessages().push({ role: "user", content: "question again" });
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).toHaveBeenCalledOnce();
+  });
+
+  it("refuses the grant for a session other than the branch it created, and burns it", async () => {
+    const { loop, branched, continueWith, setSession } = await branchClick();
+    setSession(OTHER);
+    await expect(continueWith(branched.branchContinuation, OTHER)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    setSession(TARGET);
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a lookalike grant id", async () => {
+    const { loop, continueWith } = await branchClick();
+    await expect(continueWith("00000000-0000-4000-8000-000000000000")).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["opening another session", async (loop: ReturnType<typeof makeConversationLoop>) => {
+      loop.resetAndResume.mockResolvedValue({ ok: false, compacted: false, compactedAt: null, removedMessageCount: 0 });
+      await invokeRegisteredHandler(handlers, "ave:chat:session-resume", OTHER, "main");
+    }],
+    ["starting a new chat", async () => { await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main"); }],
+  ])("cancels the pending continuation on %s", async (_label, cancel) => {
+    const { loop, branched, continueWith } = await branchClick();
+    await cancel(loop);
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
+  });
+
+  it("lets an unredeemed grant lapse after its operation bound", async () => {
+    const { loop, branched, continueWith } = await branchClick();
+    vi.setSystemTime(Date.now() + 10 * 60_000 + 1);
+    await expect(continueWith(branched.branchContinuation)).resolves.toEqual(BRANCH_CONTINUATION_REFUSED);
+    expect(loop.runTurn).not.toHaveBeenCalled();
   });
 });
 

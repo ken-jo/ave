@@ -54,7 +54,6 @@
     "src/ipc/__tests__/gated.test.ts": 2,
     "src/ipc/__tests__/plugin-theme-replay.test.ts": 3,
     "src/ipc/__tests__/usage.test.ts": 2,
-    "src/ipc/domains/__tests__/chat-verbatim.test.ts": 1,
     "src/ipc/domains/__tests__/mcp-attach-resource.test.ts": 1,
     "src/ipc/domains/__tests__/plugins-broadcast.test.ts": 5,
     "src/ipc/domains/__tests__/plugins-rate-limit-gc.test.ts": 1,

@@ -10,6 +10,7 @@ import {
 } from "./gesture-intent.js";
 import type {
   ChatSendInputOrigin,
+  ContinueAuthority,
   UserKeyboardIntentSnapshot,
 } from "../shared/chat-origin.js";
 import type { SerializedHistoryMessage } from "../shared/chat-history.js";
@@ -134,11 +135,11 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
   chatGetTurnReview: async (expectedSessionId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.getTurnReview, expectedSessionId, chatGroupId) as Promise<TurnReviewResult>,
   chatFork: async (messageId?: string) => ipcRenderer.invoke(CHANNELS.chat.fork, messageId, chatGroupId),
-  chatContinueLastUser: async (sessionId: string, userIntent?: UserKeyboardIntentSnapshot) =>
-    ipcRenderer.invoke(CHANNELS.chat.continueLastUser, {
-      sessionId,
-      intent: { inputOrigin: "user-keyboard", userActivation: consumeUserKeyboardIntent(userIntent) },
-    }, chatGroupId) as Promise<{ ok: boolean; error?: string }>,
+  chatContinueLastUser: async (sessionId: string, authority?: ContinueAuthority) =>
+    ipcRenderer.invoke(CHANNELS.chat.continueLastUser, authority !== undefined && "branchContinuation" in authority
+      ? { sessionId, branchContinuation: authority.branchContinuation }
+      : { sessionId, intent: { inputOrigin: "user-keyboard", userActivation: consumeUserKeyboardIntent(authority) } },
+    chatGroupId) as Promise<{ ok: boolean; error?: string }>,
   chatRetryEffort: async (opts?: { thinkingBudgetTokens?: number; enableThinking?: boolean }, userIntent?: UserKeyboardIntentSnapshot) =>
     ipcRenderer.invoke(CHANNELS.chat.retryEffort, opts, chatGroupId, {
       inputOrigin: "user-keyboard",
@@ -173,12 +174,17 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     >,
   chatExitCheckpointView: async () =>
     ipcRenderer.invoke(CHANNELS.chat.exitCheckpointView, chatGroupId) as Promise<{ ok: boolean }>,
-  chatBranchFromCheckpoint: async (sessionId: string, compactNum: number) =>
-    ipcRenderer.invoke(CHANNELS.chat.branchFromCheckpoint, { sessionId, compactNum }, chatGroupId) as Promise<
+  // The click's token is consumed as the request leaves, so a slow fork or load never outlives it; main keeps the result for the
+  // auto-continue as a grant bound to this branch.
+  chatBranchFromCheckpoint: async (sessionId: string, compactNum: number, userIntent?: UserKeyboardIntentSnapshot) =>
+    ipcRenderer.invoke(CHANNELS.chat.branchFromCheckpoint, {
+      sessionId, compactNum, intent: { inputOrigin: "user-keyboard", userActivation: consumeUserKeyboardIntent(userIntent) },
+    }, chatGroupId) as Promise<
       {
         newSessionId: string;
         lastMessageRole: "user" | "assistant" | "tool_result" | null;
         shouldAutoContinue: boolean;
+        branchContinuation?: string;
       } | { error: string }
     >,
   chatAbort: async () => ipcRenderer.invoke(CHANNELS.chat.abort, chatGroupId) as Promise<{ ok: boolean }>,

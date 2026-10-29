@@ -222,6 +222,15 @@ export const USER_KEYBOARD_REQUIRED = Object.freeze({
   error: "user-keyboard-required" as const,
 });
 
+/** What authorizes a continue: the click's own gesture token, or the grant a branch's click left for its auto-continue. */
+export type ContinueAuthority = UserKeyboardIntentSnapshot | { readonly branchContinuation: string };
+
+/** A branch auto-continue whose grant is missing, spent, revoked, lapsed or for another session. */
+export const BRANCH_CONTINUATION_REFUSED = Object.freeze({
+  ok: false as const,
+  error: "branch-continuation-refused" as const,
+});
+
 export function hasUserKeyboardIntentPayload(payload: unknown): boolean {
   return typeof payload === "object" && payload !== null
     && hasUserKeyboardIntent((payload as { intent?: unknown }).intent);

@@ -5,7 +5,7 @@ import { SHORT_TOAST_TTL_MS } from "../constants.js";
 import type { ViewModeState } from "../components/ViewModeBanner.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import type { AveApi } from "../types.js";
-import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
+import type { ContinueAuthority } from "../../../shared/chat-origin.js";
 
 export interface UseCheckpointViewParams {
   api: AveApi;
@@ -14,7 +14,7 @@ export interface UseCheckpointViewParams {
   streaming: boolean;
   hasActiveStreamingEntry: boolean;
   onLoadSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
-  onContinueFromLastUser?: (sessionId: string, opts?: { userIntent?: UserKeyboardIntentSnapshot }) => void | Promise<void>;
+  onContinueFromLastUser?: (sessionId: string, opts?: { authority?: ContinueAuthority }) => Promise<boolean>;
   setViewMode: React.Dispatch<React.SetStateAction<ViewModeState | null>>;
   scrollChatToBottom: (behavior?: ScrollBehavior) => void;
 }
@@ -66,7 +66,8 @@ export function useCheckpointView({
   }, [api, scrollChatToBottom, setViewMode]);
 
   const handleBranchFrom = useCallback(async (compactNum: number) => {
-    // The auto-continue runs after the fork and load awaits, outside the click; it replays the user's request with the click's intent.
+    // Captured inside the click and consumed as the branch request leaves; main turns it into the auto-continue's grant, so a slow
+    // fork or load cannot outlive it.
     const userIntent = api.captureUserKeyboardIntent();
     if (streaming || hasActiveStreamingEntry) {
       if (forkToastTimerRef.current) clearTimeout(forkToastTimerRef.current);
@@ -74,22 +75,23 @@ export function useCheckpointView({
       forkToastTimerRef.current = setTimeout(() => setForkToast(null), SHORT_TOAST_TTL_MS);
       return;
     }
-    const result = await api.chatBranchFromCheckpoint?.(currentSessionId, compactNum);
+    const result = await api.chatBranchFromCheckpoint?.(currentSessionId, compactNum, userIntent);
     if (!result || "error" in result) return;
     // Exit view-mode before loading the new session so it opens in live mode.
     setViewMode(null);
     if (!onLoadSession) return;
     const loaded = await onLoadSession(result.newSessionId);
     if (loaded === false) return;
-    if (forkToastTimerRef.current) clearTimeout(forkToastTimerRef.current);
-    setForkToast(
-      result.shouldAutoContinue
-        ? t("chatView.forkSuccessAutoContinue", { compactNum })
-        : t("chatView.forkSuccess", { compactNum }),
-    );
-    forkToastTimerRef.current = setTimeout(() => setForkToast(null), SHORT_TOAST_TTL_MS);
-    if (result.shouldAutoContinue) {
-      await onContinueFromLastUser?.(result.newSessionId, { userIntent });
+    const announce = (message: string) => {
+      if (forkToastTimerRef.current) clearTimeout(forkToastTimerRef.current);
+      setForkToast(message);
+      forkToastTimerRef.current = setTimeout(() => setForkToast(null), SHORT_TOAST_TTL_MS);
+    };
+    // Announce only the fork, which is done. The auto-continue announces itself through the host's continue status, and its refusal
+    // through the continue's error, so nothing here claims a continue the host has not admitted.
+    announce(t("chatView.forkSuccess", { compactNum }));
+    if (result.shouldAutoContinue && result.branchContinuation !== undefined) {
+      await onContinueFromLastUser?.(result.newSessionId, { authority: { branchContinuation: result.branchContinuation } });
     }
   }, [api, currentSessionId, hasActiveStreamingEntry, onContinueFromLastUser, onLoadSession, streaming, setViewMode]);
 
