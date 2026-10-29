@@ -86,6 +86,50 @@ describe("request size admission", () => {
 });
 
 describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () => {
+  it("withholds policy bytes from an impostor before delivering to the bound child", async (context) => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    requireMxcPolicyPipeHelper(context.skip);
+    const body = request(25_000);
+    const transport = await openMxcRequestTransport(body, LAUNCHER);
+    const source = `
+      const fs = require('node:fs');
+      process.stdin.once('data', () => {
+        const fd = fs.openSync(process.argv[1], 'r');
+        const chunks = [];
+        const buffer = Buffer.alloc(1024);
+        for (;;) {
+          const count = fs.readSync(fd, buffer, 0, buffer.length, null);
+          if (!count) break;
+          chunks.push(Buffer.from(buffer.subarray(0, count)));
+        }
+        fs.closeSync(fd);
+        process.stdout.write(Buffer.concat(chunks).toString('base64'));
+      });
+    `;
+    let child: ReturnType<typeof execFile> | undefined;
+    try {
+      const received = new Promise<string>((resolveRead, reject) => {
+        child = execFile(process.execPath, ["-e", source, transport.args[1]!], {
+          windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.mxcRequestTransportMs,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        }, (error, stdout) => {
+          if (error) reject(error);
+          else resolveRead(stdout);
+        });
+        transport.bindChild(child);
+      });
+      // The server disconnects an impostor before writing, which Node reports as either an empty read or EPIPE.
+      const impostor = await readPipe(transport.args[1]!)
+        .then((text) => Buffer.byteLength(text), (error: NodeJS.ErrnoException) => error.code);
+      expect([0, "EPIPE"]).toContain(impostor);
+      child!.stdin!.end("read");
+      expect(Buffer.from(await received, "base64")).toEqual(Buffer.from(JSON.stringify(body)));
+    } finally {
+      child?.kill();
+      await transport.release();
+    }
+  });
+
   it("preserves full-floor denial coverage and grants while collapsing nested denies", () => {
     const home = String.raw`C:\Users\example`;
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([home]);

@@ -1290,6 +1290,21 @@ Two classifiers answer different questions about PowerShell traversal:
   - the robocopy/xcopy/findstr recursive switches;
   - archive creation that reads an operand tree (below).
 
+  Measured runtime binding in PowerShell 5.1 and 7 resolves `gci -d 1 src` to Depth, while `-ad` and `-Directory` remain flat directory filters.
+  The filesystem cmdlets with recursion parameters are Copy-Item and Remove-Item
+  (`-Recurse`), and Get-ChildItem (`-Recurse`, `-Depth`). Prefixes bind against
+  that cmdlet's parameters, with declared parameters taking precedence over
+  common and provider parameters; an ambiguous prefix alone is not traversal.
+  Native recursive switches include findstr's `/s` (bundled, as in `/si` or
+  `/s/offline`, or dash-prefixed),
+  xcopy's `/s`, `/e`, `/t` (slash prefixes only; a bundle such as `/s/m` or
+  `/se` counts whatever its other letters; the named `/exclude`, `/compress`,
+  `/[-]sparse` and `/noclone` do not), and
+  robocopy's `/s`, `/e`, `/mir` (also dash-prefixed, without bundles). A colon
+  starts an option's value (`/exclude:C:/x.txt`, `/c:a/s`), which is not read
+  as switches. Since a dynamic argument to these commands may carry a switch,
+  the may-traverse check keeps the forced ask for it.
+
   The host PowerShell block (`validatePowerShellAst`, including the Remove-Item
   recursive-and-forced check) and the permission decision both import it.
 - **May** (`mayTraversePowerShellRecursively`): a fail-closed superset.
@@ -1304,9 +1319,9 @@ not walk an existing tree:
 
 | Class | Forms | Result |
 |---|---|---|
-| Definite | tar create, append or update: `c`/`r`/`u` in a bundled first argument (`tar cf`) or a dash bundle (`-czf`), or `--create`/`--append`/`--update`; 7z, 7za or 7zr `a`/`u`; `zip -r` (also bundled, as in `-qr`, and `--recurse-paths`); Compress-Archive whose `-Path` (by prefix or position) is a wildcard, or whose `-Path`/`-LiteralPath` is directory-shaped (`.`, `..`, or a trailing separator) | denied on both layers |
-| Not traversal | tar `-t`/`-x`, 7z `l`/`x`/`e`, unzip, Expand-Archive | not a traversal; extraction writes belong to the write policy |
-| Undecidable | a mode that is not static: a dynamic first argument, bundled flags from a variable or splat, a dynamic 7z command, zip with a dynamic argument and no `-r`; Compress-Archive with a dynamic path, a path from the pipeline, or a literal non-wildcard path not shaped as a directory | not definite, so the host does not refuse it; `may`, so MXC keeps the forced ask |
+| Definite | tar create, append or update: `c`/`r`/`u` in a bundled first argument (`tar cf`) or a dash bundle (`-czf`), or `--create`/`--append`/`--update` and unique long-option prefixes of any length (`--cr`, `--ap`, `--up`), skipping the value word of an option that takes one (`--file -t -c`, `-f -t -c`); 7z, 7za or 7zr `a`/`u`; `zip -r` (also bundled, as in `-qr`, and `--recurse-paths`); Compress-Archive whose `-Path` (by prefix or position) is a wildcard, or whose `-Path`/`-LiteralPath` is directory-shaped (`.`, `..`, or a trailing separator) | denied on both layers |
+| Not traversal | tar `-t`/`-x`, 7z `l`/`x`/`e`/`t`, unzip, Expand-Archive | not a traversal; extraction writes belong to the write policy |
+| Undecidable | a tar long option that is ambiguous or unknown to the GNU option table, when no later static mode decides (Windows ships bsdtar, whose options differ; a word after such an option may be its value, so only a create mode then decides); every 7z command other than `a`/`u`/`l`/`x`/`e`/`t`; a mode that is not static: a dynamic first argument, bundled flags from a variable or splat, a dynamic 7z command, zip with a dynamic argument and no `-r`; Compress-Archive with a dynamic path, a path from the pipeline, or a literal non-wildcard path not shaped as a directory | not definite, so the host does not refuse it; `may`, so MXC keeps the forced ask |
 
 A literal Compress-Archive path such as `src` may be a file or a directory.
 The shared classifier reads no filesystem state, so both layers see the same
@@ -1336,6 +1351,9 @@ so nothing runs under a decision made for another route. Consumption compares
 the grant's relaxations with the same function and fails closed on a mismatch.
 A rebuild from host to `analysis-required` keeps the empty set and is
 unaffected.
+Every route other than a disposable container (host, workspace sandbox,
+approval-required) is also re-observed at the final handler boundary, so a
+newly available disposable route cannot reuse that decision's empty relaxations.
 
 The host-native broker route has a different boundary. The controller cannot
 open the workload filesystem directly, and the workload is created without

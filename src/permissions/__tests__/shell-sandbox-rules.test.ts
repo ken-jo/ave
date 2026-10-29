@@ -170,6 +170,14 @@ describe("shell confinement and escape rules", () => {
     it.each([
       "Get-ChildItem -Recurse src", "gci -r src", "ls -Rec src", "dir -recurs src", "Get-ChildItem src -s",
       "Get-ChildItem src -Depth 2", "gci src -de 1", "Get-ChildItem src -Recurse:$true",
+      "gci -d 1 src", "tar --cr x.tar src", "tar --ap x.tar src", "tar --up x.tar src",
+      "findstr /si term src", "findstr -si term src", "findstr /s/i term src", "findstr -s term src",
+      "findstr -sic:probe src", "findstr /sic:probe src", "xcopy src out /s/d:01-01-2020",
+      "xcopy src out /se", "xcopy src out /s/e", "xcopy src out /t",
+      "xcopy src out /s/m", "xcopy src out /e/d", "xcopy src out /e/x", "xcopy src out /s/-y", "findstr /s/offline term src",
+      "tar --lz4 -cf out.tar src", "tar --verb -czf out.tgz src", "tar --bzip2 -cf out.tbz src", "zip -r:$x a.zip src",
+      "tar --file -t -c src", "tar --lz4 --file -t -c src", "tar -f -t -c src",
+      "robocopy src out -s", "robocopy src out -e", "robocopy src out -mir",
       "Get-ChildItem -r src | Select-String term", "Select-String term -Path (Get-ChildItem -Recurse src)",
       "if ($true) { gci -Recurse src }", "$files = gci -r src; Select-String term $files",
       "Remove-Item -Recurse build", "Copy-Item src out -Recurse", "robocopy src out /E",
@@ -186,6 +194,8 @@ describe("shell confinement and escape rules", () => {
       "tree src", "rg term", "node walker.js src", "cmd /c dir /s", "iex 'Get-ChildItem'", "& $cmd src",
       "Get-ChildItem @options", "Get-ChildItem 'unterminated",
       "tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "zip $flags a.zip d", "Compress-Archive src a.zip", "Compress-Archive -Path $p a.zip",
+      "tar --c x.tar", "tar --a x.tar", "tar --u x.tar", "tar --lz4 -t -f x.tar",
+      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt", "xcopy $from out", "robocopy src out $flags", "7z b x.7z", "7z d x.7z", "7z h x.7z", "7z i x.7z", "7z rn x.7z", "7z unknown x.7z",
     ])("keeps the forced ask for undecidable traversal %s", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
@@ -193,7 +203,7 @@ describe("shell confinement and escape rules", () => {
     });
 
     // Listing and extraction read the archive, not a tree; extraction writes belong to the write policy.
-    it.each(["tar -tf x.tar", "tar -xf x.tar", "tar xf x.tar", "7z l x.7z", "7z x x.7z", "7z e x.7z", "unzip x.zip", "Expand-Archive x.zip d"])
+    it.each(["tar -tf x.tar", "tar -xf x.tar", "tar xf x.tar", "7z l x.7z", "7z x x.7z", "7z e x.7z", "7z t x.7z", "unzip x.zip", "Expand-Archive x.zip d"])
     ("does not deny archive listing or extraction %s as traversal", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(false);
@@ -201,6 +211,10 @@ describe("shell confinement and escape rules", () => {
     });
 
     it.each(["Get-ChildItem src", "Get-ChildItem -Directory src", "Get-Content notes.txt", "Select-String term notes.txt",
+      "gci -ad src", "gc notes.txt -re 10", "gc f.csv -De ','", "xcopy src out -s", "xcopy src out /exclude:s", "robocopy src out /se", "findstr /c:s term src",
+      "xcopy src out /exclude:C:/lists/exclude.txt", "findstr /c:a/s notes.txt", "findstr /d:C:/src needle notes.txt",
+      "xcopy src out /noclone", "xcopy src out /sparse", "xcopy src out /-sparse", "findstr /off term notes.txt",
+      "Copy-Item src -De out", "Remove-Item src -d",
       "$a = 1; Write-Output $a", "foreach ($n in 1..3) { Write-Output $n }", "Copy-Item -Recurse:$false src out",
       "Get-ChildItem -Recurse: $false src"])("treats %s as flat", command => {
       expect(mayTraversePowerShellRecursively(command)).toBe(false);

@@ -16,15 +16,34 @@ export type PowerShellTraversalArgument = PowerShellTraversalParameter | PowerSh
 
 // Filesystem cmdlets that take -Recurse or -Depth.
 const RECURSIVE_PARAMETER_COMMANDS: ReadonlySet<string> = new Set([
-  "add-content", "clear-content", "clear-item", "copy-item", "get-childitem", "get-content", "get-item", "get-itemproperty",
-  "get-itempropertyvalue", "move-item", "new-item", "out-file", "remove-item", "rename-item", "set-content", "set-item",
-  "set-itemproperty", "test-path",
+  "copy-item", "get-childitem", "remove-item",
 ]);
-const NATIVE_RECURSE_SWITCHES: ReadonlyMap<string, RegExp> = new Map([
-  ["robocopy", /^\/(?:s|e|mir)$/i],
-  ["xcopy", /^\/[se]$/i],
-  ["findstr", /^\/s$/i],
+// Slash switches may be bundled (/s/m, /si); any piece carrying a recursion letter counts, whatever its other letters.
+// A colon starts the option's value, which may itself hold slashes (/exclude:C:/x.txt, /c:a/s), so scanning stops there.
+function slashSwitchRecurses(word: string, prefixes: string, letters: RegExp, named: readonly string[]): boolean {
+  if (!prefixes.includes(word[0] ?? "")) return false;
+  for (const piece of word.slice(1).split("/")) {
+    const colon = piece.indexOf(":");
+    const option = (colon === -1 ? piece : piece.slice(0, colon)).replace(/^-/, "").toLowerCase();
+    if (!named.includes(option) && letters.test(option)) return true;
+    if (colon !== -1) return false;
+  }
+  return false;
+}
+
+// Named switches from `xcopy /?` and `findstr /?` that are not letter bundles.
+const XCOPY_NAMED = ["exclude", "compress", "sparse", "noclone"];
+const FINDSTR_NAMED = ["off", "offline"];
+const NATIVE_RECURSE_SWITCHES: ReadonlyMap<string, (word: string) => boolean> = new Map([
+  ["robocopy", (word: string) => /^[-/](?:s|e|mir)$/i.test(word)],
+  ["xcopy", (word: string) => slashSwitchRecurses(word, "/", /[set]/, XCOPY_NAMED)],
+  ["findstr", (word: string) => slashSwitchRecurses(word, "/-", /s/, FINDSTR_NAMED)],
 ]);
+
+/** robocopy, xcopy and findstr take recursion as a switch, so a dynamic argument may carry one. */
+export function isNativeRecursionSwitchCommand(command: string): boolean {
+  return NATIVE_RECURSE_SWITCHES.has(commandLeaf(command));
+}
 
 function commandLeaf(name: string): string {
   const leaf = name.slice(Math.max(name.lastIndexOf("\\"), name.lastIndexOf("/")) + 1).toLowerCase();
@@ -44,7 +63,8 @@ export function isPowerShellSwitchEnabled(parameter: PowerShellTraversalParamete
 
 /** -Depth implies -Recurse whatever its value; Get-ChildItem also aliases Recurse as -s. */
 export function isPowerShellRecursionParameter(command: string, parameter: PowerShellTraversalParameter): boolean {
-  if (isPowerShellParameterPrefix(parameter, "depth")) return true;
+  if (!RECURSIVE_PARAMETER_COMMANDS.has(command)) return false;
+  if (command === "get-childitem" && isPowerShellParameterPrefix(parameter, "depth")) return true;
   const recurse = isPowerShellParameterPrefix(parameter, "recurse")
     || (command === "get-childitem" && parameter.name.toLowerCase() === "s");
   return recurse && isPowerShellSwitchEnabled(parameter);
@@ -55,7 +75,10 @@ export function isDefinitePowerShellRecursion(command: string, args: readonly Po
   const leaf = commandLeaf(command);
   if (classifyArchiveTraversal(leaf, args) === "definite") return true;
   const native = NATIVE_RECURSE_SWITCHES.get(leaf);
-  if (native !== undefined) return args.some((argument) => argument.kind === "literal" && native.test(argument.value));
+  if (native !== undefined) return args.some((argument) => {
+    const word = nativeWord(argument);
+    return word !== null && native(word);
+  });
   // The leaf also covers a module-qualified cmdlet name.
   return RECURSIVE_PARAMETER_COMMANDS.has(leaf)
     && args.some((argument) => argument.kind === "parameter" && isPowerShellRecursionParameter(leaf, argument));
@@ -82,7 +105,7 @@ function classifyArchiveTraversal(leaf: string, args: readonly PowerShellTravers
 
 // Native argv text; null when dynamic. A parameter's colon value does not change its option letters.
 function nativeWord(argument: PowerShellTraversalArgument): string | null {
-  if (argument.kind === "parameter") return `-${argument.name}`;
+  if (argument.kind === "parameter") return `-${argument.name}${argument.argument === undefined ? "" : ":"}`;
   return argument.kind === "literal" ? argument.value : null;
 }
 
@@ -92,6 +115,27 @@ const TAR_OTHER_MODE_LETTERS = "txAd";
 const TAR_VALUE_LETTERS = "bCfFgHIKLNTVX";
 const TAR_CREATE_LONG = ["create", "append", "update"];
 const TAR_OTHER_LONG = ["list", "extract", "get", "diff", "compare", "delete", "catenate", "concatenate"];
+const TAR_LONG_OPTIONS = (`
+absolute-names acls add-file after-date anchored append atime-preserve auto-compress
+backup block-number blocking-factor catenate check-device check-links checkpoint checkpoint-action
+clamp-mtime compare compress concatenate confirmation create delay-directory-restore delete dereference
+diff directory exclude exclude-backups exclude-caches exclude-caches-all exclude-caches-under exclude-from
+exclude-ignore exclude-ignore-recursive exclude-tag exclude-tag-all exclude-tag-under exclude-vcs exclude-vcs-ignores
+extract file files-from force-local format full-time get gnu group group-map gunzip gzip hard-dereference
+help hole-detection ignore-case ignore-command-error ignore-failed-read ignore-zeros incremental index-file info-script
+interactive keep-directory-symlink keep-newer-files keep-old-files label level list listed-incremental lzip lzma lzop
+mode mtime multi-volume new-volume-script newer newer-mtime no-acls no-anchored no-auto-compress no-check-device
+no-delay-directory-restore no-ignore-case no-ignore-command-error no-null no-overwrite-dir no-quote-chars no-recursion
+no-same-owner no-same-permissions no-seek no-selinux no-unquote no-verbatim-files-from no-wildcards
+no-wildcards-match-slash no-xattrs none null numeric-owner occurrence old-archive oldgnu one-file-system one-top-level
+overwrite overwrite-dir owner owner-map pax pax-option portability posix preserve-order preserve-permissions
+quote-chars quoting-style raw read-full-records record-size recursion recursive-unlink remove-files replace restrict
+rmt-command rsh-command same-order same-owner same-permissions seek selinux show-defaults show-omitted-dirs
+show-snapshot-field-ranges show-stored-names show-transformed-names skip-old-files sort sparse sparse-version star
+starting-file strip-components suffix tape-length test-label to-command to-stdout totals touch transform uncompress
+ungzip unlink-first unquote update usage use-compress-program ustar utc verbose verbatim-files-from verify version volno-file
+warning wildcards wildcards-match-slash xattrs xattrs-exclude xattrs-include xform xz zstd
+`).trim().split(/\s+/);
 
 function tarBundleMode(letters: string): PowerShellArchiveTraversal | null {
   for (const letter of letters) {
@@ -102,19 +146,42 @@ function tarBundleMode(letters: string): PowerShellArchiveTraversal | null {
   return null;
 }
 
+// Long options whose value may be the next word (`--file -t` names an archive `-t`).
+const TAR_LONG_VALUE_OPTIONS = [
+  "add-file", "after-date", "blocking-factor", "checkpoint-action", "directory", "exclude", "exclude-from", "exclude-ignore",
+  "exclude-ignore-recursive", "exclude-tag", "exclude-tag-all", "exclude-tag-under", "file", "files-from", "format", "group",
+  "group-map", "hole-detection", "index-file", "info-script", "label", "level", "listed-incremental", "mode", "mtime",
+  "new-volume-script", "newer", "newer-mtime", "no-quote-chars", "owner", "owner-map", "pax-option", "quote-chars",
+  "quoting-style", "record-size", "rmt-command", "rsh-command", "sort", "sparse-version", "starting-file", "strip-components",
+  "suffix", "tape-length", "to-command", "transform", "use-compress-program", "volno-file", "warning", "xattrs-exclude",
+  "xattrs-include", "xform",
+];
+
 // tar rejects two modes, so the first static mode decides; without one, any dynamic word may carry it.
+// A word that may be an option's value is not read as a mode unless it creates (failing closed).
 function tarTraversal(args: readonly PowerShellTraversalArgument[]): PowerShellArchiveTraversal {
   let dynamic = false;
+  let value: "none" | "known" | "maybe" = "none";
   for (const [index, argument] of args.entries()) {
     const word = nativeWord(argument);
+    const previous = value;
+    value = "none";
     if (word === null) { dynamic = true; continue; }
+    if (previous === "known") continue;
     let mode: PowerShellArchiveTraversal | null = null;
     if (word.startsWith("--")) {
-      const name = word.slice(2).split("=")[0]!.toLowerCase();
-      if (name.length >= 3 && TAR_CREATE_LONG.some((option) => option.startsWith(name))) mode = "definite";
-      else if (name.length >= 3 && TAR_OTHER_LONG.some((option) => option.startsWith(name))) mode = "none";
-    } else if (word.startsWith("-")) mode = tarBundleMode(word.slice(1));
-    else if (index === 0) mode = tarBundleMode(word);
+      const [spelled, inline] = [word.slice(2).split("=")[0]!.toLowerCase(), word.includes("=")];
+      const matches = TAR_LONG_OPTIONS.includes(spelled) ? [spelled] : TAR_LONG_OPTIONS.filter(option => option.startsWith(spelled));
+      // An unknown or ambiguous name (Windows tar is bsdtar) may carry the mode or take the next word as its value.
+      if (spelled.length === 0 || matches.length !== 1) { dynamic = true; value = inline ? "none" : "maybe"; continue; }
+      if (TAR_CREATE_LONG.includes(matches[0]!)) mode = "definite";
+      else if (TAR_OTHER_LONG.includes(matches[0]!)) mode = "none";
+      else if (!inline && TAR_LONG_VALUE_OPTIONS.includes(matches[0]!)) value = "known";
+    } else if (word.startsWith("-") && word.length > 1) {
+      mode = tarBundleMode(word.slice(1));
+      if (mode === null && TAR_VALUE_LETTERS.includes(word.at(-1)!)) value = "known";
+    } else if (index === 0) mode = tarBundleMode(word);
+    if (mode === "none" && previous === "maybe") { dynamic = true; continue; }
     if (mode !== null) return mode;
   }
   return dynamic ? "undecidable" : "none";
@@ -126,9 +193,10 @@ function sevenZipTraversal(args: readonly PowerShellTraversalArgument[]): PowerS
     const word = nativeWord(argument);
     if (word === null) return "undecidable";
     if (word.startsWith("-")) continue;
-    return /^[au]$/i.test(word) ? "definite" : "none";
+    if (/^[au]$/i.test(word)) return "definite";
+    return /^[lxet]$/i.test(word) ? "none" : "undecidable";
   }
-  return "none";
+  return "undecidable";
 }
 
 function zipTraversal(args: readonly PowerShellTraversalArgument[]): PowerShellArchiveTraversal {
@@ -136,7 +204,7 @@ function zipTraversal(args: readonly PowerShellTraversalArgument[]): PowerShellA
   for (const argument of args) {
     const word = nativeWord(argument);
     if (word === null) { dynamic = true; continue; }
-    if (/^-[0-9A-Za-z]*[rR][0-9A-Za-z]*$/.test(word) || /^--recurse-pat(?:hs|terns)$/i.test(word)) return "definite";
+    if (/^-[0-9A-Za-z]*[rR][0-9A-Za-z]*(?::.*)?$/.test(word) || /^--recurse-pat(?:hs|terns)$/i.test(word)) return "definite";
   }
   return dynamic ? "undecidable" : "none";
 }

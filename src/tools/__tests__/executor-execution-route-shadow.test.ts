@@ -1,4 +1,6 @@
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
+import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
+import * as executionRouter from "../../permissions/execution-router.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -124,6 +126,44 @@ function makeExecutor(
 }
 
 describe("execution route shadow metadata", () => {
+  it("refuses a host decision rebuilt to a disposable route before execution", async () => {
+    __resetActiveSandboxCapabilityForTest();
+    setShellSandboxRequestedAtBoot(false);
+    const dir = mkdtempSync(join(tmpdir(), "ave-route-mismatch-"));
+    const routes = vi.spyOn(executionRouter, "buildHostShellExecutionRoute");
+    const consume = vi.spyOn(executionRouter, "consumeExecutionGrantForShellInvocation");
+    const hooks = {
+      runPreToolUse: vi.fn(async () => {
+        activateDisposableCapability();
+        return { decision: "allow" as const, reason: "ready", results: [] };
+      }),
+      runPostToolUse: vi.fn(async () => ({ decision: "allow" as const, reason: "ready", results: [] })),
+      runPermissionRequest: vi.fn(async () => ({ decision: "allow" as const, reason: "ready", results: [] })),
+    };
+    try {
+      const { executor } = makeExecutor(dir, undefined, hooks);
+      const permissions = (executor as unknown as { permissionManager: PermissionManager }).permissionManager;
+      const checked = vi.spyOn(permissions, "checkDetailed");
+      const [result] = await executor.executeAll(
+        [{ id: "tu-route-mismatch", name: "bash", input: { command: "printf mismatch > marker" } }],
+        { sessionId: "sess-route-mismatch", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
+      );
+      expect(checked.mock.calls[0]?.[4]?.shellExecution?.pathPolicyRelaxations).toEqual([]);
+      expect(routes.mock.results[0]?.value.plan.route).toBe("host");
+      expect(routes.mock.results.at(-1)?.value.plan.route).toBe("disposable-container");
+      expect(hooks.runPreToolUse).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ is_error: true });
+      expect(result?.content).toContain(PATH_POLICY_DECISION_MISMATCH_ERROR);
+      expect(existsSync(join(dir, "marker"))).toBe(false);
+      expect(consume).not.toHaveBeenCalled();
+      expect(operatorHarness.consumeCount).toBe(0);
+      expect(operatorHarness.acquireCount).toBeGreaterThan(0);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("keeps the existing dynamic-path denial while refusing automatic host selection", async () => {
     __resetActiveSandboxCapabilityForTest();
     setShellSandboxRequestedAtBoot(false);

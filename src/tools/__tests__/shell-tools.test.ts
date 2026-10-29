@@ -818,7 +818,6 @@ describe("powershell tool", () => {
       ["-Rec -Forc", [psParameter("Rec"), psParameter("Forc")]],
       ["-Recur -For", [psParameter("Recur"), psParameter("For")]],
       ["-Recurs:$true -Fo", [psParameter("Recurs", psLiteral("true", "$true")), psParameter("Fo")]],
-      ["-Depth 1 -Force", [psParameter("Depth"), psLiteral("1"), psParameter("Force")]],
     ] as const)("blocks recursive forced deletion spelled %s", (_, parameters) => {
       expect(removal(...parameters)).toBe("recursive forced deletion is not allowed");
     });
@@ -828,6 +827,8 @@ describe("powershell tool", () => {
       ["-Recu:$false -Forc", [psParameter("Recu", psLiteral("false", "$false")), psParameter("Forc")]],
       ["-Recurse -f (ambiguous with -Filter)", [psParameter("Recurse"), psParameter("f")]],
       ["-Force alone", [psParameter("Force")]],
+      // Remove-Item has no -Depth in PowerShell 5.1 or 7, so binding fails before anything is removed.
+      ["-Depth 1 -Force", [psParameter("Depth"), psLiteral("1"), psParameter("Force")]],
     ] as const)("does not report forced recursive deletion for %s", (_, parameters) => {
       expect(removal(...parameters)).toBeNull();
     });
@@ -843,6 +844,20 @@ describe("powershell tool", () => {
         ["Get-ChildItem -Recurse dir", [command("Get-ChildItem", psParameter("Recurse"), psLiteral("dir"))]],
         ["gci -r dir", [command("gci", psParameter("r"), psLiteral("dir"))]],
         ["gci -s dir", [command("gci", psParameter("s"), psLiteral("dir"))]],
+        ["gci -d 1 src", [command("gci", psParameter("d"), psLiteral("1"), psLiteral("src"))]],
+        ...["--cr", "--ap", "--up"].map(option => [`tar ${option} x.tar src`, [command("tar", psLiteral(option), psLiteral("x.tar"), psLiteral("src"))]] as const),
+        ...["/si", "-si", "/s/i", "-s"].map(option => [`findstr ${option} term src`, [command("findstr", option.startsWith("-") ? psParameter(option.slice(1)) : psLiteral(option), psLiteral("term"), psLiteral("src"))]] as const),
+        ["findstr -sic:probe src", [command("findstr", psParameter("sic", psLiteral("probe")), psLiteral("src"))]],
+        ["findstr /sic:probe src", [command("findstr", psLiteral("/sic:probe"), psLiteral("src"))]],
+        ...["/se", "/s/e", "/t"].map(option => [`xcopy src out ${option}`, [command("xcopy", psLiteral("src"), psLiteral("out"), psLiteral(option))]] as const),
+        ["xcopy src out /s/d:01-01-2020", [command("xcopy", psLiteral("src"), psLiteral("out"), psLiteral("/s/d:01-01-2020"))]],
+        ...["/s/m", "/e/d", "/e/x", "/s/-y"].map(option => [`xcopy src out ${option}`, [command("xcopy", psLiteral("src"), psLiteral("out"), psLiteral(option))]] as const),
+        ["findstr /s/offline term src", [command("findstr", psLiteral("/s/offline"), psLiteral("term"), psLiteral("src"))]],
+        ...["--lz4", "--verb", "--bzip2"].map(option => [`tar ${option} -cf x.tar src`, [command("tar", psLiteral(option), psParameter("cf"), psLiteral("x.tar"), psLiteral("src"))]] as const),
+        ["zip -r:$x a.zip src", [command("zip", psParameter("r", psDynamic("$x")), psLiteral("a.zip"), psLiteral("src"))]],
+        ["tar --file -t -c src", [command("tar", psLiteral("--file"), psParameter("t"), psParameter("c"), psLiteral("src"))]],
+        ["tar -f -t -c src", [command("tar", psParameter("f"), psParameter("t"), psParameter("c"), psLiteral("src"))]],
+        ...["-s", "-e", "-mir"].map(option => [`robocopy src out ${option}`, [command("robocopy", psLiteral("src"), psLiteral("out"), psParameter(option.slice(1)))]] as const),
         ["Get-ChildItem -Depth 2 dir", [command("Get-ChildItem", psParameter("Depth"), psLiteral("2"), psLiteral("dir"))]],
         ["Copy-Item -Recurse:$true dir dest", [command("Copy-Item", psParameter("Recurse", psLiteral("true", "$true")), psLiteral("dir"), psLiteral("dest"))]],
         ["Copy-Item -Recurse:$x dir dest", [command("Copy-Item", psParameter("Recurse", psDynamic("$x")), psLiteral("dir"), psLiteral("dest"))]],
@@ -874,6 +889,15 @@ describe("powershell tool", () => {
 
       it.each([
         ["tar -tf x.tar", [command("tar", psParameter("tf"), psLiteral("x.tar"))]],
+        ...["ad", "Directory"].map(option => [`gci -${option} src`, [command("gci", psParameter(option), psLiteral("src"))]] as const),
+        ["gc notes.txt -re 10", [command("gc", psLiteral("notes.txt"), psParameter("re"), psLiteral("10"))]],
+        ["gc f.csv -De ','", [command("gc", psLiteral("f.csv"), psParameter("De"), psLiteral(","))]],
+        ["Copy-Item src -De out", [command("Copy-Item", psLiteral("src"), psParameter("De"), psLiteral("out"))]],
+        ["Remove-Item src -d", [command("Remove-Item", psLiteral("src"), psParameter("d"))]],
+        ...["--c", "--a", "--u"].map(option => [`tar ${option} x.tar`, [command("tar", psLiteral(option), psLiteral("x.tar"))]] as const),
+        ...["t", "e", "b", "d", "h", "i", "rn", "unknown"].map(mode => [`7z ${mode} x.7z`, [command("7z", psLiteral(mode), psLiteral("x.7z"))]] as const),
+        ...[["xcopy", "-s"], ["xcopy", "/exclude:s"], ["robocopy", "/se"], ["findstr", "/c:s"], ["xcopy", "/exclude:C:/lists/exclude.txt"],
+          ["findstr", "/c:a/s"], ["findstr", "/d:C:/src"], ["xcopy", "/noclone"], ["xcopy", "/sparse"], ["xcopy", "/-sparse"], ["findstr", "/off"]].map(([name, option]) => [`${name} ${option}`, [command(name!, psLiteral(option!))]] as const),
         ["tar -xf x.tar", [command("tar", psParameter("xf"), psLiteral("x.tar"))]],
         ["7z l x.7z", [command("7z", psLiteral("l"), psLiteral("x.7z"))]],
         ["7z x x.7z", [command("7z", psLiteral("x"), psLiteral("x.7z"))]],

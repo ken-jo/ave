@@ -2324,6 +2324,13 @@ export async function runToolInvocation(
           return executionRouteGrant;
         };
       }
+    } else if (executionRoutePlan !== undefined && hostShellToolName !== undefined) {
+      finalizeExecutionRouteGrant = async () => {
+        await updateExecutionRoute(executionRouteRequirementKind);
+        const router = await import("../permissions/execution-router.js");
+        router.assertDecidedPathPolicyRelaxations(executionRoutePlan!, decidedPathPolicyRelaxations);
+        return undefined;
+      };
     }
 
     return await executeAuthorizedToolInvocation({
