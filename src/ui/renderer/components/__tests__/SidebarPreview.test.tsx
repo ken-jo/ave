@@ -104,6 +104,17 @@ describe("sidebar preview cards", () => {
     expect(screen.getByRole("tooltip").textContent).not.toContain("Working");
     expect(screen.getByRole("tooltip").textContent).not.toMatch(/Agent responding|에이전트 응답/);
   });
+  it("retains a loaded terminal command across display prop refreshes", async () => {
+    const loadPreview = async () => ({ kind: "terminal" as const, title: "Terminal 1", command: "make build" });
+    const content = (title: string) => <SidebarPreviewProvider><SidebarPreviewTrigger preview={{ kind: "terminal", title }} loadPreview={loadPreview}><button>Terminal</button></SidebarPreviewTrigger></SidebarPreviewProvider>;
+    const { rerender } = render(content("Terminal 1"));
+    await act(async () => fireEvent.focus(screen.getByText("Terminal")));
+    expect(screen.getByRole("tooltip").textContent).toContain("make build");
+    rerender(content("Terminal 1"));
+    expect(screen.getByRole("tooltip").textContent).toContain("make build");
+    rerender(content("Terminal 2"));
+    expect(screen.getByRole("tooltip").textContent).not.toContain("make build");
+  });
   it("removes the native tooltip while preserving its accessible name", () => {
     render(<SidebarPreviewProvider><SidebarPreviewTrigger preview={conversation}><button title="Build review">Conversation</button></SidebarPreviewTrigger></SidebarPreviewProvider>);
     const entry = screen.getByRole("button", { name: "Build review" });

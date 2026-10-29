@@ -64,7 +64,9 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
     if (!current || current.id !== id) return;
     const nextData = data.kind === "browser" && current.data.kind === "browser"
       ? { ...data, imageDataUrl: data.imageDataUrl ?? (data.url === current.data.url ? current.data.imageDataUrl : undefined) }
-      : data;
+      : data.kind === "terminal" && current.data.kind === "terminal"
+        ? { ...data, command: data.command ?? (data.title === current.data.title ? current.data.command : undefined) }
+        : data;
     const next = { ...current, data: nextData };
     activeRef.current = next;
     setActive(next);
