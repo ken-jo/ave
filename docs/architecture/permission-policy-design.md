@@ -1962,7 +1962,18 @@ app's save, any other mutation) records no identity and shows no diff. The diff
 reads only through a non-following open whose descriptor has the recorded
 identity; it never relies on repeated path checks, so a parent swapped for a
 link at any point, or a save that replaced the inode, shows no diff until the
-agent writes the path again. Deleting a file does not
+agent writes the path again. The baseline (the text before the write) is
+captured only when the read provably came from the file the path names in its
+physical parent: a non-following open whose descriptor's identity equals
+`lstat` of the path before and after the read, with the parent's identity and
+realpath unchanged across it; otherwise no baseline is stored and the change
+has no diff. A parent swapped and swapped back entirely between two of those
+checks is not detectable without `openat`. That residual is accepted because
+review text is display-only: it leaves main only through the terminal's
+fileReviews IPC to the renderer views that draw it, and no tool result, model
+context, observation feed or `terminal_read` path reads it (a static test pins
+this, and the view's reference controls are disabled). At worst the user sees,
+in their own app, text of a file they can already read. Deleting a file does not
 erase its historical evidence. Evidence lives only in memory for the running
 application; restarting clears it. Command use is inferred from command blocks and static
 file contents, rather than proof of operating-system file opens.

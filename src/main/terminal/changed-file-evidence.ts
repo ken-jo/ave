@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath, stat, type FileHandle } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { TerminalBlockSummary } from "../../shared/terminal-blocks.js";
 import type { TerminalFileReviewSnapshot, TerminalExecutionWarning, TerminalReviewFile } from "../../shared/terminal-file-review.js";
 import type { TurnReviewFile } from "../../shared/turn-change-review.js";
@@ -100,15 +100,6 @@ function textBytes(bytes: Buffer): string | undefined {
   return Buffer.from(text, "utf8").equals(bytes) ? text : undefined;
 }
 
-/** Whether `path` still names itself physically: no component, the parents included, resolves through a link. */
-async function stillPhysical(path: string): Promise<boolean> {
-  try { return await realpath(path) === path; }
-  catch (error) {
-    if (missing(error) || isTerminalReviewUnavailable(error)) return false;
-    throw error;
-  }
-}
-
 /** Opens without following a final link; `null` for an absent file, `undefined` for one that cannot be read. */
 async function openNoFollow(path: string): Promise<FileHandle | null | undefined> {
   return open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
@@ -131,27 +122,43 @@ async function readOpenedText(handle: FileHandle, opened: BigIntStats): Promise<
   return textBytes(bytes.subarray(0, size));
 }
 
+/** A parent directory's identity and physical path, or undefined when it is not a physical directory now. */
+async function physicalDirectory(path: string): Promise<{ dev: bigint; ino: bigint } | undefined> {
+  const info = await lstat(path, { bigint: true }).catch((error: unknown) => { if (missing(error) || isTerminalReviewUnavailable(error)) return undefined; throw error; });
+  if (!info?.isDirectory()) return undefined;
+  const real = await realpath(path).catch((error: unknown) => { if (missing(error) || isTerminalReviewUnavailable(error)) return undefined; throw error; });
+  return real === path ? { dev: info.dev, ino: info.ino } : undefined;
+}
+
 /**
- * Bounded native text capture of a physical path, used at the successful mutation boundary and for command inference.
- * O_NOFOLLOW guards only the last component, so the path must also resolve to itself before the open and after it,
- * with the opened file the one the path names. Diffs never use this: they read only the recorded file identity.
+ * Bounded native text capture of a physical path: the baseline at a successful mutation boundary, and command
+ * inference. Text is returned only when the read provably came from the file the path names in its physical parent:
+ * the open does not follow a final link and its descriptor is fstat'd; that descriptor's identity equals lstat(path)
+ * before and after the read; and the parent's identity and realpath are unchanged across the read. Anything else
+ * gives no text, so a baseline is not stored and the change has no diff. A parent swapped and swapped back entirely
+ * between two of these checks is not detectable without openat; the residual is documented as display-only.
+ * Diffs never use this for current content: they read only the recorded file identity.
  */
 export async function readTerminalReviewText(path: string): Promise<string | null | undefined> {
   const info = await lstat(path, { bigint: true }).catch((error: unknown) => { if (missing(error)) return null; if (isTerminalReviewUnavailable(error)) return undefined; throw error; });
   if (info === null) return null;
   if (info === undefined) return undefined;
   if (!info.isFile() || info.size > BigInt(MAX_INFERENCE_BYTES)) return undefined;
-  if (!await stillPhysical(path)) return undefined;
+  const parent = dirname(path);
+  const parentBefore = await physicalDirectory(parent);
+  if (!parentBefore) return undefined;
   const handle = await openNoFollow(path);
   if (handle === null) return null;
   if (handle === undefined) return undefined;
   try {
     const opened = await handle.stat({ bigint: true });
     if (opened.dev !== info.dev || opened.ino !== info.ino) return undefined;
-    if (!await stillPhysical(path)) return undefined;
+    const text = await readOpenedText(handle, opened);
     const named = await lstat(path, { bigint: true }).catch((error: unknown) => { if (missing(error) || isTerminalReviewUnavailable(error)) return null; throw error; });
     if (!named || named.dev !== opened.dev || named.ino !== opened.ino) return undefined;
-    return await readOpenedText(handle, opened);
+    const parentAfter = await physicalDirectory(parent);
+    if (!parentAfter || parentAfter.dev !== parentBefore.dev || parentAfter.ino !== parentBefore.ino) return undefined;
+    return text;
   } catch (error) {
     if (isTerminalReviewUnavailable(error)) return undefined;
     throw error;

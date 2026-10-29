@@ -268,6 +268,10 @@ describe("TerminalChangesView", () => {
     const detail = await within(changes).findByTestId("turn-change-detail");
     expect(detail).toHaveTextContent("run.sh");
     expect(detail).toHaveTextContent("echo after");
+    // Display only: no file or hunk reference can carry this text into a chat (and so to the model).
+    const controls = within(detail).getAllByRole("button");
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) expect(control).toBeDisabled();
     // The detection limits are an info tooltip beside the caption, not a paragraph under the diff.
     expect(within(changes).getByTestId("terminal-changes-advisory")).toHaveAccessibleName(t("terminalFileReview.advisory"));
     expect(changes.textContent).not.toContain(t("terminalFileReview.advisory"));

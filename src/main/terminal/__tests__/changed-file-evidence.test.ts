@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { link, mkdtemp, mkdir, open as openFile, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { readdir, readFile as readSource } from "node:fs/promises";
 import { TerminalFileEvidence, inferExecutedPaths, readTerminalReviewText, writtenFileIdentity, type WrittenFileIdentity } from "../changed-file-evidence.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
 import { reviewChange as change } from "../../../__tests__/support/terminal-session-fixtures.js";
@@ -365,6 +366,79 @@ describe("host execution provenance", () => {
     expect(change((await evidence.snapshot(directory, [block("./scripts/run.sh", 2)])).files[0])).toEqual({ operation: "modify", hunks: [["before\n", "agent\n"]] });
   });
 
+  describe("baseline capture under a parent swap", () => {
+    let outside: string;
+    let parent: string;
+    let moved: string;
+    let swapped: boolean;
+    const swap = async (toLink: boolean): Promise<void> => {
+      if (toLink === swapped) return;
+      if (toLink) { await rename(parent, moved); await symlink(outside, parent); }
+      else { await unlink(parent); await rename(moved, parent); }
+      swapped = toLink;
+    };
+    beforeEach(async () => {
+      outside = await realpath(await mkdtemp(join(tmpdir(), "ave-file-evidence-host-")));
+      await writeFile(join(outside, "run.sh"), "host secret\n");
+      parent = join(directory, "scripts");
+      moved = join(directory, "scripts.real");
+      swapped = false;
+    });
+    afterEach(async () => {
+      fsHooks.before = null;
+      await swap(false);
+      await rm(outside, { recursive: true, force: true });
+    });
+
+    it("takes no baseline when path checks see the real parent while the lstat and open see a link", async () => {
+      const path = await file("scripts/run.sh", "user original\n");
+      fsHooks.before = async (call, target) => { if (target === path || target === parent) await swap(call !== "realpath"); };
+      const before = await readTerminalReviewText(path);
+      fsHooks.before = null;
+      await swap(false);
+      expect(before).toBeUndefined();
+      // The write is recorded without a baseline, so its review never carries the outside file as old text.
+      const identity = await writeOwned(path, "agent\n");
+      await evidence.recordWrite("session-a", path, before, identity);
+      const snapshot = await evidence.snapshot(directory, [block("./scripts/run.sh")]);
+      expect(snapshot.files.map(item => item.path)).toEqual([path]);
+      expect(snapshot.files[0]?.review).toBeUndefined();
+      expect(JSON.stringify(snapshot)).not.toContain("host secret");
+    });
+
+    it("takes no baseline when the parent is swapped after the open, before the read is confirmed", async () => {
+      const path = await file("scripts/run.sh", "user original\n");
+      let opened = false;
+      fsHooks.before = async (call, target) => {
+        if (call === "open" && target === path) { opened = true; return; }
+        if (opened && call === "lstat" && target === path) await swap(true);
+      };
+      expect(await readTerminalReviewText(path)).toBeUndefined();
+    });
+
+    it("takes no baseline when the parent directory is replaced by another real directory during the read", async () => {
+      const path = await file("scripts/run.sh", "user original\n");
+      const other = join(directory, "other");
+      await mkdir(other);
+      await writeFile(join(other, "run.sh"), "host secret\n");
+      let opened = false;
+      fsHooks.before = async (call, target) => {
+        if (call === "open" && target === path) { opened = true; return; }
+        if (opened && call === "lstat" && target === parent) {
+          opened = false;
+          await rename(parent, join(directory, "scripts.old"));
+          await rename(other, parent);
+        }
+      };
+      expect(await readTerminalReviewText(path)).toBeUndefined();
+    });
+
+    it("still takes a baseline when nothing moves", async () => {
+      const path = await file("scripts/run.sh", "user original\n");
+      expect(await readTerminalReviewText(path)).toBe("user original\n");
+    });
+  });
+
   it("shows no diff once a save replaces the recorded inode, until the agent writes the path again", async () => {
     const path = await file("run.sh", "agent\n");
     await evidence.recordWrite("session-a", path, "before\n", await heldIdentity(path));
@@ -459,5 +533,51 @@ describe("host execution provenance", () => {
     const oversized = await file("large", "x".repeat(1_048_577));
     expect(await readTerminalReviewText(oversized)).toBeUndefined();
     expect(await readTerminalReviewText(join(directory, "absent"))).toBeNull();
+  });
+});
+
+describe("terminal review text is display-only", () => {
+  // The review text (old and new file text) leaves main only through the fileReviews IPC, to renderer modules that draw
+  // it. No tool result, model context, observation feed or terminal_read path reads it: those modules never call the
+  // snapshot, the channel or the renderer review store, and the writers that import the evidence only record writes.
+  const root = join(__dirname, "../../..");
+  async function sources(): Promise<Map<string, string>> {
+    const found = new Map<string, string>();
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) { if (entry.name !== "__tests__") await walk(path); }
+        else if (/\.(?:ts|tsx)$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) found.set(relative(root, path).split("\\").join("/"), await readSource(path, "utf8"));
+      }
+    };
+    await walk(root);
+    return found;
+  }
+  const users = (files: Map<string, string>, pattern: RegExp) => [...files].filter(([, text]) => pattern.test(text)).map(([path]) => path).sort();
+
+  it("has one producer, one channel and only drawing consumers", async () => {
+    const files = await sources();
+    expect(files.size).toBeGreaterThan(500);
+    expect(users(files, /terminalFileEvidence\.snapshot\(/)).toEqual(["ipc/domains/terminal.ts"]);
+    expect(users(files, /\bfileReviews\b/)).toEqual(["contract/app-contract.ts", "ipc/domains/terminal.ts", "preload/terminal-api-surface.ts"]);
+    expect(users(files, /\blistFileReviews\b/)).toEqual(["preload/terminal-api-surface.ts", "shared/terminal-session.ts",
+      "ui/renderer/components/TerminalChangeAnnotations.tsx", "ui/renderer/preview/terminal-file-review.ts"]);
+    expect(users(files, /from "[./]*(?:shared|preview)\/terminal-file-review\.js"/)).toEqual(["main/terminal/changed-file-evidence.ts",
+      "ui/renderer/components/ChatSidePanel.tsx", "ui/renderer/components/MainSurfacePanels.tsx", "ui/renderer/components/SidePanelTerminal.tsx",
+      "ui/renderer/components/TerminalChangeAnnotations.tsx", "ui/renderer/components/TerminalChangesView.tsx", "ui/renderer/components/TerminalFileReviewBadge.tsx",
+      "ui/renderer/preview/terminal-file-review.ts"]);
+    expect(users(files, /from "\.\/TerminalChangesView\.js"/)).toEqual(["ui/renderer/components/MainSurfacePanels.tsx", "ui/renderer/components/SidePanelTerminal.tsx"]);
+  });
+
+  it("lets the writers that import the evidence only record writes", async () => {
+    const files = await sources();
+    const importers = users(files, /changed-file-evidence\.js"/).filter(path => path !== "ipc/domains/terminal.ts");
+    expect(importers).toEqual(["memory/code-checkpoints.ts", "observation/document-adapter.ts", "tools/file-tools.ts", "tools/guarded-file-transfer.ts"]);
+    for (const path of importers) {
+      const calls = [...files.get(path)!.matchAll(/terminalFileEvidence\.(\w+)/g)].map(match => match[1]);
+      expect(new Set(calls), path).toEqual(new Set(["recordWrite"]));
+    }
+    // The baseline read feeds only the ledger.
+    expect(users(files, /readTerminalReviewText\(/)).toEqual(["main/terminal/changed-file-evidence.ts", "memory/code-checkpoints.ts"]);
   });
 });
