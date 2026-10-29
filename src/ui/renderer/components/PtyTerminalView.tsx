@@ -265,7 +265,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
 
   return (
     <div
-      className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
+      className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-host-identity">
@@ -291,8 +291,11 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
           onSession={setSession}
         />
       ) : null}
-      {api.terminal && session ? <TerminalFileReview key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} /> : null}
-      <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" />
+      {/* Review UI overlays this output area; the xterm host is its only in-flow child, so no rows are taken. */}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
+        <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
+        {api.terminal && session ? <TerminalFileReview key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} /> : null}
+      </div>
     </div>
   );
 }

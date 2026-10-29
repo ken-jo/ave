@@ -1905,11 +1905,19 @@ an advisory inline warning when a command uses a file with concrete successful
 agent-write evidence from this application session. Direct scripts and sourced
 files, target recipes in makefiles, package scripts and their referenced scripts,
 and physical local-bin entry points are matched conservatively. The command
-continues without a confirmation dialog. Unresolved dynamic indirection is
-disclosed; subprocess writes without concrete path evidence are not claimed
-covered. Provenance is advisory and is never permission or terminal authority.
+continues without a confirmation dialog. Only a positive match to at least one
+agent-changed file warns: commands with no file reference, shell-integration and
+prompt internals, and unresolved dynamic indirection never do. Each terminal
+shows at most one warning, a single-line strip overlaid on the top of its output
+area that never takes rows from the terminal. It belongs to the latest command:
+the next command replaces it with its own strip when it matches and clears it
+otherwise, and dismissing it hides it until the next match. The changed-file panel carries one
+static note that detection is best-effort; subprocess writes without concrete
+path evidence and dynamic indirection are not claimed covered. Provenance is
+advisory and is never permission or terminal authority.
 
-The pending-review badge opens the changed-file panel. Each entry shows its
+The pending-review badge appears once, in the terminal's header or tab, and
+opens the changed-file panel beside the output. Each entry shows its
 latest known command use or that no execution use was observed. Users can open
 a diff and mark one or all entries reviewed. Review decisions bind the observed
 content hash: another content revision becomes pending again. Canonical physical

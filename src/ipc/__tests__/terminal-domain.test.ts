@@ -24,7 +24,7 @@ const owners = new Map<string, number | null>();
 const internalIds = new Set<string>();
 const writeTerminal = vi.fn(() => ({ ok: true }));
 const killTerminal = vi.fn();
-const reviewSnapshot = vi.fn(async () => ({ files: [{ path: "/work/script.sh", hash: "current" }], warnings: [] }));
+const reviewSnapshot = vi.fn(async () => ({ cwd: "/work", latestBlockId: null, files: [{ path: "/work/script.sh", hash: "current" }], warnings: [] }));
 const reviewFiles = vi.fn();
 vi.mock("../../main/terminal/changed-file-evidence.js", () => ({
   terminalFileEvidence: { snapshot: reviewSnapshot, review: reviewFiles },
@@ -175,7 +175,7 @@ describe("host file review boundary", () => {
     currentTracker = tracker;
     reviewSnapshot.mockImplementationOnce(async () => {
       currentTracker = undefined;
-      return { files: [], warnings: [] };
+      return { cwd: "/work", latestBlockId: null, files: [], warnings: [] };
     });
     expect(await handlers.get(CHANNELS.terminal.fileReviews)!(from(windowOne), ref)).toEqual({ ok: false, error: "stale-terminal-session" });
   });

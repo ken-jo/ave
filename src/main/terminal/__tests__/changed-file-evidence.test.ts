@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TerminalFileEvidence, readTerminalReviewText } from "../changed-file-evidence.js";
+import { TerminalFileEvidence, inferExecutedPaths, readTerminalReviewText } from "../changed-file-evidence.js";
 import type { TerminalBlockSummary } from "../../../shared/terminal-blocks.js";
 
 let directory: string;
@@ -40,7 +40,7 @@ describe("host execution provenance", () => {
     await changed("changed.sh");
     await file("user.sh");
     const result = await evidence.snapshot(directory, [block("./user.sh")]);
-    expect(result.warnings[0]?.files).toEqual([]);
+    expect(result.warnings).toEqual([]);
     expect(result.files).toHaveLength(1);
     expect(result.files[0]?.lastUsed).toBeNull();
   });
@@ -48,7 +48,7 @@ describe("host execution provenance", () => {
   it("does not call a script argument to a data command an execution", async () => {
     await changed("run.sh");
     const result = await evidence.snapshot(directory, [block("cat ./run.sh")]);
-    expect(result.warnings[0]?.files).toEqual([]);
+    expect(result.warnings).toEqual([]);
   });
 
   it("resolves symlink aliases to the physical changed path", async () => {
@@ -105,20 +105,21 @@ describe("host execution provenance", () => {
 
   it("discloses dynamic shell indirection without pretending to identify the target", async () => {
     await changed("run.sh");
-    const result = await evidence.snapshot(directory, [block("bash \"$SCRIPT\"")]);
-    expect(result.warnings[0]).toMatchObject({ files: [], unresolved: true });
+    expect(await inferExecutedPaths("bash \"$SCRIPT\"", directory)).toEqual({ paths: [], unresolved: true });
+    expect((await evidence.snapshot(directory, [block("bash \"$SCRIPT\"")])).warnings).toEqual([]);
   });
 
   it("discloses combined shell command-string flags", async () => {
     await changed("run.sh");
-    const result = await evidence.snapshot(directory, [block('bash -lc "exec ./run.sh"')]);
-    expect(result.warnings[0]).toMatchObject({ files: [], unresolved: true });
+    expect(await inferExecutedPaths('bash -lc "exec ./run.sh"', directory)).toEqual({ paths: [], unresolved: true });
+    expect((await evidence.snapshot(directory, [block('bash -lc "exec ./run.sh"')])).warnings).toEqual([]);
   });
 
   it("discloses dynamic make recipes and does not claim unrelated files", async () => {
     const makefile = await changed("Makefile", "build:\n\tbash $(SCRIPT)\n");
     await changed("run.sh");
-    expect((await evidence.snapshot(directory, [block("make build")])).warnings[0]).toMatchObject({ files: [makefile], unresolved: true });
+    expect(await inferExecutedPaths("make build", directory)).toEqual({ paths: [makefile], unresolved: true });
+    expect((await evidence.snapshot(directory, [block("make build")])).warnings).toEqual([{ blockId: 1, command: "make build", files: [makefile] }]);
   });
 
   it("keeps changes pending until their exact content hash is reviewed", async () => {
@@ -175,17 +176,17 @@ describe("host execution provenance", () => {
 
   it("does not retroactively attribute commands preceding an agent write", async () => {
     await changed("run.sh");
-    expect((await evidence.snapshot(directory, [block("./run.sh", 1, 1)])).warnings[0]?.files).toEqual([]);
+    expect((await evidence.snapshot(directory, [block("./run.sh", 1, 1)])).warnings).toEqual([]);
   });
 
   it("keeps command evidence scoped to terminal incarnations", async () => {
     await file("run.sh");
     const command = block("./run.sh");
-    expect((await evidence.snapshot(directory, [command], "first")).warnings[0]?.files).toEqual([]);
+    expect((await evidence.snapshot(directory, [command], "first")).warnings).toEqual([]);
     const path = join(directory, "run.sh");
     await evidence.recordWrite("session-a", path);
     expect((await evidence.snapshot(directory, [command], "second")).warnings[0]?.files).toEqual([path]);
-    expect((await evidence.snapshot(directory, [command], "first")).warnings[0]?.files).toEqual([]);
+    expect((await evidence.snapshot(directory, [command], "first")).warnings).toEqual([]);
   });
 
   it("returns a bounded real baseline and current contents with the current hash", async () => {
@@ -220,8 +221,8 @@ describe("host execution provenance", () => {
 
   it("discloses unsupported option shapes", async () => {
     await changed("run.sh");
-    expect((await evidence.snapshot(directory, [block("bash --unknown value ./run.sh")])).warnings[0]?.unresolved).toBe(true);
-    expect((await evidence.snapshot(directory, [block("npm --unknown value run build", 2)])).warnings[0]?.unresolved).toBe(true);
+    expect((await inferExecutedPaths("bash --unknown value ./run.sh", directory)).unresolved).toBe(true);
+    expect((await inferExecutedPaths("npm --unknown value run build", directory)).unresolved).toBe(true);
   });
 
   it("an inaccessible replacement does not suppress other tracked files", async () => {
@@ -232,8 +233,27 @@ describe("host execution provenance", () => {
     const result = await evidence.snapshot(directory, [block("./bad.sh && ./good.sh")]);
     expect(result.files.find(item => item.path === bad)?.hash).toBe("unavailable");
     expect(result.files.find(item => item.path === good)?.hash).toMatch(/^[a-f0-9]{64}$/);
-    expect(result.warnings[0]?.unresolved).toBe(true);
+    expect((await inferExecutedPaths("./bad.sh && ./good.sh", directory)).unresolved).toBe(true);
     expect(result.warnings[0]?.files).toEqual([good]);
+  });
+
+  it("warns only on a concrete match: no warning for prompt internals, plain commands or unresolved indirection", async () => {
+    await changed("run.sh");
+    await file("Makefile", "build:\n\techo user makefile\n");
+    const commands = ["clear", "ls", "echo hi", "cd scripts", "$RUN_SCRIPT", "bash \"$SCRIPT\"",
+      "precmd_functions=(${precmd_functions:#*starship*}); PROMPT='demo % '", "make build"];
+    const result = await evidence.snapshot(directory, commands.map((command, index) => block(command, index + 1)));
+    expect(result.warnings).toEqual([]);
+    expect(result.files[0]?.lastUsed).toBeNull();
+  });
+
+  it("keeps one warning per matching block and none for the commands between them", async () => {
+    const makefile = await changed("Makefile", "build:\n\techo build\n");
+    const result = await evidence.snapshot(directory, [block("make build", 1), block("clear", 2), block("ls", 3), block("make build", 4)]);
+    expect(result.warnings.map(warning => [warning.blockId, warning.files])).toEqual([[1, [makefile]], [4, [makefile]]]);
+    expect(result.cwd).toBe(directory);
+    expect(result.latestBlockId).toBe(4);
+    expect((await evidence.snapshot(directory, [])).latestBlockId).toBeNull();
   });
 
   it("caps text reads and distinguishes absent files from unavailable text", async () => {

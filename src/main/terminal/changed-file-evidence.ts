@@ -268,19 +268,33 @@ async function command(source: string, cwd: string, evidence: ExecutionEvidence)
   }
 }
 
+/** Static, best-effort inference of the files a host command executes or sources. `unresolved` marks
+ * indirection it could not follow; callers must not present such a command as covered or as a match. */
+export async function inferExecutedPaths(source: string, cwd: string | null): Promise<{ paths: string[]; unresolved: boolean }> {
+  const evidence: ExecutionEvidence = { paths: new Set(), unresolved: false, steps: 0, visited: new Set() };
+  try {
+    if (cwd) await command(source, cwd, evidence);
+    else evidence.unresolved = true;
+  } catch (error) {
+    if (!isTerminalReviewUnavailable(error)) throw error;
+    evidence.unresolved = true;
+  }
+  return { paths: [...evidence.paths], unresolved: evidence.unresolved };
+}
+
 /** In-memory, session-attributed evidence. It has no permission-policy consumers. */
 export class TerminalFileEvidence {
   private readonly files = new Map<string, ChangedFile>();
-  private readonly commands = new Map<string, TerminalExecutionWarning>();
-  private unavailableEvidence = false;
+  /** Per-block positive matches; `null` caches a block that uses no recorded agent-changed file. */
+  private readonly commands = new Map<string, TerminalExecutionWarning | null>();
 
   async recordWrite(sessionId: string, path: string, before?: string | null): Promise<void> {
     if (!sessionId) throw new Error("Missing changed-file session");
     let physical: string;
     try { physical = resolvePhysicalFilesystemPath(path, process.cwd(), 64); }
     catch (error) {
+      // An unresolvable write target cannot be matched later; detection is documented as best-effort.
       if (!isTerminalReviewUnavailable(error)) throw error;
-      this.unavailableEvidence = true;
       return;
     }
     const existing = this.files.get(physical);
@@ -302,17 +316,10 @@ export class TerminalFileEvidence {
     for (const block of blocks) {
       const key = `${terminalSessionId}:${block.startedAt}:${block.id}:${block.cwd}:${block.command}`;
       let warning = this.commands.get(key);
-      if (!warning) {
-        const evidence: ExecutionEvidence = { paths: new Set(), unresolved: this.unavailableEvidence, steps: 0, visited: new Set() };
-        try {
-          if (block.cwd) await command(block.command, block.cwd, evidence);
-          else evidence.unresolved = true;
-        } catch (error) {
-          if (!isTerminalReviewUnavailable(error)) throw error;
-          evidence.unresolved = true;
-        }
-        const paths = [...evidence.paths].filter(path => { const file = this.files.get(path); return file !== undefined && file.recordedAt <= block.startedAt; });
-        warning = { blockId: block.id, command: block.command, files: paths, unresolved: evidence.unresolved };
+      if (warning === undefined) {
+        const inferred = await inferExecutedPaths(block.command, block.cwd);
+        const paths = inferred.paths.filter(path => { const file = this.files.get(path); return file !== undefined && file.recordedAt <= block.startedAt; });
+        warning = paths.length > 0 ? { blockId: block.id, command: block.command, files: paths } : null;
         this.commands.set(key, warning);
         if (this.commands.size > 2_048) this.commands.delete(this.commands.keys().next().value!);
         for (const path of paths) {
@@ -320,6 +327,8 @@ export class TerminalFileEvidence {
           if (!file.lastUsed || file.lastUsed.when <= block.startedAt) file.lastUsed = { command: block.command, when: block.startedAt };
         }
       }
+      // Only a concrete match to an agent-changed file is a warning; unresolved indirection never is.
+      if (warning === null) continue;
       warnings.push(warning);
     }
     const relevant = new Set(warnings.flatMap(warning => warning.files));
@@ -331,7 +340,8 @@ export class TerminalFileEvidence {
         reviewed: /^[a-f0-9]{64}$/.test(current.hash) && file.reviewedHash === current.hash, lastUsed: file.lastUsed,
         ...(file.before !== undefined && current.text !== undefined ? { diff: { before: file.before ?? "", after: current.text } } : {}) });
     }
-    return { files, warnings };
+    const latestBlockId = blocks.reduce<number | null>((latest, block) => latest === null || block.id > latest ? block.id : latest, null);
+    return { cwd: physicalCwd, latestBlockId, files, warnings };
   }
 }
 

@@ -70,7 +70,7 @@ function terminalApi() {
     kill: vi.fn(async () => ({ ok: true as const })),
     onData: vi.fn((_handler: (event: TerminalDataEvent) => void) => () => {}),
     onExit: vi.fn((_handler: (event: TerminalExitEvent) => void) => () => {}),
-    listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { files: [], warnings: [] } })),
+    listFileReviews: vi.fn(async () => ({ ok: true as const, snapshot: { cwd: "/", latestBlockId: null, files: [], warnings: [] } })),
     reviewFiles: vi.fn(async () => ({ ok: true as const })),
     listBlocks: vi.fn(async (session: TerminalSessionInfo) => ({ ok: true as const, session, integrated: session.shellIntegration, blocks: [] as unknown[] })),
     getBlock: vi.fn(async (_session: TerminalSessionInfo, _id: number) => ({ ok: false as const, error: "block-not-found" })),
@@ -311,5 +311,30 @@ describe("PtyTerminalView environment and session boundaries", () => {
     expect(terminals).toHaveLength(1);
     view.unmount();
     expect(terminal.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("PtyTerminalView changed-file banner layout", () => {
+  it("overlays the one-line banner on the output area without taking space from the xterm host", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.listFileReviews.mockResolvedValue({ ok: true as const, snapshot: {
+      cwd: "/workspace",
+      latestBlockId: 1,
+      files: [{ path: "/workspace/Makefile", hash: "a".repeat(64), sessionIds: ["conversation"], reviewed: false, lastUsed: { command: "make build", when: 1_000 } }],
+      warnings: [{ blockId: 1, command: "make build", files: ["/workspace/Makefile"] }],
+    } } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:banner" tabLabel="Terminal 1" />);
+    const banner = await screen.findByTestId("terminal-file-warning");
+    const outputArea = screen.getByTestId("terminal-output-area");
+    const xtermHost = screen.getByTestId("terminal-xterm-host");
+    expect(banner.parentElement).toBe(outputArea);
+    expect(outputArea).toHaveClass("relative", "flex-1");
+    expect(banner).toHaveClass("absolute", "h-8");
+    // The xterm host is the only in-flow child, so FitAddon measures the full output area with or without a banner.
+    const inFlow = [...outputArea.children].filter((child) => !child.classList.contains("absolute"));
+    expect(inFlow).toEqual([xtermHost]);
+    expect(xtermHost).toHaveClass("flex-1");
+    expect(screen.getByTestId("chat-side-panel-pty-terminal").lastElementChild).toBe(outputArea);
   });
 });
