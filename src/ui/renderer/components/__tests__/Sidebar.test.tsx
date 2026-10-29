@@ -1699,6 +1699,21 @@ describe("Sidebar — every conversation family", () => {
 
   const allRows = [workBoardRow, routineRow, sideChatRow, orphanSideChatRow, mainRow];
 
+  it("keeps pending attention in a subagent row's name and its family in the description", () => {
+    const { getByRole, restore } = renderSidebar({
+      sessions: [workBoardRow],
+      pendingAnswerSessionIds: new Set([workBoardRow.id]),
+    });
+    try {
+      const row = getByRole("button", { name: /월간 보고서 초안.*답변 대기 중/ });
+      expect(row.hasAttribute("aria-label")).toBe(false);
+      expect(row.getAttribute("aria-description")).toBe("워크보드 작업");
+      expect(row.hasAttribute("title")).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
   it("lists a row per family, with a chat glyph and its accessible family label", async () => {
     const { getByTestId, restore } = renderSidebar({ sessions: allRows });
     try {

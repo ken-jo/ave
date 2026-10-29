@@ -3,6 +3,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "sidebarPreview.localFile": "로컬 파일",
+  "sidebarPreview.running": "에이전트 응답",
   "ptyTerminal.hostChip": "호스트",
   "ptyTerminal.hostChipAgentless": "호스트 · 에이전트 접근 없음",
   "terminalFileReview.changed": "에이전트 변경 {count}",

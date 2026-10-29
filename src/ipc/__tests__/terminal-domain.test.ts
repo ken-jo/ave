@@ -30,10 +30,15 @@ vi.mock("../../main/terminal/changed-file-evidence.js", () => ({
 }));
 const tracker = { list: () => [] };
 let currentTracker: typeof tracker | undefined;
-vi.mock("../../main/terminal/terminal-blocks.js", () => ({
-  getWindowTerminalBlockTracker: () => currentTracker,
-  getWindowTerminalBlockSession: () => currentTracker ? terminalSessionFixture("terminal:0000000a-1", "manual") : undefined,
-}));
+vi.mock("../../main/terminal/terminal-blocks.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../main/terminal/terminal-blocks.js")>();
+  return {
+    ...actual,
+    getWindowTerminalBlockTracker: (...args: Parameters<typeof actual.getWindowTerminalBlockTracker>) => currentTracker ?? actual.getWindowTerminalBlockTracker(...args),
+    getWindowTerminalBlockSession: (...args: Parameters<typeof actual.getWindowTerminalBlockSession>) => currentTracker
+      ? terminalSessionFixture("terminal:0000000a-1", "manual") : actual.getWindowTerminalBlockSession(...args),
+  };
+});
 vi.mock("../../main/terminal/pty-manager.js", () => ({
   setTerminalEmitter: (fn: TerminalEmit) => { emitter = fn; },
   spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" })),
@@ -43,6 +48,9 @@ vi.mock("../../main/terminal/pty-manager.js", () => ({
   terminalOwnedBy: (tabId: string, ownerWindowId: number | null) => !internalIds.has(tabId) && (!owners.has(tabId) || owners.get(tabId) === ownerWindowId),
 }));
 
+const { TerminalBlockTracker, registerTerminalBlockTracker, __resetTerminalBlocksForTest } = await import("../../main/terminal/terminal-blocks.js");
+const { TERMINAL_TEST_NONCE, terminalMarker } = await import("../../__tests__/support/terminal-markers.js");
+const { createTerminalReadTool } = await import("../../tools/terminal-read.js");
 const { registerTerminalHandlers } = await import("../domains/terminal.js");
 const { CHANNELS } = await import("../../contract/app-contract.js");
 
@@ -60,6 +68,7 @@ function from(win: ReturnType<typeof appWindow>): IpcMainInvokeEvent {
 }
 
 beforeEach(() => {
+  __resetTerminalBlocksForTest();
   handlers.clear();
   owners.clear();
   internalIds.clear();
@@ -148,6 +157,52 @@ describe("conversation terminal privacy boundary", () => {
   });
 });
 
+
+describe("terminal preview display boundary", () => {
+  it("returns only the last authenticated command to the owner renderer while model reads exclude the host", async () => {
+    const tabId = "terminal:0000000a-1";
+    owners.set(tabId, 1);
+    const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
+    tracker.recordOutput(terminalMarker("P;Cwd=/repo;Keys=emacs;Paste=1") + terminalMarker("C;cmdline_url=make%20build") + "private output" + terminalMarker("D;0"));
+    registerTerminalBlockTracker(terminalSessionFixture(tabId, "manual"), tracker, 1);
+    const preview = handlers.get(CHANNELS.terminal.preview)!;
+    expect(await preview(from(windowOne), { tabId })).toEqual({ ok: true, command: "make build" });
+    expect(await preview(from(windowTwo), { tabId })).toEqual({ ok: false, error: "not-owner" });
+    const tool = createTerminalReadTool({ windowIdForHostedSession: () => 1, liveOriginSessionId: () => undefined, conversationTerminalRef: () => undefined });
+    const result = await tool.execute({}, { metadata: { sessionId: "conversation" } } as never);
+    expect(result.output).not.toContain("make build");
+    expect(result.output).not.toContain("private output");
+    const targeted = await tool.execute({ tabId, terminalSessionId: `${tabId}/manual` }, { metadata: { sessionId: "conversation" } } as never);
+    expect(targeted.isError).toBe(true);
+    expect(targeted.output).not.toContain("make build");
+    expect(fanOut).not.toHaveBeenCalled();
+  });
+  it("bounds a multiline command preview to its first line", async () => {
+    const tabId = "terminal:0000000a-3";
+    owners.set(tabId, 1);
+    const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
+    const firstLine = `cat <<'END' ${"x".repeat(220)}`;
+    tracker.recordOutput(terminalMarker("P;Cwd=/repo;Keys=emacs;Paste=1") + terminalMarker(`C;cmdline_url=${encodeURIComponent(`${firstLine}\nprivate heredoc body\nEND`)}`) + terminalMarker("D;0"));
+    registerTerminalBlockTracker(terminalSessionFixture(tabId, "manual"), tracker, 1);
+    const result = await handlers.get(CHANNELS.terminal.preview)!(from(windowOne), { tabId });
+    expect(result).toEqual({ ok: true, command: `${firstLine.slice(0, 199)}…` });
+    if (typeof result !== "object" || result === null || !("command" in result)) throw new Error("Expected command preview");
+    expect(result.command).toHaveLength(200);
+    expect(result.command).not.toContain("private heredoc body");
+  });
+  it("exposes no raw scrollback or heuristic command and rejects subframes and agent payloads", async () => {
+    const tabId = "terminal:0000000a-2";
+    const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
+    tracker.recordInput("untrusted command\r"); tracker.recordOutput("raw scrollback");
+    registerTerminalBlockTracker(terminalSessionFixture(tabId, "manual"), tracker, 1);
+    const preview = handlers.get(CHANNELS.terminal.preview)!;
+    expect(await preview(from(windowOne), { tabId })).toEqual({ ok: true, command: null });
+    expect(await preview(from(windowOne), { tabId, lane: "agent" })).toEqual({ ok: false, error: "invalid-params" });
+    const event = { ...from(windowOne), senderFrame: { url: "file:///Applications/Ave.app/dist/index.html" } };
+    expect(await preview(event as IpcMainInvokeEvent, { tabId })).toMatchObject({ ok: false });
+  });
+});
+
 describe("host file review boundary", () => {
   const ref = terminalSessionFixture("terminal:0000000a-1", "manual");
   it("requires the owning window, top-level sender and current incarnation", async () => {
@@ -161,7 +216,7 @@ describe("host file review boundary", () => {
   it("lists the read-only snapshot and registers no channel that records a review", async () => {
     currentTracker = tracker;
     expect(await handlers.get(CHANNELS.terminal.fileReviews)!(from(windowOne), ref)).toMatchObject({ ok: true, snapshot: { files: [{ path: "/work/script.sh" }] } });
-    expect([...handlers.keys()].filter((channel) => channel.startsWith("ave:terminal:") && /review/u.test(channel))).toEqual([CHANNELS.terminal.fileReviews]);
+    expect([...handlers.keys()].filter((channel) => channel.startsWith("ave:terminal:") && /review/u.test(channel))).toEqual([CHANNELS.terminal.preview, CHANNELS.terminal.fileReviews]);
     expect(writeTerminal).not.toHaveBeenCalled();
   });
   it("revokes responses when the terminal closes during filesystem reads", async () => {

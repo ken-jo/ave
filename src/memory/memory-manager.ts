@@ -315,6 +315,7 @@ export function toSessionListRow(
     id: session.id,
     modifiedAt: session.modifiedAt.toISOString(),
     title: session.title,
+    ...(session.preview ? { preview: session.preview.slice(0, 200) } : {}),
     sessionKind: session.sessionKind,
     family,
     ...(session.workBoardItemId !== undefined ? { workBoardItemId: session.workBoardItemId } : {}),

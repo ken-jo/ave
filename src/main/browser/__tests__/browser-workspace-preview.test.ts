@@ -13,7 +13,7 @@ function setup() {
   let at = 1000;
   const capturePage = vi.fn(async () => image());
   const focus = vi.fn(); const loadURL = vi.fn();
-  const guest = { id: 7, capturePage, focus, loadURL, isDestroyed: () => false } as unknown as WebContents;
+  const guest = { id: 7, capturePage, focus, loadURL, getURL: vi.fn(() => "https://example.com"), isLoadingMainFrame: vi.fn(() => false), isDestroyed: () => false } as unknown as WebContents;
   const preview = new BrowserWorkspacePreview({ liveTab: (windowId, tabId) => live && windowId === 1 && tabId.startsWith("browser:") ? { guest, documentGeneration: generation } : null, isWindowVisible: () => visible, now: () => at });
   return { preview, guest, capturePage, focus, loadURL, setVisible: (value: boolean) => { visible = value; }, setGeneration: (value: number) => { generation = value; }, setLive: (value: boolean) => { live = value; }, advance: (ms: number) => { at += ms; } };
 }
@@ -66,6 +66,20 @@ describe("browser preview capture", () => {
       finish(image());
       await expect(pending).rejects.toThrow("stale-document");
     }
+  });
+  it("never loads a page or captures an uncommitted document", async () => {
+    const { preview, guest, capturePage, loadURL } = setup();
+    vi.mocked(guest.getURL).mockReturnValue("");
+    await expect(preview.capture(1, TARGET)).rejects.toThrow("capture-unavailable");
+    expect(capturePage).not.toHaveBeenCalled();
+    expect(loadURL).not.toHaveBeenCalled();
+  });
+  it("captures an available frame while loading instead of causing workspace backoff", async () => {
+    const { preview, guest, capturePage, loadURL } = setup();
+    vi.mocked(guest.isLoadingMainFrame).mockReturnValue(true);
+    await expect(preview.capture(1, TARGET)).resolves.toMatchObject({ tabId: TARGET.tabId, dataUrl: expect.stringMatching(/^data:image\/jpeg;base64,/) });
+    expect(capturePage).toHaveBeenCalledOnce();
+    expect(loadURL).not.toHaveBeenCalled();
   });
   it("rejects over-limit image bytes", async () => {
     const { preview, capturePage } = setup();
