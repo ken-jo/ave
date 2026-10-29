@@ -3,6 +3,7 @@ import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
+import type { SideChatOperationFailure } from "../shared/side-chat-operation.js";
 import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
 import { buildTerminalApiSurface } from "./terminal-api-surface.js";
 import { buildBrowserWorkspaceApiSurface } from "./browser-workspace-api-surface.js";
@@ -306,17 +307,17 @@ export function buildInternalApiSurface() {
         ...(sessionId !== undefined ? { sessionId } : {}),
       }) as Promise<
         | { ok: true; result: TurnResult }
-        | { ok: false; error: string }
+        | SideChatOperationFailure
       >,
     new: async () =>
       ipcRenderer.invoke(CHANNELS.sidechat.new) as Promise<
         | { ok: true; sessionId: string }
-        | { ok: false; error: string }
+        | SideChatOperationFailure
       >,
     load: async (sessionId: string) =>
       ipcRenderer.invoke(CHANNELS.sidechat.load, sessionId) as Promise<
         | { ok: true; sessionId: string; messages: SerializedHistoryMessage[] }
-        | { ok: false; error: string; messages: SerializedHistoryMessage[] }
+        | (SideChatOperationFailure & { messages: SerializedHistoryMessage[] })
       >,
     getSubAgentTranscript: async (request: SubAgentTranscriptRequest) =>
       ipcRenderer.invoke(CHANNELS.sidechat.getSubAgentTranscript, request) as Promise<SubAgentTranscriptResult>,

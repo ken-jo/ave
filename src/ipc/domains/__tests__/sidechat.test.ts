@@ -992,11 +992,22 @@ describe("pane chats are their own conversations", () => {
     const { rail, pane } = setup();
     await sendFrom({ input: "page", surface: PANE_A });
     const paneSession = pane(PANE_A)!.getSessionId();
-    await expect(sendFrom({ input: "rail", sessionId: paneSession })).resolves.toEqual({ ok: false, error: "session-open-in-pane" });
+    await expect(sendFrom({ input: "rail", sessionId: paneSession })).resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId });
     await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), paneSession))
-      .resolves.toEqual({ ok: false, error: "session-open-in-pane", messages: [] });
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId, messages: [] });
     expect(rail.runTurn).not.toHaveBeenCalled();
     expect(rail.loadSession).not.toHaveBeenCalled();
+  });
+
+  it("does not offer another window's pane as a refusal navigation target", async () => {
+    const { pane } = setup();
+    await sendFrom({ input: "page", surface: PANE_A });
+    const paneSession = pane(PANE_A)!.getSessionId();
+    await expect(handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 2), {
+      input: "other window", sessionId: paneSession, paneTabId: "terminal:abcd1234-1",
+    })).resolves.toEqual({ ok: false, error: "session-open-in-pane" });
+    await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html", 2), paneSession))
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", messages: [] });
   });
 
   it("reopens a restored pane on its stored conversation, read before and continued on its first turn", async () => {

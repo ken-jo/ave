@@ -154,10 +154,10 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
     const { getByRole, container } = render(
       <TooltipProvider>
         <PaneChatNavigationProvider value={{
-          resolveSession: (sessionId) => sessionId === "pane-session" ? { tabId: "terminal-tab", name: "터미널 1" } : undefined,
+          resolvePane: (tabId) => tabId === "terminal-tab" ? { tabId: "terminal-tab", name: "터미널 1" } : undefined,
           openPaneChat,
         }}>
-          <AssistantCard entry={makeEntry({ systemNotice: "operation-error", noticeSessionId: "pane-session" })} />
+          <AssistantCard entry={makeEntry({ systemNotice: "operation-error", noticePaneTabId: "terminal-tab" })} />
         </PaneChatNavigationProvider>
       </TooltipProvider>,
     );
@@ -171,8 +171,8 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
   it("offers no pane action after the bound surface has closed", () => {
     const { queryByRole } = render(
       <TooltipProvider>
-        <PaneChatNavigationProvider value={{ resolveSession: () => undefined, openPaneChat: vi.fn() }}>
-          <AssistantCard entry={makeEntry({ systemNotice: "operation-error", noticeSessionId: "closed-pane-session" })} />
+        <PaneChatNavigationProvider value={{ resolvePane: () => undefined, openPaneChat: vi.fn() }}>
+          <AssistantCard entry={makeEntry({ systemNotice: "operation-error", noticePaneTabId: "closed-pane-session" })} />
         </PaneChatNavigationProvider>
       </TooltipProvider>,
     );

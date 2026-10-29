@@ -559,23 +559,25 @@ export function App() {
     const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
     if (surfaces.get(tabId)) {
       if (openWorkspaceSurface(tabId)) setPaneChatOpen(tabId, true);
+      else statusPushToast({ severity: "error", message: t("app.paneChatOpenFailed"), ttlMs: 10_000 });
       return;
     }
     const source = groups.groups.find((group) => getSideTabsSink(group.id)?.snapshot().some((tab) => tab.tabId === tabId));
-    if (!source) return;
+    if (!source) {
+      statusPushToast({ severity: "error", message: t("app.paneChatUnavailable"), ttlMs: 10_000 });
+      return;
+    }
     surfaceMoves.tabToMain(source.id, tabId, { paneId: groups.focusedId, target: "center" });
     setPaneChatOpen(tabId, true);
-  }, [openWorkspaceSurface, setPaneChatOpen, surfaceMoves]);
+  }, [openWorkspaceSurface, setPaneChatOpen, surfaceMoves, statusPushToast, t]);
   const paneChatNavigation = useMemo<PaneChatNavigation>(() => ({
     openPaneChat,
-    resolveSession: (sessionId) => {
-      const tabId = sessions.find((session) => session.id === sessionId && session.family === "side-chat")?.paneTabId;
-      if (!tabId) return undefined;
+    resolvePane: (tabId) => {
       const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
       const surface = surfaces.get(tabId) ?? groups.groups.flatMap((group) => getSideTabsSink(group.id)?.snapshot() ?? []).find((tab) => tab.tabId === tabId);
       return surface ? { tabId, name: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[surface.kind]])} ${surface.ordinal}` } : undefined;
     },
-  }), [openPaneChat, sessions, t]);
+  }), [openPaneChat, t]);
   const [paneChatLayoutRevision, setPaneChatLayoutRevision] = useState(0);
   useEffect(() => subscribeMainLayoutChange(() => setPaneChatLayoutRevision((revision) => revision + 1)), []);
   useEffect(() => {

@@ -1229,7 +1229,12 @@ side-chat store. A pane's turn binds its session to the pane's tab
 tab (`paneTabId`), so a restart reopens each restored pane on its conversation
 (restored tabs keep their ids). A turn from a conversation's side panel runs
 on the side loop in the session its view shows; a conversation a pane holds
-is refused there (`session-open-in-pane`). Hiding or unmounting a pane chat
+is refused there (`session-open-in-pane`). The refusal names its owning pane tab
+only in that pane's window; the renderer checks the live tab inventory before
+offering Open, independently of the conversation list's current page or filter.
+Explicit host refusals are operation notices; unknown execution or transport
+failures remain stream errors even before the first stream frame.
+Hiding or unmounting a pane chat
 does not abort its turn. Its renderer transcript subscription follows the tab's
 lifetime; returning to the chat reattaches to that transcript. Reopening a pane's chat reads its
 history (`ave:sidechat:pane-history`); the chat's New starts the pane afresh

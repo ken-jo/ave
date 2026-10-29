@@ -43,8 +43,8 @@ function AssistantCardImpl({
 }) {
   const { t } = useTranslation();
   const paneChatNavigation = usePaneChatNavigation();
-  const noticePane = entry.systemNotice === "operation-error" && entry.noticeSessionId
-    ? paneChatNavigation?.resolveSession(entry.noticeSessionId)
+  const noticePane = entry.systemNotice === "operation-error" && entry.noticePaneTabId
+    ? paneChatNavigation?.resolvePane(entry.noticePaneTabId)
     : undefined;
   // Distinguish host-emitted system notices from model replies.
   const isSystemNotice = entry.systemNotice !== undefined;

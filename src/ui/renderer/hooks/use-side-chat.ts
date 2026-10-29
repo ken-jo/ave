@@ -27,6 +27,8 @@ import { isTurnStartEntry } from "../utils/classify-turn-entries.js";
 import type { TurnSummary } from "../components/TranscriptRenderer.js";
 import type { AveApi } from "../types.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { sideChatFailureNotice, type SideChatOperationFailure } from "../../../shared/side-chat-operation.js";
+import { parseTabId } from "../../../shared/tab-id.js";
 
 interface SideChatSendOptions {
   /** Vision / resource parts composed from the composer's attachments. */
@@ -84,8 +86,9 @@ interface SessionChangeIntent {
   applied: boolean;
   applyResult?: () => { historyReplaced: boolean };
   refusalMessage?: string;
-  refusalSessionId?: string;
-  refusedSends?: Array<{ userEntry: ChatEntry; message: string; noticeSessionId?: string | undefined }>;
+  refusalNotice?: "operation-error" | "stream-error";
+  refusalPaneTabId?: string;
+  refusedSends?: Array<{ userEntry: ChatEntry; message: string; systemNotice: "operation-error" | "stream-error"; noticePaneTabId?: string | undefined }>;
 }
 
 type SessionChangeResult = Awaited<ReturnType<NonNullable<AveApi["sideChat"]>["new" | "load"]>>;
@@ -174,6 +177,11 @@ export function prunePaneChats(api: NonNullable<AveApi["sideChat"]>, liveTabIds:
     runtime.unsubscribe?.();
     chats.delete(tabId);
   }
+}
+
+function refusalPaneTabId(failure: SideChatOperationFailure): string | undefined {
+  return failure.error === "session-open-in-pane" && typeof failure.paneTabId === "string" && parseTabId(failure.paneTabId) !== null
+    ? failure.paneTabId : undefined;
 }
 
 export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideChat {
@@ -463,9 +471,9 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     return { sendRequestId, generation: sendGenerationRef.current };
   }, [resetStreamState, setStreaming]);
 
-  const reportOperationError = useCallback((generation: number, message: string, noticeSessionId?: string) => {
+  const reportFailure = useCallback((generation: number, message: string, noticePaneTabId?: string, systemNotice: "operation-error" | "stream-error" = "stream-error") => {
     if (!viewMountedRef.current || generation !== sendGenerationRef.current) return;
-    setEntries((p) => setAssistantError(p, message, "", "operation-error", noticeSessionId));
+    setEntries((p) => setAssistantError(p, message, "", systemNotice, noticePaneTabId));
   }, [runtime]);
 
   const restoreSessionIntent = useCallback((intent: SessionChangeIntent): SessionChangeIntent => {
@@ -491,12 +499,12 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     try {
       if (sendRequestId !== null) {
         const res = await api.sideChat.abort(sendRequestId);
-        if (!res.ok) reportOperationError(generation, formatIpcError(res.error, undefined));
+        if (!res.ok) reportFailure(generation, formatIpcError(res.error, undefined), undefined, "operation-error");
       }
     } catch (err) {
-      reportOperationError(generation, errorMessage(err));
+      reportFailure(generation, errorMessage(err), undefined, "operation-error");
     }
-  }, [api, abandonTurn, reportOperationError]);
+  }, [api, abandonTurn, reportFailure]);
 
   const send = useCallback(
     async (text: string, opts?: SideChatSendOptions) => {
@@ -575,14 +583,15 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
           // Localize side-chat refusal codes through the same map as main chat.
           const thought = thoughtRef.current;
           const refusalMessage = formatIpcError(result.error, undefined);
-          const noticeSessionId = result.error === "session-open-in-pane" ? sessionIdRef.current ?? undefined : undefined;
+          const noticePaneTabId = refusalPaneTabId(result);
+          const systemNotice = sideChatFailureNotice(result.error);
           setEntries((p) =>
             setAssistantError(
               p,
               refusalMessage,
               thought,
-              result.error === "session-open-in-pane" || activeStreamIdRef.current === null ? "operation-error" : "stream-error",
-              noticeSessionId,
+              systemNotice,
+              noticePaneTabId,
             ),
           );
           if (activeStreamIdRef.current !== null) {
@@ -606,10 +615,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
           finalAssistantRoundClosedRef.current = streamStateBeforeSend.finalAssistantRoundClosed;
           if (streamStateBeforeSend.sessionChangeIntent !== null) {
             const sessionIntent = restoreSessionIntent(streamStateBeforeSend.sessionChangeIntent);
-            (sessionIntent.refusedSends ??= []).push({ userEntry, message: refusalMessage, noticeSessionId });
+            (sessionIntent.refusedSends ??= []).push({ userEntry, message: refusalMessage, noticePaneTabId, systemNotice });
             const applied = sessionIntent.applyResult?.();
             if (applied?.historyReplaced && sessionIntent.refusalMessage) {
-              reportOperationError(sessionIntent.generation, sessionIntent.refusalMessage, sessionIntent.refusalSessionId);
+              reportFailure(sessionIntent.generation, sessionIntent.refusalMessage, sessionIntent.refusalPaneTabId, sessionIntent.refusalNotice);
             }
           }
         }
@@ -625,7 +634,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
             p,
             errorMessage(err),
             thought,
-            "operation-error",
+            "stream-error",
           ),
         );
         setStreaming(false);
@@ -636,10 +645,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         if (pendingSendRef.current === pendingSend) pendingSendRef.current = null;
       }
     },
-    [api, abort, reportOperationError, resetStreamAccumulators, resetStreamState, restoreSessionIntent, setStreaming],
+    [api, abort, reportFailure, resetStreamAccumulators, resetStreamState, restoreSessionIntent, setStreaming],
   );
 
-  const changeSession = useCallback(async (invoke: () => Promise<SessionChangeResult>, clearHistory: boolean, requestedSessionId?: string) => {
+  const changeSession = useCallback(async (invoke: () => Promise<SessionChangeResult>, clearHistory: boolean) => {
     const previous = sessionChangeIntentRef.current;
     const { generation } = abandonTurn();
     const intent: SessionChangeIntent = {
@@ -661,7 +670,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
             const pendingUser = activeStreamIdRef.current === null ? activeUserEntryRef.current : null;
             let next = history;
             for (const refused of intent.refusedSends ?? []) {
-              next = setAssistantError([...next, refused.userEntry], refused.message, "", "operation-error", refused.noticeSessionId);
+              next = setAssistantError([...next, refused.userEntry], refused.message, "", refused.systemNotice, refused.noticePaneTabId);
             }
             if (pendingUser !== null && !next.includes(pendingUser)) next = [...next, pendingUser];
             setEntries(next);
@@ -677,11 +686,12 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         || !viewMountedRef.current) return;
       if (res.ok) {
         const applied = intent.applyResult!();
-        if (intent.refusalMessage && applied.historyReplaced) reportOperationError(generation, intent.refusalMessage, intent.refusalSessionId);
+        if (intent.refusalMessage && applied.historyReplaced) reportFailure(generation, intent.refusalMessage, intent.refusalPaneTabId, intent.refusalNotice);
         sessionChangeIntentRef.current = null;
       } else {
         const message = intent.refusalMessage ?? formatIpcError(res.error, undefined);
-        const noticeSessionId = intent.refusalSessionId ?? (res.error === "session-open-in-pane" ? requestedSessionId : undefined);
+        const noticePaneTabId = intent.refusalPaneTabId ?? refusalPaneTabId(res);
+        const systemNotice = intent.refusalNotice ?? sideChatFailureNotice(res.error);
         if (intent.previous !== null) {
           // A refused replacement never changed the host session. Preserve the earlier accepted change, even when its reply has
           // already arrived.
@@ -691,20 +701,21 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
             intent.refusedSends = undefined;
           }
           restored.refusalMessage = message;
-          restored.refusalSessionId = noticeSessionId;
+          restored.refusalPaneTabId = noticePaneTabId;
+          restored.refusalNotice = systemNotice;
           restored.applyResult?.();
-          reportOperationError(restored.generation, message, noticeSessionId);
+          reportFailure(restored.generation, message, noticePaneTabId, systemNotice);
         } else {
           sessionChangeIntentRef.current = null;
-          reportOperationError(generation, message, noticeSessionId);
+          reportFailure(generation, message, noticePaneTabId, systemNotice);
         }
       }
     } catch (err) {
       intent.state = "failed";
       if (sessionChangeIntentRef.current === intent) sessionChangeIntentRef.current = null;
-      reportOperationError(generation, errorMessage(err));
+      reportFailure(generation, errorMessage(err));
     }
-  }, [abandonTurn, recordSessionId, reportOperationError, restoreSessionIntent]);
+  }, [abandonTurn, recordSessionId, reportFailure, restoreSessionIntent]);
 
   const newSession = useCallback(async () => {
     const sideChat = api.sideChat;
@@ -716,7 +727,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     async (id: string) => {
       const sideChat = api.sideChat;
       if (!viewMountedRef.current || !sideChat) return;
-      await changeSession(() => sideChat.load(id), false, id);
+      await changeSession(() => sideChat.load(id), false);
     },
     [api, changeSession],
   );

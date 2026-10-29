@@ -5,6 +5,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { prunePaneChats, useSideChat } from "../use-side-chat.js";
 import type { ChatStreamEvent, ChatEntry } from "../../../../lib/chat-stream-state.js";
 import type { AveApi } from "../../types.js";
+import type { SideChatOperationFailure } from "../../../../shared/side-chat-operation.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
 import { sessionUuid } from "../../../../__tests__/support/session-uuid.js";
 
@@ -16,7 +17,7 @@ function makeApi() {
   // Typed as the real invoke is — either shape — so a test can hand back the host's refusal without casting past the
   // contract.
   const send = vi.fn(
-    async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string, _surface?: unknown, _sessionId?: string): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => ({
+    async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string, _surface?: unknown, _sessionId?: string): Promise<{ ok: true; result: unknown } | SideChatOperationFailure> => ({
       ok: true,
       result: {},
     }),
@@ -72,11 +73,81 @@ const REFUSAL_INTENT_CASES = Object.freeze((["new", "load"] as const).flatMap((f
 ));
 
 describe("useSideChat session identity", () => {
+  it.each([
+    { error: "provider connection failed", expected: "stream-error" },
+    { error: "session-open-in-pane", expected: "operation-error" },
+  ] as const)("preserves the $expected notice and host target after a pending load resolves", async ({ error, expected }) => {
+    const { api, spies } = makeApi();
+    const loadReply = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    spies.load.mockReturnValueOnce(loadReply.promise);
+    const paneTabId = "terminal:abcd1234-1";
+    spies.send.mockResolvedValueOnce({ ok: false, error, paneTabId });
+    const { result } = renderHook(() => useSideChat(api));
+    let pending = Promise.resolve();
+    act(() => { pending = result.current.loadSession("pending-session"); });
+    await act(async () => { await result.current.send("refused while loading"); });
+    await act(async () => {
+      loadReply.resolve({ ok: true, sessionId: "pending-session", messages: [] });
+      await pending;
+    });
+    const notice = lastAssistant(result.current.entries);
+    expect(notice?.systemNotice).toBe(expected);
+    expect(notice?.noticePaneTabId).toBe(expected === "operation-error" ? paneTabId : undefined);
+  });
+
+  it.each(["streaming-active", "session-open-in-pane", "pane-chat-ended", "invalid-input", "session-not-found"])("renders explicit host refusal %s as an operation notice", async (error) => {
+    const { api, spies } = makeApi();
+    spies.send.mockResolvedValueOnce({ ok: false, error });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("refused"); });
+    expect(lastAssistant(result.current.entries)?.systemNotice).toBe("operation-error");
+  });
+
+  it.each(["load", "send"] as const)("uses the host pane target for a refused %s without consulting a session list", async (operation) => {
+    const { api, spies } = makeApi();
+    const paneTabId = "terminal:abcd1234-1";
+    spies.load.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", paneTabId, messages: [] });
+    spies.send.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", paneTabId });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => {
+      if (operation === "load") await result.current.loadSession("unlisted-session");
+      else await result.current.send("refused");
+    });
+    expect(lastAssistant(result.current.entries)).toMatchObject({ systemNotice: "operation-error", noticePaneTabId: paneTabId });
+    expect(spies.list).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { error: "session-open-in-pane", paneTabId: "bad-tab" },
+    { error: "streaming-active", paneTabId: "terminal:abcd1234-1" },
+  ])("discards an invalid or unrelated refusal target $error/$paneTabId", async (failure) => {
+    const { api, spies } = makeApi();
+    spies.send.mockResolvedValueOnce({ ok: false, ...failure });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("refused"); });
+    expect(lastAssistant(result.current.entries)?.noticePaneTabId).toBeUndefined();
+  });
+
+  it.each(["send", "load", "new", "send-transport"] as const)("keeps an unknown %s failure a stream error before any prelude", async (operation) => {
+    const { api, spies } = makeApi();
+    spies.send.mockResolvedValueOnce({ ok: false, error: "provider connection failed" });
+    spies.load.mockResolvedValueOnce({ ok: false, error: "provider connection failed", messages: [] });
+    spies.newSession.mockResolvedValueOnce({ ok: false, error: "provider connection failed" });
+    if (operation === "send-transport") spies.send.mockReset().mockRejectedValueOnce(new Error("provider connection failed"));
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => {
+      if (operation === "load") await result.current.loadSession("unlisted-session");
+      else if (operation === "new") await result.current.newSession();
+      else await result.current.send("try provider");
+    });
+    expect(lastAssistant(result.current.entries)).toMatchObject({ systemNotice: "stream-error" });
+  });
+
   it.each(["load", "new", "send"] as const)("reports a refused %s as an operation notice rather than a stream error", async (operation) => {
     const { api, spies } = makeApi();
-    spies.load.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", messages: [] });
+    spies.load.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", paneTabId: "terminal:abcd1234-1", messages: [] });
     spies.newSession.mockResolvedValueOnce({ ok: false, error: "streaming-active" });
-    spies.send.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane" });
+    spies.send.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", paneTabId: "terminal:abcd1234-1" });
     const { result } = renderHook(() => useSideChat(api));
     const sessionId = "owned-pane-session";
     if (operation === "send") act(() => { result.current.restore(sessionId, []); });
@@ -86,7 +157,7 @@ describe("useSideChat session identity", () => {
       else await result.current.send("refused prompt");
     });
     expect(lastAssistant(result.current.entries)).toMatchObject({ systemNotice: "operation-error" });
-    expect(lastAssistant(result.current.entries)?.noticeSessionId).toBe(operation === "new" ? undefined : sessionId);
+    expect(lastAssistant(result.current.entries)?.noticePaneTabId).toBe(operation === "new" ? undefined : "terminal:abcd1234-1");
     expect(result.current.isStreaming).toBe(false);
   });
 

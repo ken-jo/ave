@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import { clickSidebarNavRow, deferred, splitIntoTwoTiles } from "./helpers.js";
+import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.js";
 import { SURFACE_DRAG_TYPE } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
@@ -679,6 +680,94 @@ describe("main-area terminal and web panels", () => {
     expect(sentText).toContain("$ npm test\nok\n");
     expect(sentText).toContain(`${terminalTabId}/manual`);
     expect(api.chatSend).not.toHaveBeenCalled();
+  });
+
+  it("opens the host-refused pane even when its conversation has no sidebar row", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [], settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
+    const sideChat = (api as unknown as { sideChat: Record<"send", ReturnType<typeof vi.fn>> }).sideChat;
+    sideChat.send.mockResolvedValueOnce({ ok: false, error: "session-open-in-pane", paneTabId: tabId });
+    const tiles = await splitIntoTwoTiles(container);
+    await act(async () => { fireEvent.click(tiles[1]!.element.querySelector('[data-testid="pane-panel-toggle"]')!); });
+    await act(async () => { fireEvent.click(document.querySelector('[data-testid="chat-side-panel-launcher-side-chat"]')!); });
+    const railChat = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-testid="side-chat-view"]'); expect(el).not.toBeNull(); return el!;
+    });
+    await act(async () => { fireEvent.change(railChat.querySelector("textarea")!, { target: { value: "continue this conversation" } }); });
+    await act(async () => { fireEvent.click(railChat.querySelector('[data-testid="side-chat-action-row"] button:last-child')!); });
+    const open = await waitFor(() => {
+      const el = [...railChat.querySelectorAll("button")].find((button) => button.textContent === "열기");
+      expect(el).toBeDefined(); return el!;
+    });
+    expect(railChat.textContent).toContain("이 대화는 터미널 1에 열려 있습니다.");
+    expect(container.querySelector('[data-testid^="sidebar-session-"]')).toBeNull();
+    await act(async () => { fireEvent.click(open); });
+    await waitFor(() => expect(container.querySelector(`[data-testid="pane-chat"][data-tab-id="${tabId}"]`)).not.toBeNull());
+  });
+
+  it("reports a localized notice when the pane target closes before its row click", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
+    const useMainSurfaces = mainSurfaceStore.useMainSurfaces;
+    let surfaceStore!: ReturnType<typeof useMainSurfaces>;
+    vi.spyOn(mainSurfaceStore, "useMainSurfaces").mockImplementation(() => {
+      surfaceStore = useMainSurfaces(); return surfaceStore;
+    });
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", family: "side-chat", paneTabId: tabId }],
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    const row = await waitFor(() => {
+      expect(shownSurfaces(container)[0]?.tabId).toBe(tabId);
+      const el = container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`); expect(el).not.toBeNull(); return el!;
+    });
+    await act(async () => {
+      surfaceStore.close(tabId);
+      fireEvent.click(row);
+    });
+    await waitFor(() => expect(container.querySelector('[data-testid="status-toast-message"]')?.textContent)
+      .toContain("이 터미널 또는 페이지는 이 창에서 더 이상 사용할 수 없습니다."));
+    expect(container.querySelector('[data-testid="pane-chat"]')).toBeNull();
+  });
+
+  it("reports a localized notice when a live pane cannot be revealed", async () => {
+    const tabId = "terminal:abcd1234-1";
+    const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
+    const useMainSurfaces = mainSurfaceStore.useMainSurfaces;
+    let refuseReveal = false;
+    let lookups = 0;
+    vi.spyOn(mainSurfaceStore, "useMainSurfaces").mockImplementation(() => {
+      const store = useMainSurfaces();
+      return { ...store, get: (id: string) => refuseReveal && id === tabId && ++lookups > 1 ? undefined : store.get(id) };
+    });
+    const initialLayout = {
+      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
+      sessions: [{ id: sessionId, modifiedAt: "2026-10-28T00:00:00.000Z", family: "side-chat", paneTabId: tabId }],
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: initialLayout } },
+    });
+    await waitFor(() => expect(shownSurfaces(container)[0]?.tabId).toBe(tabId));
+    refuseReveal = true;
+    await act(async () => { fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`)!); });
+    await waitFor(() => expect(container.querySelector('[data-testid="status-toast-message"]')?.textContent)
+      .toContain("터미널 또는 페이지를 열 수 없습니다. 작업 공간에서 해당 화면을 선택한 뒤 다시 시도해 주세요."));
+    expect(container.querySelector('[data-testid="pane-chat"]')).toBeNull();
   });
 
   it("opens a pane-bound conversation row on its terminal and keeps the chat open across navigation", async () => {

@@ -22,6 +22,7 @@ import {
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
 import { isValidSessionId } from "../../memory/memory-manager.js";
+import type { SideChatOperationFailure } from "../../shared/side-chat-operation.js";
 
 import { sanitizeOutgoingTurnContent, validateUserContentParts } from "../handlers/chat.js";
 import type { IpcDeps } from "../types.js";
@@ -128,6 +129,12 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   const railLoop = sideChatConversationLoop;
   const panes = paneChatLoops;
   const store = deps.sideChatMemoryManager;
+  const paneOwnershipRefusal = (sessionId: string, windowId: number): SideChatOperationFailure | undefined => {
+    const holder = panes.holding(sessionId);
+    if (!holder) return undefined;
+    const paneTabId = holder.windowId === windowId && parseTabId(holder.tabId) !== null ? holder.tabId : undefined;
+    return { ok: false, error: "session-open-in-pane", ...(paneTabId === undefined ? {} : { paneTabId }) };
+  };
   const approvalOwnerWindow = (event: IpcMainInvokeEvent) => {
     const owner = mainWindowForContents(event.sender);
     return owner && !owner.isDestroyed() && !event.sender.isDestroyed()
@@ -247,8 +254,9 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       return { ok: false as const, error: "empty-text" };
     }
     const pane = surface === null ? null : { windowId: senderWindow!.id, tabId: surface.tabId };
-    if (pane === null && p.sessionId !== undefined && panes.holding(p.sessionId)) {
-      return { ok: false as const, error: "session-open-in-pane" };
+    if (pane === null && typeof p.sessionId === "string") {
+      const refusal = paneOwnershipRefusal(p.sessionId, senderWindow.id);
+      if (refusal) return refusal;
     }
     const loop = pane === null ? railLoop : panes.resolve(pane.windowId, pane.tabId);
     const turns = turnsOf(loop);
@@ -468,7 +476,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       return { ok: false as const, error: "invalid-session-id", messages: [] };
     }
     if (railLoop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active", messages: [] };
-    if (panes.holding(sessionId)) return { ok: false as const, error: "session-open-in-pane", messages: [] };
+    const refusal = paneOwnershipRefusal(sessionId, senderWindow.id);
+    if (refusal) return { ...refusal, messages: [] };
     return railLoop.runSessionTransition("sidechat-load", async (lease) => {
       await abortTurnOf(railLoop);
       const loaded = await railLoop.loadSession(sessionId, lease);

@@ -198,7 +198,7 @@ export type ChatEntry =
       createdAt?: number;
       systemNotice?: "context-error" | "stream-error" | "operation-error";
       /** Renderer-local target for a refused operation; never persisted as model output. */
-      noticeSessionId?: string;
+      noticePaneTabId?: string;
       terminalError?: true;
       interrupted?: boolean;
       interruptedBy?: "host-exit";
@@ -666,7 +666,7 @@ export function setAssistantError(
   message: string,
   fallbackThought: string = "",
   systemNotice?: AssistantEntry["systemNotice"],
-  noticeSessionId?: string,
+  noticePaneTabId?: string,
 ): ChatEntry[] {
   // Stamp live host-error notices immediately so styling matches replay.
   const next = finalizeStreamingReasoning(entries, fallbackThought);
@@ -684,7 +684,7 @@ export function setAssistantError(
     phase: interrupted ? current?.phase : undefined,
     terminalError: true,
     ...(systemNotice !== undefined ? { systemNotice } : {}),
-    ...(noticeSessionId !== undefined ? { noticeSessionId } : {}),
+    ...(noticePaneTabId !== undefined ? { noticePaneTabId } : {}),
   };
 
   if (assistantIdx >= 0) {
