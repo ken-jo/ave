@@ -2418,6 +2418,28 @@ describe("host tabs and conversation-owned isolation", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("keeps the native Windows isolated conversation backend fail-closed even with an attested sandbox", async () => {
+    const previous = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      await expect(ensureConversationTerminal("conversation-windows", 8)).rejects.toThrow("Terminal requires the OS tool sandbox");
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+      expect(conversationTerminalRef("conversation-windows", 8)).toBeUndefined();
+    } finally { Object.defineProperty(process, "platform", { value: previous, configurable: true }); }
+  });
+
+  it("refuses host input addressed to a retired terminal incarnation", async () => {
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      const host = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 });
+      if (!host.ok) throw new Error("expected host terminal");
+      expect(writeLane({ ...host.session, terminalSessionId: "retired" }, "bad")).toEqual({ ok: false, error: "stale-terminal-session" });
+      expect(lastPty!.written).toEqual([]);
+      expect(writeLane(host.session, "echo user\r")).toEqual({ ok: true });
+      expect(lastPty!.written).toEqual(["echo user\r"]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   async function initializedConversation(id: string) {
     const originalShell = process.env.SHELL;
     vi.stubEnv("SHELL", "/bin/zsh");
@@ -2428,6 +2450,17 @@ describe("host tabs and conversation-owned isolation", () => {
     lastPty!.emitData(`\u001b]133;D;0;${nonce}\u0007\u001b]133;P;Cwd=/w;Keys=emacs;Paste=1;NotFound=0;Edit=1;B=${"ab".repeat(16)};${nonce}\u0007\u001b]133;A;${nonce}\u0007% \u001b]133;B;${"ab".repeat(16)}\u0007`);
     return started;
   }
+
+  it("keeps host tab capacity separate from conversation-owned isolated terminals", async () => {
+    for (let index = 0; index < 16; index++) await initializedConversation(`conversation-capacity-${index}`);
+    await expect(ensureConversationTerminal("conversation-capacity-over", 8)).rejects.toThrow("too many conversation terminals");
+    expect(__terminalSessionCountForTest()).toBe(16);
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      expect(await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 })).toMatchObject({ ok: true, session: { lane: "manual" } });
+      expect(__terminalSessionCountForTest()).toBe(17);
+    } finally { vi.unstubAllEnvs(); }
+  });
 
   it("deduplicates one conversation's spawn and keeps different conversations isolated", async () => {
     const first = initializedConversation("conversation-one");

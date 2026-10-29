@@ -63,8 +63,19 @@ const RING_MAX_BYTES = 256 * 1024;
 const MIN_DIM = 1;
 const MAX_COLS = 1000;
 const MAX_ROWS = 1000;
-/** Anti-DoS: max concurrent PTY sessions across all tabs. A new spawn past this is refused so an arbitrary/looping tabId can never spawn unbounded PTYs. */
-const MAX_TERMINALS = 16;
+/** Anti-DoS: max visible host terminal tabs. A new tab past this is refused so an arbitrary/looping tabId can never spawn unbounded PTYs. */
+const MAX_HOST_TERMINALS = 16;
+/** Anti-DoS: max conversation-owned isolated PTYs. A separate budget, so hidden conversations never block the user's own terminal tabs. */
+const MAX_CONVERSATION_TERMINALS = 16;
+
+/** Live sessions plus spawns in flight of one lane, each against its own budget. */
+function laneAtCapacity(lane: SpawnTerminalOptions["lane"]): boolean {
+  const suffix = `/${lane}`;
+  let count = 0;
+  for (const key of sessions.keys()) if (key.endsWith(suffix)) count++;
+  for (const key of terminalSpawnsInFlight.keys()) if (key.endsWith(suffix)) count++;
+  return count > (lane === "manual" ? MAX_HOST_TERMINALS : MAX_CONVERSATION_TERMINALS);
+}
 /** Anti-DoS: max bytes accepted for a single {@link writeTerminal} (keystroke / paste) forward. An oversized write is dropped rather than streamed to the PTY. */
 const MAX_INPUT_BYTES = 1024 * 1024;
 
@@ -358,7 +369,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
 
   // Only an authenticated manual spawn can reserve a logical tab, before any await.
   if (!record) {
-    if (logicalTabs.size + conversationTerminals.size >= MAX_TERMINALS) return Promise.resolve({ ok: false, reason: "too-many-terminals", message: "too many terminal tabs" });
+    if (logicalTabs.size >= MAX_HOST_TERMINALS) return Promise.resolve({ ok: false, reason: "too-many-terminals", message: "too many terminal tabs" });
     logicalTabs.set(tabId, { ownerWindowId, ...(options.cwd !== undefined ? { initialCwd: options.cwd } : {}) });
   }
 
@@ -436,7 +447,7 @@ async function spawnNewTerminal(
     return { ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" };
   }
 
-  if (sessions.size + terminalSpawnsInFlight.size > MAX_TERMINALS) {
+  if (laneAtCapacity(options.lane)) {
     return { ok: false, reason: "too-many-terminals", message: "too many terminal sessions" };
   }
   if (options.lane === "manual") return spawnManualTerminal(options, owner);
@@ -457,11 +468,11 @@ async function spawnNewTerminal(
   }
 
   // Anti-DoS: bound concurrent PTYs. A remount of an EXISTING tab was replayed above and does not reach here; only a genuinely NEW session counts.
-  if (sessions.size + terminalSpawnsInFlight.size > MAX_TERMINALS) {
+  if (laneAtCapacity("agent")) {
     return {
       ok: false,
       reason: "too-many-terminals",
-      message: `Too many terminal sessions open (max ${MAX_TERMINALS}). Close one and retry.`,
+      message: `Too many isolated terminal sessions open (max ${MAX_CONVERSATION_TERMINALS}). End a conversation's shell and retry.`,
     };
   }
 
@@ -876,7 +887,7 @@ export async function ensureConversationTerminal(sessionId: string, ownerWindowI
   let ownership = conversationTerminals.get(sessionId);
   if (ownership && ownership.ownerWindowId !== ownerWindowId) throw new Error("conversation terminal belongs to another window");
   if (!ownership) {
-    if (conversationTerminals.size + logicalTabs.size >= MAX_TERMINALS) throw new Error("too many terminals");
+    if (conversationTerminals.size >= MAX_CONVERSATION_TERMINALS) throw new Error("too many conversation terminals");
     ownership = { tabId: allocateConversationTerminalId(), ownerWindowId, ...(cwd === undefined ? {} : { initialCwd: cwd }) };
     conversationTerminals.set(sessionId, ownership);
     updateApprovalSurface({ kind: "bind-terminal-session", tabId: ownership.tabId, sessionId });
