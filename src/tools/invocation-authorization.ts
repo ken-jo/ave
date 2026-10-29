@@ -1054,7 +1054,10 @@ export async function authorizeToolInvocation(
         );
       }
       if (reviewerResult) {
-        permissionResult = reviewerResult;
+        // A reviewed floor remains per-call even when review falls back to a human.
+        permissionResult = permissionResult.layer <= 2
+          ? { ...reviewerResult, layer: permissionResult.layer }
+          : reviewerResult;
       }
     }
     const needsRationaleSecurityContext =

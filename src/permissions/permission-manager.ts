@@ -1428,8 +1428,14 @@ export class PermissionManager {
     if (rulesFileError && resolvedCategory !== "read") {
       return { decision: "ask", reason: rulesFileError, layer: 1, forceModal: true };
     }
+    const reviewShellFloor = shellExecution.runsSandboxed
+      && this.shouldRouteForegroundReviewer(resolvedCategory, context)
+      && !shellExfiltration && !shellSensitivePath && !scopedFloor;
+    let shellReviewReason: string | undefined;
     if (shellDestructive) {
-      return { decision: "ask", reason: t("be_permissionManager.shellDestructiveFloorReason"), layer: 2, forceModal: true };
+      const reason = t("be_permissionManager.shellDestructiveFloorReason");
+      if (!reviewShellFloor) return { decision: "ask", reason, layer: 2, forceModal: true };
+      shellReviewReason = reason;
     }
     if (shellExfiltration) {
       return {
@@ -1452,9 +1458,11 @@ export class PermissionManager {
     }
     if (shellFloorSignals?.outcome === "unproven"
       && !(shellFloorSignals.exactLiteralEvaluation === true && shellRuleEvaluation?.decision === "allow")) {
-      return context.headless === true
-        ? { decision: "deny", reason: shellFloorSignals.ordinaryAsk ?? "Shell command requires runtime evaluation", layer: 2 }
-        : { decision: "ask", reason: shellFloorSignals.ordinaryAsk ?? "Shell command requires runtime evaluation", layer: 2, forceModal: true };
+      const reason = shellFloorSignals.ordinaryAsk ?? "Shell command requires runtime evaluation";
+      if (!reviewShellFloor) return context.headless === true
+        ? { decision: "deny", reason, layer: 2 }
+        : { decision: "ask", reason, layer: 2, forceModal: true };
+      shellReviewReason ??= reason;
     }
     if (scopedFloor) return { decision: "ask", reason: scopedFloor, layer: 2, forceModal: true };
     // Ask rules (after deny, before every allow lane and mode). A per-call hard ask: never remembered, never auto-reviewed.
@@ -1502,6 +1510,11 @@ export class PermissionManager {
           ? { reviewer: { route: "headless" as const } }
           : {}),
       };
+    }
+
+    // Keep floors ahead of grants and allow rules, but after mandatory human gates.
+    if (shellReviewReason !== undefined) {
+      return { decision: "ask", reason: shellReviewReason, layer: 2, reviewer: { route: "foreground-auto" } };
     }
 
     const plainShell = ruleSubject !== undefined && !shellExecution.runsSandboxed;
@@ -1746,9 +1759,19 @@ export class PermissionManager {
       hostShellExecutionPlan: hostShellExecutionPlanAudit,
     };
     // User-approval memory hit Check the user-approval store before consulting the LLM classifier. A memory hit for a non-revoked approval bypasses the LLM call and returns the rule-based verdict directly (composition rule still applies — sandbox/context quality can only raise, not lower). HIGH-verdict approvals are intentionally included: if the user already justified a HIGH action this session, re-running the LLM is wasteful. Built outside the storage catch: a key without its identity mode is an internal contract violation and must surface, not read as a miss.
+    // Re-evaluate the same floor branch so reviewer memory cannot turn per-call consent into a grant.
+    const perCallShellReview = input.hostShellExecutionPlan?.sandboxed === true
+      && input.source === "builtin" && (toolName === "bash" || toolName === "powershell")
+      && typeof input.finalInput.command === "string"
+      && this.checkDetailed(toolName, input.source, input.category, undefined, {
+        ruleSubject: { kind: "shell", dialect: toolName, command: input.finalInput.command, cwd: input.executionCwd },
+        shellExecution: { runsSandboxed: true },
+        hostShellExecutionPlan: input.hostShellExecutionPlan,
+        sessionId: input.sessionId,
+      }).layer <= 2;
     const userApprovalIdentity = approvalCacheKeyIdentity(input.approvalCacheKey, input.approvalMemory);
     const userApprovalArgs = canonicalStringify(cacheIdentityInput);
-    const rememberedDecision = input.hostShellExecutionPlan?.mode === "plain" ? undefined : await lookupApproval(
+    const rememberedDecision = (perCallShellReview || input.hostShellExecutionPlan?.mode === "plain") ? undefined : await lookupApproval(
       toolName,
       userApprovalArgs,
       input.source,
@@ -1825,7 +1848,7 @@ export class PermissionManager {
         scope: userApproval.scope,
         verdictAtApproval: userApproval.verdictAtApproval,
       });
-    } else if (cacheResult.hit && cacheResult.verdict) {
+    } else if (!perCallShellReview && cacheResult.hit && cacheResult.verdict) {
       const ruleClassifier = new RuleBasedRiskClassifier();
       ruleVerdictForAudit = ruleClassifier.classify(buildReviewerContext()).level;
       verdict = cacheResult.verdict;
@@ -1856,7 +1879,7 @@ export class PermissionManager {
           outcome = "sandbox-state-changed";
         } else {
           // Only a successful fresh classification may become a base-cache entry. malformed/error/timeout fallback verdicts remain fail-safe for this invocation and can never reappear as an eligible "cache" rationale outcome on the next call.
-          if (outcome === "fresh") {
+          if (outcome === "fresh" && !perCallShellReview) {
             // The verdict cache is the one sink written BEFORE the common redaction point below, so it redacts its own copy. A cache hit then replays an already-masked reason.
             await cache.store(lookupKey, cacheCtx, redactVerdictReason(verdict));
           }

@@ -34,8 +34,8 @@ import {
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 import { resolve as resolvePath } from "node:path";
-import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
-import { powerShellExfiltrationSignal } from "../rules/powershell-exfiltration.js";
+import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal, inspectShellCommand } from "../rules/shell-exfiltration.js";
+import { powerShellExfiltrationSignal, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
 
 // Verdict shape returned by every classifier.
@@ -1376,6 +1376,18 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
     const cmds = extractShellCommands(ctx.finalInput);
     if (cmds.some((cmd) => DESTRUCTIVE_SHELL_RE.test(cmd))) {
       return { level: "high", reason: "shell destructive verb" };
+    }
+    return null;
+  },
+  // The existing rule-verdict reason carries runtime uncertainty into reviewer requests.
+  (ctx) => {
+    if (ctx.category !== "shell" || ctx.source !== "builtin"
+      || (ctx.toolName !== "bash" && ctx.toolName !== "powershell")) return null;
+    const inspect = ctx.toolName === "powershell" ? inspectPowerShellCommand : inspectShellCommand;
+    if (extractShellCommands(ctx.finalInput).some((command) => inspect(command, shellInvocationCwd(ctx)).outcome === "unproven")) {
+      const commands = extractShellCommands(ctx.finalInput);
+      const level = commands.length > 0 && commands.every((command) => REVERSIBLE_SHELL_RE.test(command)) ? "low" : "medium";
+      return { level, reason: "shell requires runtime evaluation" };
     }
     return null;
   },
