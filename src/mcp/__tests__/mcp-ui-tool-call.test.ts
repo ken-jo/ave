@@ -31,6 +31,13 @@ function externalSource(tools: Tool[], invoker = vi.fn(async () => "tool-output"
   return { source, invoker };
 }
 
+function loopbackRuntime(result = "plugin-result") {
+  return {
+    resolveToolOwner: vi.fn(() => "acme-cards"),
+    callFromApp: vi.fn(async () => result),
+  };
+}
+
 describe("mcp-tool-adapter — BOTH visibility bits are materialized ONCE, at ingestion", () => {
   it("applies the MCP Apps spec default [\"model\",\"app\"] when the server declares nothing", () => {
     const t = externalTool("github", "query");
@@ -164,11 +171,7 @@ describe("loopback tool-call source — plugin methods through callFromApp", () 
   it("delegates to callFromApp (visibility MUST + the gate) — NOT callFromUi", async () => {
     // Cards cannot use the panel-only dispatch path that bypasses tool risk, approval and audit.
     const callFromUi = vi.fn(async () => "panel-path");
-    const runtime = {
-      resolveToolOwner: vi.fn(() => "acme-cards"),
-      callFromApp: vi.fn(async () => "plugin-result"),
-      callFromUi,
-    };
+    const runtime = { ...loopbackRuntime(), callFromUi };
     const source = createLoopbackToolCallSource({ runtime, findTool: () => undefined });
 
     await expect(source.callTool("acme-cards", "acme_open", { id: 7 }, INVOCATION)).resolves.toBe("plugin-result");
@@ -194,10 +197,7 @@ describe("loopback tool-call source — plugin methods through callFromApp", () 
 
   it("passes an APP-ONLY tool straight to callFromApp — no deny of its own", async () => {
     // callFromApp owns visibility and governance; this adapter must dispatch through it.
-    const runtime = {
-      resolveToolOwner: vi.fn(() => "acme-cards"),
-      callFromApp: vi.fn(async () => "governed-result"),
-    };
+    const runtime = loopbackRuntime("governed-result");
     const source = createLoopbackToolCallSource({ runtime, findTool: () => undefined });
 
     await expect(source.callTool("acme-cards", "acme_auth_status", { q: 1 }, INVOCATION)).resolves.toBe(
@@ -207,10 +207,7 @@ describe("loopback tool-call source — plugin methods through callFromApp", () 
   });
 
   it("identifies every write from the Host registry as a grant target", () => {
-    const runtime = {
-      resolveToolOwner: vi.fn(() => "acme-cards"),
-      callFromApp: vi.fn(async () => "ok"),
-    };
+    const runtime = loopbackRuntime("ok");
     const policy = {
       discriminant: "operation" as const,
       operations: {

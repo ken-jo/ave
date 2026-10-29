@@ -66,6 +66,14 @@ function unzipToText(buffer: Buffer): { names: string[]; allText: string } {
   return { names, allText };
 }
 
+function writeLogLines(filename: string, messages: string[], level = 30) {
+  writeFileSync(
+    join(logsDir, filename),
+    messages.map((msg) => JSON.stringify({ level, msg })).join("\n") + "\n",
+    "utf-8",
+  );
+}
+
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "ave-diag-test-"));
   auditDir = join(tmp, "audit");
@@ -133,16 +141,12 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
   });
 
   it("email / phone / SSN / CC in log lines are redacted", async () => {
-    writeFileSync(
-      join(logsDir, "ave-2025-06-01.log"),
-      [
-        JSON.stringify({ level: 30, msg: "user victim@example.com logged in" }),
-        JSON.stringify({ level: 30, msg: "call 010-1234-5678 now" }),
-        JSON.stringify({ level: 30, msg: "ssn 900101-1234567 leaked" }),
-        JSON.stringify({ level: 30, msg: "card 4111 1111 1111 1111 charged" }),
-      ].join("\n") + "\n",
-      "utf-8",
-    );
+    writeLogLines("ave-2025-06-01.log", [
+      "user victim@example.com logged in",
+      "call 010-1234-5678 now",
+      "ssn 900101-1234567 leaked",
+      "card 4111 1111 1111 1111 charged",
+    ]);
     const { allText } = unzipToText(await build());
     expect(allText).not.toContain("victim@example.com");
     expect(allText).not.toContain("010-1234-5678");
@@ -155,17 +159,13 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
     // PII redaction does not remove credentials; apply both scrubbers to each exported line.
     const jwt =
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
-    writeFileSync(
-      join(logsDir, "ave-2025-06-04.log"),
-      [
-        JSON.stringify({ level: 30, msg: "key sk-ant-SUPERSECRETKEY123456 used" }),
-        JSON.stringify({ level: 30, msg: "Authorization: Bearer abcDEF123456tokenvalue" }),
-        JSON.stringify({ level: 30, msg: `token ${jwt}` }),
-        JSON.stringify({ level: 30, msg: "x-api-key: liveKEY9876543210value" }),
-        JSON.stringify({ level: 30, msg: "url https://x.example/mcp?api_key=SECRETPARAM123" }),
-      ].join("\n") + "\n",
-      "utf-8",
-    );
+    writeLogLines("ave-2025-06-04.log", [
+      "key sk-ant-SUPERSECRETKEY123456 used",
+      "Authorization: Bearer abcDEF123456tokenvalue",
+      `token ${jwt}`,
+      "x-api-key: liveKEY9876543210value",
+      "url https://x.example/mcp?api_key=SECRETPARAM123",
+    ]);
     const { allText } = unzipToText(await build());
     expect(allText).not.toContain("sk-ant-SUPERSECRETKEY123456");
     expect(allText).not.toContain("abcDEF123456tokenvalue");
@@ -192,11 +192,7 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
 
   it("MCP stderr in the log file is redacted at the bundle chokepoint (§5d)", async () => {
     // Server stderr reaches app logs and must be scrubbed during export.
-    writeFileSync(
-      join(logsDir, "ave-2025-06-02.log"),
-      JSON.stringify({ level: 40, msg: "[mcp stderr] leaked admin@corp.com token" }) + "\n",
-      "utf-8",
-    );
+    writeLogLines("ave-2025-06-02.log", ["[mcp stderr] leaked admin@corp.com token"], 40);
     const { allText } = unzipToText(await build());
     expect(allText).not.toContain("admin@corp.com");
     expect(allText).toContain("[REDACTED:EMAIL]");

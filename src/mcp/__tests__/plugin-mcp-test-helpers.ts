@@ -12,3 +12,14 @@ export function testLoopbackHost(
 ): PluginMcpHost {
   return PluginMcpHost.loopback(manifest, delegate, uiResources, generationId);
 }
+
+export async function publishTestHost(
+  host: PluginMcpHost,
+  pluginId: string,
+  registry: ToolRegistry,
+): Promise<string[]> {
+  const tools = await host.prepareTools();
+  registry.reservePluginReplacement(pluginId, tools, []).publish();
+  host.publishPrepared(tools);
+  return tools.map((tool) => tool.name);
+}

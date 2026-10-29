@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { McpGovernance } from "../mcp-governance.js";
 import type { McpGovernancePolicy, McpServerApproval } from "../types.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { governanceWithPolicy } from "./test-helpers.js";
+import { buildPolicy, governanceWithPolicy, stdioApproval } from "./test-helpers.js";
 
 const testDir = join(tmpdir(), `ave-mcp-governance-${process.pid}`);
 const policyPath = join(testDir, "mcp-policy.json");
@@ -18,60 +18,41 @@ async function writePolicy(policy: McpGovernancePolicy): Promise<void> {
   await writeFile(policyPath, JSON.stringify(policy, null, 2), "utf-8");
 }
 
+function policyForServers(
+  servers: McpServerApproval[],
+  version = "1.0",
+  refreshIntervalMs = 60_000,
+): McpGovernancePolicy {
+  const policy = buildPolicy(servers);
+  policy.version = version;
+  policy.globalRules.policyRefreshIntervalMs = refreshIntervalMs;
+  return policy;
+}
+
 function makePolicy(status: "approved" | "revoked"): McpGovernancePolicy {
-  return {
-    version: "1.0",
-    defaultPolicy: "deny",
-    servers: [
-      {
-        id: "srv-a",
-        status,
-        allowedTransports: ["stdio"],
-        allowedOrigins: [],
-        maxTools: 5,
-        maxConcurrentRequests: 2,
-        toolPermissionMode: "default",
-      },
-    ],
-    globalRules: {
-      maxServersTotal: 10,
-      blockedUrlPatterns: [],
-      allowedUrlPatterns: [],
-      policyRefreshIntervalMs: 20,
+  return policyForServers([
+    {
+      id: "srv-a",
+      status,
+      allowedTransports: ["stdio"],
+      allowedOrigins: [],
+      maxTools: 5,
+      maxConcurrentRequests: 2,
+      toolPermissionMode: "default",
     },
-  };
+  ], "1.0", 20);
 }
 
 function basePolicy(server: Partial<McpServerApproval>): McpGovernancePolicy {
-  return {
-    version: "1.0-test",
-    defaultPolicy: "deny",
-    servers: [
-      {
-        id: "browser-use",
-        name: "Browser Use",
-        status: "approved",
-        transport: "stdio",
-        allowedCommands: ["uvx"],
-        requiredAuth: "api-key",
-        apiKeyEnv: "OPENAI_API_KEY",
-        tlsRequired: false,
-        allowedCapabilities: ["tools"],
-        maxTools: 16,
-        toolNamePrefix: "browser_use",
-        toolPermissionMode: "default",
-        connectionTimeoutMs: 5_000,
-        maxConcurrentRequests: 4,
-        ...server,
-      },
-    ],
-    globalRules: {
-      maxServersTotal: 10,
-      blockedUrlPatterns: [],
-      allowedUrlPatterns: [],
-      policyRefreshIntervalMs: 20,
-    },
-  };
+  return policyForServers([
+    stdioApproval("browser-use", "uvx", {
+      name: "Browser Use",
+      requiredAuth: "api-key",
+      apiKeyEnv: "OPENAI_API_KEY",
+      toolNamePrefix: "browser_use",
+      ...server,
+    }),
+  ], "1.0-test", 20);
 }
 
 afterEach(async () => {
@@ -80,65 +61,34 @@ afterEach(async () => {
 });
 
 function makeStdioPolicy(apiKeyEnv?: string): McpGovernancePolicy {
-  return {
-    version: "1.0",
-    defaultPolicy: "deny",
-    servers: [
-      {
-        id: "test-stdio",
-        name: "test-stdio",
-        status: "approved",
-        transport: "stdio",
-        allowedCommands: ["uvx"],
-        requiredAuth: "api-key",
-        apiKeyEnv: apiKeyEnv ?? "MY_API_KEY",
-        tlsRequired: false,
-        allowedCapabilities: ["tools"],
-        maxTools: 16,
-        toolNamePrefix: "test",
-        toolPermissionMode: "default",
-        connectionTimeoutMs: 5_000,
-        maxConcurrentRequests: 4,
-      },
-    ],
-    globalRules: {
-      maxServersTotal: 10,
-      blockedUrlPatterns: [],
-      allowedUrlPatterns: [],
-      policyRefreshIntervalMs: 60_000,
-    },
-  };
+  return policyForServers([
+    stdioApproval("test-stdio", "uvx", {
+      requiredAuth: "api-key",
+      apiKeyEnv: apiKeyEnv ?? "MY_API_KEY",
+      toolNamePrefix: "test",
+    }),
+  ]);
 }
 
 function makeHttpPolicy(): McpGovernancePolicy {
-  return {
-    version: "1.0",
-    defaultPolicy: "deny",
-    servers: [
-      {
-        id: "test-http",
-        name: "test-http",
-        status: "approved",
-        transport: "http",
-        allowedUrls: ["example.com"],
-        requiredAuth: "api-key",
-        apiKeyHeader: "x-api-key",
-        tlsRequired: true,
-        allowedCapabilities: ["tools"],
-        maxTools: 16,
-        toolNamePrefix: "test",
-        toolPermissionMode: "default",
-        connectionTimeoutMs: 5_000,
-        maxConcurrentRequests: 4,
-      },
-    ],
-    globalRules: {
-      maxServersTotal: 10,
-      blockedUrlPatterns: [],
-      allowedUrlPatterns: [],
-      policyRefreshIntervalMs: 60_000,
+  return policyForServers([
+    {
+      id: "test-http",
+      name: "test-http",
+      status: "approved",
+      transport: "http",
+      allowedUrls: ["example.com"],
+      requiredAuth: "api-key",
+      apiKeyHeader: "x-api-key",
+      tlsRequired: true,
+      allowedCapabilities: ["tools"],
+      maxTools: 16,
+      toolNamePrefix: "test",
+      toolPermissionMode: "default",
+      connectionTimeoutMs: 5_000,
+      maxConcurrentRequests: 4,
     },
-  };
+  ]);
 }
 
 describe("McpGovernance — apiKeyEnv denylist (CRITICAL-1)", () => {

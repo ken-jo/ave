@@ -81,23 +81,17 @@ function httpApproval(
 }
 
 
-function readRpcMethod(init: RequestInit | undefined): string | undefined {
+function readRpcField<T>(init: RequestInit | undefined, field: string): T | undefined {
   if (!init?.body) return undefined;
   try {
-    return JSON.parse(String(init.body)).method as string;
+    return JSON.parse(String(init.body))[field] as T;
   } catch {
     return undefined;
   }
 }
 
-function readRpcId(init: RequestInit | undefined): number | undefined {
-  if (!init?.body) return undefined;
-  try {
-    return JSON.parse(String(init.body)).id as number;
-  } catch {
-    return undefined;
-  }
-}
+const readRpcMethod = (init: RequestInit | undefined) => readRpcField<string>(init, "method");
+const readRpcId = (init: RequestInit | undefined) => readRpcField<number>(init, "id");
 
 function jsonRpcResponse(id: number, result: unknown): Response {
   return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
@@ -123,14 +117,8 @@ function jsonRpcErrorResponse(id: number, code: number, message: string): Respon
   });
 }
 
-function readRpcParams(init: RequestInit | undefined): Record<string, unknown> | undefined {
-  if (!init?.body) return undefined;
-  try {
-    return JSON.parse(String(init.body)).params as Record<string, unknown>;
-  } catch {
-    return undefined;
-  }
-}
+const readRpcParams = (init: RequestInit | undefined) =>
+  readRpcField<Record<string, unknown>>(init, "params");
 
 function sseResponse(chunks: string[]): Response {
   const stream = new ReadableStream<Uint8Array>({

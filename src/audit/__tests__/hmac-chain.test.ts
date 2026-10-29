@@ -36,6 +36,10 @@ import {
 let workDir: string;
 const SAFE_STORAGE_TEST_PREFIX = "safe:v1:";
 
+function buildDecisionEntries(secret: string, decisions: string[]) {
+  return buildChainedEntries(secret, decisions.map((decision, index) => ({ decision, n: index + 1 })));
+}
+
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "ave-hmac-chain-"));
 });
@@ -325,11 +329,7 @@ describe("buildChainedEntries", () => {
 
   it("each subsequent entry hashes against the previous serialized line", () => {
     const secret = "aa".repeat(32);
-    const out = buildChainedEntries(secret, [
-      { decision: "allow", n: 1 },
-      { decision: "deny", n: 2 },
-      { decision: "ask", n: 3 },
-    ]);
+    const out = buildDecisionEntries(secret, ["allow", "deny", "ask"]);
     const line0 = JSON.stringify(out[0]);
     const line1 = JSON.stringify(out[1]);
     expect(out[1].prevHash).toBe(computeLineHmac(secret, line0));
@@ -397,10 +397,7 @@ describe("verifyChain", () => {
 
   it("detects missing prevHash field", () => {
     const secret = "bb".repeat(32);
-    const out = buildChainedEntries(secret, [
-      { decision: "allow", n: 1 },
-      { decision: "deny", n: 2 },
-    ]);
+    const out = buildDecisionEntries(secret, ["allow", "deny"]);
     const lines = out.map((e) => JSON.stringify(e));
     const corrupted = JSON.parse(lines[1]) as Record<string, unknown>;
     delete corrupted.prevHash;
@@ -425,10 +422,7 @@ describe("daily seal lifecycle", () => {
     const date = "2026-05-09";
     const filePath = join(workDir, `${date}.permission-audit.jsonl`);
 
-    const entries = buildChainedEntries(secret, [
-      { decision: "allow", n: 1 },
-      { decision: "deny", n: 2 },
-    ]);
+    const entries = buildDecisionEntries(secret, ["allow", "deny"]);
     writeFileSync(filePath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
 
     const seal = sealDayFromFile(secret, store, filePath, date);
@@ -455,11 +449,7 @@ describe("daily seal lifecycle", () => {
     const store = new MemorySecretStore();
     const date = "2026-05-09";
     const filePath = join(workDir, `${date}.permission-audit.jsonl`);
-    const entries = buildChainedEntries(secret, [
-      { decision: "allow", n: 1 },
-      { decision: "deny", n: 2 },
-      { decision: "ask", n: 3 },
-    ]);
+    const entries = buildDecisionEntries(secret, ["allow", "deny", "ask"]);
     writeFileSync(filePath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
     sealDayFromFile(secret, store, filePath, date);
     expect(verifyDailySeal(secret, store, filePath, date)).toEqual({ ok: true });
@@ -470,12 +460,7 @@ describe("daily seal lifecycle", () => {
     const store = new MemorySecretStore();
     const date = "2026-05-09";
     const filePath = join(workDir, `${date}.permission-audit.jsonl`);
-    const entries = buildChainedEntries(secret, [
-      { decision: "allow", n: 1 },
-      { decision: "deny", n: 2 },
-      { decision: "ask", n: 3 },
-      { decision: "allow", n: 4 },
-    ]);
+    const entries = buildDecisionEntries(secret, ["allow", "deny", "ask", "allow"]);
     const lines = entries.map((e) => JSON.stringify(e));
     writeFileSync(filePath, lines.join("\n") + "\n");
     sealDayFromFile(secret, store, filePath, date);
