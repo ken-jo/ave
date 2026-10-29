@@ -86,7 +86,7 @@ function useNetworkAnswer(request: ApprovalRequest, decide: Decide): {
 }
 
 /** The shared decision row for a network ask, with its save error under it. */
-export function NetworkDecisionRow({
+function NetworkDecisionRow({
   request,
   locked,
   decide,
@@ -132,7 +132,7 @@ function InvalidEgressRequest({ request, locked, onDecide }: { request: Approval
 }
 
 /** `host:port`, an IPv6 host bracketed. */
-export function egressTargetLabel(host: string, port: number): string {
+function egressTargetLabel(host: string, port: number): string {
   return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
 

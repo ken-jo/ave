@@ -606,10 +606,11 @@ async function spawnNewTerminal(
       ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
-    // The tab's egress token, for the life of this shell: every proxy deny of the shell and its children is audited under the tab, and a connection to a host no grant covers is
-    // asked about in the tab's banner. Releasing it (the shell ended: the tab closed) drops the tab's "This tab" grants. A pending ask also ends when the spawn itself is abandoned.
+    // Keep egress identity and grant lifetime on this confined shell; approval delivery follows its conversation.
     const egressAbort = new AbortController();
-    const egress = openEgressInvocation({ kind: "terminal", tabId }, {
+    const conversationSessionId = [...conversationTerminals.entries()].find(([, terminal]) => terminal.tabId === tabId)?.[0];
+    if (conversationSessionId === undefined) throw new Error("Confined terminal has no owning conversation");
+    const egress = openEgressInvocation({ kind: "terminal", tabId, sessionId: conversationSessionId }, {
       abortSignal: AbortSignal.any([owner.abort.signal, egressAbort.signal]),
     });
     const releaseEgress = addCleanup(() => {
@@ -891,6 +892,7 @@ export async function ensureConversationTerminal(sessionId: string, ownerWindowI
     const releaseFailedReservation = (): void => {
       if (conversationTerminals.get(sessionId) === owner && !sessions.has(key) && !terminalSpawnsInFlight.has(key)) {
         conversationTerminals.delete(sessionId);
+        updateApprovalSurface({ kind: "release-terminal", tabId: owner.tabId });
       }
     };
     void spawning.then(result => { if (!result.ok) releaseFailedReservation(); }, releaseFailedReservation);
@@ -1660,7 +1662,10 @@ export function _conversationTerminalOwnerForTest(sessionId: string): number | n
 
 /** Test-only: deterministic conversation identity for low-level confinement tests. */
 export function _reserveConversationTerminalForTest(sessionId: string, tabId: string, ownerWindowId: number | null, initialCwd?: string): void {
-  if (!conversationTerminals.has(sessionId)) conversationTerminals.set(sessionId, { tabId, ownerWindowId, ...(initialCwd !== undefined ? { initialCwd } : {}) });
+  if (!conversationTerminals.has(sessionId)) {
+    conversationTerminals.set(sessionId, { tabId, ownerWindowId, ...(initialCwd !== undefined ? { initialCwd } : {}) });
+    updateApprovalSurface({ kind: "bind-terminal-session", tabId, sessionId });
+  }
 }
 
 /** Test-only: reset module state between tests. */
@@ -1674,6 +1679,7 @@ export function __resetTerminalsForTest(): void {
   }
   sessions.clear();
   logicalTabs.clear();
+  for (const owner of conversationTerminals.values()) updateApprovalSurface({ kind: "release-terminal", tabId: owner.tabId });
   conversationTerminals.clear();
   retiringConversationTerminals.clear();
   for (const owner of terminalSpawnsInFlight.values()) {

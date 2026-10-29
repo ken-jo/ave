@@ -217,14 +217,14 @@ describe("BrowserTabRegistry", () => {
     expect(registry.liveTab("tab-2")!.actions.signal).toBe(currentSignal);
   });
 
-  it("keeps the active surface per window and reports the active terminal", () => {
+  it("keeps the active surface per window", () => {
     const { registry } = setup();
     registry.setActiveSurface(1, { kind: "terminal", tabId: "terminal:3" });
-    expect(registry.activeTerminalTabId(1)).toBe("terminal:3");
-    expect(registry.activeTerminalTabId(2)).toBeUndefined();
+    expect(registry.getActiveSurface(1)).toEqual({ kind: "terminal", tabId: "terminal:3" });
+    expect(registry.getActiveSurface(2)).toBeUndefined();
     expect(registry.activeBrowserTab(1)).toBeUndefined();
     registry.setActiveSurface(1, null);
-    expect(registry.activeTerminalTabId(1)).toBeUndefined();
+    expect(registry.getActiveSurface(1)).toBeUndefined();
   });
 
   it("counts key presses, clicks and wheel as user action, not hover", () => {
@@ -383,13 +383,14 @@ describe("a conversation bound to a pane's tab", () => {
     expect(result).toMatchObject({ error: expect.stringContaining("bound to is closed") });
   });
 
-  it("has no default page for a chat bound to a terminal, and reads that terminal", () => {
+  it("keeps a terminal pane binding separate from the active surface and refuses a default page", () => {
     const registry = twoPages();
     registry.setActiveSurface(1, { kind: "terminal", tabId: "terminal:active" });
     registry.bindConversationSurface("side-chat", { windowId: 1, surface: { kind: "terminal", tabId: "terminal:pane" } });
     expect(registry.defaultBrowserTab(1, "side-chat")).toMatchObject({ ok: false, error: expect.stringContaining("bound to a terminal") });
-    expect(registry.defaultTerminalTabId(1, "side-chat")).toBe("terminal:pane");
-    expect(registry.defaultTerminalTabId(1, "main")).toBe("terminal:active");
+    expect(registry.conversationSurface(1, "side-chat")).toEqual({ kind: "terminal", tabId: "terminal:pane" });
+    expect(registry.conversationSurface(1, "main")).toBeUndefined();
+    expect(registry.getActiveSurface(1)).toEqual({ kind: "terminal", tabId: "terminal:active" });
   });
 
   it("is scoped to its window and released when the pane chat ends", () => {

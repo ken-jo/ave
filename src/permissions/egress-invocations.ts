@@ -21,10 +21,11 @@ export interface ShellEgressContext {
   readonly approvalSurface: "interactive" | "unavailable";
 }
 
-// One workspace terminal tab, for the life of the shell it runs. A terminal is always in the foreground: the person who typed the command is at the tab, so an egress ask for it is drawn in the tab.
+// One confined terminal incarnation. Delivery follows its conversation; legacy callers may provide only the opaque terminal identity.
 export interface TerminalEgressOwner {
   readonly kind: "terminal";
   readonly tabId: string;
+  readonly sessionId?: string;
 }
 
 // What plugin-owned code a confined, non-interactive process runs.

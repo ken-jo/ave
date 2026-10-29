@@ -16,6 +16,8 @@ describe("approval surface registrations", () => {
     registry.register("root", first);
     registry.inherit("child", "root");
     expect(registry.resolve(undefined, "internal-terminal")).toBe(first);
+    expect(registry.terminalSessionId("internal-terminal")).toBe("child");
+    expect(registry.resolve("another-session", "internal-terminal")).toBeNull();
     registry.register("root", second);
     expect(registry.resolve(undefined, "internal-terminal")).toBe(second);
     registry.releaseOwner(second);

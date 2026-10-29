@@ -892,12 +892,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return this.activeSurface.get(windowId);
   }
 
-  // The renderer id of the window's active terminal tab, if a terminal is the active surface.
-  activeTerminalTabId(windowId: number): string | undefined {
-    const surface = this.activeSurface.get(windowId);
-    return surface?.kind === "terminal" ? surface.tabId : undefined;
-  }
-
   // The handle of the window's active browser tab, if one is shown and bound.
   activeBrowserTab(windowId: number): string | undefined {
     const popup = this.activePopup.get(windowId);
@@ -1047,14 +1041,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return { ok: false, error: "the page this chat is bound to is closed or has not loaded; nothing was done" };
     }
     return { ok: true, handle: tab.handle };
-  }
-
-  // The terminal a conversation's terminal tools read when the call names none: the terminal its pane chat is bound to, none for a chat bound to a page,
-  // else the window's active terminal.
-  defaultTerminalTabId(windowId: number, sessionId: string): string | undefined {
-    const bound = this.conversationSurface(windowId, sessionId);
-    if (bound !== undefined) return bound.kind === "terminal" ? bound.tabId : undefined;
-    return this.activeTerminalTabId(windowId);
   }
 
   // A live tab by handle, in any window. For approval hooks, which have no session.

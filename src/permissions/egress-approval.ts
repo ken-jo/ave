@@ -36,7 +36,7 @@ export function createApprovalGateEgressRequester(
     const requestId = randomUUID();
     const { host, port } = request.destination;
     const terminal = request.origin === "terminal";
-    // A terminal's ask names its tab: the gate draws it in the window that owns that tab, and the renderer in the tab's banner.
+    // A confined terminal retains its incarnation identity while delivery follows its registered conversation owner.
     const toolName = terminal ? TERMINAL_EGRESS_TOOL_NAME : request.toolName;
     // Only a foreground shell call reaches here: a background one was denied before asking (I5, owner 2026-10-16), so the reviewer runs in the foreground lane only.
     const mode = permissionManager?.getMode();
@@ -80,7 +80,7 @@ export function createApprovalGateEgressRequester(
       ...(reviewerVerdict === undefined ? {} : { reviewerVerdict }),
       args: terminal ? { host, port, tabId: request.tabId } : { host, port },
       reason: pauseReason ?? (terminal
-        ? `A command in workspace terminal ${request.tabId} wants to connect to ${host}:${port}.`
+        ? `A command in an isolated conversation terminal wants to connect to ${host}:${port}.`
         : `The sandboxed ${request.toolName} command wants to connect to ${host}:${port}.`),
       createdAt: Date.now(),
       allowedChoices: ["allow-once", "deny-once"],
@@ -98,7 +98,7 @@ export function createApprovalGateEgressRequester(
         ...(terminal ? { terminalTabId: request.tabId } : {}),
         ...(!terminal && request.scopes.includes("project") && request.workspaceRoot !== undefined ? { projectCwd: request.workspaceRoot } : {}),
       },
-      ...(request.origin === "shell" && request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
+      ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
     });
     if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {

@@ -87,6 +87,11 @@ export class ApprovalSurfaceRegistry {
     this.terminalSessions.delete(tabId);
   }
 
+  terminalSessionId(tabId: string): string | undefined {
+    requireIdentity(tabId);
+    return this.terminalSessions.get(tabId);
+  }
+
   registerUnattributed(owner: WebContents | null): void {
     requireSurface(owner);
     this.unattributed = owner;
@@ -110,7 +115,10 @@ export class ApprovalSurfaceRegistry {
     if (terminalTabId !== undefined) {
       requireIdentity(terminalTabId);
       const terminalSessionId = this.terminalSessions.get(terminalTabId);
-      if (terminalSessionId !== undefined) return this.resolve(terminalSessionId);
+      if (terminalSessionId !== undefined) {
+        if (sessionId !== undefined && sessionId !== terminalSessionId) return null;
+        return this.resolve(terminalSessionId);
+      }
       surface = this.terminals.get(terminalTabId) ?? null;
     } else if (sessionId === undefined) {
       surface = this.unattributed;
@@ -148,9 +156,10 @@ export type ApprovalSurfaceUpdate =
 const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
 
 /** Read-only delivery lookup; all attachment and lifecycle updates use one host function. */
-export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve">> = Object.freeze({
+export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId">> = Object.freeze({
   resolve: (sessionId: string | undefined, terminalTabId?: string) =>
     registeredApprovalSurfaces.resolve(sessionId, terminalTabId),
+  terminalSessionId: (tabId: string) => registeredApprovalSurfaces.terminalSessionId(tabId),
 });
 
 /**

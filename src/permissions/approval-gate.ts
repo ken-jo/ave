@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { recordManualApproval } from "./judge/manual-approval.js";
 import type { WebContents } from "electron";
+import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
 import { t } from "../i18n/index.js";
 import { approvalActionSummary } from "../shared/approval-action-summary.js";
 import { resolveConversationTitle } from "../shared/conversation-title.js";
@@ -164,7 +165,7 @@ interface EgressHostApproval {
   readonly scopes: readonly EgressGrantScope[];
   // `local`: this machine or a private network (loopback, RFC 1918, ULA…). `unverified`: the upstream proxy resolves the name; Ave could not check the address. For both the card warns, and only Allow once / This conversation (a terminal: This tab) are offered.
   readonly network: EgressGrantNetwork;
-  // Set when a workspace terminal tab asks: the card is that tab's banner, drawn in the window that owns the tab (never another one), and the request names no conversation. Its second scope is `tab`, a shell call's is `session`.
+  // Confined terminal identity. Conversation attribution must match its main-owned delivery binding; its lifetime grant remains `tab` rather than the shell tool's `session` scope.
   readonly terminalTabId?: string;
   // The exact `Network(<host>:<port>)` host rule "Always deny" stores unless edited (owner 2026-10-25), host-derived; null for a destination the rule grammar cannot name (an address literal).
   readonly rule: string | null;
@@ -506,7 +507,9 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   }
   if (payload.terminalTabId !== undefined) {
     if (!isTerminalTabId(payload.terminalTabId)) throw new Error("approval: terminalTabId is not a terminal tab id");
-    if (req.sessionId !== undefined) throw new Error("approval: a terminal tab's egress ask names no conversation");
+    if (req.sessionId !== undefined && approvalSurfaceRegistry.terminalSessionId(payload.terminalTabId) !== req.sessionId) {
+      throw new Error("approval: terminal egress conversation binding mismatch");
+    }
     if (payload.scopes.includes("session")) throw new Error("approval: a terminal tab is offered This tab, not This session");
     if (payload.scopes.includes("project")) throw new Error("approval: a terminal tab is never offered This project");
   } else if (payload.scopes.includes("tab")) {

@@ -22,6 +22,7 @@ import { runWithInvocationOrigin } from "../../../plugins/runtime/origin-chain.j
 import { ObservationDaemon } from "../../../observation/daemon.js";
 import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approval-gate.js";
 import { approvalSurfaceRegistry, updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
+import * as approvalSurfaces from "../../../permissions/approval-surface-registry.js";
 import { sentApprovalCards } from "../../../__tests__/test-helpers.js";
 import { TerminalObservationAdapter } from "../../../observation/terminal-adapter.js";
 import type { TerminalObservedCommand, TerminalObservationEvent } from "../../../shared/agent-observation.js";
@@ -349,7 +350,7 @@ describe("pty-manager happy path (fs-contained)", () => {
   it("retains its invocation identity while closing and cancels pending network approval", async () => {
     await spawnTerminal({ tabId: "terminal:0000000a-1" });
     const token = (wrapWorkerCommandMock.mock.calls[0]![1] as { commandId: string }).commandId;
-    expect(egressInvocationOwner(token)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1" });
+    expect(egressInvocationOwner(token)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1", sessionId: "terminal:0000000a-1" });
     expect(wrapWorkerCommandMock.mock.calls[0]![1]).toMatchObject({ denyUnixSockets: true });
     const signal = egressInvocationAbortSignal(token);
     expect(signal?.aborted).toBe(false);
@@ -546,7 +547,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { commandId: string }];
     // A minted token, not the tab id: the id the proxy sees is unguessable.
     expect(options.commandId).toMatch(/^[0-9a-f]{32}$/);
-    expect(egressInvocationOwner(options.commandId)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1" });
+    expect(egressInvocationOwner(options.commandId)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1", sessionId: "terminal:0000000a-1" });
     lastPty?.emitExit(0);
     expect(egressInvocationOwner(options.commandId)).toBeUndefined();
   });
@@ -1206,7 +1207,7 @@ describe("pty-manager typing an approved agent command", () => {
       expect.objectContaining({ kind: "terminal", command: "echo approved", cwd: "/w", tabId: TAB,
         sandbox: { mode: "isolated", detail: "asrt" } }));
     const token = lease.bindEgress.mock.calls[0]![0] as string;
-    expect(egressInvocationOwner(token)).toEqual({ kind: "terminal", tabId: TAB });
+    expect(egressInvocationOwner(token)).toEqual({ kind: "terminal", tabId: TAB, sessionId: TAB });
     expect(lease.bindEgress).toHaveBeenCalledWith(token, "terminal-session");
     expect(lease.write).toHaveBeenCalledWith("first\n");
     expect(lease.finish).not.toHaveBeenCalled();
@@ -2368,6 +2369,25 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
 
 
 describe("host tabs and conversation-owned isolation", () => {
+  it("releases failed terminal delivery aliases while retaining its conversation's own approval surface", async () => {
+    const sessionId = "conversation-failed-egress-owner";
+    const surface = { send: vi.fn(), isDestroyed: () => false };
+    updateApprovalSurface({ kind: "attach", sessionId, surface: surface as never });
+    const updates = vi.spyOn(approvalSurfaces, "updateApprovalSurface");
+    const failure = new Error("controlled launch refusal");
+    wrapWorkerCommandMock.mockRejectedValueOnce(failure);
+    try {
+      await expect(ensureConversationTerminal(sessionId, 8)).rejects.toThrow("controlled launch refusal");
+      const binding = updates.mock.calls.map(([update]) => update).find((update) => update.kind === "bind-terminal-session");
+      expect(binding?.kind).toBe("bind-terminal-session");
+      if (!binding || binding.kind !== "bind-terminal-session") throw new Error("Missing conversation terminal binding");
+      expect(approvalSurfaceRegistry.resolve(undefined, binding.tabId)).toBeNull();
+      expect(approvalSurfaceRegistry.resolve(sessionId)).toBe(surface);
+    } finally {
+      updates.mockRestore();
+      updateApprovalSurface({ kind: "release", sessionId });
+    }
+  });
   const tabId = "terminal:abcdabcd-1";
   it("preserves the configured host interpreter without confined backend availability", async () => {
     gateActive = false;

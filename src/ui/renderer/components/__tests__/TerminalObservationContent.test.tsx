@@ -5,12 +5,17 @@ import "../../../../../test/renderer/setup.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { TranscriptRenderer } from "../TranscriptRenderer.js";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
-import { TerminalObservationContent } from "../TerminalObservationContent.js";
+import { TerminalObservationCommands, useTerminalObservation } from "../TerminalObservationContent.js";
 import { OBSERVATION_LIMITS, type AgentObservationEvent, type TerminalObservedCommand, type ObservationResponse } from "../../../../shared/agent-observation.js";
 import { en } from "../../../../i18n/messages/en.js";
 import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js";
 import type { EgressDecisionBasis } from "../../../../audit/sandbox-audit.js";
 import { ko } from "../../../../i18n/messages/ko.js";
+
+function TerminalObservationHarness({ sessionId, observe }: { sessionId?: string; observe: boolean }) {
+  const observation = useTerminalObservation(sessionId, observe);
+  return <TerminalObservationCommands observation={observation} />;
+}
 
 const SESSION = "terminal-agent-session";
 const TARGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -33,7 +38,7 @@ async function emit(...events: AgentObservationEvent[]) {
   await act(async () => { listeners.forEach((listener) => listener(events)); });
 }
 async function open() {
-  const result = render(<TerminalObservationContent sessionId={SESSION} observe />);
+  const result = render(<TerminalObservationHarness sessionId={SESSION} observe />);
   await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "subscribe-terminal", sessionId: SESSION }));
   return result;
 }
@@ -61,7 +66,7 @@ describe("agent terminal observation view", () => {
   });
 
   it("does not subscribe without a conversation", () => {
-    render(<TerminalObservationContent observe />);
+    render(<TerminalObservationHarness observe />);
     expect(acknowledge).not.toHaveBeenCalled();
     expect(listeners.size).toBe(0);
   });
@@ -70,7 +75,7 @@ describe("agent terminal observation view", () => {
     let finish: (response: ObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
     acknowledge.mockImplementation((request: { action: string }) => request.action === "subscribe-terminal"
       ? new Promise<ObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
-    render(<TerminalObservationContent sessionId={SESSION} observe />);
+    render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await emit(snapshot(1));
     expect(screen.queryByTestId("terminal-observation-live-strip")).toBeNull();
     await act(async () => { finish({ ok: true, observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } }); });
@@ -157,7 +162,7 @@ describe("agent terminal observation view", () => {
   it("ticks a running duration and pins the final exit code and duration", async () => {
     vi.useFakeTimers();
     const start = Date.now() - 12_000;
-    render(<TerminalObservationContent sessionId={SESSION} observe />);
+    render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await act(async () => {});
     await emit(snapshot(1, [command({ startedAt: start })]));
     expect(screen.getByTestId("terminal-observation-duration").textContent).toBe("· 12s");
@@ -173,7 +178,7 @@ describe("agent terminal observation view", () => {
   it("releases and immediately hides the previous conversation when the session changes", async () => {
     const result = await open();
     await emit(snapshot(1));
-    result.rerender(<TerminalObservationContent sessionId="new-session" observe />);
+    result.rerender(<TerminalObservationHarness sessionId="new-session" observe />);
     expect(screen.queryByTestId("terminal-observation-live-strip")).toBeNull();
     expect(acknowledge).toHaveBeenCalledWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 });
     await emit(snapshot(2));
@@ -186,7 +191,7 @@ describe("agent terminal observation view", () => {
     let finish: (response: ObservationResponse) => void = () => { throw new Error("Subscription has not started"); };
     acknowledge.mockImplementation((request: { action: string }) => request.action === "subscribe-terminal"
       ? new Promise<ObservationResponse>((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true }));
-    const result = render(<TerminalObservationContent sessionId={SESSION} observe />);
+    const result = render(<TerminalObservationHarness sessionId={SESSION} observe />);
     result.unmount();
     await act(async () => { finish({ ok: true, observation: { targetId: TARGET, sessionId: SESSION, seq: 0 } }); });
     expect(acknowledge).toHaveBeenLastCalledWith({ action: "release", targetId: TARGET, sessionId: SESSION, seq: 0 });
@@ -195,7 +200,7 @@ describe("agent terminal observation view", () => {
 
   it("shows localized subscription, host status and render acknowledgement failures in the same slot", async () => {
     acknowledge.mockResolvedValueOnce({ ok: false, error: "unauthorized" });
-    const failed = render(<TerminalObservationContent sessionId={SESSION} observe />);
+    const failed = render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await screen.findByRole("alert");
     expect(screen.getByRole("alert").textContent).toBe("에이전트 터미널 활동을 표시하지 못했습니다");
     failed.unmount();
@@ -212,7 +217,7 @@ describe("agent terminal observation view", () => {
 
   it("bounds snapshots waiting for the subscription reply and reports overload", async () => {
     acknowledge.mockImplementation(() => new Promise<ObservationResponse>(() => {}));
-    render(<TerminalObservationContent sessionId={SESSION} observe />);
+    render(<TerminalObservationHarness sessionId={SESSION} observe />);
     await emit(...Array.from({ length: OBSERVATION_LIMITS.maxViews + 1 }, (_, index) => snapshot(index + 1, [command()], { target: { id: `pending-${index}`, path: "agent-terminal" } })));
     expect(screen.getByRole("alert").textContent).toBe("에이전트 터미널 활동을 다시 연결해야 합니다");
   });

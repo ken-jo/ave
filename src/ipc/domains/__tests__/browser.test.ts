@@ -92,7 +92,7 @@ describe("browser IPC", () => {
 
   it("sets and clears the window's active surface, refusing malformed payloads", () => {
     expect(invoke(CHANNELS.surface.setActive, fromWindow(), { kind: "terminal", tabId: "terminal:1" })).toEqual({ ok: true });
-    expect(browserTabRegistry.activeTerminalTabId(7)).toBe("terminal:1");
+    expect(browserTabRegistry.getActiveSurface(7)).toEqual({ kind: "terminal", tabId: "terminal:1" });
     expect(invoke(CHANNELS.surface.setActive, fromWindow(), null)).toEqual({ ok: true });
     expect(browserTabRegistry.getActiveSurface(7)).toBeUndefined();
     expect(invoke(CHANNELS.surface.setActive, fromWindow(), { kind: "chat", tabId: "x" })).toEqual({ ok: false, error: "bad-request" });

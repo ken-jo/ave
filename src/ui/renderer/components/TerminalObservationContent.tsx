@@ -244,9 +244,3 @@ export function TerminalObservationCommands({ observation, commands = observatio
     </section>
   );
 }
-
-/** Standalone read-only observer using the shared authenticated subscription. */
-export function TerminalObservationContent({ sessionId, observe }: { sessionId?: string; observe: boolean }) {
-  const observation = useTerminalObservation(sessionId, observe);
-  return <TerminalObservationCommands observation={observation} />;
-}

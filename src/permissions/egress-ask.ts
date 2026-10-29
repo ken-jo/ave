@@ -24,7 +24,7 @@ import { auditInvocationFor, noteCallbackDecision } from "./egress-deny-monitor.
 import { projectRuleRoot } from "./rules/project-rule-files.js";
 import { observeAgentTerminalEgressDecision } from "../tools/agent-terminal-observation.js";
 
-// What the person is asked about: for a shell tool call on its card, for a terminal in its tab.
+// Shell-tool and confined-terminal connections use their owning approval cards.
 export type EgressApprovalRequest = EgressShellApprovalRequest | EgressTerminalApprovalRequest;
 
 // A Bash or PowerShell tool call's ask, on the approval dock.
@@ -36,10 +36,11 @@ export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon 
   readonly workspaceRoot?: string;
 }
 
-// A workspace terminal tab's ask, in the banner of that tab.
+// A confined terminal's ask, on its owning conversation's approval surface.
 export interface EgressTerminalApprovalRequest extends EgressApprovalRequestCommon {
   readonly origin: "terminal";
   readonly tabId: string;
+  readonly sessionId?: string;
 }
 
 interface EgressApprovalRequestCommon {
@@ -53,7 +54,7 @@ interface EgressApprovalRequestCommon {
   readonly abortSignal: AbortSignal | undefined;
 }
 
-// How long a terminal tab's banner holds a connection before it is denied (design F).
+// How long a confined terminal's approval card holds a connection before denial.
 const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 
 // What the person answered. A deny carries why (their choice, a timeout, no surface).
@@ -84,7 +85,7 @@ export interface EgressAskDeps {
   // Writes the decision row (`emitSandboxAudit`).
   readonly audit: (entry: SandboxEgressDecisionAuditEntry) => void;
   readonly now?: () => Date;
-  // How long a terminal banner waits for an answer; `TERMINAL_EGRESS_ASK_TIMEOUT_MS` unless a test shortens it.
+  // How long the terminal card waits for an answer; `TERMINAL_EGRESS_ASK_TIMEOUT_MS` unless a test shortens it.
   readonly terminalAskTimeoutMs?: number;
 }
 
@@ -94,7 +95,7 @@ export const EGRESS_DENY_REASONS = {
   malformed: "malformed destination",
   workerOffList: "not on the extension's network allowlist",
   offline: "outbound network is disabled for this service",
-  terminalTimeout: "network approval timed out: nobody answered the terminal tab's banner within 120 seconds",
+  terminalTimeout: "network approval timed out: nobody answered the terminal approval card within 120 seconds",
   askOff: "host is not on the allow list (network asks are off)",
   headless: "host needs approval; unavailable in background run",
   noSurface: "host needs approval; no approval surface is available",
@@ -146,7 +147,7 @@ export function egressAllowlistMatches(entries: readonly string[], destination: 
 function grantSubject(token: string, owner: ShellEgressOwner | TerminalEgressOwner): EgressGrantSubject {
   return owner.kind === "shell"
     ? { token, sessionId: owner.context.sessionId, tabId: undefined, projectRoot: egressProjectRoot(owner.context.workspaceRoot), origin: "shell" }
-    : { token, sessionId: undefined, tabId: owner.tabId, projectRoot: undefined, origin: "terminal" };
+    : { token, sessionId: owner.sessionId, tabId: owner.tabId, projectRoot: undefined, origin: "terminal" };
 }
 
 // The project a shell call's "This project" grant keys on: the repository root of its working directory, the same root a project `Bash(...)` rule applies to (five-choice cards). A relative working directory is a host contract violation and throws, which the callback turns into an audited deny.
@@ -243,7 +244,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         abortSignal: deps.abortSignalOf(token),
       });
     } else {
-      // The banner holds the connection for a bounded time, then denies; the tab closing (its shell's signal) ends it at once.
+      // The card holds the connection for a bounded time; shell teardown ends the pending ask immediately.
       const expiry = new AbortController();
       let timedOut = false;
       const timer = setTimeout(() => {
@@ -255,6 +256,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         answer = await requester({
           origin: "terminal",
           tabId: owner.tabId,
+          ...(owner.sessionId === undefined ? {} : { sessionId: owner.sessionId }),
           destination,
           scopes,
           network,
