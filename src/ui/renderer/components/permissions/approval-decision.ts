@@ -52,7 +52,7 @@ export const DECISION_LABEL_KEYS: Readonly<Record<ApprovalCardChoice, string>> =
 };
 
 /** A host terminal card's lasting allow names one command in one folder of one shell, not "everywhere". */
-export const HOST_TERMINAL_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowHostTerminal";
+const HOST_TERMINAL_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowHostTerminal";
 
 /** A folder card's lasting allow is "Always allow this folder", not "everywhere": it grants the folder, not the tool. */
 export const FOLDER_ALLOW_LABEL_KEY = "toolApprovalDialog.decisionAllowFolder";

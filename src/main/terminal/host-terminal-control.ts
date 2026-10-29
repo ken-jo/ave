@@ -7,7 +7,7 @@
 import type { HostTerminalControlMode, HostTerminalControlState } from "../../shared/terminal-session.js";
 
 /** Characters a disclosure span keeps; the newest are kept when a command prints more. */
-export const HOST_DISCLOSURE_MAX_CHARS = 96 * 1024;
+const HOST_DISCLOSURE_MAX_CHARS = 96 * 1024;
 /** Completed spans kept per incarnation for their requesting conversation's continuation reads. */
 const MAX_RETAINED_DISCLOSURES = 8;
 

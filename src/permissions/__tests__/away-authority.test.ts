@@ -56,6 +56,7 @@ function makeCandidate(
     allowedChoices: ["allow-once", "deny-once"],
     durableApprovalRecordAllowed: false,
     hostShellExecutionPermitBound: false,
+    hostTerminalBound: false,
     targetFilePaths: [IN_SCOPE_FILE],
     ...overrides,
   };
@@ -319,6 +320,11 @@ describe("AwayAuthority eligibility", () => {
       "a host-shell permit binding must never be minted by an away answer",
       { hostShellExecutionPermitBound: true },
       "host-shell-permit-bound",
+    ],
+    [
+      "a command typed into the user's own host terminal is a desktop-only decision",
+      { hostTerminalBound: true },
+      "host-terminal-bound",
     ],
     [
       "a write with no resolvable target has an uncheckable scope",

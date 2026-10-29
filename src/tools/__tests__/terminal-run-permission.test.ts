@@ -67,6 +67,14 @@ async function run(
     typeCommand,
     verifyShell: async (_tabId, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
     auditMismatch: () => {},
+    host: {
+      session: () => undefined,
+      shellName: () => { throw new Error("an unbound chat never reaches a host terminal"); },
+      control: () => { throw new Error("an unbound chat never reaches a host terminal"); },
+      verifyShell: async () => { throw new Error("an unbound chat never reaches a host terminal"); },
+      typeCommand: async () => { throw new Error("an unbound chat never reaches a host terminal"); },
+      waitDisclosure: async () => { throw new Error("an unbound chat never reaches a host terminal"); },
+    },
   }));
   const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: options.choice ?? "deny-once" }));
   const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);

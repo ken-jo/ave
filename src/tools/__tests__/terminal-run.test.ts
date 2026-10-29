@@ -825,7 +825,7 @@ describe("terminal_run into a pane chat's own host terminal", () => {
   ])("types nothing when %s after approval", async (_label, change, reason) => {
     const { tool, hostTyped } = hostDeps();
     const sealed = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
-    const { scope, sessionId } = change(sealed) as { scope: ApprovalMemoryScope; sessionId?: string };
+    const { scope, sessionId } = change(sealed!) as { scope: ApprovalMemoryScope; sessionId?: string };
     const result = await tool.execute({ command: "npm test" }, ctxFor(scope, sessionId));
     expect(result.isError).toBe(true);
     expect(result.output).toMatch(reason);

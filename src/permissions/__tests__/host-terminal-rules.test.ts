@@ -12,7 +12,6 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { buildHostTerminalRuleApproval, type HostTerminalApprovalBinding } from "../rules/shell-rule-approval.js";
 import { saveApprovalCardRule } from "../approval-rule-save.js";
-import { AwayAuthority } from "../away-authority.js";
 
 let dir: string;
 let cwd: string;
@@ -170,14 +169,6 @@ describe("host terminal approval card", () => {
     const gate = new ApprovalGate({ send: vi.fn(), isDestroyed: () => false } as never);
     await expect(gate.requestAndWait(hostRequest("printf ready", { hostTerminal: binding("printf other") }))).rejects.toThrow(/host terminal/);
     await expect(gate.requestAndWait(hostRequest("printf ready", { durableApprovalRecordAllowed: true }))).rejects.toThrow(/host terminal binding/);
-  });
-
-  it("is never answered by an away grant", () => {
-    const away = new AwayAuthority();
-    expect(away.consume({
-      sessionId: "pane", source: "builtin", kind: undefined, category: "tool", toolCategory: "shell", allowedChoices: undefined,
-      durableApprovalRecordAllowed: false, hostShellExecutionPermitBound: false, hostTerminalBound: true, targetFilePaths: [],
-    }, Date.now())).toMatchObject({ answer: false });
   });
 
   it("saves only the derived exact host rule, only as Always allow, and the rule decides the next identical command", async () => {

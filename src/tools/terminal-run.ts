@@ -76,7 +76,7 @@ export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   host: HostTerminalDeps;
 }
 
-export interface HostTerminalDeps {
+interface HostTerminalDeps {
   /** The live host terminal of a workspace tab (never a side panel mount) in `windowId`. */
   session: (tabId: string, windowId: number) => TerminalSessionInfo | undefined;
   shellName: (ref: TerminalSessionRef, windowId: number) => string | undefined;
