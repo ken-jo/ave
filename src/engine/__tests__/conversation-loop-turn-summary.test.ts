@@ -25,7 +25,7 @@ import {
   A2A_INPUT_REQUIRED_CONTROL_VERSION,
 } from "../../tools/agent-send.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
-import { ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
+import { makeConversationPermissionDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 
 // Real filesystem I/O can schedule lock retries after fake time has advanced.
 const retrySleep = vi.hoisted(() => ({ skip: false }));
@@ -100,6 +100,7 @@ function createLoopWithRegistry(
       saveSession: () => {},
       listSessions: () => [],
     },
+    ...makeConversationPermissionDeps(),
     ...overrides,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as { provider: LLMProvider | null }).provider = provider;

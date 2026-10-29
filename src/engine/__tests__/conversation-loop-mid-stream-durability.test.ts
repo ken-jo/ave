@@ -21,6 +21,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { interruptRunningTurnsForExit } from "../turn/turn-journal.js";
 import { SubAgentRunner, exactToolScope } from "../subagent-runner.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { makeConversationPermissionDeps } from "./support/conversation-loop-fixtures.js";
 
 const SESSION_ID = "5d1e2f3a-46a9-493a-8a3e-f277ba673230";
 
@@ -102,6 +103,7 @@ function buildLoop(memoryManager: MemoryManager, toolRegistry: ToolRegistry, pro
     routeEngine: new RouteEngine(),
     toolRegistry,
     memoryManager,
+    ...makeConversationPermissionDeps(),
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as { provider: LLMProvider | null }).provider = provider;
   (loop as { sessionId: string }).sessionId = SESSION_ID;
@@ -419,6 +421,7 @@ describe("mid-stream durability", () => {
         routeEngine: new RouteEngine(),
         toolRegistry,
         memoryManager: { saveSession: () => Promise.resolve(), listSessions: () => [] },
+        ...makeConversationPermissionDeps(),
       } as unknown as ConstructorParameters<typeof ConversationLoop>[0],
       toolRegistry,
       subAgentMemoryManager: subStore,

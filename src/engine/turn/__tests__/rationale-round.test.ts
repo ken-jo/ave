@@ -42,7 +42,8 @@ const ELIGIBILITY_CONTEXT = {
 
 const PERMISSION = {
   decision: "ask",
-  reason: "reviewer threshold",
+  reasonCode: "reviewer-human-required",
+  reason: "Automatic review requires human approval.",
   layer: 5,
   reviewer: {
     route: "foreground-auto",

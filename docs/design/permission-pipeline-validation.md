@@ -24,7 +24,7 @@ The screenshot and CDP assertions establish the displayed state in that isolated
 
 ## Remaining gates and decisions
 
-- Final production typecheck: passed (`typecheck-publish-final.log`). The test-type ratchet also held (`test-types-publish-final.log`): inherited diagnostics remain at 232 files / 1,013 errors, with 3 files improved and 12 fully fixed; this is not a clean test compilation.
+- The earlier production typecheck passed (`typecheck-publish-final.log`) and test-type ratchet held (`test-types-publish-final.log`): 232 files / 1,013 inherited errors, with 3 files improved and 12 fully fixed. Fresh checks after the direct-UI/settings repairs remain pending; this is not a clean test compilation.
 - Final full app build and isolated CDP launch: passed (`cdp-publish-launch.log`). `cdp-publish-assertions.json` confirms owner-away `0`, zero obsolete interactive selectors and no account email. The screenshot above records the corresponding permissions state.
 - Production/push gates after the latest source changes: pending. No future CI or publish result is asserted.
 - Native filesystem-denial attribution is supported by the macOS monitor. Installed Linux diagnostic-attempt records are deliberately rejected as escalation authority, so Linux retains the original failure. The owner decision remains pending: accept this limitation or require a trusted Linux supervisor before delivery. Controlled Linux executor cases prove orchestration only.
@@ -68,7 +68,7 @@ The parent-model and away automatic deciders are retired. The breaker now overla
 | Executor and approval-memory consumers | 137 passed across 2 files; `executor-and-memory-final.log`; subsequent executor-only recheck passed 119 in `executor-two-targets-final.log`. These overlap and are not added. |
 | Broker route and mandatory floors | 10 passed; `validation-broker-route-final.log`. |
 
-Production typecheck and the test-type ratchet passed in the final publish checks described above. The normal push has not yet run. No cross-run aggregate or future CI success is asserted. The Linux owner decision and open terminal work #308 remain unchanged.
+Production typecheck and the test-type ratchet passed in the final publish checks described above. The latest normal push attempt did not complete; the repair record below supersedes the earlier pending state. No cross-run aggregate or future CI success is asserted. The Linux owner decision and open terminal work #308 remain unchanged.
 
 ## Same-card rule saves and final execution admission
 
@@ -80,4 +80,24 @@ An independently reviewed P1 race is resolved by a synchronous policy-epoch chec
 | Shell/network wildcard warning consumers | 69 passed across 4 files; `wildcard-warning-renderer.log`. Shell broader-scope warnings and network sandbox-only warnings retain distinct semantics. |
 | Late pause and execution races | 30 passed; `late-pause-final.log`. This full affected-file result includes the earlier 2-case host-race filter and overlaps previous pause coverage. |
 
-These groups are not summed with earlier overlapping results. Normal push remains pending; no future CI result is claimed.
+These groups are not summed with earlier overlapping results. A completed normal push remains pending; no future CI result is claimed.
+
+## Direct UI and live policy-authority repairs
+
+The normal gate exposed a real direct-UI sensitivity regression as well as stale fixtures. Direct preview/mention and workspace picker/drop retain the existing full sensitive matcher outside the agent tool decision tree. Native ReadFileTool separately uses its central permission and execute-time file gate; checkpoint inspection/recovery receives no new scope from tool approval.
+
+Production permission admission now reads the actual AVE_HOME/config/settings.json authority through createPermissionManager and refreshes its live fault in getPolicyEpoch, including after a human answer. The separate ave-settings.json app preference writer owns only owner-away wait configuration and cannot clear that fault.
+
+| Focused repair | Observed result and scope |
+| --- | --- |
+| Direct preview and native file boundaries | 325 passed, zero skips, across 6 files; direct-preview-guards.log. The subsequent read-core recheck passed 23 and overlaps that group. |
+| Engine fixture consumers | 168 passed; subagent consumers separately passed 79. These are scoped runs, not an aggregate gate. |
+| Rationale timeout/cancellation consumers | 24 passed; validation-rationale-owned-final.log. |
+| IPC formatter consumers | 37 passed across 2 files; ipc-error-coverage-fix.log. |
+| Markdown impact policy | 33 passed; markdown-policy-fixed.log. |
+| Actual settings-authority consumers | 384 passed and 1 existing skip across 5 files; settings-actual-authority-paths.log. The earlier 112-case subset overlaps and is not added. |
+| Production live authority admission | 7 passed; permission-settings-admission.log. Actual native reads, network and remembered approval deny across all four modes before classification when the real authority is corrupt; valid repair restores behavior. Corruption after human consent stops the handler, and ordinary app saves cannot erase the separate fault. |
+
+The normal push attempt stopped at observed failures and a specified stale abort fixture; only the owned process group was terminated (exit 143). There is no completed 996-case gate result. Later focused repairs above passed; fresh integrated production type and normal-push gates remain pending. Earlier green type/build results do not certify the latest tree, and no future CI result is asserted.
+
+The final main bundle build passed in `build-main-reconciled-direct.log`. Its preceding shared-wrapper attempt built successfully but failed process-group cleanup with `EPERM`; that nonzero wrapper result is retained separately and is not counted as a successful command. The narrow direct rerun exited zero.

@@ -8,7 +8,7 @@ import { validateSandboxPath } from "../sandbox/path-validator.js";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
-  isAdmissionDeniedPath,
+  isSensitivePath,
   isConfiguredSessionReadPath,
 } from "../permissions/sensitive-paths.js";
 
@@ -27,6 +27,8 @@ export type AssertReadableResult =
   | { ok: true; resolved: string }
   | { ok: false; error: AssertReadableFailure };
 
+// Direct preview and document reads have no agent approval receipt.
+// Keep their sensitive-path denial separate from pipeline-authorized native tool reads.
 // Check globs, then sensitive paths, then symlink-safe directory scope.
 // Sensitive denial must precede allowed-root checks so grants cannot expose private descendants.
 export function assertReadableFilePath(
@@ -46,8 +48,8 @@ export function assertReadableFilePath(
     resolved = lexical;
   }
   const canonical = canonicalizePathForMatch(resolved);
-  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(lexical), "read")
-    ?? isAdmissionDeniedPath(caseFoldForMatch(canonical), "read");
+  const sensitive = isSensitivePath(caseFoldForMatch(lexical), "read")
+    ?? isSensitivePath(caseFoldForMatch(canonical), "read");
   if (sensitive) return { ok: false, error: "sensitive-path" };
   if (isConfiguredSessionReadPath(canonical)) return { ok: true, resolved };
   const check = validateSandboxPath(resolved, cwd, [...extraAllowed]);

@@ -18,7 +18,7 @@ describe("judge configured provider wiring", () => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const provider: LLMProvider = { vendor: "openai-compatible", async *streamTurn() {} };
     const createProvider = vi.fn((_options: unknown) => provider);
-    const wireReviewerAgent = vi.fn(() => ({}));
+    const wireReviewerAgent = vi.fn(() => ({ recentlyDenied: { setReplayResolver: vi.fn() } }));
     const wireJudgeAgent = vi.fn((_input: unknown) => undefined);
     vi.doMock("../../../engine/llm/provider-factory.js", () => ({
       createProvider, secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
@@ -61,15 +61,19 @@ describe("judge configured provider wiring", () => {
           },
         } : key === "marketplace" ? { installedProviderPresets } : {},
         getSecret: vi.fn((): string | null => "configured-key"),
+        onChanged: vi.fn(),
       };
       const context = {
         host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() },
         permissionManager: new PermissionManager(join(directory, "permissions.json")),
+        approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
         settingsService, llmFetch: networkFetch, singleHopNetworkFetch: networkFetch,
         getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
         subscriptionProviderFactory: vi.fn(() => provider),
       };
       wireReviewerAndPermissions(context as never);
+      expect(context.approvalGate.setOwnerAwayAutoSkipMinutes).toHaveBeenCalledWith(0);
+      expect(settingsService.onChanged).toHaveBeenCalledWith("permissions", expect.any(Function));
       const judgeDeps = wireJudgeAgent.mock.calls[0]![0] as {
         providerForModel: (model: JudgeModelRef) => LLMProvider | null;
         selectedModelCacheScope: (model: JudgeModelRef) => Record<string, unknown>;
@@ -177,7 +181,7 @@ describe("judge configured provider wiring", () => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const provider: LLMProvider = { vendor: "claude", async *streamTurn() {} };
     const createProvider = vi.fn((_options: unknown) => provider);
-    const wireReviewerAgent = vi.fn((_deps: unknown) => ({}));
+    const wireReviewerAgent = vi.fn((_deps: unknown) => ({ recentlyDenied: { setReplayResolver: vi.fn() } }));
     const wireJudgeAgent = vi.fn((_input: unknown) => undefined);
     vi.doMock("../../../engine/llm/provider-factory.js", () => ({
       createProvider, secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
@@ -202,10 +206,12 @@ describe("judge configured provider wiring", () => {
       const settingsService = {
         get: (key: string) => key === "llm" ? { provider: "openai", vendors } : key === "marketplace" ? {} : {},
         getSecret: vi.fn((): string | null => "configured-key"),
+        onChanged: vi.fn(),
       };
       const context = {
         host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() },
         permissionManager: new PermissionManager(join(directory, "permissions.json")),
+        approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() },
         settingsService, llmFetch: unusedNetworkFetch, singleHopNetworkFetch: unusedNetworkFetch,
         getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
         subscriptionProviderFactory: vi.fn(() => provider),
@@ -220,6 +226,8 @@ describe("judge configured provider wiring", () => {
 
       writeReviewerModel(null);
       wireReviewerAndPermissions(context as never);
+      expect(context.approvalGate.setOwnerAwayAutoSkipMinutes).toHaveBeenCalledWith(0);
+      expect(settingsService.onChanged).toHaveBeenCalledWith("permissions", expect.any(Function));
       expect(lastReviewerDeps().selectedModel).toBeUndefined();
       expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "openai", model: "chat-a" });
       vendors.openai = { model: "chat-b" };

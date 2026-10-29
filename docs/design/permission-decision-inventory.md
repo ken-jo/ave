@@ -259,6 +259,9 @@ D03/D05/G04 retain mandatory-floor and no-approver denial metadata across nested
 
 Current accepted boundary clarifications:
 
+- Direct UI preview/mention/picker/drop and checkpoint inspection/recovery are adjacent user/host workflows outside the agent tool decision tree. The direct UI reader retains full sensitivity rejection in both lexical and canonical spellings; checkpoint ownership/project scope is not widened by a tool permission. Native ReadFileTool continues through central policy plus ensureFileAccess.
+- Accepted resolution 1 uses the actual permission authority at AVE_HOME/config/settings.json. Production createPermissionManager supplies a live readPermissionSettings fault callback, and getPolicyEpoch refreshes that fault, including after an approval wait. A malformed/unreadable authority denies at S1 before reads, network, review or remembered grants; a valid repair is reread. The separate AppSettings ave-settings.json permissions field stores only the owner-away wait preference, so an ordinary app save cannot erase the authority fault.
+
 - The rest-of-turn breaker is a final normal-ask overlay on every automatic authority source, including ordinary reads, remembered grants, explicit allow rules, successful review and Allow mode. Admission denies and existing forced floors retain their outcomes. Human consent answers only the current request and does not reopen automation for that turn; missing approvers deny.
 - Resolution 4's configured outside-read restriction is an S1 admission deny when no admitted root covers the target. This is an explicit changed cell from the baseline outside-read approval route: modes, reviewer and remembered tool approval cannot authorize an uncovered read or create its missing directory authority.
 - A sandboxed shell that requests filesystem scope outside its admitted roots enters the escalated mode/human route before scope expansion. Being sandboxed alone cannot auto-grant the wider scope. The current outside-scope regression requires a normal card.
@@ -278,38 +281,38 @@ All 97 sites now map to the central decision owner or an explicit retained E/O b
 | A06 | `src/tools/invocation-runner.ts:779` | S1 argument hooks finalize input before script hook and permission. | [Native][inventory-native] |
 | A07 | `src/tools/invocation-runner.ts:827` | S1 governed operation/principal binding retained; execution consumes exact capability. | [Plugin][inventory-plugin] |
 | A08 | `src/tools/invocation-runner.ts:914` | S1 sealed input mismatch refuses resume. | [Auth][inventory-auth] |
-| A09 | `src/permissions/permission-manager.ts:1428` | S4 normalized kind preserves MCP read-only hint. | [Native][inventory-native] |
+| A09 | `src/permissions/permission-manager.ts:1446` | S4 normalized kind preserves MCP read-only hint. | [Native][inventory-native] |
 | A10 | `src/tools/invocation-runner.ts:365` | S1/E selected route remains frozen and capability-bound; guest operands remain guest paths. | [Executor][inventory-executor] |
 | A11 | `src/tools/invocation-runner.ts:1166` | S1 identity derivation remains tied to final input; memory later redecides minted evidence. | [Auth][inventory-auth] |
 | A12 | `src/tools/invocation-runner.ts:1231` | S1 remote explicit-host capability denied independently of ordinary host-shell mode. | [Auth][inventory-auth] |
-| A13 | `src/permissions/permission-manager.ts:971` | S1 corrupt policy store normalizes admission denial; exact deny lookup retained. | [Manager][inventory-manager] |
+| A13 | `src/permissions/permission-manager.ts:987` | S1 corrupt policy store normalizes admission denial; exact deny lookup retained. | [Manager][inventory-manager] |
 | B01 | `src/tools/invocation-runner.ts:1855` | S1/E path/parser checks retained; dynamic/recursive uncertainty reaches central policy. Trusted native filesystem blocks re-enter the full pipeline as a fresh exact host request. | [Paths][inventory-paths] |
 | B02 | `src/tools/shell-path-policy.ts:1397` | S2/S4 lexical/canonical effect and delete-intent evidence, including partial uncertain input. | [Paths][inventory-paths] |
 | B03 | `src/tools/invocation-runner.ts:1808` | S1/E exact final command prepared under actual dialect and plan. | [Executor][inventory-executor] |
-| B04 | `src/permissions/permission-manager.ts:596` | S1 credential admission versus S2/S4 path evidence separated; runner collects all edit targets. | [Native][inventory-native] |
-| B05 | `src/permissions/permission-manager.ts:1351` | S1 retained credential stores; ordinary secret evidence reaches kind/mode pipeline. | [Native][inventory-native] |
+| B04 | `src/permissions/permission-manager.ts:597` | S1 credential admission versus S2/S4 path evidence separated; runner collects all edit targets. | [Native][inventory-native] |
+| B05 | `src/permissions/permission-manager.ts:1369` | S1 retained credential stores; ordinary secret evidence reaches kind/mode pipeline. | [Native][inventory-native] |
 | B06 | `src/tools/invocation-runner.ts:1901` | S3 authenticated directory result reused for exact call; no second category card. | [Native][inventory-native] |
 | B07 | `src/tools/invocation-runner.ts:1389` | S4/S5/S7 one combined full-argument directory/invocation result. | [Native][inventory-native] |
 | B08 | `src/tools/invocation-runner.ts:418` | R one runner history capture replaces removed directory deferred append. | [History][inventory-history] |
 | B09 | `src/tools/invocation-runner.ts:2086` | S1 per-turn plugin allowlist retained; no permission bypass via skill load. | [Plugin][inventory-plugin] |
 | B10 | `src/tools/pipeline/scoped-rule-subject.ts:9` | S3 scoped subject derives all edit targets and foreign-tool identity. | [Rules][inventory-rules] |
-| C01 | `src/permissions/permission-manager.ts:1219` | S1-S6 normalized manager request delegates to one pure decision owner. | [Manager][inventory-manager] |
-| C02 | `src/permissions/permission-manager.ts:1382` | S2/S4 dialect/path/uncertainty evidence; analysis limit is not a second mode matrix. | [Paths][inventory-paths] |
-| C03 | `src/permissions/permission-manager.ts:1412` | S1/S3 deny/ask/allow inputs composed before central decision. | [Manager][inventory-manager] |
-| C04 | `src/permissions/permission-manager.ts:1344` | S1 excluded remote capability; other-principal forced evidence retained. | [Auth][inventory-auth] |
-| C05 | `src/permissions/permission-manager.ts:971` | S1 untrusted rule store denies every category; no reviewer/allow override. | [Manager][inventory-manager] |
-| C06 | `src/permissions/permission-manager.ts:1385` | S2 recognized exfil/protected/critical/escape floors remain forced. Opaque embedded command text with no typed exfil signal remains ordinary unproven evidence; direct upload and headless regressions cover the distinction. | [Risk][inventory-risk] |
+| C01 | `src/permissions/permission-manager.ts:1235` | S1-S6 normalized manager request delegates to one pure decision owner. | [Manager][inventory-manager] |
+| C02 | `src/permissions/permission-manager.ts:1400` | S2/S4 dialect/path/uncertainty evidence; analysis limit is not a second mode matrix. | [Paths][inventory-paths] |
+| C03 | `src/permissions/permission-manager.ts:1430` | S1/S3 deny/ask/allow inputs composed before central decision. | [Manager][inventory-manager] |
+| C04 | `src/permissions/permission-manager.ts:1362` | S1 excluded remote capability; other-principal forced evidence retained. | [Auth][inventory-auth] |
+| C05 | `src/permissions/permission-manager.ts:987` | S1 untrusted rule store denies every category; no reviewer/allow override. | [Manager][inventory-manager] |
+| C06 | `src/permissions/permission-manager.ts:1403` | S2 recognized exfil/protected/critical/escape floors remain forced. Opaque embedded command text with no typed exfil signal remains ordinary unproven evidence; direct upload and headless regressions cover the distinction. | [Risk][inventory-risk] |
 | C07 | `src/permissions/decision-pipeline.ts:67` | S3 ask-before-allow follows forced floors; ordinary asks are no longer automatically forced. | [Golden][inventory-golden] |
-| C08 | `src/permissions/permission-manager.ts:1347` | S2 staged/controller/other-agent origin evidence precedes reusable authority. | [Auth][inventory-auth] |
+| C08 | `src/permissions/permission-manager.ts:1365` | S2 staged/controller/other-agent origin evidence precedes reusable authority. | [Auth][inventory-auth] |
 | C09 | `src/permissions/decision-pipeline.ts:82` | S4/S5 ordinary reads pass in strict; strict mutation asks. | [Golden][inventory-golden] |
 | C10 | `src/permissions/decision-pipeline.ts:88` | S4 shell sandbox/read-only/unproven/destructive/escalation facts drive shared result. | [Golden][inventory-golden] |
-| C11 | `src/permissions/permission-manager.ts:1432` | S4 checkpoint-backed file writes normalize to central file-write kind; no named local-memory category escape. | [Native][inventory-native] |
-| C12 | `src/permissions/permission-manager.ts:1417` | S3 authenticated grants and ordinary host-shell rules enter shared pipeline; no local exact-only host result. | [Manager][inventory-manager] |
-| C13 | `src/permissions/permission-manager.ts:1272` | S1 meta validation and E exact host execution receipt remain; receipt does not replace pipeline decision. | [Auth][inventory-auth] |
+| C11 | `src/permissions/permission-manager.ts:1450` | S4 checkpoint-backed file writes normalize to central file-write kind; no named local-memory category escape. | [Native][inventory-native] |
+| C12 | `src/permissions/permission-manager.ts:1435` | S3 authenticated grants and ordinary host-shell rules enter shared pipeline; no local exact-only host result. | [Manager][inventory-manager] |
+| C13 | `src/permissions/permission-manager.ts:1290` | S1 meta validation and E exact host execution receipt remain; receipt does not replace pipeline decision. | [Auth][inventory-auth] |
 | C14 | `src/permissions/category-registry.ts:62` | S4/S5 category descriptor delegates non-meta outcomes; metadata no longer owns parallel matrix. | [Golden][inventory-golden] |
 | C15 | `src/permissions/decision-pipeline.ts:28` | S5 ordinary auto asks identify asynchronous review; configured chain does not turn default into auto. | [Golden][inventory-golden] |
-| C16 | `src/permissions/permission-manager.ts:1278` | S6 exact minted result is consumed once, adding review evidence and redeciding against current policy. | [Manager][inventory-manager] |
-| C17 | `src/permissions/permission-manager.ts:703` | R display store accessor replaces queue coupling; dispatch no longer appends deferred grants. | [History][inventory-history] |
+| C16 | `src/permissions/permission-manager.ts:1296` | S6 exact minted result is consumed once, adding review evidence and redeciding against current policy. | [Manager][inventory-manager] |
+| C17 | `src/permissions/permission-manager.ts:704` | R display store accessor replaces queue coupling; dispatch no longer appends deferred grants. | [History][inventory-history] |
 | D01 | `src/tools/invocation-authorization.ts:373` | S1-S6 authorization gathers facts and calls manager; unavailable manager remains failure. | [Auth][inventory-auth] |
 | D02 | `src/tools/invocation-authorization.ts:18` | S3/S4 ordinary host-shell result binds live exact execution; exact-only caller gate removed. | [Auth][inventory-auth] |
 | D03 | `src/tools/invocation-authorization.ts:326` | S2 remote/cross-agent/user-owned browser facts supplied before outcome, no read auto-pass rewrite. | [Auth][inventory-auth] |
@@ -363,7 +366,7 @@ All 97 sites now map to the central decision owner or an explicit retained E/O b
 | Q02 | `src/ui/renderer/dialogs/RecentlyDeniedDialog.tsx:5` | R old queue dialog/panel removed; history closes before the fresh rerun card. Restart rerun may resolve a saved transcript reference; missing or changed references remain unavailable. | [HistoryUI][inventory-historyui] |
 | Q03 | `src/i18n/messages/generated/recentlyDenied.ts:2` | R history namespace/generated barrels replace queue fragments; IPC error mapping localized. | [HistoryUI][inventory-historyui] |
 | Q04 | `src/ui/renderer/tabs/PermissionsTab.tsx:307` | S5/S7 stable modes, zero/unlimited setting and informational history; no parent auto-answer controls. | [Modes][inventory-modes] |
-| K01 | `src/tools/file-read-core.ts:49` | E native approved secret read/explicit root grep/list executes; unapproved broad secret descendants and credential stores remain filtered. | [Native][inventory-native] |
+| K01 | `src/tools/file-read-core.ts:34` | O/E split: direct UI preview, file mentions and workspace picker/drop paths retain full lexical/canonical sensitivity guards through assertReadableFilePath and existing sensitive matchers. Agent ReadFileTool separately uses ensureFileAccess after central permission; its approved ordinary-secret access is not a direct-UI grant. | [Native][inventory-native] |
 | K02 | `src/main/browser/browser-upload.ts:245` | Retained E/O selected upload/instruction import identity and secret restrictions; not an automatic secret-discovery grant or mode bypass. | [Browser][inventory-browser] |
 | K03 | `src/plugins/isolation/out-of-process-plugin.ts:124` | E preserved worker capability envelope and broad native sensitive projection; ordinary approval never widens worker grants. Forged plugin/MCP metadata cannot request host replay. Actual native block attribution is macOS-only; controlled Linux executor cases do not certify a Linux native bridge. Owner acceptance or a trusted Linux supervisor remains pending. | [Plugin][inventory-plugin] |
 | K04 | `src/tools/invocation-runner.ts:2447` | E executable expansion retains sensitive-path omission. The macOS native monitor can issue command/cwd-bound evidence for one fresh host request. Installed Linux diagnostic attempts are rejected, so Linux keeps the original failure; no native Linux coverage is claimed from controlled executor tests. Owner acceptance or trusted Linux supervisor remains pending. | [Escalation][inventory-escalation] |

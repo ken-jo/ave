@@ -15,6 +15,7 @@ import type { BashAstValidator } from "../main/bash-ast-validator.js";
 import type { PluginRuntime } from "../plugins/runtime.js";
 import { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import { PermissionManager } from "../permissions/permission-manager.js";
+import { readPermissionSettings } from "../permissions/permission-settings-store.js";
 import {
   ApprovalGate,
   type ApprovalSurfaceResolver,
@@ -73,7 +74,10 @@ export function createSystemPromptBuilder(opts: {
 export async function createPermissionManager(): Promise<PermissionManager> {
   // Register category descriptors before any permission check; registration is idempotent.
   registerStandardCategories();
-  const permissionManager = new PermissionManager();
+  const permissionManager = new PermissionManager(undefined, () => {
+    const fault = readPermissionSettings().fault;
+    return fault === null ? undefined : `Permission settings are unreadable (${fault.kind}: ${fault.filePath}).`;
+  });
 
   // Standing allows belong only to host-registry reads without private-data access or network egress.
   permissionManager.setRules([

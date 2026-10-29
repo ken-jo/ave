@@ -6,7 +6,6 @@ import {
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
 import {
@@ -1936,23 +1935,7 @@ export class SettingsService {
   }
 
   private async saveSettings(settings: AppSettings): Promise<void> {
-    await withFileLock(this.settingsPath, async () => {
-      // Directory grants and reviewer policy have independent writers sharing this file lock.
-      // The first acquisition can create an empty lock placeholder before the initial save.
-      const source = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf-8") : "";
-      const document = source.trim() ? JSON.parse(source) as Record<string, unknown> : {};
-      if (!document || typeof document !== "object" || Array.isArray(document)) {
-        throw new Error("Invalid settings document.");
-      }
-      const storedPermissions = document.permissions;
-      if (storedPermissions !== undefined && (!storedPermissions || typeof storedPermissions !== "object" || Array.isArray(storedPermissions))) {
-        throw new Error("Invalid permissions settings.");
-      }
-      writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify({
-        ...settings,
-        permissions: { ...storedPermissions as Record<string, unknown> | undefined, ...settings.permissions },
-      }, null, 2));
-    });
+    writeUtf8FileAtomicSync(this.settingsPath, JSON.stringify(settings, null, 2));
   }
 
 }

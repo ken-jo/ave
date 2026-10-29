@@ -111,6 +111,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-dynamic-menu": "formatIpcError.invalidPayload",
   "invalid-params": "formatIpcError.invalidParams",
   "invalid-input": "formatIpcError.invalidInput",
+  "invalid-id": "formatIpcError.invalidRequestId",
+  "invalid-owner-away-auto-skip": "formatIpcError.invalidInput",
   "invalid-send-request-id": "formatIpcError.invalidInput",
   "invalid-surface": "formatIpcError.invalidInput",
   "invalid-arguments": "formatIpcError.invalidInput",

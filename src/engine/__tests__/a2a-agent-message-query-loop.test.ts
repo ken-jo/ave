@@ -17,6 +17,7 @@ import type {
   StreamEvent,
   StreamTurnParams,
 } from "../llm/types.js";
+import { makeConversationPermissionDeps } from "./support/conversation-loop-fixtures.js";
 
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -41,11 +42,9 @@ function createLoop(
 ): ConversationLoop {
   const inputClassifier = new InputClassifier();
   const routeEngine = new RouteEngine();
-  const requestAndWait = vi.fn(async (request: { id: string }) => ({
-    requestId: request.id,
-    choice: approvalChoice,
-  }));
-  const approvalGate = withApprovalGate ? { requestAndWait } : undefined;
+  const permissions = makeConversationPermissionDeps(approvalChoice);
+  const requestAndWait = vi.spyOn(permissions.approvalGate!, "requestAndWait");
+  const approvalGate = withApprovalGate ? permissions.approvalGate : undefined;
   const loop = new ConversationLoop({
     settingsService: {
       get: () => fakeLlmSettings(),
@@ -60,6 +59,7 @@ function createLoop(
     inputClassifier,
     routeEngine,
     toolRegistry,
+    permissionManager: permissions.permissionManager,
     approvalGate,
     approvalSurface,
     headless,

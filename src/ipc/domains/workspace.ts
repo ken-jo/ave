@@ -7,6 +7,8 @@ import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { createLogger } from "../../lib/logger.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
+import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
+import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import {
   readPermissionSettings,
@@ -51,6 +53,14 @@ const ACK_TOKEN_TTL_MS = 60_000;
 
 // Keep warned picks in main behind one-time tokens; acknowledgment never accepts a renderer path.
 const pendingPicks = new Map<string, { path: string; expires: number; gesture: PickGesture }>();
+
+// Native workspace gestures retain their direct-UI boundary; agent folder approval uses its own pipeline.
+function validateWorkspaceDirectoryAddition(rawPath: string): ReturnType<typeof validateDirectoryAddition> {
+  const verdict = validateDirectoryAddition(rawPath);
+  if (!verdict.ok) return verdict;
+  const sensitive = sensitiveFilePattern(expandLeadingTilde(rawPath), "write") ?? isSensitivePath(verdict.canonicalPath, "write");
+  return sensitive ? { ok: false, reason: `path matches sensitive pattern '${sensitive}'`, adjacencyWarnings: verdict.adjacencyWarnings } : verdict;
+}
 
 // Record picker versus drop provenance in widening audits; dropped paths have no native-picker authority.
 type PickGesture = "dialog" | "drop";
@@ -577,7 +587,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     gesture: PickGesture,
   ): Promise<WorkspacePickRootResult> {
     const canonicalPicked = canonicalizePathForMatch(picked);
-    const verdict = validateDirectoryAddition(canonicalPicked);
+    const verdict = validateWorkspaceDirectoryAddition(canonicalPicked);
     if (!verdict.ok) {
       return { ok: false, error: directoryDenyCode(verdict.reason), warnings: verdict.adjacencyWarnings };
     }
@@ -708,7 +718,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (canceled || !filePaths[0]) return { ok: true, canceled: true, roots: computeRoots() };
 
       const dialogPath = filePaths[0];
-      const verdict = validateDirectoryAddition(dialogPath);
+      const verdict = validateWorkspaceDirectoryAddition(dialogPath);
       if (!verdict.ok) {
         return { ok: false, error: directoryDenyCode(verdict.reason), warnings: verdict.adjacencyWarnings };
       }
@@ -917,7 +927,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         return { ok: false, error: "invalid-path" };
       }
       // Reject sensitive paths before minting tokens and return stable localized refusal codes.
-      const verdict = validateDirectoryAddition(rawPath);
+      const verdict = validateWorkspaceDirectoryAddition(rawPath);
       if (!verdict.ok) {
         return { ok: false, error: directoryDenyCode(verdict.reason), warnings: verdict.adjacencyWarnings };
       }

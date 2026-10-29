@@ -259,11 +259,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     const permissionManager = new PermissionManager(
       join(dir, "permissions.json"),
     );
-    permissionManager.checkDetailed = () => ({
-      decision: "allow",
-      reason: "receiver auto-allow",
-      layer: 3,
-    });
+    permissionManager.setMode("allow");
     const approvalGate = {
       requestAndWait: vi.fn(async (request: { id: string }) => ({
         requestId: request.id,
@@ -290,7 +286,8 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
       expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
         expect.objectContaining({
-          reason: "[Sub-Agent: researcher] receiver auto-allow",
+          reason: expect.stringContaining("[Sub-Agent: researcher]"),
+          forceExplicit: true,
         }),
       );
     } finally {

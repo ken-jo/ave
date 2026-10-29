@@ -39,6 +39,7 @@
     "docs/architecture/architecture.md",
     "docs/architecture/hook-runtime-expansion-design.md",
     "docs/architecture/mcp-alignment-design.md",
+    "docs/architecture/permission-decision-tree.md",
     "docs/architecture/permission-policy-design.md",
     "docs/architecture/proposals/suggested-replies-ghost-text.md",
     "docs/blueprints/composer-redesign-message-queue.md",

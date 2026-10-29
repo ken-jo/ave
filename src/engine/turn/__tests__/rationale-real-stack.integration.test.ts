@@ -146,7 +146,7 @@ const createPermissionManager = (directory: string): PermissionManager =>
   makePermissionManager(
     directory,
     vi.fn(() => ({
-      level: "medium" as const,
+      level: "high" as const,
       reason: "bounded write requires foreground rationale",
     })),
     "auto",
@@ -589,7 +589,7 @@ describe("foreground rationale real-stack integration", () => {
     }
   });
 
-  it("routes an attachment-tainted keyboard action directly to the ordinary modal", async () => {
+  it("routes an attachment-tainted keyboard action directly to a once-only card", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ave-rationale-attachment-"));
     const registry = new ToolRegistry();
     const write = vi.fn(async () => "write-complete");
@@ -696,7 +696,8 @@ describe("foreground rationale real-stack integration", () => {
       ).not.toContain(RATIONALE_RESPONSE_TOOL);
       expect(modalRequests).toHaveLength(1);
       expect(modalRequests[0]?.kind ?? "tool").toBe("tool");
-      expect(modalRequests[0]?.allowedChoices).toBeUndefined();
+      expect(modalRequests[0]?.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(modalRequests[0]?.requireExplicit).toBe(true);
       expect(modalRequests[0]).toMatchObject({
         toolName: "write_fixture",
         toolCategory: "write",

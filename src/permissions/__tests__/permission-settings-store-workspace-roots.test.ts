@@ -515,6 +515,17 @@ describe("a settings file the store cannot fully interpret", () => {
   });
 });
 
+describe("invalid permission policy containers", () => {
+  it.each([null, [], "invalid", 1, true])("reports and preserves an invalid container: %j", async (permissions) => {
+    const { path: settings } = fixture();
+    const source = JSON.stringify({ permissions });
+    writeFileSync(settings, source);
+    expect(readPermissionSettings(settings).fault).toMatchObject({ kind: "file-unreadable", filePath: settings });
+    await expect(writePermissionSettings({ additionalDirectories: [] }, settings)).rejects.toThrow("repair or restore");
+    expect(readFileSync(settings, "utf8")).toBe(source);
+  });
+});
+
 describe("a settings file the store cannot parse at all", () => {
   const DAMAGED = '{ "permissions": { "additionalDirectories": ["/srv/keep"], ';
 

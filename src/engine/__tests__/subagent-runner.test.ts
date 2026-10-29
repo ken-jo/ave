@@ -55,6 +55,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import type { PromptMemorySource } from "../../memory/memory-manager.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
@@ -342,9 +344,11 @@ describe("SubAgentRunner — shared SkillOverlay teardown", () => {
       ],
       ...endTurnScript("done"),
     ]);
+    const permissionDirectory = mkdtempSync(join(tmpdir(), "ave-overlay-permissions-"));
     const runner = new SubAgentRunner({
       parentDeps: {
         ...buildLoopDeps(toolRegistry),
+        permissionManager: new PermissionManager(join(permissionDirectory, "permissions.json")),
         skillOverlay: overlay,
       },
       toolRegistry,
@@ -370,6 +374,7 @@ describe("SubAgentRunner — shared SkillOverlay teardown", () => {
     } finally {
       hasProviderSpy.mockRestore();
       refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(permissionDirectory);
     }
   });
 });
@@ -399,10 +404,14 @@ describe("SubAgentRunner — maxRounds bound", () => {
       ),
     );
 
-    const parentLoop = new ConversationLoop(buildLoopDeps(toolRegistry));
+    const permissionDirectory = mkdtempSync(join(tmpdir(), "ave-budget-permissions-"));
+    const parentDeps = buildLoopDeps(toolRegistry, {
+      permissionManager: new PermissionManager(join(permissionDirectory, "permissions.json")),
+    });
+    const parentLoop = new ConversationLoop(parentDeps);
     (parentLoop as { provider: LLMProvider | null }).provider = provider;
 
-    const runner = makeRunner(toolRegistry);
+    const runner = new SubAgentRunner({ parentDeps, toolRegistry, subAgentMemoryManager: fakeSubAgentMemoryManager() });
     // Patch child loops too because each spawn constructs a fresh loop.
     const origConstructor = ConversationLoop.prototype as unknown as {
       hasProvider: () => boolean;
@@ -452,6 +461,7 @@ describe("SubAgentRunner — maxRounds bound", () => {
     } finally {
       hasProviderSpy.mockRestore();
       refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(permissionDirectory);
     }
   });
 
@@ -1473,7 +1483,20 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const parentDeps = buildLoopDeps(toolRegistry);
+    const permissionDirectory = mkdtempSync(join(tmpdir(), "ave-plugin-scope-permissions-"));
+    const contents = makeMockWebContents();
+    const approvalGate = new ApprovalGate(contents as never);
+    const requestAndWait = vi.spyOn(approvalGate, "requestAndWait");
+    contents.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+      if (channel !== IPC_APPROVAL_REQUEST) return;
+      queueMicrotask(() => approvalGate.resolveFromDesktopRenderer(request.id, {
+        requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac,
+      }, contents as never));
+    });
+    const parentDeps = buildLoopDeps(toolRegistry, {
+      approvalGate,
+      permissionManager: new PermissionManager(join(permissionDirectory, "permissions.json")),
+    });
     const runner = new SubAgentRunner({
       parentDeps,
       toolRegistry,
@@ -1492,9 +1515,13 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       expect(provider.observedToolNames[0]).toEqual([scheduleToolName]);
       expect(provider.observedToolNames[0]).not.toContain("other_plugin_tool");
       expect(execSpy).toHaveBeenCalledOnce();
+      expect(requestAndWait).toHaveBeenCalledOnce();
+      expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ toolName: scheduleToolName, source: "plugin", toolCategory: "write" }));
     } finally {
+      approvalGate.disposeAll();
       hasProviderSpy.mockRestore();
       refreshProviderSpy.mockRestore();
+      await cleanupTmpDir(permissionDirectory);
     }
   });
 

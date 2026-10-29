@@ -60,10 +60,25 @@ describe("assertReadableFilePath", () => {
     expect(verdict).toEqual({ ok: false, error: "sensitive-path" });
   });
 
-  it("reads an admitted ordinary secret inside the file scope", () => {
+  it("retains direct preview sensitivity inside an allowed directory", () => {
     const path = join(root, ".env");
     writeFileSync(path, "SYNTHETIC=value");
-    expect(assertReadableFilePath(path, root, [])).toMatchObject({ ok: true });
+    expect(assertReadableFilePath(path, root, [])).toMatchObject({ ok: false, error: "sensitive-path" });
+  });
+
+  it("keeps direct preview protection for both lexical and linked secret spellings", () => {
+    const secretDirectory = join(root, ".ssh");
+    mkdirSync(secretDirectory);
+    writeFileSync(join(secretDirectory, "notes.txt"), "synthetic-only");
+    const ordinaryAlias = join(root, "ordinary-alias");
+    symlinkSync(secretDirectory, ordinaryAlias, dirLinkType);
+    expect(assertReadableFilePath(join(ordinaryAlias, "notes.txt"), root, []))
+      .toMatchObject({ ok: false, error: "sensitive-path" });
+    writeFileSync(join(root, "sub", "ordinary.txt"), "ordinary");
+    const secretAlias = join(root, ".aws");
+    symlinkSync(join(root, "sub"), secretAlias, dirLinkType);
+    expect(assertReadableFilePath(join(secretAlias, "ordinary.txt"), root, []))
+      .toMatchObject({ ok: false, error: "sensitive-path" });
   });
 
   it("rejects a path outside cwd and the extra roots", () => {

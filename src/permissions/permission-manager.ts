@@ -505,6 +505,7 @@ export class PermissionManager {
   // Retained persisted reviewer preference for settings round trips; mode owns routing.
   private blockReadsOutsideWorkingDirectories = false;
   private policyGeneration = 0;
+  private permissionStoreError: string | undefined;
   // Optional broadcast for memory-hit auto-approve disclosure.
   private broadcastUserApprovalHit: ((payload: UserApprovalHitPayload) => void) | null = null;
   // Architectural choke point for permission config fan-out — every persisted mutation through PermissionManager (addAlwaysAllowedPersist, addAlwaysDeniedPersist, removeRule) fires this callback so multi-window PermissionsTab refreshes without each call site re-implementing the broadcast wiring. Wired by boot from `ipc/domains/permissions.ts:broadcastPermissionConfigChanged`.
@@ -517,7 +518,7 @@ export class PermissionManager {
     return this.pluginRevokeEpochs.get(pluginId) ?? 0;
   }
 
-  constructor(permissionsFilePath?: string) {
+  constructor(permissionsFilePath?: string, private readonly readPermissionStoreError?: () => string | undefined) {
     this.permissionsFilePath =
       permissionsFilePath ?? defaultPermissionsFilePath();
     this.projectRuleScopes = new ProjectRuleScopes(dirname(this.permissionsFilePath));
@@ -722,7 +723,22 @@ export class PermissionManager {
 
   // Monotonic host policy identity for sealed rationale revalidation.
   getPolicyEpoch(): string {
+    this.refreshPermissionStoreError();
     return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
+  }
+
+  private refreshPermissionStoreError(): string | undefined {
+    let error: string | undefined;
+    try {
+      error = this.readPermissionStoreError?.();
+    } catch {
+      error = "Permission settings could not be read.";
+    }
+    if (error !== this.permissionStoreError) {
+      this.permissionStoreError = error;
+      this.policyGeneration += 1;
+    }
+    return error;
   }
 
   setRules(rules: PermissionRule[]): void {
@@ -1227,9 +1243,11 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest): PermissionCheckResult {
+    const permissionStoreError = this.refreshPermissionStoreError();
     const { automationPause: _previousPause, ...currentEvidence } = evidence;
     const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
     const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
+      ...(permissionStoreError ? { admissionDenial: Object.freeze({ code: "policy-unreadable", reason: permissionStoreError }) } : {}),
       ...(pause ? { automationPause: Object.freeze({ kind: pause, reason: "Automated approval is paused for this turn; human approval is required." }) } : {}),
       tool: Object.freeze({ ...evidence.tool }),
       ...(evidence.paths ? { paths: Object.freeze(evidence.paths.map((path) => Object.freeze({ ...path }))) } : {}),

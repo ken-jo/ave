@@ -4630,22 +4630,16 @@ describe("owner-away approval wait settings", () => {
     } finally { await cleanupTmpDir(userDataPath); }
   });
 
-  it("reads a malformed stored wait as unlimited and preserves independent policy writes", async () => {
+  it("reads a malformed stored wait as unlimited and persists only the supported wait field", async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), "owner-away-policy-"));
     const filePath = join(userDataPath, "ave-settings.json");
     try {
       writeFileSync(filePath, currentSettingsJson({ permissions: { ownerAwayAutoSkipMinutes: -2, additionalDirectories: ["/workspace/first"] } }));
       const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
       expect(service.get("permissions")).toEqual({ ownerAwayAutoSkipMinutes: 0 });
-      const document = JSON.parse(readFileSync(filePath, "utf8"));
-      document.permissions.additionalDirectories = ["/workspace/latest"];
-      document.permissions.reviewer = { mode: "llm" };
-      writeFileSync(filePath, JSON.stringify(document));
       await service.patch({ permissions: { ownerAwayAutoSkipMinutes: 3 } });
       expect(JSON.parse(readFileSync(filePath, "utf8")).permissions).toEqual({
         ownerAwayAutoSkipMinutes: 3,
-        additionalDirectories: ["/workspace/latest"],
-        reviewer: { mode: "llm" },
       });
     } finally { await cleanupTmpDir(userDataPath); }
   });

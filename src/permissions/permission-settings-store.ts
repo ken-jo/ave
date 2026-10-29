@@ -128,6 +128,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
     const bytes = readAveHomeConfigurationFile(pathOverride ?? permissionSettingsPath());
     if (bytes === undefined) return structuredClone(DEFAULT_FILE);
     parsed = parseConfigurationObject(bytes.toString("utf8"), true);
+    assertPermissionContainer(parsed);
   } catch (err) {
     if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     const detail = (err as Error).message;
@@ -170,6 +171,13 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
 }
 
 // Preserve empty legacy documents; reject non-object roots before callers merge fields.
+function assertPermissionContainer(document: Record<string, unknown>): void {
+  const permissions = document.permissions;
+  if (permissions !== undefined && (!permissions || typeof permissions !== "object" || Array.isArray(permissions))) {
+    throw new Error("Permissions settings must be an object; repair or restore the settings file.");
+  }
+}
+
 function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
   filePath = resolveConfigurationFile(filePath);
   const bytes = readAveHomeConfigurationFile(filePath);
@@ -178,7 +186,9 @@ function readSettingsDocument(filePath: string, allowEmpty = true): Record<strin
     error.code = "ENOENT";
     throw error;
   }
-  return parseConfigurationObject(bytes.toString("utf8"), allowEmpty);
+  const document = parseConfigurationObject(bytes.toString("utf8"), allowEmpty);
+  assertPermissionContainer(document);
+  return document;
 }
 
 // Read the settings object a write path is about to merge into. Refusing an unparseable file is the whole point: the previous `catch {}` here merged into an empty object, so the next successful write replaced the user's entire settings document — every unrelated top-level key included — with whatever that one mutation happened to hold.
