@@ -268,3 +268,38 @@ describe("executor broker shell route", () => {
     expect(localSpawn).not.toHaveBeenCalled();
   });
 });
+
+describe("broker shell floor consent", () => {
+  it("asks on every destructive guest call without consulting or storing review cache", async () => {
+    const { setReviewerForTest } = await import("../../__tests__/support/reviewer-judge.js");
+    const { VerdictCache } = await import("../../permissions/reviewer/verdict-cache.js");
+    const { DeferredQueue } = await import("../../permissions/reviewer/deferred-queue.js");
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("auto"); manager.setInteractiveAutoApprove("medium");
+    const classify = vi.fn(() => ({ level: "medium" as const, reason: "reviewed guest" }));
+    const cache = new VerdictCache(join(root, "guest-cache.jsonl"));
+    const lookup = vi.spyOn(cache, "lookup");
+    const store = vi.spyOn(cache, "store");
+    setReviewerForTest(manager, { classifier: { classify }, cache, deferredQueue: new DeferredQueue(join(root, "guest-queue.jsonl")) });
+    const check = vi.spyOn(manager, "checkDetailed");
+    const registry = new ToolRegistry(); registry.register(new BashTool());
+    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once", approved: false }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
+    try {
+      for (let index = 0; index < 2; index += 1) {
+        const [result] = await executor.executeAll([
+          { id: `guest-floor-${index}`, name: "bash", input: { command: "rm -rf ./build" } },
+        ], { sessionId: "guest-floor", executionCwd: root,
+          permissionContext: { trustOrigin: "llm-tool-arg", userIntent: "Review this guest command" } });
+        expect(result?.is_error).toBe(true);
+      }
+      expect(check.mock.calls[0]?.[4]).toMatchObject({ hostShellExecutionPlan: { mode: "plain" },
+        disposableSubstrate: { authority: "workload-broker" } });
+      expect(requestAndWait).toHaveBeenCalledTimes(2);
+      expect(classify).not.toHaveBeenCalled();
+      expect(lookup).not.toHaveBeenCalled();
+      expect(store).not.toHaveBeenCalled();
+      expect(broker.execute).not.toHaveBeenCalled();
+    } finally { await cache.flush(); }
+  });
+});

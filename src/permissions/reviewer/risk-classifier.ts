@@ -1,3 +1,4 @@
+import { isDestructiveShellArgv, noReusableRuleReason } from "../rules/shell-prefix-values.js";
 // Disabled mode yields LOW while the matrix still applies; strict always yields HIGH/defer. Rule review is deterministic; model review composes conservatively with rules and DLP-redacts provider input. Missing provider/model configuration fails boot (docs/architecture/permission-policy-design.md).
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
 import { isIP } from "node:net";
@@ -34,8 +35,8 @@ import {
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 import { resolve as resolvePath } from "node:path";
-import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
-import { powerShellExfiltrationSignal } from "../rules/powershell-exfiltration.js";
+import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal, inspectShellCommand } from "../rules/shell-exfiltration.js";
+import { powerShellExfiltrationSignal, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
 
 // Verdict shape returned by every classifier.
@@ -82,6 +83,8 @@ export function maxVerdict(a: RiskVerdict, b: RiskVerdict): RiskVerdict {
 // Classify raw finalized input identically in every lane; DLP can destroy URL/path policy signals. Mask provider, display, audit and deferred sinks instead so secrets never leave through them.
 export interface ToolInvocationContext {
   toolName: string;
+  // Host policy reason from the original decision, never reconstructed from arguments.
+  permissionReason?: string;
   source: ToolSource;
   category: ToolCategory;
   // Manifest-declared path-bearing argument selectors. Dotted selectors are supported.
@@ -1379,6 +1382,19 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
     }
     return null;
   },
+  // The existing rule-verdict reason carries floor context without changing risk levels.
+  (ctx) => {
+    if (ctx.category !== "shell" || ctx.source !== "builtin"
+      || (ctx.toolName !== "bash" && ctx.toolName !== "powershell")) return null;
+    const commands = extractShellCommands(ctx.finalInput);
+    const destructive = ctx.toolName === "bash" && commands.some((command) =>
+      tokenizeShell(command).leaves.some((leaf) => isDestructiveShellArgv(leaf.argv) || noReusableRuleReason(leaf.argv) !== null));
+    const inspect = ctx.toolName === "powershell" ? inspectPowerShellCommand : inspectShellCommand;
+    const unproven = commands.some((command) => inspect(command, shellInvocationCwd(ctx)).outcome === "unproven");
+    if (!destructive && !unproven) return null;
+    const level = !destructive && commands.length > 0 && commands.every((command) => REVERSIBLE_SHELL_RE.test(command)) ? "low" : "medium";
+    return { level, reason: destructive ? "shell destructive floor: irreversible command" : "shell requires runtime evaluation" };
+  },
   (ctx) => {
     if (ctx.category !== "shell") return null;
     const cmds = extractShellCommands(ctx.finalInput);
@@ -1564,7 +1580,7 @@ export class RuleBasedRiskClassifier implements RiskClassifier {
   classify(input: ToolInvocationContext): RiskVerdict {
     for (const rule of RULES) {
       const v = rule(input);
-      if (v) return v;
+      if (v) return input.permissionReason === undefined ? v : { ...v, reason: input.permissionReason };
     }
     // Default fail-safe: MEDIUM (never silently LOW for an unknown shape).
     return { level: "medium", reason: "no rule matched (fail-safe medium)" };
@@ -1622,7 +1638,8 @@ function buildUserPrompt(
     sensitiveWrite: isSensitivePath(path, "write") !== null,
   }));
   const hostPolicyFacts = {
-    ruleVerdict,
+    ruleVerdict: input.permissionReason === undefined ? ruleVerdict
+      : { ...ruleVerdict, reason: maskSensitiveData(input.permissionReason).masked },
     executionCwd: input.executionCwd.slice(0, 512),
     executionCwdTruncated: input.executionCwd.length > 512,
     declaredPathCount: declaredPaths.length,

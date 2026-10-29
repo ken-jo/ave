@@ -249,8 +249,19 @@ remain bounded by source length. A Lane A character, data, token or structural
 limit stops analysis with a foreground modal/L2 or headless deny. No rule, saved
 grant, mode or reviewer satisfies either refusal. Identified floors retain their
 precedence over ordinary reasons.
-Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
-requirements keep their own authority.
+Hard denies, credential-exfiltration and sensitive-path floors, analysis limits,
+scoped floors, explicit ask rules, origin and explicit host-execution requirements
+retain their authority. When the invocation actually uses a host shell confinement plan,
+auto mode with an enabled judging foreground reviewer routes destructive and runtime
+unproven floors to foreground review at L2. Other modes, auto approval set to off,
+and unsandboxed execution retain per-call human approval; headless unproven input
+denies. Disabled review and disposable guests retain human-only floors. The
+host shell sandbox confines writes to the workspace's admitted write scope and
+egress to the proxy, so the reviewer can assess the full command within those
+boundaries. Disposable guests have their own network policy; their egress is not
+claimed as proxy-confined and does not qualify for this route. The recursive
+container-traversal gate still requires a person before any floor review. This
+does not establish static proof or a reusable allow rule.
 
 Decision cost is bounded by structural limits, not elapsed time or a work-step
 verdict. The floor derives immutable facts for each source node and literal token
@@ -2300,6 +2311,18 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 | Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
 | Auto-review | Uses the reviewer for eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to every eligible call; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
 | Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. Within-cap runtime-dependent, syntactically unproven or unknown/incompletely consumed argv asks at L2 or denies headless; a Lane B pre-analysis cap refusal follows the L6 unsandboxed path. Only a qualifying within-cap literal-evaluation request whose closed grammar consumes every option and operand can use the documented exact-rule exception; a cap refusal never can. Unsandboxed shell execution still requires a current-format exact rule after positive proof. |
+
+For actually confined shell invocations, destructive and runtime-evaluation floor
+asks use the same foreground reviewer eligibility and configured threshold as
+other auto-mode calls. The original permission decision supplies the floor reason through the existing
+rule-verdict context
+alongside the full command; review assesses the text without executing runtime
+expansions. Destructive compounds are at least MEDIUM in rule review, including
+when model review degrades to rules. LOW/MEDIUM verdicts pass only through the configured
+threshold; HIGH asks a person. These confined builtin shell floor calls bypass remembered approvals and
+verdict-cache reuse, never seed a verdict cache or reusable rule, and retain
+per-call approval when review asks a person or is unavailable. Credential and
+sensitive-path floors remain mandatory human decisions.
 
 ## Foreground And Headless Behavior
 

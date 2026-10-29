@@ -1,3 +1,8 @@
+import { DisabledRiskClassifier, RuleBasedRiskClassifier, _internal } from "../../permissions/reviewer/risk-classifier.js";
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
+import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
+import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { listApprovals, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
@@ -7,6 +12,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
+  setActiveSandboxCapability,
+  setShellSandboxRequestedAtBoot,
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
 } from "../../permissions/sandbox-capability.js";
@@ -16,13 +23,21 @@ import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
+const reviewResources = new PermissionTestResources();
 let directory: string;
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "ave-invocation-authorization-"));
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
 });
-afterEach(() => cleanupTmpDir(directory));
+afterEach(async () => {
+  await reviewResources.cleanup();
+  __resetActiveSandboxCapabilityForTest();
+  __resetSandboxRequestedAtBootForTest();
+  __resetSessionStoreForTest();
+  vi.unstubAllEnvs();
+  await cleanupTmpDir(directory);
+});
 
 describe("host shell invocation authorization", () => {
   it.each(["remove allow", "add deny"])("requires normal authorization again after %s invalidates a decision", async (change) => {
@@ -81,5 +96,82 @@ describe("host shell invocation authorization", () => {
       expect(check.mock.results[1]?.value).toMatchObject({ decision: "deny", layer: 1 });
       expect(cards).toHaveLength(0);
     }
+  });
+});
+
+describe("confined shell reviewer invocation", () => {
+  it.each(['echo "$TARGET"', "rm -rf ./build", "env git reset --hard"])("reviews each call without remembered authority: %s", async (command) => {
+    vi.stubEnv("AVE_HOME", directory);
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
+      reason: "confined shell", confines: { filesystem: true, process: true, network: true } });
+    const classify = vi.fn((_context: import("../../permissions/reviewer/risk-classifier.js").ToolInvocationContext): { level: "low" | "medium" | "high"; reason: string } => ({ level: "medium", reason: "reviewed command" }));
+    const manager = new PermissionManager(join(directory, "permissions.json"));
+    manager.setMode("auto");
+    setReviewerForTest(manager, { classifier: { classify },
+      cache: reviewResources.makeVerdictCache(join(directory, "reviewer-cache.jsonl")),
+      deferredQueue: new DeferredQueue(join(directory, "deferred.jsonl")) });
+    manager.setInteractiveAutoApprove("medium");
+    const check = vi.spyOn(manager, "checkDetailed");
+    const tool = new BashTool();
+    const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "reviewed", isError: false });
+    const registry = new ToolRegistry(); registry.register(tool);
+    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once", approved: false }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
+    const sessionId = "confined-shell-review";
+    const input = { command };
+    for (let index = 0; index < 2; index += 1) {
+      const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
+        { id: `shell-review-${index}`, name: "bash", input },
+      ], { sessionId, permissionContext: userPermissionContext({ userIntent: "Review this workspace command" }) }));
+      expect(result?.is_error).not.toBe(true);
+      const reviewed = classify.mock.calls[index]?.[0];
+      expect(reviewed?.permissionReason).toBe(check.mock.results[index]?.value.reason);
+      expect(_internal.buildUserPrompt(reviewed!)).toContain(reviewed!.permissionReason!);
+    }
+    expect(classify).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(await manager.listPersistedRules()).toEqual([]);
+    expect(await listApprovals()).toEqual([]);
+    classify.mockReturnValue({ level: "high", reason: "needs a person" });
+    const [blocked] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
+      { id: "shell-review-high", name: "bash", input },
+    ], { sessionId, permissionContext: userPermissionContext({ userIntent: "Review this workspace command" }) }));
+    expect(blocked?.is_error).toBe(true);
+    expect(classify).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(requestAndWait).toHaveBeenCalledOnce();
+    expect(requestAndWait.mock.calls[0]?.[0]).toMatchObject({ durableApprovalRecordAllowed: false });
+  });
+});
+
+describe("shell review requires a risk judgment", () => {
+  it.each([
+    { command: "rm -rf ./build", disabled: true },
+    { command: "echo ok; git reset --hard", disabled: false },
+    { command: "env git reset --hard", disabled: false },
+    { command: "echo ok && git push --force", disabled: false },
+  ])("asks a person for $command with disabled=$disabled", async ({ command, disabled }) => {
+    vi.stubEnv("AVE_HOME", directory);
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
+      reason: "confined shell", confines: { filesystem: true, process: true, network: true } });
+    const manager = new PermissionManager(join(directory, "permissions.json"));
+    manager.setMode("auto"); manager.setInteractiveAutoApprove(disabled ? "medium" : "low");
+    setReviewerForTest(manager, { classifier: disabled ? new DisabledRiskClassifier() : new RuleBasedRiskClassifier(),
+      cache: reviewResources.makeVerdictCache(join(directory, "judgment-cache.jsonl")),
+      deferredQueue: new DeferredQueue(join(directory, "judgment-queue.jsonl")) });
+    const tool = new BashTool();
+    const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "executed", isError: false });
+    const registry = new ToolRegistry(); registry.register(tool);
+    const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once", approved: false }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
+    const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
+      { id: "judgment-required", name: "bash", input: { command } },
+    ], { sessionId: "judgment-required", permissionContext: userPermissionContext({ userIntent: "Review this workspace command" }) }));
+    expect(result?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requestAndWait).toHaveBeenCalledOnce();
   });
 });

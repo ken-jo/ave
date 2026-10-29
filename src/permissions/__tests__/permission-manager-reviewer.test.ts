@@ -1,3 +1,4 @@
+import { recordApproval, lookupApproval, canonicalStringify, captureApprovalWorkingDirectory, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { randomUUID } from "node:crypto";
 import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -77,6 +78,43 @@ describe("PermissionManager.dispatchReviewer", () => {
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
     __resetWrappedPluginWorkersForTest();
+  });
+
+  it.each(['echo "$TARGET"', "rm -rf ./build", "eval 'printf ready'"])("never reuses remembered authority for a confined floor: %s", async (command) => {
+    pm.setMode("auto");
+    pm.setInteractiveAutoApprove("medium");
+    const classify = vi.fn(() => ({ level: "medium" as const, reason: "reviewed once" }));
+    setReviewerForTest(pm, { classifier: { classify }, cache, deferredQueue: queue });
+    const cwd = process.cwd();
+    const sessionId = "shell-floor-memory";
+    const finalInput = { command };
+    const plan = buildHostShellExecutionPlan({ platform: "darwin", requestedSandbox: true,
+      activeCapability: { kind: "asrt", confidence: "verified", platform: "darwin", reason: "confined",
+        confines: { filesystem: true, process: true, network: true } } });
+    const permissionDecision = pm.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, shellExecution: { runsSandboxed: true }, hostShellExecutionPlan: plan,
+    });
+    const lookup = vi.spyOn(cache, "lookup");
+    const store = vi.spyOn(cache, "store");
+    try {
+      await recordApproval("bash", canonicalStringify(finalInput), "builtin", {
+        scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
+        sessionId, workingDirectoryIdentity: captureApprovalWorkingDirectory(cwd).identity,
+      });
+      expect(await lookupApproval("bash", canonicalStringify(finalInput), "builtin", "user-keyboard", undefined, cwd, sessionId)).not.toBeNull();
+      for (let index = 0; index < 2; index += 1) {
+        const reviewed = await pm.dispatchReviewer("bash", {
+          invocationId: randomUUID(), sessionId, source: "builtin", category: "shell", pathFields: [],
+          finalInput, executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
+          trustOrigin: "user-keyboard", hostShellExecutionPlan: plan, permissionDecision,
+        }, undefined, { defer: "none" });
+        expect(reviewed.outcome).toBe("fresh");
+        expect(reviewed.verdict.level).toBe("medium");
+      }
+      expect(classify).toHaveBeenCalledTimes(2);
+      expect(lookup).not.toHaveBeenCalled();
+      expect(store).not.toHaveBeenCalled();
+    } finally { __resetSessionStoreForTest(); }
   });
 
   it("hasReviewer = false until setReviewer called", () => {
