@@ -44,6 +44,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   // Explicit local test opt-out; ignored when CI is detected.
   { name: "AVE_SKIP_NATIVE_SANDBOX_TESTS", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_TEST_NODE_EXEC_PATH", lifecycle: "active", packaged: "scrub" },
+  // The PowerShell 7 executable the native pwsh host-terminal tests run (the Windows verification session sets it).
+  { name: "AVE_TEST_PWSH", lifecycle: "active", packaged: "scrub" },
   // Explicitly source/test-only; packaged builds do not accept this env switch.
   { name: "AVE_TRACE", lifecycle: "active", packaged: "scrub" },
   // Kept the signed whitelist feed offline; host-secret grants no longer fetch anything.
