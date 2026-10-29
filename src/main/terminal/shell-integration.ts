@@ -38,14 +38,27 @@ export const TERMINAL_EDIT_LINE_QUERY = "\u0018\u0016";
 // Characters of command text a script encodes into its C marker.
 const MAX_ENCODED_COMMAND_CHARS = 4096;
 
-const ZSH_RC = (noncePath: string): string => [
+// Read the nonce file into an unexported shell variable and delete it; a nested shell finds none.
+export function shellNoncePrologue(shell: "zsh" | "bash", noncePath: string): string {
+  return (shell === "zsh" ? [
+    "__ave_nonce=''",
+    "if [[ -f " + shellQuoteForRc(noncePath) + " ]]; then",
+    "  __ave_nonce=\"$(<" + shellQuoteForRc(noncePath) + ")\"",
+    "  /bin/rm -f -- " + shellQuoteForRc(noncePath),
+    "fi",
+  ] : [
+    "__ave_nonce=''",
+    "if [ -f " + shellQuoteForRc(noncePath) + " ]; then",
+    "  IFS= read -r __ave_nonce < " + shellQuoteForRc(noncePath),
+    "  /bin/rm -f -- " + shellQuoteForRc(noncePath),
+    "fi",
+  ]).join("\n");
+}
+
+// `noncePath` null: the caller's prologue already holds the nonce in `__ave_nonce`.
+const ZSH_RC = (noncePath: string | null): string => [
   HEADER,
-  // Read and delete the nonce file first; a nested shell finds none.
-  "__ave_nonce=''",
-  "if [[ -f " + shellQuoteForRc(noncePath) + " ]]; then",
-  "  __ave_nonce=\"$(<" + shellQuoteForRc(noncePath) + ")\"",
-  "  /bin/rm -f -- " + shellQuoteForRc(noncePath),
-  "fi",
+  ...(noncePath === null ? [] : [shellNoncePrologue("zsh", noncePath)]),
   // `#` starts a comment, as in bash: the permission rules read a typed command as bash, and without this option zsh runs the text after `#`. Set before
   // anything can return, so every shell of the terminal has it.
   "setopt interactivecomments",
@@ -124,14 +137,9 @@ const ZSH_RC = (noncePath: string): string => [
   "",
 ].join("\n");
 
-const BASH_PROFILE = (noncePath: string): string => [
+const BASH_PROFILE = (noncePath: string | null): string => [
   HEADER,
-  // Read and delete the nonce file first; a nested shell finds none.
-  "__ave_nonce=''",
-  "if [ -f " + shellQuoteForRc(noncePath) + " ]; then",
-  "  IFS= read -r __ave_nonce < " + shellQuoteForRc(noncePath),
-  "  /bin/rm -f -- " + shellQuoteForRc(noncePath),
-  "fi",
+  ...(noncePath === null ? [] : [shellNoncePrologue("bash", noncePath)]),
   "shopt -s interactive_comments",
   '[ -n "$__ave_nonce" ] || return 0',
   "__ave_encode() {",
@@ -281,8 +289,9 @@ export function installShellIntegration(
 }
 
 // Host wrappers retain user callbacks while capturing command status before those callbacks run.
-export function generateHostShellHooks(shell: "zsh" | "bash", noncePath: string): string {
-  const hooks = (shell === "zsh" ? ZSH_RC(noncePath) : BASH_PROFILE(noncePath))
+// The wrapper's first startup step has already moved the nonce into `__ave_nonce` (see shellNoncePrologue), before any user file ran.
+export function generateHostShellHooks(shell: "zsh" | "bash"): string {
+  const hooks = (shell === "zsh" ? ZSH_RC(null) : BASH_PROFILE(null))
     .replace(HEADER, "# Generated authenticated terminal hooks.")
     .replace("local ave_status=$?", 'local ave_status="$__ave_command_status"');
   if (shell === "zsh") {

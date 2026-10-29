@@ -132,6 +132,9 @@ it.each([
   expect(shell).toBeDefined();
   const home = directory();
   writeFileSync(join(home, rc), startup);
+  // Ubuntu's global zshrc runs compinit, which stops at an interactive y/n question when the runner's completion directories are group-writable.
+  // That question is the native shell's behavior; this user opts out as a real user would, so the test measures only the prompt callbacks.
+  if (rc === ".zshrc") writeFileSync(join(home, ".zshenv"), "skip_global_compinit=1\n");
   const integration = prepare(shell!, home, ["-i"]);
   const tracker = new TerminalBlockTracker({ nonce: integration.nonce, marksPromptEnd: true });
   const pty = nodePty.spawn(integration.command, integration.args, {
@@ -141,11 +144,39 @@ it.each([
   pty.onData((data) => { raw += data; tracker.recordOutput(data); });
   const exited = new Promise<void>((resolve) => pty.onExit(() => resolve()));
   editors.push({ pty, exited });
-  await waitForTerminal(() => tracker.promptEndCount() > 0);
+  await waitForTerminal(() => tracker.promptEndCount() > 0)
+    .catch((error: Error) => { throw new Error(`${error.message}; terminal output: ${JSON.stringify(raw.slice(-600).replaceAll(integration.nonce, "<nonce>"))}`); });
   pty.write("false\r");
   await waitForTerminal(() => tracker.list().some((block) => block.command === "false" && block.exitCode !== null));
   expect(tracker.list().find((block) => block.command === "false")?.exitCode).toBe(1);
   if (rc === ".bashrc") expect(raw).toContain("USER-PS0");
+});
+
+// A user startup file (or a loader it runs) must not find the nonce that authenticates the host markers.
+it.each([
+  { shell: TERMINAL_TEST_MODERN_BASH, files: [".bashrc"] },
+  { shell: TERMINAL_TEST_ZSH, files: [".zshenv", ".zprofile", ".zshrc", ".zlogin"] },
+])("hides the nonce file from every $files user startup file", ({ shell, files }) => {
+  expect(shell).toBeDefined();
+  const home = directory();
+  const probe = [
+    files[0] === ".bashrc"
+      ? 'for ave_probe in "$LEAK_DIR"/ave-host-terminal-*/.ave-terminal-nonce; do'
+      : 'for ave_probe in "$LEAK_DIR"/ave-host-terminal-*/.ave-terminal-nonce(N); do',
+    '  [ -r "$ave_probe" ] && printf "LEAK:%s\\n" "$(cat "$ave_probe")"',
+    "done",
+    ...(files[0] === ".bashrc" ? ['[ -r "$(dirname "${BASH_SOURCE[1]}")/.ave-terminal-nonce" ] && printf "LEAK-SOURCE\\n"'] : []),
+    'printf "PROBED\\n"',
+    "",
+  ].join("\n");
+  for (const name of files) writeFileSync(join(home, name), (name === ".zshenv" ? "skip_global_compinit=1\n" : "") + probe);
+  const integration = prepare(shell!, home, files[0] === ".bashrc" ? ["-i"] : ["-l", "-i"], { LEAK_DIR: tmpdir() });
+  expect(integration.marksPromptEnd).toBe(true);
+  const raw = execute(integration, "printf 'alive\\n'");
+  expect(raw).toContain("PROBED");
+  expect(raw).toContain("alive");
+  expect(raw).not.toContain("LEAK");
+  expect(raw.split(integration.nonce).length - 1, "the hooks still authenticate their markers").toBeGreaterThan(0);
 });
 
 it("retains the configured debug trap without replacing it on an older interpreter", () => {

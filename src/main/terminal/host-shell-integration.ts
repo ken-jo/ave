@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { TerminalIntegrationUnavailableReason } from "../../shared/terminal-session.js";
 import type { ManualShellLaunch } from "./manual-shell.js";
-import { generateHostShellHooks, SHELL_INTEGRATION_NONCE_FILE } from "./shell-integration.js";
+import { generateHostShellHooks, SHELL_INTEGRATION_NONCE_FILE, shellNoncePrologue } from "./shell-integration.js";
 
 export interface HostShellIntegration {
   command: string;
@@ -49,7 +49,10 @@ export function prepareHostShellIntegration(launch: ManualShellLaunch, env: Node
       return path;
     };
     const noncePath = write(SHELL_INTEGRATION_NONCE_FILE, nonce);
-    const hooksPath = write("hooks", generateHostShellHooks(shell, noncePath));
+    const hooksPath = write("hooks", generateHostShellHooks(shell));
+    // The first owned startup step takes the nonce into an unexported variable and deletes the file before any user file runs.
+    // User startup files share this shell, so they can still read the variable; they can no longer find the file.
+    const prologue = shellNoncePrologue(shell, noncePath);
     const login = launch.args.includes("-l") || launch.args.includes("--login");
     if (shell === "zsh") {
       // Restore the real startup directory while each user file runs; remember changes made by those files.
@@ -57,7 +60,7 @@ export function prepareHostShellIntegration(launch: ManualShellLaunch, env: Node
       const save = '__ave_user_zdotdir_set=${+ZDOTDIR}\n__ave_user_zdotdir=${ZDOTDIR-}';
       const redirect = `export ZDOTDIR=${quote(ownedDirectory)}`;
       const source = (name: string): string => `${restore}\n[[ ! -r "\${ZDOTDIR-$HOME}/${name}" ]] || source "\${ZDOTDIR-$HOME}/${name}"\n${save}`;
-      write(".zshenv", `__ave_user_zdotdir_set=${env.ZDOTDIR === undefined ? "0" : "1"}\n__ave_user_zdotdir=${quote(env.ZDOTDIR ?? "")}\n${source(".zshenv")}\n${redirect}\n`);
+      write(".zshenv", `${prologue}\n__ave_user_zdotdir_set=${env.ZDOTDIR === undefined ? "0" : "1"}\n__ave_user_zdotdir=${quote(env.ZDOTDIR ?? "")}\n${source(".zshenv")}\n${redirect}\n`);
       write(".zprofile", `${source(".zprofile")}\n${redirect}\n`);
       write(".zshrc", `${source(".zshrc")}\n${login ? redirect : `${restore}\nsource ${quote(hooksPath)}`}\n`);
       write(".zlogin", `${source(".zlogin")}\n${restore}\nsource ${quote(hooksPath)}\n`);
@@ -76,7 +79,7 @@ export function prepareHostShellIntegration(launch: ManualShellLaunch, env: Node
         'unset __ave_profile',
       ].join("\n")
       : '[[ ! -r "$HOME/.bashrc" ]] || source "$HOME/.bashrc"';
-    const rcPath = write("bashrc", startup + "\nsource " + quote(hooksPath) + "\n");
+    const rcPath = write("bashrc", prologue + "\n" + startup + "\nsource " + quote(hooksPath) + "\n");
     return { command: launch.command, args: ["--rcfile", rcPath, "-i"], env: shellEnv, nonce,
       marksPromptEnd: true, cleanup: () => rmSync(ownedDirectory, { recursive: true, force: true }) };
   } catch {
