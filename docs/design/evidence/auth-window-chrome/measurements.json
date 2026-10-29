@@ -1,234 +1,151 @@
 {
   "sourceHashes": {
-    "src/main/auth-window-content.ts": "76ce58cd14ef051ec17492c4e6b7372c0ec7676934b454463274f66555f85d5f",
+    "src/main/auth-window-content.ts": "7ca71545cfb1d70e12966903c0ade5d10aee1e5c30bb416ad748b5c102d06b63",
     "src/main/window-titlebar-shell.ts": "febb4dea7145f567be7abba12fccd5b22f7540ac70c04b52df8cf167e32e5040",
-    "test/e2e/window/auth-window-chrome.spec.ts": "eeb2f373ec2912fca6315cba67084a026e7dcaf6e848a2b04eba106107af9b79"
+    "test/e2e/window/auth-window-chrome.spec.ts": "542b42feb793de235dfd497afee353a10a0a34ddd7814958e9121fc15d41eaa2"
   },
-  "native": {
-    "screenshot": "macos-window-long-host.png",
-    "screenshotSize": {
-      "width": 1243,
-      "height": 768
+  "rowHeight": 36,
+  "capturePresentation": "Only the isolated task windows were temporarily floated to avoid the OS thumbnail transform; production window options were unchanged.",
+  "captures": [
+    {
+      "file": "macos-window-long-host.png",
+      "size": {
+        "width": 1343,
+        "height": 768
+      },
+      "sheetOffset": {
+        "x": 823,
+        "y": 38
+      },
+      "scale": 1,
+      "buttons": [
+        {
+          "bounds": {
+            "x": 12,
+            "y": 11,
+            "right": 26,
+            "bottom": 25
+          },
+          "centerY": 18
+        },
+        {
+          "bounds": {
+            "x": 35,
+            "y": 11,
+            "right": 49,
+            "bottom": 25
+          },
+          "centerY": 18
+        },
+        {
+          "bounds": {
+            "x": 58,
+            "y": 11,
+            "right": 72,
+            "bottom": 25
+          },
+          "centerY": 18
+        }
+      ],
+      "display": "attacker-example.io",
+      "url": "http://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "uri": {
+        "x": 104,
+        "y": 10.5,
+        "width": 120,
+        "height": 15,
+        "top": 10.5,
+        "right": 224,
+        "bottom": 25.5,
+        "left": 104
+      },
+      "suffix": {
+        "x": 202.03125,
+        "y": 10.5,
+        "width": 21.96875,
+        "height": 15,
+        "top": 10.5,
+        "right": 224,
+        "bottom": 25.5,
+        "left": 202.03125
+      },
+      "elided": false,
+      "drag": "no-drag",
+      "direction": "rtl",
+      "copied": "http://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "security": "http"
     },
-    "sheetOffset": {
-      "x": 109,
-      "y": 0
-    },
-    "scale": 1,
-    "rowHeight": 36,
-    "trafficLights": [
-      {
-        "name": "red",
-        "bounds": {
-          "x": 12,
-          "y": 11,
-          "right": 26,
-          "bottom": 25
-        },
-        "centerY": 18
+    {
+      "file": "macos-window-long-label.png",
+      "size": {
+        "width": 1343,
+        "height": 768
       },
-      {
-        "name": "yellow",
-        "bounds": {
-          "x": 35,
-          "y": 11,
-          "right": 49,
-          "bottom": 25
-        },
-        "centerY": 18
+      "sheetOffset": {
+        "x": 823,
+        "y": 38
       },
-      {
-        "name": "green",
-        "bounds": {
-          "x": 58,
-          "y": 11,
-          "right": 72,
-          "bottom": 25
+      "scale": 1,
+      "buttons": [
+        {
+          "bounds": {
+            "x": 12,
+            "y": 11,
+            "right": 26,
+            "bottom": 25
+          },
+          "centerY": 18
         },
-        "centerY": 18
-      }
-    ],
-    "addressStartsAt": 104,
-    "domain": "attacker-example.io",
-    "domainRight": 456.875,
-    "portRight": 496,
-    "uriRight": 508,
-    "rowRight": 520,
-    "allCentered": true,
-    "noSecurityOrAddressOverlap": true,
-    "domainAndPortVisible": true,
-    "note": "Native capture includes the parent window because the authentication window is a modal sheet; measurements are relative to its recorded CGWindow bounds."
-  },
-  "longLabel": {
-    "url": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com:8443/login/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/long-path/",
-    "cases": [
-      {
-        "platform": "win32",
-        "uri": {
-          "x": 36,
-          "y": 9,
-          "width": 344,
-          "height": 18,
-          "top": 9,
-          "right": 380,
-          "bottom": 27,
-          "left": 36
+        {
+          "bounds": {
+            "x": 35,
+            "y": 11,
+            "right": 49,
+            "bottom": 25
+          },
+          "centerY": 18
         },
-        "domain": {
-          "x": 69.984375,
-          "y": 9,
-          "width": 263.8125,
-          "height": 15,
-          "top": 9,
-          "right": 333.796875,
-          "bottom": 24,
-          "left": 69.984375
-        },
-        "suffix": {
-          "x": 304.515625,
-          "y": 9,
-          "width": 29.28125,
-          "height": 15,
-          "top": 9,
-          "right": 333.796875,
-          "bottom": 24,
-          "left": 304.515625
-        },
-        "suffixText": ".com",
-        "suffixInk": {
-          "x": 304.515625,
-          "y": 9,
-          "width": 29.28125,
-          "height": 15,
-          "top": 9,
-          "right": 333.796875,
-          "bottom": 24,
-          "left": 304.515625
-        },
-        "port": {
-          "x": 333.796875,
-          "y": 9,
-          "width": 34.203125,
-          "height": 15,
-          "top": 9,
-          "right": 368,
-          "bottom": 24,
-          "left": 333.796875
-        },
-        "labelElided": true
+        {
+          "bounds": {
+            "x": 58,
+            "y": 11,
+            "right": 72,
+            "bottom": 25
+          },
+          "centerY": 18
+        }
+      ],
+      "display": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "url": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "uri": {
+        "x": 104,
+        "y": 10.5,
+        "width": 404,
+        "height": 15,
+        "top": 10.5,
+        "right": 508,
+        "bottom": 25.5,
+        "left": 104
       },
-      {
-        "platform": "linux",
-        "uri": {
-          "x": 36,
-          "y": 9,
-          "width": 344,
-          "height": 18,
-          "top": 9,
-          "right": 380,
-          "bottom": 27,
-          "left": 36
-        },
-        "domain": {
-          "x": 69.984375,
-          "y": 9,
-          "width": 263.8125,
-          "height": 15,
-          "top": 9,
-          "right": 333.796875,
-          "bottom": 24,
-          "left": 69.984375
-        },
-        "suffix": {
-          "x": 304.515625,
-          "y": 9,
-          "width": 29.28125,
-          "height": 15,
-          "top": 9,
-          "right": 333.796875,
-          "bottom": 24,
-          "left": 304.515625
-        },
-        "suffixText": ".com",
-        "suffixInk": {
-          "x": 304.515625,
-          "y": 9,
-          "width": 29.28125,
-          "height": 15,
-          "top": 9,
-          "right": 333.796875,
-          "bottom": 24,
-          "left": 304.515625
-        },
-        "port": {
-          "x": 333.796875,
-          "y": 9,
-          "width": 34.203125,
-          "height": 15,
-          "top": 9,
-          "right": 368,
-          "bottom": 24,
-          "left": 333.796875
-        },
-        "labelElided": true
+      "suffix": {
+        "x": 478.703125,
+        "y": 10.5,
+        "width": 29.296875,
+        "height": 15,
+        "top": 10.5,
+        "right": 508,
+        "bottom": 25.5,
+        "left": 478.703125
       },
-      {
-        "platform": "darwin",
-        "uri": {
-          "x": 104,
-          "y": 9,
-          "width": 404,
-          "height": 18,
-          "top": 9,
-          "right": 508,
-          "bottom": 27,
-          "left": 104
-        },
-        "domain": {
-          "x": 137.984375,
-          "y": 9,
-          "width": 323.8125,
-          "height": 15,
-          "top": 9,
-          "right": 461.796875,
-          "bottom": 24,
-          "left": 137.984375
-        },
-        "suffix": {
-          "x": 432.515625,
-          "y": 9,
-          "width": 29.28125,
-          "height": 15,
-          "top": 9,
-          "right": 461.796875,
-          "bottom": 24,
-          "left": 432.515625
-        },
-        "suffixText": ".com",
-        "suffixInk": {
-          "x": 432.515625,
-          "y": 9,
-          "width": 29.28125,
-          "height": 15,
-          "top": 9,
-          "right": 461.796875,
-          "bottom": 24,
-          "left": 432.515625
-        },
-        "port": {
-          "x": 461.796875,
-          "y": 9,
-          "width": 34.203125,
-          "height": 15,
-          "top": 9,
-          "right": 496,
-          "bottom": 24,
-          "left": 461.796875
-        },
-        "labelElided": true
-      }
-    ]
-  },
+      "elided": true,
+      "drag": "no-drag",
+      "direction": "rtl",
+      "copied": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com:55969/o/oauth2/authorize?client_id=fixture#signin",
+      "security": "http"
+    }
+  ],
+  "allCentered": true,
+  "noSecurityOrAddressOverlap": true,
   "nativePlatform": "darwin",
-  "otherPlatformCoverage": "Renderer geometry only; native controls require manual Windows/Linux checks."
+  "otherPlatformCoverage": "Renderer insets tested; Windows/Linux native visuals require a manual check."
 }

@@ -32,7 +32,7 @@ for (const kind of ["oauth", "cookie"] as const) {
       if (!address || typeof address === "string") throw new Error("Missing fixture address");
       const origin = `http://127.0.0.1:${address.port}`;
       app = await launchElectron({
-        args: [MAIN_ENTRY, `--user-data-dir=${resolve(home, "profile")}`, `--host-resolver-rules=MAP ${longHost} 127.0.0.1`],
+        args: [MAIN_ENTRY, `--user-data-dir=${resolve(home, "profile")}`, `--host-resolver-rules=MAP ${longHost} 127.0.0.1, MAP localhost 127.0.0.1`],
         env: buildIsolatedElectronEnv({ AVE_HOME: resolve(home, "data") }),
       });
       await app.firstWindow();
@@ -51,19 +51,17 @@ for (const kind of ["oauth", "cookie"] as const) {
         void pending.catch(() => undefined);
       }, { moduleUrl: pathToFileURL(resolve(chunks, moduleName)).href, kind, url: origin + "/redirect" })]);
       await expect(chrome.locator("#oauth-uri")).toHaveAttribute("title", origin + longPath);
-      await expect(chrome.locator("#oauth-host")).toHaveText(`127.0.0.1:${address.port}`);
+      await expect(chrome.locator("#oauth-domain")).toHaveText("127.0.0.1");
       await expect(chrome.locator("#oauth-security")).toHaveAttribute("data-security", "http");
       await expect(chrome.locator("#oauth-security")).toHaveAttribute("aria-label", /HTTP/);
       expect(await chrome.locator("input").count()).toBe(0);
       const geometry = await chrome.evaluate(() => {
         const row = document.getElementById("oauth-location")!;
-        const host = document.getElementById("oauth-host")!;
-        const path = document.getElementById("oauth-path")!;
+        const host = document.getElementById("oauth-domain")!;
         const guest = document.getElementById("auth-view")!;
         return {
           row: row.getBoundingClientRect().toJSON(), host: host.getBoundingClientRect().toJSON(),
           guest: guest.getBoundingClientRect().toJSON(),
-          elided: path.scrollWidth > path.clientWidth,
           hostHit: host.contains(document.elementFromPoint(host.getBoundingClientRect().x + 1, 18)),
         };
       });
@@ -71,7 +69,6 @@ for (const kind of ["oauth", "cookie"] as const) {
       expect(geometry.guest.y).toBe(geometry.row.bottom);
       expect(geometry.host.x).toBeGreaterThanOrEqual(process.platform === "darwin" ? 80 : 12);
       expect(geometry.host.right).toBeLessThan(geometry.row.right);
-      expect(geometry.elided).toBe(true);
       expect(geometry.hostHit).toBe(true);
       await testInfo.attach(`${kind}-address-chrome`, { body: await chrome.screenshot(), contentType: "image/png" });
       const authWindow = await app.browserWindow(chrome);
@@ -84,93 +81,76 @@ for (const kind of ["oauth", "cookie"] as const) {
         }, url);
         await expect(chrome.locator("#oauth-uri")).toHaveAttribute("title", url);
       }
-      for (const url of [`http://${longHost}:${address.port}${longPath}`, `http://[::1]:${ipv6Address.port}${longPath}`]) {
-        await navigate(url);
+      async function checkAddress(url: string, display: string, elided = false): Promise<void> {
+        await expect(chrome.locator("#oauth-domain")).toHaveText(display);
+        await chrome.locator("#oauth-uri").hover();
+        await expect(chrome.locator("#oauth-uri")).toHaveAttribute("title", url);
         const layout = await chrome.evaluate(() => {
-          const rect = (id: string) => document.getElementById(id)!.getBoundingClientRect().toJSON();
-          const subdomain = document.getElementById("oauth-subdomain")!;
           const uri = document.getElementById("oauth-uri")!;
-          const path = document.getElementById("oauth-path")!;
-          const selection = window.getSelection()!;
+          const domain = document.getElementById("oauth-domain")!;
           const range = document.createRange();
-          range.selectNodeContents(uri);
+          range.selectNodeContents(domain);
+          const selection = window.getSelection()!;
           selection.removeAllRanges();
           selection.addRange(range);
           const clipboardData = new DataTransfer();
           const copy = new ClipboardEvent("copy", { clipboardData, bubbles: true, cancelable: true });
           uri.dispatchEvent(copy);
+          const selected = selection.toString();
+          const text = domain.firstChild!;
+          range.setStart(text, Math.max(0, text.textContent!.length - 4));
           return {
-            row: rect("oauth-location"), uri: rect("oauth-uri"), domain: rect("oauth-domain"), port: rect("oauth-port"),
-            domainText: document.getElementById("oauth-domain")!.textContent,
-            subdomainElided: subdomain.scrollWidth > subdomain.clientWidth,
-            domainLabelElided: document.getElementById("oauth-domain-label")!.scrollWidth > document.getElementById("oauth-domain-label")!.clientWidth,
-            subdomainDirection: getComputedStyle(subdomain).direction,
-            pathElided: path.scrollWidth > path.clientWidth,
-            pathDirection: getComputedStyle(path).direction,
-            dragRegion: getComputedStyle(uri).getPropertyValue("-webkit-app-region"),
-            selectable: getComputedStyle(uri).userSelect,
-            selected: selection.toString(), copied: clipboardData.getData("text/plain"), copyHandled: copy.defaultPrevented,
+            uri: uri.getBoundingClientRect().toJSON(), suffix: range.getBoundingClientRect().toJSON(),
+            elided: uri.scrollWidth > uri.clientWidth, direction: getComputedStyle(uri).direction,
+            drag: getComputedStyle(uri).getPropertyValue("-webkit-app-region"), selectable: getComputedStyle(uri).userSelect,
+            selected, copied: clipboardData.getData("text/plain"), copyHandled: copy.defaultPrevented,
           };
         });
-        expect(layout.row.width).toBe(520);
-        expect(layout.domainText).toBe(url.includes(longHost) ? "attacker-example.io" : "[::1]");
-        expect(layout.domain.right).toBeLessThanOrEqual(layout.uri.right);
-        expect(layout.port.right).toBeLessThanOrEqual(layout.uri.right);
-        expect(layout.port.right).toBeLessThanOrEqual(layout.row.right - 12);
-        expect(layout.domain.x).toBeGreaterThanOrEqual(layout.uri.x);
-        expect(layout.subdomainElided).toBe(url.includes(longHost));
-        expect(layout.domainLabelElided).toBe(false);
-        expect(layout.subdomainDirection).toBe("rtl");
-        expect(layout.pathElided).toBe(true);
-        expect(layout.pathDirection).toBe("ltr");
-        expect(layout.dragRegion).toBe("no-drag");
+        expect(layout.elided).toBe(elided);
+        expect(layout.direction).toBe("rtl");
+        expect(layout.drag).toBe("no-drag");
         expect(layout.selectable).toBe("text");
-        expect(layout.selected.replace(/\s/g, "")).toContain(layout.domainText);
+        expect(layout.selected).toBe(display);
         expect(layout.copied).toBe(url);
         expect(layout.copyHandled).toBe(true);
-        await chrome.locator("#oauth-uri").hover();
-        const name = `${kind}-520-${url.includes(longHost) ? "long-host" : "ipv6"}`;
-        const screenshot = testInfo.outputPath(name + ".png");
-        await chrome.screenshot({ path: screenshot });
-        await testInfo.attach(name, { path: screenshot, contentType: "image/png" });
+        if (elided) {
+          expect(display.endsWith(".com")).toBe(true);
+          expect(layout.suffix.width).toBeGreaterThan(0);
+          expect(layout.suffix.x).toBeGreaterThanOrEqual(layout.uri.x);
+          expect(layout.suffix.right).toBeLessThanOrEqual(layout.uri.right);
+        }
+      }
+      for (const [url, display] of [
+        [`http://${longHost}:${address.port}${longPath}`, "attacker-example.io"],
+        [`http://[::1]:${ipv6Address.port}${longPath}`, "[::1]"],
+        [`http://localhost:${address.port}${longPath}`, "localhost"],
+      ]) {
+        await navigate(url);
+        await checkAddress(url, display);
       }
       for (const platform of ["darwin", "win32", "linux"] as const) {
-        const url = "https://" + "a".repeat(63) + ".com:8443/login/" + "long-path/".repeat(40);
-        await app.evaluate(async ({ BrowserWindow }, input) => {
-          const vm = process.getBuiltinModule("node:vm");
-          const service = await vm.runInThisContext(`import(${JSON.stringify(input.moduleUrl)})`, {
-            importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
-          });
-          const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().startsWith("data:text/html"));
-          if (!window) throw new Error("Missing authentication window");
-          const html = service.buildAuthWindowShellHtml({ title: "Login", url: input.url, partition: "auth-layout", platform: input.platform, chromeOnly: true });
-          await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
-        }, { moduleUrl: pathToFileURL(resolve(chunks, moduleName)).href, platform, url });
-        await expect(chrome.locator("#oauth-uri")).toHaveAttribute("title", url);
-        const layout = await chrome.evaluate(() => {
-          const rect = (id: string) => document.getElementById(id)!.getBoundingClientRect().toJSON();
-          const label = document.getElementById("oauth-domain-label")!;
-          const suffix = document.getElementById("oauth-suffix")!;
-          const range = document.createRange();
-          range.selectNodeContents(suffix);
-          return { row: rect("oauth-location"), uri: rect("oauth-uri"), domain: rect("oauth-domain"), port: rect("oauth-port"),
-            suffix: rect("oauth-suffix"), suffixText: suffix.textContent, suffixInk: range.getBoundingClientRect().toJSON(),
-            labelElided: label.scrollWidth > label.clientWidth, labelDirection: getComputedStyle(label).direction,
-            paddingRight: getComputedStyle(document.getElementById("oauth-location")!).paddingRight };
-        });
-        expect(layout.row.width).toBe(520);
-        expect(layout.paddingRight).toBe(platform === "darwin" ? "12px" : "140px");
-        expect(layout.domain.right).toBeLessThanOrEqual(layout.uri.right);
-        expect(layout.port.right).toBeLessThanOrEqual(layout.uri.right);
-        expect(layout.suffixText).toBe(".com");
-        expect(layout.suffixInk.x).toBeGreaterThanOrEqual(layout.uri.x);
-        expect(layout.suffixInk.right).toBeLessThanOrEqual(layout.uri.right);
-        expect(layout.suffixInk.width).toBeGreaterThan(0);
-        expect(layout.suffixInk.x).toBeGreaterThanOrEqual(layout.suffix.x);
-        expect(layout.suffixInk.right).toBeLessThanOrEqual(layout.suffix.right);
-        expect(layout.labelElided).toBe(true);
-        expect(layout.labelDirection).toBe("rtl");
-        await testInfo.attach(`${kind}-520-long-label-${platform}`, { body: await chrome.screenshot(), contentType: "image/png" });
+        for (const [url, display] of [
+          ["https://accounts.google.com/o/oauth2/authorize?client_id=fixture#signin", "google.com"],
+          ["https://" + longHost + ":8443/login?client_id=fixture", "attacker-example.io"],
+          ["http://127.0.0.1:8443/login", "127.0.0.1"],
+          ["http://localhost:8443/login", "localhost"],
+          ["https://co.uk:8443/login", "co.uk"],
+          ["about:blank", "about:blank"],
+          ["https://" + "a".repeat(63) + ".com:8443/login?client_id=fixture", "a".repeat(63) + ".com"],
+        ]) {
+          await app.evaluate(async ({ BrowserWindow }, input) => {
+            const vm = process.getBuiltinModule("node:vm");
+            const service = await vm.runInThisContext(`import(${JSON.stringify(input.moduleUrl)})`, {
+              importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+            });
+            const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().startsWith("data:text/html"));
+            if (!window) throw new Error("Missing authentication window");
+            const html = service.buildAuthWindowShellHtml({ title: "Login", url: input.url, partition: "auth-layout", platform: input.platform, chromeOnly: true });
+            await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+          }, { moduleUrl: pathToFileURL(resolve(chunks, moduleName)).href, platform, url });
+          await checkAddress(url, display, display.length > 63);
+        }
+        await testInfo.attach(`${kind}-520-domain-only-${platform}`, { body: await chrome.screenshot(), contentType: "image/png" });
       }
     } finally {
       await app?.close();

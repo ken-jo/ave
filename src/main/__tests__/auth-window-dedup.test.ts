@@ -323,12 +323,7 @@ describe("host OAuth auth window", () => {
     const listeners = new Map<string, (event: Record<string, unknown>) => void>();
     const uriListeners = new Map<string, (event: Record<string, unknown>) => void>();
     const uri = { title: "", addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => uriListeners.set(name, callback) };
-    const parts = {
-      "oauth-subdomain-text": { textContent: "" }, "oauth-domain-label-text": { textContent: "" }, "oauth-suffix": { textContent: "" }, "oauth-port": { textContent: "" },
-      "oauth-path": { textContent: "" }, "oauth-scheme": { textContent: "" }, "oauth-status": { textContent: "" },
-      "oauth-domain": { get textContent() { return parts["oauth-domain-label-text"].textContent + parts["oauth-suffix"].textContent; } },
-      "oauth-host": { get textContent() { return parts["oauth-subdomain-text"].textContent + parts["oauth-domain"].textContent + parts["oauth-port"].textContent; } },
-    };
+    const parts = { "oauth-domain": { textContent: "" }, "oauth-status": { textContent: "" } };
     const security = { title: "", innerHTML: "", setAttribute: vi.fn(), dataset: { security: "" } };
     const view = { setAttribute: vi.fn(), addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => listeners.set(name, callback) };
     const context = {
@@ -370,7 +365,7 @@ describe("host OAuth auth window", () => {
       } finally { await attempt.finish(); }
     });
 
-    it.each(["https://auth.example.test/", "http://127.0.0.1:8123/"])("renders an accessible security icon and preserves the host for %s", async base => {
+    it.each(["https://auth.example.test/", "http://127.0.0.1:8123/"])("renders an accessible security icon with the domain for %s", async base => {
       const attempt = start();
       try {
         const { uri, security, listeners, parts, uriListeners } = shellState(constructed[0]);
@@ -383,37 +378,32 @@ describe("host OAuth auth window", () => {
         uriListeners.get("copy")!({ clipboardData: { setData }, preventDefault });
         expect(setData).toHaveBeenCalledWith("text/plain", url);
         expect(preventDefault).toHaveBeenCalled();
-        expect(parts["oauth-host"].textContent).toBe(new URL(base).host);
-        expect(parts["oauth-path"].textContent.length).toBeGreaterThan(1000);
+        expect(parts["oauth-domain"].textContent).toBe(base.startsWith("https:") ? "example.test" : "127.0.0.1");
         expect(security.innerHTML).toContain('<svg');
         expect(security.setAttribute).toHaveBeenLastCalledWith("aria-label", t(base.startsWith("https:") ? "oauthWindow.secure" : "oauthWindow.insecure"));
       } finally { await attempt.finish(); }
     });
 
     it.each([
-      ["https://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:8443/path", "accounts.google.com.signin.oauth2.session-verify.", "attacker-example.io", ":8443"],
-      ["https://" + "a".repeat(63) + ".com:8443/path", "", "a".repeat(63) + ".com", ":8443"],
-      ["https://signin.accounts.example.co.uk:8443/path", "signin.accounts.", "example.co.uk", ":8443"],
-      ["https://signin.accounts.example.co.uk.:8443/path", "signin.accounts.", "example.co.uk.", ":8443"],
-      ["https://signin.tenant.github.io/path", "signin.", "tenant.github.io", ""],
-      ["http://[::1]:8123/path", "", "[::1]", ":8123"],
-      ["http://127.0.0.1:8123/path", "", "127.0.0.1", ":8123"],
-      ["about:blank", "", "", ""],
-    ])("separates the registrable identity and port for %s", async (url, subdomain, domain, port) => {
+      ["https://accounts.google.com/o/oauth2/authorize?client_id=fixture#signin", "google.com"],
+      ["https://accounts.google.com.signin.oauth2.session-verify.attacker-example.io:8443/path", "attacker-example.io"],
+      ["https://" + "a".repeat(63) + ".com:8443/path", "a".repeat(63) + ".com"],
+      ["https://signin.accounts.example.co.uk:8443/path", "example.co.uk"],
+      ["https://signin.accounts.example.co.uk.:8443/path", "example.co.uk"],
+      ["https://signin.tenant.github.io/path", "tenant.github.io"],
+      ["http://[::1]:8123/path", "[::1]"],
+      ["http://127.0.0.1:8123/path", "127.0.0.1"],
+      ["http://localhost:8123/path", "localhost"],
+      ["https://co.uk:8443/path", "co.uk"],
+      ["about:blank", "about:blank"],
+    ])("shows only the domain or hostname fallback for %s", async (url, domain) => {
       const attempt = start();
       try {
         const { uri, security, listeners, parts } = shellState(constructed[0]);
         listeners.get("did-navigate")!({ url, isMainFrame: true });
         expect(uri.title).toBe(url);
-        expect(parts["oauth-subdomain-text"].textContent).toBe(subdomain);
         expect(parts["oauth-domain"].textContent).toBe(domain);
-        if (url.includes("a".repeat(63))) {
-          expect(parts["oauth-domain-label-text"].textContent).toBe("a".repeat(63));
-          expect(parts["oauth-suffix"].textContent).toBe(".com");
-        }
-        expect(parts["oauth-port"].textContent).toBe(port);
         expect(parts["oauth-status"].textContent).toBe(security.title);
-        if (url === "about:blank") expect(parts["oauth-path"].textContent).toBe("about:blank");
         if (url.startsWith("http:")) expect(security.innerHTML).toContain("m12 2 10 10-10 10L2 12Z");
       } finally { await attempt.finish(); }
     });
