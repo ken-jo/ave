@@ -108,7 +108,7 @@ describe("host terminal commands after external content", () => {
     guidance?: string;
     /** Guidance the user types in the composer as the turn starts. */
     userGuidance?: string;
-    /** Whether the exact HostTerminal rule for `printf ready` is saved (default true). */
+    /** Whether an ordinary exact shell rule for `printf ready` is saved (default true). */
     exactRule?: boolean;
     /** How the turn starts (default: a verified keyboard send). */
     origin?: "user-keyboard" | "queue-auto";
@@ -144,7 +144,7 @@ describe("host terminal commands after external content", () => {
     ["an invalid-arguments error", invalidCall],
     ["a tool_search result (meta tools only)", call("t1", TOOL_SEARCH_TOOL_NAME, { query: "meeting" })],
     ["a request_plugin result (meta tools only)", call("t1", "request_plugin", { pluginId: "com.example.meeting" })],
-  ])("after %s, asks a person on a fresh forced card that ignores the exact rule, with nothing typed before approval", async (_label, first) => {
+  ])("after %s, asks a person on a fresh forced card that overrides session Allow and the ordinary rule, with nothing typed before approval", async (_label, first) => {
     const steered = await paneTurn([first, terminalRun, end]);
     expect(steered.asked).toEqual([{
       toolName: "terminal_run",
@@ -164,7 +164,7 @@ describe("host terminal commands after external content", () => {
     expect(laundered.typed).toEqual([]);
   });
 
-  it.each([true, false])("refuses, with no card, a host command after a sub-agent's report reached the active turn (exact rule saved: %s)", async (exactRule) => {
+  it.each([true, false])("refuses, with no card, a host command after a sub-agent's report reached the active turn (ordinary exact rule saved: %s)", async (exactRule) => {
     const reported = await paneTurn([call("t1", "await_worker", {}), terminalRun, end], { exactRule });
     expect(reported.delivered).toEqual(["queued"]);
     expect(reported.asked).toEqual([]);
@@ -183,7 +183,7 @@ describe("host terminal commands after external content", () => {
     expect(clean.typed).toEqual(["printf ready"]);
   });
 
-  it("never types, and asks no one, for a queued auto-send under the same exact rule", async () => {
+  it("never types, and asks no one, for a queued auto-send with the same session Allow choice", async () => {
     const queued = await paneTurn([call("t1", "terminal_run", { command: "printf ready", waitSeconds: 0 }), end], { origin: "queue-auto" });
     expect(queued.asked).toEqual([]);
     expect(queued.typed).toEqual([]);

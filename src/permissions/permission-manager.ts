@@ -80,7 +80,7 @@ import { maskSensitiveData } from "../audit/dlp-filter.js";
 import {
   isAdmissionDeniedPath,
   criticalDeleteTargetFor,
-  permissionPathEvidence,
+  createPermissionPathEvidence,
   canonicalizePathForMatch,
   caseFoldForMatch,
 } from "./sensitive-paths.js";
@@ -1438,8 +1438,9 @@ export class PermissionManager {
       floor ??= { code: "other-principal", reason: "This principal requires local approval for the action." };
     }
     let secretRead = context.secretRead === true;
+    const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd());
     for (const path of context.paths ?? []) {
-      const evidence = permissionPathEvidence(path, projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd());
+      const evidence = evidenceForPath(path);
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
       if (evidence.projectEscape) floor ??= { code: "project-escape", reason: "The target escapes the project boundary." };
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };

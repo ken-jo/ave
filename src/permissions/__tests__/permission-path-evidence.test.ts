@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { criticalDeleteTargetFor, isAdmissionDeniedPath, isSensitivePath, permissionPathEvidence, protectedControlEntryFor } from "../sensitive-paths.js";
+import { createPermissionPathEvidence, criticalDeleteTargetFor, isAdmissionDeniedPath, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { evaluateScopedRules } from "../rules/scoped-rule-matcher.js";
 import { inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
 import { inspectShellPermissionPaths } from "../../tools/shell-path-policy.js";
@@ -23,9 +23,53 @@ describe("permission path facts", () => {
     const path = join(project, name);
     expect(isSensitivePath(path, "read")).not.toBeNull();
     expect(isAdmissionDeniedPath(path, "read")).toBeNull();
-    expect(permissionPathEvidence({ lexical: path, canonical: path, effect: "read" }, project)).toMatchObject({
+    expect(createPermissionPathEvidence(project)({ lexical: path, canonical: path, effect: "read" })).toMatchObject({
       secret: expect.any(String), admissionDenial: null, protectedControl: undefined, projectEscape: false,
     });
+  });
+
+  it("keeps read and write facts separate while sharing each decision's policy roots", () => {
+    const collect = createPermissionPathEvidence(project);
+    const cases = ["ordinary", ".env", ".env.example", ".git/config", "../profile/keys/secret"];
+    for (const effect of ["read", "write", "read"] as const) {
+      for (const name of cases) {
+        const target = join(project, name);
+        const path = { lexical: target, canonical: target, effect };
+        expect(collect(path)).toEqual({
+          ...path,
+          secret: isSensitivePath(target, effect),
+          admissionDenial: isAdmissionDeniedPath(target, effect),
+          protectedControl: effect === "write" ? protectedControlEntryFor(target) : undefined,
+          projectEscape: false,
+        });
+      }
+    }
+    const secret = join(project, ".env");
+    const redirected = join(root, "profile", "keys", "secret");
+    expect(collect({ lexical: secret, canonical: redirected, effect: "read" })).toMatchObject({ secret: expect.any(String), admissionDenial: expect.any(String) });
+    expect(collect({ lexical: secret, canonical: secret, effect: "read" }).admissionDenial).toBeNull();
+  });
+
+  it("refreshes relocated policy roots between decisions without reinterpreting frozen targets", () => {
+    const firstHome = join(root, "first-host");
+    const nextHome = join(root, "next-host");
+    mkdirSync(firstHome);
+    mkdirSync(nextHome);
+    const homeLink = join(root, "host-state");
+    symlinkSync(firstHome, homeLink, "junction");
+    vi.stubEnv("AVE_HOME", homeLink);
+    const collectFirst = createPermissionPathEvidence(project);
+    const firstKey = join(firstHome, "keys", "secret");
+    const nextKey = join(nextHome, "keys", "secret");
+    const path = (target: string) => ({ lexical: target, canonical: target, effect: "read" as const });
+    expect(collectFirst(path(firstKey)).admissionDenial).not.toBeNull();
+    expect(collectFirst(path(nextKey)).admissionDenial).toBeNull();
+    unlinkSync(homeLink);
+    symlinkSync(nextHome, homeLink, "junction");
+    const collectNext = createPermissionPathEvidence(project);
+    expect(collectNext(path(nextKey)).admissionDenial).not.toBeNull();
+    expect(collectNext(path(firstKey)).admissionDenial).toBeNull();
+    expect(collectFirst(path(firstKey)).admissionDenial).not.toBeNull();
   });
 
   it.each([".env.example", ".env.sample", ".env.template", ".env.dist"])("retains the environment template exclusion for %s", (name) => {
@@ -35,8 +79,8 @@ describe("permission path facts", () => {
   it.each([".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile", ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json"])("reports protected paths across case and separators for %s", (name) => {
     const target = `${project}/${name}/child`;
     expect(protectedControlEntryFor(target)).toBe(name);
-    expect(permissionPathEvidence({ lexical: target, canonical: target, effect: "read" }, project).protectedControl).toBeUndefined();
-    expect(permissionPathEvidence({ lexical: target, canonical: target, effect: "write" }, project).protectedControl).toBe(name);
+    expect(createPermissionPathEvidence(project)({ lexical: target, canonical: target, effect: "read" }).protectedControl).toBeUndefined();
+    expect(createPermissionPathEvidence(project)({ lexical: target, canonical: target, effect: "write" }).protectedControl).toBe(name);
     expect(protectedControlEntryFor(`C:\\workspace\\${name.toUpperCase().replaceAll("/", "\\")}\\child`)).toBe(name);
   });
 
@@ -60,16 +104,16 @@ describe("permission path facts", () => {
     symlinkSync(join(project, ".git"), join(project, "alias"), process.platform === "win32" ? "junction" : "dir");
     const lexical = join(project, "alias", "config");
     writeFileSync(join(project, ".git", "config"), "synthetic");
-    expect(permissionPathEvidence({ lexical, canonical: realpathSync.native(lexical), effect: "write" }, project).protectedControl).toBe(".git");
+    expect(createPermissionPathEvidence(project)({ lexical, canonical: realpathSync.native(lexical), effect: "write" }).protectedControl).toBe(".git");
   });
 
   it("reports link and parent escape without flooring ordinary absolute external writes", () => {
     const outside = join(root, "outside");
     mkdirSync(outside);
     symlinkSync(outside, join(project, "link"), process.platform === "win32" ? "junction" : "dir");
-    expect(permissionPathEvidence({ lexical: join(project, "link", "new"), canonical: join(outside, "new"), effect: "write" }, project).projectEscape).toBe(true);
-    expect(permissionPathEvidence({ lexical: `${project}/../outside/new`, canonical: join(outside, "new"), effect: "write" }, project).projectEscape).toBe(true);
-    expect(permissionPathEvidence({ lexical: join(outside, "new"), canonical: join(outside, "new"), effect: "write" }, project).projectEscape).toBe(false);
+    expect(createPermissionPathEvidence(project)({ lexical: join(project, "link", "new"), canonical: join(outside, "new"), effect: "write" }).projectEscape).toBe(true);
+    expect(createPermissionPathEvidence(project)({ lexical: `${project}/../outside/new`, canonical: join(outside, "new"), effect: "write" }).projectEscape).toBe(true);
+    expect(createPermissionPathEvidence(project)({ lexical: join(outside, "new"), canonical: join(outside, "new"), effect: "write" }).projectEscape).toBe(false);
   });
 
   it("does not turn ordinary secret edits into a forced floor", () => {

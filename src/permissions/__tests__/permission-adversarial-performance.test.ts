@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", stateRoot);
   __resetSessionStoreForTest();
   manager = new PermissionManager(join(stateRoot, "permissions.json"));
-  manager.setMode("allow");
+  manager.setMode("default");
 });
 
 afterEach(() => {
@@ -59,8 +59,13 @@ describe("adversarial complete manager timing", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`permission nested timing ${JSON.stringify({ depth, chars: command.length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    for (const result of results) expect(result).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
+    for (const result of results) expect(result.forceModal).toBeUndefined();
+    manager.setMode("allow");
+    const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", true);
+    expect(permitted).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });
 
   it.each(TIMING_CASES)("$dialect sandboxed=$runsSandboxed radix=$radix nested=$nested", ({ dialect, runsSandboxed, radix, nested, length }) => {
@@ -76,7 +81,12 @@ describe("adversarial complete manager timing", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`permission adversarial timing ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    for (const result of results) expect(result).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
+    for (const result of results) expect(result.forceModal).toBeUndefined();
+    manager.setMode("allow");
+    const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
+    expect(permitted).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });
 });

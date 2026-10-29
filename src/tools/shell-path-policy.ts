@@ -5,7 +5,7 @@ import { displayShellWord, shellWordHasSingleField, staticShellWord, type ShellW
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, permissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { inspectSedScriptFileAccess, isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
@@ -1243,6 +1243,7 @@ export function findShellPathPolicyViolation(
   facts: ShellExecutionFacts = { dialect: "bash", environment: {} },
   evidence?: PermissionPathEvidence[],
 ): ShellPathPolicyViolation | null {
+  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot) : undefined;
   const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
   if (!evidence && nativeCwdViolation) return nativeCwdViolation;
   const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
@@ -1278,7 +1279,7 @@ export function findShellPathPolicyViolation(
     }
     if (evidence) {
       const lexical = isAbsolute(path) ? path : `${cwd ?? sandboxRoot}/${path}`;
-      evidence.push({ ...permissionPathEvidence({ lexical, canonical: absolute, effect }, sandboxRoot), ...(deleting ? { deleteIntent: true as const } : {}) });
+      evidence.push({ ...evidenceForPath!({ lexical, canonical: absolute, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
       return;
     }
     const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);

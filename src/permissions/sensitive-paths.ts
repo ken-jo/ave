@@ -550,22 +550,27 @@ export interface PermissionPathEvidence {
   deleteIntent?: true;
 }
 
-/** Both spellings are frozen by the caller; this function reports facts, never an outcome. */
-export function permissionPathEvidence(
-  path: { lexical: string; canonical: string; effect: PathEffect },
-  projectRoot: string,
-): PermissionPathEvidence {
+/** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
+export function createPermissionPathEvidence(projectRoot: string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
-  const lexical = normalize(path.lexical);
-  const canonical = normalize(path.canonical);
   const root = normalize(projectRoot);
   const within = (value: string) => value === root || value.startsWith(root + "/");
-  return {
-    ...path,
-    secret: isSensitivePath(lexical, path.effect) ?? isSensitivePath(canonical, path.effect),
-    admissionDenial: isAdmissionDeniedPath(lexical, path.effect) ?? isAdmissionDeniedPath(canonical, path.effect),
-    protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined,
-    projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !within(canonical),
+  const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
+  return path => {
+    const lexical = normalize(path.lexical);
+    const canonical = normalize(path.canonical);
+    let matcher = matchers.get(path.effect);
+    if (!matcher) {
+      matcher = { secret: createSensitivePathMatcher(path.effect), admission: createAdmissionDeniedPathMatcher(path.effect) };
+      matchers.set(path.effect, matcher);
+    }
+    return {
+      ...path,
+      secret: matcher.secret(lexical) ?? (canonical === lexical ? null : matcher.secret(canonical)),
+      admissionDenial: matcher.admission(lexical) ?? (canonical === lexical ? null : matcher.admission(canonical)),
+      protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined,
+      projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !within(canonical),
+    };
   };
 }
 

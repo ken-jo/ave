@@ -26,7 +26,7 @@ import {
   type PowerShellTraversalValue,
 } from "../../shared/powershell-recursive-traversal.js";
 
-import { permissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
+import { createPermissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
 import { modelShellPath } from "../../shared/shell-native-path.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { inspectShellPermissionPaths } from "../../tools/shell-path-policy.js";
@@ -960,6 +960,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
 } {
   const parsed = asPowerShellCommand(input);
   const paths: PermissionPathEvidence[] = [];
+  const evidenceForPath = createPermissionPathEvidence(cwd);
   if (parsed.syntax.pipelines === null) {
     const visible = inspectShellPermissionPaths(parsed.command, cwd);
     return { paths: visible.paths, unproven: true, credentialStore: null };
@@ -978,7 +979,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     } else unproven = true;
     const absolute = /^(?:[a-z]:[\\/]|[\\/])/i.test(value);
     const lexical = absolute ? value : cwd + "/" + value;
-    paths.push({ ...permissionPathEvidence({ lexical, canonical, effect }, cwd), ...(deleting ? { deleteIntent: true as const } : {}) });
+    paths.push({ ...evidenceForPath({ lexical, canonical, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
   };
   for (const parsedStage of program.stages) {
     // A literal call target has the same filesystem and credential effects as
