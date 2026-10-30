@@ -832,6 +832,34 @@ describe("credential floor: recursive searches after cd", () => {
     expect(evaluateShellRules("cd \"$X\" && make test", rules, CWD).decision).toBeNull();
   });
 
+  it.each(["strict", "default", "auto", "allow"] as const)("retains the archive output target's platform identity in %s mode", mode => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-archive-target-"));
+    try {
+      const manager = new PermissionManager(join(dir, "permissions.json"));
+      manager.setMode(mode);
+      const command = "tar -C ~ -czf /tmp/x.tgz .";
+      const context = {
+        ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir },
+        shellExecution: { runsSandboxed: true },
+      };
+      const result = manager.checkDetailed("bash", "builtin", "shell", null, context);
+      if (process.platform === "win32") {
+        expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true, reasonCode: "protected-path" });
+        expect(result.reviewer).toBeUndefined();
+        expect(manager.checkDetailed("bash", "builtin", "shell", null, { ...context, headless: true }))
+          .toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: "Nobody can approve this request; do not retry." });
+      } else {
+        expect(result).toMatchObject(mode === "allow"
+          ? { decision: "allow", reasonCode: "allow-mode" }
+          : { decision: "ask", layer: 6, reasonCode: mode === "auto" ? "review-required" : "shell-approval" });
+        expect(result.forceModal).toBeUndefined();
+        expect(result.pipelineRequest?.floor).toBeUndefined();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps ordinary scans on the mode route and denies concrete credential stores", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-cd-"));
     try {
@@ -841,7 +869,7 @@ describe("credential floor: recursive searches after cd", () => {
         shellExecution: { runsSandboxed: true },
       });
       for (const command of ["cd ~ && grep -r x .", "cd ~ && rg x", "cd $HOME; grep -r x .", "cd \"$X\" && grep -r y .",
-        "env -C ~ grep -r x .", "tar -C ~ -czf /tmp/x.tgz .", "find ~ -type f | xargs cat", "cd ~; grep -r x ."]) {
+        "env -C ~ grep -r x .", "find ~ -type f | xargs cat", "cd ~; grep -r x ."]) {
         const result = pm.checkDetailed("bash", "builtin", "shell", null, subject(command));
         expect(result, command).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
         expect(result.forceModal, command).toBeUndefined();
@@ -1159,12 +1187,13 @@ it("retains an ancestor path context before a child directory narrows", () => {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, shellExecution: { runsSandboxed: true },
     });
     for (const [command, reasonCode, sensitiveContext] of [
-      [`cd '${safe}' && printf ./link`, process.platform === "win32" ? "allow-mode" : "read-only-shell", true],
+      [`cd '${safe}' && printf ./link`, "read-only-shell", true],
       [`printf %s "$(cd '${safe}' && printf ./link)"`, "allow-mode", false],
     ] as const) {
       expect(shellSensitivePathSignal(command, cwd) !== null, command).toBe(sensitiveContext);
       const result = check(command);
       expect(result).toMatchObject({ decision: "allow", reasonCode });
+      if (reasonCode === "read-only-shell") expect(result.pipelineRequest?.shell).toMatchObject({ sandboxed: true, readOnlyProven: true, unproven: false });
       expect(result.forceModal).toBeUndefined();
     }
   } finally {

@@ -152,6 +152,7 @@ interface NonPathOperandSpec {
   valueOptions?: ReadonlySet<string>;
   // Consume path-valued options without exemption so their values cannot displace the program slot and hide a file.
   pathValueOptions?: ReadonlySet<string>;
+  writePathValueOptions?: ReadonlySet<string>;
   /** Possible value-option abbreviations consume their operand without exempting it. */
   abbreviatedValueOptions?: true;
   /** Forwarding options; possible abbreviations conservatively end option roles. */
@@ -199,7 +200,7 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
     unsupportedExecution: true,
   }] as [string, NonPathOperandSpec]),
   ["ssh-keygen", { pathValueOptions: new Set(["-f"]) }],
-  ["patch", { pathValueOptions: new Set(["-o", "--output"]) }],
+  ["patch", { pathValueOptions: new Set(["-o", "--output", "-i", "--input"]), valueOptions: new Set(["-p", "--strip", "-F", "--fuzz"]) }],
   ["gzip", { pathValueOptions: new Set(["-S", "--suffix"]) }],
   ["gdb", {
     valueOptions: DEBUGGER_CODE_OPTIONS,
@@ -270,7 +271,7 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
     pathValueOptions: new Set(["-f", "--file", "-C", "--directory", "-T", "--files-from", "-X", "--exclude-from"]),
   }],
   // Passphrase option values are data except their documented file: source.
-  ["openssl", { valueOptions: new Set(["-subj", ...OPENSSL_PASSPHRASE_OPTIONS]) }],
+  ["openssl", { valueOptions: new Set(["-subj", ...OPENSSL_PASSPHRASE_OPTIONS]), pathValueOptions: new Set(["-out", "-keyout"]), writePathValueOptions: new Set(["-out", "-keyout"]) }],
   // Data-only builtin arguments do not exempt executed substitutions or downstream consumers.
   ["printf", { firstPositionalIsProgram: true, }],
   // Format escapes can look like Windows paths but remain data.
@@ -285,6 +286,7 @@ interface ShellPathCandidate {
   value: string;
   index: number;
   effect?: PathEffect;
+  deleteIntent?: true;
   refuseAfterCheck?: boolean;
 }
 
@@ -304,6 +306,7 @@ interface OperandSlotClassification {
   nestedCommands: readonly { value: string; index: number }[];
   // Refuse operands that execute text unavailable to static inspection.
   dynamicExecution: string | null;
+  unknownWriteTarget?: string;
 }
 
 const COMPILER_COMMANDS = new Set(["cc", "c++", "gcc", "g++", "clang", "clang++"]);
@@ -379,22 +382,23 @@ function classifyGitCommitOperandSlots(argv: readonly string[]): OperandSlotClas
 // Named options precede any shorter option prefix that could claim their value.
 const COMPILER_PATH_OPTIONS = [
   "-include-pch", "-idirafter", "-isysroot", "-isystem", "-iquote", "-include", "-imacros",
-  "-MF", "-I", "-L", "-B", "-o",
+  "--dependency-file", "--serialize-diagnostics", "-MF", "-MJ", "-I", "-L", "-B", "-o",
 ];
 
 function classifyCompilerOperandSlots(argv: readonly string[], verbIndex: number): OperandSlotClassification {
   const nonPathIndices = new Set<number>();
-  const extraCandidates: { value: string; index: number }[] = [];
+  const extraCandidates: ShellPathCandidate[] = [];
   for (let i = verbIndex + 1; i < argv.length; i += 1) {
     const token = argv[i]!;
     if (token === "--") break;
-    const option = COMPILER_PATH_OPTIONS.find((prefix) => token.startsWith(prefix));
+    const option = COMPILER_PATH_OPTIONS.find(prefix => token === prefix || (prefix.startsWith("--") ? token.startsWith(prefix + "=") : token.startsWith(prefix)));
     if (!option) continue;
-    const value = token === option ? argv[++i] : token.slice(option.length);
+    const attached = token.slice(option.length);
+    const value = token === option ? argv[++i] : option.startsWith("--") && attached.startsWith("=") ? attached.slice(1) : attached;
     // Sysroot-relative values require interpretation; retain conservative scanning instead of treating = as directory data.
     if (!value || value.startsWith("=")) continue;
     nonPathIndices.add(i);
-    extraCandidates.push({ value, index: i });
+    extraCandidates.push({ value, index: i, effect: SHELL_OUTPUT_PATH_OPTIONS.has(option) ? "write" : "read" });
   }
   return { nonPathIndices, extraCandidates, nestedCommands: [], dynamicExecution: null };
 }
@@ -529,7 +533,7 @@ function classifyGrepOperandSlots(argv: readonly string[], verbIndex: number): O
   return { nonPathIndices, extraCandidates, nestedCommands: [], dynamicExecution: null };
 }
 
-type FindOperandRole = "literal" | "path";
+type FindOperandRole = "literal" | "path" | "write-path";
 
 // Consume find predicate values before primaries so primary-like data cannot alter roles; unknown syntax stays checked.
 const FIND_PRIMARY_OPERANDS: ReadonlyMap<string, readonly FindOperandRole[]> = new Map([
@@ -541,10 +545,10 @@ const FIND_PRIMARY_OPERANDS: ReadonlyMap<string, readonly FindOperandRole[]> = n
     "-perm", "-type", "-xtype", "-fstype", "-maxdepth", "-mindepth", "-regextype",
   ].map((primary): [string, readonly FindOperandRole[]] => [primary, ["literal"]]),
   ...[
-    "-newer", "-anewer", "-cnewer", "-samefile", "-fprint", "-fprint0",
-    "-fls", "-files0-from",
+    "-newer", "-anewer", "-cnewer", "-samefile", "-files0-from",
   ].map((primary): [string, readonly FindOperandRole[]] => [primary, ["path"]]),
-  ["-fprintf", ["path", "literal"]],
+  ...["-fprint", "-fprint0", "-fls"].map((primary): [string, readonly FindOperandRole[]] => [primary, ["write-path"]]),
+  ["-fprintf", ["write-path", "literal"]],
   ...[
     "-true", "-false", "-empty", "-readable", "-writable", "-executable",
     "-nouser", "-nogroup", "-print", "-print0", "-ls", "-quit", "-prune",
@@ -556,8 +560,9 @@ const FIND_PRIMARY_OPERANDS: ReadonlyMap<string, readonly FindOperandRole[]> = n
 
 function classifyFindOperandSlots(argv: readonly string[], verbIndex: number): OperandSlotClassification {
   const nonPathIndices = new Set<number>();
+  const extraCandidates: ShellPathCandidate[] = [];
   const unclassified: OperandSlotClassification = {
-    nonPathIndices: new Set(), extraCandidates: [], nestedCommands: [], dynamicExecution: null,
+    nonPathIndices: new Set(), extraCandidates, nestedCommands: [], dynamicExecution: null,
   };
   let i = verbIndex + 1;
   // Global find options do not consume roots; debugging categories consume a separate literal.
@@ -570,11 +575,19 @@ function classifyFindOperandSlots(argv: readonly string[], verbIndex: number): O
     i += 2;
   }
   // Starting points end at the first primary/operator; every root remains a path.
+  const roots: number[] = [];
   while (i < argv.length && !argv[i]!.startsWith("-")
-    && !["!", "(", "\\(", ")", "\\)", ","].includes(argv[i]!)) i += 1;
+    && !["!", "(", "\\(", ")", "\\)", ","].includes(argv[i]!)) roots.push(i++);
   let groups = 0;
   for (; i < argv.length; i += 1) {
     const primary = argv[i]!;
+    if (primary === "-delete") {
+      if (roots.length === 0) extraCandidates.push({ value: ".", index: verbIndex, effect: "write", deleteIntent: true });
+      for (const index of roots) {
+        nonPathIndices.add(index);
+        extraCandidates.push({ value: argv[index]!, index, effect: "write", deleteIntent: true });
+      }
+    }
     if (primary === "(" || primary === "\\(") { groups += 1; continue; }
     if (primary === ")" || primary === "\\)") {
       if (--groups < 0) return unclassified;
@@ -589,10 +602,14 @@ function classifyFindOperandSlots(argv: readonly string[], verbIndex: number): O
     for (const role of roles) {
       i += 1;
       if (role === "literal") nonPathIndices.add(i);
+      else {
+        nonPathIndices.add(i);
+        extraCandidates.push({ value: argv[i]!, index: i, effect: role === "write-path" ? "write" : "read" });
+      }
     }
   }
   if (groups !== 0) return unclassified;
-  return { nonPathIndices, extraCandidates: [], nestedCommands: [], dynamicExecution: null };
+  return { nonPathIndices, extraCandidates, nestedCommands: [], dynamicExecution: null };
 }
 
 // Accept only proven uv run [--] child boundaries; unmodelled options fail closed instead of granting guessed roles.
@@ -600,7 +617,7 @@ function classifyUvRunOperandSlots(argv: readonly string[]): OperandSlotClassifi
   if (argv[1] !== "run") return null;
 
   const nonPathIndices = new Set<number>([1]);
-  const extraCandidates: { value: string; index: number }[] = [];
+  const extraCandidates: ShellPathCandidate[] = [];
   const nestedCommands: { value: string; index: number }[] = [];
   let childIndex = 2;
   if (argv[childIndex] === "--") {
@@ -665,6 +682,7 @@ function classifyUvRunOperandSlots(argv: readonly string[]): OperandSlotClassifi
     extraCandidates,
     nestedCommands,
     dynamicExecution: childSlots.dynamicExecution,
+    ...(childSlots.unknownWriteTarget ? { unknownWriteTarget: childSlots.unknownWriteTarget } : {}),
   };
 }
 
@@ -753,7 +771,7 @@ function transferStructuredPaths(verb: string, option: string, value: string): s
     const command = readWgetrcCommand(value);
     const name = command.name;
     const normalize = (command: string): string => command.replaceAll("_", "");
-    if (WGETRC_COMMAND_TABLE.path.some(command => normalize(command) === name)) return file(command.value);
+    if ([...WGETRC_COMMAND_TABLE.path, ...WGETRC_COMMAND_TABLE.writePath].some(command => normalize(command) === name)) return file(command.value);
     if (WGETRC_COMMAND_TABLE.data.some(command => normalize(command) === name)) return [];
     if (WGETRC_COMMAND_TABLE.structured.some(command => normalize(command) === name)) {
       return transferStructuredPaths(verb, "--pinnedpubkey", command.value);
@@ -828,7 +846,7 @@ function classifyTransferOperandSlots(argv: readonly string[], verb: string, tab
   let defaultConfigDisabled = verb === "curl" && (argv[1] === "-q" || argv[1] === "--disable");
   type OptionRole = keyof ShellOptionTable;
   const roles = new Map<string, OptionRole>();
-  for (const role of ["flag", "data", "optionalData", "path", "config", "structured"] as const) {
+  for (const role of ["flag", "data", "optionalData", "path", "writePath", "config", "structured"] as const) {
     for (const option of table[role]) {
       roles.set(option, role);
       if (role === "flag" && option.startsWith("--")) {
@@ -880,17 +898,19 @@ function classifyTransferOperandSlots(argv: readonly string[], verb: string, tab
       const fileFormat = writeOut && value.startsWith("@");
       if (fileFormat && (value === "@" || value === "@-" || /[\0\r\n]/.test(value))) ambiguousTransferPath();
       const rcCommand = verb === "wget" && ["-e", "--execute"].includes(option) ? readWgetrcCommand(value) : undefined;
+      const fileOutput = role === "writePath" || rcCommand !== undefined
+        && WGETRC_COMMAND_TABLE.writePath.some(command => command.replaceAll("_", "") === rcCommand.name);
       const config = role === "config" || (rcCommand !== undefined
         && WGETRC_COMMAND_TABLE.config.some(command => command.replaceAll("_", "") === rcCommand.name));
       const configPath = rcCommand?.value ?? value;
       if (config && (configPath === "" || configPath === "-" || /[\0\r\n]/.test(configPath))) ambiguousTransferPath();
-      const paths = config ? [configPath] : fileFormat ? [value.slice(1)] : role === "path" ? [value] : role === "structured" ? transferStructuredPaths(verb, option, value) : [];
+      const paths = config ? [configPath] : fileFormat ? [value.slice(1)] : role === "path" || role === "writePath" ? [value] : role === "structured" ? transferStructuredPaths(verb, option, value) : [];
       nonPathIndices.add(i);
       nonPathIndices.add(valueIndex);
       if (role === "structured") programIndices.add(valueIndex);
       extraCandidates.push(...paths.map(path => ({
         value: path, index: valueIndex,
-        ...(config || fileFormat ? { effect: "read" as const, refuseAfterCheck: true } : writeOut ? { effect: "write" as const } : {}),
+        ...(config || fileFormat ? { effect: "read" as const, refuseAfterCheck: true } : writeOut || fileOutput ? { effect: "write" as const } : {}),
       })));
       i = valueIndex;
       // The first value option owns the entire suffix, even if it spells flags.
@@ -944,7 +964,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   const tarCreation = verb === "tar" && tarCreatesArchive(argv);
   const filePolicy = POWERSHELL_COMMAND_POLICIES[verb] ?? POWERSHELL_COMMAND_POLICIES[verb.replace(/\.exe$/u, "")];
   if (filePolicy?.native !== undefined && filePolicy.destination?.position !== undefined) {
-    const nativeCopySwitches = /^(?:\/[a-z?]|\/-y|\/d(?::[^\\/]*)?|\/(?:[a-z]\/)+d:[^\r\n]*|\/(?:mir|purge|mov|move|compress|noclone|-?sparse|lev:\d+|mt(?::\d+)?|r:\d+|w:\d+|copy:[a-z]+|dcopy:[a-z]+|sec|secfix|timfix|xo|xn|xc|xx|xl|is|it|sl|sj|xj|xjd|xjf|fft|dst|256|njh|njs|ndl|nfl|np|eta|tee))$/iu;
+    const nativeCopySwitches = /^(?:\/[a-z?]+(?:\/-?[a-z]+)*|\/-y|\/d(?::[^\\/]*)?|\/(?:[a-z]\/)+d:[^\r\n]*|\/(?:mir|purge|mov|move|compress|noclone|-?sparse|lev:\d+|mt(?::\d+)?|r:\d+|w:\d+|copy:[a-z]+|dcopy:[a-z]+|sec|secfix|timfix|xo|xn|xc|xx|xl|is|it|sl|sj|xj|xjd|xjf|fft|dst|256|njh|njs|ndl|nfl|np|eta|tee))$/iu;
     const positional: number[] = [];
     for (let index = 1; index < argv.length; index++) {
       const argument = argv[index]!;
@@ -1055,7 +1075,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
           "checked beforehand. Put the command in the shell call itself instead.";
       }
       if (sedAccess.hasWriteOrExec) {
-        extraCandidates.push(...sedAccess.fileOperands.map((value) => ({ value, index })));
+        extraCandidates.push(...sedAccess.fileOperands.map(({ value, effect }) => ({ value, index, effect })));
         return true;
       }
     }
@@ -1091,10 +1111,14 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
           skip.add(index);
           const values = ["awk", "gawk", "mawk", "nawk"].includes(verb)
             ? operandPaths(carried.value, false, verb) : [carried.value];
-          const effect: PathEffect | undefined = verb === "tar"
-            ? ["-f", "--file"].includes(carried.option) ? tarCreation ? "write" : "read"
-              : ["-C", "--directory"].includes(carried.option) ? tarCreation ? "read" : "write" : "read"
-            : undefined;
+          let effect: PathEffect | undefined;
+          if (spec.writePathValueOptions?.has(carried.option)) effect = "write";
+          else if (verb === "ssh-keygen" && carried.option === "-f") effect = keyGenerationInspectsInput(argv) ? "read" : "write";
+          else if (verb === "sort" && ["-T", "--temporary-directory"].includes(carried.option)) effect = "write";
+          else if (verb === "tar") effect = ["-f", "--file"].includes(carried.option) ? tarCreation ? "write" : "read"
+            : ["-C", "--directory"].includes(carried.option) ? tarCreation ? "read" : "write" : "read";
+          else if (SHELL_OUTPUT_PATH_OPTIONS.has(carried.option) && !NON_OUTPUT_COMMANDS.has(verb)
+            || ["cp", "mv", "install", "ln"].includes(verb) && ["-t", "--target-directory"].includes(carried.option)) effect = "write";
           extraCandidates.push(...values.map(value => ({ value, index, ...(effect ? { effect } : {}) })));
         } else {
           if (isSed || spec.nestedCommandOptions?.has(carried.option)) programIndices.add(index);
@@ -1153,7 +1177,39 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
       extraCandidates.push({ value: argv[index]!, index, effect: "read" });
     }
   }
+  if (verb === "patch" || verb === "gzip") {
+    const separator = argv.indexOf("--");
+    const positionals = argv.flatMap((argument, index) => index > 0 && index !== separator && !skip.has(index)
+      && (separator >= 0 && index > separator || !argument.startsWith("-") || argument === "-") ? [index] : []);
+    const output = verb === "patch" && extraCandidates.some(candidate => candidate.effect === "write");
+    const reads = argv.some((argument, index) => !skip.has(index) && (separator < 0 || index < separator)
+      && (verb === "patch" ? !output && ["--dry-run", "--check"].includes(argument)
+        : ["--stdout", "--to-stdout", "--test", "--list"].includes(argument) || /^-[^-]*[ctl]/u.test(argument)));
+    for (const [position, index] of positionals.entries()) {
+      skip.add(index);
+      extraCandidates.push({ value: argv[index]!, index, effect: verb === "gzip" ? reads ? "read" : "write" : position === 0 && !output && !reads ? "write" : "read" });
+    }
+  }
   return { nonPathIndices: skip, programIndices, extraCandidates, nestedCommands, dynamicExecution };
+}
+
+function keyGenerationInspectsInput(argv: readonly string[]): boolean {
+  const readFlags = new Set(["-l", "-L", "-y", "-e", "-i", "-F", "-Q", "-r"]);
+  const mutatingFlags = new Set(["-p", "-c", "-A", "-R", "-H", "-s", "-k", "-M"]);
+  const valueOptions = new Set(["-f", "-a", "-b", "-t", "-m", "-C", "-N", "-P", "-I", "-n", "-V", "-z", "-s", "-D", "-O", "-w", "-R", "-M"]);
+  let reads = false;
+  let mutates = false;
+  for (let index = 1; index < argv.length; index++) {
+    const argument = argv[index]!;
+    if (!/^-[^-]/u.test(argument)) continue;
+    for (let position = 1; position < argument.length; position++) {
+      const option = "-" + argument[position];
+      reads ||= readFlags.has(option);
+      mutates ||= mutatingFlags.has(option);
+      if (valueOptions.has(option)) { if (position === argument.length - 1) index++; break; }
+    }
+  }
+  return reads && !mutates;
 }
 
 interface CommandPolicyView {
@@ -1373,8 +1429,8 @@ function isUnknownWriteTarget(verb: string, index: number, argv: readonly (strin
   const raw = prefix || knownArgv[index] || "";
   const previous = argv[index - 1];
   if (SHELL_DATA_ONLY_COMMANDS.has(verb)) return false;
-  if (slots.programIndices?.has(index)) return false;
   if (slots.extraCandidates.some((candidate) => candidate.index === index && candidate.effect === "write")) return true;
+  if (slots.programIndices?.has(index)) return false;
   if (slots.extraCandidates.some((candidate) => candidate.index === index && candidate.effect === "read")) {
     const name = stripCommandPath(knownArgv[0] ?? "").toLowerCase();
     const policy = POWERSHELL_COMMAND_POLICIES[name] ?? POWERSHELL_COMMAND_POLICIES[name.replace(/\.exe$/u, "")];
@@ -1727,11 +1783,13 @@ export function findShellPathPolicyViolation(
       const {node, effective} = event;
       const outerKnownArgv = event.argv.map((argument,index) => argument ?? displayShellWord(effective.words[index]!));
       const outerSlots = classifyOperandSlots(outerKnownArgv);
+      if (evidence && outerSlots.unknownWriteTarget) onUnknownWrite?.(outerSlots.unknownWriteTarget);
       const view = projectCommandPolicyView(event, outerSlots);
       const {
         argv, words, knownArgv, slots, offset, executableHeads,
         wrapperPaths, wrapperCwds, environment: projectedEnvironment, cwd: projectedCwd,
       } = view;
+      if (evidence && slots.unknownWriteTarget) onUnknownWrite?.(slots.unknownWriteTarget);
       if (view.unsupported) decline(view.unsupported.reason, view.unsupported.word);
       const head = argv[0];
       if (head === undefined) {
@@ -1854,13 +1912,12 @@ export function findShellPathPolicyViolation(
             const operandEffect = evidence ? isUnknownWriteTarget(verb, index, argv, knownArgv, projectedSlots, words[index]) ? "write" : "read" : effect;
             checkPath(path, words[index]!.source.raw, projectedCwd,
               copySource || inputFile || (index === 1 && hostScriptReads.includes(path)) ? "read" : operandEffect,
-              ["rm", "rmdir", "unlink"].includes(verb) || (verb === "find" && knownArgv.includes("-delete")));
+              ["rm", "rmdir", "unlink"].includes(verb));
           }
         }
         for(const path of projectedSlots.extraCandidates){
           if (evidence && argv[path.index] === undefined) continue;
-          checkPath(path.value,words[path.index]!.source.raw,projectedCwd,!evidence && verb === "tar" ? effect : path.effect ?? (evidence
-            ? isUnknownWriteTarget(verb, path.index, argv, knownArgv, projectedSlots, words[path.index]) ? "write" : "read" : effect));
+          checkPath(path.value,words[path.index]!.source.raw,projectedCwd,evidence ? path.effect ?? (isUnknownWriteTarget(verb, path.index, argv, knownArgv, projectedSlots, words[path.index]) ? "write" : "read") : path.refuseAfterCheck ? path.effect ?? effect : effect, path.deleteIntent === true);
           // File-backed options are reads, but can redirect output at runtime.
           if(path.refuseAfterCheck)ambiguousTransferPath();
         }

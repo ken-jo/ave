@@ -1,3 +1,5 @@
+import type { PathEffect } from "../permissions/allowed-directories.js";
+
 /** Documented option arity separates data, path and program values. */
 type ArgumentRole = "data" | "path" | "program";
 
@@ -158,29 +160,36 @@ function dotArguments(program: string): string[] | null {
 export function classifySqliteArgumentSlots(argv: readonly string[]) {
   const nonPathIndices = new Set<number>();
   const programIndices = new Set<number>();
-  const extraCandidates: { value: string; index: number }[] = [];
+  const extraCandidates: { value: string; index: number; effect: PathEffect }[] = [];
   const nestedCommands: { value: string; index: number }[] = [];
   let dynamicExecution: string | null = null;
-  const unresolved = (detail: string) => { dynamicExecution ??= `unresolved sqlite3 ${detail}`; };
+  let unknownWriteTarget: string | undefined;
+  const unresolved = (detail: string, writing = false) => {
+    dynamicExecution ??= `unresolved sqlite3 ${detail}`;
+    if (writing) unknownWriteTarget ??= "The database write target cannot be resolved away from protected paths.";
+  };
 
-  const path = (value: string, index: number, database = false) => {
+  const path = (value: string, index: number, effect: PathEffect, database = false) => {
     if (database) {
-      if (/^~[\\/]/.test(value)) { unresolved("conditional home-directory filename"); return; }
+      if (/^~[\\/]/.test(value)) { unresolved("conditional home-directory filename", effect === "write"); return; }
       if (value === "" || value === ":memory:") return;
       if (value.startsWith("file:")) {
+        const query = value.indexOf("?");
+        const modes = query < 0 ? [] : new URLSearchParams(value.slice(query + 1).split("#", 1)[0]).getAll("mode");
+        if (modes.length > 0 && modes.every(mode => mode === "ro")) effect = "read";
         let filename = value.slice(5).split(/[?#]/, 1)[0]!;
         if (filename.startsWith("//")) {
           const authority = /^\/\/([^/]*)(\/.*)?$/.exec(filename)!;
-          if (authority[1] !== "" && authority[1] !== "localhost") { unresolved("database URI authority"); return; }
+          if (authority[1] !== "" && authority[1] !== "localhost") { unresolved("database URI authority", effect === "write"); return; }
           filename = authority[2] ?? "";
         }
         try { value = decodeURIComponent(filename); }
-        catch { unresolved("database URI encoding"); return; }
+        catch { unresolved("database URI encoding", effect === "write"); return; }
         if (value === "" || value === ":memory:") return;
       }
     }
-    if (value.includes("\0")) { unresolved("filename bytes"); return; }
-    extraCandidates.push({ value, index });
+    if (value.includes("\0")) { unresolved("filename bytes", effect === "write"); return; }
+    extraCandidates.push({ value, index, effect });
   };
 
   const sql = (program: string, index: number) => {
@@ -193,18 +202,18 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
       || /\.(?:sql|txt)$/i.test(program)) { unresolved("program or script-file operand"); return; }
     const relationNames = sqlRelationNames(tokens);
     if (!relationNames) { unresolved("program syntax"); return; }
-    const literalPath = (at: number, end: readonly string[], database: boolean) => {
+    const literalPath = (at: number, end: readonly string[], effect: PathEffect, database = false) => {
       const token = tokens[at], next = tokens[at + 1];
       // Only single-quoted literals followed by an expression boundary prove filenames; quoted identifiers may be columns.
       if (token?.kind !== "string" || (next && !end.includes(next.value.toLowerCase()))) {
-        unresolved("computed file operand"); return;
+        unresolved("computed file operand", effect === "write"); return;
       }
-      path(token.value, index, database);
+      path(token.value, index, effect, database);
     };
     for (let i = 0; i < tokens.length; i += 1) {
       const token = tokens[i]!, name = token.value.toLowerCase();
       const call = tokens[i + 1]?.kind === "symbol" && tokens[i + 1]?.value === "(";
-      if (call && FILE_FUNCTIONS.has(name)) literalPath(i + 2, [",", ")"], false);
+      if (call && FILE_FUNCTIONS.has(name)) literalPath(i + 2, [",", ")"], name === "writefile" ? "write" : "read");
       if (call && DYNAMIC_FUNCTIONS.has(name)) unresolved("dynamic program or archive function");
       if (FILE_TABLES.has(name) && (call || relationNames.has(i))) unresolved("filesystem table effects");
       if (token.kind !== "word") continue;
@@ -214,17 +223,17 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
       else if (tokens[start]?.value.toLowerCase() === "plan" && tokens[start - 1]?.value.toLowerCase() === "query"
         && tokens[start - 2]?.value.toLowerCase() === "explain") start -= 3;
       if (start >= 0 && !(tokens[start]?.kind === "symbol" && tokens[start]?.value === ";")) continue;
-      if (name === "attach") literalPath(i + (tokens[i + 1]?.kind === "word" && tokens[i + 1]?.value.toLowerCase() === "database" ? 2 : 1), ["as"], true);
+      if (name === "attach") literalPath(i + (tokens[i + 1]?.kind === "word" && tokens[i + 1]?.value.toLowerCase() === "database" ? 2 : 1), ["as"], "write", true);
       if (name === "vacuum") {
         let at = i + 1;
         if (tokens[at]?.value.toLowerCase() !== "into") at += 1;
-        if (tokens[at]?.value.toLowerCase() === "into") literalPath(at + 1, [";"], true);
+        if (tokens[at]?.value.toLowerCase() === "into") literalPath(at + 1, [";"], "write", true);
       }
       if (name === "pragma") {
         let at = i + 1;
         if (tokens[at + 1]?.value === ".") at += 2;
         if (["temp_store_directory", "data_store_directory"].includes(tokens[at]?.value.toLowerCase() ?? "")
-          && ["=", "("].includes(tokens[at + 1]?.value ?? "")) literalPath(at + 2, [";", ")"], false);
+          && ["=", "("].includes(tokens[at + 1]?.value ?? "")) literalPath(at + 2, [";", ")"], "write");
       }
     }
   };
@@ -233,7 +242,7 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
     programIndices.add(index);
     if (!value.startsWith(".")) { sql(value, index); return; }
     const args = dotArguments(value);
-    if (!args?.length) { unresolved("dot-command syntax"); return; }
+    if (!args?.length) { unresolved("dot-command syntax", /^\.(?:output|once|log|backup|save|clone|open)(?:\s|$)/i.test(value)); return; }
     const [name, ...operands] = args;
     if (DATA_DOT_COMMANDS.has(name!)) return;
     if (["shell", "system"].includes(name!)) {
@@ -244,37 +253,38 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
       return;
     }
     if (["read", "output", "once", "log"].includes(name!)) {
-      if (operands.length > 1 || (name === "read" && operands.length !== 1)) { unresolved("dot-command arity"); return; }
+      if (operands.length > 1 || (name === "read" && operands.length !== 1)) { unresolved("dot-command arity", name !== "read"); return; }
       const file = operands[0];
       if (file === undefined) return;
       if (file.startsWith("|")) {
         // Pipe streams can launch programs whose consumed data argv roles cannot establish.
         unresolved("command pipe effects");
-      } else if (file.startsWith("-")) unresolved("output helper option");
-      else if (!["stdout", "stderr", "off"].includes(file) || name === "read") path(file, index);
+      } else if (file.startsWith("-")) unresolved("output helper option", name !== "read");
+      else if (!["stdout", "stderr", "off"].includes(file) || name === "read") path(file, index, name === "read" ? "read" : "write");
       return;
     }
     if (["backup", "restore", "save", "clone"].includes(name!)) {
       const first = name === "clone";
       if (!operands.length || operands.length > (name === "clone" ? 1 : 2)
-        || operands.some((operand) => operand.startsWith("-"))) { unresolved("dot-command file options"); return; }
-      path(first ? operands[0]! : operands.at(-1)!, index, true);
+        || operands.some((operand) => operand.startsWith("-"))) { unresolved("dot-command file options", name !== "restore"); return; }
+      path(first ? operands[0]! : operands.at(-1)!, index, name === "restore" ? "read" : "write", true);
       return;
     }
     if (name === "open") {
       const files: string[] = [];
-      let alternateMode = false;
+      let alternateMode = false, readOnly = false;
       for (const operand of operands) {
+        if (["-readonly", "--readonly", "-deserialize", "--deserialize"].includes(operand)) readOnly = true;
         if (ALTERNATE_OPEN_MODES.has(operand.replace(/^--?/, ""))) alternateMode = true;
         if (["new", "readonly", "ifexists", "nofollow", "deserialize", "append", "zip"].some((option) => operand === `-${option}` || operand === `--${option}`)) continue;
-        if (operand.startsWith("-")) { unresolved("open option"); return; }
+        if (operand.startsWith("-")) { unresolved("open option", !readOnly); return; }
         files.push(operand);
       }
-      if (files.length > 1) unresolved("open arity");
-      else if (alternateMode && files[0]?.startsWith("file:")) unresolved("database URI in alternate open mode");
+      if (files.length > 1) unresolved("open arity", !readOnly);
+      else if (alternateMode && files[0]?.startsWith("file:")) unresolved("database URI in alternate open mode", !readOnly);
       else if (files[0] !== undefined) {
-        if (/^~[\\/]/.test(files[0])) unresolved("conditional home-directory filename");
-        else path(files[0], index, !alternateMode);
+        if (/^~[\\/]/.test(files[0])) unresolved("conditional home-directory filename", !readOnly);
+        else path(files[0], index, readOnly ? "read" : "write", !alternateMode);
       }
       return;
     }
@@ -282,7 +292,7 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
     unresolved("dot-command effects");
   };
 
-  let databaseIndex: number | undefined, optionsEnded = false, alternateMode = false;
+  let databaseIndex: number | undefined, optionsEnded = false, alternateMode = false, readOnly = false;
   for (let i = 1; i < argv.length; i += 1) {
     const value = argv[i]!;
     nonPathIndices.add(i);
@@ -293,10 +303,11 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
       const roles = OPTION_OPERANDS.get(name);
       if (!roles || i + roles.length >= argv.length) { unresolved("option or option arity"); break; }
       if (ALTERNATE_OPEN_MODES.has(name)) alternateMode = true;
+      if (name === "readonly" || name === "deserialize") readOnly = true;
       for (const role of roles) {
         const operand = argv[++i]!;
         nonPathIndices.add(i);
-        if (role === "path") path(operand, i);
+        if (role === "path") path(operand, i, "read");
         if (role === "program") program(operand, i);
       }
     } else if (databaseIndex === undefined) {
@@ -308,9 +319,9 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
     // Positional script detection depends on file contents and availability; only explicit -init and .read prove program-file roles.
     if (/\.(?:sql|txt)$/i.test(database)) unresolved("positional script-file role");
     // Alternate open modes may consume raw filename bytes before URI parsing; do not reuse ordinary file: database roles.
-    if (alternateMode && database.startsWith("file:")) unresolved("database URI in alternate open mode");
-    else if (/^~[\\/]/.test(database)) unresolved("conditional home-directory filename");
-    else path(database, databaseIndex, !alternateMode);
+    if (alternateMode && database.startsWith("file:")) unresolved("database URI in alternate open mode", !readOnly);
+    else if (/^~[\\/]/.test(database)) unresolved("conditional home-directory filename", !readOnly);
+    else path(database, databaseIndex, readOnly ? "read" : "write", !alternateMode);
   }
-  return { nonPathIndices, programIndices, extraCandidates, nestedCommands, dynamicExecution };
+  return { nonPathIndices, programIndices, extraCandidates, nestedCommands, dynamicExecution, ...(unknownWriteTarget ? { unknownWriteTarget } : {}) };
 }

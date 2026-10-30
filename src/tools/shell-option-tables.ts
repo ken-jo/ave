@@ -4,6 +4,7 @@ export interface ShellOptionTable {
   data: readonly string[];
   optionalData: readonly string[];
   path: readonly string[];
+  writePath: readonly string[];
   config: readonly string[];
   structured: readonly string[];
 }
@@ -61,11 +62,14 @@ export const CURL_OPTION_TABLE: ShellOptionTable = {
   ],
   optionalData: ["-h", "--help"],
   path: [
-    "--abstract-unix-socket", "--alt-svc", "--cacert", "--capath", "-c",
-    "--cookie-jar", "--crlfile", "-D", "--dump-header", "--egd-file", "--etag-compare", "--etag-save",
-    "--hsts", "--key", "--libcurl", "--netrc-file", "-o", "--output", "--output-dir", "--proxy-cacert",
-    "--proxy-capath", "--proxy-crlfile", "--proxy-key", "--pubkey", "--random-file", "--ssl-sessions",
-    "--stderr", "--trace", "--trace-ascii", "--unix-socket", "-T", "--upload-file",
+    "--abstract-unix-socket", "--cacert", "--capath", "--crlfile", "--egd-file", "--etag-compare",
+    "--key", "--netrc-file", "--proxy-cacert", "--proxy-capath", "--proxy-crlfile", "--proxy-key",
+    "--pubkey", "--random-file", "--unix-socket", "-T", "--upload-file",
+  ],
+  writePath: [
+    "--alt-svc", "-c", "--cookie-jar", "-D", "--dump-header", "--etag-save",
+    "--hsts", "--libcurl", "-o", "--output", "--output-dir", "--ssl-sessions",
+    "--stderr", "--trace", "--trace-ascii",
   ],
   config: ["-K", "--config"],
   structured: [
@@ -116,11 +120,14 @@ export const WGET_OPTION_TABLE: ShellOptionTable = {
     "--exclude-directories",
   ],
   path: [
-    "-o", "--output-file", "-a", "--append-output", "-i", "--input-file", "--input-metalink",
-    "--rejected-log", "-O", "--output-document", "--use-askpass", "-P",
-    "--directory-prefix", "--load-cookies", "--save-cookies", "--post-file", "--body-file",
-    "--certificate", "--private-key", "--ca-certificate", "--ca-directory", "--crl-file",
-    "--random-file", "--egd-file", "--hsts-file", "--warc-file", "--warc-dedup", "--warc-tempdir", "--default-page",
+    "-i", "--input-file", "--input-metalink", "--use-askpass", "--load-cookies", "--post-file",
+    "--body-file", "--certificate", "--private-key", "--ca-certificate", "--ca-directory", "--crl-file",
+    "--random-file", "--egd-file", "--warc-dedup",
+  ],
+  writePath: [
+    "-o", "--output-file", "-a", "--append-output", "--rejected-log", "-O",
+    "--output-document", "-P", "--directory-prefix", "--save-cookies", "--hsts-file", "--warc-file",
+    "--warc-tempdir", "--default-page",
   ],
   config: ["--config"],
   structured: [
@@ -131,10 +138,13 @@ export const WGET_OPTION_TABLE: ShellOptionTable = {
 // Normalize case, hyphens, and underscores; unlisted commands get no exemption without a role decision.
 export const WGETRC_COMMAND_TABLE = {
   path: [
-    "ca_certificate", "ca_directory", "certificate", "dir_prefix", "egd_file", "input", "load_cookies",
-    "logfile", "output_document", "post_file", "body_file", "private_key", "random_file",
-    "save_cookies", "crl_file", "hsts_file", "input_metalink", "rejected_log",
-    "warc_cdx_dedup", "warc_file", "warc_tempdir", "default_page",
+    "ca_certificate", "ca_directory", "certificate", "egd_file", "input", "load_cookies",
+    "post_file", "body_file", "private_key", "random_file", "crl_file", "input_metalink",
+    "warc_cdx_dedup",
+  ],
+  writePath: [
+    "dir_prefix", "logfile", "output_document", "save_cookies", "hsts_file", "rejected_log",
+    "warc_file", "warc_tempdir", "default_page",
   ],
   config: ["choose_config"],
   data: [

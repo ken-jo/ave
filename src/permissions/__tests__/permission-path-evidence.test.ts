@@ -222,6 +222,95 @@ describe("implicit and unresolved shell mutation targets", () => {
 });
 
 describe("shell target operand roles", () => {
+  for (const mode of ["strict", "default", "auto", "allow"] as const) {
+    it.each(["output_document", "logfile", "dir_prefix", "save_cookies", "hsts_file", "rejected_log", "warc_file", "warc_tempdir", "default_page"])(`keeps structured transfer output protected in ${mode}: %s`, setting => {
+      const manager = new PermissionManager(join(root, "permissions.json"));
+      manager.setMode(mode);
+      for (const headless of [false, true]) {
+        const result = manager.checkDetailed("bash", "builtin", "shell", null, {
+          ruleSubject: { kind: "shell", dialect: "bash", command: `wget -e '${setting}=.git/config' https://example.test`, cwd: project },
+          shellExecution: { runsSandboxed: true }, headless,
+        });
+        expect(result).toMatchObject(headless ? { decision: "deny", reasonCode: "no-approver" }
+          : { decision: "ask", forceModal: true, reasonCode: "protected-path" });
+        expect(result.reviewer).toBeUndefined();
+      }
+    });
+
+    it.each(["curl --stderr .git/config https://example.test", "curl --ssl-sessions .git/config https://example.test",
+      "wget --warc-tempdir .git/config https://example.test", "wget --default-page .git/config https://example.test"])(`keeps typed transfer output protected in ${mode}: %s`, command => {
+      const manager = new PermissionManager(join(root, "permissions.json"));
+      manager.setMode(mode);
+      for (const headless of [false, true]) {
+        const result = manager.checkDetailed("bash", "builtin", "shell", null, {
+          ruleSubject: { kind: "shell", dialect: "bash", command, cwd: project }, shellExecution: { runsSandboxed: true }, headless,
+        });
+        expect(result).toMatchObject(headless ? { decision: "deny", reasonCode: "no-approver" }
+          : { decision: "ask", forceModal: true, reasonCode: "protected-path" });
+      }
+    });
+  }
+
+  for (const mode of ["strict", "default", "auto", "allow"] as const) {
+    it(`retains a computed database writer floor in ${mode}`, () => {
+      const manager = new PermissionManager(join(root, "permissions.json"));
+      manager.setMode(mode);
+      for (const headless of [false, true]) {
+        const result = manager.checkDetailed("bash", "builtin", "shell", null, {
+          ruleSubject: { kind: "shell", dialect: "bash", command: "sqlite3 :memory: \"SELECT writefile(filename, 'bytes') FROM files;\"", cwd: project },
+          shellExecution: { runsSandboxed: true }, headless,
+        });
+        expect(result).toMatchObject(headless ? { decision: "deny", reasonCode: "no-approver" }
+          : { decision: "ask", forceModal: true, reasonCode: "protected-path" });
+      }
+    });
+  }
+
+  it.each(["post_file", "body_file", "private_key", "choose_config", "input", "load_cookies"])("retains structured transfer input as a read: %s", setting => {
+    const facts = inspectShellPermissionPaths(`wget --execute '${setting}=.git/config' https://example.test`, project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ canonical: join(project, ".git", "config"), effect: "read", protectedControl: undefined }));
+    expect(facts.unknownProtectedWrite).toBeUndefined();
+  });
+
+  it.each(["gcc -MF.git/config source.c", "clang -MJ.git/config source.c", "clang --dependency-file=.git/config source.c",
+    "clang --serialize-diagnostics=.git/config source.c", "find . -fprint .git/config", "find . -fprint0 .git/config",
+    "find . -fls .git/config", "find . -fprintf .git/config '%p'", "sort -T.git input.txt", "sort --temporary-directory=.git input.txt",
+    "patch .git/config patch.txt", "patch -o .git/config original.txt", "gzip .git/config", "gzip -d .git/config",
+    "openssl req -keyout .git/config", "ssh-keygen -f .git/config", "ssh-keygen -l -p -f .git/config",
+    "gzip -- '-x/../.git/config'", "uv run -- gcc -MF.git/config source.c"])("retains known writer operand effects: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ effect: "write", protectedControl: ".git" }));
+  });
+
+  it.each(["gcc -I.git source.c", "find . -newer .git/config", "find . -samefile .git/config", "find . -files0-from .git/config",
+    "find . -name '-delete' -print", "patch -o out.txt .git/config", "patch -i .git/config original.txt",
+    "patch --dry-run .git/config patch.txt", "patch --check .git/config patch.txt",
+    "gzip -c .git/config", "gzip -t .git/config", "gzip -l .git/config", "ssh-keygen -lf .git/config"])("does not turn a known input into a protected mutation: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.paths.filter(path => path.protectedControl !== undefined)).toEqual([]);
+    expect(facts.unknownProtectedWrite).toBeUndefined();
+  });
+
+  it("keeps a deletion-looking search pattern outside the delete floor", () => {
+    const command = "find . -name '-delete' -print";
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.paths.every(path => path.deleteIntent === undefined)).toBe(true);
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      const manager = new PermissionManager(join(root, "permissions.json"));
+      manager.setMode(mode);
+      const result = manager.checkDetailed("bash", "builtin", "shell", null, {
+        ruleSubject: { kind: "shell", dialect: "bash", command, cwd: project }, shellExecution: { runsSandboxed: true },
+      });
+      expect(result.forceModal).not.toBe(true);
+      expect(result.reasonCode).not.toBe("critical-delete");
+    }
+  });
+
+  it("retains parsed deletion intent on filesystem search roots", () => {
+    const facts = inspectShellPermissionPaths("find . -delete", project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ canonical: project, effect: "write", deleteIntent: true }));
+  });
+
   it.each(["xcopy /E source .git/hooks", "copy.exe /b source .git/config", "robocopy /E source .git/hooks", "xcopy /E source out .git/hooks", "copy.exe /b source out .git/config"])("retains native copy destinations after slash options and excess operands: %s", command => {
     const facts = inspectShellPermissionPaths(command, project);
     expect(facts.paths).toContainEqual(expect.objectContaining({ effect: "write", protectedControl: ".git" }));

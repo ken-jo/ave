@@ -458,8 +458,8 @@ function hasMutatingSedProgram(args: readonly string[]): boolean {
 export interface SedScriptFileAccess {
   // True when the script reads, writes or executes.
   hasWriteOrExec: boolean;
-  // Files the script names, verbatim, in script order.
-  fileOperands: string[];
+  // Files the script names, verbatim, with their actual effects in script order.
+  fileOperands: { value: string; effect: "read" | "write" }[];
   // Command lines the script runs with `e COMMAND`, verbatim, in script order. Like a file operand the command runs to end of line, so it is a span, not a word.
   execCommands: string[];
   // True when the script executes text that only exists at run time: `s///e` runs the pattern space AFTER substitution, and a bare `e` runs the pattern space as it stands. Neither can be read here, so a caller that needs to know what will run has to refuse rather than inspect.
@@ -467,7 +467,7 @@ export interface SedScriptFileAccess {
 }
 
 export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess {
-  const fileOperands: string[] = [];
+  const fileOperands: SedScriptFileAccess["fileOperands"] = [];
   const execCommands: string[] = [];
   let hasDynamicExec = false;
   let hasWriteOrExec = false;
@@ -496,7 +496,7 @@ export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess 
     }
     if (command === "w" || command === "W" || command === "r" || command === "R") {
       hasWriteOrExec = true;
-      i = takeSedFileOperand(script, i + 1, fileOperands);
+      i = takeSedFileOperand(script, i + 1, fileOperands, command === "r" || command === "R" ? "read" : "write");
       continue;
     }
     if (command === "e") {
@@ -515,7 +515,7 @@ export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess 
       // `s///e` executes the pattern space after the substitution has been applied, so the text that runs does not exist in this script.
       if (result.mutating && !result.writesFile) hasDynamicExec = true;
       i = result.writesFile
-        ? takeSedFileOperand(script, result.next, fileOperands)
+        ? takeSedFileOperand(script, result.next, fileOperands, "write")
         : result.next;
       continue;
     }
@@ -526,10 +526,10 @@ export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess 
 }
 
 // Take the filename running from `start` to the end of the line, append it to `operands`, and return the index just past that line.
-function takeSedFileOperand(script: string, start: number, operands: string[]): number {
+function takeSedFileOperand(script: string, start: number, operands: SedScriptFileAccess["fileOperands"], effect: "read" | "write"): number {
   const end = skipToSedLineEnd(script, start);
   const operand = script.slice(start, end).replace(/[\r\n]+$/, "").trim();
-  if (operand.length > 0) operands.push(operand);
+  if (operand.length > 0) operands.push({ value: operand, effect });
   return end;
 }
 

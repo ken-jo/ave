@@ -1,4 +1,4 @@
-import { type BigIntStats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
+import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { settingsFilePath } from "../data/settings-store.js";
@@ -175,15 +175,35 @@ function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, rou
   return resolved.path;
 }
 
-function addProtectedRoutingPins(path: string, routingPins: Set<string>): void {
+function addProtectedRoutingPins(path: string, routingPins: Set<string>, deniedPaths?: ReadonlySet<string>): void {
   try {
     const resolved = inspectPhysicalFilesystemPath(path, process.cwd(), MAX_MISSING_PATH_ANCESTORS);
     for (const routingPath of resolved.routingSymlinkPaths) routingPins.add(routingPath);
   } catch (error) {
-    const marker = dirname(path);
-    // A regular.git pointer makes its child control paths structurally impossible. Every other inspection failure remains fail-closed.
-    if ((error as NodeJS.ErrnoException).code === "ENOTDIR"
-      && basename(marker) === ".git" && lstatSync(marker).isFile()) return;
+    if ((error as NodeJS.ErrnoException).code === "ENOTDIR") {
+      let ancestor = dirname(path);
+      for (let depth = 0; depth < MAX_MISSING_PATH_ANCESTORS; depth += 1) {
+        let entry: Stats;
+        try { entry = lstatSync(ancestor); }
+        catch (inspectionError) {
+          if (!isMissingPath(inspectionError)) throw inspectionError;
+          const parent = dirname(ancestor);
+          if (parent === ancestor) break;
+          ancestor = parent;
+          continue;
+        }
+        const physical = resolvePolicyPath(ancestor, process.cwd());
+        // A denied regular entry cannot contain children until that protected
+        // entry is replaced. Retain its own routing pins before omitting the
+        // structurally impossible descendant, including prior deny placeholders.
+        if ((entry.isFile() || entry.isSymbolicLink() && lstatSync(physical).isFile())
+          && (basename(ancestor) === ".git" || deniedPaths?.has(ancestor))) {
+          addProtectedRoutingPins(ancestor, routingPins);
+          return;
+        }
+        break;
+      }
+    }
     throw error;
   }
 }
@@ -895,9 +915,10 @@ export function buildMandatorySandboxWritePolicy(
       try { lstatSync(path); }
       catch (error) { if (isMissingPath(error)) discovered.delete(path); else throw error; }
     }
-    for (const path of paths) addProtectedRoutingPins(path, routingPins);
-    for (const path of discovered) addProtectedRoutingPins(path, discoveredRoutingPins);
-    for (const path of protectedRoutingPaths) addProtectedRoutingPins(path, routingPins);
+    const literalWriteDenies = new Set([...paths, ...inheritedWriteDenies]);
+    for (const path of paths) addProtectedRoutingPins(path, routingPins, literalWriteDenies);
+    for (const path of discovered) addProtectedRoutingPins(path, discoveredRoutingPins, literalWriteDenies);
+    for (const path of protectedRoutingPaths) addProtectedRoutingPins(path, routingPins, literalWriteDenies);
     // A bind mount follows a routing symlink to its target; it cannot pin the directory entry while leaving that entry's parent writable. Remove every grant that could replace the link. Independent child and sibling grants remain available because they do not make the routing parent writable.
     for (const routingPath of [...routingPins, ...discoveredRoutingPins]) {
       const routingParent = dirname(routingPath);

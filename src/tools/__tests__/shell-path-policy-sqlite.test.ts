@@ -7,6 +7,7 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { isReadOnlyCommand } from "../../permissions/reviewer/host-risk-inspector.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
+import { classifySqliteArgumentSlots } from "../shell-sqlite-arguments.js";
 
 describe("database CLI argument roles", () => {
   let root: string, cwd: string, outside: string;
@@ -112,6 +113,13 @@ describe("database CLI argument roles", () => {
     "sqlite3 'file:../outside/database.db?mode=ro' 'SELECT 1;'",
   ])("retains the write boundary even with wider reads: %s", (command) => {
     for (const readFence of [false, true]) expect(policy(command, readFence)?.kind).toBe("sandbox-boundary");
+  });
+
+  it.each([
+    "sqlite3 --readonly ../outside/database.db 'SELECT 1;'",
+    call("SELECT readfile('../outside/input.txt');"),
+  ])("retains restricted-read containment for input-only operands: %s", command => {
+    expect(policy(command, true)?.kind).toBe("sandbox-boundary");
   });
 
   it("resolves extracted filenames through symlinks and URI decoding", () => {
@@ -286,5 +294,71 @@ describe("database CLI argument roles", () => {
   ])("checks relation effects across accepted identifier spellings and source structures: %s", (program) => {
     for (const fence of [false, true]) expect(policy(call(program), fence)?.kind).toBe("dynamic-path");
     expect(new BashAstValidator({ mode: "deny" }).validate("bash", { command: call(program) }).decision).toBe("deny");
+  });
+});
+
+
+describe("database CLI typed filesystem evidence", () => {
+  it.each([
+    ["SELECT writefile('.git/config', 'bytes');", ".git/config", "write"],
+    ["SELECT readfile('.git/config');", ".git/config", "read"],
+    ["SELECT realpath('.git/config');", ".git/config", "read"],
+    [".output .git/config", ".git/config", "write"],
+    [".once .git/config", ".git/config", "write"],
+    [".log .git/config", ".git/config", "write"],
+    [".backup main .git/config", ".git/config", "write"],
+    [".save .git/config", ".git/config", "write"],
+    [".clone .git/config", ".git/config", "write"],
+    [".read .git/config", ".git/config", "read"],
+    [".restore main .git/config", ".git/config", "read"],
+    ["ATTACH DATABASE '.git/config' AS attached;", ".git/config", "write"],
+    ["VACUUM INTO '.git/config';", ".git/config", "write"],
+    ["PRAGMA temp_store_directory = '.git';", ".git", "write"],
+    [".open .git/config", ".git/config", "write"],
+    [".open --readonly .git/config", ".git/config", "read"],
+  ] as const)("retains the parsed filesystem effect of %s", (program, value, effect) => {
+    const slots = classifySqliteArgumentSlots(["sqlite3", ":memory:", program]);
+    expect(slots.extraCandidates).toEqual([{ value, index: 2, effect }]);
+    expect(slots.unknownWriteTarget).toBeUndefined();
+    expect(slots.dynamicExecution).toBeNull();
+  });
+
+  it.each([
+    [["sqlite3", ".git/config", "CREATE TABLE test(value);"], 1, "write"],
+    [["sqlite3", "--readonly", ".git/config", "SELECT 1;"], 2, "read"],
+    [["sqlite3", "file:.git/config?mode=ro", "SELECT 1;"], 1, "read"],
+    [["sqlite3", "file:.git/config?mode=rw", "SELECT 1;"], 1, "write"],
+    [["sqlite3", "file:.git/config?mode=ro&mode=rw", "SELECT 1;"], 1, "write"],
+    [["sqlite3", "-init", ".git/config", ":memory:", "SELECT 1;"], 2, "read"],
+  ] as const)("retains database and init roles from %j", (argv, index, effect) => {
+    expect(classifySqliteArgumentSlots(argv).extraCandidates).toEqual([{ value: ".git/config", index, effect }]);
+  });
+
+  it.each([
+    "SELECT writefile(filename, 'bytes') FROM files;",
+    "SELECT writefile('.git/' || filename, 'bytes') FROM files;",
+    "VACUUM INTO (SELECT filename FROM files);",
+    "ATTACH filename AS attached;",
+    ".output 'unterminated",
+    ".once -e",
+    ".backup --future filename",
+  ])("retains an unknown-target witness only for a recognized writer: %s", program => {
+    const slots = classifySqliteArgumentSlots(["sqlite3", ":memory:", program]);
+    expect(slots.unknownWriteTarget).toEqual(expect.any(String));
+    expect(slots.dynamicExecution).toMatch(/unresolved sqlite3/);
+  });
+
+  it.each([
+    "SELECT readfile(filename) FROM files;",
+    "SELECT eval('SELECT 1;');",
+    "SELECT 'writefile(''.git/config'', ''bytes'')';",
+    "SELECT unknown_function(filename) FROM files;",
+    ".read 'unterminated",
+    ".output stdout", ".output stderr", ".log off",
+    ".output '|cat notes.txt'",
+  ])("does not invent a protected mutation from generic SQL or stream output: %s", program => {
+    const slots = classifySqliteArgumentSlots(["sqlite3", ":memory:", program]);
+    expect(slots.unknownWriteTarget).toBeUndefined();
+    expect(slots.extraCandidates).not.toEqual(expect.arrayContaining([expect.objectContaining({ effect: "write" })]));
   });
 });

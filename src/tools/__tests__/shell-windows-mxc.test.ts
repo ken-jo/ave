@@ -290,19 +290,28 @@ describe("builtin shell — Windows MXC containers", () => {
       const [launch] = mxcLaunchMock.prepare.mock.calls[0] as [{ filesystem: { allowWrite: string[]; denyWrite: string[]; allowRead: string[]; denyRead: string[]; floorPierces?: string[] } }];
       const { filesystem } = launch;
       expect(filesystem.allowWrite).toContain(workspace);
+      const pathKey = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+      const writeDenyCovers = (path: string) => {
+        const target = pathKey(path);
+        return filesystem.denyWrite.some(entry => {
+          if (/[*?\[\]]/.test(entry)) return false;
+          const parent = pathKey(entry);
+          return target === parent || target.startsWith(parent + "/");
+        });
+      };
       // Execution controls remain protected, including the whole settings directory.
       for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", ".claude", ".envrc"]) {
-        expect(filesystem.denyWrite, entry).toContain(join(workspace, entry));
+        expect(writeDenyCovers(join(workspace, entry)), entry).toBe(true);
       }
       for (const store of [permissionsFilePath(), userApprovalFilePath(), egressGrantFilePath()]) {
-        expect(filesystem.denyWrite, store).toContain(store);
+        expect(writeDenyCovers(store), store).toBe(true);
       }
       // Windows keeps denied workspace controls read-only when present and denied when absent.
       if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
         const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: [] }, existsSync);
         // Compare Windows paths case-insensitively, including canonical drive letters.
-        const folded = (paths: readonly string[]) => paths.map((path) => path.toLowerCase());
-        expect(folded(grants.readwrite)).toContain(workspace.toLowerCase());
+        const folded = (paths: readonly string[]) => paths.map(pathKey);
+        expect(folded(grants.readwrite)).toContain(pathKey(workspace));
         expect(folded(grants.readonly)).toEqual(expect.arrayContaining(folded([join(workspace, ".git", "hooks"), join(workspace, ".vscode")])));
         expect(folded(grants.denied)).toEqual(expect.arrayContaining(folded([join(workspace, ".husky"), join(workspace, ".envrc")])));
       }

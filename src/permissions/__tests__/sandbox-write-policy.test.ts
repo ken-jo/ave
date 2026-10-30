@@ -64,6 +64,44 @@ describe("mandatory sandbox control-file writes", () => {
 
   const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
 
+  it.each([".claude", ".idea"])("retains %s protection when an earlier Linux deny left a regular placeholder", entry => {
+    withPlatform("linux", () => {
+      const project = join(root, "project");
+      mkdirSync(project);
+      const initial = buildMandatorySandboxWritePolicy([project]);
+      const placeholder = join(project, entry);
+      writeFileSync(placeholder, "");
+      const child = join(placeholder, entry === ".claude" ? "settings.json" : "workspace.xml");
+      const repeated = buildMandatorySandboxWritePolicy([project], undefined, [child]);
+      expect(repeated.allowWrite).toEqual(initial.allowWrite);
+      expect(repeated.denyWrite).toContain(placeholder);
+      expect(repeated.denyWrite).toEqual(initial.denyWrite);
+      expectLiteralDenyCovers(repeated.denyWrite, child);
+    });
+  });
+
+  it.each([".claude", ".idea"])("pins a linked regular %s ancestor before omitting impossible children", entry => {
+    const project = join(root, "project");
+    const work = join(project, "work");
+    const target = join(root, "external-placeholder");
+    mkdirSync(work, { recursive: true });
+    writeFileSync(target, "protected fixture");
+    const link = join(project, entry);
+    symlinkSync(target, link, "file");
+    const policy = withPlatform("linux", () => buildMandatorySandboxWritePolicy([project, work]));
+    expect(policy.allowWrite).toEqual([work]);
+    expect(policy.narrowedWriteRoots).toEqual([{ root: project, reason: "routing-link" }]);
+    expect(policy.denyWrite).toEqual(expect.arrayContaining([link, target]));
+  });
+
+  it("refuses an obstructed child when its regular ancestor is not write-denied", () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, ".config"), "not protected as a whole project directory");
+    expect(() => withPlatform("linux", () => buildMandatorySandboxWritePolicy([project])))
+      .toThrow(/ENOTDIR/);
+  });
+
   it.each(["darwin", "linux", "win32"] as const)("protects existing and absent loader paths in the shared policy on %s", platform => {
     withPlatform(platform, () => {
       for (const existing of [false, true]) {

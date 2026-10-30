@@ -148,19 +148,21 @@ describe("confined shell reviewer invocation", () => {
 
 describe("shell review requires a risk judgment", () => {
   it.each([
-    { command: "rm -rf ./build", disabled: true },
-    { command: "workspace_tool inspect", disabled: false },
-    { command: "echo ok; git reset --hard", disabled: false },
-    { command: "env git reset --hard", disabled: false },
-    { command: "echo ok && git push --force", disabled: false },
-  ])("asks a person for $command with disabled=$disabled", async ({ command, disabled }) => {
+    { command: "rm -rf ./build", disabled: true, allowed: false },
+    { command: "workspace_tool inspect", disabled: false, allowed: true },
+    { command: "echo ok; git reset --hard", disabled: false, allowed: false },
+    { command: "env git reset --hard", disabled: false, allowed: false },
+    { command: "echo ok && git push --force", disabled: false, allowed: false },
+  ])("routes $command with disabled=$disabled and allowed=$allowed", async ({ command, disabled, allowed }) => {
     vi.stubEnv("AVE_HOME", directory);
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "confined shell", confines: { filesystem: true, process: true, network: true } });
     const manager = new PermissionManager(join(directory, "permissions.json"));
     manager.setMode("auto");
-    setReviewerForTest(manager, { classifier: disabled ? new DisabledRiskClassifier() : new RuleBasedRiskClassifier(),
+    const classifier = disabled ? new DisabledRiskClassifier() : new RuleBasedRiskClassifier();
+    const classify = vi.spyOn(classifier, "classify");
+    setReviewerForTest(manager, { classifier,
       cache: reviewResources.makeVerdictCache(join(directory, "judgment-cache.jsonl")),
       recentlyDenied: makeRecentlyDeniedStore(join(directory, "judgment-queue.jsonl")) });
     const tool = new BashTool();
@@ -171,8 +173,17 @@ describe("shell review requires a risk judgment", () => {
     const [result] = await runWithToolExecutionCwd(directory, () => executor.executeAll([
       { id: "judgment-required", name: "bash", input: { command } },
     ], { sessionId: "judgment-required", permissionContext: userPermissionContext({ userIntent: "Review this workspace command" }) }));
-    expect(result?.is_error).toBe(true);
-    expect(execute).not.toHaveBeenCalled();
-    expect(requestAndWait).toHaveBeenCalledOnce();
+    if (allowed) {
+      expect(classify).toHaveBeenCalledOnce();
+      expect(classify.mock.results[0]?.value).toMatchObject({ level: "medium" });
+      expect(result?.is_error).toBeUndefined();
+      expect(result?.content).toBe("executed");
+      expect(execute).toHaveBeenCalledOnce();
+      expect(requestAndWait).not.toHaveBeenCalled();
+    } else {
+      expect(result?.is_error).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+      expect(requestAndWait).toHaveBeenCalledOnce();
+    }
   });
 });

@@ -162,16 +162,40 @@ describe("native file-tool code checkpoints", () => {
       await withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "first" }], () => writeFile(file, "first")));
       const ledger = join(root, "state/code-checkpoints/turns.json");
       const originalLedger = await readFile(ledger, "utf8");
-      const first = withRequiredCodeCheckpoint(() => checkpointFileMutation([
-        { path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) },
-      ], mutate));
-      const queued = withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "queued" }], mutate));
-      const results = await Promise.allSettled([first, queued]);
-      for (const result of results) {
-        expect(result.status).toBe("rejected");
-        if (result.status === "rejected") expect(result.reason.message).toContain("retry with explicit approval");
+      let entered!: () => void;
+      const firstCheckpointEntered = new Promise<void>(resolve => { entered = resolve; });
+      let release!: () => void;
+      const firstCheckpointReleased = new Promise<void>(resolve => { release = resolve; });
+      const open = fsPromises.open;
+      let held = false;
+      const openSpy = vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        if (args[0] === ledger && !held) {
+          held = true;
+          entered();
+          await firstCheckpointReleased;
+        }
+        return handle;
+      });
+      syncBuiltinESMExports();
+      try {
+        const first = withRequiredCodeCheckpoint(() => checkpointFileMutation([
+          { path: file, content: Buffer.alloc(CODE_CHECKPOINT_POLICY.maxFileBytes + 1) },
+        ], mutate));
+        await firstCheckpointEntered;
+        const queued = withRequiredCodeCheckpoint(() => checkpointFileMutation([{ path: file, content: "queued" }], mutate));
+        release();
+        const results = await Promise.allSettled([first, queued]);
+        for (const result of results) {
+          expect(result.status).toBe("rejected");
+          if (result.status === "rejected") expect(result.reason.message).toContain("retry with explicit approval");
+        }
+        expect(await readFile(ledger, "utf8")).toBe(originalLedger);
+      } finally {
+        release();
+        openSpy.mockRestore();
+        syncBuiltinESMExports();
       }
-      expect(await readFile(ledger, "utf8")).toBe(originalLedger);
     });
     expect(mutate).not.toHaveBeenCalled();
     expect(await restoreCodeCheckpoint(sessionId, "queued-refusal")).toEqual({ ok: true });

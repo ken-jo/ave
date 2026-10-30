@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { findResolvedShellPathViolation, findShellPathPolicyViolation, inspectShellPermissionPaths, validateShellWorkingDirectory } from "../shell-path-policy.js";
@@ -21,7 +21,7 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
     expect(evidence.unproven).toBeNull();
     expect(evidence.unknownProtectedWrite).toBeUndefined();
     const canonical = caseFoldForMatch(canonicalizePathForMatch(join(process.cwd(), target)));
-    const mutation = evidence.paths.find(path => path.effect === "write" && caseFoldForMatch(path.canonical) === canonical);
+    const mutation = evidence.paths.find(path => path.effect === "write" && caseFoldForMatch(foldCanonicalPathSeparators(path.canonical)) === canonical);
     expect(mutation).toBeDefined();
     expect(mutation).toMatchObject({ effect: "write", admissionDenial: null, projectEscape: false });
     expect(mutation!.secret).not.toBeNull();
@@ -136,7 +136,7 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
     roots.push(root);
     const canonical = caseFoldForMatch(canonicalizePathForMatch(join(root, target)));
     const evidence = inspectShellPermissionPaths(command, root);
-    const mutation = evidence.paths.find(path => path.effect === "write" && caseFoldForMatch(path.canonical) === canonical);
+    const mutation = evidence.paths.find(path => path.effect === "write" && caseFoldForMatch(foldCanonicalPathSeparators(path.canonical)) === canonical);
     expect(mutation).toBeDefined();
     expect(mutation).toMatchObject({ effect: "write", admissionDenial: null, protectedControl });
     const manager = new PermissionManager(join(root, "permissions.json"));
