@@ -16,7 +16,7 @@ Modes: 기본 / Default (former 모두 확인 = strict; default for new installs
 flowchart TD
   S["도구 호출"] --> H{"입장 검사 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
-  H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 유출 · 다른 주체 턴"}
+  H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴"}
   F -->|예| ASKF["질문† (이번 한 번)"]
   F -->|아니오| R{"ask / allow 규칙 · 기억된 승인"}
   R -->|allow| ALLOW["허용"]
@@ -61,7 +61,13 @@ flowchart TD
 Notes that are part of the contract:
 - 질문† triggers only: protected paths (Claude Code list: .git .vscode .idea .husky .cargo .devcontainer .yarn
   .mvn .claude .config/git .bashrc .zshrc .zprofile .profile .envrc .gitconfig .npmrc .mcp.json .claude.json,
-  plus Ave config/home dirs), critical delete, project escape, exfil signal, other-principal turn.
+  plus Ave config/home dirs), critical delete, project escape, other-principal turn.
+- Exfil (owner decision 2026-10-30, aligned with Codex, Claude Code and Hermes): an upload/exfil signal found in
+  command text is a guardrail, not 질문†. It makes the call an ordinary ask: a card in 기본 and 쓰기 허용, the
+  reviewer in auto, allowed in 허용, denied headless. The security boundary for network egress is the sandbox egress
+  proxy (default-deny host allow-list). Command-text screening is not extended to an ever-growing list of wrappers.
+  A non-sandboxed host shell in 허용 runs opaque or wrapped uploads, as the other hosts do in full-access modes.
+  This limit is disclosed.
 - 기본 mode: writes and shell that would be allowed also go to the card. Reads stay allowed.
 - Sandbox-auto blocked by the sandbox (escalation) goes to 모드 · 사람.
 - The reviewer breaker is 3 consecutive or 20 per turn. The rest of the turn goes to a human.
@@ -128,4 +134,4 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
    - 이 세션 모두 허용: agent commands run in that tab without asking.
    - 오토: the reviewer does a logical consistency check only. Does the command follow from the user's request and task step, in the tab the task is about?
    - 모두 질문: every command asks. This is the default, and it is the behaviour when the card is dismissed.
-   Together, the browser tab and the host terminal tab are the "user-owned surfaces". The choice is per session and is never persisted. Deny rules, exfil 질문† and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
+   Together, the browser tab and the host terminal tab are the "user-owned surfaces". The choice is per session and is never persisted. Deny rules, the exfil guardrail and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
