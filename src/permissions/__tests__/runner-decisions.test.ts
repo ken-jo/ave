@@ -212,6 +212,16 @@ describe("shared runner decisions", () => {
       expect(unconsented.pipelineRequest?.exfiltration?.reason).toEqual(expect.any(String));
       expect(checkCommand(manager, dialect, command, false, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     }
+    if (disposition === "project-escape") {
+      const unconsented = checkCommand(manager, dialect, command);
+      expect(unconsented).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape",
+        pipelineRequest: { floor: { code: "project-escape" } } });
+      expect(unconsented.reviewer).toBeUndefined();
+      expect(unconsented.pipelineRequest?.exfiltration?.reason).toEqual(expect.any(String));
+      expect(checkCommand(manager, dialect, command, false, true)).toMatchObject({
+        decision: "deny", reasonCode: "no-approver", reason: "Nobody can approve this request; do not retry.",
+      });
+    }
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     manager.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     if (disposition === "ordinary") {
