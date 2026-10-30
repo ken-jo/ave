@@ -542,6 +542,7 @@ export class ToolExecutor {
   ): Promise<ToolResult> {
     const target = extractSealedRationaleExecutionTarget(request);
     if (!target) {
+      await opts.rationaleResumeRuntime?.revokeUnstartedResume?.(request);
       return {
         tool_use_id: "rationale-resume",
         content: "Rationale resume blocked: invalid or expired sealed resume request",
@@ -570,6 +571,9 @@ export class ToolExecutor {
         rationaleResumeContext,
       );
     } finally {
+      if (!rationaleResumeContext.started) {
+        await opts.rationaleResumeRuntime?.revokeUnstartedResume?.(target.request);
+      }
       // Once the host start CAS has committed, every exit path must close the
       // invocation. The ordinary success/error paths finalize below; this
       // guard covers callback, hook, and audit exceptions after start.

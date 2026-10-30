@@ -8,6 +8,7 @@ export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };
   mode: "strict" | "default" | "auto" | "allow";
   headless: boolean;
+  rationaleAvailable?: boolean;
   sessionId?: string;
   ownerAway?: boolean;
   automationPause?: { kind: "consecutive" | "total"; reason: string };
@@ -50,6 +51,9 @@ function applyMode(request: PermissionDecisionRequest, reasonCode: string, reaso
   }
   if (!reviewer.breakerOpen && reviewer.status === "success" && (reviewer.level === "low" || reviewer.level === "medium")) {
     return { outcome: "allow", reasonCode: "reviewer-allow", reason: "Automatic review allowed this action." };
+  }
+  if (!reviewer.breakerOpen && reviewer.status === "success" && reviewer.level === "high" && request.rationaleAvailable) {
+    return { outcome: "ask", reasonCode: "reviewer-human-required", reason: "Automatic review declined this action; accept, resubmit once with a verified user quote, or ask the user." };
   }
   return askHuman(request, "reviewer-human-required", "Automatic review requires human approval.");
 }

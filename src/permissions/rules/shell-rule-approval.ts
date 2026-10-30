@@ -8,7 +8,7 @@ import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, 
 import { evaluatePowerShellSubject } from "./rule-scopes.js";
 import { parseShellCommand, type ParsedShellCommand } from "./shell-prefix-policy.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
-import { inspectShellCommand } from "./shell-exfiltration.js";
+import { inspectShellCommand } from "./literal-shell-inspection.js";
 import { validatePermissionRule } from "./rule-files.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";

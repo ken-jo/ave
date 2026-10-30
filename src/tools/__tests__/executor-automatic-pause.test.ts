@@ -118,6 +118,7 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
   const ticketStore = new InProcessRationaleTicketStore({ onAudit: () => {} });
   const coordinator = new RationaleHostCoordinator({
     requestAnchor: createTestRequestAnchor({ sessionId: current.sessionId }),
+    userRoleTexts: ["Perform the requested operation."],
     rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
     ticketStore,
     rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: scopeComplete }, "review-model"),
@@ -520,7 +521,7 @@ describe("executor automated approval pause", () => {
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(execute).not.toHaveBeenCalled();
-    expect(cards[0]).toMatchObject({ sessionId: SESSION_ID, toolName: "write_probe", isReadOnly: false });
+    expect(cards[0]).toMatchObject({ sessionId: SESSION_ID, toolName: "write_probe", });
     expect(cards[0].reason).toBe("Automated approval is paused for this turn; human approval is required.");
     const auditLines = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n");
     expect(verifyChain(current.auditSecret, auditLines)).toEqual({ ok: true });
@@ -566,7 +567,7 @@ describe("executor automated approval pause", () => {
     expect(lifecycle.mock.calls.filter(([event]) => event === "PostToolUseFailure")).toHaveLength(0);
     expect(lifecycle.mock.calls.find(([event]) => event === "PermissionDenied")).toMatchObject([
       "PermissionDenied", SESSION_ID, "user-keyboard",
-      { toolName: "write_probe", denyReason: { layer: 6, source: "tool-executor", reason: denyReason } },
+      { toolName: "write_probe", denyReason: { source: "tool-executor", reason: denyReason } },
     ]);
     const rows = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     expect(rows).toContainEqual(expect.objectContaining({
@@ -876,7 +877,7 @@ describe("executor automated approval pause", () => {
     expect(blocked.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
     expect(cards).toHaveLength(2);
-    expect(cards[1]).toMatchObject({ toolCategory: "read", isReadOnly: false });
+    expect(cards[1]).toMatchObject({ toolCategory: "read", });
     expect(cards[1]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"], requireExplicit: true });
   });
 

@@ -7,7 +7,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
-import { findResolvedShellPathViolation, findShellPathPolicyViolation, inspectShellPermissionPaths, validateShellWorkingDirectory } from "../shell-path-policy.js";
+import { findResolvedShellPathViolation, findShellPathPolicyViolation, validateShellWorkingDirectory } from "../shell-path-policy.js";
+import { inspectShellPermissionPaths } from "../../permissions/rules/literal-shell-inspection.js";
 
 // Native path resolution and namespace aliases are specific to this host.
 describe.skipIf(process.platform !== "win32")("native shell path aliases", () => {

@@ -23,7 +23,6 @@ import { ko as ko_be_chatDomain } from "../generated/be_chatDomain.js";
 import { ko as ko_be_chatStreamState } from "../generated/be_chatStreamState.js";
 import { ko as ko_be_conversationLoop } from "../generated/be_conversationLoop.js";
 import { ko as ko_be_costEstimator } from "../generated/be_costEstimator.js";
-import { ko as ko_be_deferredApproval } from "../generated/be_deferredApproval.js";
 import { ko as ko_be_dlp } from "../generated/be_dlp.js";
 import { ko as ko_be_errorClassifier } from "../generated/be_errorClassifier.js";
 import { ko as ko_be_executor } from "../generated/be_executor.js";
@@ -37,7 +36,6 @@ import { ko as ko_be_mcpResourceTools } from "../generated/be_mcpResourceTools.j
 import { ko as ko_be_memoryManager } from "../generated/be_memoryManager.js";
 import { ko as ko_be_memoryWrite } from "../generated/be_memoryWrite.js";
 import { ko as ko_be_parentDirective } from "../generated/be_parentDirective.js";
-import { ko as ko_be_permissionManager } from "../generated/be_permissionManager.js";
 import { ko as ko_be_permissionModeApply } from "../generated/be_permissionModeApply.js";
 import { ko as ko_be_pluginExpansion } from "../generated/be_pluginExpansion.js";
 import { ko as ko_be_pluginRuntime } from "../generated/be_pluginRuntime.js";
@@ -212,7 +210,6 @@ export const koMessages: Record<string, string> = {
   ...ko_be_chatStreamState,
   ...ko_be_conversationLoop,
   ...ko_be_costEstimator,
-  ...ko_be_deferredApproval,
   ...ko_be_dlp,
   ...ko_be_errorClassifier,
   ...ko_be_executor,
@@ -226,7 +223,6 @@ export const koMessages: Record<string, string> = {
   ...ko_be_memoryManager,
   ...ko_be_memoryWrite,
   ...ko_be_parentDirective,
-  ...ko_be_permissionManager,
   ...ko_be_permissionModeApply,
   ...ko_be_pluginExpansion,
   ...ko_be_pluginRuntime,

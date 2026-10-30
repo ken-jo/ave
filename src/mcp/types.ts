@@ -64,7 +64,6 @@ export interface McpServerApproval {
 
 
 
-  toolPermissionMode: "default" | "strict" | "auto";
 
 
 

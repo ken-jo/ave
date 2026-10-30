@@ -165,7 +165,7 @@ export function pathGrantDecisionModel(parent: string | null, parentReasonKey: s
   };
 }
 
-/** A request the host answers once only (high risk, a sealed rationale, an elicitation, a host-narrowed choice set): every remembering choice is shown and refused with the reason. */
+/** A request the host answers once only (an elicitation or a host-narrowed choice set): every remembering choice is shown and refused with the reason. */
 export function oneShotDecisionModel(reasonKey: string): ApprovalDecisionModel {
   return {
     variant: "one-shot",

@@ -53,7 +53,7 @@ describe("nested startup admission before native execution", () => {
       manager.setMode("allow");
       manager.setRules([withCurrentShellRuleVersion({ pattern: `Bash(${command})`, action: "allow" })]);
       expect(checkShellPermission(manager, cwd, "nested-startup-marker", command, "bash", false, true))
-        .toMatchObject({ decision: "allow", layer: 6 });
+        .toMatchObject({ decision: "allow", });
       manager.setMode("strict");
       expect(checkShellPermission(manager, cwd, "nested-startup-marker", command, "bash", false, true))
         .toMatchObject({ decision: "deny", reasonCode: "no-approver" });

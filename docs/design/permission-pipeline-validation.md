@@ -1,5 +1,25 @@
 # Permission pipeline validation record
 
+## Current correction validation
+
+The binding tree is synchronized verbatim in docs-only commit `967289ffd`, including per-request model choice and one verified-quote re-review. Earlier results below identify their own historical heads.
+
+The public [assertion ledger](permission-expectation-ledger.md) enumerates all 379 historical assertion changes across 189 cases in 66 files, with exact before/CI-edit clauses and contract rows. Literal executable upload/credential and nested critical-delete downgrades are rejected and restored; ordinary opacity is not evidence of a forced floor. Retired `layer` pins are removed while substantive decisions, authority, cancellation, timing and containment assertions remain.
+
+Owner-directed removals include the retired reviewer migration and its sunset-inventory entry; disabled remains an explicit reviewer setting, and retired stored reviewer modes fail clearly rather than silently changing behavior.
+
+The current pure decision module has 35 structural AST branches (31 if statements and 4 conditional expressions), compared with 732 across the ten original complete decision-owner functions at `89acbc0d0`. These counts are structural, not whole-program cyclomatic complexity.
+
+All public-site changes are separated from this application change. Removing the candidate mirror currently makes `test/scripts/plugin-host-protocol-mirror.test.ts:211` and the mirror validation command fail because canonical and published candidate bytes differ. That publication dependency is reported rather than suppressed.
+
+Latest-per-file correction evidence: **24,748 passing assertions, zero remaining failures and 171 inherited platform/capability skips across 142 affected/direct-consumer files**. This reconciles the 139-file targeted run, its 13-file correction rerun and isolated timing/evidence runs; it is not a single combined run or full suite. The original failed reports remain retained. The obsolete display-only suite was removed with its no-reader implementation, and its transient missing-file error is not counted as a pass.
+
+Both matrices pass (582 golden and 10,369 Cartesian cases), as does the 50-case manager-pipeline suite. The four required lock suites pass 212/212. The native control-write integration passes 22/22 on the local platform, including opaque protected-target writes and a real confined commit. The new native Windows fixture still needs hosted evidence.
+
+Production typecheck passes. The shrink-only test-type gate holds at 229 measured files / 999 inherited diagnostics, with no baseline increase. Full core hygiene and its unused-code self-tests pass; localization validates 5,027 keys in two locales and 185 fragments; barrel and import-cycle checks pass. No parser cap, timeout or timing target was raised; added lines contain no new skip/only/todo markers.
+
+Two independent source reviews cleared their inspected findings after quote-provenance, original-action, receipt-cleanup and normal-card corrections. Three unresolved boundaries remain with the lead: public schema mirror publication; model choice for already-running nested effects without a sealed resumable request; and synchronous native protection for absent Git metadata on the Linux path. Existing metadata is denied; the existing absent-metadata quarantine must not be represented as synchronous denial. Publication and new hosted CI remain pending. Previous green CI is not evidence for this correction.
+
 Snapshot: 2026-10-30, `feat/permission-pipeline-v4`. The [approved decision tree](../architecture/permission-decision-tree.md) defines behavior; the [inventory](permission-decision-inventory.md#current-source-reconciliation) accounts for original and native-terminal sites. Results below are scoped observations, not release certification or a full-suite result. Evidence logs remain in the task workspace.
 
 ## Integrated foundation

@@ -1,12 +1,11 @@
 // Keep durable glob rules separate from exact decision memory. Identity binds tool/source/trust/cwd and canonical args or an opted-in target; changed target-wide args require re-review except explicit per-tool authority, and exact denies block both reviewer and foreground skip paths (docs/research/sandbox-isolation.md).
 // The live gate controls persistence: completed HIGH and mandatory one-shot allows cannot persist, exact denies may. Session decisions stay in memory, persistent decisions use private namespace files and atomic exclusive staging/fsync/rename writes; legacy session rows retain process lifetime.
-import { mkdir, readFile, access, constants, stat, chmod } from "node:fs/promises";
+import { mkdir, readFile, stat, chmod } from "node:fs/promises";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { aveHome } from "../shared/ave-home.js";
 import { matchesMcpToolApprovalMemory, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { createLogger } from "../lib/logger.js";
 import type {
   ApprovalMemory,
   UserApprovalDecision,
@@ -18,7 +17,6 @@ import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
-const log = createLogger("user-approval-store");
 let persistentWrites = createSerialQueue();
 
 export interface UserApprovalEntry {
@@ -43,7 +41,7 @@ export interface UserApprovalEntry {
   // Display metadata — stored alongside the entry so listApprovals can return human-readable tool identity without re-parsing the hash key. Required for PermissionsTab table to show toolName.
   toolName?: string;
   source?: string;
-  // Legacy pre-canonicalized args retained only until the v1 migration runs. New entries never persist input text: exact identity is represented solely by the hashed map key so DLP-masked values cannot be recovered through the renderer-readable list API.
+  // Historical input metadata is never granted new authority or returned through approval lists. New entries never persist input text: exact identity is represented solely by the hashed map key so DLP-masked values cannot be recovered through the renderer-readable list API.
   args?: string;
   // trustOrigin component used to compute the entryKey, stored for migration. Optional — absent for entries that did not supply a trustOrigin.
   trustOrigin?: string;
@@ -73,11 +71,6 @@ export function getUserApprovalGeneration(): string {
 
 export function userApprovalFilePath(): string {
   return resolve(aveHome(), "permissions", "user-approvals.json");
-}
-
-// Idempotency sentinel: presence of this file means v1 migration ran.
-function migrationMarkerPath(): string {
-  return resolve(aveHome(), "permissions", ".canonicalization-migration-v1");
 }
 
 // Bind approval identity to trust origin and semantic key as well as tool/args/source so low-trust calls cannot inherit another origin's approval. Canonical JSON hashing removes irrelevant object-key order differences.
@@ -564,156 +557,6 @@ export async function listApprovals(): Promise<UserApprovalListEntry[]> {
 // Read all persistent approvals (raw file contents). Exported for audit access.
 export async function readApprovals(): Promise<ApprovalsFile> {
   return readApprovalsFile();
-}
-
-async function scrubLegacyArgsMetadata(): Promise<void> {
-  const file = await readApprovalsFile();
-  if (!Object.values(file.approvals).some((entry) => entry.args !== undefined)) return;
-  await mutatePersistentApprovals((current) => {
-    for (const entry of Object.values(current.approvals)) delete entry.args;
-  });
-  for (const entry of sessionStore.values()) delete entry.args;
-}
-
-// Migration helpers
-
-// Collision resolver: when two stale entries map to the same new key, pick the survivor that preserves the most audit information. Rules (in priority order): 1. A revoked entry (revokedAt non-null) wins — retains audit trail. 2. Among two non-revoked (or two revoked) entries, the earlier approvedAt wins so we don't silently discard the oldest approval record.
-function chooseSurvivor(existing: UserApprovalEntry, incoming: UserApprovalEntry): UserApprovalEntry {
-  // Rule 1: prefer revoked entry for audit preservation.
-  if (existing.revokedAt && !incoming.revokedAt) return existing;
-  if (!existing.revokedAt && incoming.revokedAt) return incoming;
-
-  // Rule 2: prefer the entry with the earlier approvedAt.
-  if (existing.approvedAt <= incoming.approvedAt) return existing;
-  return incoming;
-}
-
-// Boot-time migration
-
-// Re-key entries with stored args using deep canonical JSON; preserve unreconstructable rows and accept one fresh prompt. Write approvals atomically and mark the migration once so later boots skip it.
-export async function migrateCanonicalization(): Promise<void> {
-  const markerPath = migrationMarkerPath();
-
-  // Idempotency check — skip re-keying if migration already completed, while still removing legacy input metadata under its own best-effort boundary.
-  let migrationAlreadyCompleted = false;
-  try {
-    await access(markerPath, constants.F_OK);
-    migrationAlreadyCompleted = true;
-  } catch {
-    // marker absent → proceed
-  }
-  if (migrationAlreadyCompleted) {
-    try {
-      // The migration no longer needs raw args after the marker exists. Scrub legacy metadata before returning so future host reads cannot expose values that the approval card deliberately masked.
-      await scrubLegacyArgsMetadata();
-    } catch (err) {
-      log.warn({
-        event: "user-approval-args-scrub-failed",
-        error: (err as Error).message ?? String(err),
-      });
-    }
-    return;
-  }
-
-  // Wrap the entire migration body so a corrupt approvals file or permission error does not crash boot. On failure, skip writing the marker so the next boot will retry.
-  try {
-    const file = await readApprovalsFile();
-    const entries = Object.entries(file.approvals);
-    const total = entries.length;
-    let migrated = 0;
-    let skipped = 0;
-
-    if (total > 0) {
-      const updated: Record<string, UserApprovalEntry> = {};
-
-      for (const [storedKey, entry] of entries) {
-        // Entries without stored `args` cannot be re-keyed (written before this migration field was introduced). Carry them forward unchanged.
-        if (!entry.args || !entry.toolName || !entry.source) {
-          updated[storedKey] = entry;
-          continue;
-        }
-
-        // Guard against pathologically large args strings (>1 MB) to prevent DoS via a hand-crafted approvals file.
-        if (entry.args.length > 1_048_576) {
-          log.warn({
-            event: "r2-migration-args-too-large",
-            storedKey,
-            argsLength: entry.args.length,
-          });
-          updated[storedKey] = entry;
-          skipped++;
-          continue;
-        }
-
-        // Re-canonicalize args with the new deep SOT and compute the new key. The stored `args` string is a pre-stringified canonical string; parse it, then re-stringify with the new canonicalStringify to apply recursive key-sorting inside arrays-of-objects.
-        let reCanonicalizedArgs: string;
-        try {
-          const parsed: unknown = JSON.parse(entry.args);
-          reCanonicalizedArgs = canonicalStringify(parsed);
-        } catch {
-          // args is not valid JSON (e.g. a plain string passed directly). Cannot re-canonicalize — carry forward unchanged.
-          updated[storedKey] = entry;
-          skipped++;
-          continue;
-        }
-
-        // v1 rows are args-identity rows by construction; re-key them under the same (args) formula they were written with.
-        const newKey = argsEntryKey(
-          entry.toolName,
-          reCanonicalizedArgs,
-          entry.source,
-          entry.trustOrigin,
-          entry.approvalCacheKey,
-        );
-
-        if (newKey === storedKey) {
-          // No change — args had no nested-array-of-objects, already canonical.
-          updated[newKey] = entry;
-        } else {
-          // Two stale entries may canonicalize to the same newKey. Prefer the revoked entry (revokedAt non-null wins for audit preservation); otherwise prefer the entry with the earlier approvedAt so we don't silently drop historical approvals.
-          if (newKey in updated) {
-            log.warn({
-              event: "r2-migration-collision",
-              oldKey: storedKey,
-              newKey,
-            });
-            updated[newKey] = chooseSurvivor(updated[newKey], { ...entry, args: reCanonicalizedArgs });
-          } else {
-            updated[newKey] = { ...entry, args: reCanonicalizedArgs };
-          }
-          migrated++;
-        }
-      }
-
-      if (migrated > 0) {
-        await atomicWrite({ approvals: updated });
-        // Invalidate session cache entries that were re-keyed.
-        sessionStore.clear();
-        approvalGeneration += 1;
-      }
-    }
-
-    // Idempotency marker, through the same writer as the store itself.
-    await writeFileAtomicAtPath(
-      markerPath,
-      `${JSON.stringify({ migratedAt: new Date().toISOString(), migrated, total })}\n`,
-    );
-
-    // MEDIUM: route through structured logger (bootAuditLogger not yet available at this call site; createLogger routes to the same sink).
-    log.info({
-      event: "canonicalization-migration",
-      migrated,
-      skipped,
-      total,
-    });
-    await scrubLegacyArgsMetadata();
-  } catch (err) {
-    // Log the failure but do NOT write the marker — next boot will retry.
-    log.warn({
-      event: "canonicalization-migration-failed",
-      error: (err as Error).message ?? String(err),
-    });
-  }
 }
 
 // Test helpers

@@ -1,10 +1,8 @@
-/** Parent verdicts remain distinct from automatic and user verdicts so transcripts identify the decision maker. */
+/** Host review progress and outcomes displayed in the transcript. */
 export type PermissionReviewStatus =
   | "reviewing"
   | "needs_approval"
   | "auto_approved"
-  | "parent_approved"
-  | "parent_denied"
   | "failed";
 
 /** Tool origin determines the source-to-trust mapping in permission-policy-design.md. */
@@ -15,11 +13,6 @@ export type ToolCategory = "read" | "write" | "shell" | "network" | "meta";
 
 /** Reviewer verdicts are discrete levels, never scalar scores. */
 export type RiskLevel = "low" | "medium" | "high";
-
-/** Deferred approvals cannot grant once because the original call has ended; session is the narrowest valid breadth and the fallback. */
-export type DeferredGrantScope = "session" | "always";
-
-export type DeferredApprovalSource = "button" | "question-card";
 
 export type ApprovalPurposeSuggestion = {
   text: string;

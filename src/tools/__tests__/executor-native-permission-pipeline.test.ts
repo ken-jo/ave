@@ -1,3 +1,16 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+useConfigurationOwner();
+import { HookRunner } from "../../hooks/hook-runner.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { addAllowedDirectoryPersist } from "../../permissions/permission-settings-store.js";
+import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
+import { RationaleHostCoordinator } from "../pipeline/rationale-host-coordinator.js";
+import { InProcessRationaleTicketStore } from "../pipeline/rationale-ticket-store.js";
+import { InMemoryHostAnchorRoundCasStore } from "../pipeline/rationale-control.js";
+import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticket-lifecycle.js";
+import { captureRationalePolicySnapshot } from "../pipeline/rationale-policy-epoch.js";
+import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
+import { createTestRequestAnchor } from "../pipeline/__tests__/rationale-fixtures.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -368,7 +381,7 @@ describe("native invocation permission evidence", () => {
     expect(remembered).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
-      category: "tool", forceExplicit: true, isReadOnly: false,
+      category: "tool", forceExplicit: true,
       allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
     });
   });
@@ -458,4 +471,135 @@ describe("native invocation permission evidence", () => {
     expect(requests).toHaveLength(0);
     await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it.each([false, true])("offers model choice for an outside write without granting its folder (headless=%s)", async (headless) => {
+    manager.setMode("auto");
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
+    setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "outside-choice-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "outside-choice-denied.jsonl")) });
+    const { runtime, materialize } = createRationaleHostRuntime(createTestRequestAnchor({ sessionId }));
+    const execute = vi.spyOn(writeTool, "execute");
+    const grant = vi.fn();
+    const path = join(root, "outside-choice.txt");
+    const outcome = await executor().executeConversationBatch([
+      { id: "outside-choice", name: "write_file", input: { path, content: "must wait for authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: runtime,
+      permissionContext: { trustOrigin: "llm-tool-arg", headless, additionalDirectories: [], onTurnDirectoryGrant: grant } });
+    expect(outcome.outcome).toBe("rationale-required");
+    if (outcome.outcome !== "rationale-required") throw new Error("Expected model choice for the outside write");
+    expect(outcome.control.control.action.canonicalTargets).toContain(caseFoldForMatch(path));
+    expect(materialize).toHaveBeenCalledOnce();
+    expect(classify).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(grant).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+    await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("uses the existing single folder card and permission hook for an outside model-choice fallback", async () => {
+    manager.setMode("auto");
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
+    setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "outside-card-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "outside-card-denied.jsonl")) });
+    const { runtime, materialize } = createRationaleHostRuntime(createTestRequestAnchor({ sessionId }));
+    const hooks = new ScriptHookManager();
+    const permissionHook = vi.spyOn(hooks, "runPermissionRequest");
+    const execute = vi.spyOn(writeTool, "execute");
+    const path = join(root, "outside-card.txt");
+    const outcome = await executor(hooks).executeConversationBatch([
+      { id: "outside-card", name: "write_file", input: { path, content: "must wait for authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: runtime,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [] } });
+    expect(outcome.outcome).toBe("rationale-required");
+    const callback = materialize.mock.calls[0]?.[0].requestHumanApproval;
+    if (!callback) throw new Error("Expected the original folder approval callback");
+    await expect(callback({ requestId: "outside-folder-card" })).resolves.toMatchObject({ requestId: "outside-folder-card", choice: "deny-once" });
+    expect(permissionHook).toHaveBeenCalledOnce();
+    expect(classify).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ id: "outside-folder-card", kind: "out-of-allowed-dir", args: { path }, outOfAllowedDir: { candidatePath: path } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { scope: "session", change: "none" }, { scope: "always", change: "none" },
+    { scope: "session", change: "unrelated-folder" }, { scope: "session", change: "deny-rule" },
+    { scope: "session", change: "protected-target" }, { scope: "session", change: "late-owner" },
+  ] as const)("checks the exact outside write after native $scope folder approval with $change", async ({ scope, change }) => {
+    manager.setMode("auto");
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside write needs consent" }));
+    setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "folder-resume-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "folder-resume-denied.jsonl")) });
+    const outside = join(root, "approved-folder");
+    await mkdir(outside);
+    const path = join(outside, "result.txt");
+    const cards: ApprovalRequest[] = [];
+    const contents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) cards.push(request); } };
+    const gate = new ApprovalGate(contents as never);
+    const hookRunner = new HookRunner();
+    const hooks = new ScriptHookManager();
+    let directories: string[] = [];
+    let directorySaveFailure: string | undefined;
+    const policy = () => captureRationalePolicySnapshot({ permissionManager: manager, hookRunner, scriptHookManager: hooks, additionalDirectories: directories });
+    const scopeComplete = vi.fn();
+    const coordinator = new RationaleHostCoordinator({
+      requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
+      rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
+      ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+      rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: scopeComplete }, "fixture-reviewer"),
+      approvalGate: gate, getRationalePolicyEpoch: () => policy().epoch, getRationalePolicySnapshot: policy,
+      getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "fixture-sandbox",
+      anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
+      onInvocationAudit: () => {}, onProjectionAudit: () => {},
+      onReviewerChoiceResolved: (session, request, decision) => manager.resolveReviewerChoice(session, request, decision),
+    });
+    const lifecycle = { allowDirectory: async (directory: string) => {
+      try { directories = await addAllowedDirectoryPersist(directory, join(root, "folder-settings.json")); return directories; }
+      catch (error) { directorySaveFailure = error instanceof Error ? error.message : String(error); throw error; }
+    }, denyDirectory: async () => { throw new Error("No directory removal was requested"); } };
+    const realExecutor = new ToolExecutor(registry, hookRunner, manager, undefined, gate, hooks, audit, undefined, undefined, () => lifecycle);
+    const execute = vi.spyOn(writeTool, "execute");
+    const options = { sessionId, executionCwd: project, permissionContext: { trustOrigin: "llm-tool-arg" as const, ownerUnattended: change === "late-owner", additionalDirectories: [], getAdditionalDirectories: () => directories,
+      onSessionDirectoryGrant: (directory: string) => { directories = [...new Set([...directories, directory])]; } } };
+    const initial = await realExecutor.executeConversationBatch([{ id: "outside-folder-resume", name: "write_file", input: { path, content: "approved exact effect" } }], { ...options, rationaleRuntime: coordinator });
+    expect(initial.outcome).toBe("rationale-required");
+    if (initial.outcome !== "rationale-required") throw new Error("Expected outside-write model choice");
+    const control = initial.control.control;
+    const round = await coordinator.handleRationaleRoundResult({ ticketId: control.ticketId, result: { kind: "calls", calls: [{ id: "ask-folder", name: "permission_rationale", input: { contractVersion: 1, anchorId: control.anchor.anchorId, ticketId: control.ticketId, actionDigest: control.action.actionDigest, round: 1, choice: "ask_user" } }] } });
+    expect(round?.autoApproved).toBe(false);
+    expect(scopeComplete).not.toHaveBeenCalled();
+    const pending = coordinator.promptForApproval(control.ticketId);
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    const card = cards[0]!;
+    expect(card).toMatchObject({ kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: path, suggestedParent: caseFoldForMatch(outside) } });
+    if (change === "late-owner") vi.spyOn(Date, "now").mockReturnValue(control.anchor.expiresAt + 60_001);
+    gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: scope === "session" ? "allow-session" : "allow-always", rememberPattern: outside, nonce: card.nonce, hmac: card.hmac }, contents as never);
+    const approval = await pending;
+    expect(approval, JSON.stringify({ outcome: approval?.outcome, reason: approval !== null && "reason" in approval ? approval.reason : undefined, directorySaveFailure })).toMatchObject({ outcome: "allowed-once" });
+    expect(directories).toEqual([scope === "always" ? outside : caseFoldForMatch(outside)]);
+    const protectedTarget = join(project, ".git", "config");
+    if (change === "unrelated-folder") directories = [...directories, join(root, "unrelated-folder")];
+    if (change === "deny-rule") manager.setRules([{ pattern: "write_file", action: "deny" }]);
+    if (change === "protected-target") {
+      await mkdir(join(project, ".git"));
+      await writeFile(protectedTarget, "original protected content");
+      await symlink(protectedTarget, path);
+    }
+    const sealed = await coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: control.eligibilityContext });
+    if (change !== "none" && change !== "late-owner") {
+      if (sealed) {
+        const refused = await realExecutor.executeSealedRationaleResume(sealed.resumeRequest, { ...options, rationaleResumeRuntime: coordinator });
+        expect(refused.is_error, refused.content).toBe(true);
+      } else {
+        expect(sealed).toBeNull();
+      }
+      expect(execute).not.toHaveBeenCalled();
+      expect(cards).toHaveLength(1);
+      if (change === "protected-target") expect(await readFile(protectedTarget, "utf8")).toBe("original protected content");
+      else await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+      return;
+    }
+    if (!sealed) throw new Error("Expected the native folder approval to issue an authentic resume");
+    const result = await realExecutor.executeSealedRationaleResume(sealed.resumeRequest, { ...options, rationaleResumeRuntime: coordinator });
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(await readFile(path, "utf8")).toBe("approved exact effect");
+    expect(cards).toHaveLength(1);
+  });
+
 });

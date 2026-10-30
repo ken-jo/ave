@@ -10,7 +10,7 @@ import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
@@ -88,7 +88,7 @@ function checkCommand(manager: PermissionManager, dialect: ShellDialect, command
 }
 
 function expectOrdinaryHostAsk(result: ReturnType<typeof checkCommand>): void {
-  expect(result).toMatchObject({ decision: "ask", layer: 6 });
+  expect(result).toMatchObject({ decision: "ask" });
   expect(result.forceModal).not.toBe(true);
 }
 
@@ -317,7 +317,7 @@ describe("shared runner decisions", () => {
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
     expectOrdinaryHostAsk(checkCommand(manager, "bash", command));
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
-    if (exactEligible) expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
+    if (exactEligible) expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow" });
     else expectOrdinaryHostAsk(checkCommand(manager, "bash", command));
     expect(buildShellRuleApproval("bash", command, CWD, { allow: true, deny: true }).exactRule).toBe(exactEligible ? `Bash(${command})` : null);
     expectOrdinaryHostAsk(checkCommand(manager, "powershell", command));
@@ -422,7 +422,7 @@ describe("shared runner decisions", () => {
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
   ])("denies $name before modes or remembered grants", async ({ dialect, command }) => {
     const manager = runnerManager();
-    const expected = { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" };
+    const expected = { decision: "deny", reasonCode: "shell-analysis-limit" };
     expect(checkCommand(manager, dialect, command)).toMatchObject(expected);
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     for (const mode of ["strict", "default", "auto", "allow"] as const) {

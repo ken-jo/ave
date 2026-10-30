@@ -560,13 +560,9 @@ export function TranscriptRenderer({
           }
         } else if (e.kind === "permission_review") {
           if (cls === "intermediate") {
-            // The parent-answered outcomes open the work group for the same reason the automatic ones do, and with more force: no dock
-            // ever showed these calls, so a collapsed group would be the user's only view of a decision made without them.
             if (
               e.status === "reviewing" ||
-              e.status === "auto_approved" ||
-              e.status === "parent_approved" ||
-              e.status === "parent_denied"
+              e.status === "auto_approved"
             ) {
               groupHasPermissionReview = true;
             }

@@ -128,7 +128,7 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
     );
     expect(v.level).toBe("medium");
     expect(v.reason).toMatch(/strict default, not an observation/);
-    // The level alone would ALSO open foreground auto-approve and the parent-adjudication ceiling. This flag is what keeps those shut.
+    // The explicit approval requirement is independent of the displayed risk level.
     expect(v.requiresExplicitApproval).toBe(true);
   });
 

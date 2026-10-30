@@ -67,15 +67,15 @@ describe("shell confinement and escape rules", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
     expect(check("printf ready", false)).toMatchObject({ decision: "ask" });
     manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
-    expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready", false)).toMatchObject({ decision: "allow" });
   });
 
   it.each(["strict", "default", "auto", "allow"] as const)("honors prefix and tool rules before host mode policy in %s mode", (mode) => {
     manager.setMode(mode);
     manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "bash", action: "allow" }] as const).map(withCurrentShellRuleVersion));
-    expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready", false)).toMatchObject({ decision: "allow" });
     manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
-    expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready", false)).toMatchObject({ decision: "allow" });
     const other = check("printf other", false);
     expect(other.forceModal).toBeUndefined();
     expect(other.decision).toBe(mode === "allow" ? "allow" : "ask");
@@ -89,7 +89,7 @@ describe("shell confinement and escape rules", () => {
 
   it("honors a headless host prefix rule and denies an unmatched default-mode call", () => {
     manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
-    expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "allow" });
     expect(check("echo other", false, { headless: true })).toMatchObject({ decision: "deny", reason: NO_APPROVER_MESSAGE });
     expect(check("echo other", false, { headless: true }).reviewer).toBeUndefined();
   });
@@ -97,13 +97,13 @@ describe("shell confinement and escape rules", () => {
   it("applies an edited wildcard session rule to both host and sandboxed calls", () => {
     manager.addSessionRule("conversation-a", "Bash(printf *)");
     expect(manager.listSessionRules("conversation-a")).toEqual(["Bash(printf *)"]);
-    expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow" });
     expect(check("printf ready", true, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow" });
   });
 
   it("applies a This session rule to its conversation only, until the conversation ends (five-choice shell card)", () => {
     manager.addSessionRule("conversation-a", "Bash(printf ready)");
-    expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow" });
     expect(check("printf ready", false, { sessionId: "conversation-b" })).toMatchObject({ decision: "ask" });
     expect(check("printf ready", false)).toMatchObject({ decision: "ask" });
     expect(check("printf other", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "ask" });
@@ -143,6 +143,16 @@ describe("shell confinement and escape rules", () => {
       expect(result).toMatchObject({ decision: "ask", forceModal: true, reasonCode: code });
       expect(result.reviewer).toBeUndefined();
     }
+  });
+
+  it("retains sandbox automation across independent host-bound write targets", () => {
+    manager.setMode("default");
+    const command = "echo > $PWD/a; echo > $PWD/b";
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd: dir },
+      shellExecution: { runsSandboxed: true, environmentSnapshot: { PWD: dir } },
+    }))
+      .toMatchObject({ decision: "allow", reasonCode: "sandboxed-shell" });
   });
 
   it.each(["strict", "default", "auto", "allow"] as const)("allows a proven protected-path read in %s", mode => {
@@ -323,7 +333,7 @@ describe("shell confinement and escape rules", () => {
       expect(checkOn("mxc", command)).toEqual(checkOn("asrt", command));
     }
     manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
-    expect(checkOn("mxc", "printf other")).toMatchObject({ decision: "allow", layer: 3 });
+    expect(checkOn("mxc", "printf other")).toMatchObject({ decision: "allow" });
     expect(checkOn("mxc", "printf other")).toEqual(checkOn("asrt", "printf other"));
     expect(checkOn("mxc", "env grep -R term .")).toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
     expect(checkOn("mxc", "env grep -R term ../outside")).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape" });
@@ -501,7 +511,7 @@ describe("protected write evidence budget", () => {
     const command = " ".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1) + "git config core.hooksPath /tmp";
     for (const headless of [false, true]) {
       const result = check(command, true, { headless });
-      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit", layer: 1 });
+      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       expect(result.forceModal).toBeUndefined();
       expect(result.reviewer).toBeUndefined();
     }

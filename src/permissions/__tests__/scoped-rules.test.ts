@@ -322,7 +322,7 @@ describe("scoped permission rules", () => {
     expect(manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command: "curl https://example.com", cwd: project },
       projectRulesCwd: project,
-    })).not.toMatchObject({ decision: "allow", layer: 3 });
+    })).not.toMatchObject({ decision: "allow" });
   });
 
   it("matches server and original tool identity, and grants only annotated tools", () => {
@@ -351,7 +351,6 @@ describe("scoped permission rules", () => {
     for (const mode of ["allow", "default"] as const) {
       manager.setMode(mode);
       const result = manager.checkDetailed("operation", "mcp", "network", null, { ruleSubject: ungranted, projectRulesCwd: project });
-      expect(result.layer, mode).not.toBe(3);
       expect(result.decision, mode).toBe(mode === "allow" ? "allow" : "ask");
     }
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
@@ -373,7 +372,7 @@ describe("scoped permission rules", () => {
     expect(() => manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject })).toThrow("explicit project scope");
     expect(() => manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject, projectRulesCwd: project })).toThrow("not loaded before the decision");
     await manager.ensureProjectRulesLoaded(project);
-    expect(manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject, projectRulesCwd: project })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject, projectRulesCwd: project })).toMatchObject({ decision: "allow" });
   });
 
   it("keeps private-network approval separate from a public host allow", async () => {
@@ -393,7 +392,7 @@ describe("scoped permission rules", () => {
     const restarted = new PermissionManager(join(directory, "permissions.json"));
     await restarted.ensureProjectRulesLoaded(join(project, "src"));
     for (const subject of [{ kind: "edit", cwd: join(project, "src"), paths: ["a.ts"] } as ScopedRuleSubject, network("https://example.com"), mcp()]) {
-      expect(restarted.checkDetailed("operation", subject.kind === "mcp" ? "mcp" : "builtin", subject.kind === "edit" ? "write" : "network", null, { ruleSubject: subject, projectRulesCwd: join(project, "src") })).toMatchObject({ decision: "allow", layer: 3 });
+      expect(restarted.checkDetailed("operation", subject.kind === "mcp" ? "mcp" : "builtin", subject.kind === "edit" ? "write" : "network", null, { ruleSubject: subject, projectRulesCwd: join(project, "src") })).toMatchObject({ decision: "allow" });
     }
     for (const pattern of patterns) await manager.addRulePersist({ pattern, action: "deny" }, { kind: "user" });
     await restarted.loadRulesFromFile();
@@ -471,7 +470,7 @@ describe("scoped permission rules", () => {
     await manager.loadRulesFromFile();
     await manager.ensureProjectRulesLoaded(project);
     const subject = edit(join(directory, "external.txt"));
-    expect(manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "allow" });
     expect(manager.checkScopedRules(subject, project)).toEqual({});
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());

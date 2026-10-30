@@ -243,3 +243,14 @@ describe("unsupported tool kinds", () => {
     });
   }
 });
+
+describe("reviewer denial model choice", () => {
+  it.each([false, true])("retains a successful high for a host-owned choice when headless=%s", headless => {
+    const input = request({ tool: SHELL, mode: "auto", headless, rationaleAvailable: true, shell: { ...SAFE_SHELL, sandboxed: false }, reviewer: { status: "success", level: "high" } });
+    expect(decidePermission(input)).toMatchObject({ outcome: "ask", reasonCode: "reviewer-human-required" });
+    expect(decidePermission({ ...input, rationaleAvailable: false }).outcome).toBe(headless ? "deny" : "ask");
+    expect(decidePermission({ ...input, reviewer: { status: "error", level: "high" } }).outcome).toBe(headless ? "deny" : "ask");
+    expect(decidePermission({ ...input, reviewer: { status: "success", level: "high", breakerOpen: true } }).outcome).toBe(headless ? "deny" : "ask");
+    expect(decidePermission({ ...input, floor: { code: "exfiltration", reason: "Upload" } })).toMatchObject({ outcome: headless ? "deny" : "ask-forced" });
+  });
+});

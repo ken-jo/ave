@@ -85,8 +85,7 @@ async function createValidAudit(): Promise<{ path: string; seals: ReturnType<typ
     category: "read",
     directory: "/app",
     directoryAllowed: true,
-    layer: 6,
-  });
+    });
   await logger.close();
   return { path: logger.getPermissionAuditLogFile(), seals };
 }

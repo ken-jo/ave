@@ -164,8 +164,6 @@ function stableGateReq(req: Record<string, unknown>): Record<string, unknown> {
     toolName: req.toolName,
     toolCategory: req.toolCategory,
     args: req.args,
-    isReadOnly: req.isReadOnly,
-    mode: req.mode,
     sensitivePathPattern: req.sensitivePathPattern,
     trustOrigin: req.trustOrigin,
     sandboxCapability: req.sandboxCapability,
@@ -190,7 +188,6 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       expect(pluginDeny).toBeDefined();
       expect(mcpDeny).toBeDefined();
       for (const row of [pluginDeny, mcpDeny]) {
-        expect((row.denyReasons as Array<{ layer: number }>)[0].layer).toBe(1);
         expect(row.category).toBe("network");
       }
 

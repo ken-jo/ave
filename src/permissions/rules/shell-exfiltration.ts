@@ -1,10 +1,12 @@
+import { effectiveShellWords } from "../../shared/shell-effective-command.js";
+import { literalShellBodies, literalShellFlow, recordLiteralShellFlow, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 import { homedir } from "node:os";
 import { posix, sep } from "node:path";
 import { modelShellPath } from "../../shared/shell-native-path.js";
 import { physicalParentReading } from "../../shared/shell-filesystem-path.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
-import { analyzeShell, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord } from "../../shared/shell-analysis.js";
+import { analyzeShell, staticShellWord, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord } from "../../shared/shell-analysis.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { literalRuleWord } from "./rule-specifier.js";
@@ -25,7 +27,7 @@ const WGET_UPLOAD = /^(?:--post-file|--body-file)(?:=|$)/;
 const CURL_FILE_OPTIONS = Object.freeze(["--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form", "--header", "--proxy-header", "--upload-file", "--config"]);
 const NON_FILE_URL = /^(?!file:)[a-z][a-z0-9+.-]*:\/\//i;
 const UNPARSED_UPLOAD = /\b(?:curl|wget)\b[^\n;&|]*\s(?:-[A-Za-z]*[dF]|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|--form|-T|-K|--upload-file|--config|--post-file|--body-file)(?:=|\s+)?["']?[^\s"']*@?/;
-const DYNAMIC_REASON = "Shell command requires runtime evaluation";
+export const SHELL_RUNTIME_EVALUATION_REASON = "Shell command requires runtime evaluation";
 
 function fileTransferOption(token: string): string {
   const flag = token.split("=", 1)[0]!;
@@ -424,10 +426,10 @@ function inspectNativeBoundary(argv: readonly (string | undefined)[], context: S
   return { headIndexes, ...(headNames ? { headNames } : {}) };
 }
 function inspectWord(word: ShellWord, cwd: string | undefined, context: ShellFloorContext, pass: StaticPass, scanPath = true, knownLiteral: string | undefined | null = null): string | undefined {
-  const literal = knownLiteral === null ? literalShellWord(word) : knownLiteral; if (literal === undefined) pass.unproven ??= DYNAMIC_REASON;
+  const literal = knownLiteral === null ? literalShellWord(word) : knownLiteral; if (literal === undefined) pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
   if (scanPath) pass.sensitive ??= literal === undefined
     ? sensitivePathInArgumentText(word.source.raw, cwd, context) : sensitivePathInLiteralArgumentText(literal, cwd, context);
-  if (word.parts.some((part) => part.kind !== "literal" && part.kind !== "unicode-escaped")) pass.unproven ??= DYNAMIC_REASON;
+  if (word.parts.some((part) => part.kind !== "literal" && part.kind !== "unicode-escaped")) pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
   return literal;
 }
 function inspectRedirect(redirect: ShellRedirect, cwd: string | undefined, context: ShellFloorContext, pass: StaticPass): void {
@@ -440,30 +442,47 @@ function inspectRedirect(redirect: ShellRedirect, cwd: string | undefined, conte
   // text is never reinterpreted as a filesystem argument.
   if (redirect.data && !redirect.heredocQuoted && !isShellFloorLiteralData(redirect.data)
     && redirect.data.parts.some((part) => part.kind !== "literal" && part.kind !== "unicode-escaped")) {
-    pass.unproven ??= DYNAMIC_REASON;
+    pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
   }
   if (redirect.effect === "read" && redirect.target !== undefined) pass.readsPath = true;
   if (redirect.effect === "write") pass.changesState = true;
 }
-function inspectCommand(command: ShellCommand, cwd: string | undefined, context: ShellFloorContext, singleOuter: boolean): StaticPass {
+function inspectCommand(command: ShellCommand, cwd: string | undefined, context: ShellFloorContext, singleOuter: boolean, budget: LiteralBodyBudget, inspectPowerShellBody: PowerShellBodyInspector): StaticPass {
   const pass: StaticPass = { sensitive: null, exfiltration: null, network: false, readsPath: false, commandCount: 1 };
   const argv = command.words.map((word) => literalShellWord(word));
   const raw = command.words.map((word) => word.source.raw);
-  if (argv.some((word) => word === undefined)) pass.unproven = DYNAMIC_REASON;
-  for (const assignment of command.assignments) { inspectWord(assignment.value, cwd, context, pass); for (const element of assignment.elements ?? []) inspectWord(element, cwd, context, pass); pass.unproven ??= DYNAMIC_REASON; }
+  if (argv.some((word) => word === undefined)) pass.unproven = SHELL_RUNTIME_EVALUATION_REASON;
+  for (const assignment of command.assignments) { inspectWord(assignment.value, cwd, context, pass); for (const element of assignment.elements ?? []) inspectWord(element, cwd, context, pass); pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON; }
   for (const redirect of command.redirects) inspectRedirect(redirect, cwd, context, pass);
   const proof = verifiedArgvProof(command) ?? proveStaticArgv(argv, "bash", raw, context.visits);
   const evaluation = literalNativeBoundary(argv, context);
   const eligibleLiteralEvaluation = pass.unproven === undefined && command.assignments.length === 0 && command.redirects.length === 0;
   const payload = proof.kind === "literal-evaluation" ? new Set(proof.payloadIndexes) : undefined;
-  if (proof.kind === "unproven") pass.unproven ??= DYNAMIC_REASON;
+  if (proof.kind === "unproven") pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
   else if (proof.kind === "static-complete" && proof.changesState) pass.changesState = true;
   else if (proof.kind === "literal-evaluation") {
-    pass.unproven = DYNAMIC_REASON;
+    pass.unproven = SHELL_RUNTIME_EVALUATION_REASON;
     if (singleOuter && eligibleLiteralEvaluation) pass.exactLiteralEvaluation = true;
   }
   for (let index = 0; index < command.words.length; index += 1) if (!payload?.has(index) && argv[index] === undefined) {
     inspectWord(command.words[index]!, cwd, context, pass, true, argv[index]);
+  }
+  const childFlow = { network: false, readsPath: false };
+  const effective = effectiveShellWords(command.words);
+  const bodyArgv = effective.unsupported ? argv : effective.words.map(literalShellWord);
+  const bodyRaw = effective.unsupported ? raw : effective.words.map(word => word.source.raw);
+  const input = command.redirects.filter(redirect => redirect.fileDescriptor === 0 || redirect.fileDescriptor === undefined && redirect.effect === "read").at(-1);
+  const inputProgram = input?.data ? staticShellWord(input.data) : undefined;
+  for (const body of literalShellBodies(bodyArgv, "bash", bodyRaw, inputProgram)) {
+    const child = body.dialect === "powershell"
+      ? inspectPowerShellBody(body.text, cwd, { tokens: budget.tokens, depth: budget.depth + 1 })
+      : inspectPosixShellCommand(body.text, cwd, context, { tokens: budget.tokens, depth: budget.depth + 1 }, inspectPowerShellBody);
+    pass.sensitive ??= child.sensitive;
+    pass.exfiltration ??= child.exfiltration;
+    const flow = literalShellFlow(child);
+    childFlow.network ||= flow?.network === true;
+    childFlow.readsPath ||= flow?.readsPath === true;
+    if (child.analysisLimited) throw new ShellFloorLimitError(SHELL_FLOOR_BUDGET_REASON);
   }
   const unresolvedPath = context.unresolvedPath;
   const native = inspectLiteralShellArgvFacts(argv, cwd, context, payload, evaluation); pass.sensitive ??= native.sensitive; pass.exfiltration ??= native.exfiltration;
@@ -484,31 +503,34 @@ function inspectCommand(command: ShellCommand, cwd: string | undefined, context:
   }
   if (pass.socketWrite && pass.readsPath) pass.network = true;
   if (pass.network && pass.readsPath) pass.exfiltration ??= "network command reads a file";
+  if (pass.socketWrite && childFlow.readsPath || pass.readsPath && childFlow.network) pass.exfiltration ??= "literal shell body connects file data to a network transport";
+  pass.network ||= childFlow.network;
+  pass.readsPath ||= childFlow.readsPath;
   return pass;
 }
-function inspectStatement(statement: ShellStatement, cwd: string | undefined, context: ShellFloorContext, singleOuter = false): StaticPass {
+function inspectStatement(statement: ShellStatement, cwd: string | undefined, context: ShellFloorContext, singleOuter: boolean, budget: LiteralBodyBudget, inspectPowerShellBody: PowerShellBodyInspector): StaticPass {
   context.visits.staticNodes += 1;
-  if (statement.kind === "command") return inspectCommand(statement, cwd, context, singleOuter);
-  const pass: StaticPass = { sensitive: null, exfiltration: null, network: false, readsPath: false, commandCount: 0 }, child = (value: ShellStatement): void => merge(pass, inspectStatement(value, cwd, context));
+  if (statement.kind === "command") return inspectCommand(statement, cwd, context, singleOuter, budget, inspectPowerShellBody);
+  const pass: StaticPass = { sensitive: null, exfiltration: null, network: false, readsPath: false, commandCount: 0 }, child = (value: ShellStatement): void => merge(pass, inspectStatement(value, cwd, context, false, budget, inspectPowerShellBody));
   switch (statement.kind) {
     case "sequence":
       for (const value of statement.statements) child(value);
       break;
-    case "pipeline": { let read = false; for (const value of statement.statements) { const stage = inspectStatement(value, cwd, context); if (read && (stage.network || stage.socketWrite)) stage.exfiltration ??= "network command fed from a file"; merge(pass, stage); read ||= stage.readsPath; } break; }
+    case "pipeline": { let read = false; for (const value of statement.statements) { const stage = inspectStatement(value, cwd, context, false, budget, inspectPowerShellBody); if (read && (stage.network || stage.socketWrite)) stage.exfiltration ??= "network command fed from a file"; merge(pass, stage); read ||= stage.readsPath; } break; }
     case "and": case "or":
       child(statement.left); child(statement.right);
       break;
-    case "subshell": case "background": child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
+    case "subshell": case "background": child(statement.body); pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON; break;
     case "negate": child(statement.body); break;
     case "redirected":
       for (const redirect of statement.redirects) inspectRedirect(redirect, cwd, context, pass);
       child(statement.body);
       if (pass.socketWrite && pass.readsPath) pass.exfiltration ??= "network command reads a file";
       break;
-    case "for": for (const value of statement.values ?? []) inspectWord(value, cwd, context, pass); child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
-    case "while": child(statement.condition); child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
-    case "if": child(statement.condition); child(statement.consequent); child(statement.alternate); pass.unproven ??= DYNAMIC_REASON; break;
-    case "function": child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
+    case "for": for (const value of statement.values ?? []) inspectWord(value, cwd, context, pass); child(statement.body); pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON; break;
+    case "while": child(statement.condition); child(statement.body); pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON; break;
+    case "if": child(statement.condition); child(statement.consequent); child(statement.alternate); pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON; break;
+    case "function": child(statement.body); pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON; break;
     case "unsupported": pass.unproven ??= statement.reason; break;
   }
   return pass;
@@ -531,11 +553,16 @@ function parsedWithContext(input: ShellCommandInput, context: ShellFloorContext)
   if (!parsed) { context.visits.lexes += 1; parsed = parseShellFloorCommand(input); context.facts.set(key, parsed); }
   floorContexts.set(parsed, context); return parsed;
 }
-export function inspectShellCommand(input: ShellCommandInput, cwd?: string, supplied?: ShellFloorContext): ShellFloorSignals {
+type PowerShellBodyInspector = (command: string, cwd: string | undefined, budget: LiteralBodyBudget) => ShellFloorSignals;
+
+export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string | undefined, supplied: ShellFloorContext | undefined, budget: LiteralBodyBudget, inspectPowerShellBody: PowerShellBodyInspector): ShellFloorSignals {
   if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
   const context = supplied ?? (typeof input === "string" ? new ShellFloorContext() : floorContexts.get(input) ?? new ShellFloorContext());
   try {
+    if (budget.depth >= 16) return shellFloorBudgetSignals();
     const parsed = parsedWithContext(input, context);
+    if (parsed.analysis.ok) budget.tokens.count += parsed.analysis.totalTokens ?? 0;
+    if (budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
     return shellFact(parsed, `static-floor\0${cwd ?? ""}`, () => {
       if (!parsed.analysis.ok) {
         const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
@@ -548,22 +575,17 @@ export function inspectShellCommand(input: ShellCommandInput, cwd?: string, supp
       }
       const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
       const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
-      const pass = inspectStatement(statement, cwd, context, single);
+      const pass = inspectStatement(statement, cwd, context, single, budget, inspectPowerShellBody);
       if (context.unresolvedPath) {
         pass.unproven ??= "Shell path namespace is unresolved";
         pass.exactLiteralEvaluation = undefined;
       }
       const encodedReason = encodedPowerShellExecutionReason([parsed.command]);
       if (encodedReason !== null) { pass.unproven = encodedReason; pass.exactLiteralEvaluation = undefined; }
-      if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= DYNAMIC_REASON;
+      if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= SHELL_RUNTIME_EVALUATION_REASON;
       if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
       const visible = pass.sensitive !== null || pass.exfiltration !== null;
-      return { outcome: visible ? "visible-floor" : pass.unproven ? "unproven" : "static-complete", sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) };
+      return recordLiteralShellFlow({ outcome: visible ? "visible-floor" as const : pass.unproven ? "unproven" as const : "static-complete" as const, sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) }, { network: pass.network, readsPath: pass.readsPath });
     });
   } catch (error) { if (error instanceof ShellFloorLimitError) return shellFloorBudgetSignals(); throw error; }
 }
-export function shellExfiltrationSignal(input: ShellCommandInput | readonly (string | undefined)[], cwd?: string, context?: ShellFloorContext): string | null { return Array.isArray(input) ? inspectLiteralShellArgv(input, cwd, context).exfiltration : inspectShellCommand(input as ShellCommandInput, cwd, context).exfiltration; }
-export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectShellCommand(input, cwd).sensitive; }
-export function shellScanProofBlocker(input: ShellCommandInput, cwd?: string): string | null { const result = inspectShellCommand(input, cwd); return result.analysisLimited ? result.ordinaryAsk ?? SHELL_FLOOR_BUDGET_REASON : result.exactLiteralEvaluation ? null : result.outcome === "unproven" ? result.ordinaryAsk ?? DYNAMIC_REASON : null; }
-export function shellScanOrdinaryAsk(input: ShellCommandInput, cwd?: string): string | null { const result = inspectShellCommand(input, cwd); return result.outcome === "unproven" ? result.ordinaryAsk ?? DYNAMIC_REASON : null; }
-export function _inspectShellForTest(input: ShellCommandInput, cwd?: string) { const context = new ShellFloorContext(); context.visits.frames += 1; return { ...inspectShellCommand(input, cwd, context), visits: { ...context.visits } }; }

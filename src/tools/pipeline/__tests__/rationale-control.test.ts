@@ -26,7 +26,7 @@ import { createTestRequestAnchor } from "./rationale-fixtures.js";
 const eligiblePermission: PermissionCheckResult = {
   decision: "ask",
   reason: "Automatic review requires human approval.",
-  layer: 6, reasonCode: "reviewer-human-required",
+  reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
     verdict: { level: "high", reason: "bounded shell write" },
@@ -389,7 +389,7 @@ describe("foreground rationale contract", () => {
     expect(check("fresh", { invocationTrustOrigin: "file-content" })).toBe(false);
     expect(check("fresh", { forceModal: true })).toBe(false);
     expect(check("fresh", { approvalReasonPrefix: "retry" })).toBe(false);
-    expect(check("fresh", { headless: true })).toBe(false);
+    expect(check("fresh", { headless: true })).toBe(true);
   });
 
   it("keeps raw execution authority out of the provider envelope", () => {
@@ -414,15 +414,21 @@ describe("foreground rationale contract", () => {
       ticketId: control.ticketId,
       actionDigest: control.action.actionDigest,
       round: 1,
-      suggestion: "빌드 폴더만 삭제하려는 작업입니다.",
+      choice: "resubmit", rationale: "빌드 폴더만 삭제하려는 작업입니다.", userQuote: control.anchor.sanitizedIntent,
     };
 
     expect(parseRationaleResponse(valid, control)).toMatchObject(valid);
     expect(parseRationaleResponse({ ...valid, ticketId: "other" }, control)).toBeNull();
-    expect(parseRationaleResponse({ ...valid, suggestion: "" }, control)).toBeNull();
-    expect(parseRationaleResponse({ ...valid, suggestion: "x".repeat(501) }, control)).toBeNull();
+    expect(parseRationaleResponse({ ...valid, rationale: "" }, control)).toBeNull();
+    expect(parseRationaleResponse({ ...valid, rationale: "x".repeat(501) }, control)).toBeNull();
     expect(parseRationaleResponse({ ...valid, scopeAlignment: "aligned" }, control)).toBeNull();
     expect(Object.isFrozen(parseRationaleResponse(valid, control))).toBe(true);
+    const { rationale: _rationale, userQuote: _userQuote, ...binding } = valid;
+    expect(parseRationaleResponse({ ...binding, choice: "accept" }, control)).toMatchObject({ choice: "accept" });
+    expect(parseRationaleResponse({ ...binding, choice: "ask_user" }, control)).toMatchObject({ choice: "ask_user" });
+    expect(parseRationaleResponse({ ...binding, choice: "resubmit", rationale: "The user asked." }, control)).toBeNull();
+    expect(parseRationaleResponse({ ...binding, choice: "resubmit", rationale: "The user asked.", userQuote: "" }, control)).toBeNull();
+    expect(parseRationaleResponse({ ...binding, choice: "retry" }, control)).toBeNull();
   });
 
 });

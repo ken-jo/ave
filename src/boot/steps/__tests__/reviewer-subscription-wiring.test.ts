@@ -18,12 +18,12 @@ import type { WireReviewerResult } from "../reviewer-wiring.js";
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 function reviewerResult(root: string): WireReviewerResult {
-  const settings = { mode: "rule", fallbackOnError: "deny" } as const;
+  const settings = { mode: "disabled", fallbackOnError: "deny" } as const;
   return {
     classifier: new RuleBasedRiskClassifier(), rationaleScopeReviewer: new UnavailableRationaleScopeReviewer(),
     approvalSentenceSelector: new UnavailableApprovalSentenceSelector(),
     cache: new VerdictCache(join(root, "cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "recent.json")),
-    appliedSettings: settings, effectiveSettings: { ...settings, provider: "openai", model: "fixture-model" }, runtimeMode: "rule",
+    appliedSettings: settings, effectiveSettings: { ...settings, provider: "openai", model: "fixture-model" }, runtimeMode: "disabled",
   };
 }
 

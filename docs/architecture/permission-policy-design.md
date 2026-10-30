@@ -77,6 +77,8 @@ The [owner-approved permission decision tree](permission-decision-tree.md) is th
 
 The normalized request carries the tool/source, effective kind, lexical and canonical effect paths, trusted principal, mode, human availability and applicable rules/grants. Admission denial is terminal: an invalid manifest, corrupt policy store or protected host credential store cannot be repaired by a reviewer or approval. Forced one-shot requests never enter automatic review or approval memory. User-configured outside-read restrictions remain explicit rules.
 
+Plugin-provided MCP tools follow the same MCP row as every other MCP tool: `readOnlyHint` allows; other tools use first-use approval with per-tool memory, or the reviewer in auto. There is no server-specific mode override.
+
 Argument rewriting finishes before authorization. User script `PreToolUse` runs before any target approval and can only block; an allow result means no objection. Exact effect identity, cancellation, audit integrity, manifest capabilities, SSRF and execution-time path checks remain enforced after a permission result.
 
 Shell analysis below supplies evidence. Historical L2/L6, exact-only host-shell and human-only unproven dispositions are superseded by the decision tree; static proof does not itself grant authority.
@@ -2798,19 +2800,35 @@ claim a benchmark score or task correctness.
 
 ## Automated Judge Chain
 
-The [decision tree](permission-decision-tree.md) owns reviewer eligibility and outcome routing. General risk review runs only in global auto mode for ordinary requests that require assessment; protected floors never reach it. User-owned surface Auto instead uses the separate logical-only review described in [surface choices](#user-owned-surface-choices), independently of global mode. LOW/MEDIUM allow. HIGH, unavailable provider, malformed output, timeout or live abort falls back to a normal card; without a human, that fallback denies and includes the no-retry message. A corrupt policy store is an admission denial before review.
+The [decision tree](permission-decision-tree.md) owns reviewer eligibility and outcome routing. General risk review runs only in global auto mode for ordinary requests that require assessment; protected floors never reach it. User-owned surface Auto instead uses the separate logical-only review described in [surface choices](#user-owned-surface-choices), independently of global mode. LOW/MEDIUM allow. A completed HIGH judgment enters the model choice below. An unavailable provider, malformed output, timeout, live abort or open breaker goes directly to a normal card; without a human, that fallback denies and includes the no-retry message. A corrupt policy store is an admission denial before review.
 
-The judge settings and transport contract remains in the [judge design](../design/permissions-always-allow-and-judge.md#p2-judge-slot). Configuration and shadow observations cannot override this permission contract. Shadow stages do not grant authority or count breaker denials. Explicit model selections do not silently switch providers; unset reviewer selection follows the active chat model. Invalid settings writes fail before persistence and valid writes preserve unrelated settings, with compare-and-swap rollback on refresh failure. The judge subtree remains user-only configuration under the protected-path floor.
+Reviewer configuration accepts only `llm` and `disabled`. A persisted retired `strict` or `rule` setting fails clearly during load and is not migrated or silently treated as another classifier. The judge settings and transport contract remains in the [judge design](../design/permissions-always-allow-and-judge.md#p2-judge-slot). Configuration and shadow observations cannot override this permission contract. Shadow stages do not grant authority or count breaker denials. Explicit model selections do not silently switch providers; unset reviewer selection follows the active chat model. Invalid settings writes fail before persistence and valid writes preserve unrelated settings, with compare-and-swap rollback on refresh failure. The judge subtree remains user-only configuration under the protected-path floor.
 
 Review requires a host-created invocation identity and conversation/task identity. The host supplies normalized input and host policy facts; external projections are DLP-redacted. Tool results are not review instructions. Audit records the redacted request, final outcome, model, invocation identity, reason and fallback. Review cannot persist a rule. Required audit failures remain terminal.
 
-The breaker counts each successfully completed classifier non-allow assessment once per invocation within the active root turn; errors, aborted assessments and shadow observations do not count: three consecutive denials or twenty total denials send subsequent reviewer-bound requests in that turn to normal human cards. In headless execution those human fallbacks deny. Rule allows, remembered grants, ordinary reads, sandbox-auto and checkpoint-backed project writes retain their earlier pipeline outcomes. An allowed assessment resets only the consecutive count. Human consent does not reopen reviewer automation during that turn; a fresh turn resets the breaker. Parent/child identity, settings refresh and shadow observation must not reset or double-count the active turn.
+The breaker counts one denial per request after its model choice resolves, rather than counting both the first and repeated HIGH assessments. Errors, aborted assessments and shadow observations do not count: three consecutive denials or twenty total denials send subsequent reviewer-bound requests in that turn to normal human cards. In headless execution those human fallbacks deny. Rule allows, remembered grants, ordinary reads, sandbox-auto and checkpoint-backed project writes retain their earlier pipeline outcomes. An allowed assessment resets only the consecutive count. Human consent does not reopen reviewer automation during that turn; a fresh turn resets the breaker. Parent/child identity, settings refresh and shadow observation must not reset or double-count the active turn.
+
+### Reviewer denial and model choice
+
+A completed general-risk HIGH judgment returns a denial with exactly three choices through the existing `permission_rationale` tool. This handoff grants no execution authority. It applies to ordinary auto requests, including host-shell execution and sandbox escalation; deny and forced one-shot outcomes never enter it. User-owned surface Auto retains its separate logical-only review and normal-card fallback.
+
+- `accept`: deny the call without opening a card; the model continues without it.
+- `resubmit`: once per request, supply a `rationale` and `userQuote`. The host verifies that the exact quote occurs in a user-role turn of the same session. Model text, tool output and quotes from another session are not evidence. The host attaches the verified quote and its own target-path, sandbox, checkpoint/reversibility and change-scope facts. The reviewer labels the model rationale as an untrusted claim and re-judges once. LOW/MEDIUM allows; reported scope-alignment metadata does not add a second approval threshold; a second HIGH, missing or unverifiable quote, or another resubmission request goes to a normal card.
+- `ask_user`: open a normal card. With no human approver, deny with the no-retry message.
+
+Only original native user text is citation evidence. Generated summaries, tool/model text, injected guidance, child reports and unsigned restored role labels cannot supply a verified quote. The host keeps that evidence separate from prompt augmentation and binds it to the exact session.
+
+A published human card follows the ordinary waiting policy, including unlimited owner-away waiting when auto-skip is off. Model-response expiry remains strict; waiting for a person cannot reopen the model round. A fresh authenticated answer and current action, session and policy checks remain necessary before execution. Aborting or closing the session revokes pending execution authority.
+
+The host supplies the complete ordered native-user context for this session snapshot, including duplicate turns and later revocations, and identifies the most recent complete turn containing the quote. Exact matching happens before DLP redaction. The entire canonical-JSON user-turn array must fit a 16 KiB UTF-8 evidence budget; the host neither truncates it nor substitutes an older matching turn. Missing or oversized evidence goes to the normal card. Reviewer transport redacts the quote, user context and sealed arguments. The re-judgment applies the same general risk levels as the initial review: user intent does not erase concrete risk, and scope alignment is explanatory metadata. This is separate from the logical-only user-owned surface check.
+
+Reviewer errors and an open breaker bypass the model choice and go directly to the normal card. The original sealed action and host-created request/session identity remain bound throughout the handoff. The one-resubmission limit belongs to that request: a distinct tool-use request in the same user turn has its own choice, while replay or mutation of an existing request cannot obtain another round. The choice cannot authorize a different command or weaken execution-time confinement. A repeated assessment does not create a second breaker denial for the same request. A final model-choice denial enters Recently denied through the original invocation’s denial writer; the initial HIGH, an allowed re-judgment and cancellation do not create a denied entry.
 
 ### Approval delivery and execution binding
 
 Only a registered application window's exact main frame can answer its currently delivered card. Subframes, webviews, plugin origins and unrelated app windows cannot mint consent. The explicit approval-owner registry controls delivery through attachment, adoption, detachment and parent links; ownership is never inferred from focus or persisted ancestry. User-driven attachment may transfer delivery. An app renderer remains part of the application's trust level; delivery binding does not defend against a compromised app renderer.
 
-The host verifies native human consent once for the exact request. Rules, peers, parent agents, away automation and remembered approvals are not fresh human consent. Losing an owner never approves a card; owner-away waiting follows the setting above. A forced other-principal request cannot be answered by parent adjudication or away automation.
+The host verifies native human consent once for the exact request. Rules and remembered approvals are not fresh human consent. Losing an owner never approves a card; owner-away waiting follows the setting above. A forced other-principal request requires that request’s human approval.
 
 Immediately before handler entry, a synchronous gate rechecks cancellation, required audit integrity, active-turn breaker state and plugin/remote authority. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain block-only and cancellable. Execution retains its existing ceilings and current effect identity.
 
@@ -2847,9 +2865,11 @@ host-owned request context and typed reviewer outcomes. The dispatcher issues
 exact-input-bound evidence from its existing raw-input rule trace; the gate
 uses this evidence without reclassifying display data. A conservative HIGH
 display during assessment failure is separate from a completed HIGH judgment.
-Completed HIGH judgments, changed sandbox state and mandatory one-shot requests
-retain their restrictions, including forced other-principal requests
-and sealed rationale approvals.
+A normal card after a completed HIGH or a rationale handoff uses the ordinary
+card choices supported by the exact tool and action, including available memory
+and shell-prefix scopes. A changed sandbox plan still requires current action
+binding. Forced one-shot requests, including other-principal requests, cannot
+create remembered authority.
 
 “Always allow” stores the exact tool, canonical arguments, source, trust origin
 and invocation working-directory identity. Existing tool-specific identity and

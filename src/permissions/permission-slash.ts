@@ -234,16 +234,14 @@ export type PermissionReviewerResult =
 
 const VALID_REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
   "disabled",
-  "rule",
   "llm",
-  "strict",
 ]);
 const VALID_REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set([
   "deny",
   "rule",
 ]);
 
-// Parse `/permission reviewer...` (the substring AFTER the prefix). Examples: "show" "mode disabled" "mode rule" "mode llm" "fallback deny"
+// Parse `/permission reviewer...` (the substring AFTER the prefix). Examples: "show" "mode disabled"  "mode llm" "fallback deny"
 export function parsePermissionReviewerCommand(
   rawArgs: string,
 ): PermissionReviewerCommand | { ok: false; error: string } {

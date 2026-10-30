@@ -52,6 +52,7 @@ import {
 } from "../../permissions/permission-settings-store.js";
 import {
   recordApproval,
+  getUserApprovalGeneration,
   approvalCacheKeyIdentity,
   revokeApprovalByKey,
   listApprovals,
@@ -1030,7 +1031,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // Server-side SOT lookup. If the approval already resolved/timed out or never existed, reject; we
     // never silently create an orphan entry that the renderer can later use to fish for memory hits.
     const snapshot = approvalGate?.getRequestSnapshot(requestId) ?? null;
-    if (!snapshot) {
+    if (!approvalGate || !snapshot) {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
     if (!approvalGate!.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
@@ -1101,6 +1102,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       // Authority fields come from the main-process snapshot, never the renderer body. The renderer
       // contribution is reduced to decision metadata; the exact tool/input identity remains host-owned.
+      const exactSaveToken = decision === "allow" ? approvalGate.beginExactApprovalSave(requestId, getUserApprovalGeneration()) : undefined;
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
@@ -1118,6 +1120,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
         } : {}),
       });
+      if (decision === "allow") approvalGate.completeExactApprovalSave(exactSaveToken, getUserApprovalGeneration(), scope);
       auditLogger.log({
         timestamp: new Date().toISOString(),
         sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,

@@ -121,8 +121,6 @@ export async function applyPermissionModeCommand(
       source: "builtin",
       createdAt: Date.now(),
       trustOrigin: "user-keyboard",
-      isReadOnly: false,
-      mode: "default",
     });
     // Any allow approves this switch; the card answers a conversation-scoped remembered allow with allow-session.
     if (decision.choice !== "allow-once" && decision.choice !== "allow-session" && decision.choice !== "allow-always") {

@@ -135,6 +135,18 @@ describe("mandatory sandbox control-file writes", () => {
     expect(() => withPlatform("darwin", () => buildMandatorySandboxWritePolicy([join(root, "missing")]))).toThrow("Access denied");
   });
 
+  it.each(["darwin", "linux", "win32"] as const)("protects the complete application configuration directory on %s", platform => {
+    const project = join(root, "project");
+    const configuration = join(root, "ave", "config");
+    mkdirSync(project);
+    withPlatform(platform, () => {
+      const policy = buildMandatorySandboxWritePolicy([root, project]);
+      expectLiteralDenyCovers(policy.denyWrite, configuration);
+      expectLiteralDenyCovers(policy.denyWrite, join(configuration, "future-control", "policy.json"));
+      expect(policy.denyWrite).not.toContain(join(root, "ave"));
+    });
+  });
+
   it.each(["darwin", "linux", "win32"] as const)("protects existing and absent loader paths in the shared policy on %s", platform => {
     withPlatform(platform, () => {
       for (const existing of [false, true]) {

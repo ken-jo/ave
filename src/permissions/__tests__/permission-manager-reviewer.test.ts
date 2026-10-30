@@ -923,17 +923,15 @@ describe("PermissionManager.checkDetailed — headless mutating reviewer lane", 
       headless: true,
     });
     expect(result.decision).toBe("ask");
-    expect(result.layer).toBe(6);
     expect(result.reasonCode).toBe("review-required");
   });
 
-  it("non-headless+write hits Layer 6 with category descriptor message", () => {
+  it("non-headless writes retain their reviewer request", () => {
     const { pm } = makeManager();
     const result = pm.checkDetailed("any_write", "builtin", "write", null, {
       headless: false,
     });
     expect(result.decision).toBe("ask");
-    expect(result.layer).toBe(6);
   });
 });
 

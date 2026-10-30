@@ -9,7 +9,8 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 import * as shellPolicy from "../rules/shell-prefix-policy.js";
 import * as powerShellPolicy from "../rules/powershell-exfiltration.js";
-import * as shellFloors from "../rules/shell-exfiltration.js";
+import * as shellFloorSyntax from "../rules/shell-exfiltration.js";
+import * as shellFloors from "../rules/literal-shell-inspection.js";
 import * as riskClassifier from "../reviewer/risk-classifier.js";
 import * as shellDirectory from "../shell-working-directory-identity.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
@@ -53,10 +54,10 @@ describe("complete manager timing", () => {
       const start = performance.now();
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
       const elapsed = performance.now() - start;
-      process.stdout.write(`permission lane timing ${dialect} sandboxed=${runsSandboxed} chars=${length} decision=${result.decision} layer=${result.layer} modal=${result.forceModal === true} ms=${elapsed.toFixed(3)}\n`);
+      process.stdout.write(`permission lane timing ${dialect} sandboxed=${runsSandboxed} chars=${length} decision=${result.decision} modal=${result.forceModal === true} ms=${elapsed.toFixed(3)}\n`);
       expect(result.reason).toEqual(expect.any(String));
       expect(elapsed).toBeLessThan(5_000);
-      expect(result).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" });
+      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       if (MAX_LITERAL_COMMAND_LENGTH === LITERAL_INPUT_LIMIT) {
         expect(spies).toHaveLength(10);
         for (const spy of spies.filter(spy => spy !== spies[6])) expect(spy).not.toHaveBeenCalled();
@@ -72,7 +73,7 @@ describe("complete manager timing", () => {
 
 function analysisSpies() {
   const spies = [
-    vi.spyOn(shellFloors, "parseShellFloorCommand"),
+    vi.spyOn(shellFloorSyntax, "parseShellFloorCommand"),
     vi.spyOn(powerShellPolicy, "inspectPowerShellCommand"),
     vi.spyOn(powerShellPolicy, "powerShellRuleShape"),
     vi.spyOn(powerShellPolicy, "inspectPowerShellVisibleText"),
@@ -82,7 +83,7 @@ function analysisSpies() {
     vi.spyOn(shellDirectory, "captureShellWorkingDirectoryIdentity"),
     vi.spyOn(shellPolicy, "parseShellCommand"),
   ];
-  if ("inspectShellCommand" in shellFloors) spies.push(vi.spyOn(shellFloors, "inspectShellCommand"));
+  spies.push(vi.spyOn(shellFloors, "inspectShellCommand"));
   return spies;
 }
 
@@ -103,7 +104,7 @@ describe.each(["bash", "powershell"] as const)("literal lane bounds (%s)", (dial
     manager.setRules([{ pattern: dialect, action: "allow" }]);
     for (const headless of [false, true]) {
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, headless);
-      expect(result).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+      expect(result).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
       expect(result.forceModal).toBeUndefined();
       expect(result.pipelineRequest?.shell?.unproven).toBe(true);
     }
@@ -117,14 +118,14 @@ describe.each(["bash", "powershell"] as const)("literal lane bounds (%s)", (dial
     try {
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
       if (length > LITERAL_INPUT_LIMIT) {
-        expect(result).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+        expect(result).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
         expect(result.forceModal).toBeUndefined();
         expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
         for (const spy of spies.filter(spy => spy !== spies[6])) expect(spy).not.toHaveBeenCalled();
       } else {
         expect(result).toMatchObject(dialect === "powershell" && process.platform === "win32"
-          ? { decision: "allow", layer: 6, reasonCode: "allow-mode" }
-          : { decision: "allow", layer: 3, reasonCode: "rule-allow" });
+          ? { decision: "allow", reasonCode: "allow-mode" }
+          : { decision: "allow", reasonCode: "rule-allow" });
         if (dialect === "powershell" && process.platform === "win32") expect(result.pipelineRequest?.rules?.allow).toBeUndefined();
         expect(result.forceModal).toBeUndefined();
         expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision).toBe("allow");
@@ -147,8 +148,8 @@ describe.each(["bash", "powershell"] as const)("sandbox floor bounds (%s)", (dia
     try {
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, true);
       expect(result).toMatchObject(dialect === "powershell" && length > FLOOR_INPUT_LIMIT
-        ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
-        : { decision: "allow", layer: 6, reasonCode: "allow-mode" });
+        ? { decision: "deny", reasonCode: "shell-analysis-limit" }
+        : { decision: "allow", reasonCode: "allow-mode" });
       expect(result.forceModal).toBeUndefined();
       expect(result.pipelineRequest?.shell?.unproven).toBe(true);
       expect(dialect === "bash" ? shellFloors.inspectShellCommand : powerShellPolicy.inspectPowerShellCommand).not.toHaveBeenCalled();
@@ -166,7 +167,7 @@ describe.each(["bash", "powershell"] as const)("reusable proof exhaustion (%s)",
       ? vi.spyOn(shellFloors, "inspectShellCommand")
       : vi.spyOn(powerShellPolicy, "inspectPowerShellCommand");
     const bashParse = vi.spyOn(shellPolicy, "parseShellCommand");
-    const floorParse = vi.spyOn(shellFloors, "parseShellFloorCommand");
+    const floorParse = vi.spyOn(shellFloorSyntax, "parseShellFloorCommand");
     const powerShellShape = vi.spyOn(powerShellPolicy, "powerShellRuleShape");
     const destructive = vi.spyOn(riskClassifier, "isDestructiveShellText");
     let parsesBeforeBudget = 0;
@@ -177,10 +178,10 @@ describe.each(["bash", "powershell"] as const)("reusable proof exhaustion (%s)",
       return { outcome: "unproven", sensitive: null, exfiltration: null, analysisLimited: true };
     });
     try {
-      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
       expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
-      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
       expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
       expect(powerShellShape).not.toHaveBeenCalled();

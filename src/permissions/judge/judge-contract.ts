@@ -24,6 +24,8 @@ interface JudgePolicySnapshot {
 export interface JudgeRequest {
   // Host-owned identity shared by every assessment of this tool invocation.
   invocationId: string;
+  // A host-owned rationale round counts a classifier denial only after its choice resolves.
+  deferDenialCounting?: boolean;
   // Root conversation session id. Subagents pass their parent's root id so they share one circuit breaker.
   sessionId: string;
   lane: JudgeLane;

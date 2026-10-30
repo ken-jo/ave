@@ -6,7 +6,7 @@ import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/ato
 import { createLogger } from "../lib/logger.js";
 import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
 import { parseConfigurationObject } from "../shared/configuration-document.js";
-import { readAveHomeConfigurationFile, resolveConfigurationFile, tryWithAveHomeConfigurationWrite, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
+import { readAveHomeConfigurationFile, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
@@ -26,16 +26,14 @@ async function withPermissionSettingsWrite<T>(path: string, callback: (filePath:
   return withAveHomeConfigurationWrite(path, callback);
 }
 
-// Disabled bypasses review as LOW while matrix/hard gates still apply; rule is deterministic, llm composes with rule floors, and strict returns HIGH/defer for every review.
-export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
+// Disabled bypasses automatic review; model review composes with deterministic safety evidence.
+export type ReviewerMode = "disabled" | "llm";
 export type ReviewerFallbackOnError = "deny" | "rule";
 
 // Permission policy `permissions.reviewer` block. The reviewer's model is not stored here: it is `permissions.judge.model` (unset follows the active chat model). Files written by older builds may still carry `provider`/`model` keys; the read normalizer drops them and the next save writes the block without them. Defaults: fallbackOnError="deny".
 export interface ReviewerSettingsBlock {
   mode: ReviewerMode;
   fallbackOnError: ReviewerFallbackOnError;
-  // migration marker — ISO-8601 timestamp recorded the first time a pre-`mode:"disabled"` setting was rewritten to `mode:"strict"`. Pre-builds wired `disabled` as "defer-all-HIGH" (fail-closed), so an existing user file with `mode:"disabled"` and no marker represents a fail-closed posture the user actively chose. The normalization flipped `disabled` to pass-through-LOW; without this migration that flip would be a silent post-deploy security downgrade. The presence of `disabledMigratedAt` makes the migration idempotent — subsequent loads do not re-write.
-  disabledMigratedAt?: string;
 }
 
 export interface PermissionSettingsBlock {
@@ -91,7 +89,7 @@ export class PermissionSettingsUnreadableError extends Error {
 }
 
 const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
-  // Default to model review; absent provider credentials visibly degrade to rules and rewire back after configuration. Automatic review permits LOW/MEDIUM; HIGH requires a human approval surface. Host-proven sandbox-contained plugin writes remain LOW in either classifier.
+  // Default to model review; absent provider credentials visibly degrade to rules and rewire back after configuration. Automatic review permits LOW/MEDIUM; HIGH offers the model its bounded denial choices. Host-proven sandbox-contained plugin writes remain LOW in either classifier.
   mode: "llm",
   fallbackOnError: "deny",
 };
@@ -100,7 +98,7 @@ const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
 const DEFAULT_FILE: PermissionSettingsFile = {
   permissions: {
     additionalDirectories: [],
-    // Also the value an UNREADABLE file falls back to, and deliberately not the fenced one. The deny-shape this file owes on a fault is "no directory was granted", and that is `additionalDirectories: []` above. Reads are bounded by Layer 0, which does not live in this file, so fencing them here would withdraw no protection a fault put at risk.
+    // Also the value an UNREADABLE file falls back to, and deliberately not the fenced one. The deny-shape this file owes on a fault is "no directory was granted", and that is `additionalDirectories: []` above. Host credential reads are admission-denied outside this file, so fencing them here would withdraw no protection a fault put at risk.
     blockReadsOutsideWorkingDirectories: false,
     pendingWorkspaceRootRemovals: [],
     reviewer: { ...DEFAULT_REVIEWER },
@@ -110,9 +108,7 @@ const DEFAULT_FILE: PermissionSettingsFile = {
 
 const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
   "disabled",
-  "rule",
   "llm",
-  "strict",
 ]);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
 
@@ -120,7 +116,7 @@ export function permissionSettingsPath(home = aveHome()): string {
   return pathResolve(aveHomeConfigurationDirectory(home), "settings.json");
 }
 
-// Unreadable existing settings return deny-shaped defaults with a visible fault, log an error and rewrite nothing. Migrate unmarked legacy disabled to strict and persist once; failed persistence still returns strict so upgrades cannot silently weaken policy.
+// Unreadable settings preserve disk bytes and expose a fault. Retired reviewer modes fail clearly during normalization.
 export function readPermissionSettings(pathOverride?: string): PermissionSettingsFile {
   const filePath = resolveConfigurationFile(pathOverride ?? permissionSettingsPath());
   let parsed: Record<string, unknown>;
@@ -142,32 +138,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
       fault: { kind: "file-unreadable", filePath, detail },
     };
   }
-  {
-    const migrated = migrateLegacyDisabledMode(parsed);
-    const normalized = normalizePermissionSettings(parsed, filePath);
-    if (migrated) {
-      // Persist only when immediately available; the normalized runtime result stays strict.
-      let persistFailure: string | undefined;
-      try {
-        const acquired = tryWithAveHomeConfigurationWrite(filePath, (target) => {
-          const latest = readSettingsDocument(target);
-          if (migrateLegacyDisabledMode(latest)) writeUtf8FileAtomicSync(target, JSON.stringify(latest, null, 2), 0o600);
-        });
-        if (!acquired) persistFailure = "Configuration owner is unavailable or busy";
-      } catch (persistErr) {
-        if (persistErr instanceof AveHomeConfigurationUntrustedError) throw persistErr;
-        persistFailure = (persistErr as Error).message;
-      }
-      if (persistFailure !== undefined) {
-        log.warn(
-          "issue-664 migration: failed to persist migrated settings to %s — runtime still strict (%s)",
-          filePath,
-          persistFailure,
-        );
-      }
-    }
-    return normalized;
-  }
+  return normalizePermissionSettings(parsed, filePath);
 }
 
 // Preserve empty legacy documents; reject non-object roots before callers merge fields.
@@ -200,27 +171,6 @@ function readSettingsObjectForUpdate(filePath: string): Record<string, unknown> 
     if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     throw new PermissionSettingsUnreadableError(filePath, (err as Error).message, { cause: err });
   }
-}
-
-// Only unmarked legacy disabled mode auto-migrates to strict and gains a marker. Preserve later deliberate disabled choices; all other validation defaults without mutating disk.
-export function migrateLegacyDisabledMode(parsed: Record<string, unknown>): boolean {
-  const perm = parsed.permissions;
-  if (!perm || typeof perm !== "object") return false;
-  const reviewer = (perm as Record<string, unknown>).reviewer;
-  if (!reviewer || typeof reviewer !== "object") return false;
-  const r = reviewer as Record<string, unknown>;
-  if (r.mode !== "disabled") return false;
-  if (typeof r.disabledMigratedAt === "string" && r.disabledMigratedAt.length > 0) {
-    return false;
-  }
-  const migratedAt = new Date().toISOString();
-  r.mode = "strict";
-  r.disabledMigratedAt = migratedAt;
-  log.warn(
-    "issue-664 migration: legacy reviewer mode 'disabled' (defer-all-HIGH) → 'strict' (defer-all-HIGH, honest name); marker=%s",
-    migratedAt,
-  );
-  return true;
 }
 
 // Normalize an arbitrary parsed JSON value into a valid PermissionSettingsFile. Only `permissions.additionalDirectories` is accepted as the persisted directory SOT.
@@ -342,10 +292,13 @@ function composePendingWorkspaceRootRemovals(
   return [...intents, ...malformed];
 }
 
-// Permission policy normalize `permissions.reviewer` from arbitrary JSON to the canonical block. Unknown enum values fall back to defaults with a warn (per CLAUDE.md No-Fallback: this is the *external boundary* — settings file may be hand-edited with bad values).
+// Normalize the external settings boundary. Retired modes fail clearly; unrelated malformed values retain the default model-review posture.
 function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
   if (!parsed || typeof parsed !== "object") return structuredClone(DEFAULT_REVIEWER);
   const obj = parsed as Record<string, unknown>;
+  if (obj.mode === "strict" || obj.mode === "rule") {
+    throw new Error(`Retired reviewer mode '${obj.mode}'; set permissions.reviewer.mode to 'llm' or 'disabled'.`);
+  }
   const mode =
     typeof obj.mode === "string" && REVIEWER_MODES.has(obj.mode as ReviewerMode)
       ? (obj.mode as ReviewerMode)
@@ -355,15 +308,10 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     REVIEWER_FALLBACKS.has(obj.fallbackOnError as ReviewerFallbackOnError)
       ? (obj.fallbackOnError as ReviewerFallbackOnError)
       : DEFAULT_REVIEWER.fallbackOnError;
-  const disabledMigratedAt =
-    typeof obj.disabledMigratedAt === "string" && obj.disabledMigratedAt.length > 0
-      ? obj.disabledMigratedAt
-      : undefined;
   // Only the known keys are carried, so the retired `provider`/`model`/`interactive`/`parentAdjudication` keys an older build wrote are dropped here and leave the file on the next save.
   return {
     mode,
     fallbackOnError,
-    disabledMigratedAt,
   };
 }
 
@@ -426,7 +374,6 @@ export async function writePermissionSettings(
 const REVIEWER_BLOCK_KEYS: ReadonlySet<string> = new Set([
   "mode",
   "fallbackOnError",
-  "disabledMigratedAt",
 ] satisfies ReadonlyArray<keyof ReviewerSettingsBlock>);
 
 function validateReviewerPatch(patch: ReviewerSettingsBlock): ReviewerSettingsBlock {

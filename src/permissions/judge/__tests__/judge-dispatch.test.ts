@@ -218,7 +218,7 @@ describe("judge approval-path placement", () => {
     expect(await checkAndDispatch(subject, { remoteControllerAuthority })).toMatchObject({ decision: "deny", reasonCode: "controller-capability" });
     // A permitted remote write keeps its local allow-once modal; no judge route.
     const remoteWrite = subject.manager.checkDetailed("write_file", "builtin", "write", null, { remoteControllerAuthority });
-    expect(remoteWrite).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(remoteWrite).toMatchObject({ decision: "ask", forceModal: true });
     expect(remoteWrite.reviewer).toBeUndefined();
     expect(provider.requests).toHaveLength(1);
   });
@@ -419,7 +419,7 @@ describe("configured judge dispatch lanes", () => {
     const provider = external(subject, { decision, rationale: "policy decision" });
     expect(subject.manager.checkDetailed("bash", "builtin", "shell").reviewer?.route).toBe("foreground-auto");
     // Reviewer refusal requests a normal human card; it is not an immutable deny rule.
-    expect(await checkAndDispatch(subject)).toMatchObject({ decision: decision === "deny" ? "ask" : decision, layer: 6 });
+    expect(await checkAndDispatch(subject)).toMatchObject({ decision: decision === "deny" ? "ask" : decision });
     expect(provider.requests).toHaveLength(1);
     expect(judgeRecords(subject.audit)[0]).toMatchObject({ decision, applied: true, session: "session-root" });
   });
@@ -638,9 +638,9 @@ describe("configured judge dispatch lanes", () => {
     subject.manager.setMode("allow");
     const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
     const after = await checkAndDispatch(subject, { ...context, ruleSubject: { ...context.ruleSubject, cwd: subject.root } });
-    expect(before).toMatchObject({ decision: "allow", reasonCode: "allow-mode", layer: 6 });
+    expect(before).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(before.reviewer).toBeUndefined();
-    expect(after).toMatchObject({ decision: before.decision, reason: before.reason, layer: 6 });
+    expect(after).toMatchObject({ decision: before.decision, reason: before.reason });
     expect(after.reviewer).toBeUndefined();
     expect(reviewer.calls()).toBe(0);
     expect(provider.requests).toHaveLength(0);
@@ -657,8 +657,8 @@ describe("configured judge dispatch lanes", () => {
       const shell = (root: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: root } });
       const before = await checkAndDispatch(baseline, shell(baseline.root));
       const after = await checkAndDispatch(subject, shell(subject.root));
-      expect({ decision: after.decision, layer: after.layer, reviewer: after.reviewer })
-        .toEqual({ decision: before.decision, layer: before.layer, reviewer: before.reviewer });
+      expect({ decision: after.decision, reviewer: after.reviewer })
+        .toEqual({ decision: before.decision, reviewer: before.reviewer });
     }
     expect(reviewer.calls()).toBe(0);
     expect(provider.requests).toHaveLength(0);

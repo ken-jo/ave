@@ -151,9 +151,9 @@ describe("configured saved-session access", () => {
     expect(manager.checkDetailed("write_file", "builtin", "write", undefined, { paths: [{ lexical: transcript, canonical: transcript, effect: "write" }] })).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
     const send = vi.fn();
     const gate = new ApprovalGate({ send, isDestroyed: () => false } as never, undefined, 200);
-    const request = { id: "session-read", category: "tool" as const, toolName: "read_file", source: "builtin" as const, mode: "default" as const, args: { path: transcript }, reason: "Read saved conversation", createdAt: Date.now(), target: { filePath: transcript }, isReadOnly: true };
+    const request = { id: "session-read", category: "tool" as const, toolName: "read_file", source: "builtin" as const, args: { path: transcript }, reason: "Read saved conversation", createdAt: Date.now(), target: { filePath: transcript } };
     expect((await gate.requestAndWait(request)).choice).toBe("deny-once");
-    expect((await gate.requestAndWait({ ...request, id: "session-write", isReadOnly: false })).choice).toBe("deny-once");
+    expect((await gate.requestAndWait({ ...request, id: "session-write" })).choice).toBe("deny-once");
     expect((await gate.requestAndWait({ ...request, id: "session-directory-grant", kind: "out-of-allowed-dir" })).choice).toBe("deny-once");
     expect(send.mock.calls.filter(([channel]) => channel === IPC_APPROVAL_REQUEST)).toHaveLength(3);
     expect(gate.pendingCount).toBe(0);

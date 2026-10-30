@@ -28,7 +28,7 @@ afterEach(async () => {
 
 describe("implicit reviewer model audit", () => {
   for (const observer of [false, true]) {
-    it.each(["llm", "rule"] as const)(`records %s identity in the authoritative ${observer ? "shadow baseline" : "ordinary review"}`, async (mode) => {
+    it.each(["llm", "disabled"] as const)(`records %s identity in the authoritative ${observer ? "shadow baseline" : "ordinary review"}`, async (mode) => {
       const manager = new PermissionManager(join(directory, "permissions.json"));
       manager.setMode("auto");
       const defaults = readPermissionSettings(join(directory, "absent-settings.json")).permissions.reviewer;
@@ -70,11 +70,13 @@ describe("implicit reviewer model audit", () => {
         finalInput: { command: "echo reviewed" }, executionCwd: directory,
         allowedDirectories: [directory], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
       }, undefined, { lane: "foreground-auto" });
-      expect(result).toMatchObject({ outcome: "fresh", verdict: { level: "low" }, judge: { decision: "allow", applied: true } });
+      expect(result).toMatchObject(mode === "llm"
+        ? { outcome: "fresh", verdict: { level: "low" }, judge: { decision: "allow", applied: true } }
+        : { outcome: "unavailable", verdict: { level: "high" }, judge: { decision: "ask", applied: true, source: "fallback", fallback: "unavailable" } });
       const records = readFileSync(audit.getPermissionAuditLogFile(), "utf8").trim().split("\n").map((line) => JSON.parse(line));
       expect(records).toHaveLength(1);
       expect(records[0].judgeRecord).toMatchObject({
-        mode: "active", applied: true, decision: "allow",
+        mode: "active", applied: true, decision: mode === "llm" ? "allow" : "ask",
         stages: [{ provider: "builtin-llm", model: mode === "llm" ? "openai/selected-reviewer-model" : null }],
       });
     });

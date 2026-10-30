@@ -9,9 +9,7 @@ import type { ApprovalRequest } from "../../types.js";
 
 /** The reviewer suggestion is offered where the user is already deciding, so it is answerable in the same place and the
  * same gesture as the ask itself. */
-function approvalRequest(
-  parentEscalation?: ApprovalRequest["parentEscalation"],
-): ApprovalRequest {
+function approvalRequest(): ApprovalRequest {
   return {
     id: "req-1",
     category: "tool",
@@ -26,7 +24,6 @@ function approvalRequest(
     requireExplicit: true,
     trustOrigin: "llm-tool-arg",
     reviewerVerdict: { level: "medium", reason: "shell command" },
-    ...(parentEscalation ? { parentEscalation } : {}),
   };
 }
 
@@ -131,27 +128,6 @@ describe("ToolApprovalContent reviewer-suggestion band", () => {
     expect(screen.getByTestId("approval-impact-summary")).toBeTruthy();
   });
 
-  it("takes second place to the escalation band that accounts for this ask", () => {
-    // Request context the user needs in order to decide comes before standing advice they may ignore.
-    render(
-      <ToolApprovalContent
-        conversationLabel="conversation"
-        open
-        request={approvalRequest({
-          cause: "parent-escalated",
-          reason: "I cannot tell whether this path belongs to the task",
-          childTitle: "report writer",
-        })}
-        onDecide={vi.fn()}
-        reviewerSuggestion={suggestion()}
-      />,
-    );
-    const escalation = screen.getByTestId("parent-escalation-band");
-    const reviewer = screen.getByTestId("reviewer-suggestion-band");
-    expect(
-      escalation.compareDocumentPosition(reviewer) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
 
   it("draws nothing when the window is holding no suggestion", () => {
     renderApproval(approvalRequest(), vi.fn());

@@ -2,7 +2,7 @@ import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSyn
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { settingsFilePath } from "../data/settings-store.js";
-import { aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { permissionSettingsPath } from "./permission-settings-store.js";
 import { egressGrantFilePath } from "./egress-grants.js";
@@ -850,6 +850,8 @@ export function buildMandatorySandboxWritePolicy(
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
       SANDBOX_PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
+    // The configuration directory is a control boundary, including future files.
+    join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),
     userApprovalFilePath(),
     egressGrantFilePath(),

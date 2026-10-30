@@ -1,3 +1,14 @@
+import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { HookRunner } from "../../hooks/hook-runner.js";
+import { createTestRequestAnchor } from "../pipeline/__tests__/rationale-fixtures.js";
+import { RationaleHostCoordinator } from "../pipeline/rationale-host-coordinator.js";
+import { InProcessRationaleTicketStore } from "../pipeline/rationale-ticket-store.js";
+import { InMemoryHostAnchorRoundCasStore } from "../pipeline/rationale-control.js";
+import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticket-lifecycle.js";
+import { captureRationalePolicySnapshot } from "../pipeline/rationale-policy-epoch.js";
+import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
+import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -228,5 +239,114 @@ it.each(["plugin", "mcp"] as const)("does not accept forged %s sandbox metadata 
   const [result] = await invoke(executor, `forged-${source}`, "remote_probe", {});
   expect(result).toMatchObject({ is_error: true, content: "untrusted failure" });
   expect(execute).toHaveBeenCalledOnce();
+  expect(requestAndWait).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("offers model choice for an auto host request before any host effect (headless=%s)", async (headless) => {
+  const permission = manager(); permission.setMode("auto");
+  const classify = vi.fn(() => ({ level: "high" as const, reason: "The host command needs explicit grounds" }));
+  setReviewerForTest(permission, {
+    classifier: { classify }, cache: reviewResources.makeVerdictCache(join(directory, "host-choice-cache.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(directory, "host-choice-denied.jsonl")),
+  });
+  const native = new BashTool();
+  const execute = vi.spyOn(native, "execute");
+  const registry = new ToolRegistry(); registry.register(native);
+  const requestAndWait = vi.fn();
+  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never, undefined, recordedAudit().logger);
+  const { runtime, materialize } = createRationaleHostRuntime();
+  const outcome = await executor.executeConversationBatch([
+    { id: "host-choice", name: "bash", input: { command: "mkdir ordinary", executionMode: "host", justification: "Create the requested directory" } },
+  ], { executionCwd: directory, sessionId: runtime.requestAnchor.sessionId,
+    permissionContext: userPermissionContext({ headless, trustOrigin: "llm-tool-arg" }), rationaleRuntime: runtime });
+  expect(outcome.outcome).toBe("rationale-required");
+  if (outcome.outcome !== "rationale-required") throw new Error("Expected a sealed model choice for the host request");
+  expect(outcome.control.control.sealedAction.finalInput).toMatchObject({ command: "mkdir ordinary", executionMode: "host" });
+  expect(classify).toHaveBeenCalledOnce();
+  expect(materialize).toHaveBeenCalledOnce();
+  expect(execute).not.toHaveBeenCalled();
+  expect(requestAndWait).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("offers model choice after a sandbox refusal in auto before any host retry (headless=%s)", async (headless) => {
+  const permission = manager(); permission.setMode("auto");
+  const classify = vi.fn(() => ({ level: "high" as const, reason: "The retry needs explicit grounds" }));
+  setReviewerForTest(permission, {
+    classifier: { classify }, cache: reviewResources.makeVerdictCache(join(directory, "escalation-choice-cache.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(directory, "escalation-choice-denied.jsonl")),
+  });
+  const native = new BashTool();
+  const execute = vi.spyOn(native, "execute").mockImplementation(async (raw, context) => {
+    expect((raw as Record<string, unknown>).executionMode).not.toBe("host");
+    return blockedResult("mkdir ordinary", context.cwd);
+  });
+  const registry = new ToolRegistry(); registry.register(native);
+  const requestAndWait = vi.fn();
+  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never, undefined, recordedAudit().logger);
+  const { runtime, materialize } = createRationaleHostRuntime();
+  const outcome = await executor.executeConversationBatch([
+    { id: "escalation-choice", name: "bash", input: { command: "mkdir ordinary" } },
+  ], { executionCwd: directory, sessionId: runtime.requestAnchor.sessionId,
+    permissionContext: userPermissionContext({ headless, trustOrigin: "llm-tool-arg" }), rationaleRuntime: runtime });
+  expect(outcome.outcome).toBe("rationale-required");
+  if (outcome.outcome !== "rationale-required") throw new Error("Expected a sealed model choice for the sandbox retry");
+  expect(outcome.control.control.sealedAction).toMatchObject({ toolUseId: "escalation-choice", finalInput: { command: "mkdir ordinary", executionMode: "host" } });
+  expect(classify).toHaveBeenCalledOnce();
+  expect(materialize).toHaveBeenCalledOnce();
+  expect(execute).toHaveBeenCalledOnce();
+  expect(requestAndWait).not.toHaveBeenCalled();
+});
+
+it("runs one real safe host effect after primary high and one verified-quote low review", async () => {
+  setProcessPlatform(originalPlatform);
+  __resetShellResolverCache();
+  setShellSandboxRequestedAtBoot(false);
+  setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: originalPlatform, reason: "The explicit host request uses the actual native host", confines: { filesystem: false, process: false, network: false } });
+  const actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  processProbe.execFileSync.mockImplementation(actualChildProcess.execFileSync);
+  const permission = manager(); permission.setMode("auto");
+  const classify = vi.fn(() => ({ level: "high" as const, reason: "The host write requires grounded approval" }));
+  setReviewerForTest(permission, {
+    classifier: { classify }, cache: reviewResources.makeVerdictCache(join(directory, "real-host-cache.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(directory, "real-host-denied.jsonl")),
+  });
+  const native = new BashTool();
+  const execute = vi.spyOn(native, "execute");
+  const registry = new ToolRegistry(); registry.register(native);
+  const requestAndWait = vi.fn(async () => { throw new Error("Unexpected human approval before model choice"); });
+  const gate = { requestAndWait } as unknown as ApprovalGate;
+  const hookRunner = new HookRunner();
+  const scopeComplete = vi.fn(async () => ({ text: JSON.stringify({ level: "low", reason: "The exact local result file was requested", scopeAlignment: "aligned", scopeReasons: ["The target and command match the original user request"] }), tokensIn: 1, tokensOut: 1, costUsd: 0 }));
+  const request = "Create the approved host-result file.";
+  const anchor = createTestRequestAnchor({ sessionId: randomUUID(), rawIntent: request });
+  const policy = () => captureRationalePolicySnapshot({ permissionManager: permission, hookRunner, additionalDirectories: [] });
+  const coordinator = new RationaleHostCoordinator({
+    requestAnchor: anchor, userRoleTexts: [request], rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
+    ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+    rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: scopeComplete }, "fixture-reviewer"),
+    approvalGate: gate, getRationalePolicyEpoch: () => policy().epoch, getRationalePolicySnapshot: policy,
+    getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "controlled-host",
+    anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
+    onInvocationAudit: () => {}, onProjectionAudit: () => {},
+    onReviewerChoiceResolved: (session, identity, decision) => permission.resolveReviewerChoice(session, identity, decision),
+  });
+  const executor = new ToolExecutor(registry, hookRunner, permission, undefined, gate, undefined, recordedAudit().logger);
+  const options = { sessionId: anchor.sessionId, executionCwd: directory, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [] }) };
+  const initial = await executor.executeConversationBatch([{ id: "real-host-effect", name: "bash", input: { command: "printf approved > host-result.txt", executionMode: "host", justification: "Create the approved local file" } }], { ...options, rationaleRuntime: coordinator });
+  expect(initial.outcome, initial.outcome === "completed" ? JSON.stringify(initial.results.map(result => ({ is_error: result.is_error, content: result.content.slice(0, 240) }))) : undefined).toBe("rationale-required");
+  if (initial.outcome !== "rationale-required") throw new Error("Expected model choice before a real host effect");
+  expect(execute).not.toHaveBeenCalled();
+  const control = initial.control.control;
+  const round = await coordinator.handleRationaleRoundResult({ ticketId: control.ticketId, result: { kind: "calls", calls: [{ id: "host-rationale", name: "permission_rationale", input: { contractVersion: 1, anchorId: control.anchor.anchorId, ticketId: control.ticketId, actionDigest: control.action.actionDigest, round: 1, choice: "resubmit", rationale: "Create the exact requested local result file", userQuote: request } }] } });
+  expect(round).toMatchObject({ autoApproved: true, reevaluation: { outcome: "fresh", reevaluatedVerdict: { level: "low" } } });
+  const sealed = await coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: control.eligibilityContext });
+  if (!sealed) throw new Error("Expected authentic low-review host continuation");
+  const result = await executor.executeSealedRationaleResume(sealed.resumeRequest, { ...options, rationaleResumeRuntime: coordinator });
+  expect(result.is_error, result.content).not.toBe(true);
+  expect(await readFile(join(directory, "host-result.txt"), "utf8")).toBe("approved");
+  expect(execute).toHaveBeenCalledOnce();
+  expect(execute.mock.calls[0]?.[1].hostShellExecutionPermit).toBeDefined();
+  expect(classify).toHaveBeenCalledOnce();
+  expect(scopeComplete).toHaveBeenCalledOnce();
   expect(requestAndWait).not.toHaveBeenCalled();
 });

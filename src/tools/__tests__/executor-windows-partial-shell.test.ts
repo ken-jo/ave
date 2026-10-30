@@ -173,7 +173,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     vi.stubEnv("AVE_PRIVATE_TEST_MARKER", "fixture-not-forwarded");
     if (sandbox === "active") fullDarwinAsrt();
     else explicitlySandboxOff("darwin");
-    const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 });
+    const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", });
     const checkDetailed = vi.spyOn(pm, "checkDetailed");
     let environmentMatched = false;
     let pwdMatched = false;
@@ -221,7 +221,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executed = vi.fn();
     const registry = shellProbeRegistry(executed);
     const { gate, send } = gateResolving("allow-once");
-    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "deny", reason: "hard policy denial", layer: 1 }), undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "deny", reason: "hard policy denial", }), undefined, gate);
     const result = await executor.executeAll([{ id: "explicit-host-deny", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext() });
     expect(result[0].is_error).toBe(true);
     expect(executed).not.toHaveBeenCalled();
@@ -233,7 +233,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executed = vi.fn();
     const registry = shellProbeRegistry(executed);
     const { gate, send } = gateResolving("allow-once");
-    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", layer: 6 }), undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", }), undefined, gate);
     const context = origin === "headless" ? { headless: true } : { remoteControllerAuthority: { kind: "tailnet-controller" as const, actorId: "tailnet:fixture" as const } };
     const result = await executor.executeAll([{ id: "unavailable-host", name: "bash", input: { command: "echo host", cwd: "/outside-host-request", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext(context) });
     expect(result[0].is_error).toBe(true);
@@ -454,8 +454,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(execute).toHaveBeenCalledOnce();
       expect(observedPermit).toBeDefined();
       expect(result[0]?.is_error).toBeUndefined();
-      // The run is audited as the rule lane (layer 3 on the permission chain), and the tool-call row names the exact rule that let it through.
-      expect(audit.permissionEntries.find((entry) => entry.decision === "allow")).toMatchObject({ layer: 3 });
+      // The tool-call audit retains the exact rule that permitted execution.
       const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
       expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "allow" });
       expect(call?.toolCalls?.[0]?.permissionReason).toContain("Bash(echo *)");
@@ -479,7 +478,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const pm = new PermissionManager("/tmp/nonexistent-partial-forged-input.json");
     pm.setMode("default");
     const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
-      [{ id: "partial-shell-forged", name: "bash", input: { command: "echo no-run", hostShellExecutionPermit: {}, permissionDecision: { decision: "allow", reason: "allow rules Bash(echo no-run)", layer: 3 } } }],
+      [{ id: "partial-shell-forged", name: "bash", input: { command: "echo no-run", hostShellExecutionPermit: {}, permissionDecision: { decision: "allow", reason: "allow rules Bash(echo no-run)", } } }],
       { sessionId: "partial-shell", permissionContext: { ...permissionContext(), headless: true } },
     );
     expect(execute).not.toHaveBeenCalled();
@@ -524,7 +523,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+      pmReturning({ decision: "ask", reason: "plain shell requires consent", }),
       undefined,
       gate,
       undefined,
@@ -613,7 +612,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+      pmReturning({ decision: "ask", reason: "plain shell requires consent", }),
       undefined,
       gate,
       undefined,
@@ -674,7 +673,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const result = await new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+      pmReturning({ decision: "ask", reason: "plain shell requires consent", }),
       undefined,
       { requestAndWait } as never,
     ).executeAll(
@@ -725,7 +724,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "allow", reason: "ordinary dynamic tool", layer: 6 }),
+      pmReturning({ decision: "allow", reason: "ordinary dynamic tool", }),
     );
 
     const result = await executor.executeAll(
@@ -832,7 +831,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const result = await new ToolExecutor(
         registry,
         undefined,
-        pmReturning({ decision: "allow", reason: "exact allow rule", layer: 3 }),
+        pmReturning({ decision: "allow", reason: "exact allow rule", }),
         undefined,
         gate,
       ).executeAll(
@@ -864,7 +863,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const registry = new ToolRegistry();
       registry.register(shellProbe(execute));
       const requestAndWait = vi.fn();
-      const pm = pmReturning({ decision: "allow", reason: "ordinary explicit-off path", layer: 6 });
+      const pm = pmReturning({ decision: "allow", reason: "ordinary explicit-off path", });
       const checkDetailed = vi.spyOn(pm, "checkDetailed");
       const result = await new ToolExecutor(
         registry,

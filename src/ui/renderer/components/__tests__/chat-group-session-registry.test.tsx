@@ -218,7 +218,7 @@ const approval = (id: string, overrides: Partial<ApprovalRequest> = {}): Approva
   toolName: "bash",
   args: {},
   category: "shell",
-  kind: "rationale",
+  kind: "tool",
   ...overrides,
 } as ApprovalRequest);
 

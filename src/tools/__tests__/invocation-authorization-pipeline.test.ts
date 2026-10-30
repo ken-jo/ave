@@ -53,7 +53,7 @@ function fixture(options: {
     evaluationContext: {} as AuthorizationStageContext["evaluationContext"], callbacks: undefined,
     meta: { groupId: "pipeline", toolUseId: "inspect", displayOrder: 0 }, approvalPurpose: undefined, auditInput: {}, abortSignal: undefined,
     rationaleResumeContext: undefined, rationaleBatchContext: undefined,
-    targetFilePaths: [], targetFilePath: undefined, canonicalTargets: [], approvalCacheKey: undefined,
+    targetFilePath: undefined, canonicalTargets: [], approvalCacheKey: undefined,
     executionCwd: directory, auditCurrentToolCall: vi.fn(), auditCurrentPermissionAsk: vi.fn(),
     withHostShellExecutionPlan: (result) => result,
     abortDeps: vi.fn(), returnRationaleResumeBlock: vi.fn(), sessionId: "pipeline", startTime: Date.now(),
@@ -124,7 +124,7 @@ describe("invocation permission pipeline orchestration", () => {
 
   it("carries an exact directory authorization without a second policy check or card", async () => {
     const { context, manager, requestAndWait, memorySkip } = fixture({ category: "write", mode: "strict" });
-    const permission = { decision: "allow" as const, reason: "user approved the exact outside write", layer: 6 };
+    const permission = { decision: "allow" as const, reason: "user approved the exact outside write", };
     context.directoryAuthorization = { permission, humanApproved: true };
     const check = vi.spyOn(manager, "checkDetailed");
     const result = await authorizeToolInvocation(context);
@@ -137,7 +137,7 @@ describe("invocation permission pipeline orchestration", () => {
 
   it("refuses to use directory authorization for a sealed rationale resume", async () => {
     const { context, requestAndWait } = fixture({ category: "write", mode: "strict" });
-    context.directoryAuthorization = { permission: { decision: "allow", reason: "approved exact write", layer: 6 }, humanApproved: true };
+    context.directoryAuthorization = { permission: { decision: "allow", reason: "approved exact write", }, humanApproved: true };
     context.rationaleResumeContext = {} as NonNullable<typeof context.rationaleResumeContext>;
     const blocked = { tool_use_id: "inspect", content: "resume blocked", is_error: true, durationMs: 0 };
     const refuseResume = vi.fn(async () => blocked);

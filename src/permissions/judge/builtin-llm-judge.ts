@@ -30,7 +30,7 @@ export function assertRiskClassificationTrace(trace: LlmRiskClassificationTrace)
   }
 }
 
-// Adapt rule/disabled/strict reviewer modes at the provider boundary. The manager
+// Adapt classifier traces at the provider boundary. The manager
 // consumes traces without knowing which classifier produced them.
 export function traceRiskClassifier(classifier: RiskClassifier): TracingRiskClassifier {
   return {

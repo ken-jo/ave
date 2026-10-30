@@ -167,7 +167,7 @@ export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "re
  * would need a trusted-chrome approval surface (main-process-drawn prompt plus
  * native input proof), which is out of scope for this PR.
  * User-driven attachment may transfer delivery ownership. Host-only provenance,
- * remote origin and parent adjudication remain host-authored; registration never
+ * remote origin remain host-authored; registration never
  * supplies the signed native card answer required to resume paused automation.
  */
 export function updateApprovalSurface(update: ApprovalSurfaceUpdate): void {

@@ -6,7 +6,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createPermissionPathEvidence, criticalDeleteTargetFor, isAdmissionDeniedPath, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { evaluateScopedRules } from "../rules/scoped-rule-matcher.js";
 import { inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
-import { inspectShellPermissionPaths } from "../../tools/shell-path-policy.js";
+import { inspectShellPermissionPaths } from "../rules/literal-shell-inspection.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { PermissionManager } from "../permission-manager.js";

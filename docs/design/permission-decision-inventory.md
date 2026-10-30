@@ -4,7 +4,7 @@ Snapshot: `e7c46b48c60df3ed632d4250fc2947e61d8656d1`, clean `feat/permission-pip
 
 Understood as: inventory the current main implementation and map every tool authorization decision to the approved ordered pipeline; stop before refactoring until the lead (the task requester or coordinating owner) confirms the prerequisite write-policy change is on main.
 
-The approved input is the supplied workspace artifact `/private/tmp/cx-perm-v4/permission-trees.html`, section 4, read together with the owner's task brief in the coordinating conversation. Those inputs must accompany this snapshot at handoff; this inventory does not replace their full policy definitions. Repository policy context: [Tool Governance](../architecture/architecture.md#tool-governance), [Security And Audit](../architecture/architecture.md#security-and-audit), and [Permission Policy Design](../architecture/permission-policy-design.md). The repository copy of this inventory lives in `docs/design/permission-decision-inventory.md`; the requested workspace `INVENTORY.md` is a delivery copy with identical bytes. Relative links resolve from the repository copy.
+The current binding policy is the [permission decision tree](../architecture/permission-decision-tree.md), including the approved mode and model-choice changes. The baseline inventory input was the supplied workspace artifact `/private/tmp/cx-perm-v4/permission-trees.html`, section 4, read together with the owner's task brief in the coordinating conversation. Those inputs must accompany this snapshot at handoff; this inventory does not replace their full policy definitions. Repository policy context: [Tool Governance](../architecture/architecture.md#tool-governance), [Security And Audit](../architecture/architecture.md#security-and-audit), and [Permission Policy Design](../architecture/permission-policy-design.md). The repository copy of this inventory lives in `docs/design/permission-decision-inventory.md`; the requested workspace `INVENTORY.md` is a delivery copy with identical bytes. Relative links resolve from the repository copy.
 
 ## Stage legend and scope
 
@@ -321,14 +321,14 @@ All 97 original sites map to the central decision owner or an explicit retained 
 | D06 | `src/tools/invocation-authorization.ts:470` | S6 reviewer orchestration consumes evidence through manager, not caller mode mapping. | [Auth][inventory-auth] |
 | D07 | `src/tools/invocation-authorization.ts:463` | S3 remembered authority redecides exact minted evidence; fresh manual rerun skips lookup. | [Auth][inventory-auth] |
 | D08 | `src/tools/invocation-runner.ts:420` | S5 no-approver denial captured once as history; no deferred approval result. | [History][inventory-history] |
-| D09 | `src/tools/invocation-authorization.ts:221` | S1/S7 sealed rationale checks remain; consumed directory result cannot resume a different sealed action. | [Auth][inventory-auth] |
+| D09 | `src/tools/invocation-authorization.ts:221` | S1/S6/S7 sealed per-request model choices and ordinary-card re-entry; exact user-role session quotes, one re-review, native same-card grant transitions and fresh resume identity preserve authority. A consumed directory result cannot resume a different sealed action. | [Auth][inventory-auth] |
 | D10 | `src/tools/invocation-authorization.ts:1098` | S7 selected central decision renders native card; forced other-principal requests skip reviewer/memory. | [Auth][inventory-auth] |
 | D11 | `src/tools/invocation-authorization.ts:899` | S7/E policy-epoch race rejects card authority; exact permit retains identity; human consent does not reopen turn breaker. | [Auth][inventory-auth] |
 | F01 | `src/permissions/rules/scoped-rule-matcher.ts:73` | S1 contract violations deny; S2 project escapes carry the project-escape floor. S3 all-target deny/ask and allow coverage remain evidence; a malformed target never becomes an approvable protected-path card. | [Rules][inventory-rules] |
 | F02 | `src/permissions/allowed-directories.ts:6` | S4/S7/E roots/grant sanitization rejects host admission paths; ordinary secrets are not blanket ungrantable. | [Paths][inventory-paths] |
 | F03 | `src/permissions/sensitive-paths.ts:554` | S1 credential and process-ownership subset, S2 exact protected-control mutations/escape, S4 ordinary reads and secrets separated. Decision-local matchers share policy roots per effect, retain every distinct lexical/canonical operand and refresh roots on each new decision. Native confinement projection remains E; trusted shell block escalation re-enters policy without changing worker grants. | [Native][inventory-native] |
 | F04 | `src/permissions/rules/powershell-exfiltration.ts:1139`; `src/tools/shell-path-policy.ts:1245`, `:1758` | S2/S4 separate dialect path/delete/credential evidence, including implicit repository mutations from one shared table, unresolved write targets, literal call targets and commands after background separators. Evidence collection preserves original rule proof; background execution remains unproven. Direct recognized exfil stays forced; unresolved write operands supply a possibly protected mutation, while opaque program text and read operands do not invent another forced floor. Only actual host-prepared environment evidence can prove the bounded target-expansion exception. | [Risk][inventory-risk] |
-| F05 | `src/permissions/reviewer/risk-classifier.ts:1903` | S6 classifier remains risk evidence. Framework v4 removes obsolete configuration routing prose. Typed risk-floor suite passes 449 cases, separating recognized direct effects from opaque unproven payloads. | [Risk][inventory-risk] |
+| F05 | `src/permissions/reviewer/risk-classifier.ts:1903` | S6 risk evidence remains. Public reviewer modes are only llm/disabled; retired stored modes fail clearly. Parsed literal executable upload bodies retain the exfil floor, including guest execution; ordinary opaque code alone does not. | [Risk][inventory-risk] |
 | F06 | `src/permissions/user-approval-store.ts:353` | S1/S3/S7 exact source/trust/cwd scope and deny persistence retained; forced/manual rerun cannot reuse grant. | [History][inventory-history] |
 | G01 | `src/tools/invocation-runner.ts:929` | S1 script PreToolUse moved before permission/cards; target hook exit2 regression exercises zero cards/effects. | [Native][inventory-native] |
 | G02 | `src/tools/invocation-execution.ts:15` | S1/E audit integrity/rate budget retained before handler; no approval repairs unwritable required audit. | [Executor][inventory-executor] |
@@ -422,7 +422,7 @@ Physical user PTY typing remains O. Agent `terminal_run` remains an agent tool c
 
 ## Decision-owner branch accounting
 
-The measurement uses syntax-tree counts of `IfStatement`, `ConditionalExpression` and `SwitchCase`, including nested statements, over ten complete unique legacy decision-owner functions at baseline `89acbc0d0`. The legacy sum is **732** (379 if statements, 339 conditional expressions and 14 switch cases). The current `src/permissions/decision-pipeline.ts` module contains **34** (30 if statements, 4 conditional expressions and no switch cases). These are AST branch-node counts, not diagram nodes or cyclomatic-complexity scores.
+The measurement uses syntax-tree counts of `IfStatement`, `ConditionalExpression` and `SwitchCase`, including nested statements, over ten complete unique legacy decision-owner functions at baseline `89acbc0d0`. The legacy sum is **732** (379 if statements, 339 conditional expressions and 14 switch cases). The current `src/permissions/decision-pipeline.ts` module contains **35** (31 if statements, 4 conditional expressions and no switch cases). These are AST branch-node counts, not diagram nodes or cyclomatic-complexity scores.
 
 | Baseline file | Complete function | Baseline lines | If | Conditional | Switch case | Total |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -438,6 +438,19 @@ The measurement uses syntax-tree counts of `IfStatement`, `ConditionalExpression
 | `src/tools/pipeline/reviewer-dispatch.ts` | `resolveDispatchedJudge` | 34–62 | 3 | 9 | 0 | 12 |
 
 The old functions include admission, effect binding, transport and orchestration guards as well as permission choices; the new count covers the decision-owner module alone. Evidence collection, audit, execution checks and orchestration remain outside that module. The figures therefore describe concentration of decision ownership and are not an equivalent whole-system before/after reduction or proof that the difference represents removed safety checks. The original 97-site table and 13 native-terminal additions account for retained E/O boundaries separately.
+
+## Current evidence and handoff modules
+
+These are subdivisions of already mapped regions, not additional permission decision owners. The original 117-region reconciliation remains unchanged.
+
+| Source | Existing region / stage | Responsibility |
+| --- | --- | --- |
+| `src/permissions/rules/literal-shell-inspection.ts:11` | B02 / F04, S1–S4 evidence | Own the acyclic cross-dialect traversal wiring used by both mandatory screens. |
+| `src/shared/shell-literal-bodies.ts:19` | F04, S2 evidence | Select the same parser-proven executable literals for protected-write and exfil screening; retain typed read/network flow and cumulative bounds. Printed data and opaque programs are not executable proof. |
+| `src/shared/shell-sed-arguments.ts:10`; `src/shared/shell-option-value.ts:1` | B02 / F04 | Reuse existing argument roles and literal execution bindings; no second parser or mode matrix. |
+| `src/engine/conversation-history.ts:86`; `src/engine/turn/run-turn.ts`; `src/engine/turn/query-loop.ts` | J01 / D09, S2/S6 evidence | Only private, session-bound original native user text can substantiate a citation; synthetic/restored roles and attachment/prompt augmentation carry no user authority. |
+| `src/tools/pipeline/rationale-policy-epoch.ts:76` | D09 / I01, S1/E | Authenticate only the exact card's actual consent mutation; unrelated policy or target changes invalidate resumption. |
+| `src/tools/pipeline/rationale-host-coordinator.ts`; `src/tools/pipeline/rationale-control.ts` | D09, S6/S7 | HIGH offers accept/resubmit/ask_user per request. Deny/floors, reviewer error and breaker do not enter this choice. Resubmission uses a verified user quote and host facts; normal card scopes re-enter existing approval handling. |
 
 ## Shared user-owned surface additions
 

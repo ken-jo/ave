@@ -103,7 +103,6 @@ export class AuditWriter {
       directoryAllowed: true,
       ...(args.grantLifetime !== undefined ? { grantLifetime: args.grantLifetime } : {}),
       ...(args.policyRule !== undefined ? { policyRule: args.policyRule } : {}),
-      layer: 1,
       ...(args.audit?.toolUseId !== undefined ? { toolUseId: args.audit.toolUseId } : {}),
       ...(args.audit?.executionPlan !== undefined ? { executionPlan: args.audit.executionPlan } : {}),
       ...(args.audit?.executionRoute !== undefined ? { executionRoute: args.audit.executionRoute } : {}),
@@ -210,7 +209,7 @@ export class AuditWriter {
         permissionContext,
         {
           toolName,
-          denyReason: { layer: permission.layer, source: "tool-executor", reason: permission.reason },
+          denyReason: { source: "tool-executor", reason: permission.reason },
         },
       );
     }

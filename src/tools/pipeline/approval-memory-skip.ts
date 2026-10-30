@@ -273,6 +273,5 @@ export async function tryUserApprovalMemorySkip(
   return {
     decision: "allow",
     reason: `prior user approval (scope=${approval.scope})`,
-    layer: 5,
-  };
+    };
 }

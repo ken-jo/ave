@@ -36,7 +36,7 @@ import { PermissionRulesFileCorruptError, validatePermissionRule } from "../rule
 import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
-import { inspectShellCommand, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { inspectShellCommand, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
   captureApprovalWorkingDirectory,
@@ -198,7 +198,7 @@ describe("decision path", () => {
     await restarted.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
     const proven = new PermissionManager(permissionsFile);
     await proven.loadRulesFromFile();
-    expect(proven.checkDetailed("bash", "builtin", "shell", null, shell("printf ready"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(proven.checkDetailed("bash", "builtin", "shell", null, shell("printf ready"))).toMatchObject({ decision: "allow" });
     expect(restarted.checkDetailed("bash", "builtin", "shell", null, shell("git push"))).toMatchObject({ decision: "ask" });
     // No subject → the specifier never matches the tool name.
     expect(restarted.checkDetailed("bash", "builtin", "shell")).toMatchObject({ decision: "ask" });
@@ -222,7 +222,7 @@ describe("decision path", () => {
     await pm.addRulePersist({ pattern: "Bash(git log origin/main)", action: "ask" }, { kind: "project", projectCwd: project });
     await pm.ensureProjectRulesLoaded(project);
     const ctx = (command: string) => ({ ...shell(command), projectRulesCwd: project });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log --all x"))).toMatchObject({ decision: "deny", layer: 1 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log --all x"))).toMatchObject({ decision: "deny" });
     const ask = pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"));
     expect(ask).toMatchObject({ decision: "ask", reasonCode: "rule-ask" });
     expect(ask.forceModal).toBeUndefined();

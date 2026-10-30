@@ -29,7 +29,7 @@ export function approvalFailureOutcome(
       decision: "deny",
       reason,
       // Denial audit must record why approval ended, not merely why it was requested.
-      denyReasons: [{ layer: permission.layer, source: "approval-gate", reason }],
+      denyReasons: [{ source: "approval-gate", reason }],
     },
   };
 }

@@ -50,7 +50,7 @@ function askingExecutor(toolName: string) {
   const originalCheck = permMgr.checkDetailed.bind(permMgr);
   permMgr.checkDetailed = (name: string, src, cat) =>
     name === toolName
-      ? { decision: "ask", reason: "structural-deny ordering test", layer: 5 }
+      ? { decision: "ask", reason: "structural-deny ordering test", }
       : originalCheck(name, src, cat);
 
   const wc = makeMockWebContents();

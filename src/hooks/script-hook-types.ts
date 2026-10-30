@@ -74,8 +74,8 @@ export interface LifecycleEventPayload {
   errorMessage?: string;
   // PostToolUseFailure / Stop — wall-clock duration in ms.
   durationMs?: number;
-  // PermissionDenied — why + where the deny was finalized (reason restores forensic granularity beyond the coarse layer/source).
-  denyReason?: { layer: number | undefined; source: string; reason?: string };
+  // PermissionDenied — why + where the deny was finalized (the reason identifies the finalized policy cause).
+  denyReason?: { source: string; reason?: string };
   // SessionStart — non-secret session metadata (routine scope / persona).
   sessionMeta?: Record<string, unknown>;
   // Stop — terminal stop reason for the turn.

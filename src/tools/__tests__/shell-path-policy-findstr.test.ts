@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectShellPermissionPaths } from "../shell-path-policy.js";
+import { inspectShellPermissionPaths } from "../../permissions/rules/literal-shell-inspection.js";
 
 let project: string;
 beforeEach(() => {

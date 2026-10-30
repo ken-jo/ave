@@ -124,7 +124,7 @@ describe("child invocation permission authority", () => {
     expect(current.memory).not.toHaveBeenCalled();
     expect(current.cards).toHaveLength(1);
     expect(current.request.mock.calls[0]?.[0]).toMatchObject({
-      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, isReadOnly: false,
+      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
     });
     expect(current.request.mock.calls[0]?.[0]).not.toHaveProperty("parentAdjudicationEligible");
     expect(current.events.some((event) => event.status.startsWith("parent_"))).toBe(false);

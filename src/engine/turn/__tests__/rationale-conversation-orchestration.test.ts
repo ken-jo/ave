@@ -388,3 +388,17 @@ describe("createTerminalRationaleBatchResults", () => {
     ]);
   });
 });
+
+it.each(["accept", "ask_user"] as const)("tells the model not to retry after a headless %s denial", async (choice) => {
+  const headlessControl = { ...control, eligibilityContext: { ...control.eligibilityContext, headless: true } };
+  const coordinator = makeCoordinator({
+    handleRationaleRoundResult: vi.fn(async () => choice === "accept" ? { modelDenied: true } : { autoApproved: false }),
+    promptForApproval: vi.fn(async () => ({ outcome: "denied" as const })),
+  });
+  const executor = makeExecutor({ batch: { outcome: "rationale-required", completedResults: [],
+    control: { ...executorControl, control: headlessControl } } });
+  const outcome = await invoke({ coordinator, executor }).promise;
+  expect(outcome.results.find((entry) => entry.tool_use_id === "trigger")?.content).toContain("Nobody can approve this request; do not retry.");
+  expect(coordinator.promptForApproval).toHaveBeenCalledTimes(choice === "accept" ? 0 : 1);
+  expect(executor.executeSealedRationaleResume).not.toHaveBeenCalled();
+});

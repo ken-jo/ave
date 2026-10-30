@@ -40,13 +40,6 @@ describe("parsePermissionReviewerCommand", () => {
     });
   });
 
-  it("parses 'mode rule'", () => {
-    expect(parsePermissionReviewerCommand("mode rule")).toEqual({
-      verb: "mode",
-      value: "rule",
-    });
-  });
-
   it("parses 'mode llm'", () => {
     expect(parsePermissionReviewerCommand("mode llm")).toEqual({
       verb: "mode",
@@ -91,7 +84,7 @@ describe("parsePermissionReviewerCommand", () => {
   });
 
   it("rejects 'mode' with too many args", () => {
-    const r = parsePermissionReviewerCommand("mode rule extra");
+    const r = parsePermissionReviewerCommand("mode llm extra");
     expect(r).toEqual({ ok: false, error: expect.stringMatching(/single value/) });
   });
 
@@ -115,11 +108,11 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     }
   });
 
-  it("mode rule persists to settings.json", async () => {
+  it("mode llm persists to settings.json", async () => {
     const path = tmpSettingsPath();
-    await dispatchPermissionReviewerCommand({ verb: "mode", value: "rule" }, path);
+    await dispatchPermissionReviewerCommand({ verb: "mode", value: "llm" }, path);
     const settings = readPermissionSettings(path);
-    expect(settings.permissions.reviewer.mode).toBe("rule");
+    expect(settings.permissions.reviewer.mode).toBe("llm");
   });
 
   it("ignores retired reviewer fields without rewriting until an ordinary settings change", async () => {
@@ -146,10 +139,10 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     expect(loaded).not.toHaveProperty("provider");
     expect(loaded).not.toHaveProperty("model");
 
-    const result = await dispatchPermissionReviewerCommand({ verb: "mode", value: "rule" }, path);
+    const result = await dispatchPermissionReviewerCommand({ verb: "mode", value: "llm" }, path);
     expect(result.ok).toBe(true);
     const saved = JSON.parse(readFileSync(path, "utf-8")).permissions.reviewer;
-    expect(saved).toMatchObject({ mode: "rule", fallbackOnError: "rule" });
+    expect(saved).toMatchObject({ mode: "llm", fallbackOnError: "rule" });
     expect(saved).not.toHaveProperty("interactive");
     expect(saved).not.toHaveProperty("provider");
     expect(saved).not.toHaveProperty("model");
@@ -158,16 +151,16 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
   it("rejects a reviewer patch that names the removed provider/model keys", async () => {
     const path = tmpSettingsPath();
     await expect(
-      setReviewerSettingsPersist({ mode: "rule", provider: "openai" } as never, path),
+      setReviewerSettingsPersist({ mode: "llm", provider: "openai" } as never, path),
     ).rejects.toThrow(/unsupported keys: provider.*permissions\.judge\.model/);
     expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("llm");
   });
 
   it("ignores retired parent settings on read and omits them on ordinary write", async () => {
     const path = tmpSettingsPath();
-    const original = JSON.stringify({ untouched: "keep", permissions: { reviewer: { mode: "rule", fallbackOnError: "rule", parentAdjudication: { model: "parent-session", maxVerdict: "medium" } } } });
+    const original = JSON.stringify({ untouched: "keep", permissions: { reviewer: { mode: "llm", fallbackOnError: "rule", parentAdjudication: { model: "parent-session", maxVerdict: "medium" } } } });
     writeFileSync(path, original);
-    expect(readPermissionSettings(path).permissions.reviewer).toMatchObject({ mode: "rule", fallbackOnError: "rule" });
+    expect(readPermissionSettings(path).permissions.reviewer).toMatchObject({ mode: "llm", fallbackOnError: "rule" });
     expect(readPermissionSettings(path).permissions.reviewer).not.toHaveProperty("parentAdjudication");
     expect(readFileSync(path, "utf8")).toBe(original);
     await expect(setReviewerSettingsPersist({ parentAdjudication: { model: "reviewer" } } as never, path)).rejects.toThrow(/unsupported keys: parentAdjudication/);
@@ -178,7 +171,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     await setReviewerSettingsPersist({ fallbackOnError: "deny" }, path);
     const saved = JSON.parse(readFileSync(path, "utf8"));
     expect(saved.untouched).toBe("keep");
-    expect(saved.permissions.reviewer).toMatchObject({ mode: "rule", fallbackOnError: "deny" });
+    expect(saved.permissions.reviewer).toMatchObject({ mode: "llm", fallbackOnError: "deny" });
     expect(saved.permissions.reviewer).not.toHaveProperty("parentAdjudication");
   });
 
@@ -191,7 +184,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
 
   it("rejects an inactive interactive setting patch without changing the file", async () => {
     const path = tmpSettingsPath();
-    await dispatchPermissionReviewerCommand({ verb: "mode", value: "rule" }, path);
+    await dispatchPermissionReviewerCommand({ verb: "mode", value: "llm" }, path);
     const before = readFileSync(path, "utf8");
     await expect(setReviewerSettingsPersist({ interactive: { autoApprove: "low" } } as never, path)).rejects.toThrow(/unsupported keys: interactive/);
     expect(readFileSync(path, "utf8")).toBe(before);
@@ -235,15 +228,15 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
   it("setReviewerSettingsPersist preserves additionalDirectories", async () => {
     const path = tmpSettingsPath();
     await writePermissionSettings({ additionalDirectories: ["/foo"] }, path);
-    await setReviewerSettingsPersist({ mode: "rule" }, path);
+    await setReviewerSettingsPersist({ mode: "llm" }, path);
     const settings = readPermissionSettings(path);
     expect(settings.permissions.additionalDirectories).toEqual(["/foo"]);
-    expect(settings.permissions.reviewer.mode).toBe("rule");
+    expect(settings.permissions.reviewer.mode).toBe("llm");
   });
 
   it("rolls back reviewer settings when runtime rewire fails", async () => {
     const path = tmpSettingsPath();
-    await setReviewerSettingsPersist({ mode: "rule" }, path);
+    await setReviewerSettingsPersist({ mode: "llm" }, path);
     const rewire = vi.fn(() => {
       throw new Error("missing provider");
     });
@@ -258,7 +251,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
       ok: false,
       error: expect.stringContaining("reviewer-rewire-failed"),
     });
-    expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("rule");
+    expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("llm");
     expect(rewire).toHaveBeenCalledTimes(2);
   });
 });
@@ -315,7 +308,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
     const settings = normalizePermissionSettings({
       permissions: {
         reviewer: {
-          mode: "rule",
+          mode: "llm",
           provider: "openai",
           model: "gpt-4o-mini",
           fallbackOnError: "deny",
@@ -323,7 +316,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
-    expect(settings.permissions.reviewer.mode).toBe("rule");
+    expect(settings.permissions.reviewer.mode).toBe("llm");
     expect(settings.permissions.reviewer).not.toHaveProperty("interactive");
   });
 });

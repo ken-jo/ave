@@ -496,8 +496,7 @@ a server id `plugin_<hash>` derived from the package name, version, generation, 
 and fingerprint (and, for stdio, the activation id, so a successor never inherits a
 process rooted in a retired payload); an approval with `allowedCommands: [command]`
 (stdio) or `allowedUrls: [hostname]` (http), `allowedCapabilities: ["tools"]`,
-`maxTools: 64`, `toolPermissionMode: "strict"`, a tool name prefix derived from the
-package. The approval is registered only after the user has approved that exact
+`maxTools: 64`, and a tool name prefix derived from the package. Each projected tool follows the permission decision tree: read-only hints allow; other tools ask on first use with per-tool memory, or enter automatic review in auto mode. The approval is registered only after the user has approved that exact
 fingerprint in the package sheet, recorded in the `mcpServer` trust store whose records
 never transfer across versions (`src/plugins/plugin-contribution-trust.ts:5`, `:21-28`);
 an update re-asks. From 0.13.0 an update re-asks only for a server whose approval digest

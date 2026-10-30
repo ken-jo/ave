@@ -1,3 +1,6 @@
+import { effectiveShellWords } from "../../shared/shell-effective-command.js";
+import { literalWord } from "../../shared/shell-analysis.js";
+import { literalShellBodies, literalShellFlow, recordLiteralShellFlow, type LiteralShellArgument, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 // One bounded parse supplies both exact raw identity and a single static floor pass.
 // Runtime values, generated code, callbacks and file mutation are never simulated.
 import {
@@ -11,7 +14,7 @@ import { literalRuleWord } from "./rule-specifier.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { type ShellCommandInput } from "./shell-prefix-policy.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
-import { inspectLiteralShellArgvFacts, literalNativeBoundary, sensitivePathInArgumentText, sensitivePathInLiteralArgumentText } from "./shell-exfiltration.js";
+import { inspectPosixShellCommand, inspectLiteralShellArgvFacts, literalNativeBoundary, sensitivePathInArgumentText, sensitivePathInLiteralArgumentText } from "./shell-exfiltration.js";
 import type { VerifiedArgvResolver } from "./verified-argv-authority.js";
 import { proveStaticArgv, type StaticArgvProof } from "./shell-argument-grammar.js";
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
@@ -29,7 +32,7 @@ import {
 import { createPermissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
 import { modelShellPath } from "../../shared/shell-native-path.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
-import { inspectImplicitGitWriteTargets, inspectShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
+import { inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { homedir } from "node:os";
 
@@ -1000,7 +1003,38 @@ export function proveLiteralPowerShell(input: PowerShellCommandInput): { proven:
   return { proven: true, commands: shape.commands as readonly (readonly string[])[] };
 }
 
-function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined): ShellFloorSignals {
+function literalStageBodies(stage: StaticStage) {
+  const call = stage.command.tokens[0]?.raw === "&";
+  stage = permissionEffectStage(stage);
+  if (!call && stage.command.tokens[0]?.kind === "word" && stage.command.tokens[0].quoted) return [];
+  const argument = (token: PsToken): LiteralShellArgument => {
+    if (token.kind === "word") return token.raw === "," ? "," : literalWordValue(token);
+    if (token.open !== "@(" || token.body.length !== 1) return undefined;
+    const pipeline = token.body[0]!;
+    if (pipeline.assign.length || pipeline.stages.length !== 1) return undefined;
+    const values: string[] = [];
+    for (const [index, element] of pipeline.stages[0]!.tokens.entries()) {
+      const value = element.kind === "word" && element.raw === "," ? "," : literalWordValue(element);
+      if (value === undefined || (index % 2 === 1 ? value !== "," : value === ",")) return undefined;
+      if (index % 2 === 0) values.push(value);
+    }
+    return values;
+  };
+  const argv = stage.command.tokens.map(argument);
+  if (argv.every((value): value is string => typeof value === "string")) {
+    const words = argv.map((value, index) => literalWord(value, { raw: stage.raw[index]!, start: index, end: index + 1 }));
+    const effective = effectiveShellWords(words);
+    if (!effective.unsupported && effective.words.length < words.length) {
+      const from = words.indexOf(effective.words[0]!);
+      if (from >= 0) return literalShellBodies(argv.slice(from), "powershell", stage.raw.slice(from));
+    }
+  }
+  return literalShellBodies(argv, "powershell", stage.raw);
+}
+
+function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined, budget: LiteralBodyBudget): ShellFloorSignals {
+  budget.tokens.count += parsed.context.visits.grammarRecords;
+  if (budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
   const retained = sharedWork(parsed.context).retained;
   if (parsed.analysisLimited) return { ...shellFloorBudgetSignals(), ...retained,
     ...(retained.sensitive !== null || retained.exfiltration !== null ? { outcome: "visible-floor" as const } : {}) };
@@ -1027,6 +1061,28 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined)
   let sensitive: string | null = retained.sensitive, exfiltration: string | null = retained.exfiltration;
   let pipelineId = -1;
   let pipelineReadsPath = false;
+  let readsPath = false, network = false;
+  const childFlows = new Map<PsCommand, { readsPath: boolean; network: boolean; limited: boolean }>();
+  const inspectStageBodies = (stage: StaticStage) => {
+    const cached = childFlows.get(stage.command);
+    if (cached) return cached;
+    const childFlow = { readsPath: false, network: false, limited: false };
+    for (const body of literalStageBodies(stage)) {
+      const childBudget = { tokens: budget.tokens, depth: budget.depth + 1 };
+      const child = body.dialect === "powershell" ? inspectPowerShellCommand(body.text, cwd, childBudget)
+        : inspectPosixShellCommand(body.text, cwd, undefined, childBudget, inspectPowerShellCommand);
+      sensitive ??= child.sensitive;
+      exfiltration ??= child.exfiltration;
+      const flow = literalShellFlow(child);
+      childFlow.readsPath ||= flow?.readsPath === true;
+      childFlow.network ||= flow?.network === true;
+      childFlow.limited ||= child.analysisLimited === true;
+    }
+    readsPath ||= childFlow.readsPath;
+    network ||= childFlow.network;
+    childFlows.set(stage.command, childFlow);
+    return childFlow;
+  };
   for (let index = 0; index < program.stages.length; index += 1) {
     const originalStage = program.stages[index]!;
     const stage = permissionEffectStage(originalStage);
@@ -1037,20 +1093,31 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined)
     const native = inspectLiteralShellArgvFacts(originalStage.argv, cwd, work, new Set(originalStage.proof.kind === "literal-evaluation" ? originalStage.proof.payloadIndexes : []));
     sensitive ??= native.sensitive;
     exfiltration ??= native.exfiltration ?? visiblePowerShellExfiltration(stage, stage.fedByPipeline, skipped);
-    if (stage.fedByPipeline && pipelineReadsPath && native.network) exfiltration ??= "PowerShell pipeline sends file data to a network command";
-    pipelineReadsPath ||= native.readsPath;
+    const childFlow = inspectStageBodies(originalStage);
+    if (childFlow.limited) return { ...shellFloorBudgetSignals(), sensitive, exfiltration };
+    const stageNetwork = native.network || childFlow.network;
+    const stageReadsPath = native.readsPath || childFlow.readsPath;
+    if (stage.fedByPipeline && pipelineReadsPath && stageNetwork) exfiltration ??= "PowerShell pipeline sends file data to a network command";
+    pipelineReadsPath ||= stageReadsPath;
+    readsPath ||= stageReadsPath || POWERSHELL_COMMAND_POLICIES[stage.name ?? ""]?.effects.includes("read") === true;
+    network ||= stageNetwork || POWERSHELL_COMMAND_POLICIES[stage.name ?? ""]?.effects.includes("network") === true;
     if (stage.proof.kind === "static-complete" && stage.proof.dataOnly) work.unresolvedPath = unresolvedPath;
   }
+  for (const { stage } of permissionStages(pipelines, program)) {
+    if (inspectStageBodies(stage).limited) return { ...shellFloorBudgetSignals(), sensitive, exfiltration };
+  }
   exfiltration ??= program.nestedUpload;
-  return finalizeSignals(sensitive, exfiltration, program.dynamic || program.encodedReason !== null || work.unresolvedPath,
-    !work.unresolvedPath && program.literalEvaluation !== null && program.encodedReason === null);
+  return recordLiteralShellFlow(finalizeSignals(sensitive, exfiltration, program.dynamic || program.encodedReason !== null || work.unresolvedPath,
+    !work.unresolvedPath && program.literalEvaluation !== null && program.encodedReason === null), { readsPath, network });
 }
 
 function applyStartupPolicy(signals: ShellFloorSignals): ShellFloorSignals {
   if (signals.outcome === "visible-floor" || signals.analysisLimited
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return signals;
   if (isPowerShellStartupPinned()) return signals;
-  return { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
+  const result: ShellFloorSignals = { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
+  const flow = literalShellFlow(signals);
+  return flow ? recordLiteralShellFlow(result, flow) : result;
 }
 
 interface PermissionStage { stage: StaticStage; conditional: boolean; uncertainLocation?: true }
@@ -1136,7 +1203,7 @@ function permissionStages(pipelines: readonly PsPipeline[], program: StaticProgr
 
 /** Report parsed filesystem bindings, retaining repeated targets and their individual effects.
  * When unproven is true, paths may be partial; route uncertainty through the pipeline. */
-export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, cwd: string, environment: Readonly<Record<string, string | undefined>> = {}): {
+export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, cwd: string, environment: Readonly<Record<string, string | undefined>> = {}, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }): {
   paths: readonly PermissionPathEvidence[];
   unproven: boolean;
   credentialStore: string | null;
@@ -1144,12 +1211,13 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   evidenceLimitExceeded?: true;
 } {
   const parsed = asPowerShellCommand(input);
-  if (parsed.analysisLimited) return { paths: [], unproven: true, credentialStore: null, evidenceLimitExceeded: true };
+  budget.tokens.count += parsed.context.visits.grammarRecords;
+  if (parsed.analysisLimited || budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: true, credentialStore: null, evidenceLimitExceeded: true };
   const paths: PermissionPathEvidence[] = [];
   const evidenceForPath = createPermissionPathEvidence(cwd);
   const redirectFacts = parsed.facts.get("filesystem-redirections") as readonly PsRedirection[] | undefined;
   const evidencePipelines = parsed.syntax.pipelines ?? parsed.syntax.permissionPipelines;
-  const fallback = parsed.syntax.pipelines === null && evidencePipelines === undefined ? inspectShellPermissionPaths(parsed.command, cwd) : undefined;
+  const fallback = parsed.syntax.pipelines === null && evidencePipelines === undefined ? inspectPosixShellPermissionPaths(parsed.command, cwd, { dialect: "bash", environment: {} }, undefined, budget, inspectPowerShellPermissionPaths) : undefined;
   if (fallback && (parsed.syntax.readable ?? []).length === 0) {
     return { paths: fallback.paths, unproven: true, credentialStore: null,
       ...(fallback.unknownProtectedWrite ? { unknownProtectedWrite: fallback.unknownProtectedWrite } : {}),
@@ -1208,6 +1276,24 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     // A literal call target has the same filesystem and credential effects as
     // direct invocation. Keep the original program and rule proof untouched.
     const stage = permissionEffectStage(parsedStage);
+    const literalBodies = literalStageBodies(stage);
+    for (const body of literalBodies) {
+      const childBudget = { tokens: budget.tokens, depth: budget.depth + 1 };
+      if (body.dialect === "powershell") {
+        const nested = inspectPowerShellPermissionPaths(body.text, currentDirectory ?? cwd, stageEnvironment, childBudget);
+        paths.push(...nested.paths);
+        unproven ||= nested.unproven;
+        credentialStore ??= nested.credentialStore;
+        unknownProtectedWrite ??= nested.unknownProtectedWrite;
+        evidenceLimitExceeded ||= nested.evidenceLimitExceeded === true;
+      } else {
+        const nested = inspectPosixShellPermissionPaths(body.text, currentDirectory ?? cwd, { dialect: "bash", environment: stageEnvironment }, undefined, childBudget, inspectPowerShellPermissionPaths);
+        paths.push(...nested.paths);
+        unproven ||= nested.unproven !== null;
+        unknownProtectedWrite ??= nested.unknownProtectedWrite;
+        evidenceLimitExceeded ||= nested.unproven?.kind === "analysis-limit";
+      }
+    }
     const policy = stage.name === undefined ? undefined : POWERSHELL_COMMAND_POLICIES[stage.name];
     const credential = policy?.credential;
     if (credential === true || (credential instanceof RegExp && credential.test(stage.visible.filter((value): value is string => value !== undefined).join(" ")))) {
@@ -1221,7 +1307,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
       const values = stage.command.tokens.map((token, index) => stage.argv[index] === undefined ? permissionArgumentBinding(token, stageEnvironment) : { value: stage.argv[index]!, dynamic: false });
       const source = values.map((binding, index) => binding && !binding.dynamic ? shellQuote(binding.value) : stage.raw[index]!).join(" ");
       unknownProtectedWrite ??= inspectUnknownNativeWriteArguments(values.map((binding) => binding && !binding.dynamic ? binding.value : undefined), stage.raw);
-      const native = inspectShellPermissionPaths(source, currentDirectory ?? cwd);
+      const native = inspectPosixShellPermissionPaths(source, currentDirectory ?? cwd, { dialect: "bash", environment: {} }, undefined, budget, inspectPowerShellPermissionPaths, { rootAlreadyParsed: true, literalBodiesAlreadyInspected: literalBodies.length > 0 });
       paths.push(...native.paths);
       unproven ||= native.unproven !== null;
       evidenceLimitExceeded ||= native.unproven?.kind === "analysis-limit";
@@ -1271,7 +1357,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   return { paths, unproven, credentialStore, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(evidenceLimitExceeded ? { evidenceLimitExceeded: true as const } : {}) };
 }
 
-export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd)); }
+export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget)); }
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).sensitive; }
 export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).exfiltration; }
@@ -1291,7 +1377,7 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
     limited = true;
   } finally { if (context.currentFrameDepth() > 0) context.leave(); }
   const parsed: ParsedPowerShellCommand = { command, syntax, analysisLimited: limited || context.limited, facts: context.facts, context };
-  const result = applyStartupPolicy(inspectParsed(parsed, cwd));
+  const result = applyStartupPolicy(inspectParsed(parsed, cwd, { tokens: { count: 0 }, depth: 0 }));
   return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: context.floor.visits, limits: POWERSHELL_ANALYSIS_LIMITS };
 }
 

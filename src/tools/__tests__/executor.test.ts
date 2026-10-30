@@ -746,8 +746,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.checkDetailed = () => ({
       decision: "ask",
       reason: "trust-origin boundary test",
-      layer: 5,
-    });
+      });
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1073,8 +1072,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       expect(classifySpy).not.toHaveBeenCalled();
       expect(gate.requestAndWait).toHaveBeenCalledOnce();
       expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-        mode: "default",
-        reviewerVerdict: undefined,
+          reviewerVerdict: undefined,
       }));
     } finally {
       await cleanupTmpDir(dir);
@@ -1635,7 +1633,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.checkDetailed = (_toolName, _source, category) => {
       seenCategories.push(category);
       // Deny to isolate the category supplied to policy evaluation.
-      return { decision: "deny", reason: "test", layer: 1 };
+      return { decision: "deny", reason: "test", };
     };
 
     const wc = makeMockWebContents();
@@ -1675,7 +1673,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "would otherwise allow", layer: 3 });
+    permMgr.checkDetailed = () => ({ decision: "allow", reason: "would otherwise allow", });
     const executor = new ToolExecutor(
       registry,
       hooks,
@@ -1846,7 +1844,6 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
       expect.objectContaining({
         toolName: "a2a_always_allow_meta_probe",
         toolCategory: "meta",
-        isReadOnly: false,
         reason: expect.stringContaining("[Sub-Agent: researcher]"),
       }),
     );
@@ -1931,8 +1928,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.checkDetailed = () => ({
       decision: "deny",
       reason: "receiver deny",
-      layer: 1,
-    });
+      });
     const approvalGate = { requestAndWait: vi.fn() };
     const executor = new ToolExecutor(
       registry,
@@ -2079,7 +2075,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_b", spy2));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered test", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2128,7 +2124,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_d", spy2));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered deny test", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered deny test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2214,7 +2210,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_f", spyDeny));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "selective test", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "selective test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2312,8 +2308,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     permMgr.checkDetailed = () => ({
       decision: "ask",
       reason: "stop-while-parked probe",
-      layer: 5,
-    });
+      });
 
     const turn = new AbortController();
     let signalGivenToGate: AbortSignal | undefined;
@@ -3922,8 +3917,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       (_toolName, source, category) => ({
         decision: "deny",
         reason: `blocked by unified policy: ${source}/${category}`,
-        layer: 3,
-      }),
+        }),
     );
     const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -3992,8 +3986,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       (_toolName, source, category) => ({
         decision: "deny",
         reason: `blocked by unified policy: ${source}/${category}`,
-        layer: 3,
-      }),
+        }),
     );
     const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -4164,7 +4157,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     setShellSandboxRequestedAtBoot(false);
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-r2r4.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "r2-r4 regression", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "r2-r4 regression", });
 
     const requestSpy = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,
@@ -4232,7 +4225,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const permMgr = new PermissionManager("/tmp/nonexistent-permissions-worker-cap.json");
-      permMgr.checkDetailed = () => ({ decision: "ask", reason: "worker capability regression", layer: 5 });
+      permMgr.checkDetailed = () => ({ decision: "ask", reason: "worker capability regression", });
 
       const requestSpy = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -4273,7 +4266,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(new BashTool());
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose prefill regression", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose prefill regression", });
 
     const requestSpy = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,
@@ -4326,7 +4319,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }));
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-tool-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose spoof regression", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose spoof regression", });
 
     const requestSpy = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,
@@ -4857,7 +4850,6 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       allowedChoices: ["allow-once", "deny-once"],
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
-      isReadOnly: false,
       trustOrigin: "tailnet-surface",
     }));
     expect(executed).not.toHaveBeenCalled();
@@ -4968,13 +4960,10 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     const [request] = requestAndWait.mock.calls[0] as unknown as [{
       remoteControllerOrigin?: string;
       remoteControllerAuthority?: { kind: string };
-      scopeTargetFilePaths?: readonly string[];
     }];
     // Pair the controller marker with current authority so stale or mismatched controllers cannot answer.
     expect(request.remoteControllerOrigin).toBe("platform-bridge");
     expect(request.remoteControllerAuthority?.kind).toBe("platform-bridge");
-    // Carry scope targets from the same host context to bound remote approval to armed directories.
-    expect(request.scopeTargetFilePaths).toEqual([]);
   });
 
   it("marks a bridged turn as the bridge rather than as remote-in-general", async () => {
@@ -5270,8 +5259,7 @@ describe("privacy toggle governs tool-output masking", () => {
     permMgr.checkDetailed = () => ({
       decision: "allow",
       reason: "privacy toggle probe",
-      layer: 3,
-    });
+      });
     const auditLogger = {
       log: vi.fn(),
       isPermissionAuditChainReady: vi.fn(() => true),

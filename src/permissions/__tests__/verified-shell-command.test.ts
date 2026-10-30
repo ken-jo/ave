@@ -10,7 +10,7 @@ import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExe
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { GIT_VERSION_FLOOR } from "../rules/git-readonly-argv.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-import { inspectShellCommand } from "../rules/shell-exfiltration.js";
+import { inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { holdSandboxGitWrites } from "../../shared/host-git.js";
 
@@ -114,11 +114,11 @@ describe("bound native command authority", () => {
       expect(permission(command, dialect, handle, false, false)).toMatchObject({ decision: "ask" });
       manager.setRules([withCurrentShellRuleVersion({ pattern: `${wrapper}(git *)`, action: "allow" })]);
       expect(permission(command, dialect, handle, false, true)).toMatchObject(dialect === "bash"
-        ? { decision: "deny", layer: 6, reasonCode: "no-approver" }
-        : { decision: "allow", layer: 3, reasonCode: "rule-allow" });
+        ? { decision: "deny", reasonCode: "no-approver" }
+        : { decision: "allow", reasonCode: "rule-allow" });
       manager.setRules([withCurrentShellRuleVersion({ pattern: approval.exactRule!, action: "allow" })]);
       for (const sandboxed of [false, true]) {
-        expect(permission(command, dialect, handle, sandboxed, true)).toMatchObject({ decision: "allow", layer: 3 });
+        expect(permission(command, dialect, handle, sandboxed, true)).toMatchObject({ decision: "allow" });
       }
       const identity = { command, dialect, cwd };
       expect(verifiedShellExecution(handle, identity)?.command).toContain(`'--git-dir=${join(cwd, ".git")}'`);
@@ -140,7 +140,7 @@ describe("bound native command authority", () => {
     manager.setRules([withCurrentShellRuleVersion({ pattern: prefix, action: "allow" })]);
     for (const headless of [false, true]) {
       const result = permission(command, dialect, handle, false, headless);
-      expect(result).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+      expect(result).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
       expect(result).not.toHaveProperty("forceModal");
     }
   });
@@ -150,12 +150,12 @@ describe("bound native command authority", () => {
     const approval = buildShellRuleApproval(dialect, LITERAL_COMMAND, cwd, { allow: true, deny: true }, undefined, handle);
     const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
     expect(approval.exactRule).toBe(`${wrapper}(${LITERAL_COMMAND})`);
-    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
+    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     manager.setRules([withCurrentShellRuleVersion({ pattern: `${wrapper}(bash *)`, action: "allow" })]);
-    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
+    expect(permission(LITERAL_COMMAND, dialect, handle, true, false)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     manager.setRules([withCurrentShellRuleVersion({ pattern: approval.exactRule!, action: "allow" })]);
     for (const sandboxed of [false, true]) {
-      expect(permission(LITERAL_COMMAND, dialect, handle, sandboxed, true)).toMatchObject({ decision: "allow", layer: 3 });
+      expect(permission(LITERAL_COMMAND, dialect, handle, sandboxed, true)).toMatchObject({ decision: "allow" });
     }
     expect(verifiedShellExecution(handle, { command: LITERAL_COMMAND, dialect, cwd })?.command).toContain("'/usr/bin/bash'");
   });
@@ -227,9 +227,9 @@ describe("bound native command authority", () => {
       const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
       manager.setRules([withCurrentShellRuleVersion({ pattern: `${wrapper}(${command})`, action: "allow" })]);
       expect(permission(command, dialect, handle, true, false)).toMatchObject(dialect === "bash"
-        ? { decision: "allow", layer: 6, reasonCode: "read-only-shell" }
-        : { decision: "ask", layer: 6, reasonCode: "shell-approval" });
-      expect(permission(command, dialect, handle, false, true)).toMatchObject({ decision: "deny", layer: 6, reasonCode: "no-approver" });
+        ? { decision: "allow", reasonCode: "read-only-shell" }
+        : { decision: "ask", reasonCode: "shell-approval" });
+      expect(permission(command, dialect, handle, false, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     }
   });
   it("bounds input before parsing or installation discovery", () => {

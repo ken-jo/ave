@@ -27,7 +27,6 @@ function approvingPolicy(id: string, command: string): McpGovernancePolicy {
         allowedCapabilities: ["tools"],
         maxTools: 16,
         toolNamePrefix: id,
-        toolPermissionMode: "default",
         connectionTimeoutMs: 5_000,
         maxConcurrentRequests: 4,
       },
@@ -72,7 +71,6 @@ describe("plugin-as-MCP-server loopback round-trip (#1230)", () => {
       governanceWithPolicy(approvingPolicy("fs", "ave-mcp-fs")),
       registry,
       unusedNetworkFetch,
-      undefined,
       transport,
     );
 
@@ -100,7 +98,6 @@ describe("loopback marshalling — the boundary has to behave like a wire", () =
       governanceWithPolicy(approvingPolicy("fs", "ave-mcp-fs")),
       new ToolRegistry(),
       unusedNetworkFetch,
-      undefined,
       transport,
     );
     await client.connect();

@@ -179,7 +179,7 @@ async function runTurnInSpan(
     };
     const permissionUserIntent = summarizePermissionUserIntent(inputOrigin, turnInput,
   );
-    const requestAnchor = options.requestAnchorRawIntent !== undefined && self.deps.headless !== true
+    const requestAnchor = options.requestAnchorRawIntent !== undefined
       ? createRequestAnchor({
           sessionId: effectiveSessionId,
           turnId: randomUUID(),
@@ -511,7 +511,9 @@ async function runTurnInSpan(
       role: "user",
       content: userContent,
       ...(Object.keys(userMeta).length > 0 ? { meta: userMeta } : {}),
-    });
+    }, isUserKeyboardOrigin(inputOrigin) && options?.resumesInterruptedTurn !== true
+      ? { principal: "user-keyboard", userText: { sessionId: effectiveSessionId, text: input } }
+      : undefined);
     if (options?.initialGuidance) {
       initialGuidanceId = randomUUID();
       self.history.append({

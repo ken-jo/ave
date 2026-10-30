@@ -9,7 +9,8 @@ import { prepareShellFloorInput } from "../rules/shell-literal-data.js";
 import * as shellAnalysis from "../../shared/shell-analysis.js";
 import { parseShellSyntax, SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
-import * as shellFloors from "../rules/shell-exfiltration.js";
+import * as shellFloorSyntax from "../rules/shell-exfiltration.js";
+import * as shellFloors from "../rules/literal-shell-inspection.js";
 import { inspectPowerShellCommand, inspectPowerShellVisibleText, parsePowerShellCommand, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, SHELL_FLOOR_INPUT_LIMIT, shellFloorInputExceeded } from "../rules/shell-floor-policy.js";
 
@@ -55,7 +56,7 @@ describe("bounded visible floor inspection", () => {
       const manager = new PermissionManager(join(directory, "permissions.json"));
       manager.setMode("allow");
       const result = manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: CWD }, shellExecution: { runsSandboxed: true } });
-      expect(result).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" });
+      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       expect(result.reason).toMatch(/(?:nesting|recursion|depth|budget|limit)/i);
       expect(result.forceModal).toBeUndefined();
     } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -73,7 +74,7 @@ describe("bounded visible floor inspection", () => {
 
   it("scans fallback path spans without overlapping source ranges", () => {
     const source = `printf p0 p1 p2 p3; echo 'unterminated`;
-    const paths = vi.spyOn(shellFloors, "sensitivePathInArgumentText");
+    const paths = vi.spyOn(shellFloorSyntax, "sensitivePathInArgumentText");
     try {
       expect(inspectPowerShellVisibleText(source, CWD).analysisLimited).toBeUndefined();
       const scanned = paths.mock.calls.map(([text]) => text);
@@ -83,7 +84,7 @@ describe("bounded visible floor inspection", () => {
 
   it("counts actual word records rather than whitespace inside a quote", () => {
     const command = `git commit -m '${"word ".repeat(300)}message'`;
-    const parsed = shellFloors.parseShellFloorCommand(command);
+    const parsed = shellFloorSyntax.parseShellFloorCommand(command);
     expect(parsed.analysis).toMatchObject({ ok: true, totalTokens: 4 });
     expect(parsePowerShellCommand(command).analysisLimited).toBe(false);
   });
@@ -96,21 +97,21 @@ describe("bounded visible floor inspection", () => {
       words += size;
     }
     const commands = groups.join(separator);
-    expect(shellFloors.parseShellFloorCommand(commands).analysis.ok).toBe(true);
+    expect(shellFloorSyntax.parseShellFloorCommand(commands).analysis.ok).toBe(true);
     expect(shellFloors.inspectShellCommand(`${commands} x`, CWD).analysisLimited).toBe(true);
     expect(parsePowerShellCommand(`${commands}${separator}:`).analysisLimited).toBe(true);
   });
 
   it("counts nested execution records in the same native cap", () => {
     const command = `echo $(:); ${":;".repeat(MAX_SHELL_ANALYSIS_TOKENS - 3)}`;
-    expect(shellFloors.parseShellFloorCommand(command).analysis.ok).toBe(true);
+    expect(shellFloorSyntax.parseShellFloorCommand(command).analysis.ok).toBe(true);
     expect(shellFloors.inspectShellCommand(`${command}:`, CWD).analysisLimited).toBe(true);
   });
 
   it("retains the total count on already parsed inputs", () => {
     const command = ":;".repeat(MAX_SHELL_ANALYSIS_TOKENS + 1);
     const parsed = { command, analysis: shellAnalysis.analyzeShell(command), facts: new Map() };
-    expect(() => shellFloors.parseShellFloorCommand(parsed)).toThrow();
+    expect(() => shellFloorSyntax.parseShellFloorCommand(parsed)).toThrow();
   });
 
   it("does not poison subsequent native parsing after a cap refusal", () => {
@@ -119,10 +120,10 @@ describe("bounded visible floor inspection", () => {
   });
 
   it("reuses the original parsed command without another grammar call", () => {
-    const parsed = shellFloors.parseShellFloorCommand("printf ready");
+    const parsed = shellFloorSyntax.parseShellFloorCommand("printf ready");
     const parser = vi.spyOn(shellAnalysis, "analyzeShell");
     try {
-      expect(shellFloors.parseShellFloorCommand(parsed)).toBe(parsed);
+      expect(shellFloorSyntax.parseShellFloorCommand(parsed)).toBe(parsed);
       expect(shellFloors.inspectShellCommand(parsed, CWD).analysisLimited).toBeUndefined();
       expect(parser).not.toHaveBeenCalled();
     } finally { parser.mockRestore(); }

@@ -67,7 +67,6 @@ describe("ave:chat:abort with a turn parked on an approval", () => {
       reason: "write outside the workspace",
       source: "builtin",
       createdAt: Date.now(),
-      isReadOnly: false,
       remoteControllerOrigin: "platform-bridge",
       abortSignal: turnAbortController.signal,
     });

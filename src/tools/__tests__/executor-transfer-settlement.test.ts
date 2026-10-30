@@ -85,8 +85,7 @@ async function startInvocation(options: {
   vi.spyOn(permissions, "checkDetailed").mockReturnValue({
     decision: "allow",
     reason: "test invocation admitted",
-    layer: 3,
-  });
+    });
   const auditLogger = new AuditLogger(join(directory, "audit"));
   auditLoggers.push(auditLogger);
   const auditLog = vi.spyOn(auditLogger, "log");

@@ -54,7 +54,7 @@ function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined)
         ok: true as const,
         verb: "show" as const,
         settings: {
-          mode: "rule" as const,
+          mode: "llm" as const,
           fallbackOnError: "deny" as const,
         },
         reviewerDegradedToRule: false,

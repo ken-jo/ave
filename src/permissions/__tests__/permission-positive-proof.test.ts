@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
-import { inspectShellCommand } from "../rules/shell-exfiltration.js";
+import { inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
@@ -40,11 +40,11 @@ describe.each(["bash", "powershell"] as const)("closed positive command proof (%
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     for (const sandboxed of [false, true]) {
       expect(checkShellPermission(manager, cwd, "positive-session", command, dialect, sandboxed)).toMatchObject(protectedMutation
-        ? { decision: "ask", layer: 2, forceModal: true, reasonCode: "protected-path" }
-        : { decision: "allow", layer: 3, reasonCode: "rule-allow" });
+        ? { decision: "ask", forceModal: true, reasonCode: "protected-path" }
+        : { decision: "allow", reasonCode: "rule-allow" });
       expect(checkShellPermission(manager, cwd, "positive-session", command, dialect, sandboxed, true)).toMatchObject(protectedMutation
-        ? { decision: "deny", layer: 2, reasonCode: "no-approver" }
-        : { decision: "allow", layer: 3, reasonCode: "rule-allow" });
+        ? { decision: "deny", reasonCode: "no-approver" }
+        : { decision: "allow", reasonCode: "rule-allow" });
     }
   });
 });
@@ -52,7 +52,7 @@ it.each(["–", "—", "―"])("refuses unsupported parameter punctuation %s rat
   for (const command of [`Write-Output ${dash}Unknown`, `Get-Content ${dash}Unknown notes.txt`, `Get-Content -Path ${dash}Unknown`, `Invoke-Expression ${dash}Verbose`, `Invoke-WebRequest -Uri https://x.invalid ${dash}OutFile:runner; Write-Output ready`]) {
     expect(inspectPowerShellCommand(command, cwd).outcome).toBe("unproven");
     expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
-    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", true, true)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", true, true)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   }
 });
 it.each(["env Write-Output ready", "env iwr -Uri https://x.invalid -InFile notes.txt", "npx Write-Output ready", "npm exec -- Invoke-Expression 'dir'", "env eval 'ls'", "command Write-Output ready", "builtin Write-Output ready"])("does not use shell grammar for a delegated native command: %s", (command) => {
@@ -63,7 +63,7 @@ it.each(["env Write-Output ready", "env iwr -Uri https://x.invalid -InFile notes
   expect(inspectPowerShellCommand(command, cwd).outcome).toBe("unproven");
   expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
   for (const sandboxed of [false, true]) {
-    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
-    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed, true)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed, true)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   }
 });

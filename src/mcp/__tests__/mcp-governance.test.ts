@@ -38,7 +38,6 @@ function makePolicy(status: "approved" | "revoked"): McpGovernancePolicy {
       allowedOrigins: [],
       maxTools: 5,
       maxConcurrentRequests: 2,
-      toolPermissionMode: "default",
     },
   ], "1.0", 20);
 }
@@ -84,7 +83,6 @@ function makeHttpPolicy(): McpGovernancePolicy {
       allowedCapabilities: ["tools"],
       maxTools: 16,
       toolNamePrefix: "test",
-      toolPermissionMode: "default",
       connectionTimeoutMs: 5_000,
       maxConcurrentRequests: 4,
     },
@@ -380,7 +378,6 @@ describe("McpGovernance — connectionTimeoutMs policy cap (ingestion clamp)", (
           allowedCapabilities: ["tools"],
           maxTools: 16,
           toolNamePrefix: "test",
-          toolPermissionMode: "default",
           connectionTimeoutMs: aboveCap,
           maxConcurrentRequests: 4,
         },
@@ -424,7 +421,6 @@ describe("McpGovernance — connectionTimeoutMs policy cap (ingestion clamp)", (
           allowedCapabilities: ["tools"],
           maxTools: 16,
           toolNamePrefix: "test",
-          toolPermissionMode: "default",
           connectionTimeoutMs: withinCap,
           maxConcurrentRequests: 4,
         },

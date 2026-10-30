@@ -48,8 +48,7 @@ function skillLoadHarness() {
   permissionManager.checkDetailed = () => ({
     decision: "allow",
     reason: "would otherwise allow",
-    layer: 3,
-  });
+    });
   const executor = new ToolExecutor(
     registry,
     undefined,

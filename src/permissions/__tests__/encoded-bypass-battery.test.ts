@@ -13,7 +13,7 @@ import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { canonicalRuleSpecifier } from "../rules/rule-specifier.js";
 import * as shellPolicy from "../rules/shell-prefix-policy.js";
 import * as powerShellPolicy from "../rules/powershell-exfiltration.js";
-import * as shellFloors from "../rules/shell-exfiltration.js";
+import * as shellFloors from "../rules/literal-shell-inspection.js";
 import * as riskClassifier from "../reviewer/risk-classifier.js";
 import * as shellDirectory from "../shell-working-directory-identity.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
@@ -245,15 +245,15 @@ function requireLaneBehavior(fixture: EncodedCase): void {
     ] : [];
     manager.setRules(rules.map(withCurrentShellRuleVersion));
     const expected = fixture.admissionLimit
-      ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
+      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
       : fixture.permissionFloor
-        ? { decision: "ask", layer: 2, forceModal: true, reasonCode: fixture.permissionFloor }
-        : { decision: "allow", layer: saved ? 3 : 6 };
+        ? { decision: "ask", forceModal: true, reasonCode: fixture.permissionFloor }
+        : { decision: "allow" };
     for (const sandboxed of [false, true]) {
       const foreground = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed);
       expect.soft(foreground, `sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(expected);
       if (!fixture.permissionFloor) expect.soft(foreground).not.toHaveProperty("forceModal");
-      expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed, true), `headless, sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(fixture.admissionLimit ? expected : fixture.permissionFloor ? { decision: "deny", layer: 2, reasonCode: "no-approver" } : expected);
+      expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed, true), `headless, sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(fixture.admissionLimit ? expected : fixture.permissionFloor ? { decision: "deny", reasonCode: "no-approver" } : expected);
     }
   }
 }
@@ -287,17 +287,17 @@ describe("positive command proof boundaries", () => {
     const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
     expect(card.exactRule !== null).toBe(exactEligible);
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, true))
-      .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true))
-      .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     manager.setRules(([
       { pattern: dialect, action: "allow" },
       ...(exactEligible ? [{ pattern: card.exactRule!, action: "allow" as const }] : []),
     ] as PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false))
-      .toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+      .toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true))
-      .toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+      .toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   });
 });
 
@@ -334,8 +334,8 @@ describe("configuration loading proof", () => {
     requireLaneBehavior({ ...EXPECTED_UNPROVEN, name: "edition-dependent config binding", dialect: "powershell", command, allowBody: command });
     manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `PowerShell(${command})`, action: "allow" })]);
     for (const sandboxed of [false, true]) {
-      expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
-      expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed, true)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed, true)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     }
   });
   it.each(CONFIGURATION_CASES)("$dialect: $command", (fixture) => {
@@ -346,12 +346,12 @@ describe("configuration loading proof", () => {
     for (const sandboxed of [false, true]) {
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed))
         .toMatchObject(fixture.permissionFloor
-          ? { decision: "ask", layer: 2, forceModal: true, reasonCode: fixture.permissionFloor }
-          : { decision: "allow", layer: 6, reasonCode: "allow-mode" });
+          ? { decision: "ask", forceModal: true, reasonCode: fixture.permissionFloor }
+          : { decision: "allow", reasonCode: "allow-mode" });
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed, true))
         .toMatchObject(fixture.permissionFloor
-          ? { decision: "deny", layer: 2, reasonCode: "no-approver" }
-          : { decision: "allow", layer: 6, reasonCode: "allow-mode" });
+          ? { decision: "deny", reasonCode: "no-approver" }
+          : { decision: "allow", reasonCode: "allow-mode" });
     }
   });
 });
@@ -403,9 +403,9 @@ describe("nested launcher startup configuration boundary", () => {
     manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: kind + "(" + fixture.command + ")", action: "allow" })]);
     for (const sandboxed of [false, true]) {
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed))
-        .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+        .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed, true))
-        .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+        .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     }
   });
 });
@@ -441,9 +441,9 @@ describe("managed shell startup configuration boundary", () => {
       manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `PowerShell(${storedRuleBody})`, action: "allow" })]);
       for (const sandboxed of [false, true]) {
         expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed))
-          .toMatchObject({ decision: "allow", layer: 6, reasonCode: command === "printf ready" && sandboxed ? "read-only-shell" : "allow-mode" });
+          .toMatchObject({ decision: "allow", reasonCode: command === "printf ready" && sandboxed ? "read-only-shell" : "allow-mode" });
         expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed, true))
-          .toMatchObject({ decision: "allow", layer: 6, reasonCode: command === "printf ready" && sandboxed ? "read-only-shell" : "allow-mode" });
+          .toMatchObject({ decision: "allow", reasonCode: command === "printf ready" && sandboxed ? "read-only-shell" : "allow-mode" });
       }
     } finally { setProcessPlatform(original); }
   });
@@ -456,9 +456,9 @@ describe("executable operands and optional argument boundaries", () => {
     manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `${kind}(${fixture.command})`, action: "allow" })]);
     for (const sandboxed of [false, true]) {
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed))
-        .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+        .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed, true))
-        .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+        .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     }
   });
 });
@@ -553,7 +553,7 @@ describe.each(["bash", "powershell"] as const)("literal file-execution parity (%
     for (const runsSandboxed of [true, false]) {
       manager.setRules([]);
       expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(
-        { decision: "allow", layer: 6, reasonCode: "allow-mode" },
+        { decision: "allow", reasonCode: "allow-mode" },
       );
     }
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID).decodedCommands ?? []).toEqual([]);
@@ -596,7 +596,7 @@ describe.each(["bash", "powershell"] as const)("permission decision input bounds
       const start = performance.now();
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
       const elapsed = performance.now() - start;
-      expect(result).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" });
+      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       process.stdout.write(`permission decision ${dialect} ${length} chars ${name}: ${elapsed.toFixed(3)} ms\n`);
       // Rule proof stays capped while the independent bounded path-evidence pass denies exhausted evidence.
       expect(elapsed).toBeLessThan(overLimit ? 250 : 2_000);
@@ -604,7 +604,7 @@ describe.each(["bash", "powershell"] as const)("permission decision input bounds
         for (const spy of spies.slice(0, 7)) expect(spy).not.toHaveBeenCalled();
         expect(spies[7]).toHaveBeenCalledTimes(1);
         expect(spies[8]).not.toHaveBeenCalled();
-        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" });
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
         for (const spy of spies.slice(0, 7)) expect(spy).not.toHaveBeenCalled();
         expect(spies[7]).toHaveBeenCalledTimes(2);
         expect(spies[8]).not.toHaveBeenCalled();
@@ -694,9 +694,9 @@ describe.each(["bash", "powershell"] as const)("quoted literal rule persistence 
     expect(card.exactRule).toBe(unprovenStartup ? null : pattern);
     await manager.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false)).toMatchObject(unprovenStartup
-      ? { decision: "ask", layer: 6, reasonCode: "shell-approval" } : { decision: "allow", layer: 3 });
+      ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
     expect(checkShellPermission(manager, cwd, SESSION_ID, 'printf %s "record fixture changes"', dialect, false)).toMatchObject(unprovenStartup
-      ? { decision: "ask", layer: 6, reasonCode: "shell-approval" } : { decision: "ask", layer: 6 });
+      ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "ask" });
     expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision).toBe(unprovenStartup ? "deny" : "allow");
     expect(checkShellPermission(manager, cwd, SESSION_ID, "printf %s 'different message'", dialect, false).decision).toBe("ask");
   });
@@ -729,9 +729,9 @@ describe("raw numeric argument identity", () => {
     for (const [approved, other, pattern] of [[quoted, bare, quotedPattern], [bare, quoted, barePattern]] as const) {
       manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: pattern!, action: "allow" })]);
       expect(checkShellPermission(manager, cwd, SESSION_ID, approved, "powershell", false)).toMatchObject(unprovenStartup
-        ? { decision: "ask", layer: 6, reasonCode: "shell-approval" } : { decision: "allow", layer: 3 });
+        ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
       expect(checkShellPermission(manager, cwd, SESSION_ID, other, "powershell", false)).toMatchObject(unprovenStartup
-        ? { decision: "ask", layer: 6, reasonCode: "shell-approval" } : { decision: "ask", layer: 6 });
+        ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "ask" });
       expect(checkShellPermission(manager, cwd, SESSION_ID, approved, "powershell", false, true).decision).toBe(unprovenStartup ? "deny" : "allow");
     }
   });
@@ -783,7 +783,7 @@ describe("shell rule deny precedence", () => {
             sessionId: SESSION_ID,
             shellExecution: { runsSandboxed },
             headless,
-          })).toMatchObject({ decision: "deny", layer: 1 });
+          })).toMatchObject({ decision: "deny" });
         }
       }
     }

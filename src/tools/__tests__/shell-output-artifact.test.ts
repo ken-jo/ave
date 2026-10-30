@@ -151,7 +151,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     registry.register(new BashTool());
     registry.register(createReadToolResultChunkTool());
     const permissions = new PermissionManager(join(dir, "permissions.json"));
-    permissions.checkDetailed = () => ({ decision: "allow", reason: "artifact regression", layer: 5 });
+    permissions.checkDetailed = () => ({ decision: "allow", reason: "artifact regression", });
     const executor = new ToolExecutor(registry, undefined, permissions);
     const displays: string[] = [];
     const syntheticCredential = "ghp_" + "a".repeat(32);
@@ -190,7 +190,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const { dir, memoryManager } = setup();
     const registry = new ToolRegistry(); registry.register(new BashTool());
     const permissions = new PermissionManager(join(dir, "permissions.json"));
-    permissions.checkDetailed = () => ({ decision: "allow", reason: "abandon regression", layer: 5 });
+    permissions.checkDetailed = () => ({ decision: "allow", reason: "abandon regression", });
     const executor = new ToolExecutor(registry, undefined, permissions);
     let owned: ReturnType<MemoryManager["startToolOutputCapture"]> | undefined;
     await expect(executor.executeAll([{ id: TOOL, name: "bash", input: { command: "printf '%60000s' x", timeoutSeconds: 5 } }], {

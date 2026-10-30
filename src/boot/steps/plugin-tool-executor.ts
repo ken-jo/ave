@@ -631,9 +631,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
           trustOrigin: "user-keyboard",
           createdAt: Date.now(),
           forceExplicit: true,
-          isReadOnly: false,
-          mode: "default",
-        });
+            });
         const governedTool = toolRegistry.findByName(toolName);
         if (!governedTool) {
           throw new Error(`[plugin-operation-policy] governed plugin tool '${toolName}' disappeared`);
@@ -647,7 +645,6 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             source: "plugin",
             category: governedTool.category,
             denyReasons: [{
-              layer: 6,
               reason: "plugin operation grant denied by user",
               source: "plugin-operation-grant",
             }],
@@ -697,7 +694,6 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             tool: toolName,
             source: "plugin",
             category: governedTool.category,
-            layer: 6,
             trustOrigin: "user-keyboard",
             pluginOperation: {
               pluginId,

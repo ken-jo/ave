@@ -118,8 +118,7 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
   const abortedPermission: PermissionCheckResult = {
     decision: "deny",
     reason: "user aborted turn",
-    layer: 0,
-  };
+    };
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
   await auditWriter.auditToolCall(

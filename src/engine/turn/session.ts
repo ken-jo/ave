@@ -100,6 +100,7 @@ function applyFreshSessionState(
   self.sessionSource = "clear";
   self.turnAdditionalDirectories = [];
   self.history.clear();
+  self.history.clearUserQuoteEvidence();
   self.cumulativeUsage = { inputTokens: 0, outputTokens: 0 };
   self.lastRoundProviderInputTokens = 0;
   self.lastReportedSubscriptionContextWindow = null;
@@ -296,6 +297,7 @@ export async function loadSession(
         }
       : self.deps.getDefaultProject?.());
     self.history.clear();
+    self.history.clearUserQuoteEvidence();
     self.history.restore(withSummaryBoundary(normalized.messages, {
       compactNum: sessionMeta?.branchedFromCompactNum ?? 0,
       summary: sessionMeta?.summaryPreamble,

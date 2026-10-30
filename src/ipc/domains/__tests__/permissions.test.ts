@@ -173,6 +173,8 @@ function makeDeps(options: {
       resolveFromDesktopRenderer: vi.fn((_requestId: string, decision: unknown) => decision),
       mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
       beginApprovalRuleSave: vi.fn(() => Object.freeze({})),
+      beginExactApprovalSave: vi.fn(() => Object.freeze({})),
+      completeExactApprovalSave: vi.fn(),
       completeApprovalRuleSave: vi.fn(),
       listPendingRendererRequests: vi.fn(() => []),
       canAccessRendererRequest: vi.fn(() => true),
@@ -590,7 +592,7 @@ describe("permissions IPC handlers", () => {
   it("reviewerDispatch rejects valid mutations without user-keyboard intent", async () => {
     const { deps } = await setup();
 
-    const result = await invoke(PERMISSIONS.reviewerDispatch, { rawArgs: "mode rule" });
+    const result = await invoke(PERMISSIONS.reviewerDispatch, { rawArgs: "mode llm" });
 
     expect(result).toMatchObject({ ok: false, error: "user-keyboard-required" });
     expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
@@ -607,7 +609,7 @@ describe("permissions IPC handlers", () => {
       process.env.HOME = reviewerHome;
       const { deps } = await setup();
       await invoke(PERMISSIONS.reviewerDispatch, {
-        rawArgs: "mode rule",
+        rawArgs: "mode disabled",
         intent: USER_INTENT,
       });
       deps.rewireReviewerAgent.mockImplementation(() => {
@@ -626,7 +628,7 @@ describe("permissions IPC handlers", () => {
       });
       expect(current).toMatchObject({
         ok: true,
-        settings: expect.objectContaining({ mode: "rule" }),
+        settings: expect.objectContaining({ mode: "disabled" }),
       });
       expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(3);
     } finally {

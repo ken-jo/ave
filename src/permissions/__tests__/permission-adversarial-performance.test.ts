@@ -59,8 +59,8 @@ describe("adversarial complete manager timing", () => {
       samples.push(performance.now() - start);
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`permission nested timing ${JSON.stringify({ depth, chars: command.length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
+    process.stdout.write(`permission nested timing ${JSON.stringify({ depth, chars: command.length, samples, median, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
+    for (const result of results) expect(result).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
@@ -84,18 +84,18 @@ describe("adversarial complete manager timing", () => {
       results.push(result);
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`permission adversarial timing ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
+    process.stdout.write(`permission adversarial timing ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
     // These generated long inputs contain more than the complete evidence token budget.
     const expected = runsSandboxed
-      ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
-      : { decision: "ask", layer: 6, reasonCode: "shell-approval" };
+      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
+      : { decision: "ask", reasonCode: "shell-approval" };
     for (const result of results) expect(result).toMatchObject(expected);
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
     expect(permitted).toMatchObject(runsSandboxed
-      ? { decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" }
+      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
       : { decision: "allow", reasonCode: "allow-mode" });
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });

@@ -3,7 +3,7 @@ import { raceWithAbort } from "../shared/abortable-deadline.js";
 import type { Tool } from "./base.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ToolCategory, ToolSource } from "./types.js";
-import type { ApprovalGate, ApprovalMode } from "../permissions/approval-gate.js";
+import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { PermissionDirectoryLifecycle } from "../permissions/permission-slash.js";
 import type { PermissionManager } from "../permissions/permission-manager.js";
 import type { HookDispatchResult, ScriptHookManager } from "../hooks/script-hook-manager.js";
@@ -46,16 +46,6 @@ export interface InvocationRunnerServices {
   readonly pluginOperationGrants: PluginOperationGrantCoordinator;
   readonly pluginGenerationAccessProvider: () => PluginRuntimeGenerationAccess | undefined;
   readonly pluginOperationIdentityProvider: PluginOperationIdentityProvider;
-}
-
-/** Maps the permission mode to approval delivery after the pipeline has required a card; it never classifies reads. */
-export function currentApprovalMode(
-  permissionManager: PermissionManager | undefined,
-): ApprovalMode {
-  const mode = permissionManager?.getMode?.();
-  if (mode === "strict") return "ask_all";
-  if (mode === "auto" || mode === "allow") return "full_auto";
-  return "default";
 }
 
 export function resolveEnforcedCategory(

@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 187
+ * Fragments: 185
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";
@@ -32,7 +32,6 @@ import { en as en_be_chatDomain } from "./be_chatDomain.js";
 import { en as en_be_chatStreamState } from "./be_chatStreamState.js";
 import { en as en_be_conversationLoop } from "./be_conversationLoop.js";
 import { en as en_be_costEstimator } from "./be_costEstimator.js";
-import { en as en_be_deferredApproval } from "./be_deferredApproval.js";
 import { en as en_be_dlp } from "./be_dlp.js";
 import { en as en_be_errorClassifier } from "./be_errorClassifier.js";
 import { en as en_be_executor } from "./be_executor.js";
@@ -46,7 +45,6 @@ import { en as en_be_mcpResourceTools } from "./be_mcpResourceTools.js";
 import { en as en_be_memoryManager } from "./be_memoryManager.js";
 import { en as en_be_memoryWrite } from "./be_memoryWrite.js";
 import { en as en_be_parentDirective } from "./be_parentDirective.js";
-import { en as en_be_permissionManager } from "./be_permissionManager.js";
 import { en as en_be_permissionModeApply } from "./be_permissionModeApply.js";
 import { en as en_be_pluginExpansion } from "./be_pluginExpansion.js";
 import { en as en_be_pluginRuntime } from "./be_pluginRuntime.js";
@@ -221,7 +219,6 @@ export const generatedEn: Record<string, string> = {
   ...en_be_chatStreamState,
   ...en_be_conversationLoop,
   ...en_be_costEstimator,
-  ...en_be_deferredApproval,
   ...en_be_dlp,
   ...en_be_errorClassifier,
   ...en_be_executor,
@@ -235,7 +232,6 @@ export const generatedEn: Record<string, string> = {
   ...en_be_memoryManager,
   ...en_be_memoryWrite,
   ...en_be_parentDirective,
-  ...en_be_permissionManager,
   ...en_be_permissionModeApply,
   ...en_be_pluginExpansion,
   ...en_be_pluginRuntime,

@@ -39,7 +39,7 @@ Compositional invariants that make these *sticky*:
 - LLM failure paths fail closed to HIGH when `fallbackOnError === "deny"`
   (`"llm parse failure — fallbackOnError=deny"`, `"llm error —
   fallback=deny"`).
-- `StrictRiskClassifier` is defer-all HIGH by definition.
+- Reviewer configuration accepts `llm` or `disabled`; the binding [decision tree](../permission-decision-tree.md) owns current routing.
 - Weak conversation context (`isContextMissingIntent`) blocks LLM downgrades
   of rule MEDIUM/HIGH.
 

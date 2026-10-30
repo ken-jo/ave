@@ -1,4 +1,4 @@
-import { inspectShellPermissionPaths } from "../tools/shell-path-policy.js";
+import { inspectShellPermissionPaths } from "./rules/literal-shell-inspection.js";
 import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
 import { wrapperCommand } from "./rules/shell-prefix-policy.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
@@ -29,7 +29,8 @@ import type { ScopedPermissionRule, ScopedPermissionRuleError, ShellRuleDialect 
 import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject, type HostTerminalRuleTarget } from "./rules/rule-scopes.js";
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
-import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
+import { parseShellFloorCommand } from "./rules/shell-exfiltration.js";
+import { inspectShellCommand } from "./rules/literal-shell-inspection.js";
 import { shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
@@ -197,10 +198,10 @@ export interface PermissionCheckResult {
   requiresCodeCheckpoint?: true;
   decision: PermissionDecision;
   reason: string;
-  layer: number;
   // Layer 5 reviewer routing marker. Only PermissionManager may set this. Executor must not infer reviewer eligibility from `decision: "ask"` because overlay-trigger, strict, and low-trust MCP asks are hard user-approval gates.
   reviewer?: {
     route: ReviewerLane;
+    requestId?: string;
     verdict?: RiskVerdict;
     outcome?: ReviewerDispatchOutcome;
     // Host-issued deterministic evidence for this exact invocation.
@@ -208,15 +209,15 @@ export interface PermissionCheckResult {
   };
   // Per-invocation hard-ask marker. When `true`, this `ask` decision MUST be confirmed by the user on every invocation and is NEVER auto-skipped by the explicit-approval memory store (Store B). Policy sets it only after choosing a hard user-approval lane; `decisionOverride: "ask"` may instead use the common foreground reviewer route when that route is eligible.
   forceModal?: boolean;
-  // Permission policy.5 Layer 2 — structured deny reasons for audit forensics. The pipeline records the *current* deny entry only (short-circuit evaluation; later layers are skipped). Hypothetical other-layer decisions belong to dry-run mode, not normal audit. Each entry: { layer, reason, source } layer — which Permission policy layer fired (0=sensitive, 1=allowed-dir, …) reason — short machine-readable code (e.g. "out-of-allowed-dir") source — emitter ("directory-policy", "sensitive-paths", …)
+  // Structured reasons describe the current deny entry; later pipeline stages do not run.
   denyReasons?: ReadonlyArray<{
-    layer: number;
     reason: string;
     source: string;
   }>;
 }
 
 export interface PermissionCheckContext {
+  rationaleAvailable?: boolean;
   userOwnedBrowser?: UserOwnedBrowserScope;
   hostTerminalTurn?: HostTerminalCommandScope;
   trustOrigin?: ToolTrustOrigin;
@@ -263,8 +264,9 @@ type HostTerminalPermissionContext = Pick<PermissionCheckContext, "hostTerminalT
 
 // Permission policy input bundle for reviewer-agent dispatch. Set when the caller wants the headless lane to consult the Layer 5 classifier (rather than the temporary "reviewer → ask" mapping).
 export interface ReviewerDispatchInput {
+  rationaleAvailable?: boolean;
   // Original host policy result; dispatch must preserve its per-call authority and reason.
-  permissionDecision?: Pick<PermissionCheckResult, "decision" | "layer" | "reason" | "reviewer" | "pipelineRequest">;
+  permissionDecision?: Pick<PermissionCheckResult, "decision" | "reason" | "reviewer" | "pipelineRequest">;
   // Host invocation identity shared by scope assessment and ordinary review.
   invocationId: string;
   // Conversation whose turn is being reviewed.
@@ -334,6 +336,7 @@ export function matchesReviewerApprovalBasis(
 
 // Evidence returned by review, consumed by the central permission pipeline.
 export interface ReviewerDispatchResult {
+  requestId?: string;
   verdict: RiskVerdict;
   outcome: ReviewerDispatchOutcome;
   approvalBasis?: ReviewerApprovalBasis;
@@ -500,7 +503,6 @@ export class PermissionManager {
   // "This session" allow rules (`addSessionRule`), by root conversation. Held in memory only: they end with the conversation (`endSession`) or the app.
   private readonly sessionRules = new Map<string, PermissionRule[]>();
 
-  private toolModeOverrides = new Map<string, ExecutionMode>();
 
   private readonly permissionsFilePath: string;
   private userRulesVersion: PersistedPolicyVersion | undefined;
@@ -763,41 +765,6 @@ export class PermissionManager {
   setRules(rules: PermissionRule[]): void {
     this.rules = rules.map((rule) => ({ ...rule }));
     this.policyGeneration += 1;
-  }
-
-  setToolModeOverride(toolName: string, mode: ExecutionMode): void {
-    if (mode === "default") {
-      if (this.toolModeOverrides.delete(toolName)) this.policyGeneration += 1;
-      return;
-    }
-    if (this.toolModeOverrides.get(toolName) !== mode) this.policyGeneration += 1;
-    this.toolModeOverrides.set(toolName, mode);
-  }
-
-  clearToolModeOverride(toolName: string): void {
-    if (this.toolModeOverrides.delete(toolName)) this.policyGeneration += 1;
-  }
-
-  // Prebuild an exact tool-mode snapshot; publication is assignment-only.
-  prepareToolModeOverrides(
-    predecessorToolNames: Iterable<string>,
-    replacements: readonly { toolName: string; mode: ExecutionMode }[],
-  ): { publish(): void } {
-    const predecessors = Object.freeze([...predecessorToolNames]);
-    const prepared = Object.freeze(replacements.map((entry) => Object.freeze({ ...entry })));
-    let published = false;
-    return Object.freeze({
-      publish: () => {
-        if (published) return;
-        for (const toolName of predecessors) this.toolModeOverrides.delete(toolName);
-        for (const { toolName, mode } of prepared) {
-          if (mode === "default") this.toolModeOverrides.delete(toolName);
-          else this.toolModeOverrides.set(toolName, mode);
-        }
-        this.policyGeneration += 1;
-        published = true;
-      },
-    });
   }
 
   getVisibilityDenyRules(): DenyRule[] {
@@ -1330,7 +1297,6 @@ export class PermissionManager {
       decision: decision.outcome === "sandbox-auto" ? "allow" : decision.outcome === "ask-forced" ? "ask" : decision.outcome,
       reason: decision.reason,
       reasonCode: decision.reasonCode,
-      layer: decision.reasonCode === "rule-allow" ? 3 : decision.reasonCode === "remembered-approval" ? 5 : request.admissionDenial || request.rules?.deny ? 1 : request.floor ? 2 : 6,
       pipelineRequest: request,
       ...(decision.requiresCodeCheckpoint ? { requiresCodeCheckpoint: true as const } : {}),
       ...(decision.outcome === "ask-forced" || request.manualRerun && decision.outcome === "ask" ? { forceModal: true } : {}),
@@ -1383,7 +1349,7 @@ export class PermissionManager {
       level, status: failed ? "error" : "success",
       breakerOpen: judge.judged && judge.pause !== undefined,
     } }, issued.hostTerminalContext);
-    resolved.reviewer = { route: result.reviewer.route, verdict: review.verdict, outcome: review.outcome,
+    resolved.reviewer = { route: result.reviewer.route, ...(review.requestId === undefined ? {} : { requestId: review.requestId }), verdict: review.verdict, outcome: review.outcome,
       ...(review.approvalBasis ? { approvalBasis: review.approvalBasis } : {}) };
     return resolved;
   }
@@ -1488,10 +1454,7 @@ export class PermissionManager {
     if (powerShellPaths?.credentialStore) admissionDenial ??= { code: "credential-store", reason: powerShellPaths.credentialStore };
     const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;
     if (unknownProtectedWrite) floor ??= { code: "protected-path", reason: unknownProtectedWrite };
-    const parsedRoot = parsed?.analysis.ok ? parsed.analysis.program : undefined;
-    const simpleRoot = parsedRoot?.kind === "sequence" && parsedRoot.statements.length === 1 ? parsedRoot.statements[0] : parsedRoot;
-    const hostBoundWriteTargets = shellExecution.environmentSnapshot !== undefined && shellPaths?.resolvedWriteTargetsOnly === true
-      && simpleRoot?.kind === "command";
+    const hostBoundWriteTargets = shellExecution.environmentSnapshot !== undefined && shellPaths?.resolvedWriteTargetsOnly === true;
     for (const evidence of [...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])]) {
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
       const criticalDelete = evidence.deleteIntent ? criticalDeleteTargetFor(evidence, [projectRulesCwd ?? ruleSubject?.cwd ?? process.cwd()]) : undefined;
@@ -1534,7 +1497,8 @@ export class PermissionManager {
     const request: PermissionDecisionRequest = {
       sessionId: context.sessionId,
       tool: { name: toolName, source, kind: source === "mcp" ? "mcp" : context.fileWritePolicy ? "file-write" : effectKind, readOnlyHint: context.mcpReadOnlyHint },
-      mode: this.toolModeOverrides.get(toolName) ?? this.mode,
+      mode: this.mode,
+      rationaleAvailable: context.rationaleAvailable === true,
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, rules, secretRead, manualRerun: context.manualRerun,
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
@@ -1583,8 +1547,9 @@ export class PermissionManager {
           source: "fallback", fallback: "error", rationale: "reviewer cancelled by caller", breakerTripped: false },
       };
     }
-    if (judged.baseline) return judged.baseline;
-    return reviewerResultForJudge(judged);
+    const requestIdentity = input.rationaleAvailable === true && issued?.request.rationaleAvailable === true ? { requestId: input.invocationId } : {};
+    if (judged.baseline) return { ...judged.baseline, ...requestIdentity };
+    return { ...reviewerResultForJudge(judged), ...requestIdentity };
   }
 
   private async dispatchSurfaceReviewer(request: PermissionDecisionRequest, context: HostTerminalPermissionContext, input: ReviewerDispatchInput, signal?: AbortSignal): Promise<ReviewerDispatchResult> {
@@ -1873,6 +1838,10 @@ export class PermissionManager {
     };
   }
 
+  resolveReviewerChoice(sessionId: string, invocationId: string, decision: "allow" | "deny"): void {
+    this.judgeBreaker.record(this.resolveJudgeRootSession(sessionId), decision, invocationId);
+  }
+
   async dispatchJudge(
     toolName: string,
     input: ReviewerDispatchInput,
@@ -1951,6 +1920,7 @@ export class PermissionManager {
     };
     const request: JudgeRequest = {
       invocationId: input.invocationId,
+      deferDenialCounting: input.rationaleAvailable === true && reviewedRequest?.rationaleAvailable === true && !reviewedRequest.userOwnedSurface && context?.scopeAssessment !== true,
       sessionId: this.resolveJudgeRootSession(input.sessionId),
       lane, invocation,
       recentUserMessages: input.conversationContext?.recentUserMessage ? [input.conversationContext.recentUserMessage] : [],

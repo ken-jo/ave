@@ -2,6 +2,7 @@
  * Only missing provider configuration may degrade to rules; reconfiguration restores model review. */
 import {
   createRiskClassifier,
+  RuleBasedRiskClassifier,
   type LlmCompletionResult,
   type LlmReviewerProvider,
   type RiskClassifier,
@@ -98,9 +99,7 @@ export interface WireReviewerDeps {
 /** Runtime mode may degrade from model review to rules; diagnostics consume it, but settings never persist it. */
 export type RuntimeReviewerMode =
   | "disabled"
-  | "rule"
   | "llm"
-  | "strict"
   | "llm-degraded-to-rule"
   | "llm-model-unavailable";
 
@@ -155,7 +154,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   let runtimeMode: RuntimeReviewerMode = settings.mode;
   let degradedToRule = false;
   let unavailableReason: string | undefined;
-  if (settings.mode === "disabled" || settings.mode === "strict" || settings.mode === "rule") {
+  if (settings.mode === "disabled") {
     classifier = createRiskClassifier({ mode: settings.mode });
     log.info("boot: reviewer wired (mode=%s)", settings.mode);
   } else {
@@ -214,7 +213,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
         settings.fallbackOnError,
       );
     } else {
-      classifier = createRiskClassifier({ mode: "rule" });
+      classifier = new RuleBasedRiskClassifier();
     }
   }
 

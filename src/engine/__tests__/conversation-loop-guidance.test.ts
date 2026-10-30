@@ -360,8 +360,6 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     for (const request of requests) {
       expect(request).toMatchObject({
         toolCategory: "meta",
-        isReadOnly: false,
-        mode: "ask_all",
       });
       expect(request.reason).toContain("[Sub-Agent: researcher]");
     }

@@ -90,7 +90,7 @@ describe("configuration write authority", () => {
     const bytes = '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}';
     writeFileSync(path, bytes);
     const contents = `import { writePermissionSettings } from ${JSON.stringify(settingsSource)};
-      writePermissionSettings({ reviewer: { mode: "strict" } }).then(() => console.log("wrote"), error => console.log(error.name));`;
+      writePermissionSettings({ reviewer: { mode: "llm" } }).then(() => console.log("wrote"), error => console.log(error.name));`;
     expect(child(home, contents)).toBe("AveHomeConfigurationNotOwnerError");
     expect(child(home, contents)).toBe("AveHomeConfigurationNotOwnerError");
     expect(readFileSync(path, "utf8")).toBe(bytes);

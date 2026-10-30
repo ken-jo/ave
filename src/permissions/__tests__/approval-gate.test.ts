@@ -18,7 +18,6 @@ import type {
   ApprovalRequestInput,
   ApprovalSignatureFields,
 } from "../approval-gate.js";
-import type { RationaleApprovalDisplay } from "../../shared/rationale-approval-display.js";
 import type { HostShellExecutionPermitBinding } from "../host-shell-execution-permit.js";
 import {
   buildHostShellExecutionPlan,
@@ -64,44 +63,6 @@ function makeRequest(overrides?: Partial<RequestInput>): RequestInput {
     createdAt: Date.now(),
     ...overrides,
   };
-}
-
-function makeRationaleApprovalDisplay(
-  overrides: Partial<RationaleApprovalDisplay> = {},
-): RationaleApprovalDisplay {
-  return {
-    contractVersion: 1,
-    display: "rationale-approval-display",
-    toolName: "agent_spawn",
-    canonicalTargets: ["workspace/project"],
-    requestedEffects: ["change-host-or-agent-state"],
-    affectedResources: ["workspace/project"],
-    requiredAuthority: "host-orchestration",
-    effectiveVerdict: {
-      level: "medium",
-      reason: "host-reviewed state change",
-    },
-    scopeAlignment: "aligned",
-    scopeReasons: ["the host-sealed target matches the request"],
-    rationaleStatus: "ready",
-    suggestion: "This affects only the reviewed workspace target.",
-    modalFallbackRequired: false,
-    ...overrides,
-  };
-}
-
-function makeRationaleRequest(
-  overrides: Partial<RequestInput> = {},
-): RequestInput {
-  const display = makeRationaleApprovalDisplay();
-  return makeRequest({
-    category: "tool",
-    kind: "rationale",
-    toolName: display.toolName,
-    reviewerVerdict: display.effectiveVerdict,
-    args: display,
-    ...overrides,
-  });
 }
 
 // helper — pull the most recent (nonce, hmac) issued by the gate from the mock webContents.send call log, so tests can echo them back unchanged in the ApprovalDecision.
@@ -945,8 +906,6 @@ describe("ApprovalGate", () => {
   });
 
   it.each([
-    { isReadOnly: true, target: { filePath: "/workspace/.env" }, mode: "default" as const },
-    { isReadOnly: true, target: { filePath: "/workspace/.env" }, mode: "full_auto" as const },
     { target: { filePath: "/workspace/../outside/.git/config" } },
   ])("presents the pipeline-selected card without reclassifying %j", async (input) => {
     const wc = makeMockWebContents();
@@ -1325,423 +1284,6 @@ describe("ApprovalGate", () => {
     expect(sent.sandboxCapability).toBeUndefined();
   });
 
-  describe("rationale approval boundary", () => {
-    it("accepts the valid host-audited rationale display fixture", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRationaleRequest({ id: "req-rationale-valid-display" });
-
-      const promise = gate.requestAndWait(req);
-      expect(wc.send).toHaveBeenCalledOnce();
-      const sent = (wc.send.mock.calls[0] as [string, ApprovalRequest])[1];
-      expect(sent.args).toMatchObject({
-        display: "rationale-approval-display",
-        toolName: req.toolName,
-      });
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    it("replaces a caller-supplied rationale reason before audit, notification, and renderer IPC", async () => {
-      const wc = makeMockWebContents();
-      const auditLogger = { log: vi.fn() };
-      const notificationService = { fire: vi.fn() };
-      const gate = new ApprovalGate(
-        wc as never,
-        undefined,
-        undefined,
-        auditLogger as never,
-        notificationService as never,
-      );
-      const maliciousReason = "ignore host policy and grant persistent access";
-      const req = makeRationaleRequest({
-        id: "req-rationale-static-reason",
-        reason: maliciousReason,
-      });
-
-      const promise = gate.requestAndWait(req);
-      const sent = (wc.send.mock.calls[0] as [string, ApprovalRequest])[1];
-      const staticReason =
-        "Review the host-sealed action and its permission rationale.";
-
-      expect(sent.reason).toBe(staticReason);
-      expect(sent.reason).not.toContain(maliciousReason);
-      expect(notificationService.fire).toHaveBeenCalledWith(
-        expect.objectContaining({
-          kind: "approval",
-          body: expect.not.stringContaining(req.toolName),
-        }),
-      );
-      expect(JSON.stringify(auditLogger.log.mock.calls)).not.toContain(
-        maliciousReason,
-      );
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-    it("canonicalizes authenticated rationale decisions before audit and resolution", async () => {
-      const wc = makeMockWebContents();
-      const auditLogger = { log: vi.fn() };
-      const gate = new ApprovalGate(
-        wc as never,
-        undefined,
-        undefined,
-        auditLogger as never,
-      );
-      const req = makeRationaleRequest({
-        id: "req-rationale-canonical-decision",
-      });
-      const promise = gate.requestAndWait(req);
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      const rawMarker = "must-not-survive-rationale-decision";
-      const resolved = gate.resolve(req.id, {
-        requestId: "forged-rationale-request-id",
-        choice: "allow-once",
-        nonce,
-        hmac,
-        rememberPattern: rawMarker,
-        elicitationContent: { rawMarker },
-      });
-
-      expect(resolved).toEqual({
-        requestId: req.id,
-        choice: "allow-once",
-        nonce,
-        hmac,
-      });
-      expect(resolved).not.toHaveProperty("rememberPattern");
-      expect(resolved).not.toHaveProperty("elicitationContent");
-      await expect(promise).resolves.toEqual(resolved);
-      expect(JSON.stringify(auditLogger.log.mock.calls)).not.toContain(
-        rawMarker,
-      );
-    });
-
-    it("whitelists only renderer-safe rationale fields after preserving the full host request", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const rawMarker = "must-not-reach-rationale-renderer";
-      const req = makeRationaleRequest({
-        id: "req-rationale-renderer-whitelist",
-        target: { filePath: `/workspace/${rawMarker}` },
-        evaluationContext: { rawMarker } as never,
-        approvalPurpose: { text: rawMarker } as never,
-        source: "plugin",
-        sourcePluginId: rawMarker,
-        approvalScope: rawMarker,
-        trustOrigin: rawMarker,
-        sandboxCapability: { rawMarker } as never,
-        isReadOnly: false,
-        mode: "ask_all",
-        sensitivePathPattern: rawMarker,
-        approvalCacheKey: rawMarker,
-        outOfAllowedDir: {
-          candidatePath: `/workspace/${rawMarker}`,
-          suggestedParent: null,
-          currentAllowed: [],
-          adjacencyWarnings: [],
-        },
-      });
-
-      const promise = gate.requestAndWait(req);
-      const sent = (wc.send.mock.calls[0] as [string, ApprovalRequest])[1];
-      expect(Object.keys(sent).sort()).toEqual([
-        "allowedChoices",
-        "args",
-        "category",
-        "createdAt",
-        "hmac",
-        "id",
-        "kind",
-        "nonce",
-        "reason",
-        "requireExplicit",
-        "reviewerVerdict",
-        "toolName",
-      ]);
-      expect(sent).not.toHaveProperty("target");
-      expect(sent).not.toHaveProperty("evaluationContext");
-      expect(sent).not.toHaveProperty("approvalCacheKey");
-      expect(JSON.stringify(sent)).not.toContain(rawMarker);
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-
-    it("rejects a rationale display with extra data before modal or HMAC issuance", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRationaleRequest({
-        id: "req-rationale-extra-data",
-        args: {
-          ...makeRationaleApprovalDisplay(),
-          ticketId: "must-not-cross-the-renderer-boundary",
-        },
-      });
-
-      const result = await gate.requestAndWait(req);
-      expect(result).toMatchObject({
-        requestId: req.id,
-        choice: "deny-once",
-        rememberPattern: "invalid rationale approval display",
-      });
-      expect(isHostApprovalRejectedDecision(result)).toBe(true);
-      expect(wc.send).not.toHaveBeenCalled();
-      expect(gate.pendingCount).toBe(0);
-      expect(
-        gate.resolve(req.id, {
-          requestId: req.id,
-          choice: "allow-once",
-        }),
-      ).toBeNull();
-    });
-
-    it("rejects a rationale display whose host tool identity differs before modal publication", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRationaleRequest({
-        id: "req-rationale-tool-mismatch",
-        toolName: "shell_execute",
-      });
-
-      await expect(gate.requestAndWait(req)).resolves.toMatchObject({
-        choice: "deny-once",
-        rememberPattern: "invalid rationale approval display",
-      });
-      expect(wc.send).not.toHaveBeenCalled();
-      expect(gate.pendingCount).toBe(0);
-    });
-
-    it("rejects a rationale display whose host verdict differs before modal publication", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRationaleRequest({
-        id: "req-rationale-verdict-mismatch",
-        reviewerVerdict: { level: "high", reason: "forged host verdict" },
-      });
-
-      await expect(gate.requestAndWait(req)).resolves.toMatchObject({
-        choice: "deny-once",
-        rememberPattern: "invalid rationale approval display",
-      });
-      expect(wc.send).not.toHaveBeenCalled();
-      expect(gate.pendingCount).toBe(0);
-    });
-
-    it.each(["allow-once", "deny-once"] as const)(
-      "accepts the non-persistent %s choice",
-      async (choice) => {
-        const wc = makeMockWebContents();
-        const gate = new ApprovalGate(wc as never);
-        const req = makeRationaleRequest({
-          id: `req-rationale-${choice}`,
-          kind: "rationale",
-          allowedChoices: ["allow-always"],
-        });
-
-        const promise = gate.requestAndWait(req);
-        const sent = (wc.send.mock.calls[0] as [string, ApprovalRequest])[1];
-        expect(sent.allowedChoices).toEqual(["allow-once", "deny-once"]);
-        expect(sent.requireExplicit).toBe(true);
-
-        const { nonce, hmac } = lastSentNonceHmac(wc);
-        const resolved = gate.resolve(req.id, {
-          requestId: req.id,
-          choice,
-          nonce,
-          hmac,
-        });
-
-        expect(resolved?.choice).toBe(choice);
-        await expect(promise).resolves.toMatchObject({ choice });
-      },
-    );
-
-    it.each(["allow-session", "allow-always", "deny-always"] as const)(
-      "forces persistent %s responses to deny-once",
-      async (choice) => {
-        const wc = makeMockWebContents();
-        const gate = new ApprovalGate(wc as never);
-        const req = makeRationaleRequest({
-          id: `req-rationale-reject-${choice}`,
-          kind: "rationale",
-        });
-
-        const promise = gate.requestAndWait(req);
-        const { nonce, hmac } = lastSentNonceHmac(wc);
-        const resolved = gate.resolve(req.id, {
-          requestId: req.id,
-          choice,
-          nonce,
-          hmac,
-        });
-
-        expect(resolved).toMatchObject({
-          requestId: req.id,
-          choice: "deny-once",
-          rememberPattern: "approval choice not allowed",
-        });
-        await expect(promise).resolves.toEqual(resolved);
-        expect(isHostApprovalRejectedDecision(resolved)).toBe(true);
-        expect(isHostApprovalTimeoutDecision(resolved)).toBe(false);
-        expect(gate.pendingCount).toBe(0);
-      },
-    );
-
-    it("never exposes a rationale request through getRequestSnapshot", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRationaleRequest({
-        id: "req-rationale-snapshot",
-        kind: "rationale",
-        approvalCacheKey: "must-not-be-cacheable",
-      });
-
-      const promise = gate.requestAndWait(req);
-      expect(gate.pendingCount).toBe(1);
-      expect(gate.getRequestSnapshot(req.id)).toBeNull();
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await promise;
-    });
-
-    it("keeps the host one-shot record capability out of the renderer payload", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = {
-        ...makeRequest({ id: "req-one-shot-record-capability" }),
-        durableApprovalRecordAllowed: false as const,
-      };
-
-      const promise = gate.requestAndWait(req);
-      const sent = (wc.send.mock.calls[0] as unknown as [string, ApprovalRequest])[1];
-      expect(sent).not.toHaveProperty("durableApprovalRecordAllowed");
-      expect(gate.getRequestSnapshot(req.id)).toMatchObject({
-        args: req.args,
-        durableApprovalRecordAllowed: false,
-        verdictAtApproval: "medium",
-      });
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await promise;
-    });
-
-    it("defaults exact one-shot choices to a non-recordable host snapshot", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRequest({
-        id: "req-one-shot-record-default",
-        allowedChoices: ["allow-once", "deny-once"],
-      });
-
-      const promise = gate.requestAndWait(req);
-      expect(gate.getRequestSnapshot(req.id)).toMatchObject({
-        durableApprovalRecordAllowed: false,
-      });
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await promise;
-    });
-
-    it("does not let a caller make exact one-shot choices recordable", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = {
-        ...makeRequest({
-          id: "req-one-shot-record-explicit-true",
-          allowedChoices: ["allow-once", "deny-once"],
-        }),
-        durableApprovalRecordAllowed: true as const,
-      };
-
-      const promise = gate.requestAndWait(req);
-      expect(gate.getRequestSnapshot(req.id)).toMatchObject({
-        durableApprovalRecordAllowed: false,
-      });
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await promise;
-    });
-
-    it("does not auto-approve a read-only rationale request", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(
-        wc as never,
-        makeTestPolicy({ requireExplicitApproval: false }),
-      );
-      const req = makeRationaleRequest({
-        id: "req-rationale-readonly",
-        kind: "rationale",
-        isReadOnly: true,
-        mode: "default",
-      });
-
-      const promise = gate.requestAndWait(req);
-      expect(wc.send).toHaveBeenCalledOnce();
-      expect(gate.pendingCount).toBe(1);
-      const sent = (wc.send.mock.calls[0] as [string, ApprovalRequest])[1];
-      expect(sent).toMatchObject({
-        kind: "rationale",
-        requireExplicit: true,
-        allowedChoices: ["allow-once", "deny-once"],
-      });
-      expect(sent).not.toHaveProperty("isReadOnly");
-
-      const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve(req.id, {
-        requestId: req.id,
-        choice: "deny-once",
-        nonce,
-        hmac,
-      });
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
-  });
-
-  // Conversation attribution `sessionId` names the conversation whose turn is blocked on the modal. It is signed, not merely carried: a request re-signed under a different conversation must not verify.
   describe("conversation attribution", () => {
     // The gate's HMAC key is `private` in TypeScript only — it is an ordinary runtime property. Reading it lets a test mint the exact signature the gate would have produced for a *different* conversation, which is the only way to prove the attribution is inside the signing preimage rather than sitting beside it.
     function gateSessionKey(gate: ApprovalGate): Buffer {
@@ -1960,30 +1502,10 @@ describe("ApprovalGate", () => {
       expect(blocked?.sessionId).toBe("conv-blocked");
     });
 
-    it("carries the attribution onto the narrowed rationale payload", async () => {
-      const wc = makeMockWebContents();
-      const gate = new ApprovalGate(wc as never);
-      const req = makeRationaleRequest({
-        id: "attr-rationale",
-        sessionId: "conv-rationale",
-      });
 
-      const promise = gate.requestAndWait(req);
-      const sent = lastSentRequest(wc);
-      expect(sent.kind).toBe("rationale");
-      expect(sent.sessionId).toBe("conv-rationale");
-
-      gate.resolve("attr-rationale", {
-        requestId: "attr-rationale",
-        choice: "deny-once",
-        nonce: sent.nonce,
-        hmac: sent.hmac,
-      });
-      await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
-    });
   });
 
-  // Answerer attribution `sessionId` names the conversation that was blocked; `answeredBy` names who ended the block. The assertions below are about the shape of the record: the field is present with a real value on the row that records an answer, absent everywhere else, host-derived, and closed. The choice BETWEEN answerers is exercised in the away-authority block further down.
+  // Answerer attribution `sessionId` names the conversation that was blocked; `answeredBy` names who ended the block. The assertions below are about the shape of the record: the field is present with a real value on the row that records an answer, absent everywhere else, host-derived, and closed.
   describe("approval answerer", () => {
     // Read the row's answerer, so a test asserts its value and not merely that the word appears.
     function answererOf(row: string): string | undefined {
@@ -2093,9 +1615,6 @@ describe("ApprovalGate", () => {
       );
       // Every member renders as itself. A new member that forgot its token would fail to compile in the audit table; one that mistyped it fails here.
       expect(approvalAnswererAuditToken("desk")).toBe("desk");
-      expect(approvalAnswererAuditToken("away-authority")).toBe(
-        "away-authority",
-      );
     });
   });
 
@@ -2240,7 +1759,6 @@ describe("ApprovalGate", () => {
         makeRequest({
           id: "origin-not-sent",
           remoteControllerOrigin: "tailnet-controller",
-          scopeTargetFilePaths: ["/srv/scope/report.md"],
           abortSignal: new AbortController().signal,
         }),
       );
@@ -2254,8 +1772,6 @@ describe("ApprovalGate", () => {
       expect(sent.nonce).toEqual(expect.any(String));
       // The renderer is neither asked for the marker nor told it. There is no copy of it outside the main process to author or to alter.
       expect(sent).not.toHaveProperty("remoteControllerOrigin");
-      // Same property, same reason. The scope list is host-only too: it is what bounds an away answer, so a renderer that could see it is one step from a renderer that could argue about it.
-      expect(sent).not.toHaveProperty("scopeTargetFilePaths");
       // And the abort signal. An AbortSignal is not structured-cloneable, so leaving it on the payload throws at `webContents.send` in production — loud rather than silent, but still a crash, and the mock here clones nothing so only this assertion would catch it.
       expect(sent).not.toHaveProperty("abortSignal");
     });
@@ -2306,7 +1822,7 @@ describe("ApprovalGate", () => {
   it("keeps a remote-controller read request on a one-shot human card", async () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const request = makeRequest({ sessionId: "away-session", remoteControllerOrigin: "platform-bridge", remoteControllerAuthority: makePlatformBridgeAuthority(), toolCategory: "read", isReadOnly: true, durableApprovalRecordAllowed: false });
+    const request = makeRequest({ sessionId: "away-session", remoteControllerOrigin: "platform-bridge", remoteControllerAuthority: makePlatformBridgeAuthority(), toolCategory: "read", durableApprovalRecordAllowed: false });
     const pending = gate.requestAndWait(request);
     const card = sentApprovalCards<ApprovalRequest>(wc)[0]!;
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
@@ -2322,7 +1838,6 @@ describe("ApprovalGate", () => {
         toolName: "fs_write",
         toolCategory: "write",
         sessionId: "conv-stopped",
-        isReadOnly: false,
         ...(signal === undefined ? {} : { abortSignal: signal }),
       });
     }
@@ -2488,5 +2003,64 @@ describe("ApprovalGate", () => {
         ),
       ).toBe(false);
     });
+  });
+});
+
+describe("same-card policy mutation evidence", () => {
+  it.each(["session", "persistent", "global"])("binds a completed %s exact save to its authenticated native answer once", async (scope) => {
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const request = makeRequest({ id: `exact-save-${scope}`, sessionId: "save-session" });
+    const pending = gate.requestAndWait(request);
+    const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+    const token = gate.beginExactApprovalSave(request.id, "40");
+    gate.completeExactApprovalSave(token, "41", scope);
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
+    const decision = await pending;
+    expect(gate.consumeApprovalPolicyMutation({ ...decision })).toBeUndefined();
+    expect(gate.consumeApprovalPolicyMutation(decision)).toEqual({ approvals: { from: "40", to: "41", scope } });
+    expect(gate.consumeApprovalPolicyMutation(decision)).toBeUndefined();
+  });
+
+  it("rejects a concurrent exact-store change from the same-card proof", async () => {
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const request = makeRequest({ id: "overlapping-exact-save" });
+    const pending = gate.requestAndWait(request);
+    const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+    gate.completeExactApprovalSave(gate.beginExactApprovalSave(request.id, "40"), "42", "session");
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
+    expect(gate.consumeApprovalPolicyMutation(await pending)).toBeUndefined();
+  });
+
+  it("requires a native directory answer and the exact chosen folder delta", async () => {
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const request = makeRequest({ id: "folder-save", kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: "/srv/task/file.txt", suggestedParent: "/srv/task", currentAllowed: ["/workspace"], adjacencyWarnings: [] } });
+    const pending = gate.requestAndWait(request);
+    const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-session", nonce: sent.nonce, hmac: sent.hmac }, wc as never);
+    const decision = await pending;
+    const mutation = { from: ["/workspace"], to: ["/workspace", "/srv/task"], directory: "/srv/task", scope: "session" as const };
+    expect(() => gate.recordApprovedDirectoryMutation({ ...decision }, mutation)).toThrow("not authorized by this card");
+    expect(() => gate.recordApprovedDirectoryMutation(decision, { ...mutation, to: [...mutation.to, "/unrelated"] })).toThrow("not authorized by this card");
+    gate.recordApprovedDirectoryMutation(decision, mutation);
+    expect(gate.consumeApprovalPolicyMutation(decision)).toEqual({ directories: { ...mutation, to: ["/srv/task", "/workspace"] } });
+  });
+});
+
+describe("host-owned ordinary card cancellation", () => {
+  it.each(["tool", "out-of-allowed-dir"] as const)("retires only the exact %s card owned by the supplied session", async (kind) => {
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const request = makeRequest({ id: `owned-${kind}`, sessionId: "owning-session", kind });
+    const pending = gate.requestAndWait(request);
+    const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+    expect(gate.cancelPendingRequest(request.id, "another-session", "caller-abort")).toBe(false);
+    expect(gate.pendingCount).toBe(1);
+    expect(gate.cancelPendingRequest(request.id, "owning-session", "caller-abort")).toBe(true);
+    await expect(pending).resolves.toMatchObject({ choice: "deny-once", requestId: request.id });
+    expect(gate.pendingCount).toBe(0);
+    expect(gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never)).toBeNull();
   });
 });

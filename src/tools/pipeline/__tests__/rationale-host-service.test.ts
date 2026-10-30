@@ -1,3 +1,4 @@
+import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";
 import type { ApprovalGate } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
@@ -32,7 +33,7 @@ const rationaleProvenance = {
 const permission = {
   decision: "ask",
   reason: "Automatic review requires human approval.",
-  layer: 6, reasonCode: "reviewer-human-required",
+  reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
     verdict: { level: "high", reason: "bounded destructive action" },
@@ -54,10 +55,10 @@ function createAnchor(): RequestAnchor {
   return anchor;
 }
 
-function createCandidate(anchor: RequestAnchor): RationaleControlCandidate {
+function createCandidate(anchor: RequestAnchor, approvalGate: Pick<ApprovalGate, "requestAndWait">): RationaleControlCandidate {
   const originalInput = { command: "rm -rf workspace/private-build" };
   const finalInput = { command: "rm -rf workspace/private-build", confirmed: true };
-  return {
+  const candidate: RationaleControlCandidate = {
     now: NOW,
     requestAnchor: anchor,
     rationaleProvenance,
@@ -75,9 +76,7 @@ function createCandidate(anchor: RequestAnchor): RationaleControlCandidate {
     source: "builtin",
     category: "shell",
     invocationTrustOrigin: "llm-tool-arg",
-    targetFilePaths: ["workspace/private-build"],
     canonicalTargets: ["workspace/private-build"],
-    allowedDirectories: ["workspace"],
     approvalCacheKey: "shell_exec:workspace/private-build",
     sandboxCapability: {
       kind: "asrt",
@@ -92,24 +91,17 @@ function createCandidate(anchor: RequestAnchor): RationaleControlCandidate {
       network: "strict-union",
     },
     permission,
-    permissionEvaluationContext: buildPermissionEvaluationContext({
-      policyMode: "default",
-      headless: false,
-      source: "builtin",
-      category: "shell",
-      trustOrigin: "llm-tool-arg",
-      executionCwd: "workspace",
-      allowedDirectories: ["workspace"],
-      pathFields: ["command"],
-      targetFilePaths: ["workspace/private-build"],
-      sensitivePathsAdjacent: [],
-    }),
     eligibilityContext: {
       headless: false,
       forceModal: false,
       approvalReasonPrefix: null,
     },
   };
+  return { ...candidate, requestHumanApproval: createRationaleApprovalCallback({ candidate, approvalGate,
+    evaluationContext: buildPermissionEvaluationContext({ policyMode: "auto", headless: false,
+      source: "builtin", category: "shell", trustOrigin: "llm-tool-arg", executionCwd: "workspace",
+      allowedDirectories: ["workspace"], pathFields: ["command"], targetFilePaths: [...candidate.canonicalTargets], sensitivePathsAdjacent: [] }),
+  }) };
 }
 
 function authorizedRecord(): InvocationAuditRecord {
@@ -146,10 +138,10 @@ function setup() {
     requestId: request.id,
     choice: "deny-once" as const,
   }));
-  const cancelPendingRationale = vi.fn(() => false);
+  const cancelPendingRequest = vi.fn(() => false);
   const approvalGate = {
     requestAndWait,
-    cancelPendingRationale,
+    cancelPendingRequest,
   };
   const commitStart = vi.fn(async (
     _input: Parameters<HostInvocationStartCas["commitStart"]>[0],
@@ -177,6 +169,7 @@ function setup() {
   const createCoordinator = async (): Promise<RationaleHostCoordinator> => {
     const runtime = await factory({
       requestAnchor: anchor,
+      userRoleTexts: [anchor.sanitizedIntent],
       rationaleProvenance,
       sessionId: SESSION_ID,
     });
@@ -194,7 +187,7 @@ function setup() {
     getRationaleScopeReviewer,
     reviewer,
     requestAndWait,
-    cancelPendingRationale,
+    cancelPendingRequest,
     commitStart,
   };
 }
@@ -245,7 +238,7 @@ describe("RationaleHostService", () => {
     const state = setup();
     const coordinator = await state.createCoordinator();
     const materialized = coordinator.materializeRationaleControl(
-      createCandidate(state.anchor),
+      createCandidate(state.anchor, { requestAndWait: state.requestAndWait }),
     );
     expect(materialized).not.toBeNull();
     if (!materialized) throw new Error("expected materialized rationale control");
@@ -280,7 +273,7 @@ describe("RationaleHostService", () => {
     const state = setup();
     const coordinator = await state.createCoordinator();
     const materialized = coordinator.materializeRationaleControl(
-      createCandidate(state.anchor),
+      createCandidate(state.anchor, { requestAndWait: state.requestAndWait }),
     );
     if (!materialized) throw new Error("expected materialized rationale control");
     await coordinator.handleRationaleRoundResult({
@@ -296,7 +289,7 @@ describe("RationaleHostService", () => {
     state.requestAndWait.mockImplementationOnce(() => new Promise((resolve) => {
       settleApproval = resolve as (value: null) => void;
     }));
-    state.cancelPendingRationale
+    state.cancelPendingRequest
       .mockImplementationOnce(() => {
         throw new Error("gate cancellation unavailable");
       })
@@ -313,10 +306,10 @@ describe("RationaleHostService", () => {
     expect(() => state.service.closeSession(SESSION_ID, NOW + 2)).toThrow(
       AggregateError,
     );
-    expect(state.cancelPendingRationale).toHaveBeenCalledTimes(1);
+    expect(state.cancelPendingRequest).toHaveBeenCalledTimes(1);
 
     expect(() => state.service.closeSession(SESSION_ID, NOW + 3)).not.toThrow();
-    expect(state.cancelPendingRationale).toHaveBeenCalledTimes(2);
+    expect(state.cancelPendingRequest).toHaveBeenCalledTimes(2);
     await expect(pendingPrompt).resolves.toBeNull();
   });
 
@@ -324,7 +317,7 @@ describe("RationaleHostService", () => {
     const state = setup();
     const coordinator = await state.createCoordinator();
     const materialized = coordinator.materializeRationaleControl(
-      createCandidate(state.anchor),
+      createCandidate(state.anchor, { requestAndWait: state.requestAndWait }),
     );
     if (!materialized) throw new Error("expected materialized rationale control");
     await coordinator.handleRationaleRoundResult({
@@ -353,7 +346,7 @@ describe("RationaleHostService", () => {
     const state = setup();
     const coordinator = await state.createCoordinator();
     const materialized = coordinator.materializeRationaleControl(
-      createCandidate(state.anchor),
+      createCandidate(state.anchor, { requestAndWait: state.requestAndWait }),
     );
     expect(materialized).not.toBeNull();
     state.appendTicket.mockImplementation(() => {

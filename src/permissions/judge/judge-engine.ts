@@ -459,7 +459,7 @@ export async function resolveJudge(
   // Shadow never changes behavior or creates denial history.
 
   let breakerTripped = false;
-  if (applied && source === "judge" && verdict) {
+  if (applied && source === "judge" && verdict && (!request.deferDenialCounting || verdict.decision === "allow")) {
     // One counter per session across the whole chain: the chain's final verdict.
     breakerTripped = deps.breaker.record(request.sessionId, verdict.decision, request.invocationId);
     pause = deps.breaker.pauseReason(request.sessionId);

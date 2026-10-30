@@ -39,6 +39,7 @@ export interface ShellCommandEvent {
   ): void;
 }
 export interface ShellExecutionInspector {
+  analysisTokens?(count: number): void;
   word?(word: ShellWord): void;
   unresolvedWord?(word: ShellWord, error: ShellExecutionError): boolean | void;
   /** Evidence-only continuation invalidates execution state after an opaque operation. */
@@ -123,6 +124,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   if (!analysis.ok) throw new ShellExecutionError(analysis.reason);
   let remainingTokens = totalTokenLimit;
   const chargeAnalysis = (parsed: Extract<ShellAnalysis, { ok: true }>): void => {
+    inspector.analysisTokens?.(parsed.totalTokens ?? 0);
     if (remainingTokens === undefined) return;
     if (!Number.isSafeInteger(parsed.totalTokens) || parsed.totalTokens! < 0) throw new Error("Shell analysis token count is unavailable");
     remainingTokens -= parsed.totalTokens!;

@@ -1,7 +1,7 @@
 import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { _inspectPowerShellForTest } from "../rules/powershell-exfiltration.js";
-import { _inspectShellForTest } from "../rules/shell-exfiltration.js";
+import { _inspectShellForTest } from "../rules/literal-shell-inspection.js";
 import { prepareShellFloorInput } from "../rules/shell-literal-data.js";
 
 const CWD = "/work/project";

@@ -146,7 +146,6 @@ export function permissionAuditEntryFromToolCall(args: {
     const denyReasons = args.permission.denyReasons?.length
       ? args.permission.denyReasons
       : [{
-        layer: args.permission.layer,
         reason: args.permission.reason,
         source: "tool-executor",
       }];
@@ -161,8 +160,7 @@ export function permissionAuditEntryFromToolCall(args: {
   const allowEntry: Extract<PermissionAuditEntryInput, { decision: "allow" }> = {
     ...base,
     decision: "allow",
-    layer: args.permission?.layer ?? 6,
-  };
+    };
   if (args.permission?.reviewer?.verdict) {
     allowEntry.reviewer = args.permission.reviewer.verdict;
   }
@@ -195,7 +193,6 @@ export function permissionAuditAskEntryFromToolCall(args: {
   const askEntry: Extract<PermissionAuditEntryInput, { decision: "ask" }> = {
     ...permissionAuditBase(args),
     decision: "ask",
-    layer: args.permission.layer,
     reason: args.permission.reason,
   };
   if (auditDirectory) {

@@ -79,6 +79,8 @@ export interface ToolExecutorCallbacks {
 }
 
 export interface ToolPermissionContext {
+  /** The host prepared a request-scoped rationale runtime for this invocation. */
+  rationaleAvailable?: boolean;
   /** A fresh user-requested replay still passes every admission and forced floor. */
   manualRerun?: boolean;
   /** Host provenance; never inferred from argument text. */

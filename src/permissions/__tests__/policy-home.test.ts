@@ -10,7 +10,8 @@ import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, protectedReadDenyCovering } from "../asrt-sandbox.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
-import { sensitivePathInArgumentText, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { sensitivePathInArgumentText } from "../rules/shell-exfiltration.js";
+import { shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();

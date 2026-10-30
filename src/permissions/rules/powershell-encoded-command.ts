@@ -4,6 +4,8 @@ import { wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js
 import { isPowerShellLauncher } from "./shell-prefix-values.js";
 
 const DISPLAY_ENCODED_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::(.*))?$/is;
+export function isEncodedPowerShellParameter(value: string): boolean { return DISPLAY_ENCODED_PARAMETER_RE.test(value); }
+
 const DISPLAY_SCRIPT_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
 const DISPLAY_VALUE_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:workingdirectory|configurationname|configurationfile|custompipename|executionpolicy|inputformat|outputformat|settingsfile|version|windowstyle)$/i;
 

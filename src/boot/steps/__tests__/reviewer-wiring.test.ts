@@ -81,25 +81,6 @@ describe("Permission policy P4 reviewer-wiring", () => {
     expect(result.classifier).toBeInstanceOf(RuleBasedRiskClassifier);
     expect(streamProviderFor).not.toHaveBeenCalled();
   });
-  it("settings mode=rule wires RuleBasedRiskClassifier", () => {
-    const pm = new PermissionManager(join(tmpDir, "permissions.json"));
-    const setReviewerSpy = vi.spyOn(pm, "setReviewer");
-    const result = wireReviewerAgent({
-      readActiveLlm: CHAT_LLM,
-      networkFetch: unusedNetworkFetch,
-      permissionManager: pm,
-      readSettings: () => ({
-        mode: "rule",
-        fallbackOnError: "rule",
-      }),
-      verdictCachePath: join(tmpDir, "cache.jsonl"),
-    });
-    expect(result.classifier).toBeInstanceOf(RuleBasedRiskClassifier);
-    expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
-    expect(setReviewerSpy).toHaveBeenCalledOnce();
-    expect(pm.hasReviewer()).toBe(true);
-  });
-
   it("settings mode=disabled wires DisabledRiskClassifier", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const result = wireReviewerAgent({
@@ -460,7 +441,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
         permissions: {
           additionalDirectories: [],
           reviewer: {
-            mode: "rule",
+            mode: "disabled",
             fallbackOnError: "deny",
           },
         },
@@ -472,12 +453,12 @@ describe("Permission policy P4 reviewer-wiring", () => {
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
       readSettings: () => ({
-        mode: "rule",
+        mode: "disabled",
         fallbackOnError: "deny",
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
     });
-    expect(result.appliedSettings.mode).toBe("rule");
+    expect(result.appliedSettings.mode).toBe("disabled");
     expect(result.appliedSettings.fallbackOnError).toBe("deny");
   });
 
@@ -488,7 +469,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
       readSettings: () => ({
-        mode: "rule",
+        mode: "disabled",
         fallbackOnError: "deny",
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
@@ -506,7 +487,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
         networkFetch: unusedNetworkFetch,
         permissionManager: pm,
         readSettings: () => ({
-          mode: "rule",
+          mode: "disabled",
           fallbackOnError: "deny",
         }),
         verdictCachePath: join(tmpDir, "cache-warn-auto-off.jsonl"),
@@ -530,7 +511,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
         networkFetch: unusedNetworkFetch,
         permissionManager: pm,
         readSettings: () => ({
-          mode: "rule",
+          mode: "disabled",
           fallbackOnError: "deny",
         }),
         verdictCachePath: join(tmpDir, "cache-warn-strict.jsonl"),
@@ -551,7 +532,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
       readSettings: () => ({
-        mode: "rule",
+        mode: "disabled",
         fallbackOnError: "deny",
       }),
       verdictCachePath: join(tmpDir, "cache-1.jsonl"),
@@ -563,7 +544,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       networkFetch: unusedNetworkFetch,
       permissionManager: pm,
       readSettings: () => ({
-        mode: "rule",
+        mode: "disabled",
         fallbackOnError: "deny",
       }),
       verdictCachePath: join(tmpDir, "cache-2.jsonl"),

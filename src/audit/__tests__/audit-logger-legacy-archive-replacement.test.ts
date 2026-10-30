@@ -150,8 +150,7 @@ describe("legacy audit archival under pathname replacement", () => {
       tool: "fs_read",
       source: "builtin",
       category: "read",
-      layer: 1,
-    } as Parameters<AuditLogger["appendPermissionAuditEntry"]>[0]);
+      } as Parameters<AuditLogger["appendPermissionAuditEntry"]>[0]);
     expect(appended.prevHash).toBe(computeLineHmac(SECRET, GENESIS_MARKER));
   });
 });

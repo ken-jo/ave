@@ -265,7 +265,6 @@ describe("main windows", () => {
       allowedChoices: ["allow-once", "deny-once"],
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
-      isReadOnly: false,
       egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once", "tab"], network: "public", terminalTabId: tabId },
     });
     try {

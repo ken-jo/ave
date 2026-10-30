@@ -5,7 +5,8 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { inspectHostRisk, isReadOnlyCommand } from "../reviewer/host-risk-inspector.js";
-import { findShellPathPolicyViolation, inspectShellPermissionPaths } from "../../tools/shell-path-policy.js";
+import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
+import { inspectShellPermissionPaths } from "../rules/literal-shell-inspection.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";

@@ -1,4 +1,3 @@
-import { deriveApprovalIsReadOnly } from "./invocation-authorization.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
@@ -65,7 +64,6 @@ import {
 } from "./pipeline/rationale-resume-runner.js";
 import {
   runScriptHook,
-  currentApprovalMode,
   type InvocationRunnerServices,
 } from "./invocation-services.js";
 import {
@@ -270,7 +268,6 @@ export async function executeAuthorizedToolInvocation(
     evaluationContext,
     approvalCacheKey,
     approvalPurpose,
-    targetFilePaths,
     sensitivePathPattern,
     invocationAllowedScope,
     hostShellExecutionPlanAudit,
@@ -428,7 +425,7 @@ export async function executeAuthorizedToolInvocation(
       msg,
       true,
       startTime,
-      { decision: "deny", reason: msg, layer: 6 },
+      { decision: "deny", reason: msg, },
       rateResult.remaining,
       invocationPermissionContext,
       invocationCategory,
@@ -586,14 +583,12 @@ export async function executeAuthorizedToolInvocation(
           await services.auditLogger.appendPermissionAuditEntry({
             ...commonGrantAudit,
             decision: "allow",
-            layer: 6,
-          });
+            });
         } else {
           await services.auditLogger.appendPermissionAuditEntry({
             ...commonGrantAudit,
             decision: "deny",
             denyReasons: [{
-              layer: 6,
               reason: consumed.reason,
               source: "plugin-operation-grant",
             }],
@@ -611,8 +606,7 @@ export async function executeAuthorizedToolInvocation(
         const denied: PermissionCheckResult = {
           decision: "deny",
           reason,
-          layer: 6,
-        };
+          };
         callbacks?.onToolEnd?.(
           toolUse.name,
           msg,
@@ -687,9 +681,8 @@ export async function executeAuthorizedToolInvocation(
             ...permissionResult,
             decision: "deny",
             reason: msg,
-            layer: permissionResult.layer ?? 6,
-          }
-        : { decision: "deny", reason: msg, layer: 6 },
+            }
+        : { decision: "deny", reason: msg, },
       rateResult.remaining,
       invocationPermissionContext,
       invocationCategory,
@@ -853,14 +846,13 @@ export async function executeAuthorizedToolInvocation(
         services.auditLogger.assertPermissionAuditWritable();
       } catch (error) {
         permissionResult = {
-          decision: "deny", reason: "permission audit chain unavailable before execution", layer: 6,
-        };
+          decision: "deny", reason: "permission audit chain unavailable before execution", };
         throw new Error(t("be_executor.auditChainBlock", { name: toolUse.name, error: errorMessage(error) }));
       }
     }
     if (humanApproved && services.permissionManager &&
         approvedPolicyEpoch !== services.permissionManager.getPolicyEpoch()) {
-      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution.", layer: permissionResult?.layer ?? 6 };
+      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution.", };
       throw new Error(permissionResult.reason);
     }
     const recheckTarget = permissionRecheckResult ?? permissionResult;
@@ -964,13 +956,8 @@ export async function executeAuthorizedToolInvocation(
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
-      isReadOnly: permissionResult.forceModal !== true && deriveApprovalIsReadOnly({
-        invocationCategory, approvalReasonPrefix,
-        remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
-      }), mode: currentApprovalMode(services.permissionManager),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
       ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
-      scopeTargetFilePaths: targetFilePaths,
       sensitivePathPattern, evaluationContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       ...(invocationPermissionContext.approvalMemory ? { approvalMemory: invocationPermissionContext.approvalMemory } : {}),
@@ -1165,7 +1152,6 @@ export async function executeAuthorizedToolInvocation(
       trustOrigin: invocationPermissionContext.trustOrigin,
       decision: "deny",
       denyReasons: [{
-        layer: 6,
         reason: "authorized governed operation remains unsettled after interruption",
         source: "plugin-operation-execution",
       }],
@@ -1371,7 +1357,6 @@ export async function executeAuthorizedToolInvocation(
               category: invocationCategory,
               trustOrigin: invocationPermissionContext.trustOrigin,
               decision: "allow",
-              layer: 6,
               pluginOperation: {
                 pluginId,
                 operation,
@@ -1594,7 +1579,7 @@ export async function executeAuthorizedToolInvocation(
   );
   const auditedPermissionResult = authorizationRequired || effectNoApprover
     ? {
-        ...(permissionResult ?? { layer: 6 }),
+        ...(permissionResult ?? { }),
         decision: "deny" as const,
         reason: effectNoApprover ? NO_APPROVER_MESSAGE : "authorization required but approval surface unavailable",
       }

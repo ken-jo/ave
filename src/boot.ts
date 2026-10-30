@@ -78,7 +78,6 @@ import { createServiceClient } from "./boot/steps/service-endpoint.js";
 import { wireModelCatalogRefresh } from "./boot/steps/model-catalog-refresh.js";
 import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
-import { migrateCanonicalization } from "./permissions/user-approval-store.js";
 import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler.js";
 import { createLogger } from "./lib/logger.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
@@ -262,11 +261,6 @@ export async function bootstrap(
   ctx.inputClassifier = inputClassifier;
   ctx.toolRegistry = toolRegistry;
   ctx.routeEngine = routeEngine;
-
-  // One-shot idempotent migration: re-canonicalize user-approval keys for the
-  // RFC 8785 JCS deep-recursion canonicalStringify. Runs after bootstrapCoreServices so any failure is
-  // caught internally and logged without aborting boot. Noop if marker present.
-  await migrateCanonicalization();
 
   // Shared AuditLogger + NotificationService + plugin auth-partition seeding.
   await setupAuditAndNotification(ctx);

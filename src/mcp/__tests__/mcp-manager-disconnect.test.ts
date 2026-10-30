@@ -50,7 +50,6 @@ async function makeManager(onServerDisconnected: (id: string) => void) {
     new (ToolRegistry as new () => InstanceType<typeof ToolRegistry>)(),
     unusedNetworkFetch,
     testConfigPath,
-    undefined,
     { log: vi.fn() } as never,
     undefined,
     onServerDisconnected,

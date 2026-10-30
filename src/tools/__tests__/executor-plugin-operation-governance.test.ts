@@ -127,7 +127,7 @@ function setup(options: {
     }),
   ]);
   const permissions = new PermissionManager("/tmp/nonexistent-operation-governance.json");
-  permissions.checkDetailed = () => ({ decision: "allow", reason: "test", layer: 3 });
+  permissions.checkDetailed = () => ({ decision: "allow", reason: "test", });
   const approvalGate = { requestAndWait: vi.fn(async (_request: Record<string, unknown>) => ({ choice: "allow-once" })) };
   const scriptHookManager =
     options.wireHooks === false

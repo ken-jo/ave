@@ -18,7 +18,7 @@ import {
 const permission = {
   decision: "ask",
   reason: "Automatic review requires human approval.",
-  layer: 6, reasonCode: "reviewer-human-required",
+  reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
     verdict: { level: "high", reason: "bounded shell action" },
@@ -320,7 +320,6 @@ it("requires and revalidates the host eligibility snapshot for every control", (
   const anchor = anchorAt();
   const action = actionFor(anchor.anchorId);
   for (const blockedContext of [
-    { ...eligibilityContext, headless: true },
     { ...eligibilityContext, forceModal: true },
     { ...eligibilityContext, approvalReasonPrefix: "explicit retry" },
   ]) {
@@ -435,7 +434,7 @@ it("rejects extra authority, coercion, hostile arrays, and stale controls", () =
     ticketId: control.ticketId,
     actionDigest: control.action.actionDigest,
     round: 1,
-    suggestion: "빌드 폴더만 삭제합니다.",
+    choice: "resubmit", rationale: "빌드 폴더만 삭제합니다.", userQuote: control.anchor.sanitizedIntent,
   };
 
   expect(parseRationaleResponse({

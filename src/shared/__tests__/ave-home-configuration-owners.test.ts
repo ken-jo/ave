@@ -61,7 +61,7 @@ function migrateOtherProcess(home: string): string[] {
 
 describe("independent configuration owners", () => {
 
-  it("skips normalization persistence while an in process async writer holds the home", async () => {
+  it("reads supported reviewer settings without migration while an in process writer holds the home", async () => {
     const home = fixture();
     const path = join(home, "settings.json");
     const raw = JSON.stringify({ permissions: { reviewer: { mode: "disabled" } } });
@@ -69,12 +69,12 @@ describe("independent configuration owners", () => {
     await withAveHomeConfigurationWrite(path, async () => {
       const started = performance.now();
       const result = readPermissionSettings(path);
-      expect(result.permissions.reviewer.mode).toBe("strict");
+      expect(result.permissions.reviewer.mode).toBe("disabled");
       expect(readFileSync(path, "utf8")).toBe(raw);
       expect(performance.now() - started).toBeLessThan(5_000);
     });
     readPermissionSettings(path);
-    expect(JSON.parse(readFileSync(path, "utf8")).permissions.reviewer.mode).toBe("strict");
+    expect(JSON.parse(readFileSync(path, "utf8")).permissions.reviewer.mode).toBe("disabled");
   });
 
 
@@ -91,9 +91,9 @@ describe("independent configuration owners", () => {
     const lock = join(home, "config", ".ave-config.lock");
     writeFileSync(lock, "unreadable lock");
     expect(migrateAveHomeConfiguration(home, { enforcement: "none", home, category: "not-protected", reason: "Fixture refusal" })).toEqual([]);
-    await writePermissionSettings({ reviewer: { mode: "strict" } });
+    await writePermissionSettings({ reviewer: { mode: "llm" } });
     await savePolicy({ requireExplicitApproval: true }, undefined, join(home, "absent-admin.json"));
-    await writePermissionSettings({ reviewer: { mode: "strict" } }, join(home, "config", "settings.json"));
+    await writePermissionSettings({ reviewer: { mode: "llm" } }, join(home, "config", "settings.json"));
     await savePolicy({ requireExplicitApproval: true }, join(home, "config", "policy.json"), join(home, "absent-admin.json"));
     expect(migrateAveHomeConfiguration(home)).toEqual([]);
     expect(existsSync(join(home, "settings.json"))).toBe(true);

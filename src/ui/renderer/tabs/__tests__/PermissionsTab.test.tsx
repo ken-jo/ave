@@ -641,24 +641,33 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByTestId("permission-reviewer-model")).toHaveTextContent("retired-reviewer");
   });
 
-  it("shows the fixed low/medium policy without a threshold control in auto", async () => {
-    const api = installApi([[]]);
-    api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
-    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return reviewerResult("show", "llm", "deny");
-      }
-      throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
-    });
+  it.each(["en", "ko"] as const)("shows the reviewer model choices without a threshold control in auto (%s)", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const api = installApi([[]]);
+      api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
+      api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
+        if (rawArgs === "show") {
+          return reviewerResult("show", "llm", "deny");
+        }
+        throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
+      });
 
-    await renderPermissionsTab();
-    expect(screen.queryByTestId("interactive-auto-approve-select")).toBeNull();
-    expect(screen.getByTestId("auto-review-behavior")).toHaveTextContent("저·중위험은 허용");
-    expect(screen.getByTestId("auto-review-behavior")).toHaveTextContent("고위험, 오류와 검증 중단은 사용자에게 확인");
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
-    expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
+      await renderPermissionsTab();
+      expect(screen.queryByTestId("interactive-auto-approve-select")).toBeNull();
+      const behavior = screen.getByTestId("auto-review-behavior");
+      const expected = locale === "en"
+        ? ["low and medium risk", "accept it", "cite your instructions once for another review", "or ask you", "Review errors or interruptions ask you", "one-time approval without review"]
+        : ["저·중위험은 허용", "거부를 받아들이거나", "사용자의 지시를 근거로 한 번 더 검토를 요청하거나", "사용자에게 확인을 요청", "오류나 검증 중단은 사용자에게 확인", "리뷰어를 거치지 않고 이번 한 번 승인"];
+      for (const outcome of expected) expect(behavior).toHaveTextContent(outcome);
+      expect(api.permission.reviewerDispatch).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
+      expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
+      expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
   it("surfaces the reviewer rewire failure when entering the auto-verification mode", async () => {

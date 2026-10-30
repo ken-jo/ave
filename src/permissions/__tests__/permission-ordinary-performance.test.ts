@@ -74,7 +74,6 @@ interface TimingCase {
   command: string;
   rules: string[];
   expected: "allow" | "ask";
-  layer: 2 | 3 | 6;
   reasonCode: "protected-path" | "rule-allow" | "allow-mode";
 }
 
@@ -84,22 +83,21 @@ const NPM_COMMAND = npmCommand(1_500);
 const SHORT_PIPELINE = pipelineCommand(1_800);
 const LONG_PIPELINE = pipelineCommand(6_500);
 // Startup proof still controls rule reuse; it does not create a security floor.
-const PIPELINE_LAYER = process.platform === "win32" ? 6 : 3;
 const PIPELINE_REASON = process.platform === "win32" ? "allow-mode" : "rule-allow";
 const TIMING_CASES: readonly TimingCase[] = [
   ...[false, true].flatMap((runsSandboxed): TimingCase[] => [
-    { name: "commit-short-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: COMMIT_COMMAND, rules: [COMMIT_COMMAND], expected: "ask" as const, layer: 2, reasonCode: "protected-path" },
-    { name: "quoted-literal-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: LITERAL_COMMAND, rules: [LITERAL_COMMAND], expected: "allow" as const, layer: 3, reasonCode: "rule-allow" },
-    { name: "npm-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: NPM_COMMAND, rules: [NPM_COMMAND], expected: "allow" as const, layer: 6, reasonCode: "allow-mode" },
-    { name: "pipeline-1800", dialect: "powershell" as const, runsSandboxed, length: 1_800, ...SHORT_PIPELINE, expected: "allow", layer: PIPELINE_LAYER, reasonCode: PIPELINE_REASON },
+    { name: "commit-short-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: COMMIT_COMMAND, rules: [COMMIT_COMMAND], expected: "ask" as const, reasonCode: "protected-path" },
+    { name: "quoted-literal-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: LITERAL_COMMAND, rules: [LITERAL_COMMAND], expected: "allow" as const, reasonCode: "rule-allow" },
+    { name: "npm-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: NPM_COMMAND, rules: [NPM_COMMAND], expected: "allow" as const, reasonCode: "allow-mode" },
+    { name: "pipeline-1800", dialect: "powershell" as const, runsSandboxed, length: 1_800, ...SHORT_PIPELINE, expected: "allow", reasonCode: PIPELINE_REASON },
   ]),
-  { name: "heredoc-quoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, true), rules: [], expected: "allow", layer: 6, reasonCode: "allow-mode" },
-  { name: "heredoc-unquoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, false), rules: [], expected: "allow", layer: 6, reasonCode: "allow-mode" },
-  { name: "pipeline-6500", dialect: "powershell", runsSandboxed: true, length: 6_500, ...LONG_PIPELINE, expected: "allow", layer: 6, reasonCode: "allow-mode" },
+  { name: "heredoc-quoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, true), rules: [], expected: "allow", reasonCode: "allow-mode" },
+  { name: "heredoc-unquoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, false), rules: [], expected: "allow", reasonCode: "allow-mode" },
+  { name: "pipeline-6500", dialect: "powershell", runsSandboxed: true, length: 6_500, ...LONG_PIPELINE, expected: "allow", reasonCode: "allow-mode" },
 ];
 
 describe("ordinary complete manager timing", () => {
-  it.each(TIMING_CASES)("$name sandboxed=$runsSandboxed keeps its declared permission result", ({ name, dialect, runsSandboxed, length, command, rules, expected, layer, reasonCode }) => {
+  it.each(TIMING_CASES)("$name sandboxed=$runsSandboxed keeps its declared permission result", ({ name, dialect, runsSandboxed, length, command, rules, expected, reasonCode }) => {
     expect(command.length).toBe(length);
     const kind = dialect === "bash" ? "Bash" : "PowerShell";
     // Only short stage rules are needed for a lane-B pipeline; no input parse or cache warmup occurs before the timer.
@@ -113,9 +111,9 @@ describe("ordinary complete manager timing", () => {
       results.push(result);
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`permission ordinary timing ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
+    process.stdout.write(`permission ordinary timing ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
     for (const result of results) {
-      expect(result).toMatchObject({ decision: expected, layer, reasonCode });
+      expect(result).toMatchObject({ decision: expected, reasonCode });
       expect(result.forceModal === true).toBe(expected === "ask");
     }
   });

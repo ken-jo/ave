@@ -1,3 +1,4 @@
+import { isRationaleHumanApprovalActive } from "./rationale-control.js";
 import {
   chmodSync,
   closeSync,
@@ -52,7 +53,7 @@ type AuditVersion = 0 | 1 | 2;
 
 interface InvocationJournalEntry {
   authorized: InvocationAuditRecord;
-  authorizationExpiresAt: number;
+  authorizationExpiresAt: number | null;
   controlDigest: string;
   sessionId: string;
   lease: HostInvocationStartLease;
@@ -206,7 +207,7 @@ function validateEntry(
       entry.authorized.state !== "authorized" || entry.authorized.version !== 0 ||
       entry.authorized.invocationDigest !== invocationDigest ||
       !DIGEST_PATTERN.test(entry.controlDigest) ||
-      !Number.isFinite(entry.authorizationExpiresAt)) {
+      (entry.authorizationExpiresAt !== null && !Number.isFinite(entry.authorizationExpiresAt))) {
     throw new Error("journal authorization or session binding mismatch");
   }
 
@@ -255,7 +256,7 @@ function validateEntry(
 
   if (!Number.isFinite(entry.updatedAt) ||
       entry.updatedAt < entry.lease.startedAt ||
-      entry.authorizationExpiresAt <= entry.lease.startedAt) {
+      (entry.authorizationExpiresAt !== null && entry.authorizationExpiresAt <= entry.lease.startedAt)) {
     throw new Error("journal entry has an invalid update timestamp");
   }
 }
@@ -551,7 +552,7 @@ function makeRoomForInvocation(input: {
     .filter(([, entry]) =>
       entry.terminal !== null &&
       entry.pendingAuditVersions.length === 0 &&
-      entry.authorizationExpiresAt <= input.now)
+      (entry.authorizationExpiresAt === null || entry.authorizationExpiresAt <= input.now))
     .sort(([leftDigest, left], [rightDigest, right]) =>
       left.updatedAt - right.updatedAt || leftDigest.localeCompare(rightDigest));
 
@@ -654,7 +655,8 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       });
       const entry: InvocationJournalEntry = {
         authorized: input.authorized,
-        authorizationExpiresAt: input.control.anchor.expiresAt,
+        // Human consent is live and one-shot; model-only starts retain their original deadline.
+        authorizationExpiresAt: isRationaleHumanApprovalActive(input.control, now) ? null : input.control.anchor.expiresAt,
         controlDigest: sha256Hex(canonicalStringify(input.control)),
         sessionId: input.sessionId,
         lease,

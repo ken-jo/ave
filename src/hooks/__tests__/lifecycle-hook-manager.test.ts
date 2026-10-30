@@ -63,14 +63,14 @@ describe("#811 m2 — lifecycle event dispatch", () => {
     expect(out.results[0].reason).toContain("dur=123");
   });
 
-  it.skipIf(!HAS_NODE)("PermissionDenied carries the denyReason {layer, source}", async () => {
+  it.skipIf(!HAS_NODE)("PermissionDenied carries the denyReason {source}", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [lifecycleEntry("PermissionDenied", ["node", ECHO])]);
     const out = await m.runLifecycleEvent("PermissionDenied", "s1", "unknown", {
       toolName: "bash",
-      denyReason: { layer: 3, source: "tool-executor" },
+      denyReason: { source: "tool-executor" },
     });
-    expect(out.results[0].reason).toContain('deny={"layer":3,"source":"tool-executor"}');
+    expect(out.results[0].reason).toContain('deny={"source":"tool-executor"}');
   });
 
   it.skipIf(!HAS_NODE)("PreCompact carries reason + tokenEstimate", async () => {
@@ -104,10 +104,10 @@ describe("#811 m2 — lifecycle event dispatch", () => {
     m.setTrustedRegistry([], [lifecycleEntry("PermissionDenied", ["node", ECHO])]);
     const out = await m.runLifecycleEvent("PermissionDenied", "s1", "unknown", {
       toolName: "bash",
-      denyReason: { layer: 3, source: "tool-executor", reason: "tool-not-found" },
+      denyReason: { source: "tool-executor", reason: "tool-not-found" },
     });
     expect(out.results[0].reason).toContain(
-      'deny={"layer":3,"source":"tool-executor","reason":"tool-not-found"}',
+      'deny={"source":"tool-executor","reason":"tool-not-found"}',
     );
   });
 
@@ -116,9 +116,9 @@ describe("#811 m2 — lifecycle event dispatch", () => {
     m.setTrustedRegistry([], [lifecycleEntry("PermissionDenied", ["node", ECHO])]);
     const out = await m.runLifecycleEvent("PermissionDenied", "s1", "unknown", {
       toolName: "bash",
-      denyReason: { layer: 3, source: "tool-executor", reason: "blocked write for 415-555-1234" },
+      denyReason: { source: "tool-executor", reason: "blocked write for 415-555-1234" },
     });
-    expect(out.results[0].reason).toContain('"layer":3,"source":"tool-executor","reason":"blocked write for ');
+    expect(out.results[0].reason).toContain('"source":"tool-executor","reason":"blocked write for ');
     expect(out.results[0].reason).not.toContain("415-555-1234");
   });
 

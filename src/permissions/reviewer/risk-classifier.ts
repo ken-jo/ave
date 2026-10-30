@@ -1,5 +1,5 @@
 import { isDestructiveShellArgv, noReusableRuleReason } from "../rules/shell-prefix-values.js";
-// Disabled mode yields LOW while the matrix still applies; strict always yields HIGH/defer. Rule review is deterministic; model review composes conservatively with rules and DLP-redacts provider input. Missing provider/model configuration fails boot (docs/architecture/permission-policy-design.md).
+// Disabled mode yields LOW while mandatory gates still apply. Model review composes conservatively with deterministic evidence and redacts provider input.
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
 import { isIP } from "node:net";
 import { maskSensitiveData, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
@@ -34,7 +34,8 @@ import {
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 import { resolve as resolvePath } from "node:path";
-import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal, inspectShellCommand } from "../rules/shell-exfiltration.js";
+import { SHELL_EXFIL_VERDICT_REASON } from "../rules/shell-exfiltration.js";
+import { shellExfiltrationSignal, inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { powerShellExfiltrationSignal, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
 import { reviewUserOwnedSurface, type UserOwnedSurfaceReviewInput, type UserOwnedSurfaceReviewResult } from "./user-owned-surface-reviewer.js";
@@ -43,7 +44,7 @@ import { reviewUserOwnedSurface, type UserOwnedSurfaceReviewInput, type UserOwne
 export interface RiskVerdict {
   level: RiskLevel;
   reason: string;
-  // Unknown effects require a human even when their display risk permits remembering the answer. Keep explicit approval on its own axis so lowering below HIGH cannot also enable foreground auto-approval or parent adjudication.
+  // Unknown effects require a human even when their display risk permits remembering the answer. Keep explicit approval on its own axis so lowering below HIGH cannot also enable foreground auto-approval through another authority.
   requiresExplicitApproval?: boolean;
 }
 
@@ -114,19 +115,10 @@ export interface RiskClassifier {
 
 // DisabledRiskClassifier
 
-// Reviewer disabled — every dispatch returns LOW so the reviewer lane is a no-op. The per-tool category × source × trust matrix in PermissionManager (deny rules, allowed-dir checks, overlay-trigger guards, explicit approval dock) is unaffected. pre-fix this classifier returned HIGH+"defer all" which silently queued every plugin write/auth tool in the headless lane (an auth/sign-in tool from a mail/calendar plugin was the original reproducer). The name contradicted the behaviour and broke wrapper UX. Fail-closed semantics moved to StrictRiskClassifier.
+// Disabling automatic review leaves mandatory gates and permission rules in force.
 export class DisabledRiskClassifier implements RiskClassifier {
   classify(_: ToolInvocationContext): RiskVerdict {
     return { level: "low", reason: "reviewer disabled — pass-through" };
-  }
-}
-
-// StrictRiskClassifier
-
-// A strict assessment requires the normal human fallback. Without an approver, the decision pipeline denies with no-retry guidance.
-export class StrictRiskClassifier implements RiskClassifier {
-  classify(_: ToolInvocationContext): RiskVerdict {
-    return { level: "high", reason: "reviewer strict — defer all" };
   }
 }
 
@@ -1892,7 +1884,7 @@ export class LlmRiskClassifier implements RiskClassifier {
 
 // Factory
 
-export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
+export type ReviewerMode = "disabled" | "llm";
 
 export interface ReviewerSettings {
   mode: ReviewerMode;
@@ -1910,10 +1902,6 @@ export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier
   switch (settings.mode) {
     case "disabled":
       return new DisabledRiskClassifier();
-    case "strict":
-      return new StrictRiskClassifier();
-    case "rule":
-      return new RuleBasedRiskClassifier();
     case "llm": {
       if (!settings.provider) {
         throw new Error(

@@ -238,7 +238,7 @@ describe("RequestAnchor and rationale provenance host wiring", () => {
   },
   );
 
-  it("does not create an anchor for headless execution even with keyboard-shaped input", async () => {
+  it("keeps the authenticated raw user anchor and provenance for headless model choice", async () => {
     const fixture = makeHarness([
       toolRound("headless-bash", "bash"),
       endRound], true,
@@ -249,12 +249,20 @@ describe("RequestAnchor and rationale provenance host wiring", () => {
       requestAnchorRawIntent: "background request",
     });
 
+    expect(fixture.permissionContexts[0]).toMatchObject({
+      headless: true,
+      requestAnchor: { inputOrigin: "user-keyboard", sessionId: fixture.loop.getSessionId() },
+      rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
+    });
+  });
+  it("does not fabricate a headless anchor when the trusted raw intent is absent", async () => {
+    const fixture = makeHarness([toolRound("headless-without-seed", "bash"), endRound], true);
+    await fixture.loop.runTurn("background request", undefined, undefined, userKeyboardTurn());
     expect(fixture.permissionContexts[0]).toMatchObject({ headless: true });
     expect(fixture.permissionContexts[0]).not.toHaveProperty("requestAnchor");
-    expect(fixture.permissionContexts[0]).not.toHaveProperty(
-      "rationaleProvenance",
-    );
+    expect(fixture.permissionContexts[0]).not.toHaveProperty("rationaleProvenance");
   });
+
   it("invalidates host rationale state before replacing or cleaning up a session", async () => {
     const closeRationaleSession = vi.fn();
     const fixture = makeHarness([], false, closeRationaleSession);

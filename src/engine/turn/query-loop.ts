@@ -572,7 +572,7 @@ export async function queryLoop(
             ...(subAgentHistoryMeta(subAgentSource).meta ?? {}),
           },
         // Only a batch the user typed, every entry of it, is the user's own words; anything else marks another principal at the history.
-        }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard" } : undefined);
+        }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard", userText: { sessionId: effectiveSessionId, text: joined } } : undefined);
         delivery.historyMessage = historyMessage;
       }
 
@@ -1279,6 +1279,7 @@ export async function queryLoop(
         enableDormantRationaleForTesting:
           self.deps.enableDormantRationaleForTesting,
       });
+      const rationaleUserRoleTexts = self.history.getUserQuoteTexts(effectiveSessionId);
       // Materialize the runtime before reordering meta tools; unavailable factories retain legacy ordering.
       const preparedRationaleRuntime = rationaleActivationRequested
         ? await prepareRationaleConversationRuntime({
@@ -1286,6 +1287,7 @@ export async function queryLoop(
             requestAnchor: bounds.requestAnchor ?? null,
             rationaleProvenance: currentRationaleProvenance,
             sessionId: effectiveSessionId,
+            userRoleTexts: rationaleUserRoleTexts,
           })
         : null;
       const rationaleOrchestrationEnabled = preparedRationaleRuntime !== null;
@@ -1802,6 +1804,7 @@ export async function queryLoop(
             rationaleProvenance: currentRationaleProvenance,
             sessionId: effectiveSessionId,
             rationaleRuntime: preparedRationaleRuntime,
+            userRoleTexts: rationaleUserRoleTexts,
             ...(orderedMetaToolHandler
               ? { interceptedMetaToolHandler: orderedMetaToolHandler }
               : {}),
@@ -2651,8 +2654,6 @@ export async function gateCrossAgentInterceptedMetaTools(
           reason: `${approvalReasonPrefix} cross-agent message requested ${toolUse.name}`,
           source: "builtin",
           createdAt: Date.now(),
-          isReadOnly: false,
-          mode: "ask_all",
           trustOrigin,
           // Use the active turn controller so user stop cancels this pending approval too.
           ...(self.currentAbortController === null

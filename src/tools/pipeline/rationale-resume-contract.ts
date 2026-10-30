@@ -3,19 +3,18 @@ import type { RiskVerdict } from "../../permissions/reviewer/risk-classifier.js"
 import { maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { redactHomePathsInText } from "../../audit/dlp-filter.js";
 import {
-  createRationaleApprovalDisplay,
   normalizeRationaleApprovalDisplayText,
-  type RationaleApprovalDisplay,
   RATIONALE_DISPLAY_CAPS,
 } from "../../shared/rationale-approval-display.js";
 import {
   RATIONALE_CONTROL_CONTRACT_VERSION,
   assertRationaleCanonicalJson,
   normalizeRationaleRiskVerdict,
-  parseRationaleResponse,
+  parseRationaleExecutionResponse,
   sanitizeDisplayText,
   verifyActionIdentity,
-  verifyRationaleRequiredControl,
+  verifyRationaleExecutionControl,
+  verifyRationaleTicketControl,
   type ActionIdentity,
   type HostRationaleEligibilityContext,
   type RationaleRequiredControl,
@@ -25,7 +24,7 @@ import {
 } from "./rationale-control.js";
 import {
   REVIEWER_REEVALUATION_FAILURE_OUTCOMES,
-  validateReviewerScopeReevaluation,
+  validateReviewerExecutionReevaluation,
   type RationaleGenerationOutcome,
   type ReviewerScopeAlignment,
   type ReviewerReevaluationOutcome,
@@ -70,7 +69,7 @@ export interface RationaleUiAuditProjection {
   terminalReason: RationaleTerminalReason | null;
   suggestion: string | null;
   modalFallbackRequired: boolean;
-  // Mark only fresh, aligned, non-high reviewer terminals as auto-approved; user/modal decisions retain false provenance.
+  // Mark only fresh low/medium reviewer terminals as auto-approved; user/modal decisions retain false provenance.
   autoApproved: boolean;
 }
 
@@ -97,6 +96,9 @@ const PROJECTION_SCOPE_ALIGNMENTS: readonly ReviewerScopeAlignment[] = [
 const PROJECTION_TERMINAL_REASONS: readonly RationaleTerminalReason[] = [
   "allowed-once",
   "user-deny",
+  "model-accepted-denial",
+  "no-approver",
+  "host-denied",
   "user-cancel",
   "modal-timeout",
   "caller-abort",
@@ -231,10 +233,9 @@ export function validateRationaleUiAuditProjection(
         value.modalFallbackRequired === false &&
         isSanitizedProjectionText(value.suggestion, RATIONALE_DISPLAY_CAPS.suggestionLength);
       if (!readyOk) return false;
-      // autoApproved requires aligned, non-high review and the one-shot allowed_once terminal; otherwise it must be false.
+      // autoApproved requires a fresh low/medium review and the one-shot allowed_once terminal.
       if (value.autoApproved) {
-        return value.scopeAlignment === "aligned" &&
-          value.terminalReason === "allowed-once" &&
+        return value.terminalReason === "allowed-once" &&
           reevaluated.level !== "high";
       }
       return true;
@@ -293,9 +294,9 @@ export function createRationaleUiAuditProjection(input: {
   autoApproved?: boolean;
 }): RationaleUiAuditProjection {
   const now = input.now ?? Date.now();
-  if (!verifyRationaleRequiredControl(input.control, { now }) ||
+  if (!verifyRationaleTicketControl(input.control, { now }) ||
       (input.reevaluation !== null &&
-        !validateReviewerScopeReevaluation(input.reevaluation, input.control, now))) {
+        !validateReviewerExecutionReevaluation(input.reevaluation, input.control, now))) {
     throw new Error("invalid rationale UI/audit binding");
   }
   validateRationaleTicketRecord(input.ticket);
@@ -306,11 +307,10 @@ export function createRationaleUiAuditProjection(input: {
     input.ticket.terminalReason !== "allowed-once" ||
     input.reevaluation === null ||
     input.reevaluation.outcome !== "fresh" ||
-    input.reevaluation.scopeAlignment !== "aligned" ||
     input.reevaluation.reevaluatedVerdict.level === "high"
   )) {
     throw new Error(
-      "auto-approved projection requires an aligned non-high reviewer allow-once terminal",
+      "auto-approved projection requires a fresh low/medium reviewer allow-once terminal",
     );
   }
   const generationOutcome = input.ticket.generationOutcome;
@@ -336,11 +336,12 @@ export function createRationaleUiAuditProjection(input: {
         input.reevaluation.modalFallbackRequired !== false) {
       throw new Error("ready rationale requires fresh reviewer reevaluation");
     }
-    const parsed = parseRationaleResponse(input.response, input.control, now);
+    const parsed = parseRationaleExecutionResponse(input.response, input.control, now);
     if (!parsed || !canonicalJsonEqual(parsed, input.response)) {
       throw new Error("ready projection requires sealed rationale response");
     }
-    suggestion = projectUiText(parsed.suggestion, 500, "suggestion");
+    if (parsed.choice !== "resubmit") throw new Error("ready projection requires a resubmitted rationale");
+    suggestion = projectUiText(parsed.rationale, 500, "suggestion");
     reevaluatedVerdict = input.reevaluation.reevaluatedVerdict;
     effectiveVerdict = input.reevaluation.effectiveVerdict;
     scopeAlignment = input.reevaluation.scopeAlignment;
@@ -406,37 +407,6 @@ export function createRationaleUiAuditProjection(input: {
   }, "RationaleUiAuditProjection");
 }
 
-// Renderer payloads contain bounded explanatory facts only; keep replay-sensitive ticket, anchor, and action bindings host-side.
-// Rebuild through the strict display parser so invalid projections cannot widen the modal surface.
-export function createRationaleApprovalDisplayFromProjection(
-  projection: RationaleUiAuditProjection,
-): RationaleApprovalDisplay {
-  if (!validateRationaleUiAuditProjection(projection)) {
-    throw new TypeError("invalid rationale UI/audit projection");
-  }
-  // Keep renderer status narrowed explicitly; audit types also permit pre-terminal states.
-  const rationaleStatus = projection.rationaleStatus;
-  if (rationaleStatus !== "ready" && rationaleStatus !== "failed") {
-    throw new TypeError("projection has no renderer-safe rationale status");
-  }
-  return createRationaleApprovalDisplay({
-    toolName: projection.toolName,
-    canonicalTargets: projection.canonicalTargets,
-    requestedEffects: projection.requestedEffects,
-    affectedResources: projection.affectedResources,
-    requiredAuthority: projection.requiredAuthority,
-    effectiveVerdict: {
-      level: projection.effectiveVerdict.level,
-      reason: projection.effectiveVerdict.reason,
-    },
-    scopeAlignment: projection.scopeAlignment,
-    scopeReasons: projection.scopeReasons,
-    rationaleStatus,
-    suggestion: projection.suggestion,
-    modalFallbackRequired: projection.modalFallbackRequired,
-  });
-}
-
 export const RATIONALE_SECURITY_SUFFIX_VERSION = 4 as const;
 
 export const RATIONALE_SECURITY_SUFFIX = Object.freeze([
@@ -500,7 +470,7 @@ export function createSealedRationaleResumeRequest(input: {
   if (input.rationaleStatus !== "ready" && input.rationaleStatus !== "failed") {
     throw new TypeError("invalid runtime rationaleStatus");
   }
-  if (!verifyRationaleRequiredControl(input.control, {
+  if (!verifyRationaleExecutionControl(input.control, {
     now, currentEligibilityContext: input.currentEligibilityContext,
   })) throw new Error("invalid, expired, or stale rationale control");
   if (!verifyActionIdentity(input.currentActionIdentity) ||
@@ -508,7 +478,7 @@ export function createSealedRationaleResumeRequest(input: {
     throw new Error("current ActionIdentity does not match sealed action");
   }
   if (input.reevaluation !== null &&
-      !validateReviewerScopeReevaluation(input.reevaluation, input.control, now)) {
+      !validateReviewerExecutionReevaluation(input.reevaluation, input.control, now)) {
     throw new Error("reviewer reevaluation binding mismatch");
   }
   validateRationaleTicketRecord(input.ticket);
@@ -534,7 +504,7 @@ export function createSealedRationaleResumeRequest(input: {
         input.reevaluation.modalFallbackRequired !== false) {
       throw new Error("ready rationale requires fresh reviewer reevaluation");
     }
-    response = parseRationaleResponse(input.response, input.control, now);
+    response = parseRationaleExecutionResponse(input.response, input.control, now);
     if (!response) throw new Error("invalid rationale response");
   } else {
     if (input.response !== null) {
@@ -584,7 +554,7 @@ export function validateSealedRationaleResumeRequest(
       "currentEligibilityContext", "securitySuffixVersion", "securitySuffix",
       "executionEntryPoint", "directToolExecute"], "SealedRationaleResumeRequest");
     const control = request.control as RationaleRequiredControl;
-    if (!verifyRationaleRequiredControl(control, { now, currentEligibilityContext })) return false;
+    if (!verifyRationaleExecutionControl(control, { now, currentEligibilityContext })) return false;
     const ticket = request.ticket as RationaleTicketStateRecord;
     validateRationaleTicketRecord(ticket);
     validateHostConsumedAllowOnceReceipt(
@@ -616,7 +586,7 @@ export function validateSealedRationaleResumeRequest(
       !canonicalJsonEqual(request.currentEligibilityContext, currentEligibilityContext) ||
       !canonicalJsonEqual(request.securitySuffix, RATIONALE_SECURITY_SUFFIX) ||
       (reevaluation !== null &&
-        !validateReviewerScopeReevaluation(reevaluation, control, now))) return false;
+        !validateReviewerExecutionReevaluation(reevaluation, control, now))) return false;
     if (request.rationaleStatus === "failed") {
       if (request.response !== null) return false;
       return generationOutcome === "accepted-rationale"
@@ -628,7 +598,7 @@ export function validateSealedRationaleResumeRequest(
         generationOutcome !== "accepted-rationale" ||
         reevaluation === null || reevaluation.outcome !== "fresh" ||
         reevaluation.modalFallbackRequired !== false) return false;
-    const response = parseRationaleResponse(request.response, control, now);
+    const response = parseRationaleExecutionResponse(request.response, control, now);
     return response !== null && canonicalJsonEqual(response, request.response);
   } catch {
     return false;

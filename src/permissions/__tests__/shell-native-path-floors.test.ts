@@ -1,6 +1,6 @@
 import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { inspectShellCommand, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { inspectShellCommand, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";

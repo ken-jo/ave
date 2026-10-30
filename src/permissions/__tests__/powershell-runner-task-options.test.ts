@@ -1,7 +1,7 @@
 import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 import { analyzeShellForRules, evaluateShellRules, proveLiteralShell } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 

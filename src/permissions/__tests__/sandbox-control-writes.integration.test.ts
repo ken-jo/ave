@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -35,6 +35,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
     root = realpathSync(mkdtempSync(join(tmpdir(), "sandbox-control-writes-")));
     userData = join(root, "desktop-data");
     vi.stubEnv("AVE_HOME", join(root, "ave"));
+    mkdirSync(join(root, "ave", "config"), { recursive: true, mode: 0o700 });
     await initializeRequiredSandbox({ allowedDomains: [], userDataDir: userData });
   });
   afterAll(async () => {
@@ -48,6 +49,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
     target: string,
     command = 'mkdir -p "$(dirname "$CONTROL_TARGET")" && printf changed >> "$CONTROL_TARGET"',
     writeRoots: string[] = [root],
+    extraEnv: NodeJS.ProcessEnv = {},
   ): Promise<{ status: number | null; output: string }> {
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: undefined, workspaceRoot: root, approvalSurface: "unavailable" } });
@@ -59,7 +61,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
       });
       const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
         const child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
-          env: { ...process.env, ...wrapped.env, CONTROL_TARGET: target }, cwd: root, stdio: ["ignore", "ignore", "pipe"],
+          env: { ...process.env, ...wrapped.env, ...extraEnv, CONTROL_TARGET: target }, cwd: root, stdio: ["ignore", "ignore", "pipe"],
         });
         let stderr = "";
         child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
@@ -170,6 +172,52 @@ describe.skipIf(shouldSkipNativeSandboxTests())("sandbox control-file write boun
       root = originalRoot;
       rmSync(project, { recursive: true, force: true });
       rmSync(storage, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks opaque mutations of repository controls and application configuration while commits remain writable", async () => {
+    const project = join(root, "opaque-project");
+    mkdirSync(project);
+    const gitConfigurationEnv = { GIT_CONFIG_GLOBAL: join(project, "git-global"), GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_COUNT: "0", GIT_CONFIG_PARAMETERS: "", GIT_ATTR_NOSYSTEM: "1", XDG_CONFIG_HOME: join(project, "git-xdg") };
+    const gitEnv = { ...process.env, ...gitConfigurationEnv };
+    execFileSync("git", ["init", "--quiet", project], { env: gitEnv });
+    execFileSync("git", ["-C", project, "config", "user.name", "Sandbox Fixture"], { env: gitEnv });
+    execFileSync("git", ["-C", project, "config", "user.email", "fixture.invalid"], { env: gitEnv });
+    const configuration = join(process.env.AVE_HOME!, "config");
+    mkdirSync(configuration, { recursive: true, mode: 0o700 });
+    const targets = [join(project, ".git", "config"), join(project, ".git", "hooks", "pre-commit"),
+      join(project, ".bash_profile"), join(configuration, "future-control.json")];
+    const originalRoot = root;
+    root = project;
+    try {
+      for (const target of targets) {
+        mkdirSync(dirname(target), { recursive: true });
+        if (!existsSync(target)) writeFileSync(target, "original");
+        const original = readFileSync(target, "utf8");
+        const command = "ELECTRON_RUN_AS_NODE=1 " + shellQuote(process.execPath)
+          + " -e " + shellQuote('require("node:fs").appendFileSync(process.env.CONTROL_TARGET,"changed")');
+        const result = await attempt(target, command, [project, configuration]);
+        expect(result.status, result.output).not.toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(original);
+      }
+      const ordinary = join(project, "opaque-result.txt");
+      const opaque = "ELECTRON_RUN_AS_NODE=1 " + shellQuote(process.execPath)
+        + " -e " + shellQuote('require("node:fs").appendFileSync(process.env.CONTROL_TARGET,"changed")');
+      const ordinaryResult = await attempt(ordinary, opaque, [project]);
+      expect(ordinaryResult.status, ordinaryResult.output).toBe(0);
+      expect(readFileSync(ordinary, "utf8")).toBe("changed");
+      // A protected hook must not execute while testing the ordinary commit path.
+      rmSync(join(project, ".git", "hooks", "pre-commit"));
+      writeFileSync(join(project, "tracked.txt"), "checkpoint");
+      const result = await attempt(join(project, "tracked.txt"),
+        "git add tracked.txt && git -c commit.gpgSign=false commit --quiet -m checkpoint", [project], gitConfigurationEnv);
+      expect(result.status, result.output).toBe(0);
+      expect(execFileSync("git", ["-C", project, "log", "-1", "--format=%s"], { encoding: "utf8", env: gitEnv }).trim()).toBe("checkpoint");
+      expect(existsSync(join(project, ".git", "index"))).toBe(true);
+    } finally {
+      root = originalRoot;
+      rmSync(project, { recursive: true, force: true });
     }
   });
 

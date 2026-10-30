@@ -54,7 +54,7 @@ const eligibilityContext = {
   headless: false, forceModal: false, approvalReasonPrefix: null,
 } as const;
 const permission = {
-  decision: "ask", reason: "Automatic review requires human approval.", layer: 6, reasonCode: "reviewer-human-required",
+  decision: "ask", reason: "Automatic review requires human approval.", reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
     verdict: { level: "high", reason: "bounded workspace deletion" },
@@ -215,9 +215,15 @@ describe("PR1 executor channel and rationale-only round", () => {
       triggeringBatchDisposition: control.triggeringBatchDisposition,
       round: 1, now: NOW,
     })).toEqual(winner);
-    expect(sequentialStore.tryReserve({
+    const secondRequest = sequentialStore.tryReserve({
       anchor: control.anchor, action: changedAction,
       triggeringBatchDisposition: changedBatch, round: 1, now: NOW,
+    });
+    expect(secondRequest).not.toBeNull();
+    expect(secondRequest?.ticketId).not.toBe(winner.ticketId);
+    expect(sequentialStore.tryReserve({
+      anchor: control.anchor, action: changedAction,
+      triggeringBatchDisposition: control.triggeringBatchDisposition, round: 1, now: NOW,
     })).toBeNull();
 
     const replayA = createRationaleRequiredControl({
@@ -249,7 +255,15 @@ describe("PR1 executor channel and rationale-only round", () => {
         round: 1, now: NOW,
       });
     }));
-    expect(attempts.filter((receipt) => receipt !== null)).toHaveLength(1);
+    expect(attempts.filter((receipt) => receipt !== null)).toHaveLength(2);
+    expect(attempts[0]?.ticketId).not.toBe(attempts[1]?.ticketId);
+    const sameRequestStore = new InMemoryHostAnchorRoundCasStore();
+    const sameRequestAttempts = await Promise.all([control.action, changedAction].map(async (action) => {
+      await Promise.resolve();
+      return sameRequestStore.tryReserve({ anchor: control.anchor, action,
+        triggeringBatchDisposition: control.triggeringBatchDisposition, round: 1, now: NOW });
+    }));
+    expect(sameRequestAttempts.filter((receipt) => receipt !== null)).toHaveLength(1);
   });
 
   it("rejects hostile batch descriptors and forged anchor CAS bindings", () => {
@@ -459,11 +473,11 @@ describe("isReviewerAutoApproveEligible", () => {
     ["aligned", "low", true],
     ["aligned", "medium", true],
     ["aligned", "high", false],
-    ["unclear", "low", false],
-    ["unclear", "medium", false],
+    ["unclear", "low", true],
+    ["unclear", "medium", true],
     ["unclear", "high", false],
-    ["outside", "low", false],
-    ["outside", "medium", false],
+    ["outside", "low", true],
+    ["outside", "medium", true],
     ["outside", "high", false],
   ] as const)(
     "fresh %s + %s reevaluated verdict → %s",
@@ -886,7 +900,7 @@ describe("invocation audit and sealed resume", () => {
     });
     const response = parseRationaleResponse({
       ...responseFor(control),
-      suggestion:
+      rationale:
         "Use " + macHome + "/private/output for " + rawEmail +
         "<script>alert(1)</script>\u0000",
     }, control, NOW);

@@ -22,12 +22,8 @@ export const en = {
   // Reviewer mode options
   "permissionsTab.reviewerModeDisabledLabel": "Validation off (auto-pass)",
   "permissionsTab.reviewerModeDisabledDescription": "Disables the permission reviewer and applies only category default policies. Per-tool block/allow rules remain in effect.",
-  "permissionsTab.reviewerModeRuleLabel": "Rule-based validation",
-  "permissionsTab.reviewerModeRuleDescription": "Local risk classification allows low and medium risk; high risk asks a person. Requests without an approver are denied.",
   "permissionsTab.reviewerModeLlmLabel": "LLM validation",
   "permissionsTab.reviewerModeLlmDescription": "After rule validation, an LLM can raise the risk level. It cannot lower it.",
-  "permissionsTab.reviewerModeStrictLabel": "Strict review",
-  "permissionsTab.reviewerModeStrictDescription": "Returns high risk for reviewable actions. A person must approve; requests without a person are denied.",
 
   // Reviewer fallback options
   "permissionsTab.fallbackDenyLabel": "Block",
@@ -102,7 +98,7 @@ export const en = {
 
   // Policy section
   "permissionsTab.policyTitle": "Permission Policy",
-  "permissionsTab.autoReviewBehavior": "auto uses a fixed review policy: low and medium risk allow; high risk, errors and cancellation ask a person. Protected actions skip the reviewer and need one-time approval.",
+  "permissionsTab.autoReviewBehavior": "auto allows low and medium risk. After a high-risk denial, the agent can accept it, cite your instructions once for another review, or ask you. Review errors or interruptions ask you. Protected actions need one-time approval without review.",
   "permissionsTab.policyDescription": "Default allows ordinary reads and proven read-only sandboxed commands; other actions ask. Allow writes also allows recoverable project edits and safe sandboxed commands. auto reviews other actions. Allow still enforces deny rules and one-time approval for protected actions.",
   "permissionsTab.policyAriaLabel": "Select permission policy",
 
@@ -379,12 +375,8 @@ export const ko: Record<keyof typeof en, string> = {
 
   "permissionsTab.reviewerModeDisabledLabel": "검증 끔 (자동 통과)",
   "permissionsTab.reviewerModeDisabledDescription": "권한 리뷰어를 끄고 카테고리 기본 정책만 적용합니다. 도구별 차단/허용 규칙은 그대로 유지됩니다.",
-  "permissionsTab.reviewerModeRuleLabel": "규칙 기반 검증",
-  "permissionsTab.reviewerModeRuleDescription": "로컬 위험도 분류는 저·중위험을 허용하고 고위험은 사용자에게 확인합니다. 승인할 사람이 없으면 거부합니다.",
   "permissionsTab.reviewerModeLlmLabel": "LLM 검증",
   "permissionsTab.reviewerModeLlmDescription": "규칙 검증 뒤 LLM이 위험도를 올릴 수 있습니다. 낮출 수는 없습니다.",
-  "permissionsTab.reviewerModeStrictLabel": "엄격 검증",
-  "permissionsTab.reviewerModeStrictDescription": "검증 대상 작업에 고위험을 반환합니다. 사용자가 승인해야 하며 승인할 사람이 없으면 거부합니다.",
 
   "permissionsTab.fallbackDenyLabel": "차단",
   "permissionsTab.fallbackDenyDescription": "자동 검증 오류는 사용자에게 확인합니다. 승인할 사람이 없으면 거부합니다.",
@@ -444,7 +436,7 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.summaryCloseDenies": "Escape 키는 거부 처리",
 
   "permissionsTab.policyTitle": "권한 정책",
-  "permissionsTab.autoReviewBehavior": "auto의 검증 기준은 고정됩니다. 저·중위험은 허용하고, 고위험, 오류와 검증 중단은 사용자에게 확인합니다. 보호 대상은 리뷰어를 거치지 않고 이번 한 번 승인이 필요합니다.",
+  "permissionsTab.autoReviewBehavior": "auto는 저·중위험은 허용합니다. 고위험으로 거부되면 에이전트가 거부를 받아들이거나, 사용자의 지시를 근거로 한 번 더 검토를 요청하거나, 사용자에게 확인을 요청합니다. 오류나 검증 중단은 사용자에게 확인합니다. 보호 대상은 리뷰어를 거치지 않고 이번 한 번 승인이 필요합니다.",
   "permissionsTab.policyDescription": "기본은 일반 읽기와 입증된 읽기 전용 샌드박스 명령을 허용하고 나머지는 확인합니다. 쓰기 허용은 복구 가능한 프로젝트 변경과 안전한 샌드박스 명령도 허용합니다. auto는 나머지 작업을 리뷰어가 검증하며, 허용도 거부 규칙과 보호 대상의 이번 한 번 승인은 유지합니다.",
   "permissionsTab.policyAriaLabel": "권한 정책 선택",
 

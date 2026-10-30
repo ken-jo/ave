@@ -48,7 +48,7 @@ function allowingExecutor(toolName: string) {
   }));
 
   const permMgr = new PermissionManager(join(dir, "permissions.json"));
-  permMgr.checkDetailed = () => ({ decision: "allow", reason: "identity probe", layer: 5 });
+  permMgr.checkDetailed = () => ({ decision: "allow", reason: "identity probe", });
 
   const validator = new BashAstValidator({ mode: "deny" });
   const validateSpy = vi.spyOn(validator, "validate");

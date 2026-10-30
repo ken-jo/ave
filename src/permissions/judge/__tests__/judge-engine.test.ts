@@ -448,3 +448,21 @@ it("retains a completed classifier block when the caller stops during its audit 
   expect(d.breaker.snapshot("session-root")).toEqual({ consecutive: 1, total: 20, open: true });
   expect(d.breaker.pauseReason("session-root")).toBe("total");
 });
+
+it("counts a rationale-bound denial once after the host resolves the choice", async () => {
+  const d = deps(answering(DENY));
+  const request = { ...judgeRequest(), deferDenialCounting: true };
+  expect(await resolveJudge(UNDECIDED, request, d)).toMatchObject({ judged: true, decision: "deny", source: "judge" });
+  expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 0, open: false });
+  d.breaker.record(request.sessionId, "deny", request.invocationId);
+  d.breaker.record(request.sessionId, "deny", request.invocationId);
+  expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 1, total: 1, open: false });
+});
+
+it("retains immediate allow counting when a rationale round is available", async () => {
+  const d = deps(answering(ALLOW));
+  const request = { ...judgeRequest(), deferDenialCounting: true };
+  d.breaker.record(request.sessionId, "deny", "prior-denial");
+  expect(await resolveJudge(UNDECIDED, request, d)).toMatchObject({ judged: true, decision: "allow" });
+  expect(d.breaker.snapshot(request.sessionId)).toEqual({ consecutive: 0, total: 1, open: false });
+});

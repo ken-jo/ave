@@ -24,6 +24,8 @@ const DEFAULT_MAX_MESSAGES = Number.POSITIVE_INFINITY;
  * another principal, so a producer that forgets it fails closed. */
 export interface HistoryAppendProvenance {
   principal: "user-keyboard";
+  /** Original text supplied by the human input producer, before prompt or attachment augmentation. */
+  userText?: { readonly sessionId: string; readonly text: string };
 }
 
 /** A host transform that rewrites rows the history already holds, declared by the transform itself, never inferred from the rows.
@@ -48,6 +50,8 @@ export class ConversationHistory {
    * same rows is not new content; an id is proof of nothing by itself, so a row under a held id is compared with what was committed. */
   private readonly committed = new Map<string, CommittedRow>();
   private readonly maxMessages: number;
+  private userQuoteSessionId: string | undefined;
+  private readonly userQuoteTexts: string[] = [];
 
   constructor(options?: ConversationHistoryOptions) {
     // Default history is unbounded; token compaction owns context reduction.
@@ -79,10 +83,23 @@ export class ConversationHistory {
   }
 
   private appendAt(message: GenericMessage, index: number, provenance: HistoryAppendProvenance | undefined): StoredMessage {
+    const userText = provenance?.userText;
+    if (userText !== undefined && (message.role !== "user" || provenance?.principal !== "user-keyboard" ||
+        typeof userText.sessionId !== "string" || !userText.sessionId.trim() || typeof userText.text !== "string")) {
+      throw new Error("User quotation evidence requires a native user row, session and original text");
+    }
     const stored = stampMessageId(stampCreatedAt(applyToolResultCap(message)));
     const next = [...this.messages];
     next.splice(index, 0, stored);
     this.commit(next, { via: "append", row: stored, provenance });
+    if (userText !== undefined) {
+      const { sessionId, text } = userText;
+      if (this.userQuoteSessionId !== sessionId) {
+        this.clearUserQuoteEvidence();
+        this.userQuoteSessionId = sessionId;
+      }
+      if (text.length > 0) this.userQuoteTexts.push(text);
+    }
     this.trim();
     this.appendObserver?.(stored);
     return stored;
@@ -143,6 +160,16 @@ export class ConversationHistory {
     const current = { row, ...rowDigests(row) };
     if (!isDeclaredRewrite(prior, current, "metadata-only")) noteToolResultsReturnedToModel();
     this.committed.set(id!, current);
+  }
+
+  /** Only native-authored user text is citation evidence; restored roles and prompt wrappers grant nothing. */
+  getUserQuoteTexts(sessionId: string): readonly string[] {
+    return this.userQuoteSessionId === sessionId ? [...this.userQuoteTexts] : [];
+  }
+
+  clearUserQuoteEvidence(): void {
+    this.userQuoteSessionId = undefined;
+    this.userQuoteTexts.length = 0;
   }
 
   /** Return a shallow array copy; later row metadata mutations remain visible to snapshots. */

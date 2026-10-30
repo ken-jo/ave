@@ -11,7 +11,8 @@ import { isShellFloorLiteralData } from "./shell-floor-policy.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { literalRuleWord, type RuleSpecifier } from "./rule-specifier.js";
-import { inspectShellCommand, literalShellWord, shellScanOrdinaryAsk, shellScanProofBlocker } from "./shell-exfiltration.js";
+import { literalShellWord } from "./shell-exfiltration.js";
+import { inspectShellCommand, shellScanOrdinaryAsk, shellScanProofBlocker } from "./literal-shell-inspection.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import {
   arithmeticEvaluationReason,

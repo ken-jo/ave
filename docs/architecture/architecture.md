@@ -1924,7 +1924,7 @@ plugin versus `mcpServerId` for an MCP tool.
 
 Read-only MCP tools are allowed by kind. Other MCP tools use the same mode and
 reviewer stages as other tool sources: auto invokes the reviewer, low/medium
-verdicts allow, and high/error/abort verdicts require a normal approval card.
+verdicts allow, and a completed high verdict enters the model choice and single verified resubmission in the [decision tree](permission-decision-tree.md). Errors and aborts require a normal approval card.
 Plugin invocations still require their own effect permissions and one-use
 operation grants; neither bypasses a tool ask rule. Both sources converge on
 the active recipient’s approval gate and retain their audit/effect-ledger

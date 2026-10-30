@@ -1227,7 +1227,7 @@
       "ave/host/config/set": {
         "description": "Persist a config key. Triggers a plugin reload so the new value is visible to the plugin on next handler invocation.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises none of its own.",
           "properties": {
             "code": {
               "type": "integer"
@@ -4331,7 +4331,7 @@
       "ave/host/storage/exists": {
         "description": "Test whether the path exists.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
@@ -4433,7 +4433,7 @@
       "ave/host/storage/list": {
         "description": "List entries in `relPath` (directories included). Empty for missing dir.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
@@ -4637,7 +4637,7 @@
       "ave/host/storage/read": {
         "description": "Read raw bytes; throws ENOENT if the file does not exist.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
@@ -4739,7 +4739,7 @@
       "ave/host/storage/readEncrypted": {
         "description": "Read the ciphertext previously written by {@link writeEncrypted} at `relPath` and return the decrypted UTF-8 plaintext. Throws ENOENT if the file does not exist (same contract as {@link readText}); throws {@link PluginStorageEncryptionUnavailableError} if host encryption is unavailable — it never returns raw ciphertext or a plaintext guess.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, plugin-storage, plugin-storage-encryption-unavailable.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, plugin-storage-encryption-unavailable.",
           "properties": {
             "code": {
               "type": "integer"
@@ -4841,7 +4841,7 @@
       "ave/host/storage/readJson": {
         "description": "Read + parse JSON; returns `null` on missing file, throws on bad JSON.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"
@@ -4950,7 +4950,7 @@
       "ave/host/storage/readText": {
         "description": "Read text; throws ENOENT if the file does not exist.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, plugin-storage.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage.",
           "properties": {
             "code": {
               "type": "integer"

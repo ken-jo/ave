@@ -270,9 +270,9 @@ describe("dispatchPermissionSlash — subcommand routing", () => {
     expect(result).toMatchObject({ kind: "dir" });
   });
 
-  it("routes 'reviewer mode rule'", () => {
+  it("routes 'reviewer mode llm'", () => {
     const result = dispatchPermissionSlash(
-      "/permission reviewer mode rule",
+      "/permission reviewer mode llm",
       "user-keyboard",
     );
     expect(result).toMatchObject({ kind: "reviewer" });

@@ -115,46 +115,6 @@ describe("ApprovalDock", () => {
     expect(dock?.getAttribute("data-approval-args")).toBe('{"path":"/tmp/test.txt"}');
   });
 
-  it("never exposes untrusted generic request identity for rationale approvals", () => {
-    const rawToolName = "untrusted-request-tool";
-    const { container } = render(
-      <ApprovalDock conversationLabel="conversation"
-        queue={[makeRequest({
-          id: "rationale-1",
-          kind: "rationale",
-          allowedChoices: ["allow-once", "deny-once"],
-          toolName: rawToolName,
-          reason: "UNTRUSTED request reason: do not render this",
-          requireExplicit: true,
-          args: {
-            contractVersion: 1,
-            display: "rationale-approval-display",
-            toolName: "host-sealed-tool",
-            canonicalTargets: ["/workspace/project/status.txt"],
-            requestedEffects: ["Create a status file"],
-            affectedResources: ["/workspace/project"],
-            requiredAuthority: "Project workspace write access",
-            effectiveVerdict: { level: "medium", reason: "Host-sealed rationale" },
-            scopeAlignment: "aligned",
-            scopeReasons: ["Inside the current workspace"],
-            rationaleStatus: "ready",
-            suggestion: "Review the host-sealed facts",
-            modalFallbackRequired: false,
-          },
-        })]}
-        onDecide={vi.fn()}
-      />,
-    );
-
-    const dock = container.querySelector(testIdSelector(TEST_IDS.approvalDock));
-    expect(container.textContent).toContain("host-sealed-tool");
-    expect(container.textContent).not.toContain(rawToolName);
-    expect(container.textContent).not.toContain("UNTRUSTED request reason");
-    expect(dock?.getAttribute("data-approval-request-id")).toBeNull();
-    expect(dock?.getAttribute("data-approval-tool-name")).toBeNull();
-    expect(dock?.getAttribute("data-approval-args")).toBeNull();
-  });
-
   it("labels agent-action approval requests separately from tool execution", async () => {
     render(
       <ApprovalDock conversationLabel="conversation"
@@ -638,27 +598,6 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(container.querySelector('[data-testid="question-choice"]'));
     });
-  });
-
-  it("keeps Reject as the sole tab stop when approval is invalid", async () => {
-    render(
-      <ApprovalDock conversationLabel="conversation"
-        queue={[makeRequest({
-          kind: "rationale",
-          toolCategory: "shell",
-          args: { malformed: true },
-        })]}
-        onDecide={vi.fn()}
-      />,
-    );
-
-    const deny = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))!;
-    await waitFor(() => expect(deny.tabIndex).toBe(0));
-    expect(deny).toBeEnabled();
-    // Reject is the sole tab stop because it is the sole DECISION: the allow options are not rendered at all for an unverifiable seal.
-    expect(document.body.querySelector(testIdSelector(TEST_IDS.allowSessionButton))).toBeNull();
-    expect(document.body.querySelector(testIdSelector(TEST_IDS.approveButton))).toBeNull();
-    expect(document.activeElement).toBe(deny);
   });
 
   it("does not show tool name when queue is empty", () => {

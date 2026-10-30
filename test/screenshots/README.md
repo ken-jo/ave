@@ -92,8 +92,7 @@ calls the fixture's tool through its bridge and shows the answer, so opening the
 panel is also a plugin's first tool call.
 
 - **Reviewer disabled** (`permissions.reviewer.mode: "disabled"` in the
-  `AVE_HOME/config/settings.json`, with the `disabledMigratedAt` marker so it is not
-  migrated back to `strict`) whenever a scenario installs plugins, so the
+  `AVE_HOME/config/settings.json`) whenever a scenario installs plugins, so the
   reviewer's own model call cannot stall a capture. The fixture's tool is a
   write, so its call still raises the "Approve Tool Execution" card under the
   default execution mode: `chat-plugin-panel` sets `executionMode: 'allow'`,

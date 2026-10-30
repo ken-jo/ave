@@ -115,7 +115,6 @@ export function createApprovalGateEgressRequester(
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       ...(!terminal ? { ownerUnattended: request.ownerUnattended, toolApprovalWait: request.toolApprovalWait } : {}),
-      isReadOnly: false,
       egressHost: {
         host,
         port,

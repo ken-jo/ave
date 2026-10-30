@@ -23,7 +23,7 @@ export interface ScenarioEntry {
   // One script entry answers each model call; refused requests fail the capture.
   scriptedScript?: ScriptedScript;
   // Plugin seeding owns reviewer mode unless overridden.
-  reviewerMode?: 'disabled' | 'rule' | 'llm' | 'strict';
+  reviewerMode?: 'disabled' | 'llm';
   // Auto mode routes foreground tool calls through review before approval.
   executionMode?: 'default' | 'strict' | 'auto' | 'allow';
   seededCorpus?: Readonly<Record<string, string>>;

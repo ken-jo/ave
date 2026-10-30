@@ -64,9 +64,6 @@ describe("host shell rule policy epochs", () => {
     ["rules", (manager) => manager.setRules([])],
     ["mode", (manager) => manager.setMode("strict")],
     ["persisted mode", (manager) => manager.setModePersist("strict")],
-    ["tool mode", (manager) => manager.setToolModeOverride("bash", "strict")],
-    ["cleared tool mode", (manager) => manager.clearToolModeOverride("bash")],
-    ["published tool modes", (manager) => manager.prepareToolModeOverrides(["bash"], []).publish()],
     ["path settings", (manager) => manager.setBlockReadsOutsideWorkingDirectories(true)],
     ["rule reload", (manager) => manager.loadRulesFromFile()],
     ["allow removal", (manager) => manager.removeRule("Bash(echo epoch)", "allow")],
@@ -83,7 +80,6 @@ describe("host shell rule policy epochs", () => {
     const manager = new PermissionManager(join(tmpdir(), "host-epoch-permissions.json"));
     manager.setMode("default");
     manager.setRules([withCurrentShellRuleVersion({ pattern: "Bash(echo epoch)", action: "allow" })]);
-    manager.setToolModeOverride("bash", "auto");
     const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
       hostShellExecutionPlan: hostPlan,
@@ -143,7 +139,6 @@ describe("PermissionManager (B1 persistence)", () => {
     const result = pm.checkDetailed("my_tool", "builtin", "write");
     expect(result.decision).toBe("allow");
     expect(result.reasonCode).toBe("remembered-approval");
-    expect(result.layer).toBe(5);
 
     // 영구: store에 rule이 추가됐는지 (수동 경로 default write-tier)
     expect(mockStore.rules).toContainEqual({ pattern: "my_tool", action: "allow", tier: "write" });
@@ -176,7 +171,6 @@ describe("PermissionManager (B1 persistence)", () => {
 
     const result = pm.checkDetailed("dangerous_tool", "builtin", "write");
     expect(result.decision).toBe("deny");
-    expect(result.layer).toBe(1);
 
     expect(mockStore.rules).toContainEqual({ pattern: "dangerous_tool", action: "deny" });
     expect(pm.getVisibilityDenyRules()).toEqual([{ pattern: "dangerous_tool" }]);
@@ -210,7 +204,6 @@ describe("PermissionManager (B1 persistence)", () => {
 
     const result = fresh.checkDetailed("pre_allowed_tool", "builtin", "write");
     expect(result.decision).toBe("allow");
-    expect(result.layer).toBe(3);
   });
 
   it("loadRulesFromFile is a no-op when file does not exist", async () => {
@@ -261,7 +254,6 @@ describe("PermissionManager (B1 persistence)", () => {
     // 인메모리에서도 제거됐는지 — write category이므로 ask여야 함
     const result = pm.checkDetailed("removable_tool", "builtin", "write");
     expect(result.decision).toBe("ask");
-    expect(result.layer).toBe(6);
   });
 
   // listPersistedRules
@@ -292,22 +284,13 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(mcp.reasonCode).toBe("allow-mode");
   });
 
-  it("strict MCP tool override forces ask regardless of global auto mode", async () => {
-    await pm.setModePersist("auto");
-    pm.setToolModeOverride("mcp_server__write_note", "strict");
-
+  it.each(["strict", "default", "auto", "allow"] as const)("routes external tools through the global %s mode", mode => {
+    pm.setMode(mode);
     const result = pm.checkDetailed("mcp_server__write_note", "mcp", "write");
-
-    expect(result.decision).toBe("ask");
-    expect(result.reasonCode).toBe("external-tool");
-    expect(result.layer).toBe(6);
-  });
-
-  it("uses the effective tool mode for ordinary external review", () => {
-    pm.setToolModeOverride("mcp_server__fetch", "auto");
-    expect(pm.checkDetailed("mcp_server__fetch", "mcp", "network")).toMatchObject({ decision: "ask", reviewer: { route: "foreground-auto" } });
-    pm.setMode("strict");
-    expect(pm.checkDetailed("mcp_server__fetch", "mcp", "network").reviewer?.route).toBe("foreground-auto");
+    expect(result.decision).toBe(mode === "allow" ? "allow" : "ask");
+    expect(result.reviewer?.route).toBe(mode === "auto" ? "foreground-auto" : undefined);
+    expect(result.forceModal).toBeUndefined();
+    expect(pm.checkDetailed("mcp_server__read_note", "mcp", "write", undefined, { mcpReadOnlyHint: true }).decision).toBe("allow");
   });
   it("keeps explicit allow rules before strict-mode kind policy", () => {
     pm.setRules([{ pattern: "read_file", action: "allow" }]);
@@ -319,11 +302,10 @@ describe("PermissionManager (B1 persistence)", () => {
     pm.setMode("strict");
     expect(pm.checkDetailed("write_report", "builtin", "write")).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
   });
-  it("trust-based terminal decision uses a unique layer number", () => {
+  it("trust-based terminal decision retains its mode policy", () => {
     const result = pm.checkDetailed("builtin_read_tool", "builtin", "read");
 
     expect(result.decision).toBe("allow");
-    expect(result.layer).toBe(6);
   });
 
   it("keeps remembered grants before headless automatic review", async () => {
@@ -358,9 +340,7 @@ describe("PermissionManager (B1 persistence)", () => {
     );
 
     expect(sameScope.decision).toBe("allow");
-    expect(sameScope.layer).toBe(5);
     expect(widerScope.decision).toBe("ask");
-    expect(widerScope.layer).toBe(6);
   });
 
   it("does not reuse bare tool-name allow rules when approvalCacheKey is present", async () => {
@@ -375,7 +355,6 @@ describe("PermissionManager (B1 persistence)", () => {
     );
 
     expect(result.decision).toBe("ask");
-    expect(result.layer).toBe(6);
   });
 });
 
@@ -406,7 +385,6 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
       remoteControllerAuthority: authority,
     })).toMatchObject({
       decision: "ask",
-      layer: 2,
       forceModal: true,
       reasonCode: "other-principal",
     });
@@ -426,7 +404,7 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
     ] as const) {
       expect(pm.checkDetailed(toolName, "builtin", category, null, {
         remoteControllerAuthority: authority,
-      })).toMatchObject({ decision: "deny", layer: 1 });
+      })).toMatchObject({ decision: "deny" });
     }
 
     expect(pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
@@ -434,7 +412,6 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
       remoteControllerAuthority: authority,
     })).toMatchObject({
       decision: "deny",
-      layer: 1,
       reasonCode: "controller-capability",
     });
   });
@@ -444,7 +421,7 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
 
     expect(pm.checkDetailed("read_file", "builtin", "read", null, {
       remoteControllerAuthority: authority,
-    })).toMatchObject({ decision: "deny", layer: 1 });
+    })).toMatchObject({ decision: "deny" });
   });
 });
 describe("PermissionManager — platform bridge remote policy", () => {
@@ -484,7 +461,6 @@ describe("PermissionManager — platform bridge remote policy", () => {
       remoteControllerAuthority: authority,
     })).toMatchObject({
       decision: "ask",
-      layer: 2,
       forceModal: true,
       reasonCode: "other-principal",
     });
@@ -544,7 +520,6 @@ describe("PermissionManager — overlay-trigger origin override", () => {
     );
 
     expect(r.decision).toBe("ask");
-    expect(r.layer).toBe(2);
     expect(r.reviewer).toBeUndefined();
     expect(r.forceModal).toBe(true);
   });
@@ -761,7 +736,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     // write/shell/network invocations of the same pattern → NOT covered → ask.
     const write = pm.checkDetailed("dual_tool", "builtin", "write");
     expect(write.decision).toBe("ask");
-    expect(write.layer).toBe(6);
     expect(pm.checkDetailed("dual_tool", "builtin", "shell").decision).toBe("ask");
     expect(pm.checkDetailed("dual_tool", "builtin", "network").decision).toBe("ask");
   });
@@ -772,7 +746,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     for (const cat of ["read", "write", "shell", "network"] as const) {
       const r = pm.checkDetailed("power_tool", "builtin", cat);
       expect(r.decision).toBe("allow");
-      expect(r.layer).toBe(5);
     }
   });
 
@@ -781,7 +754,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     pm.setRules([{ pattern: "legacy_tool", action: "allow" }]);
     const r = pm.checkDetailed("legacy_tool", "builtin", "write");
     expect(r.decision).toBe("allow");
-    expect(r.layer).toBe(3);
   });
 
   // restart-shadow regression (layer-3 gate)
@@ -796,7 +768,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     // …but the write invocation MUST ask — proving the layer-3 gate.
     const write = fresh.checkDetailed("reloaded_tool", "builtin", "write");
     expect(write.decision).toBe("ask");
-    expect(write.layer).toBe(6);
   });
 
   it("restart-shadow: a reloaded write-tier grant still covers write after reload", async () => {
@@ -806,7 +777,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
 
     const write = fresh.checkDetailed("reloaded_writer", "builtin", "write");
     expect(write.decision).toBe("allow");
-    expect(write.layer).toBe(3);
   });
 
   // migration round-trip
@@ -885,7 +855,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
 
     const r = pm.checkDetailed("mem_tool", "builtin", "write");
     expect(r.decision).toBe("allow");
-    expect(r.layer).toBe(3);
   });
 
   // MINOR-2: dup-hit tier reconciliation (boot-default shadow)
@@ -912,7 +881,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
       decisionOverride: "ask",
     });
     expect(r.decision).toBe("allow");
-    expect(r.layer).toBe(5);
   });
 
   it("a read-tier grant still does NOT cover a meta invocation", async () => {
@@ -923,7 +891,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     });
     expect(r.decision).toBe("ask");
     expect(r.forceModal).toBeUndefined();
-    expect(r.layer).toBe(6);
   });
 });
 

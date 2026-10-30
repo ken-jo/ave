@@ -1,3 +1,4 @@
+import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
@@ -50,12 +51,12 @@ import {
 import {
   dispatchReviewerForHeadless as dispatchReviewerForHeadlessImpl,
   dispatchReviewerForInteractiveAuto as dispatchReviewerForInteractiveAutoImpl,
+  dispatchReviewerForRationale,
   reviewerInvocationId,
 } from "./pipeline/reviewer-dispatch.js";
 import { returnUserAbort, type UserAbortDeps,
 } from "./pipeline/invocation-context.js";
 import {
-  currentApprovalMode,
   runScriptHook,
   type InvocationRunnerServices,
 } from "./invocation-services.js";
@@ -84,17 +85,6 @@ type AuditToolCall = (...args: Parameters<AuditWriter["auditToolCall"]>) => Prom
 type AuditPermissionAsk = (
   ...args: Parameters<AuditWriter["auditPermissionAsk"]>
 ) => Promise<void>;
-
-/** Other-principal requests never advertise read-only approval authority. */
-export function deriveApprovalIsReadOnly(opts: {
-  invocationCategory: ToolCategory;
-  approvalReasonPrefix: string | undefined;
-  remoteControllerAuthority: unknown;
-}): boolean {
-  if (opts.approvalReasonPrefix) return false;
-  if (opts.remoteControllerAuthority !== undefined) return false;
-  return opts.invocationCategory === "read";
-}
 
 export interface AuthorizationStageContext {
   services: InvocationRunnerServices;
@@ -127,12 +117,12 @@ export interface AuthorizationStageContext {
   abortSignal: AbortSignal | undefined;
   rationaleResumeContext: RationaleResumeExecutionContext | undefined;
   rationaleBatchContext: RationaleBatchExecutionContext | undefined;
-  targetFilePaths: string[];
   targetFilePath: string | undefined;
   canonicalTargets: Array<{ filePath: string; canonicalPath: string }>;
   approvalCacheKey: string | undefined;
   executionCwd: string;
   auditCurrentToolCall: AuditToolCall;
+  hasRecordedDenial?: () => boolean;
   auditCurrentPermissionAsk: AuditPermissionAsk;
   withHostShellExecutionPlan: (result: ToolResult) => ToolResult;
   abortDeps: (input: Record<string, unknown>) => UserAbortDeps;
@@ -151,8 +141,11 @@ export interface AuthorizationStageContext {
   secretRead?: boolean;
   shellReadOnlyProven?: boolean;
   shellEscalated?: boolean;
-  directoryAuthorization?: { permission: PermissionCheckResult; humanApproved: boolean };
+  directoryAuthorization?: { permission: PermissionCheckResult; humanApproved: boolean; pendingRationale?: true; requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<import("../permissions/approval-gate.js").ApprovalDecision> };
   permissionResult: PermissionCheckResult | undefined;
+  reviewedPermissionForCard?: PermissionCheckResult;
+  cardRequestId?: string;
+  onHumanDecision?: (decision: import("../permissions/approval-gate.js").ApprovalDecision) => void;
   resolvedPluginOperation: ResolvedPluginOperation | undefined;
   pluginOperationPrincipal: PluginOperationPrincipal | undefined;
 }
@@ -202,7 +195,6 @@ export async function authorizeToolInvocation(
     abortSignal,
     rationaleResumeContext,
     rationaleBatchContext,
-    targetFilePaths,
     targetFilePath,
     canonicalTargets,
     approvalCacheKey,
@@ -222,10 +214,10 @@ export async function authorizeToolInvocation(
   let approvedPolicyEpoch = humanApproved ? services.permissionManager?.getPolicyEpoch() : undefined;
   let permissionRecheckResult: PermissionCheckResult | undefined;
   if (context.directoryAuthorization !== undefined) {
-    if (rationaleResumeContext !== undefined) {
+    if (rationaleResumeContext !== undefined && !context.directoryAuthorization.pendingRationale) {
       return returnRationaleResumeBlock("Directory authorization cannot resume a sealed rationale action", finalInput, context.directoryAuthorization.permission);
     }
-    if (context.directoryAuthorization.permission.decision !== "allow") {
+    if (context.directoryAuthorization.permission.decision !== "allow" && !context.directoryAuthorization.pendingRationale) {
       throw new Error("Directory authorization requires an allow decision");
     }
     permissionResult = context.directoryAuthorization.permission;
@@ -330,7 +322,7 @@ export async function authorizeToolInvocation(
     code: "other-principal" as const,
     reason: "another principal's request requires local allow-once approval",
   } : undefined);
-  if (context.directoryAuthorization === undefined) {
+  if (context.directoryAuthorization === undefined || context.directoryAuthorization.pendingRationale) {
     const shellDialect = isCanonicalBashTool(tool)
       ? "bash" as const
       : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
@@ -378,7 +370,11 @@ export async function authorizeToolInvocation(
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
-    permissionResult = services.permissionManager
+    permissionResult = context.reviewedPermissionForCard !== undefined && services.permissionManager !== undefined
+      ? services.permissionManager.recheckPermission(context.reviewedPermissionForCard)
+      : context.directoryAuthorization?.pendingRationale
+      ? context.directoryAuthorization.permission
+      : services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
@@ -410,7 +406,6 @@ export async function authorizeToolInvocation(
       : {
           decision: "deny",
           reason: "Permission manager is unavailable",
-          layer: 3,
           forceModal: true,
         };
     if (!permissionResult) {
@@ -438,7 +433,7 @@ export async function authorizeToolInvocation(
     const ordinaryRequest = permissionResult.pipelineRequest;
     if (permissionResult.decision !== "allow" && ordinaryRequest !== undefined && !ordinaryRequest.admissionDenial &&
         !ordinaryRequest.floor && ordinaryRequest.rules?.deny === undefined && ordinaryRequest.rules?.ask === undefined &&
-        ordinaryRequest.manualRerun !== true && rationaleResumeContext === undefined &&
+        ordinaryRequest.manualRerun !== true && context.reviewedPermissionForCard === undefined && rationaleResumeContext === undefined &&
         rationaleBatchContext === undefined && services.permissionManager !== undefined) {
       const memorySkip = await services.tryUserApprovalMemorySkip(
         toolUse.name,
@@ -465,10 +460,14 @@ export async function authorizeToolInvocation(
       }
     }
     if (
-      permissionResult.decision === "ask" &&
-      permissionResult.reviewer?.route === "foreground-auto"
+      permissionResult.decision === "ask" && rationaleResumeContext === undefined && permissionResult.reviewer?.verdict === undefined &&
+      (permissionResult.reviewer?.route === "foreground-auto" ||
+        rationaleBatchContext !== undefined && permissionResult.reviewer?.route === "headless")
     ) {
-      const reviewerResult = await dispatchReviewerForInteractiveAutoImpl(
+      const dispatchInitialReview = rationaleBatchContext !== undefined
+        ? dispatchReviewerForRationale
+        : dispatchReviewerForInteractiveAutoImpl;
+      const reviewerResult = await dispatchInitialReview(
         services.permissionManager,
         toolUse.name,
         source,
@@ -529,6 +528,7 @@ export async function authorizeToolInvocation(
                 : "rationale-sandbox-execution-plan/v2",
             executionCwd,
             allowedDirectories: [...invocationAllowedScope.directories],
+            checkpointAvailable: permissionResult.pipelineRequest?.fileWrite?.checkpointAvailable === true,
             capability: {
               kind: sandboxCapability.kind,
               confidence: sandboxCapability.confidence,
@@ -549,6 +549,7 @@ export async function authorizeToolInvocation(
               : { hostShellExecutionPlan: hostShellExecutionPlanAudit }),
           };
     if (rationaleBatchContext && sandboxCapability && sandboxExecutionPlan) {
+      const reviewedPermissionForCard = permissionResult;
       const rationaleControl = await maybeMaterializeRationaleControl(
         rationaleBatchContext.runtime,
         {
@@ -568,16 +569,33 @@ export async function authorizeToolInvocation(
             : { mcpServerId: tool.mcpServerId }),
           ...(tool.workerId === undefined ? {} : { workerId: tool.workerId }),
           invocationTrustOrigin: invocationPermissionContext.trustOrigin,
-          targetFilePaths,
           canonicalTargets: canonicalTargets.map(
             (target) => target.canonicalPath,
           ),
-          allowedDirectories: invocationAllowedScope.directories,
           ...(approvalCacheKey === undefined ? {} : { approvalCacheKey }),
+          recordTerminalDenial: async (reason) => {
+            if (abortSignal?.aborted || context.hasRecordedDenial?.()) return;
+            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true,
+              startTime, { ...reviewedPermissionForCard, decision: "deny", reason }, Infinity,
+              invocationPermissionContext, invocationCategory, executionCwd);
+          },
+          requestHumanApproval: context.directoryAuthorization?.requestHumanApproval ?? (async ({ requestId, abortSignal: cardAbortSignal }) => {
+            let humanDecision: import("../permissions/approval-gate.js").ApprovalDecision | undefined;
+            const cardAuthorization = await authorizeToolInvocation({ ...context, directoryAuthorization: undefined,
+              rationaleBatchContext: undefined, rationaleResumeContext: undefined,
+              reviewedPermissionForCard, cardRequestId: requestId,
+              ...(cardAbortSignal === undefined ? {} : { abortSignal: cardAbortSignal }),
+              onHumanDecision: (decision) => { humanDecision = decision; },
+            });
+            if (humanDecision === undefined && "tool_use_id" in cardAuthorization && cardAuthorization.is_error === true) {
+              throw new RationaleHumanApprovalDeniedError(cardAuthorization.content);
+            }
+            if (humanDecision === undefined) throw new Error("Approval did not produce an authenticated decision");
+            return humanDecision;
+          }),
           sandboxCapability,
           sandboxExecutionPlan,
           permission: permissionResult,
-          permissionEvaluationContext: evaluationContext,
           eligibilityContext: {
             headless: invocationPermissionContext.headless === true,
             forceModal: permissionResult.forceModal === true,
@@ -588,6 +606,11 @@ export async function authorizeToolInvocation(
       if (rationaleControl) {
         return { outcome: "rationale-required", control: rationaleControl };
       }
+    }
+    // A high that cannot offer a model choice is finalized at the ordinary card boundary.
+    if (rationaleResumeContext === undefined && sessionId !== undefined && permissionResult.reviewer?.verdict?.level === "high" &&
+        permissionResult.reviewer.requestId !== undefined) {
+      services.permissionManager?.resolveReviewerChoice(sessionId, permissionResult.reviewer.requestId, "deny");
     }
     if (rationaleResumeContext) {
       if (!sandboxCapability || !sandboxExecutionPlan) {
@@ -614,12 +637,10 @@ export async function authorizeToolInvocation(
           canonicalTargets: canonicalTargets.map(
             (target) => target.canonicalPath,
           ),
-          allowedDirectories: invocationAllowedScope.directories,
           ...(approvalCacheKey === undefined ? {} : { approvalCacheKey }),
           sandboxCapability,
           sandboxExecutionPlan,
           permission: permissionResult,
-          permissionEvaluationContext: evaluationContext,
           eligibilityContext: {
             headless: invocationPermissionContext.headless === true,
             forceModal: permissionResult.forceModal === true,
@@ -682,7 +703,7 @@ export async function authorizeToolInvocation(
         durationMs,
       });
     }
-    if (permissionResult.decision === "ask") {
+    if (permissionResult.decision === "ask" && !rationaleResumeContext?.prepared) {
       if (invocationPermissionContext.headless === true || permissionResult.reviewer?.route === "headless") {
         const headlessReviewerRoute =
           permissionResult.reviewer?.route === "headless";
@@ -690,8 +711,7 @@ export async function authorizeToolInvocation(
           const headlessDeny: PermissionCheckResult = {
             decision: "deny",
             reason: NO_APPROVER_MESSAGE,
-            layer: permissionResult.layer,
-          };
+            };
           const msg = t("be_executor.permBlockHeadlessDeny", {
             name: toolUse.name,
             source,
@@ -869,14 +889,10 @@ export async function authorizeToolInvocation(
           ...permissionResult,
           decision: "allow",
           reason: "host-authentic rationale allow-once receipt consumed",
-          layer: permissionResult.layer,
-        };
+          };
       } else if (invocationPermissionContext.approvalSurface === "unavailable") {
         return returnAuthorizationRequired(permissionResult);
       } else if (services.approvalGate) {
-        // Layer 3: wire target.filePath + isReadOnly + mode so the
-        // approval gate can apply sensitive-path and read-only checks to
-        // the exact invocation shown to the user.
         const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyApprovalRuleVerdict({
@@ -899,7 +915,7 @@ export async function authorizeToolInvocation(
           }) : undefined;
         const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         const approvalRequest = {
-          id: randomUUID(),
+          id: context.cardRequestId ?? randomUUID(),
           ...(permissionResult.forceModal === true
             ? {
                 // Forced floors consume consent for this invocation only.
@@ -932,23 +948,9 @@ export async function authorizeToolInvocation(
           ...(remoteControllerOrigin === undefined
             ? {}
             : { remoteControllerOrigin }),
-          // The live authority object itself, host-only for the same reason.
-          // The marker above says WHICH controller; this says the controller is
-          // still current, which only the object can answer — a string cannot
-          // go stale. Away Authority requires both and refuses when they
-          // disagree, so they are projected from one context together rather
-          // than left to be wired separately.
           ...(invocationPermissionContext.remoteControllerAuthority === undefined
             ? {}
-            : {
-                remoteControllerAuthority:
-                  invocationPermissionContext.remoteControllerAuthority,
-                // Every path, not the one below. `target.filePath` is the first
-                // extracted path and exists to be displayed; a scope check that
-                // read it would bind `move_file`'s source and let its
-                // destination go anywhere.
-                scopeTargetFilePaths: targetFilePaths,
-              }),
+            : { remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority }),
           reviewerVerdict: permissionResult.reviewer?.verdict,
           ...(approvalRuleAssessment ? { ruleVerdict: approvalRuleAssessment.verdict, approvalRuleBasis: approvalRuleAssessment.basis } : {}),
           reviewerOutcome: permissionResult.reviewer?.outcome,
@@ -967,13 +969,6 @@ export async function authorizeToolInvocation(
           source: source as ToolSource,
           createdAt: Date.now(),
           ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
-          isReadOnly: permissionResult.forceModal !== true && deriveApprovalIsReadOnly({
-            invocationCategory,
-            approvalReasonPrefix,
-            remoteControllerAuthority:
-              invocationPermissionContext.remoteControllerAuthority,
-          }),
-          mode: currentApprovalMode(services.permissionManager),
           sensitivePathPattern,
           trustOrigin: invocationPermissionContext.trustOrigin,
           // Propagate approvalCacheKey so renderer record key
@@ -1187,8 +1182,7 @@ export async function authorizeToolInvocation(
           const revokedPermission: PermissionCheckResult = {
             decision: "deny",
             reason,
-            layer: 2,
-          };
+            };
           emitToolStart(callbacks, toolUse.name, finalInput, meta);
           callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, revokedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
@@ -1206,6 +1200,7 @@ export async function authorizeToolInvocation(
         }) : { permission: permissionResult, decision, humanApproved: undefined };
         permissionResult = surfaceResolution.permission;
         decision = surfaceResolution.decision;
+        context.onHumanDecision?.(decision);
         const manuallyApproved = decision.choice.startsWith("allow") &&
           !isHostApprovalRejectedDecision(decision);
 
@@ -1279,8 +1274,7 @@ export async function authorizeToolInvocation(
           ...permissionResult,
           decision: "allow",
           reason: `user approved approval request (${decision.choice})`,
-          layer: permissionResult.layer,
-        };
+          };
         // allow-once / allow-always: 실행 계속
       } else {
         // §F4: approvalGate 미연결 시 fail-closed — 모든 ask 결정을 차단

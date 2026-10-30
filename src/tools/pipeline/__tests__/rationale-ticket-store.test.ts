@@ -24,7 +24,7 @@ const NOW = 1_900_000_000_000;
 const permission = {
   decision: "ask",
   reason: "Automatic review requires human approval.",
-  layer: 6, reasonCode: "reviewer-human-required",
+  reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
     verdict: { level: "high", reason: "bounded workspace deletion" },

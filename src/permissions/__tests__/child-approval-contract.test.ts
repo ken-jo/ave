@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
-import { ApprovalGate, approvalAnswererAuditToken, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
+import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 
 function request(): ApprovalRequestInput {
   return {
@@ -12,10 +12,6 @@ function request(): ApprovalRequestInput {
 }
 
 describe("child approval provenance contract", () => {
-  it("preserves the historical model-answerer audit token without routing approvals to a model", () => {
-    expect(approvalAnswererAuditToken("parent-agent")).toBe("parent-agent");
-    expect(approvalAnswererAuditToken("desk")).toBe("desk");
-  });
 
   it("keeps host-only child identities out of the renderer card", async () => {
     const surface = makeMockWebContents();

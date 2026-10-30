@@ -76,7 +76,7 @@ describe("host shell invocation authorization", () => {
         ]),
       },
     }));
-    expect(check.mock.results[0]?.value).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check.mock.results[0]?.value).toMatchObject({ decision: "allow", });
     expect(check.mock.calls[0]?.[4]).toMatchObject({ hostShellExecutionPlan: { executionRequest: "host" } });
     expect(stale?.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
@@ -93,7 +93,7 @@ describe("host shell invocation authorization", () => {
       expect(cards[0]?.allowedChoices).toBeUndefined();
       expect(cards[0]).toMatchObject({ requireExplicit: true });
     } else {
-      expect(check.mock.results[1]?.value).toMatchObject({ decision: "deny", layer: 1 });
+      expect(check.mock.results[1]?.value).toMatchObject({ decision: "deny", });
       expect(cards).toHaveLength(0);
     }
   });

@@ -783,7 +783,7 @@ jobs:
           src/workload/__tests__/runtime.test.ts
           test/scripts/smoke-windows-nsis-installer.test.ts
 
-      - name: Run native workbook confinement
+      - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         shell: powershell
@@ -791,7 +791,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           node scripts/fetch-mxc.mjs --arch x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
+          bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   macos-permission-tests:

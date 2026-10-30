@@ -10,6 +10,7 @@ import {
   normalizeRationaleRiskVerdict,
   parseRationaleResponse,
   verifyRationaleRequiredControl,
+  verifyRationaleTicketControl,
   type RationaleRequiredControl,
   type RationaleResponse,
   type HostAnchorRoundReservationReceipt,
@@ -294,12 +295,10 @@ export interface ReviewerScopeReevaluation {
   modalFallbackRequired: boolean;
 }
 
-// Auto-approval requires positive fresh, aligned, non-high reevaluatedVerdict; all other outcomes fail closed to the modal.
+// Fresh low/medium re-evaluation allows the action; high and review failures require a card.
 // Never gate on effectiveVerdict: max(initial, reevaluated) retains the initial high verdict.
 export function isReviewerAutoApproveEligible(r: ReviewerScopeReevaluation): boolean {
-  return r.outcome === "fresh" &&
-    r.scopeAlignment === "aligned" &&
-    r.reevaluatedVerdict.level !== "high";
+  return r.outcome === "fresh" && r.reevaluatedVerdict.level !== "high";
 }
 
 export function createReviewerScopeReevaluation(input: {
@@ -348,11 +347,19 @@ export function createReviewerScopeReevaluation(input: {
   }, "ReviewerScopeReevaluation");
 }
 
-export function validateReviewerScopeReevaluation(
-  value: unknown, control: RationaleRequiredControl, now = Date.now(),
+export function validateReviewerScopeReevaluation(value: unknown, control: RationaleRequiredControl, now = Date.now()): value is ReviewerScopeReevaluation {
+  return validateRationaleReevaluation(value, control, now, false);
+}
+
+export function validateReviewerExecutionReevaluation(value: unknown, control: RationaleRequiredControl, now = Date.now()): value is ReviewerScopeReevaluation {
+  return validateRationaleReevaluation(value, control, now, true);
+}
+
+function validateRationaleReevaluation(
+  value: unknown, control: RationaleRequiredControl, now: number, humanWait: boolean,
 ): value is ReviewerScopeReevaluation {
   try {
-    if (!verifyRationaleRequiredControl(control, { now })) return false;
+    if (!(humanWait ? verifyRationaleTicketControl(control, { now }) : verifyRationaleRequiredControl(control, { now }))) return false;
     assertRationaleCanonicalJson(value, "ReviewerScopeReevaluation");
     if (!isRecord(value)) return false;
     assertExactOwnKeys(value, ["contractVersion", "ticketId", "anchorId", "actionDigest", "round",

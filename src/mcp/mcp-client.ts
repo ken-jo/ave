@@ -20,7 +20,6 @@ import type {
 import type { McpGovernance } from "./mcp-governance.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { mcpToolToTool } from "./mcp-tool-adapter.js";
-import type { PermissionManager } from "../permissions/permission-manager.js";
 import {
   NetworkGuardError,
   ensurePublicHttpUrl,
@@ -431,7 +430,6 @@ export class McpClient {
     private readonly toolRegistry: ToolRegistry,
     /** The host's outbound transport, handed to the HTTP transport it builds. */
     private readonly networkFetch: typeof fetch,
-    private readonly permissionManager?: PermissionManager,
     /** Optional pre-built transport. When provided, `connect()` uses it instead of constructing a stdio/HTTP transport from `config`. This is the seam an in-process first-party plugin
      * uses to bind a {@link McpTransport} straight to its {@link PluginMcpServer} loopback (design §3.1 hybrid topology); the external stdio/HTTP path is unchanged when it is omitted. */
     private readonly transportOverride?: McpTransport,
@@ -913,7 +911,6 @@ export class McpClient {
   async disconnect(): Promise<void> {
     this.stopHealthCheck();
     this.rejectAllPending(t("be_mcpClient.serverDisconnected"));
-    this.clearRegisteredToolOverrides();
 
     // ToolRegistry에서 도구 제거 + 디스커버리 산출물 정리
     this.clearDiscoveredSurfaces();
@@ -1538,7 +1535,6 @@ export class McpClient {
     }
 
     // Swap: registerTools rolls its own batch back on a partial failure, so the worst post-validation outcome is an empty (never half-updated) set.
-    this.clearRegisteredToolOverrides();
     this.toolRegistry.unregisterByMcp(this.config.id);
     this.state.registeredTools = [];
     this.registerTools(tools);
@@ -1574,7 +1570,6 @@ export class McpClient {
     this.state.status = "error";
     this.state.lastError = reason;
     this.rejectAllPending(reason);
-    this.clearRegisteredToolOverrides();
     this.clearDiscoveredSurfaces();
     this.stopHealthCheck();
   }
@@ -1642,7 +1637,6 @@ export class McpClient {
 
   private registerTools(tools: McpToolSchema[]): void {
     const serverId = this.config.id;
-    const toolPermissionMode = this.governance.getApproval(serverId)?.toolPermissionMode ?? "default";
     const newlyRegistered: string[] = [];
 
     try {
@@ -1655,23 +1649,13 @@ export class McpClient {
         );
         this.state.registeredTools.push(namespacedName);
         newlyRegistered.push(namespacedName);
-        this.permissionManager?.setToolModeOverride(namespacedName, toolPermissionMode);
       }
     } catch (err) {
-      for (const toolName of newlyRegistered) {
-        this.permissionManager?.clearToolModeOverride(toolName);
-      }
       this.toolRegistry.unregisterByMcp(serverId);
       this.state.registeredTools = this.state.registeredTools.filter(
         (toolName) => !newlyRegistered.includes(toolName),
       );
       throw err;
-    }
-  }
-
-  private clearRegisteredToolOverrides(): void {
-    for (const toolName of this.state.registeredTools) {
-      this.permissionManager?.clearToolModeOverride(toolName);
     }
   }
 

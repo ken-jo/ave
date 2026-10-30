@@ -50,7 +50,7 @@ const permissionContext = {
   userIntent: "Perform the requested operation.",
 };
 
-function hostRuntime(): RationaleHostRuntime {
+function hostRuntime(onCandidate?: (candidate: RationaleControlCandidate) => void): RationaleHostRuntime {
   const anchor = createTestRequestAnchor({
     sessionId: "ef975fd1-380d-4acf-8e50-7f1535885ebc",
     turnId: "turn-rationale-resume",
@@ -64,6 +64,7 @@ function hostRuntime(): RationaleHostRuntime {
     materializeRationaleControl: (
       candidate: RationaleControlCandidate,
     ): RationaleRuntimeMaterialization => {
+      onCandidate?.(candidate);
       const canonicalTargets = candidate.canonicalTargets.length > 0
         ? [...candidate.canonicalTargets]
         : [RATIONALE_UNKNOWN_SCOPE_SENTINEL];
@@ -249,6 +250,7 @@ async function fixture() {
     createAuditLogger(order, directory),
   );
 
+  let reviewerRequestId: string | undefined;
   const initial = await executor.executeConversationBatch(
     [{
       id: "sealed-use",
@@ -259,7 +261,7 @@ async function fixture() {
       executionCwd: process.cwd(),
       sessionId: "ef975fd1-380d-4acf-8e50-7f1535885ebc",
       permissionContext,
-      rationaleRuntime: hostRuntime(),
+      rationaleRuntime: hostRuntime((candidate) => { reviewerRequestId = candidate.permission.reviewer.requestId; }),
     },
   );
   if (initial.outcome !== "rationale-required") {
@@ -284,6 +286,9 @@ async function fixture() {
     },
   );
   if (!snapshot) throw new Error("rationale-failed transition failed");
+  if (!reviewerRequestId) throw new Error("Fixture reviewer request identity is missing");
+  expect(manager.getJudgeBreaker().snapshot(control.anchor.sessionId)).toEqual({ consecutive: 0, total: 0, open: false });
+  manager.resolveReviewerChoice(control.anchor.sessionId, reviewerRequestId, "deny");
   snapshot = ticketStore.promptUser(
     createRationaleTicketCasExpectation(snapshot),
   );
@@ -318,6 +323,9 @@ async function fixture() {
   });
   const startStore = new InMemoryHostInvocationStartCasStore();
   const resumeRuntime: RationaleResumeHostRuntime = {
+    hasHumanApproval: (candidate) => candidate.ticketId === request.ticketId &&
+      candidate.invocationDigest === request.invocationDigest &&
+      ticketStore.isAuthenticConsumedAllowOnceReceipt(receipt),
     resolveCurrentActionIdentity: identity,
     loadHostConsumedAllowOnceReceipt: loadReceipt,
     isAuthenticConsumedAllowOnceReceipt: authenticateReceipt,

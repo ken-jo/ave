@@ -37,6 +37,7 @@ async function dispatchReview(args: ReviewArguments, headless: boolean): Promise
     ...(approvalPurpose ? { approvalPurpose } : {}) });
   const review = await manager.dispatchReviewer(toolName, {
     invocationId: reviewerInvocationId(meta), sessionId, source, category, pathFields, finalInput,
+    rationaleAvailable: context.rationaleAvailable === true,
     executionCwd: evaluationContext.executionCwd, auditInput, allowedDirectories, sensitivePathsAdjacent,
     trustOrigin: context.trustOrigin, evaluationContext, permissionDecision: initial,
     ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent, ...(context.currentTaskStep ? { currentTaskStep: context.currentTaskStep } : {}) } } : {}),
@@ -60,6 +61,10 @@ async function dispatchReview(args: ReviewArguments, headless: boolean): Promise
     toolName, toolCategory: category, source, ...meta, verdictLevel: review.verdict.level, reason: decision.reason,
     ...(approvalPurpose ? { approvalPurpose } : {}) });
   return decision;
+}
+
+export async function dispatchReviewerForRationale(...args: ReviewArguments): Promise<PermissionCheckResult> {
+  return dispatchReview(args, args[8].headless === true);
 }
 
 export async function dispatchReviewerForHeadless(...args: ReviewArguments): Promise<

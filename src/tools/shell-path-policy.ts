@@ -1,12 +1,15 @@
+import { readShellOptionValue as readOptionValue } from "../shared/shell-option-value.js";
+import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
+import { literalShellBodies, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
 import { isAbsolute, join } from "node:path";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
-import { displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
+import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
-import { inspectSedScriptFileAccess, isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
+import { isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
 import { RECURSIVE_TRAVERSAL_COMMANDS, recursiveTraversalFlag } from "../shared/shell-recursive-traversal.js";
@@ -235,12 +238,6 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
     firstPositionalIsProgram: true,
     programSuppliedBy: new Set(["-f", "--file", "--source"]),
   }] as [string, NonPathOperandSpec]),
-  ["sed", {
-    valueOptions: new Set(["-e", "--expression"]),
-    pathValueOptions: new Set(["-f", "--file"]),
-    firstPositionalIsProgram: true,
-    programSuppliedBy: new Set(["-e", "--expression", "-f", "--file"]),
-  }],
   // grep's first positional is a pattern; include/exclude globs filter traversal rather than open operands.
   ...(["rg", "ag", "ack"] as const).map((verb) => [verb, {
     valueOptions: new Set([
@@ -1030,6 +1027,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   }
   if (verb === "git") return classifyGitCommitOperandSlots(argv);
   if (verb === "sqlite3") return classifySqliteArgumentSlots(argv);
+  if (verb === "sed") return classifySedArgumentSlots(argv);
   if (verb === "find") return classifyFindOperandSlots(argv, verbIndex);
   if (verb === "findstr" || verb === "findstr.exe") return classifyFindstrOperandSlots(argv, verbIndex);
   if (["grep", "egrep", "fgrep"].includes(verb)) return classifyGrepOperandSlots(argv, verbIndex);
@@ -1052,31 +1050,12 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   if (!spec) return empty;
   if (spec.unsupportedExecution) return { ...empty, dynamicExecution: "nested shell dialect is not supported" };
   const valueOptions = new Set([...spec.valueOptions ?? [], ...spec.pathValueOptions ?? []]);
-  const isSed = verb === "sed";
 
   // A normally data-only slot stays path-checked when its value opens or executes content.
   const exempts = (value: string, index: number, option?: string): boolean => {
     if (verb === "openssl" && option && OPENSSL_PASSPHRASE_OPTIONS.has(option) && value.startsWith("file:")) {
       extraCandidates.push({ value: value.slice(5), index });
       return true;
-    }
-    // The host sed scanner supplies file and execution spans, including filenames attached directly to command letters.
-    // Never split those spans on whitespace: w/tmp/x and w /tmp/x address the same outside file.
-    if (isSed) {
-      programIndices.add(index);
-      const sedAccess = inspectSedScriptFileAccess(value);
-      // Re-enter sed e COMMAND just like a shell -c payload.
-      nestedCommands.push(...sedAccess.execCommands.map((value) => ({ value, index })));
-      if (sedAccess.hasDynamicExec && dynamicExecution === null) {
-        dynamicExecution =
-          `Dynamic path: \`sed\` script \`${value}\` executes text that only exists while sed runs ` +
-          "(`s///e`, or `e` with no command, run the pattern space), so the paths it uses cannot be " +
-          "checked beforehand. Put the command in the shell call itself instead.";
-      }
-      if (sedAccess.hasWriteOrExec) {
-        extraCandidates.push(...sedAccess.fileOperands.map(({ value, effect }) => ({ value, index, effect })));
-        return true;
-      }
     }
     return true;
   };
@@ -1120,7 +1099,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
             || ["cp", "mv", "install", "ln"].includes(verb) && ["-t", "--target-directory"].includes(carried.option)) effect = "write";
           extraCandidates.push(...values.map(value => ({ value, index, ...(effect ? { effect } : {}) })));
         } else {
-          if (isSed || spec.nestedCommandOptions?.has(carried.option)) programIndices.add(index);
+          if (spec.nestedCommandOptions?.has(carried.option)) programIndices.add(index);
           if (exempts(carried.value, index, carried.option)) {
             skip.add(i);
             skip.add(index);
@@ -1331,35 +1310,6 @@ export function projectFixedChildShellCommand(event: ShellCommandEvent): Project
   };
 }
 
-function readOptionValue(
-  argv: readonly string[],
-  index: number,
-  options: ReadonlySet<string>,
-  otherValueOptions?: ReadonlySet<string>,
-): { option: string; value: string; consumedNext: boolean } | null {
-  const token = argv[index]!;
-  const equals = token.indexOf("=");
-  // A short option consumes the entire suffix, including a leading equals sign.
-  if (equals > 2 && options.has(token.slice(0, equals))) {
-    return { option: token.slice(0, equals), value: token.slice(equals + 1), consumedNext: false };
-  }
-  const takeNext = (option: string): { option: string; value: string; consumedNext: boolean } | null => {
-    const next = argv[index + 1];
-    return next === undefined ? null : { option, value: next, consumedNext: true };
-  };
-  if (options.has(token)) return takeNext(token);
-  // Only short options cluster; exclude long options and --.
-  if (!token.startsWith("-") || token.startsWith("--")) return null;
-  for (let i = 1; i < token.length; i += 1) {
-    const option = `-${token[i]!}`;
-    // A different value-taking option owns the entire remaining suffix.
-    if (otherValueOptions?.has(option)) return null;
-    if (!options.has(option)) continue;
-    const attached = token.slice(i + 1);
-    return attached.length > 0 ? { option, value: attached, consumedNext: false } : takeNext(option);
-  }
-  return null;
-}
 
 function buildRecursiveBlockMessage(
   commandToken: string,
@@ -1657,6 +1607,13 @@ export function inspectImplicitGitWriteTargets(
   return "The command mutates protected repository control metadata.";
 }
 
+type PowerShellPathInspector = (command: string, cwd: string, environment: Readonly<Record<string, string | undefined>>, budget: LiteralBodyBudget) => {
+  paths: readonly PermissionPathEvidence[];
+  unproven: boolean;
+  unknownProtectedWrite?: string;
+  evidenceLimitExceeded?: true;
+};
+
 interface ShellWriteTargetProof {
   dynamicWords: Set<ShellWord>;
   boundTargets: Set<ShellWord>;
@@ -1683,6 +1640,9 @@ export function findShellPathPolicyViolation(
   onUnknownWrite?: (reason: string) => void,
   targetProof?: ShellWriteTargetProof,
   prepared?: PreparedShellAnalysis,
+  literalBudget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 },
+  inspectPowerShellBody?: PowerShellPathInspector,
+  argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean },
 ): ShellPathPolicyViolation | null {
   const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot) : undefined;
   const resolvedEvidencePaths = evidence ? new Map<string, string>() : undefined;
@@ -1750,8 +1710,16 @@ export function findShellPathPolicyViolation(
     const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);
     if (violation) throw new PathPolicyError(violation);
   };
+  // A projected argv reuses its original input charge and separately inspected bodies.
+  let firstAnalysis = true;
   try {
-    inspectShellExecution(command, cwd, facts, { path: (path, raw, at, effect, role) => checkPath(path, raw, at, effect, false, role),
+    inspectShellExecution(command, cwd, facts, { analysisTokens(count) {
+      if (!evidence) return;
+      if (firstAnalysis && argumentView?.rootAlreadyParsed) { firstAnalysis = false; return; }
+      firstAnalysis = false;
+      literalBudget.tokens.count += count;
+      if (literalBudget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) throw new ShellExecutionError("Shell analysis total token limit exceeded");
+    }, path: (path, raw, at, effect, role) => checkPath(path, raw, at, effect, false, role),
       word(word) {
         if (word.parts.some((part) => part.kind !== "literal")) targetProof?.dynamicWords.add(word);
       },
@@ -1780,6 +1748,14 @@ export function findShellPathPolicyViolation(
         }
       }, command(event) {
       const {node, effective} = event;
+      if (evidence && !argumentView?.literalBodiesAlreadyInspected) for (const body of literalShellBodies(event.argv, event.dialect, effective.words.map(word => word.source.raw))) {
+        if (body.dialect !== "powershell") continue;
+        if (!inspectPowerShellBody) throw new Error("Missing cross-dialect shell path inspector");
+        const nested = inspectPowerShellBody(body.text, event.cwd ?? cwd, event.environment, { tokens: literalBudget.tokens, depth: literalBudget.depth + 1 });
+        evidence.push(...nested.paths);
+        if (nested.unknownProtectedWrite) onUnknownWrite?.(nested.unknownProtectedWrite);
+        if (nested.evidenceLimitExceeded) throw new ShellExecutionError("Shell analysis total token limit exceeded");
+      }
       const outerKnownArgv = event.argv.map((argument,index) => argument ?? displayShellWord(effective.words[index]!));
       const outerSlots = classifyOperandSlots(outerKnownArgv);
       if (evidence && outerSlots.unknownWriteTarget) onUnknownWrite?.(outerSlots.unknownWriteTarget);
@@ -1792,7 +1768,7 @@ export function findShellPathPolicyViolation(
       if (view.unsupported) decline(view.unsupported.reason, view.unsupported.word);
       const head = argv[0];
       if (head === undefined) {
-        inspectEmbeddedShellPrograms(event, outerSlots);
+        if (!argumentView?.literalBodiesAlreadyInspected) inspectEmbeddedShellPrograms(event, outerSlots);
         return;
       }
       const verb = transferCommandVerb(head) ?? stripCommandPath(head);
@@ -1921,7 +1897,7 @@ export function findShellPathPolicyViolation(
           if(path.refuseAfterCheck)ambiguousTransferPath();
         }
       }
-      inspectEmbeddedShellPrograms(event,outerSlots);
+      if (!argumentView?.literalBodiesAlreadyInspected) inspectEmbeddedShellPrograms(event,outerSlots);
     }}, evidence ? MAX_SHELL_ANALYSIS_TOKENS : undefined, prepared);
     return unresolvedEvidence;
   }catch(error){
@@ -1933,17 +1909,19 @@ export function findShellPathPolicyViolation(
 
 /** Collect parsed operands, retaining repeated spellings and their individual effects.
  * A non-null unproven result means paths may be partial; route that uncertainty through the pipeline. */
-export function inspectShellPermissionPaths(command: string, cwd: string, facts: ShellExecutionFacts = { dialect: "bash", environment: {} }, prepared?: PreparedShellAnalysis): {
+export function inspectPosixShellPermissionPaths(command: string, cwd: string, facts: ShellExecutionFacts = { dialect: "bash", environment: {} }, prepared?: PreparedShellAnalysis, literalBudget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, inspectPowerShellBody?: PowerShellPathInspector, argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean }): {
   paths: readonly PermissionPathEvidence[];
   unproven: ShellPathPolicyViolation | null;
   unknownProtectedWrite?: string;
   resolvedWriteTargetsOnly?: true;
 } {
+  prepared ??= { command, analysis: analyzeShell(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }) };
+  if (literalBudget.depth >= 16 || literalBudget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: { kind: "analysis-limit", reason: "Shell analysis total token limit exceeded" } };
   const paths: PermissionPathEvidence[] = [];
   let unknownProtectedWrite: string | undefined;
   const targetProof: ShellWriteTargetProof = { dynamicWords: new Set(), boundTargets: new Set(), commands: 0, simpleDataCommand: true };
-  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof, prepared);
-  const resolvedWriteTargetsOnly = unproven === null && !unknownProtectedWrite && targetProof.commands === 1 && targetProof.simpleDataCommand
+  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof, prepared, literalBudget, inspectPowerShellBody, argumentView);
+  const resolvedWriteTargetsOnly = unproven === null && !unknownProtectedWrite && targetProof.commands > 0 && targetProof.simpleDataCommand
     && targetProof.dynamicWords.size > 0 && [...targetProof.dynamicWords].every((word) => targetProof.boundTargets.has(word));
   return { paths, unproven, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(resolvedWriteTargetsOnly ? { resolvedWriteTargetsOnly: true as const } : {}) };
 }
@@ -2021,29 +1999,19 @@ export function inspectEmbeddedShellPrograms(event: ShellCommandEvent, suppliedS
     assertProjectedOperandCardinality(argv, words);
     const knownArgv = argv as readonly string[];
 
-    for (const program of slots.nestedCommands) event.inspectNested(program.value, "posix", nestedContext, words[program.index]?.source);
     const verb = stripCommandPath(knownArgv[0]!);
     const shellOptions = NON_PATH_OPERAND_SPECS.get(verb)?.nestedCommandOptions;
+    const inputProgram = event.inputRedirect?.data ? staticShellWord(event.inputRedirect.data) : undefined;
+    if (shellOptions && event.inputRedirect?.data && inputProgram === undefined
+      && literalShellBodies(knownArgv, event.dialect, words.map(word => word.source.raw), "").length > 0) decline("unresolved shell input program", event.inputRedirect.data);
+    const bodies = literalShellBodies(knownArgv, event.dialect, words.map(word => word.source.raw), inputProgram);
+    for (const body of bodies) {
+      if (body.dialect === "powershell") decline("nested shell dialect is not supported", words[0]);
+      event.inspectNested(body.text, body.dialect, nestedContext, words[body.index]?.source);
+    }
     if (!shellOptions) return;
-    if (!["sh", "dash", "bash"].includes(verb)) decline("nested shell dialect is not supported", words[0]);
-    const dialect = verb === "bash" ? "bash" : "posix";
-    let carriesCommand = false;
-    for (let index = 1; index < knownArgv.length; index += 1) {
-      const carried = readOptionValue(knownArgv, index, shellOptions);
-      if (!carried) continue;
-      event.inspectNested(carried.value, dialect, nestedContext, words[carried.consumedNext ? index + 1 : index]?.source);
-      carriesCommand = true;
-      if (carried.consumedNext) index += 1;
-    }
-    if (!carriesCommand) {
-      for (const redirect of event.inputRedirect ? [event.inputRedirect] : []) {
-        if (!redirect.data) continue;
-        const program = staticShellWord(redirect.data);
-        if (program === undefined) decline("unresolved shell input program", redirect.data);
-        event.inspectNested(program, dialect, nestedContext, redirect.data.source);
-      }
-      if (event.fromPipe) decline("unresolved shell program from a pipe", words[0]);
-    }
+    const carriesCommand = bodies.length > 0;
+    if (!carriesCommand && event.fromPipe) decline("unresolved shell program from a pipe", words[0]);
   };
 
   inspectProgramView(view.argv, view.words, view.slots);
