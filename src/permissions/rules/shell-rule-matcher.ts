@@ -327,7 +327,11 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const command = parsed.command;
   const hasRestrictions = rules.deny.length > 0 || rules.ask.length > 0;
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no shell rules" };
-  const shape = analyzeShellForRules(parsed, cwd);
+  const proofLimited = command.length > MAX_LITERAL_COMMAND_LENGTH;
+  // Restrictive rules use the bounded syntax even when reusable identity is too long.
+  const shape = hasRestrictions && proofLimited
+    ? shellFact(parsed, `restriction-shape\0${cwd ?? ""}`, () => shapeOf(parsed, cwd))
+    : analyzeShellForRules(parsed, cwd);
 
   if (hasRestrictions) {
     // deny > ask: a deny rule that matches a visible command wins even when another part of the input is hidden; hidden code then asks, because a deny rule the matcher could not evaluate must not be bypassed.
@@ -359,6 +363,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
     if (ask) return { decision: "ask", pattern: ask.pattern, reason: `ask rule ${ask.pattern}` };
   }
 
+  if (proofLimited) return { decision: null, reason: "literal command length limit exceeded" };
   if (rules.allow.length === 0) return { decision: null, reason: "no allow rule" };
   if (!shape.ok) return { decision: null, reason: `unparseable: ${shape.reason}` };
   if (shape.hidden.length > 0) return { decision: null, reason: shape.hidden[0]! };

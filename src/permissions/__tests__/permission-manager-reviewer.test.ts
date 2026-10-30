@@ -857,9 +857,9 @@ describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.
   });
 });
 
-describe("#664 flood guard — degraded rule reviewer does not over-defer headless sandbox writes", () => {
-  it("allows a low-risk headless plugin sandbox write without denial history", async () => {
-    // Without configured credentials, model review degrades to rules; host-proven own-data writes must still classify LOW rather than defer.
+describe("unconfigured model reviewer for plugin data writes", () => {
+  it("denies a reviewer-bound headless plugin write when no model provider is available", async () => {
+    // Host data-root facts cannot substitute for an unavailable model review.
     const { wireReviewerAgent } = await import("../../boot/steps/reviewer-wiring.js");
     const { detectSandboxCapability } = await import("../sandbox-capability.js");
     const { realpathSync } = await import("node:fs");
@@ -868,14 +868,14 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
     pm.setMode("auto");
     const wiring = wireReviewerAgent({
       permissionManager: pm,
-      // Degrades to the rule classifier — no adapter is built and nothing is ever fetched, so the transport is the tripwire.
+      // No adapter is built and no provider request may be fetched.
       networkFetch: unusedNetworkFetch,
       readSettings: () => ({
         mode: "llm",
         fallbackOnError: "deny",
       }),
       readActiveLlm: () => ({ provider: "openai", model: "gpt-4o-mini" }),
-      // Factory present (boot contract honored) but the user has not configured an API key → provider unconfigured → degrade to rule.
+      // The factory is wired, but there is no configured model provider.
       streamProviderFor: () => null,
       verdictCachePath: tmpFile("flood-cache.jsonl"),
       recentlyDenied: makeRecentlyDeniedStore(tmpFile("flood-denied.jsonl")),
@@ -889,6 +889,8 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
     const TMP = realpathSync(tmpdir());
     const sandboxRoot = `${TMP}/ave-664-flood/.ave/plugins/ave-plugin-samplemail`;
 
+    const pending = pm.checkDetailed("samplemail_auth", "plugin", "write", undefined, { headless: true });
+    expect(pending.reviewer?.route).toBe("headless");
     const r = await pm.dispatchReviewer(
       "samplemail_auth",
       {
@@ -902,16 +904,18 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
         executionCwd: process.cwd(),
         sensitivePathsAdjacent: [],
         trustOrigin: "plugin-emitted",
-        // v6 — auto-LOW keys solely on the host-computed ownerPluginSandboxRoot.
+        permissionDecision: pending,
+        // Only the host computes the owning plugin data root.
         ownerPluginSandboxRoot: sandboxRoot,
         sandboxCapability: detectSandboxCapability(),
       },
       undefined,
-      // Headless lane uses the default "high" defer policy.
+      // A missing human turns the normal-card fallback into a denial.
       { lane: "headless" },
     );
 
-    expect(r.verdict.level).toBe("low");
+    expect(r).toMatchObject({ outcome: "unavailable", verdict: { level: "high" }, judge: { decision: "deny", fallback: "unavailable" } });
+    expect(pm.resolveReviewedPermission(pending, r)).toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: "Nobody can approve this request; do not retry." });
     expect(await wiring.recentlyDenied.list()).toHaveLength(0);
   });
 });

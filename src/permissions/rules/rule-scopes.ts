@@ -13,6 +13,7 @@ import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleI
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
 import { type ShellCommandInput } from "./shell-prefix-policy.js";
+import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 
 export type ProjectRuleState =
   | { ok: true; projectRoot: string; rules: readonly PermissionRule[] }
@@ -235,7 +236,11 @@ export function evaluatePowerShellSubject(
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no powershell rules" };
   const parsed = typeof subject.command === "string" ? parsePowerShellCommand(subject.command)
     : "syntax" in subject.command ? subject.command : parsePowerShellCommand(subject.command.command);
-  const shape = powerShellRuleShape(parsed);
+  const proofLimited = parsed.command.length > MAX_LITERAL_COMMAND_LENGTH;
+  if (proofLimited && !hasRestrictions) return { decision: null, reason: "literal command length limit exceeded" };
+  const shape = proofLimited && hasRestrictions
+    ? powerShellRuleShape(parsed, { restrictionsOnly: true })
+    : powerShellRuleShape(parsed);
   if (hasRestrictions) {
     // A restriction also meets the command under every spelling of its name (`restrictionTokens`): over-matching a deny or ask only narrows, so the
     // normalization that rule identity refuses (an allow compares the literal name) is safe here.
@@ -251,6 +256,7 @@ export function evaluatePowerShellSubject(
     const ask = matching(rules.ask);
     if (ask) return { decision: "ask", pattern: ask.pattern, reason: `ask rule ${ask.pattern}` };
   }
+  if (proofLimited) return { decision: null, reason: "literal command length limit exceeded" };
   if (rules.allow.length === 0) return { decision: null, reason: "no allow rule" };
   if (!shape.ok) return { decision: null, reason: `unreadable: ${shape.reason}` };
   if (shape.opaque !== null) return { decision: null, reason: shape.opaque };

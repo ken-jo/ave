@@ -113,12 +113,10 @@ export interface RiskClassifier {
   reviewUserOwnedSurface?(input: UserOwnedSurfaceReviewInput, signal?: AbortSignal): Promise<UserOwnedSurfaceReviewResult>;
 }
 
-// DisabledRiskClassifier
-
-// Disabling automatic review leaves mandatory gates and permission rules in force.
-export class DisabledRiskClassifier implements RiskClassifier {
-  classify(_: ToolInvocationContext): RiskVerdict {
-    return { level: "low", reason: "reviewer disabled — pass-through" };
+// A disabled reviewer supplies no risk assessment or automatic approval authority.
+export class UnavailableRiskClassifier implements RiskClassifier {
+  classify(_: ToolInvocationContext): never {
+    throw new ReviewerDispatchError("error", "Permission reviewer is disabled; automatic review is unavailable.");
   }
 }
 
@@ -1901,7 +1899,7 @@ export interface ReviewerSettings {
 export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier {
   switch (settings.mode) {
     case "disabled":
-      return new DisabledRiskClassifier();
+      return new UnavailableRiskClassifier();
     case "llm": {
       if (!settings.provider) {
         throw new Error(

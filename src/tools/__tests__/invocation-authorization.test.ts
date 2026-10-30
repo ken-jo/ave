@@ -1,4 +1,4 @@
-import { DisabledRiskClassifier, RuleBasedRiskClassifier, _internal } from "../../permissions/reviewer/risk-classifier.js";
+import { UnavailableRiskClassifier, RuleBasedRiskClassifier, _internal } from "../../permissions/reviewer/risk-classifier.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -160,7 +160,7 @@ describe("shell review requires a risk judgment", () => {
       reason: "confined shell", confines: { filesystem: true, process: true, network: true } });
     const manager = new PermissionManager(join(directory, "permissions.json"));
     manager.setMode("auto");
-    const classifier = disabled ? new DisabledRiskClassifier() : new RuleBasedRiskClassifier();
+    const classifier = disabled ? new UnavailableRiskClassifier() : new RuleBasedRiskClassifier();
     const classify = vi.spyOn(classifier, "classify");
     setReviewerForTest(manager, { classifier,
       cache: reviewResources.makeVerdictCache(join(directory, "judgment-cache.jsonl")),

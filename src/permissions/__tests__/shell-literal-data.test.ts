@@ -26,6 +26,16 @@ function check(command: string, runsSandboxed = true) {
   });
 }
 
+function expectAnalysisLimit(command: string, runsSandboxed = true): void {
+  const previousMode = manager.getMode();
+  try {
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      manager.setMode(mode);
+      expect(check(command, runsSandboxed), mode).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+    }
+  } finally { manager.setMode(previousMode); }
+}
+
 describe("literal heredoc data bounds", () => {
   it("declines a substitution even when its quoted heredoc body is inert data", () => {
     const command = 'echo "$(cat <<\'EOF\'\nrm -rf /\nEOF\n)"';
@@ -56,16 +66,24 @@ describe("literal heredoc data bounds", () => {
   it("routes an unproven host call through the mode", () => {
     expect(check(hereDocument(8_001), false)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
   });
-  it("keeps data-allowance limits separate from Allow-mode routing", () => {
-    expect(check(hereDocument(SHELL_LITERAL_DATA_LIMIT + 1))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+  it("denies data-allowance exhaustion before every mode", () => {
+    const oversized = hereDocument(SHELL_LITERAL_DATA_LIMIT + 1);
+    expect(prepareShellFloorInput(oversized, "bash")).toBeNull();
+    expectAnalysisLimit(oversized);
     const one = hereDocument(33_000);
-    expect(check(one + one)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(prepareShellFloorInput(one + one, "bash")).toBeNull();
+    expectAnalysisLimit(one + one);
   });
   it("counts Unicode data in bytes", () => {
-    expect(check(`cat > out.txt <<'EOF'\n${"한".repeat(22_000)}\nEOF\n`)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    const command = `cat > out.txt <<'EOF'\n${"한".repeat(22_000)}\nEOF\n`;
+    expect(Buffer.byteLength("한".repeat(22_000) + "\n", "utf8")).toBe(66_001);
+    expect(prepareShellFloorInput(command, "bash")).toBeNull();
+    expectAnalysisLimit(command);
   });
   it("leaves unquoted data under the ordinary analysis cap", () => {
-    expect(check(hereDocument(8_001, "EOF"))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    const command = hereDocument(8_001, "EOF");
+    expect(prepareShellFloorInput(command, "bash")).toBeNull();
+    expectAnalysisLimit(command);
   });
   it("accepts a double quoted delimiter without expanding its data", () => {
     expect(check(hereDocument(9_000, '"EOF"').replace("aaaa", "$HOME"))).toMatchObject({ decision: "allow" });
@@ -84,16 +102,21 @@ describe("literal heredoc data bounds", () => {
   it("refuses missing delimiters and false markers in comments or strings", () => {
     for (const command of [hereDocument(9_000).slice(0, -4), "# <<'EOF'\n" + "a".repeat(9_000) + "\nEOF\n", "printf \"<<'EOF'\"\n" + "a".repeat(9_000) + "\nEOF\n"]) {
       expect(prepareShellFloorInput(command, "bash")).toBeNull();
-      expect(check(command)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+      expectAnalysisLimit(command);
     }
   });
   it("does not reuse a data allowance across unrelated executable text", () => {
-    expect(check(hereDocument(9_000) + "printf " + "x".repeat(8_001))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    const command = hereDocument(9_000) + "printf " + "x".repeat(8_001);
+    expect(prepareShellFloorInput(command, "bash")).toBeNull();
+    expectAnalysisLimit(command);
   });
   it.each([{ receiver: "bash", executesShell: true }, { receiver: "python3 -", executesShell: false }, { receiver: "env bash", executesShell: true }, { receiver: "( bash )", executesShell: true }])("keeps known code consumers separate from the data allowance: $receiver", ({ receiver, executesShell }) => {
     const command = `${receiver} <<'EOF'\n# ${"a".repeat(9_000)}\nrm -rf /\nEOF\n`;
     expect(prepareShellFloorInput(command, "bash")).toBeNull();
-    expect(check(command)).toMatchObject(executesShell
+    expectAnalysisLimit(command);
+    const bounded = `${receiver} <<'EOF'\nrm -rf /\nEOF\n`;
+    expect(prepareShellFloorInput(bounded, "bash")).not.toBeNull();
+    expect(check(bounded)).toMatchObject(executesShell
       ? { decision: "ask", forceModal: true, reasonCode: "critical-delete" }
       : { decision: "allow", reasonCode: "allow-mode" });
   });
@@ -105,12 +128,12 @@ describe("literal heredoc data bounds", () => {
     expect(check(command)).toMatchObject({ decision: "ask", forceModal: true });
     const large = command.replace("$(rm -rf /)", "# " + "a".repeat(9_000) + "\n$(rm -rf /)");
     expect(prepareShellFloorInput(large, "bash")).toBeNull();
-    expect(check(large)).toMatchObject({ decision: "ask", forceModal: true });
+    expectAnalysisLimit(large);
   });
   it("keeps later unquoted heredocs from sharing a quoted-data allowance", () => {
     const command = hereDocument(9_000) + "cat <<X\nplain data\nX\n";
     expect(prepareShellFloorInput(command, "bash")).toBeNull();
-    expect(check(command)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expectAnalysisLimit(command);
   });
   it("uses the original grammar for a backslash quoted delimiter", () => {
     const command = hereDocument(9_000, "\\EOF");

@@ -22,6 +22,8 @@ const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   "column", "comm", "join", "paste", "expand", "unexpand", "fold",
 ]);
 
+const POWERSHELL_READ_ONLY_COMMANDS: ReadonlySet<string> = new Set(["get-childitem", "gci", "dir"]);
+
 // Read-listed verbs still escalate on mutating flags; null means always mutating, including defensive entries for excluded write utilities. Match exact/equals long flags and mutating letters in leading short clusters; unexpanded dollar tokens on mutation-capable verbs fail closed because expansion can synthesize hidden flags.
 const MUTATING_FLAGS: ReadonlyMap<string, ReadonlySet<string> | null> = new Map([
   ["sed",  new Set(["-i", "--in-place"])],
@@ -227,17 +229,17 @@ export function inspectHostRisk(signals: HostRiskSignals): ToolCategory {
 }
 
 // Every leaf must have a known read-only verb/form and no mutating flags; use the shared tokenizer. Parse failures, substitutions and all redirects fail closed, including input redirects whose paths argv checks cannot contain. Scan supported sed file/exec forms; exclude awk rather than pretend to parse its language.
-export function isReadOnlyCommand(command: string, prepared?: PreparedShellAnalysis): boolean {
+export function isReadOnlyCommand(command: string, prepared?: PreparedShellAnalysis, dialect: "bash" | "powershell" = "bash"): boolean {
   const { leaves, parseError } = tokenizeShell(command, prepared);
   if (parseError) return false;
   if (leaves.length === 0) return false;
-  return leaves.every((leaf) => isReadOnlyShellLeaf(leaf));
+  return leaves.every((leaf) => isReadOnlyShellLeaf(leaf, { dialect }));
 }
 
 // Risk and path containment share leaf classification. Only containment may ignore redirect taint when judging verb operands separately: cat x > y reads x but writes y; whole-call risk must still reject the redirect.
 export function isReadOnlyShellLeaf(
   leaf: ShellLeaf,
-  options?: { readonly ignoreRedirects?: boolean },
+  options?: { readonly ignoreRedirects?: boolean; readonly dialect?: "bash" | "powershell" },
 ): boolean {
   // Any hidden execution or redirect (output OR input) taints the whole command (default-strict — see the doc comment on isReadOnlyCommand). hasOutputRedirect covers both file-target redirects AND fd-dup (>&m, n>&m) so `ls 2>&1` / `ls >&2` correctly stay shell — they have an output-redirect operator even though no file target is named.
   if (leaf.hasCommandSubstitution || leaf.hasProcessSubstitution) return false;
@@ -255,7 +257,9 @@ export function isReadOnlyShellLeaf(
     return bareVerb !== undefined && READ_ONLY_COMMANDS.has(bareVerb);
   }
 
-  const verb = stripCommandPath(argv[0]!);
+  const spelling = stripCommandPath(argv[0]!);
+  const powerShellCmdlet = options?.dialect === "powershell" && POWERSHELL_READ_ONLY_COMMANDS.has(spelling.toLowerCase());
+  const verb = powerShellCmdlet ? spelling.toLowerCase() : spelling;
   // An option that hands the verb a program to run makes the leaf an execution, whatever the verb's read-only table says.
   if (namesProgramToRun(verb, argv.slice(1))) return false;
   if (verb === "git") {
@@ -264,7 +268,9 @@ export function isReadOnlyShellLeaf(
   if (verb === "tar") {
     return !leaf.argvHasExpandableDollar.some(Boolean) && parseTarListing(argv) !== null;
   }
-  if (!READ_ONLY_COMMANDS.has(verb)) return false;
+  if (!READ_ONLY_COMMANDS.has(verb) && !powerShellCmdlet) return false;
+  if (["get-childitem", "gci", "dir"].includes(verb) && argv.slice(1).some(argument => argument.startsWith("-")
+    && !/^-(?:path|literalpath|filter|include|exclude|recurse|name|file|directory|depth|force|attributes|hidden|readonly|system|followlink|followsymlink)(?::|$)/iu.test(argument))) return false;
   if (verb === "uniq" && hasUniqOutput(argv.slice(1))) return false;
   // A read-only verb still MUTATES when carrying a mutating flag (`sed -i`, `find … -delete`, …). Escalate to non-read-only.
   if (hasMutatingFlag(verb, argv.slice(1), leaf.argvHasExpandableDollar.slice(1))) return false;

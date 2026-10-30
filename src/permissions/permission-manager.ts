@@ -44,7 +44,7 @@ import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest }
 import { isHostNetworkSubject } from "./host-network-subject.js";
 import { canonicalEgressHost, isValidEgressPort } from "./egress-grants.js";
 import {
-  DisabledRiskClassifier,
+  UnavailableRiskClassifier,
   RuleBasedRiskClassifier,
   maxVerdict,
   isDestructiveShellText,
@@ -510,7 +510,7 @@ export class PermissionManager {
   private reviewerClassifier: TracingRiskClassifier | null = null;
   private surfaceReviewer: RiskClassifier["reviewUserOwnedSurface"];
   private readonly userOwnedSurfaceChoices = new UserOwnedSurfaceStore();
-  private reviewerJudgmentEnabled = false;
+  private reviewerDisabled = false;
   private reviewerModel: string | undefined;
   private reviewerUnavailableReason: string | undefined;
   private judgeDeps: JudgeEngineDeps | undefined;
@@ -555,14 +555,14 @@ export class PermissionManager {
     cache: VerdictCache;
     recentlyDenied?: RecentlyDeniedStore;
     cacheScope?: Record<string, unknown>;
-    // True when persisted mode is "llm" but wiring degraded to the rule classifier (provider/key not configured). Defaults to false so all non-degraded callers (rule/disabled/strict, successful llm) clear it.
+    // True when persisted mode is "llm" but wiring degraded to the rule classifier (provider/key not configured). Defaults to false so disabled and successfully configured callers clear it.
     degradedToRule?: boolean;
     // The user selected a reviewer model that cannot run (not offered, or its provider is not connected). Every review then fails as `unavailable` with this reason: the foreground asks with a modal, headless denies. No other model, and no rule-only classifier, stands in for the choice.
     unavailableReason?: string;
   }): void {
     this.reviewerClassifier = traceRiskClassifier(deps.classifier);
     this.surfaceReviewer = this.reviewerClassifier.reviewUserOwnedSurface;
-    this.reviewerJudgmentEnabled = !(deps.classifier instanceof DisabledRiskClassifier);
+    this.reviewerDisabled = deps.classifier instanceof UnavailableRiskClassifier;
     this.reviewerModel = deps.model;
     this.reviewerUnavailableReason = deps.unavailableReason;
     this.verdictCache = deps.cache;
@@ -1461,8 +1461,9 @@ export class PermissionManager {
     const shellExecution = context.shellExecution ?? { runsSandboxed: false };
     const command = ruleSubject?.command;
     let floorInput: ShellFloorInput | null | undefined;
-    let analysisLimited = command !== undefined && command.length > MAX_LITERAL_COMMAND_LENGTH;
-    if (command !== undefined && !analysisLimited && shellExecution.runsSandboxed) {
+    const ruleProofLimited = command !== undefined && command.length > MAX_LITERAL_COMMAND_LENGTH;
+    let analysisLimited = false;
+    if (command !== undefined) {
       floorInput = prepareShellFloorInput(command, ruleSubject!.dialect);
       analysisLimited ||= floorInput === null || shellFloorInputExceeded(floorInput.parsed ?? floorInput.command);
     }
@@ -1475,15 +1476,18 @@ export class PermissionManager {
     analysisLimited ||= parsed !== undefined && !parsed.analysis.ok && shellFloorParserBudgetExceeded(parsed.analysis.reason) || parsedPowerShell?.analysisLimited === true;
     const shellSignals = !analysisLimited && parsed ? inspectShellCommand(parsed, ruleSubject?.cwd)
       : !analysisLimited && parsedPowerShell ? inspectPowerShellCommand(parsedPowerShell, ruleSubject?.cwd) : undefined;
-    analysisLimited ||= shellSignals?.analysisLimited === true;
+    const shellInspectionExhausted = analysisLimited || shellSignals?.analysisLimited === true;
+    analysisLimited ||= shellInspectionExhausted;
+    if (shellInspectionExhausted) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
     if (shellSignals?.exfiltration) floor ??= { code: "exfiltration", reason: shellSignals.exfiltration };
-    const shellShape = parsed && !analysisLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
-    const shellPaths = command !== undefined && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
+    const shellShape = parsed && !analysisLimited && !ruleProofLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
+    const shellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
       ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {} }, parsed) : undefined;
-    const powerShellPaths = command !== undefined && ruleSubject?.dialect === "powershell" && ruleSubject.cwd !== undefined
+    const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && ruleSubject.cwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, ruleSubject.cwd, shellExecution.environmentSnapshot ?? {}) : undefined;
     if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
-    if (powerShellPaths?.credentialStore) admissionDenial ??= { code: "credential-store", reason: powerShellPaths.credentialStore };
+    const credentialStore = shellPaths?.credentialStore ?? powerShellPaths?.credentialStore;
+    if (credentialStore) admissionDenial ??= { code: "credential-store", reason: credentialStore };
     const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;
     if (unknownProtectedWrite) floor ??= { code: "protected-path", reason: unknownProtectedWrite };
     const hostBoundWriteTargets = shellExecution.environmentSnapshot !== undefined && shellPaths?.resolvedWriteTargetsOnly === true;
@@ -1521,7 +1525,7 @@ export class PermissionManager {
       const argv = wrapped.ordinaryAsk === undefined && wrapped.code === undefined && wrapped.candidateRange === undefined && !wrapped.runtimeArgv && !wrapped.nestedDialect ? leaf.argv.slice(wrapped.index) : leaf.argv;
       return isDestructiveShellArgv(argv) || noReusableRuleReason(argv.map((arg) => arg ?? "")) !== null;
     })));
-    const readOnlyProven = context.shellReadOnlyProven ?? (command !== undefined && !analysisLimited && isReadOnlyCommand(command, parsed));
+    const readOnlyProven = context.shellReadOnlyProven ?? (command !== undefined && !analysisLimited && !ruleProofLimited && isReadOnlyCommand(command, parsed, ruleSubject?.kind === "shell" ? ruleSubject.dialect : "bash"));
     // Meta is host dispatch metadata; normalize its authenticated contract to an effect kind.
     const effectKind = category === "meta" && !invalidMeta
       ? context.decisionOverride === "always-allow-with-audit" ? "read" : "write"
@@ -1534,7 +1538,7 @@ export class PermissionManager {
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, rules, secretRead, manualRerun: context.manualRerun,
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
-      ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
+      ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };
     const result = this.pipelineResult(request, context);
     if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && projectPolicyVersion && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
@@ -1559,6 +1563,7 @@ export class PermissionManager {
     }
     const permission = input.permissionDecision as PermissionCheckResult | undefined;
     const issued = permission === undefined ? undefined : this.pipelineRequests.get(permission);
+    let verifiedSurfaceReview = false;
     if (issued?.request.userOwnedSurface?.choice === "auto") {
       const current = this.pipelineResult(issued.request, issued.hostTerminalContext);
       const currentRequest = this.pipelineRequests.get(current)!.request;
@@ -1568,14 +1573,15 @@ export class PermissionManager {
           judge: { judged: false, skip: "rule-decided" } };
       }
       if (currentRequest.tool.name !== toolName || currentRequest.tool.source !== input.source || currentRequest.sessionId !== input.sessionId || !input.invocationId?.trim()) throw new JudgeContractError("Logical review requires its issued surface action");
-      return this.dispatchSurfaceReviewer(currentRequest, issued.hostTerminalContext!, input, options?.abortSignal);
+      if (!this.reviewerDisabled) return this.dispatchSurfaceReviewer(currentRequest, issued.hostTerminalContext!, input, options?.abortSignal);
+      verifiedSurfaceReview = true;
     }
-    if (permission?.pipelineRequest?.userOwnedSurface) throw new JudgeContractError("Logical review requires an issued surface request");
+    if (permission?.pipelineRequest?.userOwnedSurface && !verifiedSurfaceReview) throw new JudgeContractError("Logical review requires an issued surface request");
     const lane = (options?.lane ?? input.permissionDecision?.reviewer?.route) === "headless" ? "headless" : "foreground";
     let judged: Awaited<ReturnType<PermissionManager["dispatchJudge"]>>;
     try {
       judged = await this.dispatchJudge(toolName, input, lane, options?.abortSignal, {
-        routineScope, ...(options?.purpose === "approval-scope" ? { baseline: true as const, scopeAssessment: true as const } : {}),
+        routineScope, ...(verifiedSurfaceReview ? { logicalSurface: true as const } : {}), ...(options?.purpose === "approval-scope" ? { baseline: true as const, scopeAssessment: true as const } : {}),
       });
     } catch (error) {
       if (!options?.abortSignal?.aborted || error instanceof JudgeContractError) throw error;
@@ -1601,7 +1607,7 @@ export class PermissionManager {
     if (!input.conversationContext?.recentUserMessage?.trim()) return finish(false, "The user request is missing.", "unavailable");
     if (!input.conversationContext.currentTaskStep?.trim()) return finish(false, "The current task step is missing.", "unavailable");
     const reviewer = this.surfaceReviewer;
-    if (!reviewer || !this.reviewerJudgmentEnabled || this.reviewerUnavailableReason) return finish(false, "Logical consistency review is unavailable.", "unavailable");
+    if (!reviewer || this.reviewerDisabled || this.reviewerUnavailableReason) return finish(false, "Logical consistency review is unavailable.", "unavailable");
     const reviewInput: UserOwnedSurfaceReviewInput = {
       surface: request.userOwnedSurface!.kind, toolName: request.tool.name, userRequest: input.conversationContext.recentUserMessage,
       currentTaskStep: input.conversationContext.currentTaskStep,
@@ -1659,7 +1665,7 @@ export class PermissionManager {
       return basis;
     };
     // Only a judge stage configured with its own model may run while the reviewer's model is unavailable. A model-less stage also supplies a tracing classifier (when a hook redacted its view), but that classifier is the reviewer's own, so it is refused like the reviewer.
-    if ((this.reviewerUnavailableReason !== undefined || !this.reviewerJudgmentEnabled) && options?.stageOwnModel !== true) {
+    if (this.reviewerDisabled || (this.reviewerUnavailableReason !== undefined && options?.stageOwnModel !== true)) {
       return {
         verdict: { level: "high", reason: this.reviewerUnavailableReason ?? "Permission reviewer is disabled" },
         cacheReason: "miss-not-found",
@@ -1886,7 +1892,7 @@ export class PermissionManager {
     input: ReviewerDispatchInput,
     lane: JudgeLane,
     abortSignal?: AbortSignal,
-    context?: { routineScope?: Record<string, unknown>; baseline?: true; scopeAssessment?: true },
+    context?: { routineScope?: Record<string, unknown>; baseline?: true; scopeAssessment?: true; logicalSurface?: true },
   ): Promise<JudgeDispatchResult> {
     if (input.sessionId === undefined || input.sessionId.trim().length === 0) {
       throw new JudgeContractError("Automated permission review requires a session id");
@@ -1896,7 +1902,7 @@ export class PermissionManager {
     }
     const wired = this.judgeDeps;
     if (!wired) throw new JudgeContractError("Permission judge is not wired");
-    const baseline = context?.baseline === true || !this.hasJudge(input.category);
+    const baseline = this.reviewerDisabled || context?.baseline === true || !this.hasJudge(input.category);
     const defaultStage = { provider: "builtin-llm" as const, id: "builtin-llm" };
     const deps: JudgeEngineDeps = baseline ? {
       budget: "classifier",
@@ -1953,7 +1959,7 @@ export class PermissionManager {
     });
     const reviewedRequest = input.permissionDecision ? this.pipelineRequests.get(input.permissionDecision as PermissionCheckResult)?.request : undefined;
     const gate: JudgeGate = {
-      priorDecision: "undecided", strictMode: context?.scopeAssessment !== true && (reviewedRequest?.mode ?? this.mode) === "strict",
+      priorDecision: "undecided", strictMode: context?.scopeAssessment !== true && context?.logicalSurface !== true && (reviewedRequest?.mode ?? this.mode) === "strict",
       capabilityGrant: !baseline && input.category === "meta", remoteController: false,
       reviewerBaseline: baseline,
     };

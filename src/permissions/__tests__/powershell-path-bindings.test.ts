@@ -108,6 +108,9 @@ it.each([
   "Write-Output x > $(Get-Location)",
   "Write-Output x > *.txt",
   "& { Set-Content -Path $target -Value x }",
+  "$script = { Set-Content -Path $target -Value x }",
+  "function change { Set-Content -Path $target -Value x }",
+  "function outer { inner }; function inner { Set-Content -Path $target -Value x }",
   "Write-Output $(Set-Content -Path $target -Value x)",
   "$script = { Set-Content -Path $target -Value x }; & $script",
   "function change { Set-Content -Path $target -Value x }; change",
@@ -133,10 +136,6 @@ it.each([
   "Expand-Archive -Path $source -DestinationPath ordinary",
   "Tee-Object -Variable $variableName",
   "Write-Output '.git/config'",
-  "Write-Output { Set-Content -Path .git/config -Value x }",
-  "$script = { Set-Content -Path $target -Value x }",
-  "function change { Set-Content -Path $target -Value x }",
-  "function outer { inner }; function inner { Set-Content -Path $target -Value x }",
   "git config --file .git/config remote.origin.url",
   "Write-Output x > out.txt",
   "Set-Content -LiteralPath 'out*' -Value x",
@@ -144,6 +143,14 @@ it.each([
   const result = inspectPowerShellPermissionPaths(command, project);
   expect(result.unknownProtectedWrite).toBeUndefined();
   expect(result.paths.some((path) => path.effect === "write" && path.protectedControl !== undefined)).toBe(false);
+});
+
+it("retains a protected write target in an uninvoked literal script block", () => {
+  const result = inspectPowerShellPermissionPaths("Write-Output { Set-Content -Path .git/config -Value x }", project);
+  expect(result.unknownProtectedWrite).toBeUndefined();
+  expect(result.paths).toEqual(expect.arrayContaining([
+    expect.objectContaining({ canonical: join(project, ".git/config"), effect: "write", protectedControl: ".git" }),
+  ]));
 });
 
 it.each([

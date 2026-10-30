@@ -203,6 +203,10 @@ describe("shell confinement and escape rules", () => {
       expect(uncertain).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
       expect(uncertain.forceModal).toBeUndefined();
       expect(checkPowerShell("rg term")).toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
+      for (const command of ["Get-ChildItem", "gci", "dir", "Get-ChildItem -Path src -Recurse -Depth 2", "gci -LiteralPath src -File", "dir -Filter *.ts -Force"]) {
+        manager.setMode("strict");
+        expect(checkPowerShell(command), command).toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
+      }
     });
 
     it.each([
@@ -228,7 +232,8 @@ describe("shell confinement and escape rules", () => {
       const result = checkPowerShell(command);
       const staticGrammar = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2", "Copy-Item src out -Recurse"].includes(command);
       const staticConfined = staticGrammar && process.platform !== "win32";
-      expect(result).toMatchObject(staticConfined
+      const readOnlyListing = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2"].includes(command);
+      expect(result).toMatchObject(readOnlyListing ? { decision: "allow", reasonCode: "read-only-shell" } : staticConfined
         ? { decision: "allow", reasonCode: "sandboxed-shell" }
         : { decision: "ask", reasonCode: "shell-approval" });
       if (staticGrammar) expect(result.pipelineRequest?.shell).toMatchObject({ sandboxed: true, unproven: !staticConfined, destructive: false });
@@ -515,5 +520,22 @@ describe("protected write evidence budget", () => {
       expect(result.forceModal).toBeUndefined();
       expect(result.reviewer).toBeUndefined();
     }
+  });
+});
+
+describe("ordinary sandbox rows after literal screening", () => {
+  it.each(["strict", "default", "auto", "allow"] as const)("preserves project redirection and repository inspection in %s", mode => {
+    manager.setMode(mode);
+    expect(check("echo x > out.txt", true)).toMatchObject(mode === "strict"
+      ? { decision: "ask", reasonCode: "shell-approval" }
+      : { decision: "allow", reasonCode: "sandboxed-shell" });
+    expect(check("git status", true)).toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
+  });
+});
+
+describe("command language proof isolation", () => {
+  it.each(["Get-ChildItem", "gci", "dir"])("does not treat a matching native program name as a read-only cmdlet: %s", command => {
+    manager.setMode("strict");
+    expect(check(command, true)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
   });
 });

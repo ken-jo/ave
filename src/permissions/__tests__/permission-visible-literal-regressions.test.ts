@@ -48,7 +48,7 @@ function measured(command: string, dialect: ShellRuleDialect, sandboxed: boolean
 }
 
 describe("visible literal decision regressions", () => {
-  it("bounds repeated ambiguous path segments inside one quoted argument", () => {
+  it("bounds literal-body inspection without treating serialized argv as new code", () => {
     manager.setMode("allow");
     const observations = [64, 128, 256].map((repetitions) => {
       const command = `printf %s './${"AppData/Local/a/User Data/b/".repeat(repetitions)}tail'`;
@@ -56,9 +56,11 @@ describe("visible literal decision regressions", () => {
       return { repetitions, chars: command.length, ...timing };
     });
     process.stdout.write(`literal path timing ${JSON.stringify(observations)}\n`);
-    for (const { median, results } of observations) {
+    for (const { repetitions, median, results } of observations) {
       expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
-      for (const result of results) expect(result).toMatchObject({ decision: "allow" });
+      for (const result of results) expect(result).toMatchObject(repetitions === 256
+        ? { decision: "deny", reasonCode: "shell-analysis-limit" }
+        : { decision: "allow", reasonCode: repetitions === 64 ? "read-only-shell" : "allow-mode" });
     }
   });
 
@@ -100,7 +102,7 @@ describe("visible literal decision regressions", () => {
     expect(headless.decision).toBe("deny");
   });
 
-  it("allows a literal pipeline without speculative per-span reservations", async () => {
+  it("refuses a literal pipeline when required body inspection exceeds the shared budget", async () => {
     const sentence = "Document the configuration options and clarify the expected behavior for developers. ";
     const prefix = "Write-Output '";
     const suffix = "' | Select-Object -First 1 | Out-String";
@@ -114,9 +116,8 @@ describe("visible literal decision regressions", () => {
     const timing = measured(command, "powershell", false);
     const headless = check(command, "powershell", false, true);
     process.stdout.write(`literal pipeline timing ${JSON.stringify({ chars: command.length, ...timing, headless })}\n`);
-    for (const result of timing.results) expect(result).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
-    expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", reasonCode: "no-approver" } : { decision: "allow" });
+    for (const result of timing.results) expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+    expect(headless).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
     expect(timing.median).toBeLessThan(DECISION_COST_TARGET_MS);
   });
 });

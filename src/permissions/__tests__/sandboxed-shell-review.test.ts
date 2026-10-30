@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
-import { DisabledRiskClassifier, RuleBasedRiskClassifier, _internal, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
+import { UnavailableRiskClassifier, RuleBasedRiskClassifier, _internal, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 
 const resources = new PermissionTestResources();
@@ -111,8 +111,14 @@ describe("confined shell mode and review policy", () => {
       projectRulesCwd: cwd, shellExecution: { runsSandboxed: true },
     })).toMatchObject({ decision: "ask", forceModal: true });
   });
-  it("routes analysis uncertainty through ordinary auto review", () => {
+  it("denies actual safety-budget exhaustion before auto review", () => {
     const result = check(`echo ${"x".repeat(9000)}`);
+    expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+    expect(result.forceModal).toBeUndefined();
+    expect(result.reviewer).toBeUndefined();
+  });
+  it("routes bounded analysis uncertainty through ordinary auto review", () => {
+    const result = check("mystery \"$value\"");
     expect(result).toMatchObject({ decision: "ask", reviewer: { route: "foreground-auto" } });
     expect(result.forceModal).toBeUndefined();
   });
@@ -163,7 +169,7 @@ describe("shell judgment boundaries", () => {
     expect(result.forceModal).toBeUndefined();
   });
   it("routes disabled judgment to unavailable evidence rather than an automatic grant", async () => {
-    setReviewerForTest(manager, { classifier: new DisabledRiskClassifier(),
+    setReviewerForTest(manager, { classifier: new UnavailableRiskClassifier(),
       cache: resources.makeVerdictCache(join(cwd, "disabled-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(cwd, "disabled-queue.jsonl")) });
     const pending = check("rm -rf ./build");
     const reviewed = await manager.dispatchReviewer("bash", {
@@ -230,7 +236,7 @@ describe("issued shell dispatch authority", () => {
   it.each(["disabled", "guest"] as const)("rejects copied permission authority after switching to %s", async (change) => {
     const permissionDecision = check("rm -rf ./build");
     if (change === "disabled") {
-      setReviewerForTest(manager, { classifier: new DisabledRiskClassifier(),
+      setReviewerForTest(manager, { classifier: new UnavailableRiskClassifier(),
         cache: resources.makeVerdictCache(join(cwd, "stale-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(cwd, "stale-queue.jsonl")) });
     }
     const forgedPermissionDecision = { ...permissionDecision, decision: "allow" as const };

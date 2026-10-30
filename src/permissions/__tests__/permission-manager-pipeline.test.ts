@@ -1,16 +1,16 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PermissionManager, isIssuedShellAllowRuleDecision, type PermissionCheckContext, type ReviewerDispatchResult } from "../permission-manager.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { JudgeContractError } from "../judge/judge-contract.js";
 import { issueHostNetworkSubject } from "../host-network-subject.js";
-import { DisabledRiskClassifier, RuleBasedRiskClassifier } from "../reviewer/risk-classifier.js";
+import { UnavailableRiskClassifier, RuleBasedRiskClassifier } from "../reviewer/risk-classifier.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
-import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
+import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 // The expected behavior comes from docs/architecture/permission-decision-tree.md.
@@ -313,7 +313,7 @@ describe("permission manager pipeline integration", () => {
   it.each([false, true])("treats disabled review as unavailable rather than a low-risk assessment (headless %s)", async (headless) => {
     manager.setMode("auto");
     const cache = new VerdictCache(join(directory, "disabled-review.jsonl"));
-    setReviewerForTest(manager, { classifier: new DisabledRiskClassifier(), cache });
+    setReviewerForTest(manager, { classifier: new UnavailableRiskClassifier(), cache });
     const pending = manager.checkDetailed("web_fetch", "builtin", "network", undefined, { headless });
     const review = await manager.dispatchReviewer("web_fetch", {
       invocationId: "disabled-review", sessionId: "disabled-session", source: "builtin", category: "network",
@@ -326,6 +326,47 @@ describe("permission manager pipeline integration", () => {
     expect(result.forceModal).toBeUndefined();
     if (headless) expect(result.reason).toBe(NO_APPROVER_MESSAGE);
     await cache.flush();
+  });
+
+  it("disabled review blocks a previously approving custom judge before cached authority can run", async () => {
+    manager.setMode("auto");
+    const { judgeSettings, scriptedStage, collectingAudit } = await import("../judge/__tests__/judge-request-fixture.js");
+    const stage = scriptedStage("custom-reviewer");
+    const judge = vi.fn(async () => ({ decision: "allow" as const, rationale: "Custom reviewer approved" }));
+    const classifier = { classify: vi.fn(() => ({ level: "low" as const, reason: "Classifier approved" })) };
+    const cache = new VerdictCache(join(directory, "disabled-custom.jsonl"));
+    manager.setReviewer({ classifier, cache });
+    wireJudgeForTest(manager);
+    const dispatch = async (headless: boolean) => {
+      const pending = manager.checkDetailed("network_probe", "builtin", "network", undefined, { headless });
+      const review = await manager.dispatchReviewer("network_probe", {
+        invocationId: "disabled-custom-" + headless, sessionId: "disabled-custom-session", source: "builtin", category: "network",
+        pathFields: [], finalInput: { url: "http://localhost:3456" }, executionCwd: directory,
+        allowedDirectories: [directory], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard", permissionDecision: pending,
+      }, undefined, { lane: headless ? "headless" : "foreground-auto" });
+      return { review, result: manager.resolveReviewedPermission(pending, review) };
+    };
+    try {
+      expect((await dispatch(false)).result.decision).toBe("allow");
+      expect(classifier.classify).toHaveBeenCalledOnce();
+      expect((await dispatch(false)).review.outcome).toBe("cache");
+      classifier.classify.mockClear();
+    manager.setJudge({ settings: judgeSettings({ chain: [stage], categories: { shell: true, write: true, network: true } }),
+      chain: [{ settings: stage, judge: { id: "custom-reviewer", version: "fixture", judge } }],
+      breaker: manager.getJudgeBreaker(), audit: collectingAudit().logger });
+      expect((await dispatch(false)).result.decision).toBe("allow");
+      expect(judge).toHaveBeenCalledOnce();
+      manager.setReviewer({ classifier: new UnavailableRiskClassifier(), cache });
+      judge.mockClear();
+      for (const headless of [false, true]) {
+        const blocked = await dispatch(headless);
+        expect(blocked.review).toMatchObject({ outcome: "unavailable", judge: { fallback: "unavailable" } });
+        expect(blocked.result).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
+        expect(blocked.result.forceModal).toBeUndefined();
+      }
+      expect(judge).not.toHaveBeenCalled();
+      expect(classifier.classify).not.toHaveBeenCalled();
+    } finally { await cache.flush(); }
   });
 
   it("assesses a remembered scope in strict mode without granting a new execution decision", async () => {

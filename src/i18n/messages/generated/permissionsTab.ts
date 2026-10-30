@@ -3,7 +3,7 @@ export const en = {
   "permissionsTab.reviewerModeFaultTitle": "Choose a supported permission reviewer setting",
   "permissionsTab.reviewerModeFaultDescription": "The saved reviewer mode is no longer supported. Automatic review is unavailable until you choose a setting. Your other settings are unchanged.",
   "permissionsTab.reviewerModeRepairLlm": "Use automatic review",
-  "permissionsTab.reviewerModeRepairDisabled": "Turn off the reviewer",
+  "permissionsTab.reviewerModeRepairDisabled": "Turn off review: auto asks with a card",
   "permissionsTab.reviewerModeRecovered": "Permission reviewer setting updated.",
   "permissionsTab.reviewerModeRecoveryRewireFailed": "Your reviewer choice was saved, but the reviewer could not reconnect. Automatic review remains unavailable.",
   "permissionsTab.ownerAwayAutoSkipLabel": "Owner-away auto-skip (minutes)",
@@ -26,8 +26,8 @@ export const en = {
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "The Windows sandbox helper failed its integrity check. Ave blocked it from running. Reinstall Ave to restore the verified helper.",
 
   // Reviewer mode options
-  "permissionsTab.reviewerModeDisabledLabel": "Validation off (auto-pass)",
-  "permissionsTab.reviewerModeDisabledDescription": "Disables the permission reviewer and applies only category default policies. Per-tool block/allow rules remain in effect.",
+  "permissionsTab.reviewerModeDisabledLabel": "Review off (auto asks)",
+  "permissionsTab.reviewerModeDisabledDescription": "Disables automatic review. Requests that need review use a permission card even in auto mode; without a person, they are denied. Permission rules and mandatory protections remain in effect.",
   "permissionsTab.reviewerModeLlmLabel": "LLM validation",
   "permissionsTab.reviewerModeLlmDescription": "After rule validation, an LLM can raise the risk level. It cannot lower it.",
 
@@ -128,7 +128,7 @@ export const en = {
   // Inline warning banners
   "permissionsTab.warnAutoModeAutoApproveOff": "⚠ Auto-approve low risk is off in \"Auto-validate\" mode. To allow low-risk actions without confirmation, enable \"Auto-approve low risk\" above.",
   "permissionsTab.warnAllowModeReviewerIgnored": "Allow mode bypasses automatic review. Deny rules and one-time approval for protected actions remain in effect.",
-  "permissionsTab.warnReviewerLlmDegradedToRule": "⚠ LLM validation is inactive (no LLM provider/API key configured) — currently running on rule-based validation. Configure a chat LLM provider to enable LLM validation; it switches on automatically.",
+  "permissionsTab.warnReviewerLlmDegradedToRule": "Automatic review is unavailable because no model provider is configured. Auto mode asks with a card. Configure a provider to enable automatic review.",
 
   // CLI mapping panel
   "permissionsTab.cliMappingTitle": "CLI Mapping (slash commands)",
@@ -362,8 +362,8 @@ export const en = {
 export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.reviewerModeFaultTitle": "지원되는 권한 리뷰어 설정을 선택하세요",
   "permissionsTab.reviewerModeFaultDescription": "저장된 리뷰어 모드는 더 이상 지원되지 않습니다. 설정을 선택하기 전까지 자동 검토를 사용할 수 없습니다. 다른 설정은 유지됩니다.",
-  "permissionsTab.reviewerModeRepairLlm": "자동 검토 사용",
-  "permissionsTab.reviewerModeRepairDisabled": "리뷰어 끄기",
+  "permissionsTab.reviewerModeRepairLlm": "자동 리뷰 사용",
+  "permissionsTab.reviewerModeRepairDisabled": "리뷰 끄기: auto 모드에서도 카드로 확인",
   "permissionsTab.reviewerModeRecovered": "권한 리뷰어 설정을 변경했습니다.",
   "permissionsTab.reviewerModeRecoveryRewireFailed": "리뷰어 선택은 저장했지만 리뷰어를 다시 연결하지 못했습니다. 자동 검토는 계속 사용할 수 없습니다.",
   "permissionsTab.ownerAwayAutoSkipLabel": "부재 중 자동 스킵 (분)",
@@ -385,8 +385,8 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.sandboxRestartFailed": "Ave를 다시 시작하지 못했습니다. 다시 시도해 주세요.",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "Windows 샌드박스 도우미의 무결성 검사에 실패하여 Ave가 실행을 차단했습니다. Ave를 다시 설치하여 검증된 도우미를 복원하세요.",
 
-  "permissionsTab.reviewerModeDisabledLabel": "검증 끔 (자동 통과)",
-  "permissionsTab.reviewerModeDisabledDescription": "권한 리뷰어를 끄고 카테고리 기본 정책만 적용합니다. 도구별 차단/허용 규칙은 그대로 유지됩니다.",
+  "permissionsTab.reviewerModeDisabledLabel": "리뷰 끄기 (auto에서도 확인)",
+  "permissionsTab.reviewerModeDisabledDescription": "자동 리뷰를 끕니다. 리뷰가 필요한 요청은 auto 모드에서도 카드로 확인하고, 승인할 사람이 없으면 거부합니다. 권한 규칙과 필수 보호는 그대로 적용됩니다.",
   "permissionsTab.reviewerModeLlmLabel": "LLM 검증",
   "permissionsTab.reviewerModeLlmDescription": "규칙 검증 뒤 LLM이 위험도를 올릴 수 있습니다. 낮출 수는 없습니다.",
 
@@ -468,7 +468,7 @@ export const ko: Record<keyof typeof en, string> = {
 
   "permissionsTab.warnAutoModeAutoApproveOff": "⚠ \"자동 검증\" 모드에서 저위험 자동 허용이 꺼져 있습니다. 저위험 작업을 확인 없이 허용하려면 위에서 \"저위험 자동 허용\"을 켜세요.",
   "permissionsTab.warnAllowModeReviewerIgnored": "허용 모드에서는 자동 검증을 생략합니다. 거부 규칙과 보호 대상의 이번 한 번 승인은 유지합니다.",
-  "permissionsTab.warnReviewerLlmDegradedToRule": "⚠ LLM 검증이 비활성 상태입니다 (LLM 공급자/API 키 미구성) — 현재 규칙 기반 검증으로 동작 중입니다. 채팅 LLM 공급자를 구성하면 LLM 검증이 자동으로 켜집니다.",
+  "permissionsTab.warnReviewerLlmDegradedToRule": "모델 공급자가 구성되지 않아 자동 리뷰를 사용할 수 없습니다. auto 모드에서도 카드로 확인합니다. 공급자를 구성하면 자동 리뷰를 사용할 수 있습니다.",
 
   "permissionsTab.cliMappingTitle": "CLI 매핑 (슬래시 명령)",
   "permissionsTab.cliMappingDescription": "동일 설정을 채팅 입력창에서 슬래시 명령으로도 변경할 수 있습니다.",

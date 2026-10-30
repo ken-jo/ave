@@ -2408,6 +2408,8 @@ describe("reviewer mode recovery", () => {
 
       expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultTitle"));
       expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultDescription"));
+      expect(screen.getByTestId("reviewer-mode-repair-llm")).toHaveTextContent(locale === "ko" ? "자동 리뷰 사용" : "Use automatic review");
+      expect(screen.getByTestId("reviewer-mode-repair-disabled")).toHaveTextContent(locale === "ko" ? "리뷰 끄기: auto 모드에서도 카드로 확인" : "Turn off review: auto asks with a card");
       expect(screen.queryByTestId("permissions-load-error")).toBeNull();
       expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
       expect(document.body.textContent).not.toContain("private unsupported reviewer value");

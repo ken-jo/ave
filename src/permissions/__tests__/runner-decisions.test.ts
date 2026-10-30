@@ -153,7 +153,9 @@ const INNER_UPLOADS = [
 const OPAQUE_BINDING_CASES = DECISION_CASES.filter((row) => row.why === "opaque binding remains unproven without a sandbox");
 
 // Host credential catalogue commands are S1 admission denials, not ordinary secret reads.
+const LITERAL_CREDENTIAL_COMMAND = "setsid --bogus python pwsh -c 'cmdkey.exe /list'";
 const CREDENTIAL_COMMANDS = new Set([
+  LITERAL_CREDENTIAL_COMMAND,
   "cmdkey /list", "vaultcmd /listcreds:'Windows Credentials'", "Get-StoredCredential",
   "rundll32 keymgr.dll,KRShowKeyMgr", "Get-Secret x",
   "Get-ChildItem Cert:\\CurrentUser\\My | Export-PfxCertificate -FilePath x.pfx -Password $p",
@@ -161,7 +163,7 @@ const CREDENTIAL_COMMANDS = new Set([
 ].flatMap((command) => command.startsWith("& ") ? [command] : [command, `& ${command}`]));
 
 function expectStaticContract(manager: () => PermissionManager, dialect: ShellDialect, command: string): void {
-  if (dialect === "powershell" && CREDENTIAL_COMMANDS.has(command)) {
+  if ((dialect === "powershell" && CREDENTIAL_COMMANDS.has(command)) || command === LITERAL_CREDENTIAL_COMMAND) {
     for (const headless of [false, true]) expect(checkCommand(manager(), dialect, command, false, headless))
       .toMatchObject({ decision: "deny", reasonCode: "credential-store" });
     return;
@@ -356,20 +358,14 @@ describe("shared runner decisions", () => {
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason and enforced floor: %s", async (command) => {
-    const opaquePayload = /(?:\s-c\s|--call=)/.test(command);
-    if (opaquePayload) {
-      expect(shellExfiltrationSignal(command, CWD)).toBeNull();
-      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ exfiltration: null });
-    } else {
-      expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload (?:of|from) a file/);
-      expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload (?:of|from) a file/);
-      for (const dialect of DIALECTS) {
-        const manager = runnerManager();
-        manager.setMode("allow");
-        await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-        expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "exfiltration" });
-        expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
-      }
+    expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload (?:of|from) a file/);
+    expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload (?:of|from) a file/);
+    for (const dialect of DIALECTS) {
+      const manager = runnerManager();
+      manager.setMode("allow");
+      await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+      expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "exfiltration" });
+      expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
     }
   });
 

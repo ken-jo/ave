@@ -1,5 +1,5 @@
 /** Reviewer wiring follows the selected model or active chat identity; errors default to denial (docs/architecture/permission-policy-design.md).
- * Only missing provider configuration may degrade to rules; reconfiguration restores model review. */
+ * Missing provider configuration retains host rule facts but leaves automatic review unavailable; reconfiguration restores model review. */
 import {
   createRiskClassifier,
   RuleBasedRiskClassifier,
@@ -168,7 +168,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     classifier = createRiskClassifier({ mode: settings.mode });
     log.info("boot: reviewer wired (mode=%s)", settings.mode);
   } else {
-    // Catch only missing external provider configuration; rules remain stricter than disabled review and reconfiguration restores model review.
+    // Catch only missing external provider configuration; reconfiguration restores model review.
     // Keep classifier construction and telemetry outside the catch so internal contract violations abort boot.
     let adapter: LlmReviewerProvider | undefined;
     const selectedModelUnavailable = (): void => {
@@ -192,10 +192,11 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       } else {
         degradedToRule = true;
         runtimeMode = "llm-degraded-to-rule";
+        unavailableReason = "Permission reviewer provider is not configured; automatic review is unavailable.";
         log.warn(
           { provider: effectiveSettings.provider, error: (err as Error).message },
-          "boot: reviewer mode=llm requested but provider could not be wired — " +
-            "degrading to rule classifier. Reviewer auto-heals to llm once an LLM " +
+          "boot: reviewer mode=llm requested but provider could not be wired; automatic review is unavailable. " +
+            "Rule classification supplies host facts only. Reviewer auto-heals to llm once an LLM " +
             "provider/API key is configured (login or Intelligence settings re-fires wiring).",
         );
       }

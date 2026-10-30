@@ -16,6 +16,7 @@ export interface PowerShellCommandPolicy {
   // Destination bindings whose filesystem paths can send data to a share.
   destination?: PowerShellPathBinding & { kind?: "printer" | "mail" };
   sourceEffect?: "read" | "write";
+  processInvocation?: { executable: string; arguments: string };
   // Native payload grammar; all other catalogue forms remain opaque.
   native?: "opaque" | "cmd" | "wmic" | "dotnet";
   // Credential-store access and explicit native transfer forms remain floors.
@@ -291,7 +292,7 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "enter-pssession": { aliases: ["etsn"], effects: ["network"], parameters: ["computername", "connectionuri", "credential", "session", "id", "name"] },
   "invoke-command": { aliases: ["icm"], effects: ["network", "launcher"], parameters: ["computername", "connectionuri", "credential", "session", "scriptblock", "filepath", "argumentlist*", "asjob?"] },
   "new-webserviceproxy": { aliases: [], effects: ["network"], parameters: ["uri", "credential", "namespace", "class"] },
-  "start-process": { aliases: ["saps", "start"], effects: ["launcher"], parameters: ["filepath", "argumentlist*", "workingdirectory", "credential", "wait?", "nonewwindow?", "passthru?", "verb", "windowstyle"] },
+  "start-process": { processInvocation: { executable: "filepath", arguments: "argumentlist" }, aliases: ["saps", "start"], effects: ["launcher"], parameters: ["filepath", "argumentlist*", "workingdirectory", "credential", "wait?", "nonewwindow?", "passthru?", "verb", "windowstyle"] },
   "invoke-item": { aliases: ["ii"], effects: ["launcher"], parameters: PATH_PARAMETERS },
   "invoke-expression": { aliases: ["iex"], effects: ["launcher"], parameters: ["command*"] },
   "start-job": { aliases: ["sajb"], effects: ["launcher"], parameters: ["scriptblock", "filepath", "name", "argumentlist*"] },

@@ -1,5 +1,6 @@
+import { shellExecutableBodySlots } from "../../tools/shell-path-policy.js";
 import { effectiveShellWords } from "../../shared/shell-effective-command.js";
-import { literalShellBodies, literalShellFlow, recordLiteralShellFlow, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
+import { literalShellBodies, shellLiteralFragments, literalShellFlow, recordLiteralShellFlow, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 import { homedir } from "node:os";
 import { posix, sep } from "node:path";
 import { modelShellPath } from "../../shared/shell-native-path.js";
@@ -252,13 +253,17 @@ function curlShortFileOption(token: string): { kind: "data" | "form" | "upload" 
   }
   return null;
 }
-export interface LiteralShellArgvFacts { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean }
-export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set(), evaluation?: NativeArgvBoundary): LiteralShellArgvFacts {
+export interface LiteralShellArgvFacts { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; deferredSensitive?: () => string | null }
+export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set(), evaluation?: NativeArgvBoundary, sensitiveForNetworkOnly = false): LiteralShellArgvFacts {
   let sensitive: string | null = null, exfiltration: string | null = null;
   let curl = false, wget = false, scp = false, rsync = false, scripted = false, socat = false, network = false, reader = false, readsPath = false;
   let transferOperands = 0, transferDestinationRemote = false;
   let pendingCurlFile: "data" | "form" | "upload" | "header" | undefined;
   const heads = evaluation ?? literalNativeBoundary(argv, context);
+  const inspectSensitive = !sensitiveForNetworkOnly || argv.some((token, index) => {
+    const name = heads.headNames?.get(index) ?? programName(token);
+    return (heads.headIndexes.has(index) || inRange(heads.headRange, index)) && name !== undefined && NETWORK_PROGRAMS.has(name);
+  });
   context.visits.staticViews += 1;
   for (let index = 0; index < argv.length; index += 1) {
     context.visits.staticTokens += 1;
@@ -272,7 +277,7 @@ export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)
     network ||= isHead && name !== undefined && NETWORK_PROGRAMS.has(name);
     if (isHead && name !== undefined && PATH_READERS.has(name)) reader = true;
     else if (reader && !token.startsWith("-")) readsPath = true;
-    sensitive ??= sensitivePathInLiteralArgumentText(token, cwd, context);
+    if (inspectSensitive) sensitive ??= sensitivePathInLiteralArgumentText(token, cwd, context);
     if (pendingCurlFile !== undefined) {
       if (pendingCurlFile === "upload") exfiltration ??= "curl upload of a file";
       else if (/^@/.test(token) || (pendingCurlFile === "form" && /(?:^|=)[@<]/.test(token))) exfiltration ??= `curl ${pendingCurlFile} from a file`;
@@ -302,15 +307,23 @@ export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)
   }
   if (transferOperands >= 2 && transferDestinationRemote) exfiltration ??= `${scp ? "scp" : "rsync"} to a remote target`;
   if (sensitive && (curl || wget || scp || rsync || scripted)) exfiltration ??= `sensitive path argument (${sensitive})`;
-  return { sensitive, exfiltration, network, readsPath };
+  const deferredSensitive = sensitiveForNetworkOnly && !inspectSensitive ? () => {
+    for (let index = 0; index < argv.length; index++) {
+      if (payloadIndexes.has(index) || argv[index] === undefined) continue;
+      const hit = sensitivePathInLiteralArgumentText(argv[index]!, cwd, context);
+      if (hit !== null) return hit;
+    }
+    return null;
+  } : undefined;
+  return { sensitive, exfiltration, network, readsPath, ...(deferredSensitive ? { deferredSensitive } : {}) };
 }
 export function inspectLiteralShellArgv(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set()): { sensitive: string | null; exfiltration: string | null } {
   const { sensitive, exfiltration } = inspectLiteralShellArgvFacts(argv, cwd, context, payloadIndexes);
   return { sensitive, exfiltration };
 }
 
-interface StaticPass { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; commandCount: number; socketWrite?: true; changesState?: true; unproven?: string; exactLiteralEvaluation?: true }
-function merge(into: StaticPass, value: StaticPass): void { into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.socketWrite ||= value.socketWrite; into.readsPath ||= value.readsPath; into.commandCount += value.commandCount; into.changesState ||= value.changesState; into.unproven ??= value.unproven; }
+interface StaticPass { deferredSensitive?: (() => string | null)[]; sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; commandCount: number; socketWrite?: true; changesState?: true; unproven?: string; exactLiteralEvaluation?: true }
+function merge(into: StaticPass, value: StaticPass): void { if (value.deferredSensitive) (into.deferredSensitive ??= []).push(...value.deferredSensitive); into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.socketWrite ||= value.socketWrite; into.readsPath ||= value.readsPath; into.commandCount += value.commandCount; into.changesState ||= value.changesState; into.unproven ??= value.unproven; }
 interface IndexRange { from: number; to: number }
 export interface NativeArgvBoundary { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; ambiguous?: true }
 function inRange(range: IndexRange | undefined, index: number): boolean {
@@ -473,19 +486,30 @@ function inspectCommand(command: ShellCommand, cwd: string | undefined, context:
   const bodyRaw = effective.unsupported ? raw : effective.words.map(word => word.source.raw);
   const input = command.redirects.filter(redirect => redirect.fileDescriptor === 0 || redirect.fileDescriptor === undefined && redirect.effect === "read").at(-1);
   const inputProgram = input?.data ? staticShellWord(input.data) : undefined;
-  for (const body of literalShellBodies(bodyArgv, "bash", bodyRaw, inputProgram)) {
+  const executableBodies = bodyArgv.every((value): value is string => typeof value === "string") ? shellExecutableBodySlots(bodyArgv, inputProgram) : [];
+  const bodyOffset = effective.unsupported ? 0 : command.words.indexOf(effective.words[0]!);
+  for (const body of literalShellBodies(bodyArgv, bodyRaw, executableBodies.find(body => body.index === bodyArgv.length)?.text, shellLiteralFragments(effective.unsupported ? command.words : effective.words))) {
+    const executed = payload?.has(body.index + bodyOffset) || executableBodies.some(candidate => candidate.index === body.index && candidate.dialect === body.dialect)
+      || executableBodies.some(candidate => candidate.index === body.index && candidate.index === bodyArgv.length);
+    const childBudget = { tokens: budget.tokens, depth: budget.depth + 1, literalBody: true as const, ...(!executed ? { floorOnly: true as const } : {}) };
+    const unresolvedBeforeBody = context.unresolvedPath;
     const child = body.dialect === "powershell"
-      ? inspectPowerShellBody(body.text, cwd, { tokens: budget.tokens, depth: budget.depth + 1 })
-      : inspectPosixShellCommand(body.text, cwd, context, { tokens: budget.tokens, depth: budget.depth + 1 }, inspectPowerShellBody);
-    pass.sensitive ??= child.sensitive;
+      ? inspectPowerShellBody(body.text, cwd, childBudget)
+      : inspectPosixShellCommand(body.text, cwd, context, childBudget, inspectPowerShellBody);
+    if (!executed) context.unresolvedPath = unresolvedBeforeBody;
+    if (executed) pass.sensitive ??= child.sensitive;
     pass.exfiltration ??= child.exfiltration;
     const flow = literalShellFlow(child);
-    childFlow.network ||= flow?.network === true;
-    childFlow.readsPath ||= flow?.readsPath === true;
+    if (executed) { childFlow.network ||= flow?.network === true; childFlow.readsPath ||= flow?.readsPath === true; }
     if (child.analysisLimited) throw new ShellFloorLimitError(SHELL_FLOOR_BUDGET_REASON);
   }
   const unresolvedPath = context.unresolvedPath;
-  const native = inspectLiteralShellArgvFacts(argv, cwd, context, payload, evaluation); pass.sensitive ??= native.sensitive; pass.exfiltration ??= native.exfiltration;
+  const native = inspectLiteralShellArgvFacts(argv, cwd, context, payload, evaluation, budget.floorOnly === true); pass.sensitive ??= native.sensitive; pass.exfiltration ??= native.exfiltration;
+  if (native.deferredSensitive) (pass.deferredSensitive ??= []).push(native.deferredSensitive);
+  if (budget.literalBody) for (let index = 1; index < argv.length && pass.exfiltration === null; index++) {
+    const candidate = programName(argv[index]);
+    if (candidate !== undefined && NETWORK_PROGRAMS.has(candidate)) pass.exfiltration ??= inspectLiteralShellArgvFacts(argv.slice(index), cwd, context).exfiltration;
+  }
   // Literal output data can add a visible floor without requiring filesystem identity.
   if (proof.kind === "static-complete" && proof.dataOnly) context.unresolvedPath = unresolvedPath;
   pass.network ||= native.network; pass.readsPath ||= native.readsPath;
@@ -556,14 +580,14 @@ function parsedWithContext(input: ShellCommandInput, context: ShellFloorContext)
 type PowerShellBodyInspector = (command: string, cwd: string | undefined, budget: LiteralBodyBudget) => ShellFloorSignals;
 
 export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string | undefined, supplied: ShellFloorContext | undefined, budget: LiteralBodyBudget, inspectPowerShellBody: PowerShellBodyInspector): ShellFloorSignals {
-  if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
+  if (budget.depth >= 16 || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS || shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
   const context = supplied ?? (typeof input === "string" ? new ShellFloorContext() : floorContexts.get(input) ?? new ShellFloorContext());
   try {
     if (budget.depth >= 16) return shellFloorBudgetSignals();
     const parsed = parsedWithContext(input, context);
     if (parsed.analysis.ok) budget.tokens.count += parsed.analysis.totalTokens ?? 0;
     if (budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
-    return shellFact(parsed, `static-floor\0${cwd ?? ""}`, () => {
+    return shellFact(parsed, `static-floor\0${budget.floorOnly === true ? "literal" : "complete"}\0${cwd ?? ""}`, () => {
       if (!parsed.analysis.ok) {
         const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
         let sensitive: string | null = null;
@@ -576,6 +600,7 @@ export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string |
       const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
       const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
       const pass = inspectStatement(statement, cwd, context, single, budget, inspectPowerShellBody);
+      if (pass.network) for (const probe of pass.deferredSensitive ?? []) { pass.sensitive ??= probe(); if (pass.sensitive !== null) break; }
       if (context.unresolvedPath) {
         pass.unproven ??= "Shell path namespace is unresolved";
         pass.exactLiteralEvaluation = undefined;

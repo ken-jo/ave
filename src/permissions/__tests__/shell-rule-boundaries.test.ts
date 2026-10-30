@@ -52,7 +52,7 @@ describe("stored broad wildcard compatibility", () => {
       ruleSubject: shellSubject(command), shellExecution: plainRoute, projectRulesCwd: project,
     });
     expect(manager.getRulesLoadError()).toBeUndefined();
-    expect(check("printf ready")).toMatchObject({ decision: "allow" });
+    expect(check("printf ready")).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
     expect(check("git status")).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(check("git status").pipelineRequest?.rules?.allow).toBeUndefined();
     expect(check("npm run build")).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });

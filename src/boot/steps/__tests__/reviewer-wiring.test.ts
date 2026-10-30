@@ -1,3 +1,6 @@
+import { dispatchPermissionReviewerCommandWithRewire } from "../../../permissions/permission-slash.js";
+import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
+useConfigurationOwner();
 import { wireJudgeForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { reviewerSettings } from "../../../__tests__/support/reviewer-settings.js";
 /** Reviewer boot integration (docs/architecture/permission-policy-design.md). */
@@ -14,7 +17,7 @@ import {
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import {
   RuleBasedRiskClassifier,
-  DisabledRiskClassifier,
+  UnavailableRiskClassifier,
   LlmRiskClassifier,
   type RiskVerdict,
 } from "../../../permissions/reviewer/risk-classifier.js";
@@ -30,7 +33,7 @@ import {
 import type { LLMProvider, StreamEvent } from "../../../engine/llm/types.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
-import { readPermissionSettings } from "../../../permissions/permission-settings-store.js";
+import { readPermissionSettings, setReviewerSettingsPersist } from "../../../permissions/permission-settings-store.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 
 let tmpDir: string;
@@ -82,7 +85,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     expect(result.classifier).toBeInstanceOf(RuleBasedRiskClassifier);
     expect(streamProviderFor).not.toHaveBeenCalled();
   });
-  it("settings mode=disabled wires DisabledRiskClassifier", () => {
+  it("settings mode=disabled wires UnavailableRiskClassifier", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const result = wireReviewerAgent({
       readActiveLlm: CHAT_LLM,
@@ -94,7 +97,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
       }),
       verdictCachePath: join(tmpDir, "cache.jsonl"),
     });
-    expect(result.classifier).toBeInstanceOf(DisabledRiskClassifier);
+    expect(result.classifier).toBeInstanceOf(UnavailableRiskClassifier);
     expect(result.rationaleScopeReviewer).toBeInstanceOf(UnavailableRationaleScopeReviewer);
     expect(pm.hasReviewer()).toBe(true);
   });
@@ -241,7 +244,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     ).toThrow(/no streamProviderFor supplied/);
   });
 
-  it("mode=llm + factory null → degrades to rule (provider unconfigured)", () => {
+  it("unconfigured provider retains host facts without automatic review", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const result = wireReviewerAgent({
       readActiveLlm: CHAT_LLM,
@@ -257,7 +260,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     expect(pm.isReviewerDegradedToRule()).toBe(true);
   });
 
-  it("degraded wiring keeps the reviewer available", () => {
+  it("unconfigured provider keeps the dispatch service wired for human fallback", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const result = wireReviewerAgent({
       readActiveLlm: CHAT_LLM,
@@ -271,7 +274,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
     expect(pm.hasReviewer()).toBe(true);
   });
 
-  it("logs a boot warn on llm→rule degrade", () => {
+  it("logs that automatic review is unavailable without a provider", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -287,7 +290,7 @@ describe("Permission policy P4 reviewer-wiring", () => {
         verdictCachePath: join(tmpDir, "cache-degrade-warn.jsonl"),
       });
       const fired = warnSpy.mock.calls.some((args) =>
-        args.some((a) => typeof a === "string" && a.includes("degrading to rule classifier")),
+        args.some((a) => typeof a === "string" && a.includes("automatic review is unavailable")),
       );
       expect(fired).toBe(true);
     } finally {
@@ -984,4 +987,92 @@ it.each(["strict", "rule", "unrecognized"])("starts with an explicit settings fa
     }
     expect(streamProviderFor).not.toHaveBeenCalled();
   } finally { await wired.cache.flush(); }
+});
+
+it.each([false, true])("repairing an invalid mode to disabled retains the human fallback (headless %s)", async headless => {
+  const path = join(tmpDir, "repair-disabled.json");
+  writeFileSync(path, JSON.stringify({ permissions: { reviewer: { mode: "strict" } } }));
+  const manager = new PermissionManager(join(tmpDir, "repair-disabled-permissions.json"));
+  manager.setMode("auto");
+  const streamProviderFor = vi.fn(() => stubProvider([]));
+  const wire = () => wireReviewerAgent({ permissionManager: manager, networkFetch: unusedNetworkFetch,
+    readSettings: () => readPermissionSettings(path), readActiveLlm: CHAT_LLM, streamProviderFor,
+    verdictCachePath: join(tmpDir, "repair-disabled-cache.jsonl") });
+  const dispatch = async () => {
+    const pending = manager.checkDetailed("network_probe", "builtin", "network", undefined, { headless });
+    const review = await manager.dispatchReviewer("network_probe", { invocationId: "repair-disabled-" + headless,
+      sessionId: "repair-disabled-session", source: "builtin", category: "network", pathFields: [],
+      finalInput: { url: "https://example.test/" }, executionCwd: tmpDir, allowedDirectories: [tmpDir],
+      sensitivePathsAdjacent: [], trustOrigin: "llm-tool-arg", permissionDecision: pending },
+      undefined, { lane: headless ? "headless" : "foreground-auto" });
+    expect(review.outcome).toBe("unavailable");
+    expect(manager.resolveReviewedPermission(pending, review)).toMatchObject({ decision: headless ? "deny" : "ask",
+      reasonCode: headless ? "no-approver" : "reviewer-human-required" });
+  };
+  const initial = wire();
+  wireJudgeForTest(manager);
+  try {
+    expect(initial.runtimeMode).toBe("llm-settings-invalid");
+    await dispatch();
+    await setReviewerSettingsPersist({ mode: "disabled" }, path);
+    expect(readPermissionSettings(path).fault).toBeNull();
+    const repaired = wire();
+    try {
+      expect(repaired.runtimeMode).toBe("disabled");
+      expect(() => repaired.classifier.classify({} as never)).toThrow("automatic review is unavailable");
+      await dispatch();
+      expect(streamProviderFor).not.toHaveBeenCalled();
+    } finally { await repaired.cache.flush(); }
+  } finally { await initial.cache.flush(); }
+});
+
+it.each([
+  { providerAvailable: false, headless: false }, { providerAvailable: false, headless: true },
+  { providerAvailable: true, headless: false }, { providerAvailable: true, headless: true },
+])("repair to llm preserves unavailable fallback until a provider can review: %j", async ({ providerAvailable, headless }) => {
+  const path = join(tmpDir, "repair-llm.json");
+  writeFileSync(path, JSON.stringify({ permissions: { reviewer: { mode: "strict" } } }));
+  const manager = new PermissionManager(join(tmpDir, "repair-llm-permissions.json"));
+  manager.setMode("auto");
+  const provider = stubProvider([{ type: "text_delta", text: '{"level":"low","reason":"The requested local read is consistent."}' },
+    { type: "message_complete", stopReason: "end_turn" }]);
+  const streamProviderFor = vi.fn(() => providerAvailable ? provider : null);
+  const wired: ReturnType<typeof wireReviewerAgent>[] = [];
+  const wire = () => {
+    const result = wireReviewerAgent({ permissionManager: manager, networkFetch: unusedNetworkFetch,
+      readSettings: () => readPermissionSettings(path), readActiveLlm: CHAT_LLM, streamProviderFor,
+      verdictCachePath: join(tmpDir, "repair-llm-cache.jsonl") });
+    wired.push(result);
+  };
+  const dispatch = async () => {
+    const pending = manager.checkDetailed("network_probe", "builtin", "network", undefined, { headless, sessionId: "repair-llm-session" });
+    const review = await manager.dispatchReviewer("network_probe", { invocationId: "repair-llm-" + wired.length,
+      sessionId: "repair-llm-session", source: "builtin", category: "network", pathFields: [],
+      finalInput: { url: "https://api.openai.com/v1/models" }, executionCwd: tmpDir, allowedDirectories: [tmpDir],
+      sensitivePathsAdjacent: [], trustOrigin: "user-keyboard", permissionDecision: pending },
+      undefined, { lane: headless ? "headless" : "foreground-auto" });
+    return { review, result: manager.resolveReviewedPermission(pending, review) };
+  };
+  wire();
+  wireJudgeForTest(manager);
+  try {
+    const before = await dispatch();
+    expect(before.review.outcome).toBe("unavailable");
+    expect(before.result).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
+    expect(streamProviderFor).not.toHaveBeenCalled();
+    const repair = await dispatchPermissionReviewerCommandWithRewire({ verb: "mode", value: "llm" }, wire, path);
+    expect(repair.ok).toBe(true);
+    expect(readPermissionSettings(path).fault).toBeNull();
+    expect(streamProviderFor).toHaveBeenCalledOnce();
+    const after = await dispatch();
+    if (providerAvailable) {
+      expect(wired.at(-1)?.runtimeMode).toBe("llm");
+      expect(after.review).toMatchObject({ outcome: "fresh", verdict: { level: "low" } });
+      expect(after.result.decision).toBe("allow");
+    } else {
+      expect(wired.at(-1)?.runtimeMode).toBe("llm-degraded-to-rule");
+      expect(after.review).toMatchObject({ outcome: "unavailable", verdict: { level: "high", reason: "Permission reviewer provider is not configured; automatic review is unavailable." } });
+      expect(after.result).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
+    }
+  } finally { await Promise.all(wired.map(result => result.cache.flush())); }
 });
