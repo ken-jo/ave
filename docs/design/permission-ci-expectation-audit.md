@@ -96,3 +96,9 @@ These additional expectation changes apply the same cells above to native path l
 - The workflow reader selector deliberately selects tests containing any `.github` literal. Its existing sandbox policy fixture now contains such a control-path example. The pre-push test requires that exact additional suite and admits only that additional source-test path in its selected-path assertion; selector behavior and every other reader requirement remain unchanged.
 
 The literal evaluator fixture with an outer home-relative secret operand retains Allow via `allow-mode`, rather than a generic sandbox reason: independent secret-read evidence precedes the sandbox kind row. Exact-rule ineligibility remains asserted. This changes reason metadata, not the allowed decision; no expansion or opaque payload is executed for classification.
+
+| Additional test file under `src/` | Exact expectation change | Contract basis and retained controls |
+| --- | --- | --- |
+| `permissions/__tests__/shell-sandbox-rules.test.ts` | `robocopy src out $flags`, `robocopy --% a b /e`, `xcopy --% a b /s`, and `$env:X='/e'; robocopy --% a b %X%` force a protected-path card in all four modes and deny headless. | These are known writers whose unresolved native argument tail can select an output target, so absence of a protected mutation cannot be proven. Every mode/headless control remains asserted. The known switch value in `xcopy src out /s/d:$date` remains ordinary unproven shell evidence; it is not itself an unknown output operand. |
+
+The file-type evidence producer also rejects an empty derived extension before matching file types. Existing independent oracle expectations remain unchanged; this is a producer correction, not a new decision cell.
