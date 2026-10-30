@@ -9,11 +9,13 @@ import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 
 const disconnect = vi.fn(async () => undefined);
 const constructedConfigs: Array<Record<string, unknown>> = [];
 const constructedFetches: unknown[] = [];
+let discoveryReadOnlyHint = false;
 const oauth = vi.hoisted(() => ({ sessions: [] as Array<{ config: { id: string }; credentialKey: string; status: string; fetch: unknown; authenticate: () => Promise<void> }> }));
 vi.mock("../mcp-oauth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../mcp-oauth.js")>();
@@ -52,6 +54,7 @@ vi.mock("../mcp-client.js", () => ({
         description: "read",
         source: "mcp",
         category: "network",
+        mcpReadOnlyHint: discoveryReadOnlyHint,
         mcpServerId: this.config.id,
         jsonSchema: { type: "object", properties: {} },
         execute: async () => ({ output: this.config.id, isError: false }),
@@ -113,6 +116,7 @@ beforeEach(() => {
   disconnect.mockResolvedValue(undefined);
   constructedConfigs.length = 0;
   constructedFetches.length = 0;
+  discoveryReadOnlyHint = false;
   oauth.sessions.length = 0;
 });
 
@@ -556,4 +560,37 @@ describe("McpManager bundled generation", () => {
     await expect(manager.discardBundledGeneration(prepared)).resolves.toBeUndefined();
     expect(disconnect).toHaveBeenCalledTimes(2);
   });
+});
+
+it.each([false, true])("keeps a plugin-hosted MCP tool on the shared MCP permission row with readOnlyHint=%s", async readOnlyHint => {
+  discoveryReadOnlyHint = readOnlyHint;
+  const registry = new ToolRegistry();
+  const manager = new McpManager(new McpGovernance(join(root, `policy-mcp-permission-${readOnlyHint}.json`)), registry, unusedNetworkFetch,
+    join(root, `servers-mcp-permission-${readOnlyHint}.json`));
+  const generationId = `permission-${readOnlyHint}`;
+  const projection = preparePluginMcpGeneration(generation(generationId), root)[0];
+  const trust = new PluginMcpTrustStore();
+  trust.approve(projection);
+  const prepared = await manager.prepareBundledGeneration({ pluginId: "sampleportal", generationId }, [projection], trust);
+  try {
+    manager.publishBundledGeneration(prepared);
+    const tool = registry.findByName("mcp_sampleportal_portal_read")!;
+    expect(tool).toMatchObject({ source: "mcp", mcpReadOnlyHint: readOnlyHint, mcpServerId: projection.serverId,
+      pluginGeneration: { pluginId: "sampleportal", generationId } });
+    const permissions = new PermissionManager(join(root, `tool-permission-${readOnlyHint}.json`));
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      permissions.setMode(mode);
+      const firstUse = permissions.checkDetailed(tool.name, tool.source, tool.category, undefined, { mcpReadOnlyHint: tool.mcpReadOnlyHint });
+      expect(firstUse.decision).toBe(readOnlyHint || mode === "allow" ? "allow" : "ask");
+      expect(firstUse.reviewer?.route).toBe(!readOnlyHint && mode === "auto" ? "foreground-auto" : undefined);
+      expect(firstUse.forceModal).toBeUndefined();
+    }
+    if (!readOnlyHint) {
+      permissions.setMode("default");
+      const firstUse = permissions.checkDetailed(tool.name, tool.source, tool.category, undefined, { mcpReadOnlyHint: false });
+      expect(firstUse).toMatchObject({ decision: "ask", reasonCode: "external-tool" });
+      expect(permissions.resolveRememberedPermission(firstUse, "The user approved this server and tool")).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
+      expect(permissions.checkDetailed(`${tool.name}_other`, "mcp", "network")).toMatchObject({ decision: "ask", reasonCode: "external-tool" });
+    }
+  } finally { await manager.disconnectAll(); }
 });

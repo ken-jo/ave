@@ -85,7 +85,7 @@ describe("host terminal decision lane", () => {
     const pm = await manager([
       { pattern: "Bash(printf *)", action: "deny" },
     ]);
-    expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf ready"))).toMatchObject({ decision: "deny", layer: 1 });
+    expect(pm.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("printf ready"))).toMatchObject({ decision: "deny" });
     const asked = await manager([{ pattern: "Bash(cat *)", action: "ask" }]);
     const explicitAsk = asked.checkDetailed("terminal_run", "builtin", "shell", null, hostSubject("cat notes.txt"));
     expect(explicitAsk).toMatchObject({ decision: "ask", reasonCode: "rule-ask" });

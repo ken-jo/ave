@@ -266,7 +266,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
     });
   });
 
-  it("invalid enum values fall back to defaults", () => {
+  it("invalid reviewer enum values carry an explicit no-authority fault", () => {
     const settings = normalizePermissionSettings({
       permissions: {
         reviewer: {
@@ -277,8 +277,8 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
-    // Unknown enum values fall back to the new "llm" default (external boundary: hand-edited settings file with bad values).
-    expect(settings.permissions.reviewer.mode).toBe("llm");
+    expect(settings.fault).toMatchObject({ kind: "reviewer-mode-invalid" });
+    expect(settings.permissions.reviewer.mode).toBe("disabled");
     expect(settings.permissions.reviewer.fallbackOnError).toBe("deny");
     expect(settings.permissions.reviewer).not.toHaveProperty("provider");
     expect(settings.permissions.reviewer).not.toHaveProperty("model");
@@ -341,7 +341,7 @@ describe("settings file persistence — reviewer block format", () => {
     expect(parsed.permissions.reviewer).not.toHaveProperty("provider");
   });
 
-  it("hand-edited bad enum is normalized on read but bad write rejected", async () => {
+  it("hand-edited unknown reviewer mode reports a fault without granting model-review authority", async () => {
     const path = tmpSettingsPath();
     writeFileSync(
       path,
@@ -349,8 +349,9 @@ describe("settings file persistence — reviewer block format", () => {
         permissions: { reviewer: { mode: "yolo", provider: "openai", model: "x", fallbackOnError: "rule" } },
       }),
     );
-    // Read normalises silently (external boundary). Bad enum → "llm" default.
+    // A readable file keeps its unrelated settings; the invalid reviewer cannot run.
     const r = readPermissionSettings(path);
-    expect(r.permissions.reviewer.mode).toBe("llm");
+    expect(r.permissions.reviewer.mode).toBe("disabled");
+    expect(r.fault).toMatchObject({ kind: "reviewer-mode-invalid" });
   });
 });

@@ -4,6 +4,8 @@ The [expectation audit](permission-ci-expectation-audit.md) explains the semanti
 
 A legacy `layer` number in a quoted historical assertion is evidence of that edit, not a current field: the public result and hook field are retired. Final implementation must satisfy the binding [decision tree](../architecture/permission-decision-tree.md), including its model-choice change.
 
+The [expectation continuation](permission-expectation-continuation.md) extends the exact source audit through the publication working tree, including every deleted assertion in the reviewer/card/migration retirements and the pre-push reader change. It preserves this historical table and records two catalogue assertions restored verbatim.
+
 ## Contract rows
 
 | Code | Named row or stage | Permitted expectation change |
@@ -904,3 +906,21 @@ These are stronger observations of the existing 질문† row, not exceptions or
 | Final denial projection after MC accept, failed/invalid resubmission or declined card | Final model-choice denial enters Recently denied exactly once through the original invocation writer. Initial HIGH, later LOW/MEDIUM allow and cancellation do not create denied history. | MC final deny / Recently denied contract |
 
 | Dead candidate/card display metadata assertions in `executor-rationale-batch.test.ts` and rationale host fixtures | Removed `allowedDirectories`/display-only pins after removing the obsolete card-builder metadata; sealed action, scope, policy identity and actual normal-card assertions remain. | Owner no-writer cleanup and MC → normal card; no decision change |
+
+## Remaining retired-field consumers
+
+Owner decision 8b removes the result field; it does not change a permission outcome. The following exact consumers drop only numeric `layer` matchers or fixture members: `sandboxed-shell-review`, `session-scope-end`, `permission-visible-literal-regressions`, `shell-rule-boundaries`, `literal-proof`, `shell-rule-version`, `git-repository-read-boundary`, `host-terminal-rules`, `powershell-startup-paths`, `subagent-resume`, `conversation-loop-plugin-operation-governance`, `conversation-loop-authorization-required`, `subagent-runner`, plugin `runtime`, and `ave-home-boundaries.windows`. Every decision, reason, forced-floor, cancellation, timing and containment assertion remains. The forged-decision negative test changes `decision` to `allow` instead of changing the retired numeric field; it still requires host-issued identity rejection.
+
+The Windows home-boundary fixture now stores and reads supported reviewer mode `llm` instead of retired `strict` (owner decision 8a). It still asserts exact loaded configuration, denied policy and no privacy migration. Separate retirement tests continue requiring clear failure for stored `strict` and `rule`. MCP server-validation layer fields and historical audit inputs are separate contracts and are unchanged.
+
+The same owner-8b-only cleanup covers the later numeric-field consumers `permission-review-scenario-board`, `execution-router`, `encoded-argument-exclusion`, `classifier-widening-battery`, `nested-executable-startup`, `reviewer-dispatch-delegation`, `hook-system-wiring` and `approval-memory-skip-host-plan`. The obsolete standalone `{layer: 6}` assertion now checks the allowed stage-4 reason codes (`allow-mode`, `read-only-shell`, `sandboxed-shell`) as well as the unchanged expected decision; it cannot pass through a saved-rule reason. Existing decision and sealed-plan audit assertions remain. No permission cell changes for this metadata removal.
+
+| Exact fixture | Before → final | Basis |
+| --- | --- | --- |
+| `fixtures/classifier-widening.ts`: `bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'`, both dialects | Exact allow-rule suggestion available → unavailable; installation, verified plan and every sandbox/saved/headless execution outcome stay unchanged. | Row E: preserve the existing secret-read rule-save guard, already asserted for bare `cat ~/.aws/credentials` in `rules-store-and-decision.test.ts`; shared literal-body evidence exposes the same sensitive read. Row Q still owns execution, with no forced floor added. |
+
+| CI contract fixture | Correction | Basis |
+| --- | --- | --- |
+| `mcp-oauth-wiring.test.ts` OAuth dependency position | Constructor capture index 9 → 8 after removing the unused permission override argument; encrypted-secret, browser and egress assertions unchanged. | Owner 8c interface retirement; row E, no decision change |
+| `turn-entry-classification.test.ts` original-user evidence site | Account for the additional keyboard-origin comparison in `run-turn`; it records raw user text only after verified intent and does not create a turn authority path. | MC/RR verified original-user quote; source-inventory repair |
+| Windows CI native suite inventory | Provision the existing native sandbox prerequisite before permission regressions and include the control-write suite in their explicit list; native execution remains enabled. Inventory assertions and platform conditions are unchanged. | Added native integration coverage; no changed cell or reduced gate |

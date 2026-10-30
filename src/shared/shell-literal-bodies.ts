@@ -2,6 +2,8 @@ import { classifySedArgumentSlots } from "./shell-sed-arguments.js";
 import { classifySqliteArgumentSlots } from "../tools/shell-sqlite-arguments.js";
 import { wrapperCommand } from "../permissions/rules/shell-prefix-policy.js";
 import { isEncodedPowerShellParameter } from "../permissions/rules/powershell-encoded-command.js";
+import { stripCommandPath } from "./shell-effective-command.js";
+import { sep } from "node:path";
 
 interface LiteralShellBody {
   text: string;
@@ -9,9 +11,13 @@ interface LiteralShellBody {
   index: number;
 }
 
-export type LiteralShellArgument = string | readonly string[] | undefined;
+export type LiteralShellArgument = string | readonly string[] | undefined
+  | { kind: "parenthesized"; values: readonly string[] }
+  | { kind: "expression"; argv: readonly LiteralShellArgument[] }
+  | { kind: "scriptblock"; text: string };
 
 function executableName(value: string): string {
+  if (sep === "\\") return stripCommandPath(value);
   return value.split(/[\\/]/).at(-1)!.toLowerCase().replace(/\.exe$/u, "");
 }
 
@@ -27,10 +33,40 @@ export function literalShellBodies(
     for (const value of values) {
       if (value === undefined) return undefined;
       if (typeof value === "string") result.push(value);
-      else result.push(...value);
+      else if (Array.isArray(value)) result.push(...value);
+      else return undefined;
     }
     return result;
   };
+  if (dialect === "powershell") {
+    const parenthesized = (value: LiteralShellArgument): readonly string[] | undefined =>
+      value !== undefined && typeof value === "object" && "kind" in value && value.kind === "parenthesized" ? value.values : undefined;
+    const invoked = head === "&" || head === ".";
+    const target = invoked ? argv[1] : head;
+    if (invoked && target !== undefined && typeof target === "object" && "kind" in target && target.kind === "expression"
+      && argv.length === 2) return literalShellBodies([head, ...target.argv], dialect);
+    const parameters = invoked ? argv.slice(2) : argv.slice(1);
+    if (typeof target === "string" && ((!invoked && /^\$ExecutionContext\.InvokeCommand\.InvokeScript$/iu.test(target))
+      || (invoked && /^\[scriptblock\]::Create$/iu.test(target)))) {
+      const values = parameters.length === 1 ? parenthesized(parameters[0]) : undefined;
+      return values?.length === 1 ? [{ text: values[0]!, dialect, index: invoked ? 2 : 1 }] : [];
+    }
+    if (["foreach-object", "%"].includes(name)) {
+      const member = argv.findIndex(value => typeof value === "string" && /^-membername$/iu.test(value));
+      const argument = argv.findIndex(value => typeof value === "string" && /^-argumentlist$/iu.test(value));
+      if (member > 0 && typeof argv[member + 1] === "string" && /^invokescript$/iu.test(argv[member + 1] as string)
+        && argument > 0 && typeof argv[argument + 1] === "string" && argument + 2 === argv.length) {
+        return [{ text: argv[argument + 1] as string, dialect, index: argument + 1 }];
+      }
+    }
+    if (name === "invoke-command") {
+      const parameter = argv.findIndex(value => typeof value === "string" && /^-scriptblock$/iu.test(value));
+      const block = parameter > 0 ? argv[parameter + 1] : undefined;
+      if (block !== undefined && typeof block === "object" && "kind" in block && block.kind === "scriptblock") {
+        return [{ text: block.text, dialect, index: parameter + 1 }];
+      }
+    }
+  }
   if (["sed", "sqlite3"].includes(name)) {
     const values = strings(argv);
     if (values) {

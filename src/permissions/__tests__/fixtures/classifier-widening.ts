@@ -28,7 +28,7 @@ export const CLASSIFIER_WIDENING_FIXTURES: readonly WideningFixture[] = [
   { ...READ_ONLY, command: "git rev-parse --show-toplevel" },
   { ...READ_ONLY, command: "git branch --list" },
   { ...EVALUATION, command: "bash --noprofile --norc -p -c 'printf ready'" },
-  { ...EVALUATION, command: "bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'" },
+  { ...EVALUATION, command: "bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'", exact: false },
   { ...UNPROVEN, command: "git status" },
   { ...UNPROVEN, command: "git diff" },
   { ...UNPROVEN, command: "git diff HEAD" },

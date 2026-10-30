@@ -1,5 +1,11 @@
 // i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
+  "permissionsTab.reviewerModeFaultTitle": "Choose a supported permission reviewer setting",
+  "permissionsTab.reviewerModeFaultDescription": "The saved reviewer mode is no longer supported. Automatic review is unavailable until you choose a setting. Your other settings are unchanged.",
+  "permissionsTab.reviewerModeRepairLlm": "Use automatic review",
+  "permissionsTab.reviewerModeRepairDisabled": "Turn off the reviewer",
+  "permissionsTab.reviewerModeRecovered": "Permission reviewer setting updated.",
+  "permissionsTab.reviewerModeRecoveryRewireFailed": "Your reviewer choice was saved, but the reviewer could not reconnect. Automatic review remains unavailable.",
   "permissionsTab.ownerAwayAutoSkipLabel": "Owner-away auto-skip (minutes)",
   "permissionsTab.ownerAwayAutoSkipHint": "0 waits without a limit. After the configured wait, deny the request and tell the model not to retry.",
   "permissionsTab.ownerAwaySaveFailed": "Could not save owner-away auto-skip.",
@@ -354,6 +360,12 @@ export const en = {
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity: the proxy cannot tell which extension process opened a connection the way it can for a contained shell command.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "permissionsTab.reviewerModeFaultTitle": "지원되는 권한 리뷰어 설정을 선택하세요",
+  "permissionsTab.reviewerModeFaultDescription": "저장된 리뷰어 모드는 더 이상 지원되지 않습니다. 설정을 선택하기 전까지 자동 검토를 사용할 수 없습니다. 다른 설정은 유지됩니다.",
+  "permissionsTab.reviewerModeRepairLlm": "자동 검토 사용",
+  "permissionsTab.reviewerModeRepairDisabled": "리뷰어 끄기",
+  "permissionsTab.reviewerModeRecovered": "권한 리뷰어 설정을 변경했습니다.",
+  "permissionsTab.reviewerModeRecoveryRewireFailed": "리뷰어 선택은 저장했지만 리뷰어를 다시 연결하지 못했습니다. 자동 검토는 계속 사용할 수 없습니다.",
   "permissionsTab.ownerAwayAutoSkipLabel": "부재 중 자동 스킵 (분)",
   "permissionsTab.ownerAwayAutoSkipHint": "0은 무제한 대기입니다. 설정한 시간이 지나면 요청을 거부하고 모델에 재시도하지 않도록 알립니다.",
   "permissionsTab.ownerAwaySaveFailed": "부재 중 자동 스킵 설정을 저장하지 못했습니다.",

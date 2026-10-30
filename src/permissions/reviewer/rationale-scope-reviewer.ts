@@ -1,3 +1,4 @@
+import { hasRationaleUserQuote } from "../../shared/rationale-user-quote.js";
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { stripMarkdown } from "../../shared/strip-markdown.js";
@@ -150,7 +151,7 @@ export class LlmRationaleScopeReviewer implements RationaleScopeReviewer {
     }
     const response = parseRationaleResponse(input.response, input.control, now);
     if (!response || response.choice !== "resubmit" || input.verifiedUserQuote !== response.userQuote || typeof input.verifiedUserMessage !== "string" ||
-        !input.verifiedUserMessage.includes(response.userQuote) ||
+        !hasRationaleUserQuote(input.verifiedUserMessage, response.userQuote) ||
         !Array.isArray(input.verifiedUserMessages) || !input.verifiedUserMessages.every((message) => typeof message === "string") ||
         !input.verifiedUserMessages.includes(input.verifiedUserMessage) ||
         Buffer.byteLength(canonicalStringify(input.verifiedUserMessages), "utf8") > MAX_RATIONALE_USER_CONTEXT_BYTES || !input.hostSafetyFacts) {

@@ -419,6 +419,7 @@ describe("foreground rationale contract", () => {
 
     expect(parseRationaleResponse(valid, control)).toMatchObject(valid);
     expect(parseRationaleResponse({ ...valid, ticketId: "other" }, control)).toBeNull();
+    for (const userQuote of ["y", "the", "delete X", "abcdefghijklmnop"]) expect(parseRationaleResponse({ ...valid, userQuote }, control)).toBeNull();
     expect(parseRationaleResponse({ ...valid, rationale: "" }, control)).toBeNull();
     expect(parseRationaleResponse({ ...valid, rationale: "x".repeat(501) }, control)).toBeNull();
     expect(parseRationaleResponse({ ...valid, scopeAlignment: "aligned" }, control)).toBeNull();

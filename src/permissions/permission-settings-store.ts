@@ -54,7 +54,12 @@ export interface PendingWorkspaceRootRemoval {
 }
 
 // What a read could NOT interpret in the on-disk file. The settings file is an external boundary: it is hand-editable, it is restored from backups, and a half-written predecessor of the atomic writer could survive a crash. None of that may be answered by pretending the user simply has no projects — "we could not read your settings" and "you have no extra directories" are different facts and the UI owes the user the first one. So a read reports the condition here instead of erasing it, and the file itself is left byte-for-byte as it was found.
-type PermissionSettingsFault =
+export type PermissionSettingsFault =
+  | {
+      kind: "reviewer-mode-invalid";
+      filePath: string;
+      detail: string;
+    }
   | {
       // The whole file failed to parse. No grant in it can be honoured.
       kind: "file-unreadable";
@@ -71,7 +76,7 @@ type PermissionSettingsFault =
 
 export interface PermissionSettingsFile {
   permissions: PermissionSettingsBlock;
-  // `null` when the file was interpreted whole. Callers that GATE on the settings (the executor allow-list, the reviewer) deliberately ignore it: with an uninterpretable SOT the only honest gate answer is the deny-shaped default this read returns with it. Callers that DISPLAY the settings must not — a fault means the list they are about to draw is not the user's.
+  // A reviewer-only fault preserves readable directory policy while disabling automatic review. Whole-file faults retain deny-shaped defaults; display callers surface the fault.
   fault: PermissionSettingsFault | null;
 }
 
@@ -116,7 +121,7 @@ export function permissionSettingsPath(home = aveHome()): string {
   return pathResolve(aveHomeConfigurationDirectory(home), "settings.json");
 }
 
-// Unreadable settings preserve disk bytes and expose a fault. Retired reviewer modes fail clearly during normalization.
+// Unreadable settings and invalid reviewer modes expose faults without rewriting the file.
 export function readPermissionSettings(pathOverride?: string): PermissionSettingsFile {
   const filePath = resolveConfigurationFile(pathOverride ?? permissionSettingsPath());
   let parsed: Record<string, unknown>;
@@ -224,7 +229,9 @@ export function normalizePermissionSettings(
       reviewer: normalizeReviewerBlock(perm.reviewer),
     },
     fault:
-      journal.malformed.length > 0
+      isReviewerModeInvalid(perm.reviewer)
+        ? { kind: "reviewer-mode-invalid", filePath, detail: "Permission reviewer mode must be llm or disabled." }
+        : journal.malformed.length > 0
         ? {
             kind: "pending-removals-malformed",
             filePath,
@@ -292,13 +299,21 @@ function composePendingWorkspaceRootRemovals(
   return [...intents, ...malformed];
 }
 
-// Normalize the external settings boundary. Retired modes fail clearly; unrelated malformed values retain the default model-review posture.
+function isReviewerModeInvalid(parsed: unknown): boolean {
+  if (parsed === undefined) return false;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
+  const mode = (parsed as Record<string, unknown>).mode;
+  return mode !== undefined && (typeof mode !== "string" || !REVIEWER_MODES.has(mode as ReviewerMode));
+}
+
+// Disabled defaults under a fault carry no automatic-review authority; only an explicit supported mode repairs the setting.
 function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
+  if (isReviewerModeInvalid(parsed)) {
+    const fallback = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).fallbackOnError : undefined;
+    return { mode: "disabled", fallbackOnError: typeof fallback === "string" && REVIEWER_FALLBACKS.has(fallback as ReviewerFallbackOnError) ? fallback as ReviewerFallbackOnError : "deny" };
+  }
   if (!parsed || typeof parsed !== "object") return structuredClone(DEFAULT_REVIEWER);
   const obj = parsed as Record<string, unknown>;
-  if (obj.mode === "strict" || obj.mode === "rule") {
-    throw new Error(`Retired reviewer mode '${obj.mode}'; set permissions.reviewer.mode to 'llm' or 'disabled'.`);
-  }
   const mode =
     typeof obj.mode === "string" && REVIEWER_MODES.has(obj.mode as ReviewerMode)
       ? (obj.mode as ReviewerMode)
@@ -335,7 +350,7 @@ function composeSettingsForPersist(
       ...(next.pendingWorkspaceRootRemovals === undefined
         ? {}
         : { pendingWorkspaceRootRemovals: [...next.pendingWorkspaceRootRemovals] }),
-      reviewer: next.reviewer ?? normalizeReviewerBlock(existingPerm.reviewer),
+      reviewer: next.reviewer ?? (isReviewerModeInvalid(existingPerm.reviewer) ? existingPerm.reviewer : normalizeReviewerBlock(existingPerm.reviewer)),
     },
   };
 }
@@ -352,10 +367,13 @@ export async function writePermissionSettings(
   await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = (existing.permissions ?? {}) as Record<string, unknown>;
+    if (isReviewerModeInvalid(existingPerm.reviewer) && patch.reviewer && patch.reviewer.mode === undefined) {
+      throw new Error("Choose llm or disabled before changing permission reviewer settings.");
+    }
     const existingReviewer = normalizeReviewerBlock(existingPerm.reviewer);
-    const nextReviewer: ReviewerSettingsBlock = patch.reviewer
+    const nextReviewer: ReviewerSettingsBlock | undefined = patch.reviewer
       ? validateReviewerPatch({ ...existingReviewer, ...patch.reviewer })
-      : existingReviewer;
+      : undefined;
     const nextDirs =
       patch.additionalDirectories !== undefined
         ? [...patch.additionalDirectories]
@@ -767,7 +785,7 @@ export async function completeWorkspaceRootRemovalPersist(
           pending.filter((candidate) => candidate.operationId !== operationId),
           journal.malformed,
         ),
-        reviewer: normalizeReviewerBlock(existingPerm.reviewer),
+        reviewer: isReviewerModeInvalid(existingPerm.reviewer) ? existingPerm.reviewer : normalizeReviewerBlock(existingPerm.reviewer),
       },
     };
     try {

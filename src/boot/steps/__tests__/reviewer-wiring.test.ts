@@ -1,3 +1,4 @@
+import { wireJudgeForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { reviewerSettings } from "../../../__tests__/support/reviewer-settings.js";
 /** Reviewer boot integration (docs/architecture/permission-policy-design.md). */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
@@ -959,4 +960,28 @@ describe("user-selected permission reviewer model", () => {
     expect(setReviewer.mock.lastCall?.[0]).not.toHaveProperty("unavailableReason");
     expect(setReviewer.mock.lastCall?.[0].cacheScope).toMatchObject({ provider: "claude", model: "selected-model" });
   });
+});
+
+it.each(["strict", "rule", "unrecognized"])("starts with an explicit settings fault for %s and keeps automatic review unavailable", async mode => {
+  const path = join(tmpDir, "invalid-reviewer.json");
+  writeFileSync(path, JSON.stringify({ permissions: { additionalDirectories: [tmpDir], reviewer: { mode } }, unrelated: true }));
+  const manager = new PermissionManager(join(tmpDir, "invalid-reviewer-permissions.json"));
+  manager.setMode("auto");
+  const streamProviderFor = vi.fn(() => stubProvider([]));
+  const wired = wireReviewerAgent({ permissionManager: manager, networkFetch: unusedNetworkFetch,
+    readSettings: () => readPermissionSettings(path), readActiveLlm: CHAT_LLM, streamProviderFor,
+    verdictCachePath: join(tmpDir, "invalid-reviewer-cache.jsonl") });
+  wireJudgeForTest(manager);
+  expect(wired.runtimeMode).toBe("llm-settings-invalid");
+  expect(readPermissionSettings(path).permissions.additionalDirectories).toEqual([tmpDir]);
+  expect(streamProviderFor).not.toHaveBeenCalled();
+  try {
+    for (const headless of [false, true]) {
+      const initial = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: "invalid-reviewer-session", headless, rationaleAvailable: true });
+      const review = await manager.dispatchReviewer("network_probe", { invocationId: `invalid-review-${headless}`, sessionId: "invalid-reviewer-session", source: "builtin", category: "network", pathFields: [], finalInput: { url: "https://example.test" }, executionCwd: tmpDir, allowedDirectories: [tmpDir], sensitivePathsAdjacent: [], trustOrigin: "llm-tool-arg", permissionDecision: initial, rationaleAvailable: true });
+      expect(review).toMatchObject({ outcome: "unavailable", verdict: { level: "high" } });
+      expect(manager.resolveReviewedPermission(initial, review)).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
+    }
+    expect(streamProviderFor).not.toHaveBeenCalled();
+  } finally { await wired.cache.flush(); }
 });

@@ -1,3 +1,4 @@
+import { isRationaleUserQuote, RATIONALE_USER_QUOTE_MIN_LENGTH, RATIONALE_USER_QUOTE_MAX_LENGTH, RATIONALE_USER_QUOTE_PATTERN } from "../../shared/rationale-user-quote.js";
 // Versioned rationale handoff carries sealed control in memory but grants no execution authority or durable tickets.
 import { randomUUID } from "node:crypto";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
@@ -553,7 +554,7 @@ export const RATIONALE_RESPONSE_SCHEMA: ToolSchema = {
       round: { type: "integer", const: 1 },
       choice: { type: "string", enum: ["accept", "resubmit", "ask_user"] },
       rationale: { type: "string", minLength: 1, maxLength: 500 },
-      userQuote: { type: "string", minLength: 1, maxLength: 2000 },
+      userQuote: { type: "string", minLength: RATIONALE_USER_QUOTE_MIN_LENGTH, maxLength: RATIONALE_USER_QUOTE_MAX_LENGTH, pattern: RATIONALE_USER_QUOTE_PATTERN, description: "At least three words copied exactly from a native user turn, with whitespace or punctuation boundaries." },
     },
     required: ["contractVersion", "anchorId", "ticketId", "actionDigest", "round", "choice"],
   },
@@ -1592,7 +1593,7 @@ function parseRationaleBoundResponse(
       actionDigest: control.action.actionDigest, round: 1 as const };
     if (input.choice !== "resubmit") return deepFreeze({ ...base, choice: input.choice });
     if (typeof input.rationale !== "string" || !input.rationale.trim() || input.rationale.length > 500 ||
-        typeof input.userQuote !== "string" || !input.userQuote.trim() || input.userQuote.length > 2000) return null;
+        !isRationaleUserQuote(input.userQuote)) return null;
     // Preserve exact quote bytes until verification; display redaction is a separate projection.
     return deepFreeze({ ...base, choice: "resubmit" as const, rationale: input.rationale, userQuote: input.userQuote });
   } catch {

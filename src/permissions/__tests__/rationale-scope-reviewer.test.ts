@@ -277,18 +277,18 @@ describe("LlmRationaleScopeReviewer", () => {
 it("redacts verified full-turn context at reviewer transport after exact host verification", async () => {
   const secret = "sk-" + "a".repeat(48);
   const control = controlFixture({ command: "Remove-Item -Recurse build # " + secret });
-  const message = `do not delete X; keep credential ${secret} private`;
+  const message = `do not delete generated output; keep credential ${secret} private`;
   const { provider, complete } = providerReturning(canonicalStringify({ level: "high",
     reason: "The full turn forbids deletion.", scopeAlignment: "outside", scopeReasons: ["The quoted substring is negated."] }));
   const reviewer = new LlmRationaleScopeReviewer(provider, "reviewer-model");
-  const response = { ...responseFor(control), userQuote: "delete X" };
-  const result = await reviewer.reevaluate({ control, response, verifiedUserQuote: "delete X",
+  const response = { ...responseFor(control), userQuote: "delete generated output" };
+  const result = await reviewer.reevaluate({ control, response, verifiedUserQuote: "delete generated output",
     verifiedUserMessage: message, verifiedUserMessages: [message], hostSafetyFacts: { targetPaths: control.action.canonicalTargets }, now: NOW });
   const payload = complete.mock.calls[0]![0].userPrompt;
   expect(payload).not.toContain(secret);
   expect(JSON.parse(payload).sealedActionInput).toContain("Remove-Item -Recurse build");
-  expect(JSON.parse(payload)).toMatchObject({ verifiedUserQuote: "delete X",
-    verifiedUserMessages: [expect.stringContaining("do not delete X")], matchedUserMessageIndex: 0 });
+  expect(JSON.parse(payload)).toMatchObject({ verifiedUserQuote: "delete generated output",
+    verifiedUserMessages: [expect.stringContaining("do not delete generated output")], matchedUserMessageIndex: 0 });
   expect(result.reevaluatedVerdict.level).toBe("high");
 });
 

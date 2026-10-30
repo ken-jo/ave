@@ -6,7 +6,7 @@ The binding tree is synchronized verbatim in docs-only commit `967289ffd`, inclu
 
 The public [assertion ledger](permission-expectation-ledger.md) enumerates all 379 historical assertion changes across 189 cases in 66 files, with exact before/CI-edit clauses and contract rows. Literal executable upload/credential and nested critical-delete downgrades are rejected and restored; ordinary opacity is not evidence of a forced floor. Retired `layer` pins are removed while substantive decisions, authority, cancellation, timing and containment assertions remain.
 
-Owner-directed removals include the retired reviewer migration and its sunset-inventory entry; disabled remains an explicit reviewer setting, and retired stored reviewer modes fail clearly rather than silently changing behavior.
+Owner-directed removals include the retired reviewer migration and its sunset-inventory entry; disabled remains an explicit reviewer setting, and retired or unknown stored reviewer modes report a recoverable settings fault rather than silently changing behavior or blocking startup.
 
 The current pure decision module has 35 structural AST branches (31 if statements and 4 conditional expressions), compared with 732 across the ten original complete decision-owner functions at `89acbc0d0`. These counts are structural, not whole-program cyclomatic complexity.
 
@@ -21,6 +21,16 @@ Production typecheck passes. The shrink-only test-type gate holds at 229 measure
 Two independent source reviews cleared their inspected findings after quote-provenance, original-action, receipt-cleanup and normal-card corrections. The owner approved the two-mirror publication exception. The lead confirmed that unanchored already-running nested effects and egress requests retain normal-card fallback (headless denial with the no-retry message), and accepted existing absent-Git-metadata quarantine as part of the Linux limit. Existing metadata is denied; quarantine is not synchronous denial, and no new path blocks initialization of repositories. Publication and new hosted CI remain pending. Previous green CI is not evidence for this correction.
 
 Snapshot: 2026-10-30, `feat/permission-pipeline-v4`. The [approved decision tree](../architecture/permission-decision-tree.md) defines behavior; the [inventory](permission-decision-inventory.md#current-source-reconciliation) accounts for original and native-terminal sites. Results below are scoped observations, not release certification or a full-suite result. Evidence logs remain in the task workspace.
+
+## Current review validation
+
+The requested text sweep selected all **61** test files mentioning retired layer/mode/migration contracts; changed boundaries, rationale consumers and locks expanded it to **130 files**. That run passes **17,154 assertions**, with 73 inherited platform/capability skips. Every later substantive assertion in formerly layer-blocked tests ran. The standalone numeric-field discriminator now checks explicit stage reason codes; the secret-read fixture retains its execution outcomes and existing exact-rule save restriction.
+
+Isolated parser/evidence timing and safety budgets pass **485/485** at unchanged limits. The final literal-body consumer selection passes **1,051** with 33 existing platform skips; localization tests pass **39/39**, and the actual on-disk legacy `args` listing proof passes within **52/52** store tests. These groups overlap and must not be summed as a unique total. The four required lock suites pass **212/212**, already included above. Native local control-write integration remains **22/22**; hosted native platform evidence is reported separately.
+
+Production typecheck passes; the shrink-only test-type gate measures 229 files / 998 inherited diagnostics without baseline growth. Full core hygiene, its unused-code self-tests, localization (5,033 keys / two locales / 185 fragments), barrels and import-cycle checks pass. Exactly one resolved unused-type entry was removed from the debt baseline; no exception was added. Both read-only source reviews cleared their inspected quote/provenance, fault-recovery and literal-body findings; runtime CI remains independent.
+
+The continuous expectation record now retains 379 historical assertion records and 620 continuation records across 329 additional cases / 90 files, covering retirement removals, the actual legacy `args` boundary and restored literal exfiltration floors. Full failure logs for run `41016573396` are retained, including all shards and Windows. Corrections preserve decisions, containment, cancellation and authority; no threshold, timeout or parser cap was raised. Final publication CI is pending.
 
 ## Integrated foundation
 

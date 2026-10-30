@@ -1,3 +1,4 @@
+import { hasRationaleUserQuote } from "../../shared/rationale-user-quote.js";
 import {
   isHostApprovalRejectedDecision,
   isHostApprovalTimeoutDecision,
@@ -168,6 +169,7 @@ export interface RationaleHostCoordinatorOptions {
   readonly onReviewerChoiceResolved?: (sessionId: string, requestId: string, decision: "allow" | "deny") => void;
   readonly requestAnchor: RequestAnchor | null;
   readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
   readonly rationaleProvenance: RationaleEligibilityProvenance;
   /** Shared with every coordinator created for this host session. */
   readonly ticketStore: InProcessRationaleTicketStore;
@@ -308,7 +310,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
   readonly rationaleProvenance: RationaleEligibilityProvenance;
 
   readonly #onReviewerChoiceResolved: RationaleHostCoordinatorOptions["onReviewerChoiceResolved"];
-  readonly #userRoleTexts: readonly string[];
+  readonly #getUserRoleTexts: () => readonly string[];
   readonly #ticketStore: InProcessRationaleTicketStore;
   readonly #rationaleScopeReviewer: RationaleScopeReviewer;
   readonly #approvalGate: RationaleApprovalGate;
@@ -337,7 +339,8 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     }
     this.requestAnchor = options.requestAnchor;
     this.#onReviewerChoiceResolved = options.onReviewerChoiceResolved;
-    this.#userRoleTexts = Object.freeze([...(options.userRoleTexts ?? [])]);
+    const userRoleTexts = Object.freeze([...(options.userRoleTexts ?? [])]);
+    this.#getUserRoleTexts = options.getUserRoleTexts ?? (() => userRoleTexts);
     this.rationaleProvenance = Object.freeze({ ...options.rationaleProvenance });
     this.#ticketStore = options.ticketStore;
     this.#rationaleScopeReviewer = options.rationaleScopeReviewer;
@@ -749,18 +752,19 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
         : "generation-error";
     }
     let reevaluation: ReviewerScopeReevaluation | null = null;
+    const reviewUserRoleTexts = Object.freeze([...this.#getUserRoleTexts()]);
     let verifiedUserMessage: string | undefined;
     if (generatedResponse?.choice === "resubmit") {
-      for (let index = this.#userRoleTexts.length - 1; index >= 0; index -= 1) {
-        const message = this.#userRoleTexts[index]!;
-        if (!message.includes(generatedResponse.userQuote)) continue;
+      for (let index = reviewUserRoleTexts.length - 1; index >= 0; index -= 1) {
+        const message = reviewUserRoleTexts[index]!;
+        if (!hasRationaleUserQuote(message, generatedResponse.userQuote)) continue;
         // Keep the full most recent matching turn; truncation could remove a negation or condition.
         if (Buffer.byteLength(message, "utf8") <= MAX_RATIONALE_USER_CONTEXT_BYTES) verifiedUserMessage = message;
         break;
       }
     }
     const hasVerifiedUserContext = verifiedUserMessage !== undefined &&
-      Buffer.byteLength(canonicalStringify(this.#userRoleTexts), "utf8") <= MAX_RATIONALE_USER_CONTEXT_BYTES;
+      Buffer.byteLength(canonicalStringify(reviewUserRoleTexts), "utf8") <= MAX_RATIONALE_USER_CONTEXT_BYTES;
     if (generationOutcome === "accepted-rationale" && generatedResponse !== null && hasVerifiedUserContext) {
       let reviewerResult: ReviewerScopeReevaluation;
       const reviewerOutcome = await runWithAbortableDeadline(
@@ -769,7 +773,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
           response: generatedResponse,
           verifiedUserQuote: generatedResponse.choice === "resubmit" ? generatedResponse.userQuote : "",
           verifiedUserMessage,
-          verifiedUserMessages: this.#userRoleTexts,
+          verifiedUserMessages: reviewUserRoleTexts,
           hostSafetyFacts: {
             targetPaths: context.control.action.canonicalTargets,
             sandbox: context.approval.sandboxCapability,
@@ -828,6 +832,9 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     ) {
       this.abort(input.ticketId, settledAt);
       return null;
+    }
+    if (!canonicalJsonEqual(reviewUserRoleTexts, this.#getUserRoleTexts())) {
+      reevaluation = createReviewerScopeReevaluation({ control: context.control, outcome: "unavailable", now: startedAt });
     }
     const ready = generationOutcome === "accepted-rationale" &&
       reevaluation?.outcome === "fresh";

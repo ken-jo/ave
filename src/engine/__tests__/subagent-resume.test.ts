@@ -282,13 +282,11 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       ? {
           decision: "ask",
           reason: "fixture requires local authorization",
-          layer: 3,
           forceModal: true,
         }
       : {
           decision: "allow",
           reason: "fixture allows setup read",
-          layer: 3,
         };
     const provider = new ScriptedProvider([
       [

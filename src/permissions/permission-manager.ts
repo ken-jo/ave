@@ -526,6 +526,7 @@ export class PermissionManager {
   private blockReadsOutsideWorkingDirectories = false;
   private policyGeneration = 0;
   private permissionStoreError: string | undefined;
+  private reviewerSettingsError: string | undefined;
   // Optional broadcast for memory-hit auto-approve disclosure.
   private broadcastUserApprovalHit: ((payload: UserApprovalHitPayload) => void) | null = null;
   // Architectural choke point for permission config fan-out — every persisted mutation through PermissionManager (addAlwaysAllowedPersist, addAlwaysDeniedPersist, removeRule) fires this callback so multi-window PermissionsTab refreshes without each call site re-implementing the broadcast wiring. Wired by boot from `ipc/domains/permissions.ts:broadcastPermissionConfigChanged`.
@@ -538,7 +539,7 @@ export class PermissionManager {
     return this.pluginRevokeEpochs.get(pluginId) ?? 0;
   }
 
-  constructor(permissionsFilePath?: string, private readonly readPermissionStoreError?: () => string | undefined) {
+  constructor(permissionsFilePath?: string, private readonly readPermissionStoreError?: () => string | undefined, private readonly readReviewerSettingsError?: () => string | undefined) {
     this.permissionsFilePath =
       permissionsFilePath ?? defaultPermissionsFilePath();
     this.projectRuleScopes = new ProjectRuleScopes(dirname(this.permissionsFilePath));
@@ -745,7 +746,19 @@ export class PermissionManager {
   // Monotonic host policy identity for sealed rationale revalidation.
   getPolicyEpoch(): string {
     this.refreshPermissionStoreError();
+    this.refreshReviewerSettingsError();
     return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
+  }
+
+  private refreshReviewerSettingsError(): string | undefined {
+    let error: string | undefined;
+    try { error = this.readReviewerSettingsError?.(); }
+    catch { error = "Permission reviewer settings could not be read."; }
+    if (error !== this.reviewerSettingsError) {
+      this.reviewerSettingsError = error;
+      this.policyGeneration += 1;
+    }
+    return error;
   }
 
   private refreshPermissionStoreError(): string | undefined {
@@ -1518,6 +1531,11 @@ export class PermissionManager {
     routineScope?: Record<string, unknown>,
     options?: { lane?: ReviewerLane; abortSignal?: AbortSignal; purpose?: "approval-scope" },
   ): Promise<ReviewerDispatchResult> {
+    const settingsError = this.refreshReviewerSettingsError();
+    if (settingsError !== undefined) {
+      return { verdict: { level: "high", reason: settingsError }, outcome: "error", cacheReason: "miss-not-found",
+        judge: { judged: true, mode: "active", decision: options?.lane === "headless" ? "deny" : "ask", applied: true, source: "fallback", fallback: "error", rationale: settingsError, breakerTripped: false } };
+    }
     const permission = input.permissionDecision as PermissionCheckResult | undefined;
     const issued = permission === undefined ? undefined : this.pipelineRequests.get(permission);
     if (issued?.request.userOwnedSurface?.choice === "auto") {

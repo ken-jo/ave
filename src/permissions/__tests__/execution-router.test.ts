@@ -983,7 +983,7 @@ describe("execution router", () => {
             shellExecution: { runsSandboxed: legacyPlan.sandboxed, pathPolicyRelaxations: relaxations },
           });
         expect(decide(pathPolicyRelaxations).reason).not.toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
-        expect(decide([])).toMatchObject({ decision: "ask", reasonCode: "shell-approval", layer: 6 });
+        expect(decide([])).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
         expect(decide([]).forceModal).toBeUndefined();
 
         const grant = issueExecutionGrant(plan, { toolUseId: "tool-use-test", toolName: "powershell", decidedPathPolicyRelaxations: pathPolicyRelaxations });

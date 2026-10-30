@@ -630,6 +630,8 @@ jobs:
           }
           node scripts/check-srt-win-integrity.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/fetch-mxc.mjs --arch x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $helper = Join-Path $PWD 'node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
           & $helper install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -657,6 +659,7 @@ jobs:
           src/tools/__tests__/mxc-link-traversal.integration.test.ts
           src/tools/__tests__/mxc-pipe-lifetime.integration.test.ts
           src/permissions/__tests__/asrt-deny-absent-native.test.ts
+          src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           src/permissions/__tests__/windows-deny-acl.test.ts
           src/main/terminal/__tests__/host-shell-integration.test.ts
           src/permissions/__tests__/allowed-directories.test.ts

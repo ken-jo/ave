@@ -398,7 +398,6 @@ describe("permission-review-scenario-board-v2.html contract", () => {
             tool: name,
             source: "builtin",
             category,
-            layer: 6,
             reviewer: expect.objectContaining({
               level: "medium",
               reason: "medium reviewer verdict",

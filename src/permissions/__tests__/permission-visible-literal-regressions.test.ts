@@ -58,7 +58,7 @@ describe("visible literal decision regressions", () => {
     process.stdout.write(`literal path timing ${JSON.stringify(observations)}\n`);
     for (const { median, results } of observations) {
       expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
-      for (const result of results) expect(result).toMatchObject({ decision: "allow", layer: 6 });
+      for (const result of results) expect(result).toMatchObject({ decision: "allow" });
     }
   });
 
@@ -78,7 +78,7 @@ describe("visible literal decision regressions", () => {
     expect(keys[0]).not.toBe(keys[1]);
     expect(keys[0]).toBe("PowerShell(Write-Output '0x10')");
     expect(savedResult).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "ask", layer: 6, reasonCode: "shell-approval" } : { decision: "allow", layer: 3 });
+      ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
     expect(check(saved, "powershell", false, true).decision).toBe(UNPROVEN_STARTUP ? "deny" : "allow");
     expect(other.decision).toBe("ask");
     expect(headless.decision).toBe("deny");
@@ -115,8 +115,8 @@ describe("visible literal decision regressions", () => {
     const headless = check(command, "powershell", false, true);
     process.stdout.write(`literal pipeline timing ${JSON.stringify({ chars: command.length, ...timing, headless })}\n`);
     for (const result of timing.results) expect(result).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "ask", layer: 6, reasonCode: "shell-approval" } : { decision: "allow", layer: 3 });
-    expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", layer: 6, reasonCode: "no-approver" } : { decision: "allow", layer: 3 });
+      ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
+    expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", reasonCode: "no-approver" } : { decision: "allow" });
     expect(timing.median).toBeLessThan(DECISION_COST_TARGET_MS);
   });
 });

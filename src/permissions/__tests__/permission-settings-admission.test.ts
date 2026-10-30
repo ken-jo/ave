@@ -126,3 +126,25 @@ describe("production permission configuration admission", () => {
     expect(current.execute).not.toHaveBeenCalled();
   });
 });
+
+it.each(["strict", "rule", "unrecognized"])("keeps readable policy active while a live %s reviewer setting fails closed at review", async mode => {
+  const manager = await createPermissionManager();
+  manager.setMode("auto");
+  const classify = vi.fn(() => ({ level: "low" as const, reason: "Previous valid reviewer" }));
+  const cache = new VerdictCache(join(directory, "mode-fault-cache.jsonl"));
+  caches.push(cache);
+  setReviewerForTest(manager, { classifier: { classify }, cache });
+  const previous = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: "reviewer-settings-session" });
+  writeFileSync(policyPath, JSON.stringify({ permissions: { additionalDirectories: [project], reviewer: { mode } } }));
+  expect(readPermissionSettings().fault?.kind).toBe("reviewer-mode-invalid");
+  expect(readPermissionSettings().permissions.additionalDirectories).toEqual([project]);
+  expect(manager.checkDetailed("ordinary_read", "builtin", "read")).toMatchObject({ decision: "allow", reasonCode: "ordinary-read" });
+  expect(manager.recheckPermission(previous)).toMatchObject({ decision: "deny", reasonCode: "policy-changed" });
+  for (const headless of [false, true]) {
+    const initial = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: "reviewer-settings-session", headless, rationaleAvailable: true });
+    const review = await manager.dispatchReviewer("network_probe", { invocationId: `live-invalid-mode-${headless}`, sessionId: "reviewer-settings-session", source: "builtin", category: "network", pathFields: [], finalInput: {}, executionCwd: project, allowedDirectories: [project], sensitivePathsAdjacent: [], trustOrigin: "llm-tool-arg", permissionDecision: initial, rationaleAvailable: true });
+    expect(review).toMatchObject({ outcome: "error", verdict: { level: "high" }, judge: { source: "fallback", fallback: "error" } });
+    expect(manager.resolveReviewedPermission(initial, review)).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
+  }
+  expect(classify).not.toHaveBeenCalled();
+});

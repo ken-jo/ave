@@ -25,7 +25,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
-import type { HookTrustRow, ScopedPermissionRuleError } from "../../types.js";
+import type { HookTrustRow, PermissionReviewerDispatchResult, ScopedPermissionRuleError } from "../../types.js";
 import { isPolicyUserEditable, type AdminPolicyDiagnostic, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
@@ -93,7 +93,7 @@ function installApi(
         userAdditions: [],
         effective: [],
       })),
-      reviewerDispatch: vi.fn(async (rawArgs: string) => {
+      reviewerDispatch: vi.fn<(rawArgs: string) => Promise<PermissionReviewerDispatchResult>>(async (rawArgs: string) => {
         if (rawArgs === "show") {
           return reviewerResult("show", "disabled", "deny");
         }
@@ -2374,5 +2374,78 @@ describe("owner-away approval auto-skip", () => {
     fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
     await waitFor(() => expect(settingsApi().updateSettings).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+  });
+});
+
+describe("reviewer mode recovery", () => {
+  function invalidReviewerResult() {
+    return {
+      ...reviewerResult("show", "disabled", "deny"),
+      fault: {
+        kind: "reviewer-mode-invalid" as const,
+        filePath: "/ave-home/config/settings.json",
+        detail: "private unsupported reviewer value",
+      },
+    };
+  }
+
+  it.each([
+    ["en", "llm"], ["en", "disabled"], ["ko", "llm"], ["ko", "disabled"],
+  ] as const)("repairs the saved mode with one %s action to %s", async (locale, recoveredMode) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const api = installApi([[]]);
+      api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
+        if (rawArgs === "show") return invalidReviewerResult();
+        if (rawArgs === `mode ${recoveredMode}`) return reviewerResult("mode", recoveredMode, "deny");
+        throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
+      });
+      const settings = window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn>; updateSettings: ReturnType<typeof vi.fn> };
+      settings.getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 9 } });
+
+      await renderPermissionsTab();
+
+      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultTitle"));
+      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultDescription"));
+      expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+      expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
+      expect(document.body.textContent).not.toContain("private unsupported reviewer value");
+      expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+
+      await act(async () => { fireEvent.click(screen.getByTestId(`reviewer-mode-repair-${recoveredMode}`)); });
+
+      expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", `mode ${recoveredMode}`]);
+      expect(screen.queryByTestId("reviewer-mode-fault")).toBeNull();
+      expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
+      expect(api.permission.setMode).not.toHaveBeenCalled();
+      expect(settings.updateSettings).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("refreshes the saved repair choice while keeping a reconnect error visible", async () => {
+    const api = installApi([[]]);
+    let repaired = false;
+    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
+      if (rawArgs === "show") return repaired ? reviewerResult("show", "llm", "deny") : invalidReviewerResult();
+      if (rawArgs === "mode llm") {
+        repaired = true;
+        return { ok: false, error: "reviewer-rewire-failed: private reviewer transport failure" };
+      }
+      throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
+    });
+    await renderPermissionsTab();
+
+    await act(async () => { fireEvent.click(screen.getByTestId("reviewer-mode-repair-llm")); });
+
+    expect(screen.queryByTestId("reviewer-mode-fault")).toBeNull();
+    expect(screen.getByText(t("permissionsTab.reviewerModeRecoveryRewireFailed"), { exact: false })).toBeVisible();
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm", "show"]);
+    expect(document.body.textContent).not.toContain("private reviewer transport failure");
+    expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+    expect(api.permission.setMode).not.toHaveBeenCalled();
   });
 });

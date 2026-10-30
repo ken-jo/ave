@@ -112,8 +112,8 @@ function assertUnprovenRepository(cwd: string, commands: readonly string[], mark
             ruleSubject: { kind: "shell", dialect, command, cwd }, shellExecution: { runsSandboxed }, headless,
             ...(handle === undefined ? {} : { verifiedShellCommand: handle }),
           });
-          expect.soft(check(false)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
-          expect.soft(check(true)).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+          expect.soft(check(false)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+          expect.soft(check(true)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
         }
         expect.soft(resolveVerifiedExecutable).not.toHaveBeenCalled();
         for (const entry of CHILD_ENTRY_POINTS) expect.soft(childProcess[entry]).not.toHaveBeenCalled();

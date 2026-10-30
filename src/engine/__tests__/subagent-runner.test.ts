@@ -264,7 +264,6 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
     permissionManager.checkDetailed = () => ({
       decision: "ask",
       reason: "fixture requires local authorization",
-      layer: 3,
       forceModal: true,
     });
     const provider = new ScriptedProvider([[

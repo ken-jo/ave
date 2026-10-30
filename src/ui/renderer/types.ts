@@ -130,7 +130,7 @@ export type { AppSettings, MemoryCaptureMode };
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ApprovalRuleSaveResult } from "../../permissions/approval-rule-save.js";
-import type { ReviewerSettingsBlock, ReviewerMode, ReviewerFallbackOnError } from "../../permissions/permission-settings-store.js";
+import type { PermissionSettingsFault, ReviewerSettingsBlock, ReviewerMode, ReviewerFallbackOnError } from "../../permissions/permission-settings-store.js";
 import type { PreviewReadDocumentResult } from "../../shared/preview-document.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule };
 
@@ -1474,6 +1474,7 @@ export type PermissionReviewerDispatchResult =
       ok: true;
       verb: "show" | "mode" | "fallback";
       settings: PermissionReviewerSettings;
+      fault?: PermissionSettingsFault;
       /**
        * Runtime degrade flag — true when the persisted reviewer mode is "llm"
        * but boot wiring could not instantiate the LLM provider (no chat

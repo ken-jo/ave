@@ -74,7 +74,7 @@ describe("reviewer dispatch consumes chain decisions", () => {
       const judge = deciding(decision);
       const current = subject(judge);
       const result = await dispatch(current, lane);
-      expect(result).toMatchObject({ decision: decision === "allow" ? "allow" : lane === "headless" ? "deny" : "ask", layer: 6, reviewer: { route: lane } });
+      expect(result).toMatchObject({ decision: decision === "allow" ? "allow" : lane === "headless" ? "deny" : "ask", reviewer: { route: lane } });
       expect(result.forceModal).toBeUndefined();
       expect(judge.judge).toHaveBeenCalledOnce();
       const reviewedRequest = vi.mocked(judge.judge).mock.calls[0]?.[0];

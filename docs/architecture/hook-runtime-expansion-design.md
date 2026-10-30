@@ -148,7 +148,7 @@ Each proposed event below has a **verified existing fire point**. `Blocking` sta
 | `PostToolUse` *(existing)* | `src/tools/invocation-execution.ts:498` | `toolName` | no | `toolOutput`, `isError` |
 | `PermissionRequest` *(existing)* | `src/tools/invocation-authorization.ts:427/465/814/931` | `toolName` | **yes** | `input`, permission verdict |
 | `PostToolUseFailure` | `src/tools/invocation-execution.ts:520` (execute returned `isError`) | `toolName` | no | `errorMessage`, `durationMs` |
-| `PermissionDenied` | `src/tools/pipeline/audit-writer.ts:191` (all denied terminal audits) | `toolName` | no (observe) | `denyReason { layer, source }` |
+| `PermissionDenied` | `src/tools/pipeline/audit-writer.ts:191` (all denied terminal audits) | `toolName` | no (observe) | `denyReason { source, reason? }` |
 | `UserPromptSubmit` | `src/engine/turn/run-turn.ts:183` (after classify/route, before `queryLoop`) | input text | **yes** (deny → turn refused) | `inputText`*, `inputOrigin`, `route`, `classification` |
 | `SessionStart` | `src/engine/turn/run-turn.ts:169` (`runTurn` entry) | sessionId | no | `sessionMeta` (routine scope / persona) |
 | `Stop` | `src/engine/turn/run-turn.ts:430` (`runTurn` finally, before post-turn chain) | sessionId | no | `stopReason`, `toolCount`, `durationMs` |

@@ -2001,10 +2001,12 @@ export function inspectEmbeddedShellPrograms(event: ShellCommandEvent, suppliedS
 
     const verb = stripCommandPath(knownArgv[0]!);
     const shellOptions = NON_PATH_OPERAND_SPECS.get(verb)?.nestedCommandOptions;
+    // Native executable aliases retain the grammar already selected by the path policy.
+    const literalArgv = process.platform === "win32" && shellOptions ? [verb, ...knownArgv.slice(1)] : knownArgv;
     const inputProgram = event.inputRedirect?.data ? staticShellWord(event.inputRedirect.data) : undefined;
     if (shellOptions && event.inputRedirect?.data && inputProgram === undefined
-      && literalShellBodies(knownArgv, event.dialect, words.map(word => word.source.raw), "").length > 0) decline("unresolved shell input program", event.inputRedirect.data);
-    const bodies = literalShellBodies(knownArgv, event.dialect, words.map(word => word.source.raw), inputProgram);
+      && literalShellBodies(literalArgv, event.dialect, words.map(word => word.source.raw), "").length > 0) decline("unresolved shell input program", event.inputRedirect.data);
+    const bodies = literalShellBodies(literalArgv, event.dialect, words.map(word => word.source.raw), inputProgram);
     for (const body of bodies) {
       if (body.dialect === "powershell") decline("nested shell dialect is not supported", words[0]);
       event.inspectNested(body.text, body.dialect, nestedContext, words[body.index]?.source);

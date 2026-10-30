@@ -658,8 +658,8 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
   return { stages, nestedUpload, dynamic, literalEvaluation, encodedReason };
 }
 
-// Control statements run their `{}` bodies inline in the same scope. Script blocks (`& {}`, `. {}`, ForEach-Object and
-// Where-Object blocks, any scriptblock argument or value) open a scope or depend on runtime, so their bodies are declined.
+// Control statements run their `{}` bodies inline in the same scope. Script blocks and callbacks do not prove
+// reusable argv; separately bound executable bodies may still contribute floor evidence.
 const CONTROL_KEYWORDS = new Set(["if", "elseif", "else", "switch", "foreach", "for", "while", "do", "until", "try", "catch", "finally"]);
 
 /** The control keyword heading this statement, `"clause"` for a switch clause, or undefined for any other command. */
@@ -1005,20 +1005,30 @@ export function proveLiteralPowerShell(input: PowerShellCommandInput): { proven:
 
 function literalStageBodies(stage: StaticStage) {
   const call = stage.command.tokens[0]?.raw === "&";
-  stage = permissionEffectStage(stage);
+  const constructedCall = ["&", "."].includes(stage.command.tokens[0]?.raw ?? "")
+    && /^\[scriptblock\]::Create$/iu.test(stage.command.tokens[1]?.raw ?? "");
+  if (!constructedCall) stage = permissionEffectStage(stage);
   if (!call && stage.command.tokens[0]?.kind === "word" && stage.command.tokens[0].quoted) return [];
   const argument = (token: PsToken): LiteralShellArgument => {
-    if (token.kind === "word") return token.raw === "," ? "," : literalWordValue(token);
-    if (token.open !== "@(" || token.body.length !== 1) return undefined;
+    if (token.kind === "word") {
+      if (!token.quoted && ["&", "."].includes(token.raw)) return token.raw;
+      if (!token.quoted && /^(?:\$ExecutionContext\.InvokeCommand\.InvokeScript|\[scriptblock\]::Create)$/iu.test(token.raw)) return token.raw;
+      return token.raw === "," ? "," : literalWordValue(token);
+    }
+    if (token.open === "{") return { kind: "scriptblock", text: token.raw.slice(1, -1) };
+    if (!["@(", "("].includes(token.open) || token.body.length !== 1) return undefined;
     const pipeline = token.body[0]!;
     if (pipeline.assign.length || pipeline.stages.length !== 1) return undefined;
+    if (token.open === "(" && /^\[scriptblock\]::Create$/iu.test(pipeline.stages[0]!.tokens[0]?.raw ?? "")) {
+      return { kind: "expression", argv: pipeline.stages[0]!.tokens.map(argument) };
+    }
     const values: string[] = [];
     for (const [index, element] of pipeline.stages[0]!.tokens.entries()) {
       const value = element.kind === "word" && element.raw === "," ? "," : literalWordValue(element);
       if (value === undefined || (index % 2 === 1 ? value !== "," : value === ",")) return undefined;
       if (index % 2 === 0) values.push(value);
     }
-    return values;
+    return token.open === "(" ? { kind: "parenthesized", values } : values;
   };
   const argv = stage.command.tokens.map(argument);
   if (argv.every((value): value is string => typeof value === "string")) {
@@ -1276,7 +1286,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     // A literal call target has the same filesystem and credential effects as
     // direct invocation. Keep the original program and rule proof untouched.
     const stage = permissionEffectStage(parsedStage);
-    const literalBodies = literalStageBodies(stage);
+    const literalBodies = literalStageBodies(parsedStage);
     for (const body of literalBodies) {
       const childBudget = { tokens: budget.tokens, depth: budget.depth + 1 };
       if (body.dialect === "powershell") {

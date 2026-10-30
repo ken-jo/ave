@@ -76,8 +76,9 @@ export async function createPermissionManager(): Promise<PermissionManager> {
   registerStandardCategories();
   const permissionManager = new PermissionManager(undefined, () => {
     const fault = readPermissionSettings().fault;
-    return fault === null ? undefined : `Permission settings are unreadable (${fault.kind}: ${fault.filePath}).`;
-  });
+    return fault === null || fault.kind === "reviewer-mode-invalid" ? undefined : `Permission settings are unreadable (${fault.kind}: ${fault.filePath}).`;
+  }, () => readPermissionSettings().fault?.kind === "reviewer-mode-invalid"
+    ? "Permission reviewer settings are invalid; choose llm or disabled in Permissions settings." : undefined);
 
   // Standing allows belong only to host-registry reads without private-data access or network egress.
   permissionManager.setRules([

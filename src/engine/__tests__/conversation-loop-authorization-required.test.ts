@@ -437,7 +437,6 @@ describe("ConversationLoop authorization-required terminal", () => {
     permissionManager.checkDetailed = () => ({
       decision: "allow",
       reason: "fixture pre-authorized spawn",
-      layer: 3,
     });
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,

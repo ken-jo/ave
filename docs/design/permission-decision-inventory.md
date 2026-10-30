@@ -472,3 +472,5 @@ These seven bounded regions account for the owner-approved surface-choice extens
 | Native terminal N | 13 | Admission, genuine taint, exact recipient/rule identity, card and PTY boundaries retained or moved into shared surface handling. |
 | Shared user-owned surface U | 7 | Central choice, live scope, session lifecycle, logical review, native card and final effects accounted for above. |
 | Total | 117 | No unmapped site; overlapping orchestration is identified, not counted as another permission owner. |
+
+The same mapped evidence regions now include exact bounded native-user quotes (`src/shared/rationale-user-quote.ts`) and live-row provenance (`src/engine/conversation-history.ts`). Quote removal or changed context invalidates re-review before execution; neither module grants authority. Reviewer-mode settings faults (`src/permissions/permission-settings-store.ts`, reviewer wiring and the manager live reader) supply review-unavailable evidence to the existing normal-card edge, while preserving readable unrelated settings. These subdivide the existing review/settings regions and do not add decision owners.

@@ -51,9 +51,9 @@ describe("literal exact-rule proof", () => {
         for (const runsSandboxed of [false, true]) {
           const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed } };
           expect(manager.checkDetailed("powershell", "builtin", "shell", null, context)).toMatchObject(admitted
-            ? { decision: "allow", layer: 3 } : { decision: "allow", layer: 6, reasonCode: "allow-mode" });
+            ? { decision: "allow" } : { decision: "allow", reasonCode: "allow-mode" });
           expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true })).toMatchObject(admitted
-            ? { decision: "allow", layer: 3 } : { decision: "allow", layer: 6, reasonCode: "allow-mode" });
+            ? { decision: "allow" } : { decision: "allow", reasonCode: "allow-mode" });
         }
       }
       const floorCommand = "Get-Content ~/.ssh/id_rsa";
@@ -250,9 +250,9 @@ describe("literal exact-rule proof", () => {
     manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
     const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed: false } };
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, context)).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "allow", layer: 6, reasonCode: "allow-mode" } : { decision: "allow", layer: 3 });
+      ? { decision: "allow", reasonCode: "allow-mode" } : { decision: "allow" });
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("allow");
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "allow", layer: 6, reasonCode: "read-only-shell" } : { decision: "allow", layer: 3 });
+      ? { decision: "allow", reasonCode: "read-only-shell" } : { decision: "allow" });
   });
 });

@@ -772,7 +772,10 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       return true;
     });
     provider.beforeNextTurn = () => {
-      loop.queueGuidanceWithDisposition("guide across a compaction", { onDropped: dropped });
+      expect(loop.queueUserGuidance("guide across a compaction")).toBe("queued");
+      const guidance = loop.guidanceQueue[0];
+      if (!guidance) throw new Error("Expected native user guidance");
+      guidance.onDropped = dropped;
     };
 
     await loop.runTurn("start the agent turn", undefined, undefined, {
@@ -788,6 +791,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     ).toHaveLength(0);
     expect(dropped).toHaveBeenCalledTimes(1);
     expect(loop.guidanceQueue).toEqual([]);
+    expect(loop.history.getUserQuoteTexts(loop.sessionId)).not.toContain("guide across a compaction");
   });
 
   it("runs one preflight on a round that both drained a guide and crossed the threshold", async () => {

@@ -12,6 +12,7 @@ import {
   type ReviewerFallbackOnError,
   type ReviewerMode,
   type ReviewerSettingsBlock,
+  type PermissionSettingsFault,
 } from "./permission-settings-store.js";
 import {
   acceptHookTrust,
@@ -227,7 +228,7 @@ export interface PermissionReviewerCommand {
 }
 
 export type PermissionReviewerResult =
-  | { ok: true; verb: "show"; settings: ReviewerSettingsBlock }
+  | { ok: true; verb: "show"; settings: ReviewerSettingsBlock; fault?: PermissionSettingsFault }
   | { ok: true; verb: "mode"; settings: ReviewerSettingsBlock }
   | { ok: true; verb: "fallback"; settings: ReviewerSettingsBlock }
   | { ok: false; error: string };
@@ -284,7 +285,7 @@ export async function dispatchPermissionReviewerCommand(
 ): Promise<PermissionReviewerResult> {
   if (cmd.verb === "show") {
     const current = readPermissionSettings(pathOverride);
-    return { ok: true, verb: "show", settings: current.permissions.reviewer };
+    return { ok: true, verb: "show", settings: current.permissions.reviewer, ...(current.fault ? { fault: current.fault } : {}) };
   }
   if (cmd.verb === "mode") {
     if (!VALID_REVIEWER_MODES.has(cmd.value as ReviewerMode)) {
@@ -341,7 +342,7 @@ export async function dispatchPermissionReviewerCommandWithRewire(
     rewireReviewerAgent?.();
     return result;
   } catch (err) {
-    if (previous.ok) {
+    if (previous.ok && !(previous.verb === "show" && previous.fault)) {
       await setReviewerSettingsPersist({ ...previous.settings }, pathOverride);
       try {
         rewireReviewerAgent?.();

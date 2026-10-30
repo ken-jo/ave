@@ -223,8 +223,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "marks a drained guidance batch as the user's only when every entry came through queueUserGuidance",
   },
   "engine/turn/run-turn.ts": {
-    sites: { runTurn: 1 },
-    classification: "runTurn itself: spends the verified intent and refuses a keyboard origin without one",
+    sites: { runTurn: 1, userKeyboardLiteral: 1 },
+    classification: "runTurn spends the verified intent, refuses an unsigned keyboard origin, and records original user text only after that verification",
   },
   "ipc/domains/chat.ts": {
     sites: { mintUserKeyboardIntent: 5, runStreamedTurn: 4, userKeyboardLiteral: 3, runTurn: 1, queueUserGuidance: 1, queueGuidance: 1 },

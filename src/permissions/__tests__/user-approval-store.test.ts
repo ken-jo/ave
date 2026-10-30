@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rm, mkdir } from "node:fs/promises";
+import { rm, mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 
 // Point AVE_HOME at an isolated temp dir so tests don't touch ~/.ave
@@ -22,6 +22,7 @@ import {
   listApprovals,
   readApprovals,
   canonicalStringify,
+  userApprovalFilePath,
   __resetSessionStoreForTest,
 } from "../user-approval-store.js";
 
@@ -207,6 +208,26 @@ describe("revokeApprovalByKey", () => {
 });
 
 describe("listApprovals", () => {
+  it("omits legacy raw arguments read from disk without interpreting or rewriting them", async () => {
+    const approvedArgs = canonicalStringify({ content: "approved report" });
+    const legacyArgs = canonicalStringify({ password: "legacy-disk-private-credential" });
+    await recordApproval("file_write", approvedArgs, "builtin", {
+      scope: "persistent", verdictAtApproval: "low", nlJustification: null,
+    });
+    const file = await readApprovals();
+    const key = Object.keys(file.approvals)[0]!;
+    const legacyFile = { approvals: { [key]: { ...file.approvals[key], args: legacyArgs } } };
+    await writeFile(userApprovalFilePath(), JSON.stringify(legacyFile), "utf8");
+
+    const rows = await listApprovals();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key, toolName: "file_write", source: "builtin", decision: "allow", scope: "persistent" });
+    expect(rows[0]).not.toHaveProperty("args");
+    expect(JSON.stringify(rows)).not.toContain("legacy-disk-private-credential");
+    expect(await lookupApproval("file_write", legacyArgs, "builtin", undefined, undefined, undefined, SESSION)).toBeNull();
+    expect(JSON.parse(await readFile(userApprovalFilePath(), "utf8"))).toEqual(legacyFile);
+  });
+
   it("lists active (non-revoked) persistent entries", async () => {
     await recordApproval("file_read", '{"path":"/tmp/a"}', "builtin", {
       scope: "persistent",

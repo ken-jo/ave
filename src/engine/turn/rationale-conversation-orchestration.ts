@@ -70,6 +70,7 @@ export interface RationaleCoordinatorFactoryInput {
   readonly rationaleProvenance: RationaleEligibilityProvenance;
   readonly sessionId: string;
   readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
 }
 
 export type RationaleCoordinatorFactory = (
@@ -79,6 +80,7 @@ export type RationaleCoordinatorFactory = (
 // Resolve null or failed factories before splitting legacy batches; execution still revalidates every action.
 export interface RationaleRuntimePreparationInput {
   readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
   readonly coordinatorFactory?: RationaleCoordinatorFactory;
   readonly requestAnchor: RequestAnchor | null;
   readonly rationaleProvenance: RationaleEligibilityProvenance;
@@ -87,6 +89,7 @@ export interface RationaleRuntimePreparationInput {
 
 export interface ExecuteRationaleAwareBatchInput {
   readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
   readonly executor: ToolExecutor;
   readonly toolUses: ToolUseBlock[];
   readonly executeOptions: ConversationExecuteOptions;
@@ -182,6 +185,7 @@ export async function prepareRationaleConversationRuntime(
       rationaleProvenance: input.rationaleProvenance,
       sessionId: input.sessionId,
       userRoleTexts: input.userRoleTexts,
+      getUserRoleTexts: input.getUserRoleTexts,
     });
     return runtime && runtimeMatchesBatch(
       runtime,

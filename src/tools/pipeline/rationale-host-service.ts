@@ -148,6 +148,7 @@ export class RationaleHostService {
           requestAnchor: input.requestAnchor,
           rationaleProvenance: input.rationaleProvenance,
           userRoleTexts: input.userRoleTexts,
+          getUserRoleTexts: input.getUserRoleTexts,
           onReviewerChoiceResolved: this.#onReviewerChoiceResolved,
           ticketStore: this.#ticketStore,
           rationaleScopeReviewer: reviewer,

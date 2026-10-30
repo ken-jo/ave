@@ -44,7 +44,6 @@ describe("ConversationLoop plugin operation governance", () => {
     permissionManager.checkDetailed = () => ({
       decision: "allow",
       reason: "test",
-      layer: 3,
     });
     const activeGeneration = { pluginId, generationId, state: {} };
     const generationAccess = {

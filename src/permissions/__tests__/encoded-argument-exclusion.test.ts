@@ -46,11 +46,11 @@ describe.each(["bash", "powershell"] as const)("conservative launcher argument e
       pattern: canonicalRuleSpecifier(`${dialect === "bash" ? "Bash" : "PowerShell"}(${remembered})`), action: "allow" as const,
     })));
     const context = { ruleSubject: { kind: "shell" as const, dialect, command, cwd }, shellExecution: { runsSandboxed: false } };
-    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
-    expect(manager.checkDetailed(dialect, "builtin", "shell", null, { ...context, headless: true })).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(manager.checkDetailed(dialect, "builtin", "shell", null, { ...context, headless: true })).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     manager.setMode("default");
-    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
-    expect(manager.checkDetailed(dialect, "builtin", "shell", null, { ...context, headless: true })).toMatchObject({ decision: "deny", layer: 6, reasonCode: "no-approver" });
+    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+    expect(manager.checkDetailed(dialect, "builtin", "shell", null, { ...context, headless: true })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     manager.setMode("allow");
   }
 
@@ -119,7 +119,7 @@ describe.each(["bash", "powershell"] as const)("conservative launcher argument e
     expect(pattern).toBeNull();
     manager.setRules([withCurrentShellRuleVersion({ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`, action: "allow" as const })]);
     const context = { ruleSubject: { kind: "shell" as const, dialect, command, cwd }, shellExecution: { runsSandboxed: false }, headless: true };
-    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(encodedPowerShellExecutionReason(["sh", "-c", "pwsh -enc literal"])).not.toBeNull();
     expect(encodedPowerShellExecutionReason(["printf", "data", "pwsh", "-enc", PAYLOAD])).not.toBeNull();
     expect(encodedPowerShellExecutionReason(["pwsh-custom", "-enc", PAYLOAD])).toBeNull();

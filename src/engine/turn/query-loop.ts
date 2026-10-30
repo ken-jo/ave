@@ -400,6 +400,8 @@ export async function queryLoop(
       if (!delivery) return;
       pendingGuidanceDelivery = null;
       const injectionId = delivery.historyMessage?.meta?.hostInjectionId;
+      // Revoke the original native quotation provenance even when compaction replaced its row object.
+      if (delivery.historyMessage !== null) self.history.removeExact(delivery.historyMessage);
       if (injectionId !== undefined) {
         // Remove by durable row ID; compaction can replace object identity and cause duplicate redelivery.
         self.history.removeByHostInjectionId(injectionId);
@@ -1288,6 +1290,7 @@ export async function queryLoop(
             rationaleProvenance: currentRationaleProvenance,
             sessionId: effectiveSessionId,
             userRoleTexts: rationaleUserRoleTexts,
+            getUserRoleTexts: () => self.history.getUserQuoteTexts(effectiveSessionId),
           })
         : null;
       const rationaleOrchestrationEnabled = preparedRationaleRuntime !== null;
@@ -1805,6 +1808,7 @@ export async function queryLoop(
             sessionId: effectiveSessionId,
             rationaleRuntime: preparedRationaleRuntime,
             userRoleTexts: rationaleUserRoleTexts,
+            getUserRoleTexts: () => self.history.getUserQuoteTexts(effectiveSessionId),
             ...(orderedMetaToolHandler
               ? { interceptedMetaToolHandler: orderedMetaToolHandler }
               : {}),

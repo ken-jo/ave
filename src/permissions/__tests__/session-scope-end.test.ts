@@ -59,7 +59,7 @@ describe("ending a conversation's session scope", () => {
     endSessionScopedPermissions("ending", manager);
 
     expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "ending"))).toMatchObject({ decision: "ask" });
-    expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "staying"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "staying"))).toMatchObject({ decision: "allow" });
     expect(listSessionApprovals().map((entry) => entry.sessionId)).toEqual(["staying"]);
     expect(releasedAmong("ending", "staying")).toEqual(["ending"]);
   });
@@ -101,7 +101,7 @@ describe("ending a conversation's session scope", () => {
     endSessionScopedPermissions("child-1", manager);
 
     expect(manager.listSessionRules("root")).toEqual(["Bash(printf ready)"]);
-    expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "child-2"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "child-2"))).toMatchObject({ decision: "allow" });
     expect(listSessionApprovals().map((entry) => entry.sessionId)).toEqual(["root"]);
     expect(releasedAmong("root", "child-1", "child-2")).toEqual(["child-1"]);
   });

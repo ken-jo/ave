@@ -19,6 +19,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   readPermissionSettings,
   type ReviewerSettingsBlock,
+  type PermissionSettingsFile,
 } from "../../permissions/permission-settings-store.js";
 import type { LLMProvider, LLMVendor } from "../../engine/llm/types.js";
 import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
@@ -82,7 +83,7 @@ export interface WireReviewerDeps {
   /** The host's outbound transport; both reviewer adapters run on it. */
   networkFetch: typeof fetch;
   /** Defaults to readPermissionSettings; tests may override the reader. */
-  readSettings?: () => ReviewerSettingsBlock;
+  readSettings?: () => ReviewerSettingsBlock | PermissionSettingsFile;
   /** Use the selected reviewer identity, or the active chat model. */
   readActiveLlm: () => ActiveReviewerLlmIdentity;
   /** An unset selection follows chat; an unavailable explicit selection must fail without substituting rules or another model. */
@@ -101,7 +102,8 @@ export type RuntimeReviewerMode =
   | "disabled"
   | "llm"
   | "llm-degraded-to-rule"
-  | "llm-model-unavailable";
+  | "llm-model-unavailable"
+  | "llm-settings-invalid";
 
 export interface WireReviewerResult {
   classifier: RiskClassifier;
@@ -139,7 +141,10 @@ type EffectiveReviewerSettings = ReviewerSettingsBlock & {
 
 /** Rewiring replaces the classifier while reusing lock-protected backing files and renderer notifications; live rerun closures remain attached to their history store. */
 export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
-  const settings = (deps.readSettings ?? defaultReadSettings)();
+  const loadedSettings = (deps.readSettings ?? defaultReadSettings)();
+  const settings = "permissions" in loadedSettings ? loadedSettings.permissions.reviewer : loadedSettings;
+  const settingsFault = "permissions" in loadedSettings ? loadedSettings.fault : null;
+  const reviewerSettingsInvalid = settingsFault?.kind === "reviewer-mode-invalid" || settingsFault?.kind === "file-unreadable";
   const effectiveSettings = resolveEffectiveSettings(settings, deps);
   const cache = new VerdictCache(deps.verdictCachePath);
   const recentlyDenied = deps.recentlyDenied ?? deps.permissionManager.getRecentlyDenied()
@@ -154,7 +159,12 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   let runtimeMode: RuntimeReviewerMode = settings.mode;
   let degradedToRule = false;
   let unavailableReason: string | undefined;
-  if (settings.mode === "disabled") {
+  if (reviewerSettingsInvalid) {
+    runtimeMode = "llm-settings-invalid";
+    unavailableReason = "Permission reviewer settings are invalid; choose llm or disabled in Permissions settings.";
+    classifier = new RuleBasedRiskClassifier();
+    log.warn("boot: permission reviewer settings are invalid; automatic review is unavailable");
+  } else if (settings.mode === "disabled") {
     classifier = createRiskClassifier({ mode: settings.mode });
     log.info("boot: reviewer wired (mode=%s)", settings.mode);
   } else {
@@ -249,8 +259,8 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   };
 }
 
-function defaultReadSettings(): ReviewerSettingsBlock {
-  return readPermissionSettings().permissions.reviewer;
+function defaultReadSettings(): PermissionSettingsFile {
+  return readPermissionSettings();
 }
 
 /** Resolve identity in every mode because judge wiring and cache scopes also consume it. */

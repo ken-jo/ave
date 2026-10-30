@@ -236,12 +236,12 @@ function formatRevokeError(error: string | undefined, message: string | undefine
     : t("formatIpcError.unknownError"));
 }
 
-function formatReviewerDispatchError(error: string): string {
+function formatReviewerDispatchError(error: string, previousSettingsRestored = true): string {
   if (error.startsWith("reviewer-rewire-failed:")) {
     // The detail is a raw exception message from main: log it, do not show it.
     console.warn("[ave] permissions: reviewer rewire failed:", error.slice("reviewer-rewire-failed:".length).trim());
     return [
-      t("permissionsTab.errorReviewerRewireFailed"),
+      t(previousSettingsRestored ? "permissionsTab.errorReviewerRewireFailed" : "permissionsTab.reviewerModeRecoveryRewireFailed"),
       t("permissionsTab.errorReviewerRewireHint"),
     ].join(" ");
   }
@@ -350,6 +350,8 @@ export function PermissionsTab({
   const [exactDenyBusy, setExactDenyBusy] = useState(false);
   const exactDenyFocusRef = useRef<HTMLDivElement>(null);
   const [reviewer, setReviewer] = useState<PermissionReviewerSettings>(DEFAULT_REVIEWER_SETTINGS);
+  const [reviewerModeInvalid, setReviewerModeInvalid] = useState(false);
+  const [reviewerRecoveryBusy, setReviewerRecoveryBusy] = useState(false);
 
   // ── OS Tool Sandbox ───────────────────────────────
   const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxCapability } =
@@ -409,6 +411,7 @@ export function PermissionsTab({
       setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
       setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
       setReviewer(reviewerRes.settings);
+      setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
       const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
@@ -579,7 +582,7 @@ export function PermissionsTab({
     const targetReviewerMode = reviewerModeForExecMode(m);
     if (
       (m === mode && reviewer.mode === targetReviewerMode) ||
-      modeBusy
+      modeBusy || reviewerRecoveryBusy
     ) {
       return;
     }
@@ -601,8 +604,11 @@ export function PermissionsTab({
         const reviewerRes = await window.ave.permission.reviewerDispatch(`mode ${targetReviewerMode}`);
         if (reviewerRes.ok) {
           setReviewer(reviewerRes.settings);
+          setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
         } else {
-          showBanner("error", formatReviewerDispatchError(reviewerRes.error));
+          const previousSettingsRestored = !reviewerModeInvalid;
+          if (reviewerModeInvalid) await fetchAll();
+          showBanner("error", formatReviewerDispatchError(reviewerRes.error, previousSettingsRestored));
           return;
         }
       }
@@ -610,6 +616,27 @@ export function PermissionsTab({
       showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
     } finally {
       setModeBusy(false);
+    }
+  };
+
+  const handleReviewerModeRecovery = async (reviewerMode: PermissionReviewerMode) => {
+    if (reviewerRecoveryBusy || modeBusy) return;
+    setReviewerRecoveryBusy(true);
+    try {
+      const result = await window.ave.permission.reviewerDispatch(`mode ${reviewerMode}`);
+      if (!result.ok) {
+        await fetchAll();
+        showBanner("error", formatReviewerDispatchError(result.error, false));
+        return;
+      }
+      setReviewer(result.settings);
+      setReviewerModeInvalid(result.fault?.kind === "reviewer-mode-invalid");
+      showBanner("warn", t("permissionsTab.reviewerModeRecovered"));
+    } catch (error) {
+      await fetchAll();
+      showBanner("error", t("permissionsTab.errorReviewerChangeError", { message: thrownErrorText("reviewer mode recovery", error) }));
+    } finally {
+      setReviewerRecoveryBusy(false);
     }
   };
 
@@ -1037,6 +1064,29 @@ export function PermissionsTab({
           </div>
         </SettingsSection>
 
+        {reviewerModeInvalid ? (
+          <div
+            className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-3 text-sm"
+            data-testid="reviewer-mode-fault"
+            role="alert"
+          >
+            <p className="font-medium">{t("permissionsTab.reviewerModeFaultTitle")}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("permissionsTab.reviewerModeFaultDescription")}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button type="button" size="sm" disabled={reviewerRecoveryBusy || modeBusy}
+                data-testid="reviewer-mode-repair-llm"
+                onClick={() => void handleReviewerModeRecovery("llm")}>
+                {t("permissionsTab.reviewerModeRepairLlm")}
+              </Button>
+              <Button type="button" size="sm" variant="outline" disabled={reviewerRecoveryBusy || modeBusy}
+                data-testid="reviewer-mode-repair-disabled"
+                onClick={() => void handleReviewerModeRecovery("disabled")}>
+                {t("permissionsTab.reviewerModeRepairDisabled")}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
         <PermissionJudgeContent />
 
         {/* ── Section A: Permission Policy Preset ── */}
@@ -1047,7 +1097,7 @@ export function PermissionsTab({
         >
           <RadioGroup
             value={mode}
-            disabled={modeBusy}
+            disabled={modeBusy || reviewerRecoveryBusy}
             aria-label={t("permissionsTab.policyAriaLabel")}
             onValueChange={(value) => {
               if (!isExecutionMode(value)) return;

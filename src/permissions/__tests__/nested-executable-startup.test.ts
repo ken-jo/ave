@@ -38,14 +38,14 @@ describe("nested executable startup requires more than argv", () => {
       manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
       for (const sandboxed of [false, true]) {
         expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed))
-          .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+          .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
         expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed, true))
-          .toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
+          .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
         manager.setMode("default");
         expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed))
-          .toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
+          .toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
         expect(checkShellPermission(manager, cwd, "nested-startup", command, dialect, sandboxed, true))
-          .toMatchObject({ decision: "deny", layer: 6, reasonCode: "no-approver" });
+          .toMatchObject({ decision: "deny", reasonCode: "no-approver" });
         manager.setMode("allow");
       }
     }

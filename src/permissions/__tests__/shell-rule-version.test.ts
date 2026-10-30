@@ -62,7 +62,7 @@ describe("stored shell rule format versions", () => {
       expect(manager.checkDetailed("bash", "builtin", "shell", null, {
         ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
         shellExecution: { runsSandboxed: false }, headless,
-      })).toMatchObject({ decision: headless ? "deny" : "ask", layer: 6 });
+      })).toMatchObject({ decision: headless ? "deny" : "ask" });
     }
     expect(readFileSync(file, "utf8")).toBe(original);
     expect((await manager.listScopedRules()).rules[0]).not.toHaveProperty("invalidReason");
@@ -78,15 +78,15 @@ describe("stored shell rule format versions", () => {
     writeUser(file, [rule]);
     const manager = new PermissionManager(file);
     await manager.loadRulesFromFile();
-    for (const headless of [false, true]) expect(check(manager, dialect, cwd, headless)).toMatchObject({ decision: headless ? "deny" : "ask", layer: 6 });
+    for (const headless of [false, true]) expect(check(manager, dialect, cwd, headless)).toMatchObject({ decision: headless ? "deny" : "ask" });
     manager.setRules([rule]);
-    for (const headless of [false, true]) expect(check(manager, dialect, cwd, headless)).toMatchObject({ decision: headless ? "deny" : "ask", layer: 6 });
+    for (const headless of [false, true]) expect(check(manager, dialect, cwd, headless)).toMatchObject({ decision: headless ? "deny" : "ask" });
     const location = projectRulesLocation(root, cwd);
     mkdirSync(dirname(location.filePath), { recursive: true });
     writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [rule], updatedAt: "" }));
     const projectReader = new PermissionManager(file);
     await projectReader.ensureProjectRulesLoaded(cwd);
-    for (const headless of [false, true]) expect(check(projectReader, dialect, cwd, headless, { projectRulesCwd: cwd })).toMatchObject({ decision: headless ? "deny" : "ask", layer: 6 });
+    for (const headless of [false, true]) expect(check(projectReader, dialect, cwd, headless, { projectRulesCwd: cwd })).toMatchObject({ decision: headless ? "deny" : "ask" });
     expect((await readPermissionsFile(file))?.rules).toEqual([rule]);
     expect((await readProjectRulesFile(location))?.rules).toEqual([rule]);
   });
@@ -99,14 +99,14 @@ describe("stored shell rule format versions", () => {
     if (scope === "session") manager.addSessionRule("conversation", patternFor(dialect));
     else await manager.addRulePersist({ pattern: patternFor(dialect), action: "allow" }, scope === "project" ? { kind: "project", projectCwd: cwd } : { kind: "user" });
     const extra = scope === "session" ? { sessionId: "conversation" } : scope === "project" ? { projectRulesCwd: cwd } : {};
-    for (const headless of [false, true]) expect(check(manager, dialect, cwd, headless, extra)).toMatchObject({ decision: "allow", layer: 3 });
+    for (const headless of [false, true]) expect(check(manager, dialect, cwd, headless, extra)).toMatchObject({ decision: "allow" });
     if (scope !== "session") {
       const stored = scope === "project" ? await readProjectRulesFile(projectRulesLocation(root, cwd)) : await readPermissionsFile(file);
       expect(stored?.rules).toEqual([{ pattern: patternFor(dialect), action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
       const restarted = new PermissionManager(file);
       await restarted.loadRulesFromFile();
       if (scope === "project") await restarted.ensureProjectRulesLoaded(cwd);
-      expect(check(restarted, dialect, cwd, true, extra)).toMatchObject({ decision: "allow", layer: 3 });
+      expect(check(restarted, dialect, cwd, true, extra)).toMatchObject({ decision: "allow" });
     }
   });
 
@@ -126,7 +126,7 @@ describe("stored shell rule format versions", () => {
     await manager.addRulePersist(stale, scope === "project" ? { kind: "project", projectCwd: cwd } : { kind: "user" });
     const stored = scope === "user" ? await readPermissionsFile(file) : await readProjectRulesFile(projectRulesLocation(root, cwd));
     expect(stored?.rules).toEqual([withCurrentShellRuleVersion(stale)]);
-    expect(check(manager, dialect, cwd, true, scope === "project" ? { projectRulesCwd: cwd } : {})).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check(manager, dialect, cwd, true, scope === "project" ? { projectRulesCwd: cwd } : {})).toMatchObject({ decision: "allow" });
   });
 
   it.each(["bash", "powershell"] as const)("preserves stale %s allows during unrelated writes", async (dialect) => {
