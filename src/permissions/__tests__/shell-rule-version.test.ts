@@ -47,7 +47,7 @@ function directDecision(dialect: Dialect, rule: PermissionRule) {
   const command = commandFor(dialect);
   return dialect === "bash"
     ? evaluateShellSubject({ command, exactAllowOnly: true }, [rule]).decision
-    : evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, [rule]).decision;
+    : evaluatePowerShellSubject({ command, exactAllowOnly: true }, [rule]).decision;
 }
 
 describe("stored shell rule format versions", () => {

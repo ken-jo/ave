@@ -57,7 +57,7 @@ export interface EffectGateContext {
   // Invocation-scoped `allow-once` descriptor keys (discarded when the frame pops).
   readonly onceGrants: Set<string>;
   readonly executionCwd?: string;
-  readonly permissionContext?: Pick<PermissionCheckContext, "admissionDenial" | "floor" | "manualRerun" | "ownerUnattended" | "remoteControllerAuthority" | "permissionStoreError">;
+  readonly permissionContext?: Pick<PermissionCheckContext, "admissionDenial" | "floor" | "exfiltration" | "manualRerun" | "ownerUnattended" | "remoteControllerAuthority" | "permissionStoreError">;
   readonly abortSignal?: AbortSignal;
 }
 

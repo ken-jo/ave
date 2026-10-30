@@ -22,7 +22,7 @@ interface ActionRow {
 
 const MODES: readonly Mode[] = ["strict", "default", "auto", "allow"];
 const BOUNDARIES: readonly Boundary[] = ["inside-project", "outside-project"];
-const FLOORS = [undefined, "protected-path", "critical-delete", "project-escape", "exfiltration", "other-principal"] as const;
+const FLOORS = [undefined, "protected-path", "critical-delete", "project-escape", "other-principal"] as const;
 const RULES = ["none", "deny", "ask", "allow", "remembered", "ask+allow"] as const;
 const ACTIONS: readonly ActionRow[] = [
   { name: "ordinary file read", tool: { name: "read_file", source: "builtin", kind: "read" }, inside: ["allow", "allow", "allow", "allow"], outside: ["allow", "allow", "allow", "allow"] },
@@ -68,7 +68,7 @@ for (const action of ACTIONS) {
     for (const [modeIndex, mode] of MODES.entries()) {
       for (const headless of [false, true]) {
         for (const floor of FLOORS) {
-          for (const rule of RULES) {
+          for (const exfiltration of [false, true]) for (const rule of RULES) {
             const fileName = action.fileName ?? "item";
             const path = boundary === "inside-project" ? `/workspace/project/${fileName}` : `/outside/${fileName}`;
             const paths = { lexical: path, canonical: path };
@@ -81,20 +81,22 @@ for (const action of ACTIONS) {
               ...(action.checkpoint === undefined ? {} : { fileWrite: { insideProject: boundary === "inside-project", checkpointAvailable: action.checkpoint } }),
               ...(floor ? { floor: { code: floor, reason: "Mandatory one-time approval." } } : {}),
               rules: RULE_EVIDENCE[rule],
+              ...(exfiltration ? { exfiltration: { reason: "An upload signal was observed." } } : {}),
             };
             // Owner precedence: deny rules; mandatory floors; explicit ask rules;
-            // explicit/remembered allow; the action's matrix cell; human availability.
+            // explicit/remembered allow; ordinary exfiltration guardrail; the action's matrix cell; human availability.
             let expected: ContractCell | "ask-forced" | "deny";
             if (rule === "deny") expected = "deny";
             else if (floor) expected = "ask-forced";
-            else if (rule === "ask" || rule === "ask+allow") expected = ASK_RULE_CELLS[modeIndex];
+            else if (rule === "ask" || rule === "ask+allow") expected = exfiltration && headless ? "deny" : ASK_RULE_CELLS[modeIndex];
             else if (rule === "allow" || rule === "remembered") expected = "allow";
+            else if (exfiltration) expected = headless ? "deny" : ASK_RULE_CELLS[modeIndex];
             else expected = (boundary === "inside-project" ? action.inside : action.outside)[modeIndex];
             const reviewRequired = expected === "reviewer";
             if (reviewRequired) expected = "ask";
             else if (headless && (expected === "ask" || expected === "ask-forced")) expected = "deny";
             CASES.push({
-              name: `${action.name} / ${boundary} / ${mode} / ${headless ? "headless" : "human"} / ${floor ?? "no-floor"} / ${rule}`,
+              name: `${action.name} / ${boundary} / ${mode} / ${headless ? "headless" : "human"} / ${floor ?? "no-floor"} / ${exfiltration ? "guardrail" : "no-guardrail"} / ${rule}`,
               request,
               expected: expected as ExpectedOutcome,
               reviewRequired,
@@ -121,10 +123,10 @@ const REVIEW_RESULTS: readonly {
 ];
 
 describe("permission contract Cartesian matrix", () => {
-  it("covers every action, boundary, mode, availability, floor and rule combination", () => {
+  it("covers every action, boundary, mode, availability, floor, guardrail and rule combination", () => {
     expect(ACTIONS).toHaveLength(18);
-    expect(CASES).toHaveLength(10_368);
-    expect(new Set(CASES.map((entry) => entry.name)).size).toBe(10_368);
+    expect(CASES).toHaveLength(17_280);
+    expect(new Set(CASES.map((entry) => entry.name)).size).toBe(17_280);
   });
 
   it.each(CASES)("$name", ({ request, expected, reviewRequired }) => {

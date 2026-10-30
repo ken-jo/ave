@@ -73,8 +73,8 @@ interface TimingCase {
   length: number;
   command: string;
   rules: string[];
-  expected: "allow" | "ask" | "deny";
-  reasonCode: "protected-path" | "rule-allow" | "allow-mode" | "shell-analysis-limit";
+  expected: "allow" | "ask";
+  reasonCode: "protected-path" | "rule-allow" | "allow-mode";
 }
 
 const COMMIT_COMMAND = commitCommand(1_500);
@@ -82,16 +82,18 @@ const LITERAL_COMMAND = literalCommand(1_500);
 const NPM_COMMAND = npmCommand(1_500);
 const SHORT_PIPELINE = pipelineCommand(1_800);
 const LONG_PIPELINE = pipelineCommand(6_500);
+// Startup proof still controls rule reuse; it does not create a security floor.
+const PIPELINE_REASON = process.platform === "win32" ? "allow-mode" : "rule-allow";
 const TIMING_CASES: readonly TimingCase[] = [
   ...[false, true].flatMap((runsSandboxed): TimingCase[] => [
-    { name: "commit-short-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: COMMIT_COMMAND, rules: [COMMIT_COMMAND], expected: "deny" as const, reasonCode: "shell-analysis-limit" },
-    { name: "quoted-literal-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: LITERAL_COMMAND, rules: [LITERAL_COMMAND], expected: "deny" as const, reasonCode: "shell-analysis-limit" },
+    { name: "commit-short-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: COMMIT_COMMAND, rules: [COMMIT_COMMAND], expected: "ask" as const, reasonCode: "protected-path" },
+    { name: "quoted-literal-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: LITERAL_COMMAND, rules: [LITERAL_COMMAND], expected: "allow" as const, reasonCode: "rule-allow" },
     { name: "npm-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: NPM_COMMAND, rules: [NPM_COMMAND], expected: "allow" as const, reasonCode: "allow-mode" },
-    { name: "pipeline-1800", dialect: "powershell" as const, runsSandboxed, length: 1_800, ...SHORT_PIPELINE, expected: "deny", reasonCode: "shell-analysis-limit" },
+    { name: "pipeline-1800", dialect: "powershell" as const, runsSandboxed, length: 1_800, ...SHORT_PIPELINE, expected: "allow", reasonCode: PIPELINE_REASON },
   ]),
   { name: "heredoc-quoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, true), rules: [], expected: "allow", reasonCode: "allow-mode" },
   { name: "heredoc-unquoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, false), rules: [], expected: "allow", reasonCode: "allow-mode" },
-  { name: "pipeline-6500", dialect: "powershell", runsSandboxed: true, length: 6_500, ...LONG_PIPELINE, expected: "deny", reasonCode: "shell-analysis-limit" },
+  { name: "pipeline-6500", dialect: "powershell", runsSandboxed: true, length: 6_500, ...LONG_PIPELINE, expected: "allow", reasonCode: "allow-mode" },
 ];
 
 describe("ordinary complete manager timing", () => {

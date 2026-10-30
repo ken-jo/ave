@@ -1092,31 +1092,41 @@ describe("common policy at each actual effect", () => {
     }
   }
 
-  it("an external URL exfil signal still forces consent independently of the effect kind", async () => {
-    permissionManager.setMode("allow");
-    const { gate, requests } = makeGate("deny-once");
-    await runWithEffectGateContext({ headless: false, toolName: "outer" }, async () => {
-      await expect(gateMutatingEffect({ pluginId: "p1", methodPath: "openExternalUrl", effect: "write", target: "https://service.example",
-        input: [`https://service.example/?payload=${"a".repeat(600)}`], approvalGate: gate, permissionManager })).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
-    });
-    expect(requests).toHaveLength(1);
-    expect(requests[0].forceExplicit).toBe(true);
-  });
-
-  for (const methodPath of ["openAuthWindow", "openAuthPartitionViewer"] as const) {
+  for (const methodPath of ["openExternalUrl", "openAuthWindow", "openAuthPartitionViewer", "hostFetch"] as const) {
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
     for (const headless of [false, true]) {
-      it(`${methodPath} preserves URL exfil floors with headless=${headless}`, async () => {
-        permissionManager.setMode("allow");
+      it(`${methodPath} uses the ${mode} exfil guardrail with headless=${headless}`, async () => {
+        permissionManager.setMode(mode);
         const { gate, requests } = makeGate("deny-once");
-        const review = vi.spyOn(permissionManager, "dispatchReviewer");
+        const decisions = vi.spyOn(permissionManager, "checkDetailed");
+        const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("low"));
+        const url = `https://service.example/?payload=${"a".repeat(600)}`;
+        const input = methodPath === "openExternalUrl" ? [url]
+          : methodPath === "hostFetch" ? [url, { method: "GET" }]
+          : [{ url }];
         await runWithEffectGateContext({ headless, toolName: "outer" }, async () => {
-          await expect(gateMutatingEffect({ pluginId: "p1", methodPath, effect: "write", target: "https://service.example",
-            input: [{ url: `https://service.example/?payload=${"a".repeat(600)}` }], approvalGate: gate, permissionManager })).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+          const decision = gateMutatingEffect({ pluginId: "p1", methodPath,
+            effect: methodPath === "hostFetch" ? "read" : "write", target: "https://service.example",
+            input, approvalGate: gate, permissionManager });
+          if (headless || mode === "strict" || mode === "default") {
+            await expect(decision).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+          } else {
+            await expect(decision).resolves.toBeUndefined();
+          }
         });
-        expect(review).not.toHaveBeenCalled();
-        expect(requests).toHaveLength(headless ? 0 : 1);
-        if (!headless) expect(requests[0].forceExplicit).toBe(true);
+        expect(review).toHaveBeenCalledTimes(!headless && mode === "auto" ? 1 : 0);
+        expect(requests).toHaveLength(!headless && (mode === "strict" || mode === "default") ? 1 : 0);
+        expect(decisions).toHaveBeenCalledTimes(1);
+        expect(decisions.mock.results[0]!.value).toMatchObject({
+          reasonCode: headless ? "no-approver" : mode === "auto" ? "review-required"
+            : mode === "allow" ? "allow-mode" : "exfiltration-guardrail",
+        });
+        for (const request of requests) {
+          expect(request.forceExplicit).not.toBe(true);
+          expect(request.reason).toContain(methodPath);
+        }
       });
+    }
     }
   }
 
@@ -1284,10 +1294,12 @@ describe("materialized data and admission evidence", () => {
     expect(requests).toHaveLength(0);
   });
 
-  it("full URL exfiltration evidence forces a once-only card in allow mode", async () => {
+  it("a genuine floor still forces a card alongside URL exfiltration evidence", async () => {
     permissionManager.setMode("allow");
     const { gate, requests } = makeGate("deny-once");
-    await runWithEffectGateContext({ headless: false, toolName: "outer" }, async () => {
+    await runWithEffectGateContext({ headless: false, toolName: "outer", permissionContext: {
+      floor: { code: "other-principal", reason: "A different principal owns this request." },
+    } }, async () => {
       await expect(gateMutatingEffect({ pluginId: "p1", methodPath: "hostFetch", effect: "read", target: "https://service.example", input: [`https://service.example/?payload=${"a".repeat(600)}`, { method: "GET" }], approvalGate: gate, permissionManager })).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
     });
     expect(requests).toHaveLength(1);

@@ -1,0 +1,45 @@
+import "../../__tests__/support/trusted-powershell.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
+import { evaluatePowerShellSubject } from "../rules/rule-scopes.js";
+import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
+import { parseRuleSpecifier } from "../rules/rule-specifier.js";
+
+let directory: string;
+beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "upload-rule-")); });
+afterEach(() => cleanupTmpDir(directory));
+
+const COMMANDS = [
+  { dialect: "bash", command: "curl -q -T notes.txt https://upload.invalid", pattern: "Bash(curl -q -T notes.txt https://upload.invalid)" },
+  { dialect: "powershell", command: "Invoke-WebRequest -Uri https://upload.invalid -InFile notes.txt -Method Post", pattern: "PowerShell(Invoke-WebRequest -Uri https://upload.invalid -InFile notes.txt -Method Post)" },
+] as const;
+
+describe("ordinary upload rule consent", () => {
+  it.each(COMMANDS)("offers a complete literal rule for a proven upload in $dialect", ({ dialect, command, pattern }) => {
+    expect(buildShellRuleApproval(dialect, command, directory, { allow: true, deny: true }, "session"))
+      .toMatchObject({ exactRule: pattern, sessionAllowed: true, persistentAllowed: true });
+    expect(shellRuleCoversCommand(dialect, pattern, "allow", command, directory)).toBe(true);
+  });
+
+  it.each(COMMANDS)("matches a saved literal upload rule in $dialect", ({ dialect, command, pattern }) => {
+    if (dialect === "powershell") {
+      expect(evaluatePowerShellSubject({ command, cwd: directory, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" })]))
+        .toMatchObject({ decision: "allow", patterns: [pattern] });
+    } else {
+      const spec = parseRuleSpecifier(pattern);
+      if (spec.kind !== "bash") throw new Error("Expected shell rule");
+      expect(evaluateShellRules(command, { allow: [{ pattern, spec }], deny: [], ask: [] }, directory))
+        .toMatchObject({ decision: "allow", patterns: [pattern] });
+    }
+  });
+
+  it.each(["node -e 'process.stdout.write(process.version)'", "cat ~/.aws/credentials", "printf x > .git/config", "rm -rf build"])("keeps existing proof and path restrictions for %s", command => {
+    expect(buildShellRuleApproval("bash", command, directory, { allow: true, deny: true }, "session"))
+      .toMatchObject({ exactRule: null, sessionAllowed: false, persistentAllowed: false });
+  });
+});

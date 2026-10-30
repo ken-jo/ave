@@ -1,15 +1,14 @@
-import { bindShellSyntaxSnapshot, shellSyntaxObservation } from "../shared/shell-syntax-cache.js";
 import { readShellOptionValue as readOptionValue } from "../shared/shell-option-value.js";
 import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
-import { literalShellBodies, literalShellPathFacts, literalShellPathSnapshot, shellLiteralFragments, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
+import { literalShellBodies, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
 import { isAbsolute, join } from "node:path";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
-import { displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
+import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
@@ -21,7 +20,6 @@ import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE, type ShellOptionTable } from "./shell-option-tables.js";
 import { shellFloorParserBudgetExceeded } from "../permissions/rules/shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../shared/shell-analysis-limits.js";
-import { proveStaticArgv } from "../permissions/rules/shell-argument-grammar.js";
 import { POWERSHELL_COMMAND_POLICIES } from "../permissions/rules/powershell-command-policy.js";
 
 type ShellPathPolicyViolationKind =
@@ -169,10 +167,6 @@ interface NonPathOperandSpec {
   programSuppliedBy?: ReadonlySet<string>;
   // Re-enter shell-command option values through full policy rather than exempting executable payloads.
   nestedCommandOptions?: ReadonlySet<string>;
-  nestedCommandTail?: true;
-  stdinCommand?: true;
-  slashOptions?: true;
-  nestedCommandDialect?: "bash" | "posix" | "powershell";
 }
 
 // Keep code options interpreter-specific; identical letters can mean boolean flags or config files elsewhere.
@@ -220,19 +214,7 @@ const NON_PATH_OPERAND_SPECS: ReadonlyMap<string, NonPathOperandSpec> = new Map<
   ...(["sh", "bash", "zsh", "dash", "ksh"] as const).map((verb) => [verb, {
     valueOptions: SHELL_CODE_OPTIONS,
     nestedCommandOptions: SHELL_CODE_OPTIONS,
-    stdinCommand: true,
-    nestedCommandDialect: verb === "bash" ? "bash" : "posix",
   }] as [string, NonPathOperandSpec]),
-  ...(["pwsh", "powershell"] as const).map(verb => [verb, {
-    unsupportedExecution: true,
-    valueOptions: new Set(["-c", "-C", "-Command", "-command"]),
-    nestedCommandOptions: new Set(["-c", "-C", "-Command", "-command"]),
-    nestedCommandTail: true,
-    nestedCommandDialect: "powershell" as const,
-  }] as [string, NonPathOperandSpec]),
-  ["cmd", { unsupportedExecution: true, slashOptions: true,
-    valueOptions: new Set(["/c", "/C", "/k", "/K"]), nestedCommandOptions: new Set(["/c", "/C", "/k", "/K"]),
-    nestedCommandTail: true, nestedCommandDialect: "powershell" }],
   ...(["python", "python2", "python3"] as const).map((verb) => [verb, {
     valueOptions: PYTHON_CODE_OPTIONS,
   }] as [string, NonPathOperandSpec]),
@@ -964,7 +946,7 @@ function classifyFindstrOperandSlots(argv: readonly string[], verbIndex: number)
   return { nonPathIndices, extraCandidates, nestedCommands: [], dynamicExecution: null, operandEffect: "read" };
 }
 
-function classifyOperandSlots(argv: readonly string[], collectUnsupportedRoles = false): OperandSlotClassification {
+function classifyOperandSlots(argv: readonly string[]): OperandSlotClassification {
   const skip = new Set<number>();
   const extraCandidates: ShellPathCandidate[] = [];
   const nestedCommands: { value: string; index: number }[] = [];
@@ -1066,7 +1048,7 @@ function classifyOperandSlots(argv: readonly string[], collectUnsupportedRoles =
   }
   const spec = NON_PATH_OPERAND_SPECS.get(verb);
   if (!spec) return empty;
-  if (spec.unsupportedExecution && !collectUnsupportedRoles) return { ...empty, dynamicExecution: "nested shell dialect is not supported" };
+  if (spec.unsupportedExecution) return { ...empty, dynamicExecution: "nested shell dialect is not supported" };
   const valueOptions = new Set([...spec.valueOptions ?? [], ...spec.pathValueOptions ?? []]);
 
   // A normally data-only slot stays path-checked when its value opens or executes content.
@@ -1091,7 +1073,7 @@ function classifyOperandSlots(argv: readonly string[], collectUnsupportedRoles =
       optionsEnded = true;
       continue;
     }
-    if (!optionsEnded && (token.startsWith("-") || spec.slashOptions && token.startsWith("/")) && token.length > 1) {
+    if (!optionsEnded && token.startsWith("-") && token.length > 1) {
       // The numeric key-size form is data; other algorithm operands can load files.
       if (verb === "openssl" && token === "-newkey" && /^rsa:\d+$/.test(argv[i + 1] ?? "")) {
         skip.add(++i);
@@ -1630,7 +1612,6 @@ type PowerShellPathInspector = (command: string, cwd: string, environment: Reado
   unproven: boolean;
   unknownProtectedWrite?: string;
   evidenceLimitExceeded?: true;
-  credentialStore?: string | null;
 };
 
 interface ShellWriteTargetProof {
@@ -1662,11 +1643,9 @@ export function findShellPathPolicyViolation(
   literalBudget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 },
   inspectPowerShellBody?: PowerShellPathInspector,
   argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean },
-  credentialStoreEvidence?: { reason?: string },
 ): ShellPathPolicyViolation | null {
-  const pathSnapshot = evidence ? literalShellPathSnapshot(literalBudget, sandboxRoot) : undefined;
-  const evidenceForPath = pathSnapshot?.evidenceForPath;
-  const resolvedEvidencePaths = pathSnapshot?.resolved;
+  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot) : undefined;
+  const resolvedEvidencePaths = evidence ? new Map<string, string>() : undefined;
   let unresolvedEvidence: ShellPathPolicyViolation | null = null;
   if (!evidence) {
     const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
@@ -1706,7 +1685,7 @@ export function findShellPathPolicyViolation(
     }
     let absolute: string;
     try {
-      const key = resolvedEvidencePaths ? JSON.stringify(["bash", cwd ?? sandboxRoot, path]) : undefined;
+      const key = resolvedEvidencePaths ? JSON.stringify([cwd, path]) : undefined;
       absolute = key === undefined ? resolveShellFilesystemPath(path, cwd ?? sandboxRoot, { dialect: "bash" })
         : resolvedEvidencePaths!.get(key) ?? resolveShellFilesystemPath(path, cwd ?? sandboxRoot, { dialect: "bash" });
       if (key !== undefined) resolvedEvidencePaths!.set(key, absolute);
@@ -1769,21 +1748,13 @@ export function findShellPathPolicyViolation(
         }
       }, command(event) {
       const {node, effective} = event;
-      const bodySlots = event.argv.every((value): value is string => typeof value === "string") ? shellExecutableBodySlots(event.argv) : [];
-      const bodyProof = proveStaticArgv(event.argv, "bash", effective.words.map(word => word.source.raw));
-      if (evidence && !argumentView?.literalBodiesAlreadyInspected) for (const body of literalShellBodies(event.argv, effective.words.map(word => word.source.raw), undefined, shellLiteralFragments(effective.words))) {
-        const childBudget = { tokens: literalBudget.tokens, depth: literalBudget.depth + 1, literalBody: true as const };
-        const executed = bodyProof.kind === "literal-evaluation" && bodyProof.payloadIndexes.includes(body.index)
-          || bodySlots.some(candidate => candidate.index === body.index && candidate.dialect === body.dialect);
-        if (body.dialect === "powershell" && !inspectPowerShellBody) throw new Error("Missing cross-dialect shell path inspector");
-        const child = body.dialect === "powershell"
-          ? inspectPowerShellBody!(body.text, event.cwd ?? cwd, event.environment, childBudget)
-          : inspectPosixShellPermissionPaths(body.text, event.cwd ?? cwd, { dialect: "bash", environment: event.environment }, undefined, childBudget, inspectPowerShellBody);
-        const retained = literalShellPathFacts(child, executed);
-        evidence.push(...retained.paths);
-        if (retained.credentialStore && credentialStoreEvidence) credentialStoreEvidence.reason ??= retained.credentialStore;
-        if (retained.unknownProtectedWrite) onUnknownWrite?.(retained.unknownProtectedWrite);
-        if (retained.evidenceLimitExceeded) throw new ShellExecutionError("Shell analysis total token limit exceeded");
+      if (evidence && !argumentView?.literalBodiesAlreadyInspected) for (const body of literalShellBodies(event.argv, event.dialect, effective.words.map(word => word.source.raw))) {
+        if (body.dialect !== "powershell") continue;
+        if (!inspectPowerShellBody) throw new Error("Missing cross-dialect shell path inspector");
+        const nested = inspectPowerShellBody(body.text, event.cwd ?? cwd, event.environment, { tokens: literalBudget.tokens, depth: literalBudget.depth + 1 });
+        evidence.push(...nested.paths);
+        if (nested.unknownProtectedWrite) onUnknownWrite?.(nested.unknownProtectedWrite);
+        if (nested.evidenceLimitExceeded) throw new ShellExecutionError("Shell analysis total token limit exceeded");
       }
       const outerKnownArgv = event.argv.map((argument,index) => argument ?? displayShellWord(effective.words[index]!));
       const outerSlots = classifyOperandSlots(outerKnownArgv);
@@ -1943,23 +1914,16 @@ export function inspectPosixShellPermissionPaths(command: string, cwd: string, f
   unproven: ShellPathPolicyViolation | null;
   unknownProtectedWrite?: string;
   resolvedWriteTargetsOnly?: true;
-  credentialStore?: string;
 } {
+  prepared ??= { command, analysis: analyzeShell(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }) };
   if (literalBudget.depth >= 16 || literalBudget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: { kind: "analysis-limit", reason: "Shell analysis total token limit exceeded" } };
-  if (prepared !== undefined) bindShellSyntaxSnapshot(prepared, literalBudget.tokens);
-  if (prepared === undefined) {
-    const observation = shellSyntaxObservation(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }, literalBudget.tokens);
-    if ("parserError" in observation) throw observation.parserError;
-    prepared = { command, analysis: observation.analysis };
-  }
   const paths: PermissionPathEvidence[] = [];
   let unknownProtectedWrite: string | undefined;
-  const credentialStoreEvidence: { reason?: string } = {};
   const targetProof: ShellWriteTargetProof = { dynamicWords: new Set(), boundTargets: new Set(), commands: 0, simpleDataCommand: true };
-  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof, prepared, literalBudget, inspectPowerShellBody, argumentView, credentialStoreEvidence);
+  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof, prepared, literalBudget, inspectPowerShellBody, argumentView);
   const resolvedWriteTargetsOnly = unproven === null && !unknownProtectedWrite && targetProof.commands > 0 && targetProof.simpleDataCommand
     && targetProof.dynamicWords.size > 0 && [...targetProof.dynamicWords].every((word) => targetProof.boundTargets.has(word));
-  return { paths, unproven, ...(credentialStoreEvidence.reason ? { credentialStore: credentialStoreEvidence.reason } : {}), ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(resolvedWriteTargetsOnly ? { resolvedWriteTargetsOnly: true as const } : {}) };
+  return { paths, unproven, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(resolvedWriteTargetsOnly ? { resolvedWriteTargetsOnly: true as const } : {}) };
 }
 
 function operandPaths(value: string, option: boolean, verb: string): string[] {
@@ -2009,23 +1973,6 @@ export function validateShellCommandPathPolicy(
   return findShellPathPolicyViolation(command, cwd, sandboxRoot, extraAllowedDirectories, blockReadsOutsideWorkingDirectories, facts)?.reason ?? null;
 }
 
-/** Command-language operands retain path evidence without proving their executable identity. */
-export function shellExecutableBodySlots(argv: readonly string[], stdin?: string): readonly { text: string; index: number; dialect: "bash" | "posix" | "powershell" }[] {
-  const verb = stripCommandPath(argv[0] ?? "").replace(/\.exe$/iu, "");
-  const spec = NON_PATH_OPERAND_SPECS.get(verb);
-  if (!spec?.nestedCommandOptions) {
-    const slots = verb === "sed" ? classifySedArgumentSlots(argv) : verb === "sqlite3" ? classifySqliteArgumentSlots(argv) : undefined;
-    return (slots?.nestedCommands ?? []).map(body => ({ text: body.value, index: body.index, dialect: "posix" as const }));
-  }
-  const slots = classifyOperandSlots([verb, ...argv.slice(1)], true);
-  const bodies = [...(slots.programIndices ?? [])].map(index => ({
-    text: spec.nestedCommandTail ? argv.slice(index).join(" ") : argv[index]!, index,
-    dialect: spec.nestedCommandDialect ?? "posix",
-  }));
-  if (spec.stdinCommand && stdin !== undefined && bodies.length === 0) bodies.push({ text: stdin, index: argv.length, dialect: spec.nestedCommandDialect ?? "posix" });
-  return bodies;
-}
-
 /** Program roles and recursive admission are shared by structural and path checks. */
 export function inspectEmbeddedShellPrograms(event: ShellCommandEvent, suppliedSlots?: OperandSlotClassification): void {
   const view = projectCommandPolicyView(event, suppliedSlots);
@@ -2054,17 +2001,18 @@ export function inspectEmbeddedShellPrograms(event: ShellCommandEvent, suppliedS
 
     const verb = stripCommandPath(knownArgv[0]!);
     const shellOptions = NON_PATH_OPERAND_SPECS.get(verb)?.nestedCommandOptions;
+    // Native executable aliases retain the grammar already selected by the path policy.
+    const literalArgv = process.platform === "win32" && shellOptions ? [verb, ...knownArgv.slice(1)] : knownArgv;
     const inputProgram = event.inputRedirect?.data ? staticShellWord(event.inputRedirect.data) : undefined;
-    if (shellOptions && event.inputRedirect?.data && inputProgram === undefined) decline("unresolved shell input program", event.inputRedirect.data);
-    // Executable roles come from the existing operand grammar, independently of broad floor-only literal screens.
-    const programs = shellExecutableBodySlots(knownArgv, inputProgram);
-    for (const body of programs) {
+    if (shellOptions && event.inputRedirect?.data && inputProgram === undefined
+      && literalShellBodies(literalArgv, event.dialect, words.map(word => word.source.raw), "").length > 0) decline("unresolved shell input program", event.inputRedirect.data);
+    const bodies = literalShellBodies(literalArgv, event.dialect, words.map(word => word.source.raw), inputProgram);
+    for (const body of bodies) {
       if (body.dialect === "powershell") decline("nested shell dialect is not supported", words[0]);
       event.inspectNested(body.text, body.dialect, nestedContext, words[body.index]?.source);
     }
-
     if (!shellOptions) return;
-    const carriesCommand = programs.length > 0;
+    const carriesCommand = bodies.length > 0;
     if (!carriesCommand && event.fromPipe) decline("unresolved shell program from a pipe", words[0]);
   };
 

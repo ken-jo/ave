@@ -121,6 +121,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
       },
     };
     const gate = new ApprovalGate(nativeWebContents as never);
+    const approvalInputs = vi.spyOn(gate, "requestAndWait");
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (
@@ -141,7 +142,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     };
     const reviewedUrls = () => classify.mock.calls.map(([ctx]) => (ctx.finalInput as { url?: string }).url);
     const reviewedTools = () => classify.mock.calls.map(([ctx]) => ctx.toolName);
-    return { cards, run, reviewedUrls, reviewedTools };
+    return { cards, run, reviewedUrls, reviewedTools, approvalInputs };
   }
 
   /** The real web_fetch identity (keys + schema), with the network stubbed out. */
@@ -275,15 +276,18 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     expect(cards).toHaveLength(2);
   });
 
-  it("forces a one-time card for a recognized exfiltration query despite origin approval", async () => {
-    const { tool } = webFetch();
-    const { cards, run } = harness([tool]);
+  it("uses a normal card when an exfiltration assessment exceeds the origin approval", async () => {
+    const { tool, execute } = webFetch();
+    const { cards, run, approvalInputs } = harness([tool]);
     await run("web_fetch", { url: "https://a.example/x" });
     await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
     expect(cards).toHaveLength(2);
-    expect(cards[1].allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(cards[1].allowedChoices).toBeUndefined();
+    expect(approvalInputs.mock.calls[1]![0].forceExplicit).not.toBe(true);
     expect(cards[1].reason).toContain("exfiltration");
-    expect(cards[1].persistentAllowAllowed).toBe(false);
+    await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
+    expect(cards).toHaveLength(2);
+    expect(execute).toHaveBeenCalledTimes(3);
   });
 
   describe("without a configured reviewer", () => {
@@ -301,10 +305,12 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
 
     it("asks again when the new query escalates under the rules", async () => {
       const { tool } = webFetch();
-      const { cards, run } = harness([tool], undefined, { reviewer: false });
+      const { cards, run, approvalInputs } = harness([tool], undefined, { reviewer: false });
       await run("web_fetch", { url: "https://a.example/x" });
       await run("web_fetch", { url: "https://a.example/x?token=sk-live-0123456789abcdefghijklmnop" });
       expect(cards).toHaveLength(2);
+      expect(approvalInputs.mock.calls[1]![0].forceExplicit).not.toBe(true);
+      expect(cards[1].allowedChoices).toBeUndefined();
     });
 
     it("asks for a row approved under a reviewer, which the rules alone cannot re-check", async () => {

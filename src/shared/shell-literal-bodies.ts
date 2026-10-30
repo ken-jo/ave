@@ -1,7 +1,9 @@
-import { createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { classifySedArgumentSlots } from "./shell-sed-arguments.js";
 import { classifySqliteArgumentSlots } from "../tools/shell-sqlite-arguments.js";
-import type { ShellWord } from "./shell-analysis.js";
+import { wrapperCommand } from "../permissions/rules/shell-prefix-policy.js";
+import { isEncodedPowerShellParameter } from "../permissions/rules/powershell-encoded-command.js";
+import { stripCommandPath } from "./shell-effective-command.js";
+import { sep } from "node:path";
 
 interface LiteralShellBody {
   text: string;
@@ -12,83 +14,143 @@ interface LiteralShellBody {
 export type LiteralShellArgument = string | readonly string[] | undefined
   | { kind: "parenthesized"; values: readonly string[] }
   | { kind: "expression"; argv: readonly LiteralShellArgument[] }
-  | { kind: "scriptblock" | "literal"; text: string };
+  | { kind: "scriptblock"; text: string };
 
-export interface LiteralShellFragment { text: string; index: number }
-
-/** Project literal AST parts without changing the owning argument or interpreting its receiver. */
-export function shellLiteralFragments(words: readonly ShellWord[]): readonly LiteralShellFragment[] {
-  const fragments: LiteralShellFragment[] = [];
-  for (let index = 0; index < words.length; index++) {
-    for (const part of words[index]!.parts) {
-      if (part.kind === "literal" || part.kind === "unicode-escaped") fragments.push({ text: part.value, index });
-    }
-  }
-  return fragments;
+function executableName(value: string): string {
+  if (sep === "\\") return stripCommandPath(value);
+  return value.split(/[\\/]/).at(-1)!.toLowerCase().replace(/\.exe$/u, "");
 }
 
-/** Parser-owned literal data is screened independently of the command that receives it. */
+/** Select executable literal bodies from parser-owned argv; this never evaluates or tokenizes source. */
 export function literalShellBodies(
-  argv: readonly LiteralShellArgument[], raw?: readonly string[], stdin?: string,
-  fragments: readonly LiteralShellFragment[] = [],
+  argv: readonly LiteralShellArgument[], dialect: "bash" | "posix" | "powershell", raw?: readonly string[], stdin?: string,
 ): readonly LiteralShellBody[] {
-  const bodies: LiteralShellBody[] = [];
-  const seen = new Set<string>();
-  const append = (text: string, index: number, grammars: readonly ("posix" | "powershell")[] = ["posix", "powershell"]): void => {
-    // A single inert word has neither a nested argv nor an executable effect.
-    if (!/[\s;|&<>(){}]/u.test(text)) return;
-    for (const grammar of grammars) {
-      const key = grammar + "\0" + text;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      bodies.push({ text, dialect: grammar, index });
+  const head = argv[0];
+  if (typeof head !== "string") return [];
+  const name = dialect === "powershell" || process.platform === "win32" ? executableName(head) : head.split("/").at(-1)!.replace(/\.exe$/u, "");
+  const strings = (values: readonly LiteralShellArgument[]): string[] | undefined => {
+    const result: string[] = [];
+    for (const value of values) {
+      if (value === undefined) return undefined;
+      if (typeof value === "string") result.push(value);
+      else if (Array.isArray(value)) result.push(...value);
+      else return undefined;
     }
+    return result;
   };
-  const visit = (value: LiteralShellArgument, index: number, literal = false): void => {
-    if (typeof value === "string") {
-      if (literal || /[\s]/u.test(value) || /['"\\]/u.test(raw?.[index] ?? "")) append(value, index);
-    } else if (Array.isArray(value)) {
-      for (const item of value) append(item, index);
-    } else if (value && "kind" in value) {
-      if (value.kind === "scriptblock") append(value.text, index, ["powershell"]);
-      else if (value.kind === "literal") append(value.text, index);
-      else if (value.kind === "parenthesized") for (const item of value.values) append(item, index);
-      else if (value.kind === "expression") for (const item of value.argv) visit(item, index, true);
+  if (dialect === "powershell") {
+    const parenthesized = (value: LiteralShellArgument): readonly string[] | undefined =>
+      value !== undefined && typeof value === "object" && "kind" in value && value.kind === "parenthesized" ? value.values : undefined;
+    const invoked = head === "&" || head === ".";
+    const target = invoked ? argv[1] : head;
+    if (invoked && target !== undefined && typeof target === "object" && "kind" in target && target.kind === "expression"
+      && argv.length === 2) return literalShellBodies([head, ...target.argv], dialect);
+    const parameters = invoked ? argv.slice(2) : argv.slice(1);
+    if (typeof target === "string" && ((!invoked && /^\$ExecutionContext\.InvokeCommand\.InvokeScript$/iu.test(target))
+      || (invoked && /^\[scriptblock\]::Create$/iu.test(target)))) {
+      const values = parameters.length === 1 ? parenthesized(parameters[0]) : undefined;
+      return values?.length === 1 ? [{ text: values[0]!, dialect, index: invoked ? 2 : 1 }] : [];
     }
-  };
-  for (let index = 0; index < argv.length; index++) {
-    if (index > 0 || typeof argv[index] !== "string" || /^['"]/u.test(raw?.[index] ?? "")) visit(argv[index], index);
+    if (["foreach-object", "%"].includes(name)) {
+      const member = argv.findIndex(value => typeof value === "string" && /^-membername$/iu.test(value));
+      const argument = argv.findIndex(value => typeof value === "string" && /^-argumentlist$/iu.test(value));
+      if (member > 0 && typeof argv[member + 1] === "string" && /^invokescript$/iu.test(argv[member + 1] as string)
+        && argument > 0 && typeof argv[argument + 1] === "string" && argument + 2 === argv.length) {
+        return [{ text: argv[argument + 1] as string, dialect, index: argument + 1 }];
+      }
+    }
+    if (name === "invoke-command") {
+      const parameter = argv.findIndex(value => typeof value === "string" && /^-scriptblock$/iu.test(value));
+      const block = parameter > 0 ? argv[parameter + 1] : undefined;
+      if (block !== undefined && typeof block === "object" && "kind" in block && block.kind === "scriptblock") {
+        return [{ text: block.text, dialect, index: parameter + 1 }];
+      }
+    }
   }
-  for (const fragment of fragments) {
-    // An unchanged unquoted command head is not an argument body; reparsing it would rediscover itself.
-    if (fragment.index === 0 && (fragment.text === argv[0] || fragment.text === raw?.[0]) && !/^['"]/u.test(raw?.[0] ?? "")) continue;
-    append(fragment.text, fragment.index);
+  if (["sed", "sqlite3"].includes(name)) {
+    const values = strings(argv);
+    if (values) {
+      const slots = name === "sed" ? classifySedArgumentSlots(values) : classifySqliteArgumentSlots(values);
+      return slots.nestedCommands.map(body => ({ text: body.value, index: body.index, dialect: "posix" as const }));
+    }
   }
-  // Adjacent parser-proven literal strings may be concatenated by the receiver. Screen that possible body without assuming an invoker.
-  let sequence: string[] = [], sequenceIndex = 0;
-  const finishSequence = () => { if (sequence.length > 1) append(sequence.join(" "), sequenceIndex); sequence = []; };
+  if (dialect !== "powershell" && head === "exec" && argv.every((value): value is string => typeof value === "string")) {
+    const child = wrapperCommand(argv);
+    if (!child.ordinaryAsk && !child.runtimeArgv && !child.code && child.index > 0 && child.index < argv.length) {
+      return literalShellBodies(argv.slice(child.index), dialect, raw?.slice(child.index))
+        .map(body => ({ ...body, index: body.index + child.index }));
+    }
+  }
+  if (dialect !== "powershell" && head === "eval") {
+    const start = argv[1] === "--" ? 2 : 1;
+    const values = strings(argv.slice(start));
+    return values?.length ? [{ text: values.join(" "), dialect, index: start }] : [];
+  }
+  if (dialect === "powershell" && ["iex", "invoke-expression"].includes(name)) {
+    const start = typeof argv[1] === "string" && /^-command$/iu.test(argv[1]) ? 2 : 1;
+    return typeof argv[start] === "string" && argv.length === start + 1
+      ? [{ text: argv[start], dialect, index: start }] : [];
+  }
+  if (dialect === "powershell" && ["start-process", "start"].includes(name)) {
+    let executable: string | undefined;
+    let argumentValues: string[] | undefined;
+    let argumentIndex = 0;
+    for (let index = 1; index < argv.length; index++) {
+      const value = argv[index];
+      if (typeof value !== "string") continue;
+      const parameter = !/^["']/u.test(raw?.[index] ?? "") ? /^[-\u2013-\u2015](filepath|argumentlist)(?::(.*))?$/iu.exec(value) : null;
+      if (parameter) {
+        const inline = parameter[2];
+        if (parameter[1]!.toLowerCase() === "filepath") {
+          const target = inline || argv[++index];
+          if (typeof target === "string") executable = target;
+        } else {
+          argumentIndex = inline ? index : index + 1;
+          const values: LiteralShellArgument[] = inline ? [inline] : [];
+          while (index + 1 < argv.length) {
+            const next = argv[index + 1];
+            if (typeof next === "string" && /^[-\u2013-\u2015][A-Za-z]/u.test(next)
+              && !/^["']/u.test(raw?.[index + 1] ?? "")) break;
+            index++;
+            if (next !== ",") values.push(next);
+          }
+          argumentValues = strings(values);
+        }
+      } else if (executable === undefined && !value.startsWith("-")) executable = value;
+    }
+    if (!executable || !argumentValues) return [];
+    const nested = literalShellBodies([executable, ...argumentValues], "powershell");
+    const executableText = /[\s'"]/u.test(executable) ? "& '" + executable.replaceAll("'", "''") + "'" : executable;
+    return nested.length ? nested.map(body => ({ ...body, index: argumentIndex }))
+      : [{ text: [executableText, ...argumentValues].join(" "), dialect: "powershell", index: argumentIndex }];
+  }
+  const shell = ["sh", "dash", "bash", "zsh", "ksh"].includes(name);
+  const powerShell = ["pwsh", "powershell"].includes(name);
+  const commandShell = name === "cmd";
+  if (!shell && !powerShell && !commandShell) return [];
   for (let index = 1; index < argv.length; index++) {
     const value = argv[index];
-    const literal = typeof value === "string" && /^['"]/u.test(raw?.[index] ?? "") ? value
-      : value && typeof value === "object" && "kind" in value && value.kind === "literal" ? value.text : undefined;
-    if (literal === undefined) finishSequence();
-    else { if (sequence.length === 0) sequenceIndex = index; sequence.push(literal); }
+    if (typeof value !== "string") continue;
+    if (powerShell && isEncodedPowerShellParameter(value)) return [];
+    const shellOption = shell ? /^-[A-Za-z]*?c([\s\S]*)$/u.exec(value) : null;
+    const command = shell ? shellOption !== null : commandShell ? /^\/(?:c|k)$/iu.test(value) : /^-(?:c|command)$/iu.test(value);
+    if (!command) continue;
+    if (shellOption?.[1]) return [{ text: shellOption[1], dialect: name === "bash" ? "bash" : "posix", index }];
+    const start = index + 1;
+    const values = strings(powerShell || commandShell ? argv.slice(start) : argv.slice(start, start + 1));
+    return values?.length ? [{ text: values.join(" "), dialect: powerShell || commandShell ? "powershell" : name === "bash" ? "bash" : "posix", index: start }] : [];
   }
-  finishSequence();
-  // Foreign-language parsers expose typed executable fragments; these are not host-shell invoker guesses.
-  const head = argv[0];
-  if (typeof head === "string" && argv.every((value): value is string => typeof value === "string")) {
-    const name = head.split(/[\\/]/u).at(-1)!;
-    const slots = name === "sed" ? classifySedArgumentSlots(argv) : name === "sqlite3" ? classifySqliteArgumentSlots(argv) : undefined;
-    for (const body of slots?.nestedCommands ?? []) append(body.value, body.index);
-  }
-  if (stdin !== undefined) append(stdin, argv.length);
-  return bodies;
+  const stdinSelected = argv.length === 1 || argv[1] === "-"
+    || argv.slice(1).some(value => typeof value === "string" && /^-[A-Za-z]*s[A-Za-z]*$/u.test(value))
+    || argv.slice(1).every(value => typeof value === "string" && value.startsWith("-"));
+  return shell && stdin !== undefined && stdinSelected
+    ? [{ text: stdin, dialect: name === "bash" ? "bash" : "posix", index: argv.length }]
+    : [];
 }
 
-export interface LiteralBodyBudget { tokens: { count: number }; depth: number; literalBody?: true; floorOnly?: true }
+export interface LiteralBodyBudget { tokens: { count: number }; depth: number }
 
-interface LiteralShellFlow { network: boolean; readsPath: boolean; credentialStore?: string }
+interface LiteralShellFlow { network: boolean; readsPath: boolean }
 const literalFlows = new WeakMap<object, LiteralShellFlow>();
 
 /** Keep typed child flow in memory without adding execution authority or serialized signal fields. */
@@ -98,41 +160,3 @@ export function recordLiteralShellFlow<T extends object>(result: T, flow: Litera
 }
 
 export function literalShellFlow(result: object): LiteralShellFlow | undefined { return literalFlows.get(result); }
-
-/** Normalize positive literal-path evidence without granting authority from ordinary data operands. */
-export function literalShellPathFacts(result: {
-  paths: readonly PermissionPathEvidence[];
-  unproven: boolean | { kind: string } | null;
-  credentialStore?: string | null;
-  unknownProtectedWrite?: string;
-  evidenceLimitExceeded?: true;
-}, executed: boolean) {
-  return {
-    paths: result.paths.filter(path => executed || path.protectedControl !== undefined || path.admissionDenial !== null),
-    unproven: typeof result.unproven === "boolean" ? result.unproven : result.unproven !== null,
-    credentialStore: result.credentialStore ?? null,
-    unknownProtectedWrite: result.unknownProtectedWrite,
-    evidenceLimitExceeded: result.evidenceLimitExceeded === true || typeof result.unproven === "object" && result.unproven?.kind === "analysis-limit",
-  };
-}
-
-interface LiteralPathSnapshot {
-  resolved: Map<string, string>;
-  evidence: Map<string, ReturnType<typeof createPermissionPathEvidence>>;
-}
-const literalPathSnapshots = new WeakMap<LiteralBodyBudget["tokens"], LiteralPathSnapshot>();
-
-/** Grammar children share one filesystem observation snapshot during a decision. */
-export function literalShellPathSnapshot(budget: LiteralBodyBudget, projectRoot: string) {
-  let snapshot = literalPathSnapshots.get(budget.tokens);
-  if (snapshot === undefined) {
-    snapshot = { resolved: new Map(), evidence: new Map() };
-    literalPathSnapshots.set(budget.tokens, snapshot);
-  }
-  let evidenceForPath = snapshot.evidence.get(projectRoot);
-  if (evidenceForPath === undefined) {
-    evidenceForPath = createPermissionPathEvidence(projectRoot);
-    snapshot.evidence.set(projectRoot, evidenceForPath);
-  }
-  return { resolved: snapshot.resolved, evidenceForPath };
-}

@@ -225,9 +225,9 @@ function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
   })];
 }
 
-// `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no floor signal is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
+// `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no sensitive-path or proof blocker is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
 export function evaluatePowerShellSubject(
-  subject: { command: PowerShellCommandInput; cwd?: string; exactAllowOnly: boolean; floorSignal: string | null },
+  subject: { command: PowerShellCommandInput; cwd?: string; exactAllowOnly: boolean },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ShellRuleEvaluation {
   const rules = collectPowerShellRules(...scopes);
@@ -262,12 +262,11 @@ export function evaluatePowerShellSubject(
   if (shape.opaque !== null) return { decision: null, reason: shape.opaque };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   const inspection = inspectPowerShellCommand(parsed, subject.cwd);
-  if (inspection.outcome === "visible-floor" || inspection.analysisLimited
+  if (inspection.sensitive !== null || inspection.analysisLimited
     || (inspection.outcome === "unproven" && inspection.exactLiteralEvaluation !== true)) {
     return { decision: null, reason: inspection.exfiltration ?? inspection.sensitive ?? inspection.ordinaryAsk ?? "Shell command requires runtime evaluation" };
   }
   if (inspection.exactLiteralEvaluation === true) rules.allow = rules.allow.filter((rule) => !rule.spec.wildcard);
-  if (subject.floorSignal !== null) return { decision: null, reason: subject.floorSignal };
   const patterns: string[] = [];
   for (const argv of shape.commands) {
     const rule = rules.allow.find((candidate) => matchesPowerShellRule(candidate.spec, argv));

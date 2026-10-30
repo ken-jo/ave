@@ -85,9 +85,20 @@ it.each(["allow", "auto", "ask"] as const)("uses the same choice for a genuine h
 it("denies headless and explicit denies while preserving real floors before the surface choice", () => {
   manager.setUserOwnedSurfaceChoice("session", "browser", "allow");
   expect(browser({ ...browserContext(), headless: true })).toMatchObject({ decision: "deny", reason: NO_APPROVER_MESSAGE });
-  expect(browser({ ...browserContext(), floor: { code: "exfiltration", reason: "Upload" } })).toMatchObject({ decision: "ask", forceModal: true });
+  expect(browser({ ...browserContext(), floor: { code: "protected-path", reason: "Control mutation" } })).toMatchObject({ decision: "ask", forceModal: true });
   manager.setRules([{ pattern: "browser_action", action: "deny" }]);
   expect(browser()).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+});
+
+it.each(["allow", "auto", "ask"] as const)("keeps the browser session choice with a normal upload guardrail: %s", choice => {
+  manager.setMode("allow");
+  manager.setUserOwnedSurfaceChoice("session", "browser", choice);
+  const context = { ...browserContext(), exfiltration: { reason: "Upload signal" } };
+  const result = browser(context);
+  expect(result.decision).toBe(choice === "allow" ? "allow" : "ask");
+  expect(result.forceModal).toBeUndefined();
+  expect(result.reviewer?.route).toBe(choice === "auto" ? "foreground-auto" : undefined);
+  expect(browser({ ...context, headless: true })).toMatchObject({ decision: "deny", reason: NO_APPROVER_MESSAGE });
 });
 
 it("uses the actual logical prompt through a traced model classifier and never calls general risk or caches", async () => {

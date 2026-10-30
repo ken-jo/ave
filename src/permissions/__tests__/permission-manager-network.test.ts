@@ -27,14 +27,22 @@ describe("actual network connection pipeline", () => {
     expect(manager.resolveRememberedPermission(result.permission, "Registry grant").decision).toBe("deny");
   });
 
-  it.each(["auto", "allow"] as const)("keeps mandatory floors before network allow rules and grants in %s", async (mode) => {
+  it.each(["strict", "default", "auto", "allow"] as const)("retains earlier network grants before an exfiltration guardrail in %s", async mode => {
     manager.setMode(mode);
     manager.setRules([{ pattern: "Network(api.example.com:443)", action: "allow" }]);
-    const context = { floor: { code: "exfiltration" as const, reason: "Credential upload" } };
+    const context = { exfiltration: { reason: "Credential upload" } };
     const result = await manager.checkNetworkPermission(DESTINATION, context);
-    expect(result.permission).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "exfiltration" });
+    expect(result.permission).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(result.permission.forceModal).toBeUndefined();
     expect(result.permission.reviewer).toBeUndefined();
-    expect(manager.resolveRememberedPermission(result.permission, "Registry grant")).toMatchObject({ decision: "ask", forceModal: true });
+    expect(manager.resolveRememberedPermission(result.permission, "Registry grant")).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect((await manager.checkNetworkPermission(DESTINATION, { ...context, headless: true })).permission)
+      .toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    manager.setRules([]);
+    const pending = await manager.checkNetworkPermission(DESTINATION, context);
+    expect(pending.permission.decision).toBe(mode === "allow" ? "allow" : "ask");
+    expect(pending.permission.forceModal).toBeUndefined();
+    expect(pending.permission.reviewer?.route).toBe(mode === "auto" ? "foreground-auto" : undefined);
     expect((await manager.checkNetworkPermission(DESTINATION, { ...context, headless: true })).permission)
       .toMatchObject({ decision: "deny", reason: NO_APPROVER_MESSAGE });
   });

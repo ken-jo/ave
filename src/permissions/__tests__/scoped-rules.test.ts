@@ -310,7 +310,7 @@ describe("scoped permission rules", () => {
     const rules = [allow("WebFetch(domain:*.example.com:443)")];
     for (const url of ["https://API.EXAMPLE.COM/page", "https://api.example.com.:443/page"]) expect(evaluate(network(url), rules).decision).toBe("allow");
     for (const url of ["https://example.com", "https://api.example.com:8443", "http://api.example.com", "https://api.example.com.evil.test", "https://evil.test/?next=api.example.com"]) expect(evaluate(network(url), rules).decision).toBeUndefined();
-    expect(evaluate(network("https://api.example.com@evil.test"), rules)).toMatchObject({ floorCode: "exfiltration" });
+    expect(evaluate(network("https://api.example.com@evil.test"), rules)).toMatchObject({ exfiltration: { reason: "Network target contains credentials" } });
     expect(evaluate(network("file:///api.example.com"), rules)).toMatchObject({ admissionDenial: "Network target must use HTTP or HTTPS" });
     const spec = parseRuleSpecifier("WebFetch(domain:example.com)");
     if (spec.kind !== "webfetch") throw new Error("Expected host rule");
@@ -346,7 +346,7 @@ describe("scoped permission rules", () => {
     for (const subject of [edit(".git/config"), edit(join(directory, "ave-home", "permissions.json"))]) {
       expect(manager.checkDetailed("operation", "builtin", "write", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "ask", forceModal: true });
     }
-    // Unannotated external tools follow mode; an explicit exfiltration signal always needs fresh approval.
+    // Unannotated external tools and unconsented upload guardrails follow their ordinary mode route.
     const ungranted = mcp("lookup", false);
     for (const mode of ["allow", "default"] as const) {
       manager.setMode(mode);
@@ -358,10 +358,23 @@ describe("scoped permission rules", () => {
       const result = manager.checkDetailed("operation", "builtin", "network", null, {
         ruleSubject: network(`https://example.com/?token=${"sk-" + "a".repeat(50)}`), projectRulesCwd: project,
       });
-      expect(result, mode).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "exfiltration" });
+      expect(result, mode).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+      expect(result.forceModal, mode).toBeUndefined();
       expect(result.reviewer, mode).toBeUndefined();
-      expect(result.pipelineRequest?.floor, mode).toMatchObject({ code: "exfiltration" });
+      expect(result.pipelineRequest?.floor, mode).toBeUndefined();
+      expect(result.pipelineRequest?.exfiltration?.reason, mode).toMatch(/exfiltration/);
     }
+    manager.setRules([]);
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      manager.setMode(mode);
+      const result = manager.checkDetailed("operation", "builtin", "network", null, {
+        ruleSubject: network("https://user:secret@example.com/"), projectRulesCwd: project,
+      });
+      expect(result.decision, mode).toBe(mode === "allow" ? "allow" : "ask");
+      expect(result.forceModal, mode).toBeUndefined();
+      expect(result.reviewer?.route, mode).toBe(mode === "auto" ? "foreground-auto" : undefined);
+    }
+    manager.setRules([allow("Edit(**)")]);
     manager.setMode("strict");
     expect(manager.checkDetailed("write_file", "builtin", "write", null, { ruleSubject: edit("src/a.ts"), projectRulesCwd: project }).decision).toBe("allow");
   });
@@ -516,6 +529,41 @@ describe("scoped permission rules", () => {
     expect(requestAndWait).toHaveBeenCalledTimes(annotation === "read-only" ? 0 : 1);
   });
 
+  it.each([
+    { action: "ask", permitted: true, reasonCode: "allow-mode" },
+    { action: "deny", permitted: false, reasonCode: "rule-deny" },
+  ] as const)("executes the initial token request only when the pipeline permits an $action rule in Allow mode", async ({ action, permitted, reasonCode }) => {
+    manager.setMode("allow");
+    const pattern = "WebFetch(domain:93.184.216.34)";
+    await manager.addRulePersist({ pattern, action }, { kind: "user" });
+    const url = `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}`;
+    const requests: string[] = [];
+    const transport = vi.fn(async (request: string | URL | Request) => {
+      requests.push(String(request));
+      return new Response("executed", { headers: { "content-type": "text/plain" } });
+    }) as unknown as typeof fetch;
+    const registry = new ToolRegistry();
+    registry.register(createWebFetchTool(transport));
+    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" as const }));
+    const review = vi.spyOn(manager, "dispatchReviewer");
+    const permission = vi.spyOn(manager, "checkDetailed");
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
+      { id: "initial-token-request", name: "web_fetch", input: { url } },
+    ], { sessionId: "initial-token-request", permissionContext: userPermissionContext() }));
+    const checked = permission.mock.results.flatMap(entry => entry.type === "return" ? [entry.value] : [])
+      .find(value => value.pipelineRequest?.tool.name === "web_fetch" && value.pipelineRequest.rules?.[action] === pattern);
+    expect(checked).toMatchObject({ decision: permitted ? "allow" : "deny", reasonCode });
+    expect(checked?.pipelineRequest?.exfiltration?.reason).toMatch(/exfiltration signal/);
+    expect(checked?.forceModal).toBeUndefined();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(transport).toHaveBeenCalledTimes(permitted ? 1 : 0);
+    expect(requests).toEqual(permitted ? [url] : []);
+    expect(result?.is_error === true, result?.content).toBe(!permitted);
+    expect(result?.content).toContain(permitted ? "executed" : pattern);
+  });
+
   it.each(["deny", "ask", "unmatched", "port", "allow", "generic"] as const)("checks a redirected destination before transport: %s", async (action) => {
     const origin = "https://93.184.216.34/start";
     const redirected = action === "port" ? "https://93.184.216.34:8443/next" : "https://93.184.216.35/next";
@@ -543,7 +591,7 @@ describe("scoped permission rules", () => {
     if (!permitted) expect(result?.content).toContain("new permission decision");
   });
 
-  // A credential-bearing request has one-shot authority for its approved origin.
+  // Once-only request consent stays bound to its origin, even when an upload guardrail uses an ordinary card.
   it.each(["none", "same-origin", "other-origin"] as const)("keeps credential-bearing request approval bound to its origin: %s", async (redirect) => {
     let requests = 0;
     const transport = vi.fn(async () => {
@@ -557,10 +605,14 @@ describe("scoped permission rules", () => {
     const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
-      { id: "request-floor", name: "web_fetch", input: { url: `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}` } },
-    ], { sessionId: "request-floor", permissionContext: userPermissionContext() }));
+      { id: "credential-request", name: "web_fetch", input: { url: `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}` } },
+    ], { sessionId: "credential-request", permissionContext: userPermissionContext() }));
     expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(requestAndWait.mock.calls[0]?.[0]).toMatchObject({ forceExplicit: true, durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    const card = requestAndWait.mock.calls[0]?.[0];
+    expect(card).toMatchObject({ category: "tool", toolName: "web_fetch", toolCategory: "network", sessionId: "credential-request", reason: expect.stringContaining("exfiltration signal") });
+    expect(card?.forceExplicit).toBeUndefined();
+    expect(card?.durableApprovalRecordAllowed).toBeUndefined();
+    expect(card?.allowedChoices).toBeUndefined();
     expect(transport).toHaveBeenCalledTimes(redirect === "same-origin" ? 2 : 1);
     expect(result?.is_error === true, result?.content).toBe(redirect === "other-origin");
   });
@@ -579,13 +631,33 @@ describe("scoped permission rules", () => {
     }) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "ask-host", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },
     ], { sessionId: "ask-host", permissionContext: userPermissionContext() }));
     expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(transport).toHaveBeenCalledTimes(redirect === "same-origin" ? 2 : 1);
-    expect(result?.is_error === true, result?.content).toBe(redirect === "other-origin" || redirect === "same-origin-sensitive");
+    expect(requestAndWait.mock.calls[0]?.[0].forceExplicit).toBeUndefined();
+    expect(transport).toHaveBeenCalledTimes(redirect === "same-origin" || redirect === "same-origin-sensitive" ? 2 : 1);
+    expect(result?.is_error === true, result?.content).toBe(redirect === "other-origin");
+  });
+
+  it("does not transfer per-call consent to a new credential-bearing origin", async () => {
+    await manager.addRulePersist({ pattern: "WebFetch(domain:93.184.216.34)", action: "ask" }, { kind: "user" });
+    const transport = vi.fn(async () => new Response(null, { status: 302, headers: {
+      location: `https://93.184.216.35/next?token=${"sk-" + "a".repeat(50)}`,
+    } })) as unknown as typeof fetch;
+    const registry = new ToolRegistry();
+    registry.register(createWebFetchTool(transport));
+    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
+      { id: "redirect-credential-denial", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },
+    ], { sessionId: "redirect-credential-denial", permissionContext: userPermissionContext() }));
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+    expect(requestAndWait.mock.calls[0]?.[0].forceExplicit).toBeUndefined();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(result?.is_error).toBe(true);
+    expect(result?.content).toContain("new permission decision");
   });
 });

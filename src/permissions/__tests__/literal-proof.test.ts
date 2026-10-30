@@ -80,13 +80,13 @@ describe("literal exact-rule proof", () => {
     if (!state.ok) throw state.error;
     const result = dialect === "bash"
       ? evaluateShellSubject({ command, cwd, exactAllowOnly: true }, state.rules)
-      : evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, state.rules);
+      : evaluatePowerShellSubject({ command, exactAllowOnly: true }, state.rules);
     if (exactEligible) expect(result.decision).toBe("allow");
     else expect(result.decision).not.toBe("allow");
     const different = command.replace("fixture", "different");
     const mismatch = dialect === "bash"
       ? evaluateShellSubject({ command: different, cwd, exactAllowOnly: true }, state.rules)
-      : evaluatePowerShellSubject({ command: different, exactAllowOnly: true, floorSignal: null }, state.rules);
+      : evaluatePowerShellSubject({ command: different, exactAllowOnly: true }, state.rules);
     expect(mismatch.decision).not.toBe("allow");
   });
 
@@ -138,14 +138,14 @@ describe("literal exact-rule proof", () => {
     const pattern = `PowerShell(Get-ChildItem '${parameter}')`;
     expect(canonicalRuleSpecifier(pattern)).toBe(pattern);
     const rule = withCurrentShellRuleVersion({ pattern, action: "allow" as const });
-    expect(evaluatePowerShellSubject({ command: `Get-ChildItem '${parameter}'`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).toBe(UNPROVEN_STARTUP ? null : "allow");
-    expect(evaluatePowerShellSubject({ command: `Get-ChildItem ${parameter}`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).not.toBe("allow");
+    expect(evaluatePowerShellSubject({ command: `Get-ChildItem '${parameter}'`, exactAllowOnly: true }, [rule]).decision).toBe(UNPROVEN_STARTUP ? null : "allow");
+    expect(evaluatePowerShellSubject({ command: `Get-ChildItem ${parameter}`, exactAllowOnly: true }, [rule]).decision).not.toBe("allow");
     expect(buildShellRuleApproval("powershell", `Get-ChildItem '${parameter}'`, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(UNPROVEN_STARTUP ? null : pattern);
   });
 
   it("preserves deny alias normalization with quoted parameters", () => {
     const pattern = canonicalRuleSpecifier("PowerShell(Write-Output '-Path')");
-    expect(evaluatePowerShellSubject({ command: "write '-Path'", exactAllowOnly: true, floorSignal: null }, [{ pattern, action: "deny" }]).decision).toBe("deny");
+    expect(evaluatePowerShellSubject({ command: "write '-Path'", exactAllowOnly: true }, [{ pattern, action: "deny" }]).decision).toBe("deny");
   });
 
   it.each(["(git status)", "for x in a b; do git status; done"])("does not offer a single argv rule for compound syntax: %s", (command) => {

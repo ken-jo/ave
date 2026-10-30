@@ -370,7 +370,6 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (shape.allowBlockers.length > 0) return { decision: null, reason: shape.allowBlockers[0]! };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   const floor = inspectShellCommand(parsed, cwd);
-  if (floor.exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${floor.exfiltration}` };
   if (floor.sensitive) return { decision: null, reason: `sensitive path (floor): ${floor.sensitive}` };
   // Floor: destructive text anywhere is never covered by an allow rule.
   // An approved literal-evaluation payload is opaque. Its complete raw text is

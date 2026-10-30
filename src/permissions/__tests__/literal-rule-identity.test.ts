@@ -12,7 +12,7 @@ const CWD = "/work/project";
 // #223 executable-bound startup admission: literal identity does not prove win32 startup.
 const UNPROVEN_STARTUP = process.platform === "win32";
 function powerShellAllow(pattern: string, command: string): string | null {
-  return evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, [
+  return evaluatePowerShellSubject({ command, exactAllowOnly: true }, [
     withCurrentShellRuleVersion({ pattern: canonicalRuleSpecifier(pattern), action: "allow" }),
     { pattern: "PowerShell(unrelated *)", action: "deny" },
   ]).decision;

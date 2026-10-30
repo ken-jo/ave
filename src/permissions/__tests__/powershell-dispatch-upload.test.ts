@@ -10,17 +10,14 @@ describe("static dispatch and remote-write boundaries", () => {
   it.each([
     `$ExecutionContext.InvokeCommand | ForEach-Object -MemberName InvokeScript -ArgumentList '${PAYLOAD}'`,
     `$ExecutionContext.InvokeCommand.InvokeScript('${PAYLOAD}')`,
-    `$ExecutionContext.InvokeCommand | % InvokeScript '${PAYLOAD}'`,
-    `$ExecutionContext.SessionState.InvokeCommand.NewScriptBlock('${PAYLOAD}')`,
-    `[scriptblock]'${PAYLOAD}'`,
-    `Unknown-Dispatcher { '${PAYLOAD}' }`,
-  ])("retains an upload floor from every literal body: %s", command => {
+  ])("retains an upload floor from a bound literal invocation: %s", command => {
     expect(inspectPowerShellCommand(command, CWD))
       .toMatchObject({ outcome: "visible-floor", sensitive: null, exfiltration: expect.any(String) });
   });
 
   it.each([
     "$ExecutionContext.InvokeCommand | ForEach-Object -MemberName $method -ArgumentList $code",
+    `$ExecutionContext.InvokeCommand | % InvokeScript '${PAYLOAD}'`,
     "$ExecutionContext.SessionState | foreach $method $code",
     "Get-ChildItem | Where-Object -FilterScript $code",
     "Get-ChildItem | ? $code",
@@ -28,10 +25,13 @@ describe("static dispatch and remote-write boundaries", () => {
     "Get-ChildItem | Sort-Object -Property $property",
     "Get-ChildItem | Format-Table -Property $property",
     "$target.$method($code)",
+    `$ExecutionContext.SessionState.InvokeCommand.NewScriptBlock('${PAYLOAD}')`,
     "$target.Invoke($code)",
     "$target.ToString($code)",
     "Invoke-Command -ScriptBlock $code",
+    `[scriptblock]'${PAYLOAD}'`,
     "[scriptblock]$code",
+    `Unknown-Dispatcher { '${PAYLOAD}' }`,
     "Unknown-Helper; Get-Content ~/.ssh/config",
     "Unknown-Helper; Get-ChildItem | % InvokeScript $code",
     "Write-Host ($target.$method($code))",
@@ -47,7 +47,7 @@ describe("static dispatch and remote-write boundaries", () => {
     "npm exec helper",
     "python -c $code",
     "bash script.sh",
-  ])("keeps unavailable runtime dispatch payloads unproven: %s", (command) => {
+  ])("declines runtime dispatch without inspecting its payload: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     if (command.includes("~/.ssh/config")) expect(result).toMatchObject({ outcome: "visible-floor" });
     else expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });

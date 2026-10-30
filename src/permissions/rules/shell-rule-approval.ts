@@ -80,7 +80,7 @@ function exactBashRule(parsed: ParsedShellCommand, projectCwd: string): string |
     || parsed.analysis.program.statements[0]?.kind !== "command") return null;
   const floor = (signals.exactLiteralEvaluation !== true && isDestructiveShellText(command))
     || (shape.ok && shape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv) !== null))
-    || signals.exfiltration !== null || signals.sensitive !== null || signals.analysisLimited
+    || signals.sensitive !== null || signals.analysisLimited
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true);
   if (floor || !proof.proven || proof.commands.length !== 1 || !proof.commands[0]) return null;
   const tokens = literalTokens(proof.commands[0].rawWords);
@@ -92,7 +92,7 @@ function exactBashRule(parsed: ParsedShellCommand, projectCwd: string): string |
 function exactPowerShellRule(parsed: ParsedPowerShellCommand, projectCwd: string): string | null {
   const command = parsed.command;
   const signals = inspectPowerShellCommand(parsed, projectCwd);
-  if (signals.exfiltration !== null || signals.sensitive !== null || signals.analysisLimited
+  if (signals.sensitive !== null || signals.analysisLimited
     || (signals.exactLiteralEvaluation !== true && isDestructiveShellText(command))
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return null;
   const proof = proveLiteralPowerShell(parsed);
@@ -161,12 +161,10 @@ function shellRuleCoversParsedCommand(dialect: ShellRuleDialect, pattern: string
   }
   if (spec.kind !== "powershell") return false;
   const parsed = syntax.powershell ?? parsePowerShellCommand(command);
-  const signals = inspectPowerShellCommand(parsed, cwd);
   const result = evaluatePowerShellSubject({
     command: parsed,
     cwd,
     exactAllowOnly: false,
-    floorSignal: signals.exfiltration ?? signals.sensitive ?? (signals.analysisLimited ? "PowerShell analysis budget exceeded" : null),
   }, [rule]);
   return result.decision === action;
 }

@@ -22,7 +22,6 @@ import { runWithToolExecutionCwd } from "./execution-context.js";
 import { runWithAgentObservationInvocation } from "./agent-observation-context.js";
 import { preparedShellCommand } from "./prepared-shell-invocation.js";
 import { isCanonicalWebFetchTool } from "./web-fetch.js";
-import { screenEgressRequest } from "../permissions/reviewer/risk-classifier.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
@@ -736,15 +735,13 @@ export async function executeAuthorizedToolInvocation(
           const initial = first && url.href === initialUrl.href;
           first = false;
           if (initial && (rules.decision === "allow" || rules.decision === "ask")) scopedFetch = true;
-          const screen = screenEgressRequest({ url: url.href, allowPrivateNetwork: finalInput.allowPrivateNetwork === true });
-          const initialApproval = initial && hasPerCallApproval;
+          if (rules.decision === "deny") throw new Error("Network destination requires a new permission decision");
+          // The pipeline already authorized these exact initial arguments.
+          if (initial) return;
           const approvedOrigin = hasPerCallApproval && url.origin === initialUrl.origin;
           // One approval covers ordinary redirects within that origin;
-          // restrictions and fresh sensitive requests still apply per hop.
-          if (rules.decision === "deny"
-            || (!initialApproval && rules.floor)
-            || (!initial && (scopedFetch || hasPerCallApproval) && screen.outcome === "screened")
-            || (rules.decision === "ask" && !approvedOrigin)
+          // destination restrictions still apply per hop.
+          if ((rules.decision === "ask" && !approvedOrigin)
             || ((scopedFetch || hasPerCallApproval) && !initial && rules.decision !== "allow" && !approvedOrigin)) {
             throw new Error("Network destination requires a new permission decision");
           }
@@ -1049,7 +1046,7 @@ export async function executeAuthorizedToolInvocation(
               headless: invocationPermissionContext.headless === true,
               executionCwd,
               abortSignal: signal,
-              permissionContext: { admissionDenial: permissionResult?.pipelineRequest?.admissionDenial, floor: permissionResult?.pipelineRequest?.floor, manualRerun: invocationPermissionContext.manualRerun, ownerUnattended: invocationPermissionContext.ownerUnattended, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, permissionStoreError: invocationPermissionContext.permissionStoreError },
+              permissionContext: { admissionDenial: permissionResult?.pipelineRequest?.admissionDenial, floor: permissionResult?.pipelineRequest?.floor, exfiltration: permissionResult?.pipelineRequest?.exfiltration, manualRerun: invocationPermissionContext.manualRerun, ownerUnattended: invocationPermissionContext.ownerUnattended, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, permissionStoreError: invocationPermissionContext.permissionStoreError },
               approvalSurface: invocationPermissionContext.approvalSurface,
               toolName: toolUse.name,
               ...(sessionId === undefined ? {} : { sessionId }),

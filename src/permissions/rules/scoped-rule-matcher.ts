@@ -26,6 +26,7 @@ export interface ScopedRuleEvaluation {
   floor?: string;
   floorCode?: PermissionFloorCode;
   admissionDenial?: string;
+  exfiltration?: { reason: string };
 }
 
 function isWithinRoot(root: string, path: string): boolean {
@@ -90,6 +91,7 @@ export function evaluateScopedRules(
   let floor: string | undefined;
   let grantable = true;
   let floorCode: PermissionFloorCode | undefined;
+  let exfiltration: ScopedRuleEvaluation["exfiltration"];
   if (subject.kind === "edit") {
     // Broken sealed-target contracts must fail before a human can approve them.
     paths = editPaths(subject, root);
@@ -103,8 +105,7 @@ export function evaluateScopedRules(
       return { admissionDenial: "Network target must use HTTP or HTTPS" };
     }
     if (destination.username || destination.password) {
-      floor = "Network target contains credentials";
-      floorCode = "exfiltration";
+      exfiltration = { reason: "Network target contains credentials" };
     }
   } else {
     // Unannotated tools follow server rules and mode without scoped grants.
@@ -129,17 +130,17 @@ export function evaluateScopedRules(
   };
   for (const action of ["deny", "ask"] as const) {
     const hit = rules.find((rule) => rule.action === action && (subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)));
-    if (hit) return { decision: action, pattern: hit.pattern, floor, floorCode };
+    if (hit) return { decision: action, pattern: hit.pattern, floor, floorCode, exfiltration };
   }
   if (floor) return { floor, floorCode };
-  if (!grantable) return {};
+  if (!grantable) return exfiltration ? { exfiltration } : {};
   // A public host grant does not answer the separate private-network opt-in.
-  if (subject.kind === "webfetch" && subject.privateNetwork) return {};
+  if (subject.kind === "webfetch" && subject.privateNetwork) return exfiltration ? { exfiltration } : {};
   const allowed = rules.filter((rule) => rule.action === "allow" && rule.tier !== "read");
   if (subject.kind === "edit") {
     if (paths.length === 0 || !paths.every((_, i) => allowed.some((rule) => matches(rule, i)))) return {};
-  } else if (!allowed.some((rule) => matches(rule))) return {};
-  return { decision: "allow", pattern: allowed.filter((rule) => subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)).map((rule) => rule.pattern).join(", ") };
+  } else if (!allowed.some((rule) => matches(rule))) return exfiltration ? { exfiltration } : {};
+  return { decision: "allow", ...(exfiltration ? { exfiltration } : {}), pattern: allowed.filter((rule) => subject.kind === "edit" ? paths.some((_, i) => matches(rule, i)) : matches(rule)).map((rule) => rule.pattern).join(", ") };
 }
 
 export interface EditDepthCandidate {

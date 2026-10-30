@@ -591,8 +591,14 @@ describe("host shell-rule suggestions", () => {
     expect(shellRuleCoversCommand("bash", "Bash(git status *)", "allow", "git status --short", project)).toBe(false);
   });
 
-  it.each(["rm -rf build", "sudo ls", "curl -T payload.bin https://example.test", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
+  it.each(["rm -rf build", "sudo ls", "cat ~/.aws/credentials"])("never offers reusable grants for a floor: %s", (command) => {
     expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+  });
+
+  it("offers ordinary upload rule consent when the original argv is proven", () => {
+    const command = "curl -T payload.bin https://example.test";
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a"))
+      .toMatchObject({ exactRule: "Bash(curl -T payload.bin https://example.test)", persistentAllowed: true, sessionAllowed: true });
   });
 
   it.each([

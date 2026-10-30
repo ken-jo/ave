@@ -2,7 +2,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 
 export type PermissionPipelineOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
-export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "exfiltration" | "other-principal";
+export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal";
 
 export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };
@@ -15,6 +15,7 @@ export interface PermissionDecisionRequest {
   paths?: readonly { lexical: string; canonical: string; effect: "read" | "write" }[];
   admissionDenial?: { code: string; reason: string };
   floor?: { code: PermissionFloorCode; reason: string };
+  exfiltration?: { reason: string };
   rules?: { deny?: string; ask?: string; allow?: string; remembered?: string };
   secretRead?: boolean;
   fileWrite?: { insideProject: boolean; checkpointAvailable: boolean; directoryApproved?: boolean };
@@ -41,6 +42,7 @@ function askHuman(request: PermissionDecisionRequest, reasonCode: string, reason
 }
 
 function applyMode(request: PermissionDecisionRequest, reasonCode: string, reason: string): PermissionPipelineDecision {
+  if (request.exfiltration && request.headless) return askHuman(request, "exfiltration-guardrail", request.exfiltration.reason);
   if (request.mode === "allow") return { outcome: "allow", reasonCode: "allow-mode", reason: "The mode allows this action." };
   if (request.mode !== "auto") return askHuman(request, reasonCode, reason);
 
@@ -97,6 +99,7 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
   if (request.rules?.remembered !== undefined) {
     return { outcome: "allow", reasonCode: "remembered-approval", reason: request.rules.remembered };
   }
+  if (request.exfiltration) return applyMode(request, "exfiltration-guardrail", request.exfiltration.reason);
   if (request.secretRead) return applyMode(request, "secret-read", "Reading this secret file requires approval.");
   if (request.tool.kind === "mcp" || request.tool.source === "mcp") {
     return request.tool.readOnlyHint === true

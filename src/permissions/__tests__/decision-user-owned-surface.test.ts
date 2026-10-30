@@ -13,6 +13,17 @@ describe.each(["browser", "host-terminal"] as const)("%s session surface policy"
         expect(result.reviewRequired).toBe(!headless && choice === "auto" ? true : undefined);
       }
     });
+    it(`${mode}/${choice} keeps an exfiltration guardrail on the consented surface route`, () => {
+      const request = { ...base, mode, userOwnedSurface: { kind, choice }, exfiltration: { reason: "Upload signal" } };
+      const result = decidePermission(request);
+      expect(result.outcome).toBe(choice === "allow" ? "allow" : "ask");
+      expect(result.reviewRequired).toBe(choice === "auto" ? true : undefined);
+      expect(decidePermission({ ...request, headless: true })).toMatchObject({ outcome: "deny", reason: NO_APPROVER_MESSAGE });
+      expect(decidePermission({ ...request, rules: { ask: "Ask explicitly." } }))
+        .toMatchObject({ outcome: "ask", reasonCode: "rule-ask" });
+      expect(decidePermission({ ...request, rules: { deny: "No uploads." } }))
+        .toMatchObject({ outcome: "deny", reasonCode: "rule-deny" });
+    });
     it(`${mode}/${choice} obeys an ask rule before any session choice`, () => {
       const evidence = { ...base, mode, rules: { ask: "Ask explicitly.", allow: "Generic allow." }, userOwnedSurface: { kind, choice }, reviewer: { status: "success" as const, level: "low" as const } };
       expect(decidePermission(evidence)).toEqual({ outcome: "ask", reasonCode: "rule-ask", reason: "Ask explicitly." });
@@ -23,7 +34,7 @@ describe.each(["browser", "host-terminal"] as const)("%s session surface policy"
     });
     it(`${mode}/${choice} preserves deny and actual floors`, () => {
       for (const headless of [false, true]) {
-        const request = { ...base, mode, headless, userOwnedSurface: { kind, choice }, floor: { code: "exfiltration" as const, reason: "upload" } };
+        const request = { ...base, mode, headless, userOwnedSurface: { kind, choice }, floor: { code: "protected-path" as const, reason: "control mutation" } };
         expect(decidePermission(request).outcome).toBe(headless ? "deny" : "ask-forced");
         expect(decidePermission({ ...request, rules: { deny: "blocked" } })).toMatchObject({ outcome: "deny", reasonCode: "rule-deny" });
         expect(decidePermission({ ...request, floor: { code: "other-principal", reason: "tainted" } }).outcome).toBe(headless ? "deny" : "ask-forced");

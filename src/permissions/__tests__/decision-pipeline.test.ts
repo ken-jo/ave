@@ -42,6 +42,7 @@ const ACTION_ROWS: readonly ActionRow[] = [
   { name: "network action", evidence: { tool: { name: "web_fetch", source: "builtin", kind: "network" } }, expected: QUESTION },
   { name: "read-only external tool", evidence: { tool: { name: "remote_read", source: "mcp", kind: "mcp", readOnlyHint: true } }, expected: ["allow", "allow", "allow", "allow"] },
   { name: "other external tool", evidence: { tool: { name: "remote_call", source: "mcp", kind: "mcp" } }, expected: QUESTION },
+  { name: "exfiltration guardrail", evidence: { exfiltration: { reason: "An upload signal was observed." } }, expected: QUESTION, headlessExpected: "deny" },
   { name: "mandatory human floor", evidence: { floor: { code: "protected-path", reason: "Protected control path." } }, expected: ["ask-forced", "ask-forced", "ask-forced", "ask-forced"] },
 ];
 
@@ -71,7 +72,7 @@ describe("permission decision mode matrix", () => {
 });
 
 describe("ordered admission, floors and explicit rules", () => {
-  const floors: readonly PermissionFloorCode[] = ["protected-path", "critical-delete", "project-escape", "exfiltration", "other-principal"];
+  const floors: readonly PermissionFloorCode[] = ["protected-path", "critical-delete", "project-escape", "other-principal"];
   for (const mode of MODES) {
     for (const code of floors) {
       for (const headless of [false, true]) {
@@ -251,6 +252,44 @@ describe("reviewer denial model choice", () => {
     expect(decidePermission({ ...input, rationaleAvailable: false }).outcome).toBe(headless ? "deny" : "ask");
     expect(decidePermission({ ...input, reviewer: { status: "error", level: "high" } }).outcome).toBe(headless ? "deny" : "ask");
     expect(decidePermission({ ...input, reviewer: { status: "success", level: "high", breakerOpen: true } }).outcome).toBe(headless ? "deny" : "ask");
-    expect(decidePermission({ ...input, floor: { code: "exfiltration", reason: "Upload" } })).toMatchObject({ outcome: headless ? "deny" : "ask-forced" });
+    expect(decidePermission({ ...input, floor: { code: "protected-path", reason: "Protected control path" } })).toMatchObject({ outcome: headless ? "deny" : "ask-forced" });
+  });
+});
+
+
+describe("ordinary exfiltration guardrail", () => {
+  for (const mode of MODES) {
+    const evidence = { mode, tool: SHELL, shell: SAFE_SHELL, exfiltration: { reason: "A file upload was observed." } };
+    it(`routes unconsented uploads through mode handling in ${mode}`, () => {
+      const result = decidePermission(request(evidence));
+      expect(result.outcome).toBe(mode === "allow" ? "allow" : "ask");
+      expect(result.reviewRequired).toBe(mode === "auto" ? true : undefined);
+      if (mode === "strict" || mode === "default") expect(result.reasonCode).toBe("exfiltration-guardrail");
+    });
+    it(`denies an unconsented headless upload before automatic review in ${mode}`, () => {
+      for (const reviewer of [undefined, { status: "success" as const, level: "low" as const }]) {
+        expect(decidePermission(request({ ...evidence, headless: true, reviewer })))
+          .toEqual({ outcome: "deny", reasonCode: "no-approver", reason: EXPECTED_NO_APPROVER_MESSAGE });
+      }
+    });
+    it(`keeps earlier grants and genuine floors before the guardrail in ${mode}`, () => {
+      for (const kind of ["allow", "remembered"] as const) {
+        expect(decidePermission(request({ ...evidence, headless: true, rules: { [kind]: "Explicit consent." } })))
+          .toMatchObject({ outcome: "allow", reasonCode: kind === "allow" ? "rule-allow" : "remembered-approval" });
+      }
+      expect(decidePermission(request({ ...evidence, rules: { deny: "No uploads." } })))
+        .toMatchObject({ outcome: "deny", reasonCode: "rule-deny" });
+      expect(decidePermission(request({ ...evidence, floor: { code: "protected-path", reason: "Control mutation." } })))
+        .toMatchObject({ outcome: "ask-forced", reasonCode: "protected-path" });
+    });
+  }
+  it("keeps reviewer model choice for an anchored foreground upload", () => {
+    const evidence = request({ mode: "auto", tool: SHELL, exfiltration: { reason: "Upload signal." }, rationaleAvailable: true });
+    expect(decidePermission({ ...evidence, reviewer: { status: "success", level: "low" } }))
+      .toMatchObject({ outcome: "allow", reasonCode: "reviewer-allow" });
+    expect(decidePermission({ ...evidence, reviewer: { status: "success", level: "high" } }))
+      .toMatchObject({ outcome: "ask", reasonCode: "reviewer-human-required" });
+    expect(decidePermission({ ...evidence, reviewer: { status: "error" } }))
+      .toMatchObject({ outcome: "ask", reasonCode: "reviewer-human-required" });
   });
 });

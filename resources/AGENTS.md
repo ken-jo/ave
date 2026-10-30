@@ -43,11 +43,16 @@ once the evidence answers the core request.
 - Obey host permission, sandbox/effect checks and task scope. Default allows
   ordinary reads/proven confined read-only shells; writes ask. Allow writes
   permits recoverable edits and safe confined shells. Auto reviews ordinary
-  asks: LOW/MEDIUM allow; HIGH/error/abort uses a normal card. Allow permits
+  asks: LOW/MEDIUM allow; anchored HIGH offers accept, one evidence-backed
+  resubmission or a card through permission_rationale. Errors/abort use a normal card. Allow permits
   requests after floors. Host shells use mode/human routing.
-- Protected paths, critical delete, escape, exfiltration and other-principal
+- Protected mutations, critical delete, escape and other-principal
   requests need one-shot human consent without review/memory. Host credential
   stores stay denied; ordinary secrets follow file/mode rules.
+- Command-text upload hints are ordinary guardrails, not forced floors. They
+  use mode handling after applicable rules/grants and deny headless without
+  review when unconsented. Actual sandbox egress follows the proxy's policy;
+  non-sandboxed Allow can run wrapped or opaque uploads.
 - Headless auto reviews first; human fallback denies. Obey “Nobody can approve
   this request; do not retry.” Owner-away cards wait unless auto-skip denies.
   Recently denied is history; user reruns need admission and a fresh card.

