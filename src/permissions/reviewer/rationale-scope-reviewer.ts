@@ -52,7 +52,7 @@ const ALIGNMENTS = new Set<Exclude<ReviewerScopeAlignment, "unknown">>([
 const MAX_SCOPE_REVIEW_OUTPUT_CHARS = 4_096;
 
 // Reviewer prose is untrusted; strip markup/control characters before DLP so tags, backticks and bidi overrides cannot conceal secrets. Share this sanitizer with parent adjudication.
-export function sanitizeUntrustedReviewerText(
+function sanitizeUntrustedReviewerText(
   value: string,
   maxLength: number,
 ): string {

@@ -19,8 +19,6 @@ export type RiskLevel = "low" | "medium" | "high";
 /** Deferred approvals cannot grant once because the original call has ended; session is the narrowest valid breadth and the fallback. */
 export type DeferredGrantScope = "session" | "always";
 
-export const NARROWEST_DEFERRED_SCOPE: DeferredGrantScope = "session";
-
 export type DeferredApprovalSource = "button" | "question-card";
 
 export type ApprovalPurposeSuggestion = {

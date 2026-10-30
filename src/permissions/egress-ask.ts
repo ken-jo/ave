@@ -74,7 +74,7 @@ export type EgressApprovalAnswer =
 
 export type EgressApprovalRequester = (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>;
 
-export interface ShellNetworkPermissionRequest {
+interface ShellNetworkPermissionRequest {
   readonly destination: EgressDestination;
   readonly context: ShellEgressContext;
   readonly network: EgressGrantNetwork;
@@ -82,7 +82,7 @@ export interface ShellNetworkPermissionRequest {
   readonly rememberedGrant?: EgressGrantScope;
 }
 
-export interface ShellNetworkPermissionEvaluation extends NetworkPermissionEvaluation {
+interface ShellNetworkPermissionEvaluation extends NetworkPermissionEvaluation {
   readonly policyEpoch: string;
   readonly approvalIdentity: string;
 }

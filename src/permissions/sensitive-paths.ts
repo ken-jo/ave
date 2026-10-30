@@ -400,7 +400,7 @@ export function isAdmissionDeniedPath(absPath: string, effect: PathEffect = "wri
   return absPath ? createAdmissionDeniedPathMatcher(effect)(absPath) : null;
 }
 
-export function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
+function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
   return createPathSensitivityMatcher(effect, spend, canonicalize, true);
 }
 

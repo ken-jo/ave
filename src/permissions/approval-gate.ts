@@ -86,7 +86,7 @@ function maskApprovalPurposeForDisplay(
 export type ApprovalMode = "default" | "ask_all" | "full_auto";
 
 // Permission policy.5 — discriminated kinds for the approval dock. Default `"tool"` is the normal Layer 3 ask; `"out-of-allowed-dir"` is the Layer 1 directory-confirm variant; and `"agent-action"` is a plugin-origin host approval request that does not correspond to a host tool execution.
-export type ApprovalKind =
+type ApprovalKind =
   "tool" | "out-of-allowed-dir" | "agent-action" | "rationale" | "egress-host";
 
 // The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell call or workspace terminal tab wants to reach `host:port`, and the person picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.

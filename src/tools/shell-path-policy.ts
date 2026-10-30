@@ -1,5 +1,4 @@
 import { isAbsolute, join } from "node:path";
-import { homedir } from "node:os";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
 import { displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
@@ -13,7 +12,7 @@ import { parseTarListing } from "../shared/shell-tar-listing.js";
 import { RECURSIVE_TRAVERSAL_COMMANDS, recursiveTraversalFlag } from "../shared/shell-recursive-traversal.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { modelShellPath } from "../shared/shell-native-path.js";
-import { expandShellTildePaths } from "../shared/home-tilde.js";
+import { expandLeadingTilde, expandShellTildePaths } from "../shared/home-tilde.js";
 import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE, type ShellOptionTable } from "./shell-option-tables.js";
 import { shellFloorParserBudgetExceeded } from "../permissions/rules/shell-floor-policy.js";
@@ -1586,7 +1585,7 @@ export function inspectImplicitGitWriteTargets(
       return undefined;
     }
     if (options.includes("--global")) {
-      const home = environment.HOME ?? environment.USERPROFILE ?? homedir();
+      const home = environment.HOME ?? environment.USERPROFILE ?? expandLeadingTilde("~");
       checkPath(environment.GIT_CONFIG_GLOBAL ?? join(home, ".gitconfig"), "global repository configuration", directory, effect);
       return query ? undefined : "The command mutates protected global repository configuration.";
     }
