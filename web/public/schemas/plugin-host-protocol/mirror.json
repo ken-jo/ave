@@ -11,14 +11,14 @@
       "protocol": "3",
       "appVersion": "0.14.1",
       "sha256": "90d2ad156e5b78eed8da374241d4cc05aa9d92d284a508384fdba6a85e607a94",
-      "generatedFrom": "0a2b9fe08f782816dc9e607ccbad279fb7463158",
+      "generatedFrom": "86535a296c85e07a5dcb7e9239b179654ee4b9ad",
       "publishedTag": null
     },
     {
       "protocol": "4",
       "appVersion": "0.14.1",
-      "sha256": "df4b1ca672a48bf90fc1130237e3cc1174de52362e01fe3fa823ac331297a39b",
-      "generatedFrom": "0a2b9fe08f782816dc9e607ccbad279fb7463158",
+      "sha256": "9b9a3bfdf0aa6522e9de844fe933e1fbb9dc270debfe42cf37f9232f30981139",
+      "generatedFrom": "6892aff0dfd646f37e860df7a2a3fe7462310c4c",
       "publishedTag": null
     }
   ],
