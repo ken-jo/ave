@@ -1,10 +1,15 @@
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as shellAnalysis from "../shell-analysis.js";
-import { bindShellSyntaxSnapshot, shellSyntaxObservation } from "../shell-syntax-cache.js";
+import { bindShellSyntaxSnapshot, existingStaticShellSyntax, shellSyntaxObservation } from "../shell-syntax-cache.js";
 import { parseShellFloorCommand } from "../../permissions/rules/shell-exfiltration.js";
 import { inspectPosixShellPermissionPaths } from "../../tools/shell-path-policy.js";
 
 import { bindVerifiedArgvProof, verifiedArgvProof } from "../../permissions/rules/verified-argv-authority.js";
+
+import { PermissionManager } from "../../permissions/permission-manager.js";
 
 const COMMAND = "printf '%s' 'literal body text'";
 
@@ -51,6 +56,7 @@ describe("request-owned shell syntax observations", () => {
     const childCommand = child.analysis.program.kind === "sequence" ? child.analysis.program.statements[0]! : child.analysis.program;
     expect(childCommand).not.toBe(rootCommand);
     expect(verifiedArgvProof(childCommand)).toBeUndefined();
+    expect(existingStaticShellSyntax(COMMAND, ["printf", "%s", "literal body text"], { totalTokens: 400 }, counter)?.analysis).toBe(child.analysis);
     expect(verifiedArgvProof(rootCommand)).toMatchObject({ kind: "static-complete" });
   });
 
@@ -80,5 +86,56 @@ describe("request-owned shell syntax observations", () => {
     if (command.kind !== "command") throw new Error("Expected command syntax");
     expect(command.words.map(word => word.source.raw)).toEqual(["printf", "'%s'", "'literal body text'"]);
     expect(command.source.raw).toBe(COMMAND);
+  });
+});
+
+
+describe("original static native syntax projection", () => {
+  it("peeks eligible original syntax without reparsing or changing source extents", () => {
+    const counter = {};
+    expect(existingStaticShellSyntax(COMMAND, ["printf", "%s", "literal body text"], { totalTokens: 400 }, counter)).toBeUndefined();
+    const original = shellSyntaxObservation(COMMAND, "bash", { totalTokens: 400 }, counter);
+    const parse = vi.spyOn(shellAnalysis, "analyzeShell");
+    try {
+      const selected = existingStaticShellSyntax(COMMAND, ["printf", "%s", "literal body text"], { totalTokens: 400 }, counter);
+      expect(selected).toEqual({ command: COMMAND, analysis: original.analysis });
+      expect(selected?.analysis).toBe(original.analysis);
+      expect(parse).not.toHaveBeenCalled();
+      expect(existingStaticShellSyntax(COMMAND, ["printf", "%s", "literal body text"], { totalTokens: 399 }, counter)).toBeUndefined();
+    } finally { parse.mockRestore(); }
+  });
+
+  it.each([
+    { source: "VALUE=1 cat file", argv: ["cat", "file"] },
+    { source: "cat < file", argv: ["cat"] },
+    { source: "cat file | cat other", argv: ["cat", "file"] },
+    { source: "cat file; cat other", argv: ["cat", "file"] },
+    { source: "cat $FILE", argv: ["cat", "file"] },
+    { source: "cat $(printf file)", argv: ["cat", "file"] },
+    { source: "cat ~/notes", argv: ["cat", "~/notes"] },
+    { source: "cat *.ts", argv: ["cat", "*.ts"] },
+    { source: "cat 'file'", argv: ["cat", "different"] },
+    { source: "cat 'file'", argv: ["cat", undefined] },
+    { source: "cat 'file'", argv: ["cat"] },
+  ])("keeps unsupported or different bound arguments on the existing adapter: $source", ({ source, argv }) => {
+    const counter = {};
+    shellSyntaxObservation(source, "bash", { totalTokens: 400 }, counter);
+    expect(existingStaticShellSyntax(source, argv, { totalTokens: 400 }, counter)).toBeUndefined();
+  });
+
+  it("does not parse the serialized native spelling of an already inspected literal body", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "native-syntax-reuse-")));
+    vi.stubEnv("AVE_HOME", join(root, "state"));
+    const parse = vi.spyOn(shellAnalysis, "analyzeShell");
+    try {
+      const manager = new PermissionManager(join(root, "permissions.json")); manager.setMode("allow");
+      const body = "./" + "AppData/Local/a/User Data/b/".repeat(64) + "tail";
+      const command = "printf %s '" + body + "'";
+      for (let observation = 0; observation < 2; observation++) {
+        expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: root }, shellExecution: { runsSandboxed: true } }))
+          .toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
+      }
+      expect(parse.mock.calls.map(([source]) => source)).toEqual([command, body, command, body]);
+    } finally { parse.mockRestore(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }
   });
 });

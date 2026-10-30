@@ -1292,3 +1292,7 @@ The neighboring `Copy-Item src out -Recurse` keeps exactly its prior platform-de
 ### Bounded canonicalization work
 
 No permission expectation, 40 ms threshold, sample count, timeout or parser cap changes. New canonicalization cases prove exact fallback-byte equivalence, inaccessible-ancestor child resolution, first-observed cached prefixes, linked descendants and conservative namespace handling. The optimization replaces redundant filesystem probes only after a structural refusal at the original walk boundary; access and unknown errors preserve the original walk. The existing literal-path outcome assertions remain unchanged after the hosted timing failures.
+
+### Identical literal syntax reuse
+
+No existing outcome or timing expectation changes. Added syntax-cache cases assert exact source/argv equivalence and refuse assignments, redirections, compound commands, expansion, mismatched arguments, independent request counters and verified-root seeding. Fresh path/environment facts and the original budget charges remain separate from reusable pure syntax. All visible-literal decision assertions, samples and thresholds remain unchanged.

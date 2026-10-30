@@ -1,4 +1,4 @@
-import { analyzeShell, type ShellAnalysis } from "./shell-analysis.js";
+import { analyzeShell, staticShellWord, type PreparedShellAnalysis, type ShellAnalysis } from "./shell-analysis.js";
 import type { ShellParserLimits } from "./shell-parser.js";
 
 interface SyntaxObservation { analysis: ShellAnalysis; parserError?: unknown }
@@ -32,4 +32,15 @@ export function shellSyntaxObservation(command: string, dialect: "bash" | "posix
   catch (parserError) { result = { analysis: { ok: false, reason: "shell parser failed" }, parserError }; }
   snapshot?.set(key, result);
   return result;
+}
+
+/** Reuse original syntax only when its complete command is the same already-bound literal argv. */
+export function existingStaticShellSyntax(command: string, argv: readonly (string | undefined)[], limits: ShellParserLimits, counter: object): PreparedShellAnalysis | undefined {
+  const observation = counterSnapshots.get(counter)?.get(JSON.stringify(["bash", limits.totalTokens, command]));
+  if (observation === undefined || "parserError" in observation || !observation.analysis.ok) return undefined;
+  const { analysis } = observation;
+  const node = analysis.program.kind === "sequence" && analysis.program.statements.length === 1 ? analysis.program.statements[0]! : analysis.program;
+  if (node.kind !== "command" || node.assignments.length !== 0 || node.redirects.length !== 0 || node.words.length !== argv.length) return undefined;
+  if (!node.words.every((word, index) => argv[index] !== undefined && staticShellWord(word) === argv[index])) return undefined;
+  return { command, analysis };
 }

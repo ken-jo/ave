@@ -1,4 +1,4 @@
-import { bindShellSyntaxSnapshot } from "../../shared/shell-syntax-cache.js";
+import { bindShellSyntaxSnapshot, existingStaticShellSyntax } from "../../shared/shell-syntax-cache.js";
 import { literalShellBodies, literalShellPathFacts, literalShellPathSnapshot, literalShellFlow, recordLiteralShellFlow, type LiteralShellArgument, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 // One bounded parse supplies both exact raw identity and a single static floor pass.
 // Runtime values, generated code, callbacks and file mutation are never simulated.
@@ -1468,10 +1468,13 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     if (policy === undefined || policy.native) {
       credentialStore ??= nativeCredentialStore(stage, sharedWork(parsed.context));
       const values = stage.command.tokens.map((token, index) => stage.argv[index] === undefined || budget.literalBody && token.kind === "word" && /[%!]/u.test(token.text) ? permissionArgumentBinding(token, stageEnvironment, budget.literalBody) : { value: stage.argv[index]!, dynamic: false });
-      const source = values.map((binding, index) => binding && !binding.dynamic ? shellQuote(binding.value) : stage.raw[index]!).join(" ");
+      const nativeArgv = values.map(binding => binding && !binding.dynamic ? binding.value : undefined);
+      const prepared = stages.length === 1 && parsed.syntax.pipelines !== null
+        ? existingStaticShellSyntax(parsed.command, nativeArgv, { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }, budget.tokens) : undefined;
+      const source = prepared?.command ?? values.map((binding, index) => binding && !binding.dynamic ? shellQuote(binding.value) : stage.raw[index]!).join(" ");
       unknownProtectedWrite ??= inspectUnknownNativeWriteArguments(values.map((binding) => binding && !binding.dynamic ? binding.value : undefined), stage.raw);
       // Original AST bodies were screened above; serialized argv quotes carry no source provenance.
-      const native = inspectPosixShellPermissionPaths(source, currentDirectory ?? cwd, { dialect: "bash", environment: {} }, undefined, budget, inspectPowerShellPermissionPaths, { rootAlreadyParsed: true, literalBodiesAlreadyInspected: true });
+      const native = inspectPosixShellPermissionPaths(source, currentDirectory ?? cwd, { dialect: "bash", environment: {} }, prepared, budget, inspectPowerShellPermissionPaths, { rootAlreadyParsed: true, literalBodiesAlreadyInspected: true });
       paths.push(...native.paths);
       unproven ||= native.unproven !== null;
       evidenceLimitExceeded ||= native.unproven?.kind === "analysis-limit";
