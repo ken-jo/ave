@@ -1,13 +1,22 @@
 // Both sides of every scope comparison must share canonical bytes across traversal, Unicode, case, slashes and symlinks; use realpath-derived temp paths.
-import { afterEach, describe, it, expect } from "vitest";
-import { mkdirSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "../sensitive-paths.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import * as filesystem from "node:fs";
+import { mkdirSync, symlinkSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
+import { canonicalizePathForMatch, createPathCanonicalizer, foldCanonicalPathSeparators, MAX_WALK_UP } from "../sensitive-paths.js";
 import { PermissionTestResources } from "./test-resources.js";
+
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, existsSync: vi.fn(actual.existsSync), lstatSync: vi.fn(actual.lstatSync) };
+});
 
 const resources = new PermissionTestResources();
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.mocked(filesystem.existsSync).mockReset();
+  vi.mocked(filesystem.lstatSync).mockReset();
   await resources.cleanup();
 });
 
@@ -96,5 +105,75 @@ describe("foldCanonicalPathSeparators — win32 shapes", () => {
 
   it("does not invent a leading pair off win32", () => {
     expect(foldCanonicalPathSeparators("//server/share/proj", "linux")).toBe("/server/share/proj");
+  });
+});
+
+
+describe("bounded missing-suffix observations", () => {
+  const ancestorAtLimit = (path: string) => { for (let i = 0; i < MAX_WALK_UP; i++) path = dirname(path); return path; };
+
+  it("proves a missing bounded ancestor once instead of probing every impossible descendant", () => {
+    const root = resources.makeTmpDir("ave-missing-suffix-");
+    const path = join(root, "missing", ...Array.from({ length: MAX_WALK_UP + 8 }, () => "x"), "leaf");
+    const exists = vi.mocked(filesystem.existsSync).mockClear();
+    const metadata = vi.mocked(filesystem.lstatSync).mockClear();
+    expect(createPathCanonicalizer()(path)).toBe(foldCanonicalPathSeparators(path));
+    expect(metadata).toHaveBeenCalledExactlyOnceWith(ancestorAtLimit(path));
+    expect(exists).not.toHaveBeenCalled();
+  });
+
+  it("preserves original fallback bytes and sibling observations for a length-invalid prefix", () => {
+    const root = resources.makeTmpDir("ave-length-suffix-");
+    const path = join(root, ...Array.from({ length: MAX_WALK_UP + 8 }, () => "x"), "cafe\u0301");
+    const sibling = join(dirname(path), "other");
+    const expected = canonicalizePathForMatch(path);
+    const expectedSibling = canonicalizePathForMatch(sibling);
+    const metadata = vi.mocked(filesystem.lstatSync).mockClear().mockImplementation(() => { throw Object.assign(new Error("Path is too long"), { code: "ENAMETOOLONG" }); });
+    const exists = vi.mocked(filesystem.existsSync).mockClear();
+    const observe = createPathCanonicalizer();
+    expect(observe(path)).toBe(expected);
+    expect(observe(path)).toBe(expected);
+    expect(observe(sibling)).toBe(expectedSibling);
+    expect(metadata).toHaveBeenCalledExactlyOnceWith(ancestorAtLimit(path));
+    expect(exists).not.toHaveBeenCalled();
+  });
+
+  it("retains child-first link resolution when the bounded ancestor exists", () => {
+    const root = resources.makeTmpDir("ave-existing-suffix-");
+    const prefix = join(root, ...Array.from({ length: MAX_WALK_UP + 4 }, () => "x"));
+    const physical = join(root, "physical");
+    mkdirSync(prefix, { recursive: true }); mkdirSync(physical);
+    symlinkSync(physical, join(prefix, "link"), "junction");
+    expect(createPathCanonicalizer()(join(prefix, "link", "leaf")))
+      .toBe(foldCanonicalPathSeparators(join(filesystem.realpathSync.native(physical), "leaf")));
+  });
+
+  it.each(["EACCES", "EPERM", "ELOOP", "EIO", "UNKNOWN"])("keeps the original accessible-child result after ancestor metadata error %s", code => {
+    const root = resources.makeTmpDir("ave-denied-suffix-");
+    const path = join(root, ...Array.from({ length: MAX_WALK_UP + 8 }, () => "x"), "leaf");
+    const target = join(root, "resolved-child");
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(() => { throw Object.assign(new Error("Metadata unavailable"), { code }); });
+    const exists = vi.spyOn(filesystem, "existsSync").mockReturnValue(true);
+    vi.spyOn(filesystem.realpathSync, "native").mockReturnValue(target);
+    expect(createPathCanonicalizer()(path)).toBe(foldCanonicalPathSeparators(target));
+    expect(exists).toHaveBeenCalledExactlyOnceWith(path);
+  });
+
+  it("does not preflight beyond a previously observed intermediate prefix", () => {
+    const root = resources.makeTmpDir("ave-known-suffix-");
+    const prefix = join(root, ...Array.from({ length: 32 }, () => "x"));
+    const observe = createPathCanonicalizer();
+    observe(prefix);
+    const metadata = vi.spyOn(filesystem, "lstatSync");
+    const path = join(prefix, ...Array.from({ length: 40 }, () => "y"), "leaf");
+    expect(observe(path)).toBe(foldCanonicalPathSeparators(path));
+    expect(metadata).not.toHaveBeenCalled();
+  });
+
+  it.each(["\\\\server\\share\\" + "x\\".repeat(72) + "leaf", "/" + "x/".repeat(70) + "../leaf"])("keeps namespace or parent-ambiguous input on the original walk: %s", path => {
+    vi.spyOn(filesystem, "existsSync").mockReturnValue(false);
+    const metadata = vi.spyOn(filesystem, "lstatSync");
+    createPathCanonicalizer()(path, true);
+    expect(metadata).not.toHaveBeenCalled();
   });
 });

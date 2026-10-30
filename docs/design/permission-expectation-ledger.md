@@ -1288,3 +1288,7 @@ Global Allow writes (`default`), sandboxed=true:
 The permission outcome assertion already required allow/read-only-shell and remains unchanged. The stale Windows metadata pin `unproven:true` becomes `unproven:false`; both now explicitly require readOnlyProven:true as well as unchanged sandboxed:true and destructive:false. This follows the newly supported known-safe read-only cmdlet proof rather than external interpreter startup authority.
 
 The neighboring `Copy-Item src out -Recurse` keeps exactly its prior platform-dependent decision and unproven value (Windows ordinary approval/unproven; non-Windows sandbox-auto/proven). It additionally pins readOnlyProven:false. Every traversal predicate, no-force/no-floor assertion, and later Allow-mode result remains unchanged.
+
+### Bounded canonicalization work
+
+No permission expectation, 40 ms threshold, sample count, timeout or parser cap changes. New canonicalization cases prove exact fallback-byte equivalence, inaccessible-ancestor child resolution, first-observed cached prefixes, linked descendants and conservative namespace handling. The optimization replaces redundant filesystem probes only after a structural refusal at the original walk boundary; access and unknown errors preserve the original walk. The existing literal-path outcome assertions remain unchanged after the hosted timing failures.
