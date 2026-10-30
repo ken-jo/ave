@@ -1,10 +1,11 @@
+import { bindShellSyntaxSnapshot, shellSyntaxObservation } from "../shared/shell-syntax-cache.js";
 import { readShellOptionValue as readOptionValue } from "../shared/shell-option-value.js";
 import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
 import { literalShellBodies, literalShellPathFacts, literalShellPathSnapshot, shellLiteralFragments, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
 import { isAbsolute, join } from "node:path";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
-import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
+import { displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
@@ -1945,7 +1946,12 @@ export function inspectPosixShellPermissionPaths(command: string, cwd: string, f
   credentialStore?: string;
 } {
   if (literalBudget.depth >= 16 || literalBudget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: { kind: "analysis-limit", reason: "Shell analysis total token limit exceeded" } };
-  prepared ??= { command, analysis: analyzeShell(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }) };
+  if (prepared !== undefined) bindShellSyntaxSnapshot(prepared, literalBudget.tokens);
+  if (prepared === undefined) {
+    const observation = shellSyntaxObservation(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }, literalBudget.tokens);
+    if ("parserError" in observation) throw observation.parserError;
+    prepared = { command, analysis: observation.analysis };
+  }
   const paths: PermissionPathEvidence[] = [];
   let unknownProtectedWrite: string | undefined;
   const credentialStoreEvidence: { reason?: string } = {};

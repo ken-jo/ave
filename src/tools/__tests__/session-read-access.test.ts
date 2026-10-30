@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import { ToolRegistry } from "../registry.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { getBuiltinShellSessionReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
-import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadRoot, isConfiguredSessionReadPath, isSensitivePath } from "../../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, createConfiguredSessionReadPathMatcher, createPathCanonicalizer, createPermissionPathEvidence, getConfiguredSessionReadRoot, isConfiguredSessionReadPath, isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { assertReadableFilePath } from "../file-read-core.js";
 import { ensureFileAccess } from "../file-access-policy.js";
@@ -40,6 +40,31 @@ afterEach(async () => {
 });
 
 describe("configured saved-session access", () => {
+  it("keeps read and write evidence separate while sharing root observations", () => {
+    const evidence = createPermissionPathEvidence(context.cwd);
+    const read = evidence({ lexical: transcript, canonical: canonical(transcript), effect: "read" });
+    const write = evidence({ lexical: transcript, canonical: canonical(transcript), effect: "write" });
+    expect(read.secret).toBeNull();
+    expect(read.admissionDenial).toBeNull();
+    expect(write.secret).not.toBeNull();
+    expect(write.protectedControl).toBeDefined();
+    const hostKey = join(profile, "keys", "host-key.json");
+    expect(evidence({ lexical: hostKey, canonical: canonical(hostKey), effect: "read" }).admissionDenial).not.toBeNull();
+  });
+
+  it("refreshes session-root authority when a new decision observes a changed directory link", () => {
+    const original = createConfiguredSessionReadPathMatcher(createPathCanonicalizer());
+    expect(original(canonical(transcript))).toBe(true);
+    renameSync(sessions, sessions + "-saved");
+    symlinkSync(context.cwd, sessions, "junction");
+    const canonicalize = createPathCanonicalizer();
+    const fresh = createConfiguredSessionReadPathMatcher(canonicalize);
+    expect(getConfiguredSessionReadRoot(canonicalize)).toBeUndefined();
+    expect(fresh(canonical(transcript))).toBe(false);
+    const evidence = createPermissionPathEvidence(context.cwd);
+    expect(evidence({ lexical: transcript, canonical: canonical(transcript), effect: "read" }).secret).not.toBeNull();
+  });
+
   it("reads and discovers real history through the public file surfaces outside the project", async () => {
     expect(getConfiguredSessionReadRoot()).toBe(canonicalizePathForMatch(sessions));
     expect(ensureFileAccess(transcript, context, "read")).toBeNull();

@@ -553,6 +553,7 @@ export interface PermissionPathEvidence {
 /** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
 export function createPermissionPathEvidence(projectRoot: string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
+  const canonicalize = createPathCanonicalizer();
   const root = normalize(projectRoot);
   const within = (value: string) => value === root || value.startsWith(root + "/");
   const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
@@ -565,7 +566,7 @@ export function createPermissionPathEvidence(projectRoot: string): (path: { lexi
     if (previous) return { ...path, ...previous };
     let matcher = matchers.get(path.effect);
     if (!matcher) {
-      matcher = { secret: createSensitivePathMatcher(path.effect), admission: createAdmissionDeniedPathMatcher(path.effect) };
+      matcher = { secret: createSensitivePathMatcher(path.effect, undefined, canonicalize), admission: createAdmissionDeniedPathMatcher(path.effect, undefined, canonicalize) };
       matchers.set(path.effect, matcher);
     }
     const observation = {
@@ -608,10 +609,10 @@ export function policyMatchPaths(filePath: string): readonly string[] {
 }
 
 // Resolve only the primary session namespace, without materializing it.
-export function getConfiguredSessionReadRoot(): string | undefined {
-  const home = canonicalizePathForMatch(aveHome());
+export function getConfiguredSessionReadRoot(canonicalize: (path: string) => string = canonicalizePathForMatch): string | undefined {
+  const home = canonicalize(aveHome());
   const lexicalRoot = foldCanonicalPathSeparators(sessionStorePath(home));
-  const canonicalRoot = canonicalizePathForMatch(lexicalRoot);
+  const canonicalRoot = canonicalize(lexicalRoot);
   // A relocated application root is valid. A sessions-directory link must not turn that single namespace into a grant for some other host directory.
   if (caseFoldForMatch(canonicalRoot) !== caseFoldForMatch(lexicalRoot)) return undefined;
   // The native filesystem policy interprets these as patterns, not literals.
@@ -629,10 +630,10 @@ export function isConfiguredSessionReadPath(canonicalPath: string): boolean {
 }
 
 // Snapshot the namespace once for one permission decision.
-export function createConfiguredSessionReadPathMatcher(): (canonicalPath: string) => boolean {
+export function createConfiguredSessionReadPathMatcher(canonicalize: (path: string) => string = canonicalizePathForMatch): (canonicalPath: string) => boolean {
   let snapshot: { root: string | undefined } | undefined;
   return (canonicalPath) => {
-    snapshot ??= { root: getConfiguredSessionReadRoot() };
+    snapshot ??= { root: getConfiguredSessionReadRoot(canonicalize) };
     return isSessionReadPathUnderRoot(canonicalPath, snapshot.root);
   };
 }
@@ -832,7 +833,7 @@ function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | 
       return "runtime-settings-file";
     }
     roots ??= {
-      session: effect === "read" ? getConfiguredSessionReadRoot() : undefined,
+      session: effect === "read" ? getConfiguredSessionReadRoot(canonicalize) : undefined,
       keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
     };
     const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);

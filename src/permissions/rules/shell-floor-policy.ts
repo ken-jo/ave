@@ -57,7 +57,7 @@ export class ShellFloorContext {
   readonly visits = { frames: 0, stages: 0, lexes: 0, transfers: 0, walk: 0, inventory: 0, commands: 0, feeder: 0, code: 0, coverage: 0, codeNodes: 0, codeWordLinks: 0, codeSourceChars: 0, codeTokenFacts: 0, codeTokenUses: 0, codeCoverage: 0, codeRangeSteps: 0, staticTokens: 0, staticArguments: 0, staticChars: 0, staticNodes: 0, staticViews: 0 };
   readonly facts = new Map<string, unknown>();
   readonly canonicalize = createPathCanonicalizer();
-  readonly isSessionReadPath = createConfiguredSessionReadPathMatcher();
+  readonly isSessionReadPath = createConfiguredSessionReadPathMatcher(this.canonicalize);
   readonly locationUnder = createSensitiveLocationMatcher(this.canonicalize);
   private readonly match = createSensitivePathMatcher("read", undefined, this.canonicalize);
   private readonly matches = new Map<string, string | null>();

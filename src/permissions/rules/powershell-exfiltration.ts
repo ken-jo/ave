@@ -1,3 +1,4 @@
+import { bindShellSyntaxSnapshot } from "../../shared/shell-syntax-cache.js";
 import { literalShellBodies, literalShellPathFacts, literalShellPathSnapshot, literalShellFlow, recordLiteralShellFlow, type LiteralShellArgument, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 // One bounded parse supplies both exact raw identity and a single static floor pass.
 // Runtime values, generated code, callbacks and file mutation are never simulated.
@@ -1368,6 +1369,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   evidenceLimitExceeded?: true;
 } {
   if (budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: true, credentialStore: null, evidenceLimitExceeded: true };
+  if (typeof input !== "string") bindShellSyntaxSnapshot(input, budget.tokens);
   const parsed = asPowerShellCommand(input);
   budget.tokens.count += parsed.context.visits.grammarRecords;
   if (parsed.analysisLimited || budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: true, credentialStore: null, evidenceLimitExceeded: true };
@@ -1521,6 +1523,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
 
 export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }): ShellFloorSignals {
   if (budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
+  if (typeof input !== "string") bindShellSyntaxSnapshot(input, budget.tokens);
   return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget));
 }
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
