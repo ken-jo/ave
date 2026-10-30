@@ -201,3 +201,9 @@ At that checkpoint the local reconciliation was **23,931 passed, zero failures a
 Hosted Linux timing then passed at 25.06 / 35.41 / 11.81 ms; Windows retained one 45.50 ms failure. Actual-fixture profiling found 1,240 repeated compilations of the fixed namespace-denial catalogue per decision. Its 155 stateless matchers are now compiled once for each platform-case setting, bounded to two tables. Paths, roots, results and grants are not cached by those tables. Root changes and platform case behavior remain checked; filesystem observations are unchanged.
 
 The latest local reconciliation is **24,041 passed, zero failures and 157 inherited skips across 84 files** (`permission-latest-per-case.json`). The final isolated budget/lock/cache run passes **710/710** with unchanged limits. The specific timing probe passes at 8.32 / 11.45 / 7.27 ms; types and core hygiene pass. Hosted final-head confirmation remains separate from these local measurements.
+
+## Hosted validation recovery
+
+The normal source push passed 15 changed-file tests and 8,750 related/direct-consumer and lock tests across 54 selected files, with 183 inherited platform skips. These groups overlap the affected-case reconciliation above.
+
+A service disruption left the pull-request head behind the accepted branch ref. The existing manual workflow was dispatched at source head `2f6960a86c215e5874ffe91d87207856f510aeae` without changing the implementation: [validation run](https://github.com/ken-jo/ave/actions/runs/41076008723). Build/typecheck, Linux confinement and macOS permission paths have passed; remaining test and rollup outcomes must be checked before claiming hosted completion. Manual dispatch runs its existing coverage gate. The earlier-head results are not substitutes for this source-head validation.
