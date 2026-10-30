@@ -85,6 +85,7 @@ vi.mock("../services.js", () => ({
               return {};
           }
         }),
+        onChanged: vi.fn(() => () => {}),
         getSecret: vi.fn(() => undefined),
         getAll: vi.fn(() => ({})),
         deletePluginConfig: vi.fn(async () => undefined),

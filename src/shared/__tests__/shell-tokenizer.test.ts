@@ -3,6 +3,18 @@ import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { tokenizeShell } from "../shell-tokenizer.js";
 import { isReadOnlyShellLeaf } from "../../permissions/reviewer/host-risk-inspector.js";
+import { analyzeShell } from "../shell-analysis.js";
+
+describe("prepared risk projection", () => {
+  it("reuses matching syntax without changing its risk leaves", () => {
+    const command = "cat notes.txt > output.txt";
+    expect(tokenizeShell(command, { command, analysis: analyzeShell(command) })).toEqual(tokenizeShell(command));
+  });
+  it("rejects a prepared syntax tree belonging to another command", () => {
+    expect(() => tokenizeShell("cat notes.txt", { command: "cat notes.txt", analysis: analyzeShell("rm notes.txt") }))
+      .toThrow("Prepared shell analysis does not match the command");
+  });
+});
 
 describe("compound output risk projection", () => {
   it.each(['(cat source) >output', '{ cat source; } 2>&1'])("retains output effects for %s", (command) => {

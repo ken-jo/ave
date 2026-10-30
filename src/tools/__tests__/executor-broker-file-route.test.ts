@@ -99,11 +99,7 @@ function allowingExecutor(tool: Tool, root: string): ToolExecutor {
   const registry = new ToolRegistry();
   registry.register(tool);
   const permissionManager = new PermissionManager(join(root, "permissions.json"));
-  permissionManager.checkDetailed = () => ({
-    decision: "allow",
-    reason: "broker file route test",
-    layer: 5,
-  });
+  permissionManager.setMode("allow");
   const auditLogger = new AuditLogger(join(root, "audit"));
   auditLoggers.push(auditLogger);
   return new ToolExecutor(
@@ -204,8 +200,11 @@ describe("executor canonical file workload-broker route", () => {
     vi.useFakeTimers();
     const tool = new ReadFileTool();
     let brokerSignal: AbortSignal | undefined;
+    let entered!: () => void;
+    const brokerEntered = new Promise<void>((resolve) => { entered = resolve; });
     broker.execute.mockImplementationOnce(async (_capability, _operation, _payload, _authority, signal) => {
       brokerSignal = signal as AbortSignal;
+      entered();
       await new Promise<void>((resolve) => {
         setTimeout(resolve, resolveWorkloadBrokerInvocationBudgetMs(
           TOOL_TIMEOUT_POLICY.workloadBrokerFileOperationMs,
@@ -220,6 +219,7 @@ describe("executor canonical file workload-broker route", () => {
       { path: "/git/slow.txt" },
     );
     await vi.advanceTimersByTimeAsync(0);
+    await brokerEntered;
     await vi.advanceTimersByTimeAsync(resolveWorkloadBrokerInvocationBudgetMs(
       TOOL_TIMEOUT_POLICY.workloadBrokerFileOperationMs,
     ));
@@ -235,8 +235,11 @@ describe("executor canonical file workload-broker route", () => {
     const tool = new ReadFileTool();
     const caller = new AbortController();
     let brokerSignal: AbortSignal | undefined;
+    let entered!: () => void;
+    const brokerEntered = new Promise<void>((resolve) => { entered = resolve; });
     broker.execute.mockImplementationOnce(async (_capability, _operation, _payload, _authority, signal) => {
       brokerSignal = signal as AbortSignal;
+      entered();
       return await new Promise((resolve) => {
         brokerSignal!.addEventListener("abort", () => resolve({
           output: "Workload broker refused execution (request-aborted).",
@@ -254,6 +257,7 @@ describe("executor canonical file workload-broker route", () => {
       caller.signal,
     );
     await vi.advanceTimersByTimeAsync(0);
+    await brokerEntered;
     caller.abort(new Error("caller cancelled"));
     await vi.advanceTimersByTimeAsync(0);
 
@@ -264,7 +268,12 @@ describe("executor canonical file workload-broker route", () => {
   it("covers broker handshake, binary effect, receipt, and image decode before the view_image ceiling", async () => {
     vi.useFakeTimers();
     const tool = new ViewImageTool();
+    let entered!: () => void;
+    const brokerEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let decoding!: () => void;
+    const decodeEntered = new Promise<void>((resolve) => { decoding = resolve; });
     broker.execute.mockImplementationOnce(async () => {
+      entered();
       await new Promise<void>((resolve) => {
         setTimeout(resolve, resolveWorkloadBrokerInvocationBudgetMs(
           TOOL_TIMEOUT_POLICY.workloadBrokerFileOperationMs,
@@ -279,6 +288,7 @@ describe("executor canonical file workload-broker route", () => {
       };
     });
     imagePreparation.prepareImageBytes.mockImplementationOnce(async () => {
+      decoding();
       await new Promise<void>((resolve) => {
         setTimeout(resolve, TOOL_TIMEOUT_POLICY.imagePreparationMs);
       });
@@ -305,11 +315,14 @@ describe("executor canonical file workload-broker route", () => {
       { path: "/git/image.png" },
     );
     await vi.advanceTimersByTimeAsync(0);
+    await brokerEntered;
     await vi.advanceTimersByTimeAsync(
       resolveWorkloadBrokerInvocationBudgetMs(
         TOOL_TIMEOUT_POLICY.workloadBrokerFileOperationMs,
-      ) + TOOL_TIMEOUT_POLICY.imagePreparationMs,
+      ),
     );
+    await decodeEntered;
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.imagePreparationMs);
 
     await expect(resultPromise).resolves.toMatchObject({
       image: { mimeType: "image/png", bytes: 3 },

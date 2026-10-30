@@ -54,7 +54,10 @@ describe("bounded visible floor inspection", () => {
     try {
       const manager = new PermissionManager(join(directory, "permissions.json"));
       manager.setMode("allow");
-      expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: CWD }, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      const result = manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: CWD }, shellExecution: { runsSandboxed: true } });
+      expect(result).toMatchObject({ decision: "deny", layer: 1, reasonCode: "shell-analysis-limit" });
+      expect(result.reason).toMatch(/(?:nesting|recursion|depth|budget|limit)/i);
+      expect(result.forceModal).toBeUndefined();
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 

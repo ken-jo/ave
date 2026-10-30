@@ -179,12 +179,13 @@ describe("shell confinement and escape rules", () => {
   });
 
   describe("PowerShell on the MXC route", () => {
-    const checkPowerShell = (command: string) => {
+    const checkPowerShell = (command: string, headless = false) => {
       const hostShellExecutionPlan = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: mxcShellCapability(), shellSubstrate: "mxc" });
       return manager.checkDetailed("powershell", "builtin", "shell", null, {
         ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: dir },
         hostShellExecutionPlan,
         shellExecution: { runsSandboxed: hostShellExecutionPlan.sandboxed },
+        headless,
       });
     };
     it("routes uncertain traversal to ordinary approval and keeps known-safe read proof", () => {
@@ -215,11 +216,12 @@ describe("shell confinement and escape rules", () => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(true);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
       const result = checkPowerShell(command);
-      const staticConfined = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2", "Copy-Item src out -Recurse"].includes(command);
+      const staticGrammar = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2", "Copy-Item src out -Recurse"].includes(command);
+      const staticConfined = staticGrammar && process.platform !== "win32";
       expect(result).toMatchObject(staticConfined
         ? { decision: "allow", reasonCode: "sandboxed-shell" }
         : { decision: "ask", reasonCode: "shell-approval" });
-      if (staticConfined) expect(result.pipelineRequest?.shell).toMatchObject({ sandboxed: true, unproven: false, destructive: false });
+      if (staticGrammar) expect(result.pipelineRequest?.shell).toMatchObject({ sandboxed: true, unproven: !staticConfined, destructive: false });
       expect(result.forceModal).toBeUndefined();
       expect(result.pipelineRequest?.floor).toBeUndefined();
       manager.setMode("allow");
@@ -231,8 +233,8 @@ describe("shell confinement and escape rules", () => {
       "Get-ChildItem @options", "Get-ChildItem 'unterminated",
       "zip $flags a.zip d", "Compress-Archive src a.zip", "Compress-Archive -Path $p a.zip",
       "tar --c x.tar", "tar --a x.tar", "tar --u x.tar", "tar --lz4 -t -f x.tar",
-      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt", "robocopy src out $flags",
-      "robocopy --% a b /e", "xcopy --% a b /s", "findstr --% /s term src", "$env:X='/e'; robocopy --% a b %X%", "7z b x.7z", "7z d x.7z", "7z h x.7z", "7z i x.7z", "7z rn x.7z", "7z unknown x.7z",
+      "xcopy src out /s/d:$date", "findstr /s/c:$needle notes.txt",
+      "findstr --% /s term src", "7z b x.7z", "7z d x.7z", "7z h x.7z", "7z i x.7z", "7z rn x.7z", "7z unknown x.7z",
     ])("uses ordinary mode policy for undecidable traversal %s", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
@@ -243,12 +245,14 @@ describe("shell confinement and escape rules", () => {
       expect(checkPowerShell(command).decision).toBe("allow");
     });
 
-    it.each(["tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "xcopy $from out"])("forces possibly protected mutation targets in %s", command => {
+    it.each(["tar $mode x.tar", "tar @flags x.tar", "7z $op x.7z", "xcopy $from out",
+      "robocopy src out $flags", "robocopy --% a b /e", "xcopy --% a b /s", "$env:X='/e'; robocopy --% a b %X%"])("forces possibly protected mutation targets in %s", command => {
       expect(definitelyTraversesPowerShellRecursively(command)).toBe(false);
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
       for (const mode of ["strict", "default", "auto", "allow"] as const) {
         manager.setMode(mode);
         expect(checkPowerShell(command)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+        expect(checkPowerShell(command, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
       }
     });
 

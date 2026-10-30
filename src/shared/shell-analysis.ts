@@ -46,6 +46,14 @@ export type ShellStatement =
   | { kind: "unsupported"; source: ShellSpan; reason: string; redirected?: { body: ShellStatement; redirects: readonly ShellRedirect[] } };
 
 export type ShellAnalysis = { ok: true; program: ShellStatement; totalTokens?: number } | { ok: false; reason: string };
+export interface PreparedShellAnalysis { readonly command: string; readonly analysis: ShellAnalysis }
+
+export function validatePreparedShellAnalysis(command: string, prepared: PreparedShellAnalysis): ShellAnalysis {
+  if (prepared.command !== command || prepared.analysis.ok && prepared.analysis.program.source.raw !== command) {
+    throw new Error("Prepared shell analysis does not match the command");
+  }
+  return prepared.analysis;
+}
 
 export function literalWord(value: string, source: ShellSpan): ShellWord {
   return { source, parts: [{ kind: "literal", value }], preservesEmpty: true };

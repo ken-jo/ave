@@ -122,7 +122,10 @@ describe.each(["bash", "powershell"] as const)("literal lane bounds (%s)", (dial
         expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
         for (const spy of spies.filter(spy => spy !== spies[6])) expect(spy).not.toHaveBeenCalled();
       } else {
-        expect(result).toMatchObject({ decision: "allow", layer: 3, reasonCode: "rule-allow" });
+        expect(result).toMatchObject(dialect === "powershell" && process.platform === "win32"
+          ? { decision: "allow", layer: 6, reasonCode: "allow-mode" }
+          : { decision: "allow", layer: 3, reasonCode: "rule-allow" });
+        if (dialect === "powershell" && process.platform === "win32") expect(result.pipelineRequest?.rules?.allow).toBeUndefined();
         expect(result.forceModal).toBeUndefined();
         expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision).toBe("allow");
         expect(spies[dialect === "bash" ? 0 : 1]).toHaveBeenCalled();

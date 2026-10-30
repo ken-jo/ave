@@ -253,6 +253,6 @@ describe("literal exact-rule proof", () => {
       ? { decision: "allow", layer: 6, reasonCode: "allow-mode" } : { decision: "allow", layer: 3 });
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("allow");
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "allow", layer: 6, reasonCode: "allow-mode" } : { decision: "allow", layer: 3 });
+      ? { decision: "allow", layer: 6, reasonCode: "read-only-shell" } : { decision: "allow", layer: 3 });
   });
 });

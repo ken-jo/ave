@@ -222,6 +222,99 @@ describe("implicit and unresolved shell mutation targets", () => {
 });
 
 describe("shell target operand roles", () => {
+  it.each(["xcopy /E source .git/hooks", "copy.exe /b source .git/config", "robocopy /E source .git/hooks", "xcopy /E source out .git/hooks", "copy.exe /b source out .git/config"])("retains native copy destinations after slash options and excess operands: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ effect: "write", protectedControl: ".git" }));
+  });
+
+  it.each(["xcopy /E .git/hooks out", "copy.exe /b .git/config out", "robocopy /E .git/hooks out"])("keeps native copy source-only protected paths as reads: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ effect: "read" }));
+    expect(facts.paths.filter(path => path.protectedControl !== undefined)).toEqual([]);
+  });
+
+  it("retains an explicit native log output separately from the ordinary destination", () => {
+    const facts = inspectShellPermissionPaths("robocopy source out /LOG:.git/config", project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ canonical: join(project, ".git", "config"), effect: "write", protectedControl: ".git" }));
+  });
+
+  it.each(['xcopy "$SOURCE" out', 'copy.exe "$SOURCE" out', 'robocopy "$SOURCE" out'])("retains possible output-option injection in an unknown native source: %s", command => {
+    expect(inspectShellPermissionPaths(command, project).unknownProtectedWrite).toBeDefined();
+  });
+
+  it.each(["Set-Content .npmrc x", "Add-Content .npmrc x", "Out-File -FilePath .npmrc -InputObject x", "Set-Content -Path .npmrc -Value x"])("retains declared writer bindings across native argument inspection: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ canonical: join(project, ".npmrc"), effect: "write", protectedControl: ".npmrc" }));
+  });
+
+  it.each(["unknown-tool .npmrc x", "Set-Content out.txt .npmrc", "Set-Content -Path out.txt -Value .npmrc"])("does not turn writer data or unknown-tool data into destinations: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.unknownProtectedWrite).toBeUndefined();
+    expect(facts.paths.filter(path => path.protectedControl !== undefined)).toEqual([]);
+  });
+
+  it("keeps a declared copy source read-only while preserving moved-source mutation", () => {
+    const copied = inspectShellPermissionPaths("Copy-Item ~/.ssh/id_rsa out.txt", project);
+    expect(copied.unknownProtectedWrite).toBeUndefined();
+    expect(copied.paths).toContainEqual(expect.objectContaining({ effect: "read", secret: expect.any(String) }));
+    expect(copied.paths).toContainEqual(expect.objectContaining({ canonical: join(project, "out.txt"), effect: "write" }));
+    const moved = inspectShellPermissionPaths("Move-Item .git/config out.txt", project);
+    expect(moved.paths).toContainEqual(expect.objectContaining({ canonical: join(project, ".git", "config"), effect: "write", protectedControl: ".git" }));
+  });
+
+
+  it("retains the actual output effect of a read-like repository command", () => {
+    const facts = inspectShellPermissionPaths("git diff --output=.git/config", project);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ canonical: join(project, ".git", "config"), effect: "write", protectedControl: ".git" }));
+  });
+
+  it.each(["python3 opaque.py .git/config", "unknown-tool .git/config", "python3 -c 'print(1)' .git/config", "./.git/helper"])("does not infer a mutation from opaque program data or loading: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.unknownProtectedWrite).toBeUndefined();
+    expect(facts.paths.filter(path => path.protectedControl !== undefined)).toEqual([]);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ effect: "read" }));
+  });
+
+  it.each(["echo x > .git/config", "cp source .git/config", "git config core.hooksPath /tmp", 'cp source "$OUTPUT"'])("retains actual mutation roles despite ordinary program-data treatment: %s", command => {
+    const facts = inspectShellPermissionPaths(command, project);
+    expect(facts.unknownProtectedWrite !== undefined || facts.paths.some(path => path.protectedControl !== undefined)).toBe(true);
+  });
+
+  it("distinguishes a moved protected source from a copied read source", () => {
+    const moved = inspectShellPermissionPaths("mv .git/config out", project);
+    expect(moved.paths).toContainEqual(expect.objectContaining({ canonical: join(project, ".git", "config"), effect: "write", protectedControl: ".git" }));
+    const copied = inspectShellPermissionPaths("cp .git/config out", project);
+    expect(copied.paths).toContainEqual(expect.objectContaining({ canonical: join(project, ".git", "config"), effect: "read", protectedControl: undefined }));
+    expect(copied.paths.filter(path => path.protectedControl !== undefined)).toEqual([]);
+  });
+
+  it("retains opaque execution proof when its path argument has no mutation role", () => {
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    const result = manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command: 'python3 -c "$CODE" .git/config', cwd: project },
+      shellExecution: { runsSandboxed: true },
+    });
+    expect(result.pipelineRequest?.shell?.unproven).toBe(true);
+    expect(result.pipelineRequest?.floor).toBeUndefined();
+    expect(result).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+  });
+
+  it("keeps archive creation sources separate from extraction destinations", () => {
+    const archive = join(project, "x.tgz");
+    const create = inspectShellPermissionPaths(`tar -C ~ -czf ${JSON.stringify(archive)} .`, project);
+    expect(create.unknownProtectedWrite).toBeUndefined();
+    expect(create.paths).toContainEqual(expect.objectContaining({ canonical: archive, effect: "write" }));
+    expect(create.paths.some(path => path.effect === "read")).toBe(true);
+    expect(inspectShellPermissionPaths(`tar -C ~ -xzf ${JSON.stringify(archive)}`, project).unknownProtectedWrite).toBeDefined();
+  });
+
+  it("retains secret-read evidence for an unresolved home-relative reader operand", () => {
+    const facts = inspectShellPermissionPaths("cat ~/.ssh/id_rsa", project);
+    expect(facts.unknownProtectedWrite).toBeUndefined();
+    expect(facts.paths).toContainEqual(expect.objectContaining({ effect: "read", secret: expect.any(String) }));
+  });
+
   it.each(['pwsh -enc $env:PAYLOAD > out.txt', '$COMMAND > out.txt'])("keeps a literal current-command redirect outside callee opacity: %s", command => {
     const facts = inspectShellPermissionPaths(command, project);
     expect(facts.unknownProtectedWrite).toBeUndefined();

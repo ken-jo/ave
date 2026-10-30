@@ -10,7 +10,8 @@ function fileTypes(): Readonly<Record<string, keyof typeof FILE_TYPE_ROWS>> {
   const types = Object.fromEntries(Object.entries(FILE_TYPE_ROWS).flatMap(([type, extensions]) =>
     extensions.split(" ").map((extension) => [extension, type as keyof typeof FILE_TYPE_ROWS])));
   for (const [name, policy] of Object.entries(POWERSHELL_COMMAND_POLICIES)) {
-    if (policy.native) types[/\.[^./]+$/.exec(name)?.[0] ?? ""] ??= "opaque";
+    const extension = /\.[^./]+$/.exec(name)?.[0];
+    if (policy.native && extension !== undefined) types[extension] ??= "opaque";
   }
   return Object.freeze(types);
 }

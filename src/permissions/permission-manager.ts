@@ -1481,7 +1481,7 @@ export class PermissionManager {
     if (shellSignals?.exfiltration) floor ??= { code: "exfiltration", reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
     const shellPaths = command !== undefined && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
-      ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {} }) : undefined;
+      ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {} }, parsed) : undefined;
     const powerShellPaths = command !== undefined && ruleSubject?.dialect === "powershell" && ruleSubject.cwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, ruleSubject.cwd, shellExecution.environmentSnapshot ?? {}) : undefined;
     if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
@@ -1526,7 +1526,7 @@ export class PermissionManager {
       const argv = wrapped.ordinaryAsk === undefined && wrapped.code === undefined && wrapped.candidateRange === undefined && !wrapped.runtimeArgv && !wrapped.nestedDialect ? leaf.argv.slice(wrapped.index) : leaf.argv;
       return isDestructiveShellArgv(argv) || noReusableRuleReason(argv.map((arg) => arg ?? "")) !== null;
     })));
-    const readOnlyProven = context.shellReadOnlyProven ?? (command !== undefined && !analysisLimited && isReadOnlyCommand(command));
+    const readOnlyProven = context.shellReadOnlyProven ?? (command !== undefined && !analysisLimited && isReadOnlyCommand(command, parsed));
     // Meta is host dispatch metadata; normalize its authenticated contract to an effect kind.
     const effectKind = category === "meta" && !invalidMeta
       ? context.decisionOverride === "always-allow-with-audit" ? "read" : "write"

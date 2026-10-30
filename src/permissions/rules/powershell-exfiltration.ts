@@ -1235,12 +1235,13 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     const writes = effects.some((effect) => ["file-write", "provider-write"].includes(effect)) || destination !== undefined;
     if (!writes && !effects.some((effect) => ["read", "cwd-write", "network"].includes(effect))) continue;
     const effect = writes ? "write" : "read";
+    const sourceEffect = policy.sourceEffect ?? effect;
     const bindings = filesystemArgumentBindings(stage, stageEnvironment);
     unproven ||= bindings.unproven;
     if (writes && bindings.splat) unknownProtectedWrite ??= "Runtime splatting may replace the shell write destination.";
     const pathParameters = new Set(["path", "literalpath", "filepath", "destination", "destinationpath", "newname", "workingdirectory", ...(stage.name === "new-item" ? ["name"] : []), ...(destination?.parameters ?? [])]);
     for (const name of pathParameters) {
-      for (const binding of bindings.named.get(name) ?? []) add(binding, ["copy-item", "expand-archive"].includes(stage.name!) && ["path", "literalpath"].includes(name) ? "read" : effect, stage.name === "remove-item", name === "literalpath");
+      for (const binding of bindings.named.get(name) ?? []) add(binding, ["path", "literalpath"].includes(name) ? sourceEffect : effect, stage.name === "remove-item", name === "literalpath");
     }
     for (const binding of bindings.named.get("outfile") ?? []) add(binding, "write");
     if (!writes && !effects.some((effect) => ["read", "cwd-write"].includes(effect))) continue;
@@ -1248,14 +1249,14 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     const values = stage.name === "select-string" ? bindings.positional.slice(1) : bindings.positional;
     if (["copy-item", "expand-archive"].includes(stage.name!)) {
       const slots = [
-        { parameters: ["path", "literalpath"], effect: "read" as const },
+        { parameters: ["path", "literalpath"], effect: sourceEffect },
         { parameters: stage.name === "expand-archive" ? ["destinationpath"] : ["destination"], effect: "write" as const },
       ].filter(slot => !slot.parameters.some(name => bindings.named.has(name)));
       for (const [index, binding] of values.slice(0, slots.length).entries()) add(binding, slots[index]!.effect);
     } else {
       const count = ["move-item", "rename-item"].includes(stage.name!) ? 2 : 1;
       const candidates = bindings.ambiguous ? values : values.slice(0, count);
-      for (const binding of candidates) add(binding, effect, stage.name === "remove-item");
+      for (const [index, binding] of candidates.entries()) add(binding, index === 0 ? sourceEffect : effect, stage.name === "remove-item");
     }
     if (effects.includes("cwd-write")) {
       const target = bindings.named.get("path")?.[0] ?? bindings.named.get("literalpath")?.[0] ?? bindings.positional[0];

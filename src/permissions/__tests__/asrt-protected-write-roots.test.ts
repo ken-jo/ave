@@ -178,6 +178,31 @@ describe("the shared layer withholds grants under the protected floor", () => {
     ownHome.cleanup();
   });
 
+  it("preserves protected write and read separation beneath long hosted paths", () => {
+    setProcessPlatform("darwin");
+    const parent = root;
+    root = join(parent, "hosted-checkout-" + "x".repeat(24));
+    let ownHome: ReturnType<typeof createSandboxProcessHome> | undefined;
+    try {
+      const layoutValue = layout();
+      ownHome = layoutValue.ownHome;
+      const { protectedRoots, ordinaryRoots } = layoutValue;
+      const filesystem = buildPerCommandSandboxCustomConfig(wrapShapes.terminal([...protectedRoots, ...ordinaryRoots]))?.filesystem;
+      expect(filesystem?.allowWrite).toEqual([...protectedRoots, ...ordinaryRoots]);
+      expect(filesystem?.allowRead).toEqual([protectedRoots.at(-1)!, ...ordinaryRoots]);
+      for (const path of [...protectedRoots, ...ordinaryRoots]) {
+        const target = join(path, ".bash_profile");
+        expect(filesystem?.denyWrite?.some(entry => {
+          const base = typeof entry === "string" ? entry : entry.path;
+          return target === base || target.startsWith(base + sep);
+        }), target).toBe(true);
+      }
+    } finally {
+      ownHome?.cleanup();
+      root = parent;
+    }
+  });
+
   it("names each withheld grant and the deny covering it, so a later EROFS or ENOENT has a cause", () => {
     setProcessPlatform("linux");
     const { protectedRoots, ownHome } = layout();

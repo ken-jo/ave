@@ -33,6 +33,7 @@ const readTracked = (path: string) => {
 };
 const WORKFLOW_READERS = [
   "src/__tests__/packaging-discipline-source.test.ts",
+  "src/permissions/__tests__/sandbox-write-policy.test.ts",
   "test/scripts/git-inventory-gates.test.ts",
   "test/scripts/pre-push-source-policy.test.ts",
   "test/scripts/run-ci-suite.test.ts",
@@ -111,7 +112,9 @@ describe("pre-push scoped tier selection", () => {
     expect(scoped).toMatchObject({ tier: "fast", namedPaths: [".github/workflows/ci.yml"], relatedFiles: [], documentationEntries: [] });
     const selected = selectNamedPathTests(scoped.namedPaths, trackedTests, readTracked);
     expect(selected).toEqual(expect.arrayContaining(WORKFLOW_READERS));
-    expect(selected.every((test) => test.startsWith("test/scripts/") || test === "src/__tests__/packaging-discipline-source.test.ts"))
+    expect(selected.every((test) => test.startsWith("test/scripts/") ||
+      test === "src/__tests__/packaging-discipline-source.test.ts" ||
+      test === "src/permissions/__tests__/sandbox-write-policy.test.ts"))
       .toBe(true);
   });
 

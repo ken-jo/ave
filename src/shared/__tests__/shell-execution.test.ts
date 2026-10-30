@@ -129,6 +129,25 @@ describe.skipIf(process.platform==="win32")("typed shell execution and native ar
       { dialect: "bash", environment }, { path() {}, command() {} })).toThrow("Unsupported compound input or dynamic descriptor redirection");
   });
 
+  it("validates a prepared command's source before reusing its syntax", () => {
+    const { cwd, environment } = fixture();
+    const command = "cat README.md";
+    const analysis = analyzeShell(command);
+    for (const prepared of [{ command, analysis }, { command: "cat other.md", analysis }]) {
+      expect(() => inspectShellExecution("cat other.md", cwd, { dialect: "bash", environment },
+        { path() {}, command() {} }, undefined, prepared)).toThrow("Prepared shell analysis does not match the command");
+    }
+  });
+
+  it("charges prepared syntax and executed nested code to the same token budget", () => {
+    const { cwd, environment } = fixture();
+    const command = "bash -c ':'";
+    const analysis = analyzeShell(command);
+    expect(analysis).toMatchObject({ ok: true, totalTokens: 3 });
+    expect(() => inspectShellExecution(command, cwd, { dialect: "bash", environment },
+      { path() {}, command: event => inspectEmbeddedShellPrograms(event) }, 3, { command, analysis })).toThrow("Shell analysis total token limit exceeded");
+  });
+
   it("retains cwd and loop state at a known lexical break", () => {
     const { cwd, environment } = fixture();
     mkdirSync(join(cwd, "stage/first"), { recursive: true });

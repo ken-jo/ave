@@ -84,7 +84,7 @@ describe("literal evaluation approval", () => {
   ])("routes outer secret-read operands through the mode: $command", ({ dialect, command }) => {
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     manager.setRules([withCurrentShellRuleVersion({ pattern: exact(dialect, command), action: "allow" })]);
-    expect(check(command, dialect)).toMatchObject({ decision: "allow", layer: 6, reasonCode: dialect === "bash" ? "sandboxed-shell" : "allow-mode" });
+    expect(check(command, dialect)).toMatchObject({ decision: "allow", layer: 6, reasonCode: "allow-mode" });
   });
 
   it("keeps upload operands visible when one is spelled like an evaluator", () => {

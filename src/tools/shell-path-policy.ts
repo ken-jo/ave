@@ -2,7 +2,7 @@ import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
-import { displayShellWord, shellWordHasSingleField, staticShellWord, type ShellWord } from "../shared/shell-analysis.js";
+import { displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
@@ -18,6 +18,7 @@ import { classifySqliteArgumentSlots } from "./shell-sqlite-arguments.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE, type ShellOptionTable } from "./shell-option-tables.js";
 import { shellFloorParserBudgetExceeded } from "../permissions/rules/shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../shared/shell-analysis-limits.js";
+import { POWERSHELL_COMMAND_POLICIES } from "../permissions/rules/powershell-command-policy.js";
 
 type ShellPathPolicyViolationKind =
   | "dynamic-path"
@@ -289,6 +290,8 @@ interface ShellPathCandidate {
 
 interface OperandSlotClassification {
   nonPathIndices: ReadonlySet<number>;
+  /** File operands of a known reader retain read effects without proving its execution safe. */
+  operandEffect?: PathEffect;
   /** Program roles that require exact expansion even when they contain no literal file effect. */
   programIndices?: ReadonlySet<number>;
   /** Fixed child command boundary owned by an execution wrapper. */
@@ -898,9 +901,38 @@ function classifyTransferOperandSlots(argv: readonly string[], verb: string, tab
 }
 
 // Classify non-path argv slots and embedded file references; -- ends options.
+function classifyFindstrOperandSlots(argv: readonly string[], verbIndex: number): OperandSlotClassification {
+  const nonPathIndices = new Set<number>();
+  const extraCandidates: ShellPathCandidate[] = [];
+  let patternSupplied = false;
+  for (let index = verbIndex + 1; index < argv.length; index += 1) {
+    const value = argv[index]!;
+    if (value === "--%") { nonPathIndices.add(index); continue; }
+    const attached = /^[-/]([belrsixvnmpo]*[cfgda]):(.*)$/is.exec(value);
+    if (attached) {
+      nonPathIndices.add(index);
+      const option = attached[1]!.at(-1)!.toLowerCase();
+      if (option === "c" || option === "g") patternSupplied = true;
+      if (["f", "g", "d"].includes(option)) {
+        const paths = option === "d" ? attached[2]!.split(";") : [attached[2]!];
+        extraCandidates.push(...paths.filter(path => path.length > 0).map(path => ({ value: path, index, effect: "read" as const })));
+      }
+      continue;
+    }
+    if (/^[-/](?:[belrsixvnmpo](?:\/?[belrsixvnmpo])*|off(?:line)?)$/i.test(value)) {
+      nonPathIndices.add(index);
+      continue;
+    }
+    // Unknown options cannot prove a data exemption; their possible paths are still reads.
+    if (/^[-/]/.test(value)) continue;
+    if (!patternSupplied) { nonPathIndices.add(index); patternSupplied = true; }
+  }
+  return { nonPathIndices, extraCandidates, nestedCommands: [], dynamicExecution: null, operandEffect: "read" };
+}
+
 function classifyOperandSlots(argv: readonly string[]): OperandSlotClassification {
   const skip = new Set<number>();
-  const extraCandidates: { value: string; index: number }[] = [];
+  const extraCandidates: ShellPathCandidate[] = [];
   const nestedCommands: { value: string; index: number }[] = [];
   const programIndices = new Set<number>();
   let dynamicExecution: string | null = null;
@@ -909,6 +941,64 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   const head = argv[verbIndex];
   if (head === undefined) return empty;
   const verb = transferCommandVerb(head) ?? stripCommandPath(head).toLowerCase();
+  const tarCreation = verb === "tar" && tarCreatesArchive(argv);
+  const filePolicy = POWERSHELL_COMMAND_POLICIES[verb] ?? POWERSHELL_COMMAND_POLICIES[verb.replace(/\.exe$/u, "")];
+  if (filePolicy?.native !== undefined && filePolicy.destination?.position !== undefined) {
+    const nativeCopySwitches = /^(?:\/[a-z?]|\/-y|\/d(?::[^\\/]*)?|\/(?:[a-z]\/)+d:[^\r\n]*|\/(?:mir|purge|mov|move|compress|noclone|-?sparse|lev:\d+|mt(?::\d+)?|r:\d+|w:\d+|copy:[a-z]+|dcopy:[a-z]+|sec|secfix|timfix|xo|xn|xc|xx|xl|is|it|sl|sj|xj|xjd|xjf|fft|dst|256|njh|njs|ndl|nfl|np|eta|tee))$/iu;
+    const positional: number[] = [];
+    for (let index = 1; index < argv.length; index++) {
+      const argument = argv[index]!;
+      const output = /^\/(?:uni)?log\+?:(.*)$/iu.exec(argument);
+      const input = /^\/exclude:(.*)$/iu.exec(argument);
+      if (output || input) {
+        skip.add(index);
+        extraCandidates.push({ value: (output ?? input)![1]!, index, effect: output ? "write" : "read" });
+      } else if (nativeCopySwitches.test(argument)) skip.add(index);
+      else { skip.add(index); positional.push(index); }
+    }
+    for (const [position, index] of positional.entries()) extraCandidates.push({ value: argv[index]!, index,
+      effect: position === 0 && !argv.some(argument => /^\/(?:mov|move)$/iu.test(argument)) ? "read" : "write" });
+    return { ...empty, nonPathIndices: skip, extraCandidates };
+  }
+  if (filePolicy?.native === undefined && filePolicy?.effects.includes("file-write") && filePolicy.destination?.kind === undefined
+    && filePolicy.destination?.position !== undefined) {
+    const destination = filePolicy.destination;
+    const destinationPosition = filePolicy.destination.position;
+    const sourceEffect = filePolicy.sourceEffect ?? (filePolicy.effects.includes("read") ? "read" : "write");
+    const positional: number[] = [];
+    const bound = new Map<string, { value: string; index: number }>();
+    for (let index = 1; index < argv.length; index++) {
+      const argument = argv[index]!;
+      if (argument.startsWith("-")) {
+        skip.add(index);
+        const colon = argument.indexOf(":");
+        const key = argument.slice(1, colon < 0 ? undefined : colon).toLowerCase();
+        const parameters = filePolicy.parameters.filter(parameter => parameter.replace(/[?*]$/u, "").startsWith(key));
+        const parameter = parameters.length === 1 ? parameters[0] : parameters.find(parameter => parameter.replace(/[?*]$/u, "") === key);
+        if (!parameter || parameter.endsWith("?")) continue;
+        const valueIndex = colon < 0 ? ++index : index;
+        const value = colon < 0 ? argv[valueIndex] : argument.slice(colon + 1);
+        if (value === undefined) continue;
+        skip.add(valueIndex);
+        bound.set(parameter.replace(/[?*]$/u, ""), { value, index: valueIndex });
+      } else { skip.add(index); positional.push(index); }
+    }
+    if (!destination.variableParameters?.some(parameter => bound.has(parameter))) {
+      for (const [name, target] of bound) {
+        if (destination.parameters.includes(name)) extraCandidates.push({ ...target, effect: "write" });
+        else if (["path", "literalpath", "filepath"].includes(name)) extraCandidates.push({ ...target, effect: sourceEffect });
+      }
+      const positions = Array.from({ length: destinationPosition + 1 }, (_, position) => position).filter(position =>
+        position === destinationPosition ? !destination.parameters.some(parameter => bound.has(parameter))
+          : !["path", "literalpath", "filepath"].some(parameter => bound.has(parameter)));
+      for (const [position, index] of positional.entries()) {
+        const binding = positions[position];
+        if (binding === undefined) break;
+        extraCandidates.push({ value: argv[index]!, index, effect: binding === destinationPosition ? "write" : sourceEffect });
+      }
+    }
+    return { ...empty, nonPathIndices: skip, extraCandidates };
+  }
   // A short filename alias cannot prove which executable's grammar applies.
   if (process.platform === "win32" && /~[0-9]/.test(verb)) {
     return { ...empty, dynamicExecution: "unresolved short command name" };
@@ -922,6 +1012,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   if (verb === "git") return classifyGitCommitOperandSlots(argv);
   if (verb === "sqlite3") return classifySqliteArgumentSlots(argv);
   if (verb === "find") return classifyFindOperandSlots(argv, verbIndex);
+  if (verb === "findstr" || verb === "findstr.exe") return classifyFindstrOperandSlots(argv, verbIndex);
   if (["grep", "egrep", "fgrep"].includes(verb)) return classifyGrepOperandSlots(argv, verbIndex);
   if (verb === "pgrep") return classifyProcessPatternOperandSlots(argv, verbIndex);
   if (verb === "kill") {
@@ -934,7 +1025,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
     const listing = parseTarListing(argv.slice(verbIndex));
     if (listing) {
       for (let i = verbIndex + 1; i < argv.length; i += 1) skip.add(i);
-      extraCandidates.push(...listing.archivePaths.map((value, index) => ({ value, index: listing.archiveArgIndices[index]! })));
+      extraCandidates.push(...listing.archivePaths.map((value, index) => ({ value, index: listing.archiveArgIndices[index]!, effect: "read" as const })));
       return empty;
     }
   }
@@ -1000,7 +1091,11 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
           skip.add(index);
           const values = ["awk", "gawk", "mawk", "nawk"].includes(verb)
             ? operandPaths(carried.value, false, verb) : [carried.value];
-          extraCandidates.push(...values.map(value => ({ value, index })));
+          const effect: PathEffect | undefined = verb === "tar"
+            ? ["-f", "--file"].includes(carried.option) ? tarCreation ? "write" : "read"
+              : ["-C", "--directory"].includes(carried.option) ? tarCreation ? "read" : "write" : "read"
+            : undefined;
+          extraCandidates.push(...values.map(value => ({ value, index, ...(effect ? { effect } : {}) })));
         } else {
           if (isSed || spec.nestedCommandOptions?.has(carried.option)) programIndices.add(index);
           if (exempts(carried.value, index, carried.option)) {
@@ -1050,6 +1145,12 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
     if (!programTaken) {
       if (exempts(token, i)) skip.add(i);
       programTaken = true;
+    }
+  }
+  if (tarCreation) for (let index = 1; index < argv.length; index++) {
+    if (!skip.has(index) && !argv[index]!.startsWith("-")) {
+      skip.add(index);
+      extraCandidates.push({ value: argv[index]!, index, effect: "read" });
     }
   }
   return { nonPathIndices: skip, programIndices, extraCandidates, nestedCommands, dynamicExecution };
@@ -1259,6 +1360,10 @@ const DIRECT_PATH_MUTATORS = new Set(["tee", "mv", "touch", "mkdir", "mkfifo", "
 const SHELL_DATA_ONLY_COMMANDS = new Set(["echo", "printf", "tr", "true", "false", ":", "pwd"]);
 const NON_OUTPUT_COMMANDS = new Set(["ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "ssh", "git", "test", "["]);
 
+function tarCreatesArchive(argv: readonly string[]): boolean {
+  return argv.some(arg => ["--create", "--append", "--update", "--concatenate"].includes(arg) || /^-[^-]*[cruA]/u.test(arg));
+}
+
 function isUnknownWriteTarget(verb: string, index: number, argv: readonly (string | undefined)[], knownArgv: readonly string[], slots: OperandSlotClassification, word?: ShellWord): boolean {
   let prefix = "";
   for (const part of word?.parts ?? []) {
@@ -1270,7 +1375,14 @@ function isUnknownWriteTarget(verb: string, index: number, argv: readonly (strin
   if (SHELL_DATA_ONLY_COMMANDS.has(verb)) return false;
   if (slots.programIndices?.has(index)) return false;
   if (slots.extraCandidates.some((candidate) => candidate.index === index && candidate.effect === "write")) return true;
+  if (slots.extraCandidates.some((candidate) => candidate.index === index && candidate.effect === "read")) {
+    const name = stripCommandPath(knownArgv[0] ?? "").toLowerCase();
+    const policy = POWERSHELL_COMMAND_POLICIES[name] ?? POWERSHELL_COMMAND_POLICIES[name.replace(/\.exe$/u, "")];
+    const fixedPathPrefix = prefix.length > 0 && (!/^[-/]/u.test(prefix) || /[\\/]/u.test(prefix.slice(1)));
+    return policy?.native !== undefined && policy.destination?.position !== undefined && argv[index] === undefined && !fixedPathPrefix;
+  }
   if (slots.nonPathIndices.has(index) && !slots.extraCandidates.some((candidate) => candidate.index === index)) return false;
+  if (verb === "git" && (previous === "--output" || raw.startsWith("--output="))) return true;
   if (!NON_OUTPUT_COMMANDS.has(verb) && (previous !== undefined && SHELL_OUTPUT_PATH_OPTIONS.has(previous)
     || /^(?:--output(?:-file|-document)?|--out)=/u.test(raw)
     || /^-o[^-]/u.test(raw) || raw === "-o" && argv[index] === undefined)) return true;
@@ -1279,7 +1391,7 @@ function isUnknownWriteTarget(verb: string, index: number, argv: readonly (strin
   if (verb === "dd") return raw.startsWith("of=");
   if (verb === "tar") {
     if (parseTarListing(knownArgv)) return false;
-    const creates = knownArgv.some((arg) => ["--create", "--append", "--update", "--concatenate"].includes(arg) || /^-[^-]*[cruA]/u.test(arg));
+    const creates = tarCreatesArchive(knownArgv);
     if (previous === "-C" || previous === "--directory" || raw.startsWith("--directory=")) return true;
     if (previous === "-f" || previous === "--file" || /^-[^-]*f$/u.test(previous ?? "")) return creates;
     if (raw.startsWith("--file=") || /^-[^-]*f/u.test(raw)) return creates;
@@ -1312,7 +1424,7 @@ export function inspectUnknownNativeWriteArguments(argv: readonly (string | unde
   if (head === undefined) return undefined;
   const knownArgv = argv.map((value, index) => value ?? rawWords[index] ?? "");
   const verb = transferCommandVerb(head) ?? stripCommandPath(head).replace(/\.exe$/iu, "").toLowerCase();
-  knownArgv[0] = verb;
+  knownArgv[0] = head;
   const slots = classifyOperandSlots(knownArgv);
   for (let index = 1; index < argv.length; index++) {
     if (argv[index] === undefined && isUnknownWriteTarget(verb, index, argv, knownArgv, slots)) {
@@ -1328,7 +1440,7 @@ export function inspectUnknownNativeWriteLocation(argv: readonly (string | undef
   if (head === undefined) return undefined;
   const verb = transferCommandVerb(head) ?? stripCommandPath(head).replace(/\.exe$/iu, "").toLowerCase();
   const knownArgv = argv.map((value, index) => value ?? rawWords[index] ?? "");
-  knownArgv[0] = verb;
+  knownArgv[0] = head;
   const slots = classifyOperandSlots(knownArgv);
   for (let index = 1; index < argv.length; index++) {
     const value = argv[index];
@@ -1515,20 +1627,25 @@ export function findShellPathPolicyViolation(
   evidence?: PermissionPathEvidence[],
   onUnknownWrite?: (reason: string) => void,
   targetProof?: ShellWriteTargetProof,
+  prepared?: PreparedShellAnalysis,
 ): ShellPathPolicyViolation | null {
   const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot) : undefined;
   const resolvedEvidencePaths = evidence ? new Map<string, string>() : undefined;
   let unresolvedEvidence: ShellPathPolicyViolation | null = null;
-  const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
-  if (!evidence && nativeCwdViolation) return nativeCwdViolation;
-  const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
-  if (!evidence && cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
+  if (!evidence) {
+    const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
+    if (nativeCwdViolation) return nativeCwdViolation;
+    const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
+    if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
+  }
   const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect, deleting = false, role?: "directory"): void => {
     if (evidence && role === "directory") effect = "read";
     // Public standard-stream operands identify child descriptors; host resolution would inspect different resources.
     if (SHELL_DEVICE_PATHS.has(path)) return;
-    const nativeViolation = windowsShellPathViolation(path, label, effect);
-    if (!evidence && nativeViolation) throw new PathPolicyError(nativeViolation);
+    if (!evidence) {
+      const nativeViolation = windowsShellPathViolation(path, label, effect);
+      if (nativeViolation) throw new PathPolicyError(nativeViolation);
+    }
     // Check prepared HOME and OS home tilde anchors without granting either workspace authority.
     if (!evidence && (label === "~" || label.startsWith("~/"))) {
       for (const candidate of expandShellTildePaths(label)) {
@@ -1670,7 +1787,7 @@ export function findShellPathPolicyViolation(
         }
       }
       const leaf = commandLeaf(node, effective);
-      const effect: PathEffect = verb === "cd" ? evidence ? "read" : "write" : isReadOnlyShellLeaf(leaf, {ignoreRedirects:true}) ? "read" : "write";
+      const effect: PathEffect = slots.operandEffect ?? (verb === "cd" ? evidence ? "read" : "write" : isReadOnlyShellLeaf(leaf, {ignoreRedirects:true}) ? "read" : "write");
       if (!evidence && pathEffectIsConfined(effect, blockReadsOutsideWorkingDirectories)) {
         if (RECURSIVE_TRAVERSAL_COMMANDS.has(verb) && !(verb === "tar" && parseTarListing(knownArgv) && !projectedEnvironment.TAR_OPTIONS)) {
           throw new PathPolicyError({kind:"recursive-traversal",reason:buildRecursiveBlockMessage(head,verb),candidate:head});
@@ -1688,6 +1805,9 @@ export function findShellPathPolicyViolation(
         && (verb === "curl" || projectedSlots.programIndices?.has(index) || !projectedSlots.nonPathIndices.has(index) || projectedSlots.extraCandidates.some((path) => path.index === index)) ? [index] : []);
       for (const unknown of unknowns) {
         if (isUnknownWriteTarget(verb, unknown, argv, knownArgv, projectedSlots, words[unknown])) onUnknownWrite?.(`The write target may be protected: ${words[unknown]?.source.raw ?? "unresolved operand"}`);
+        else if (evidence && words[unknown]?.source.raw.startsWith("~/")) {
+          for (const candidate of expandShellTildePaths(words[unknown]!.source.raw)) checkPath(candidate, words[unknown]!.source.raw, projectedCwd, "read");
+        }
         if (!evidence) decline("unresolved command operand", words[unknown]);
         unresolvedEvidence ??= { kind: "dynamic-path", reason: "Shell path policy: unresolved command operand", candidate: words[unknown]?.source.raw };
       }
@@ -1705,7 +1825,7 @@ export function findShellPathPolicyViolation(
       const hostScriptReads = hostScriptInvocationReadPaths(argv, projectedEnvironment);
       for (const executable of executableHeads) {
         checkPath(executable.value, executable.word.source.raw, executable.cwd,
-          hostScriptReads.includes(executable.value) ? "read" : effect);
+          evidence || hostScriptReads.includes(executable.value) ? "read" : effect);
       }
       for (const wrapperPath of wrapperPaths) {
         checkPath(wrapperPath.value, wrapperPath.word.source.raw, wrapperPath.cwd, "read");
@@ -1731,20 +1851,22 @@ export function findShellPathPolicyViolation(
             const copySource = evidence && verb === "cp" && (index < knownArgv.length - 1
               || knownArgv.some((value) => value === "-t" || value.startsWith("--target-directory") || /^-[^-]*t/.test(value)));
             const inputFile = evidence && verb === "dd" && argument.startsWith("if=");
+            const operandEffect = evidence ? isUnknownWriteTarget(verb, index, argv, knownArgv, projectedSlots, words[index]) ? "write" : "read" : effect;
             checkPath(path, words[index]!.source.raw, projectedCwd,
-              copySource || inputFile || (index === 1 && hostScriptReads.includes(path)) ? "read" : effect,
+              copySource || inputFile || (index === 1 && hostScriptReads.includes(path)) ? "read" : operandEffect,
               ["rm", "rmdir", "unlink"].includes(verb) || (verb === "find" && knownArgv.includes("-delete")));
           }
         }
         for(const path of projectedSlots.extraCandidates){
           if (evidence && argv[path.index] === undefined) continue;
-          checkPath(path.value,words[path.index]!.source.raw,projectedCwd,path.effect ?? effect);
+          checkPath(path.value,words[path.index]!.source.raw,projectedCwd,!evidence && verb === "tar" ? effect : path.effect ?? (evidence
+            ? isUnknownWriteTarget(verb, path.index, argv, knownArgv, projectedSlots, words[path.index]) ? "write" : "read" : effect));
           // File-backed options are reads, but can redirect output at runtime.
           if(path.refuseAfterCheck)ambiguousTransferPath();
         }
       }
       inspectEmbeddedShellPrograms(event,outerSlots);
-    }}, evidence ? MAX_SHELL_ANALYSIS_TOKENS : undefined);
+    }}, evidence ? MAX_SHELL_ANALYSIS_TOKENS : undefined, prepared);
     return unresolvedEvidence;
   }catch(error){
     if(error instanceof PathPolicyError)return error.violation;
@@ -1755,7 +1877,7 @@ export function findShellPathPolicyViolation(
 
 /** Collect parsed operands, retaining repeated spellings and their individual effects.
  * A non-null unproven result means paths may be partial; route that uncertainty through the pipeline. */
-export function inspectShellPermissionPaths(command: string, cwd: string, facts: ShellExecutionFacts = { dialect: "bash", environment: {} }): {
+export function inspectShellPermissionPaths(command: string, cwd: string, facts: ShellExecutionFacts = { dialect: "bash", environment: {} }, prepared?: PreparedShellAnalysis): {
   paths: readonly PermissionPathEvidence[];
   unproven: ShellPathPolicyViolation | null;
   unknownProtectedWrite?: string;
@@ -1764,7 +1886,7 @@ export function inspectShellPermissionPaths(command: string, cwd: string, facts:
   const paths: PermissionPathEvidence[] = [];
   let unknownProtectedWrite: string | undefined;
   const targetProof: ShellWriteTargetProof = { dynamicWords: new Set(), boundTargets: new Set(), commands: 0, simpleDataCommand: true };
-  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof);
+  const unproven = findShellPathPolicyViolation(command, cwd, cwd, [], false, facts, paths, (reason) => { unknownProtectedWrite ??= reason; }, targetProof, prepared);
   const resolvedWriteTargetsOnly = unproven === null && !unknownProtectedWrite && targetProof.commands === 1 && targetProof.simpleDataCommand
     && targetProof.dynamicWords.size > 0 && [...targetProof.dynamicWords].every((word) => targetProof.boundTargets.has(word));
   return { paths, unproven, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(resolvedWriteTargetsOnly ? { resolvedWriteTargetsOnly: true as const } : {}) };

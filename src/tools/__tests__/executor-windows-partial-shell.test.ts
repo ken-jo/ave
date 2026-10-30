@@ -24,6 +24,7 @@ import { createDynamicTool, type Tool } from "../base.js";
 import { BashTool } from "../shell-tools.js";
 import { ToolExecutor, type ToolCallMeta } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
+import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { permissionManagerReturning as pmReturning } from "./executor-reviewer-fixtures.js";
 import {
@@ -163,14 +164,32 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     __resetSandboxRequestedAtBootForTest();
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockReset();
+    vi.unstubAllEnvs();
     setProcessPlatform(ORIGINAL_PLATFORM);
     rmSync(testRoot, { recursive: true, force: true });
   });
 
   it.each(["active", "off"])("binds native consent for explicit host with sandbox %s", async (sandbox) => {
+    vi.stubEnv("AVE_PRIVATE_TEST_MARKER", "fixture-not-forwarded");
     if (sandbox === "active") fullDarwinAsrt();
     else explicitlySandboxOff("darwin");
-    const executed = vi.fn();
+    const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 });
+    const checkDetailed = vi.spyOn(pm, "checkDetailed");
+    let environmentMatched = false;
+    let pwdMatched = false;
+    let privateMarkerRemoved = false;
+    let issuedEnvironmentKeys: string[] = [];
+    let checkedEnvironmentKeys: string[] = [];
+    const executed = vi.fn((context: import("../types.js").ToolExecutionContext) => {
+      expect(context.preparedShellInvocation).toBeDefined();
+      const issuedEnvironment = preparedShellFacts(context.preparedShellInvocation!).environment;
+      const checkedEnvironment = checkDetailed.mock.calls[0]?.[4]?.shellExecution?.environmentSnapshot;
+      environmentMatched = checkedEnvironment === issuedEnvironment;
+      pwdMatched = checkedEnvironment?.PWD === context.cwd;
+      privateMarkerRemoved = !Object.hasOwn(checkedEnvironment ?? {}, "AVE_PRIVATE_TEST_MARKER");
+      issuedEnvironmentKeys = Object.keys(issuedEnvironment).sort();
+      checkedEnvironmentKeys = Object.keys(checkedEnvironment ?? {}).sort();
+    });
     const registry = shellProbeRegistry(executed);
     let gate: ApprovalGate;
     const send = vi.fn((channel: string, request: ApprovalRequest) => {
@@ -180,8 +199,6 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     });
     const nativeWebContents = { isDestroyed: () => false, send };
     gate = new ApprovalGate(nativeWebContents as never);
-    const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 });
-    const checkDetailed = vi.spyOn(pm, "checkDetailed");
     const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
     const result = await executor.executeAll([{ id: "explicit-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { sessionId: "explicit-host", permissionContext: permissionContext() });
     expect(sentApprovalCards({ send })).toHaveLength(1);
@@ -189,7 +206,13 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(executed.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
     const checkedContext = checkDetailed.mock.calls[0]?.[4];
     expect(checkedContext?.hostShellExecutionPlan).toBe(executed.mock.calls[0][0].hostShellExecutionPlan);
-    expect(checkedContext?.shellExecution).toEqual({ runsSandboxed: false, pathPolicyRelaxations: [] });
+    const { environmentSnapshot: checkedEnvironment, ...executionFlags } = checkedContext!.shellExecution!;
+    expect(executionFlags).toEqual({ runsSandboxed: false, pathPolicyRelaxations: [] });
+    expect(checkedEnvironment !== undefined).toBe(true);
+    expect(environmentMatched).toBe(true);
+    expect(checkedEnvironmentKeys).toEqual(issuedEnvironmentKeys);
+    expect(pwdMatched).toBe(true);
+    expect(privateMarkerRemoved).toBe(true);
     expect(result[0].is_error).toBeUndefined();
   });
 

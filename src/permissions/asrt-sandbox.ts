@@ -685,6 +685,7 @@ export function buildPerCommandSandboxCustomConfig(
     admittedWindowsPolicies.get(grants)?.allowWrite ?? grants.allowWrite,
     _baseTrustedSettings?.userDataDir,
     sensitiveDenyWrite,
+    sensitiveDenyWrite.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
   );
   fs.allowWrite = process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
   const reasonKeys = {
@@ -1554,6 +1555,7 @@ export function buildSandboxConfig(
     admittedWindowsPolicies.get(trustedSettings)?.allowWrite ?? trustedSettings.allowWrite ?? [],
     trustedSettings.userDataDir,
     sensitiveDenyWrite,
+    sensitiveDenyWrite.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
   );
   const denyWriteUnion: FilesystemPathEntry[] = [];
   const denyWriteSeen = new Set<string>();

@@ -307,8 +307,8 @@ export function inspectLiteralShellArgv(argv: readonly (string | undefined)[], c
   return { sensitive, exfiltration };
 }
 
-interface StaticPass { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; commandCount: number; changesState?: true; unproven?: string; exactLiteralEvaluation?: true }
-function merge(into: StaticPass, value: StaticPass): void { into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.readsPath ||= value.readsPath; into.commandCount += value.commandCount; into.changesState ||= value.changesState; into.unproven ??= value.unproven; }
+interface StaticPass { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; commandCount: number; socketWrite?: true; changesState?: true; unproven?: string; exactLiteralEvaluation?: true }
+function merge(into: StaticPass, value: StaticPass): void { into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.socketWrite ||= value.socketWrite; into.readsPath ||= value.readsPath; into.commandCount += value.commandCount; into.changesState ||= value.changesState; into.unproven ??= value.unproven; }
 export interface IndexRange { from: number; to: number }
 export interface NativeArgvBoundary { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; ambiguous?: true }
 function inRange(range: IndexRange | undefined, index: number): boolean {
@@ -431,7 +431,10 @@ function inspectWord(word: ShellWord, cwd: string | undefined, context: ShellFlo
   return literal;
 }
 function inspectRedirect(redirect: ShellRedirect, cwd: string | undefined, context: ShellFloorContext, pass: StaticPass): void {
-  if (redirect.target) inspectWord(redirect.target, cwd, context, pass);
+  if (redirect.target) {
+    const target = inspectWord(redirect.target, cwd, context, pass);
+    if (redirect.effect === "write" && target !== undefined && /^\/dev\/(?:tcp|udp)\/[^/]+\/[^/]+$/.test(target)) pass.socketWrite = true;
+  }
   // Heredoc bodies are data. Quoted bodies are opaque slices; an unquoted
   // body's expansions make the command runtime-dependent, but its literal
   // text is never reinterpreted as a filesystem argument.
@@ -466,7 +469,20 @@ function inspectCommand(command: ShellCommand, cwd: string | undefined, context:
   const native = inspectLiteralShellArgvFacts(argv, cwd, context, payload, evaluation); pass.sensitive ??= native.sensitive; pass.exfiltration ??= native.exfiltration;
   // Literal output data can add a visible floor without requiring filesystem identity.
   if (proof.kind === "static-complete" && proof.dataOnly) context.unresolvedPath = unresolvedPath;
-  pass.network = native.network; pass.readsPath ||= native.readsPath;
+  pass.network ||= native.network; pass.readsPath ||= native.readsPath;
+  // A proven file-reader head still consumes possible file operands when their
+  // expansion is unknown; it must not lose that input flow at a socket redirect.
+  if (!pass.readsPath) {
+    for (const index of evaluation.headIndexes) {
+      const name = evaluation.headNames?.get(index) ?? programName(argv[index]);
+      if (name !== undefined && PATH_READERS.has(name)
+        && command.words.some((_, operand) => {
+          context.visits.staticTokens += 1;
+          return operand > index && !payload?.has(operand) && argv[operand] === undefined;
+        })) pass.readsPath = true;
+    }
+  }
+  if (pass.socketWrite && pass.readsPath) pass.network = true;
   if (pass.network && pass.readsPath) pass.exfiltration ??= "network command reads a file";
   return pass;
 }
@@ -478,13 +494,17 @@ function inspectStatement(statement: ShellStatement, cwd: string | undefined, co
     case "sequence":
       for (const value of statement.statements) child(value);
       break;
-    case "pipeline": { let read = false; for (const value of statement.statements) { const stage = inspectStatement(value, cwd, context); if (read && stage.network) stage.exfiltration ??= "network command fed from a file"; merge(pass, stage); read ||= stage.readsPath; } break; }
+    case "pipeline": { let read = false; for (const value of statement.statements) { const stage = inspectStatement(value, cwd, context); if (read && (stage.network || stage.socketWrite)) stage.exfiltration ??= "network command fed from a file"; merge(pass, stage); read ||= stage.readsPath; } break; }
     case "and": case "or":
       child(statement.left); child(statement.right);
       break;
     case "subshell": case "background": child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
     case "negate": child(statement.body); break;
-    case "redirected": for (const redirect of statement.redirects) inspectRedirect(redirect, cwd, context, pass); child(statement.body); break;
+    case "redirected":
+      for (const redirect of statement.redirects) inspectRedirect(redirect, cwd, context, pass);
+      child(statement.body);
+      if (pass.socketWrite && pass.readsPath) pass.exfiltration ??= "network command reads a file";
+      break;
     case "for": for (const value of statement.values ?? []) inspectWord(value, cwd, context, pass); child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
     case "while": child(statement.condition); child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
     case "if": child(statement.condition); child(statement.consequent); child(statement.alternate); pass.unproven ??= DYNAMIC_REASON; break;

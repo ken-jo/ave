@@ -1,6 +1,6 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve } from "node:path";
-import { analyzeShell, literalWord, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
+import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
 import { resolveShellFilesystemPath } from "./shell-filesystem-path.js";
@@ -118,8 +118,8 @@ function uniqueResults(results: readonly StateResult[]): StateResult[] {
 }
 
 /** Same original text and prepared child facts are inspected at both gates. */
-export function inspectShellExecution(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector, totalTokenLimit?: number): void {
-  const analysis = analyzeShell(command, "bash", totalTokenLimit === undefined ? undefined : { totalTokens: totalTokenLimit });
+export function inspectShellExecution(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector, totalTokenLimit?: number, prepared?: PreparedShellAnalysis): void {
+  const analysis = prepared === undefined ? analyzeShell(command, "bash", totalTokenLimit === undefined ? undefined : { totalTokens: totalTokenLimit }) : validatePreparedShellAnalysis(command, prepared);
   if (!analysis.ok) throw new ShellExecutionError(analysis.reason);
   let remainingTokens = totalTokenLimit;
   const chargeAnalysis = (parsed: Extract<ShellAnalysis, { ok: true }>): void => {

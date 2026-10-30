@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { PermissionManager } from "../permission-manager.js";
+import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "../rules/powershell-command-policy.js";
 import { inspectPowerShellPermissionPaths, powerShellRuleShape } from "../rules/powershell-exfiltration.js";
 
 let root: string;
@@ -214,4 +216,44 @@ it.each([
 
 it.each(["setsid --bogus cmdkey.exe /list", "& setsid --bogus cmdkey.exe /list"])("does not treat an uncertain wrapper operand as a bound credential-store operation: %s", command => {
   expect(inspectPowerShellPermissionPaths(command, project).credentialStore).toBeNull();
+});
+
+it("preserves explicit cmdlet aliases beside exact native executable names", () => {
+  expect(canonicalPowerShellName("copy")).toBe("copy-item");
+  expect(canonicalPowerShellName("cpi")).toBe("copy-item");
+  expect(canonicalPowerShellName("copy.exe")).toBe("copy.exe");
+  expect(POWERSHELL_COMMAND_POLICIES[canonicalPowerShellName("copy.exe")]?.native).toBe("opaque");
+  expect(canonicalPowerShellName("cmdkey")).toBe("cmdkey.exe");
+  expect(canonicalPowerShellName("xcopy.exe")).toBe("xcopy");
+});
+
+it.each(["strict", "default", "auto", "allow"] as const)("retains the protected destination of a mixed-binding copy alias in %s mode", mode => {
+  const manager = new PermissionManager(join(root, "permissions.json"));
+  manager.setMode(mode);
+  const command = "copy .git/config -LiteralPath notes.txt";
+  const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd: project }, shellExecution: { runsSandboxed: true } };
+  const pending = manager.checkDetailed("powershell", "builtin", "shell", null, context);
+  expect(pending).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+  expect(pending.reviewer).toBeUndefined();
+  expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }))
+    .toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+});
+
+it("retains a protected source as a read through the explicit copy alias", () => {
+  const command = "copy -LiteralPath .git/config out.txt";
+  const result = inspectPowerShellPermissionPaths(command, project);
+  expect(result.paths).toEqual(expect.arrayContaining([
+    expect.objectContaining({ canonical: join(project, ".git", "config"), effect: "read" }),
+    expect.objectContaining({ canonical: join(project, "out.txt"), effect: "write" }),
+  ]));
+  expect(result.paths.some(path => path.protectedControl !== undefined)).toBe(false);
+  expect(result.unknownProtectedWrite).toBeUndefined();
+  const manager = new PermissionManager(join(root, "permissions.json"));
+  manager.setMode("allow");
+  const decision = manager.checkDetailed("powershell", "builtin", "shell", null, {
+    ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: project }, shellExecution: { runsSandboxed: true },
+  });
+  expect(decision.decision).toBe("allow");
+  expect(decision.forceModal).toBeUndefined();
+  expect(decision.pipelineRequest?.floor).toBeUndefined();
 });

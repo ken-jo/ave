@@ -179,6 +179,8 @@ describe("producer wiring — the dispatch lanes thread the invocation cwd", () 
 
   it("dispatchReviewerForHeadless hands the classifier the canonical invocation cwd", async () => {
     const invocationCwd = makeRoot();
+    pm.setMode("auto");
+    await pm.ensureProjectRulesLoaded(invocationCwd);
     const evaluationContext = buildPermissionEvaluationContext({
       policyMode: "unmanaged",
       headless: true,

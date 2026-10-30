@@ -232,7 +232,7 @@ describe("config.set crosses as plain JSON and comes back as nothing", () => {
     expect(contract.arguments).toBe("plain-json");
     expect(contract.result).toBe("void");
     expect(contract.lifetime).toBe("none");
-    expect(contract.errors).toEqual([]);
+    expect(contract.errors).toEqual(["effect-boundary-denied"]);
   });
 
   it("reaches the host's own implementation with the plugin's key and value", async () => {

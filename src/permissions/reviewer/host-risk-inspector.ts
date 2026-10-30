@@ -1,5 +1,6 @@
 // Derive risk solely from host-owned evidence; unknown or path-bearing calls stay write-equivalent and only positive read-only proof can downgrade them. Do not trust plugin hints, perform I/O/global mutation or duplicate containment; isPathAllowed owns containment and the caller owns final permission (docs/architecture/architecture.md).
 import type { ToolCategory } from "../../tools/types.js";
+import type { PreparedShellAnalysis } from "../../shared/shell-analysis.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import { hasNetworkTarget } from "./network-target.js";
@@ -226,8 +227,8 @@ export function inspectHostRisk(signals: HostRiskSignals): ToolCategory {
 }
 
 // Every leaf must have a known read-only verb/form and no mutating flags; use the shared tokenizer. Parse failures, substitutions and all redirects fail closed, including input redirects whose paths argv checks cannot contain. Scan supported sed file/exec forms; exclude awk rather than pretend to parse its language.
-export function isReadOnlyCommand(command: string): boolean {
-  const { leaves, parseError } = tokenizeShell(command);
+export function isReadOnlyCommand(command: string, prepared?: PreparedShellAnalysis): boolean {
+  const { leaves, parseError } = tokenizeShell(command, prepared);
   if (parseError) return false;
   if (leaves.length === 0) return false;
   return leaves.every((leaf) => isReadOnlyShellLeaf(leaf));

@@ -4,7 +4,7 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
@@ -88,8 +88,9 @@ describe("PowerShell rule shape", () => {
 describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) rule", () => {
   it.each(["strict", "default", "auto", "allow"] as const)("matches the raw literal form exactly in %s mode", (mode) => {
     manager.setMode(mode);
-    const ordinary = mode === "allow" ? { decision: "allow", reasonCode: "allow-mode" } : ORDINARY_ASK;
-    const exact = mode === "allow" && UNPROVEN_STARTUP ? ordinary : EXACT_ALLOW;
+    const ordinary = mode === "allow" ? { decision: "allow", reasonCode: "allow-mode" }
+      : mode === "auto" ? { decision: "ask", layer: 6, reasonCode: "review-required" } : ORDINARY_ASK;
+    const exact = UNPROVEN_STARTUP ? ordinary : EXACT_ALLOW;
     expect(powershell("Get-ChildItem src", false)).toMatchObject(ordinary);
     manager.setRules(([{ pattern: "PowerShell(Get-ChildItem src)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(powershell("Get-ChildItem src", false)).toMatchObject(exact);
@@ -247,13 +248,20 @@ describe("PowerShell deny and ask rules meet every spelling of the command name"
 
 describe("PowerShell encoded code and literal rule proof", () => {
   const PAYLOAD = encodeScript("rm -rf /");
-  const check = (command: string, dialect: "powershell" | "bash", runsSandboxed: boolean) => manager.checkDetailed(dialect, "builtin", "shell", null, {
+  const check = (command: string, dialect: "powershell" | "bash", runsSandboxed: boolean, headless = false) => manager.checkDetailed(dialect, "builtin", "shell", null, {
+    headless,
     ruleSubject: { kind: "shell", dialect, command, cwd: dir },
     shellExecution: { runsSandboxed },
   });
 
   it.each(["powershell", "bash"] as const)("uses visible floors and sandbox authority (%s)", (dialect) => {
-    expect(check(dialect === "powershell" ? "Remove-Item -LiteralPath / -Recurse -Force" : "rm -rf /", dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true, reasonCode: "critical-delete" });
+    const criticalCommand = dialect === "powershell" ? "Remove-Item -LiteralPath / -Recurse -Force" : `rm -rf '${parse(dir).root.replace(/\\/g, "/")}'`;
+    expect(check(criticalCommand, dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true, reasonCode: "critical-delete" });
+    expect(check(criticalCommand, dialect, true, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+    if (dialect === "bash" && process.platform === "win32") {
+      expect(check("rm -rf /", dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true, reasonCode: "protected-path" });
+      expect(check("rm -rf /", dialect, true, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+    }
     const opaqueChild = check('pwsh -Command "rm -rf /"', dialect, true);
     expect(opaqueChild).toMatchObject({ decision: "ask", layer: 6, reasonCode: "shell-approval" });
     expect(opaqueChild.forceModal).toBeUndefined();

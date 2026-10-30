@@ -138,6 +138,29 @@ function resolvePolicyDenyPath(path: string): string {
   }
 }
 
+function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly string[]): string[] {
+  const keyFor = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
+  const inheritedKeys = new Set(inherited.map(path => {
+    while (path.endsWith(sep) && dirname(path) !== path) path = path.slice(0, -1);
+    return keyFor(path);
+  }));
+  const retained = new Set(inheritedKeys);
+  for (const path of [...paths].sort((left, right) => left.length - right.length)) {
+    const key = keyFor(path);
+    if (retained.has(key)) continue;
+    let parent = dirname(key);
+    while (parent !== dirname(parent) && !retained.has(parent)) parent = dirname(parent);
+    if (!retained.has(parent)) retained.add(key);
+  }
+  const emitted = new Set<string>();
+  return paths.filter(path => {
+    const key = keyFor(path);
+    if (inheritedKeys.has(key) || !retained.has(key) || emitted.has(key)) return false;
+    emitted.add(key);
+    return true;
+  });
+}
+
 function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, routingPins: Set<string>, discovery?: GitControlDiscovery): string {
   const resolved = inspectPhysicalFilesystemPath(path, cwd, MAX_MISSING_PATH_ANCESTORS);
   if (resolved.unresolvedParentTraversal) {
@@ -782,16 +805,18 @@ function addNestedGitControlPaths(
   return true;
 }
 
-// Sensitive/application literal denies include absent paths. Linux Git controls alone use existing entries plus a recoverable post-command quarantine sweep. Store locations come from their writers so changing a layout also changes this boundary. Existing sensitive-write protection is unioned separately. Its paths are inspected only for routing links; their owning union remains responsible for emitting the corresponding deny entries.
+// Sensitive/application literal denies include absent paths. Linux Git controls alone use existing entries plus a recoverable post-command quarantine sweep. Store locations come from their writers so changing a layout also changes this boundary. Routing paths supply identity only. Inherited write denies must be absolute literal denies independently emitted in the caller's final union; they can cover redundant descendants after every target is resolved.
 export function buildMandatorySandboxWritePolicy(
   writeRoots: readonly FilesystemPathEntry[],
   userDataDir?: string,
   protectedRoutingPaths: readonly string[] = [],
+  inheritedWriteDenies: readonly string[] = [],
 ): Pick<FilesystemConfig, "denyWrite"> & {
   allowWrite: string[];
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
+  if (inheritedWriteDenies.some(path => !isAbsolute(path) || /[*?\[\]]/.test(path))) throw new Error("Invalid inherited sandbox write deny");
   const rootSnapshots = writeRoots.map(entry => {
     const original = typeof entry === "string" ? entry : entry.path;
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
@@ -894,10 +919,15 @@ export function buildMandatorySandboxWritePolicy(
       || !roots.some(root => isPhysicalPathWithin(root, path))) routingPins.add(path);
   }
   // Preserve both the directory entry and its target when a setting is a link.
-  const entries: FilesystemPathEntry[] = [...new Set([...paths].flatMap((path) => [
+  const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => [
     path,
     resolvePolicyDenyPath(path),
-  ]))]
+  ]))];
+  // Resolve every child first so a linked loader keeps its physical deny even
+  // when its lexical spelling is already covered by a denied parent directory.
+  // Windows may omit an inherited deny during ACL narrowing; retain its full
+  // mandatory set until that later platform-specific decision has finished.
+  const entries: FilesystemPathEntry[] = minimalLiteralDenyPaths(resolvedDenyPaths, process.platform === "win32" ? [] : inheritedWriteDenies)
     .map((path) => /[*?\[\]]/.test(path) ? { path, literal: true } : path);
   // Linux consumes routing links only to revoke covering grants. Replaying one as a deny bind would follow its target and could mask an unrelated subtree.
   if (process.platform !== "linux") {
