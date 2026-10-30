@@ -31,7 +31,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, sep, resolve as pathResolve, relative as pathRelative, posix } from "node:path";
-import { globMatch } from "../lib/glob-matcher.js";
+import { compileGlobMatcher } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
@@ -608,6 +608,20 @@ export function policyMatchPaths(filePath: string): readonly string[] {
   return Object.freeze([normalized, normalized + "/"]);
 }
 
+const sessionRootDenyMatchers = new Map<boolean, readonly ((path: string) => boolean)[]>();
+
+function sessionRootMatchesCredentialPattern(path: string): boolean {
+  const insensitive = process.platform === "darwin" || process.platform === "win32";
+  let matchers = sessionRootDenyMatchers.get(insensitive);
+  if (matchers === undefined) {
+    // Only the fixed catalogue is compiled here; path observations and grants remain decision-local.
+    matchers = SENSITIVE_PATH_PATTERNS.filter(pattern => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern))
+      .map(pattern => compileGlobMatcher(pattern, { caseInsensitive: insensitive }));
+    sessionRootDenyMatchers.set(insensitive, matchers);
+  }
+  return matchers.some(matches => matches(path));
+}
+
 // Resolve only the primary session namespace, without materializing it.
 export function getConfiguredSessionReadRoot(canonicalize: (path: string) => string = canonicalizePathForMatch): string | undefined {
   const home = canonicalize(aveHome());
@@ -619,7 +633,7 @@ export function getConfiguredSessionReadRoot(canonicalize: (path: string) => str
   if (/[\0\r\n*?\[\]]/.test(canonicalRoot)) return undefined;
   // A configured application root inside a credential store cannot turn that store into an allowed native read subtree.
   if (policyMatchPaths(caseFoldForMatch(canonicalRoot)).some((candidate) =>
-    SENSITIVE_PATH_PATTERNS.some((pattern) => !READ_ONLY_NAMESPACE_PATTERNS.has(pattern) && globMatch(candidate, pattern)))) return undefined;
+    sessionRootMatchesCredentialPattern(candidate))) return undefined;
   return canonicalRoot;
 }
 

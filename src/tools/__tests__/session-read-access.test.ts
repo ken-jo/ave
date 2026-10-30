@@ -9,6 +9,7 @@ import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-g
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { getBuiltinShellSessionReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
 import { canonicalizePathForMatch, caseFoldForMatch, createConfiguredSessionReadPathMatcher, createPathCanonicalizer, createPermissionPathEvidence, getConfiguredSessionReadRoot, isConfiguredSessionReadPath, isSensitivePath } from "../../permissions/sensitive-paths.js";
+import * as globMatcher from "../../lib/glob-matcher.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { assertReadableFilePath } from "../file-read-core.js";
 import { ensureFileAccess } from "../file-access-policy.js";
@@ -40,6 +41,25 @@ afterEach(async () => {
 });
 
 describe("configured saved-session access", () => {
+  it("reuses only fixed pattern compilation while rechecking each configured root", () => {
+    expect(getConfiguredSessionReadRoot()).toBe(canonicalizePathForMatch(sessions));
+    const compile = vi.spyOn(globMatcher, "compileGlobMatcher");
+    try {
+      vi.stubEnv("AVE_HOME", join(root, ".ssh"));
+      expect(getConfiguredSessionReadRoot()).toBeUndefined();
+      const changed = join(root, "another-profile");
+      vi.stubEnv("AVE_HOME", changed);
+      expect(getConfiguredSessionReadRoot()).toBe(canonicalizePathForMatch(sessionStorePath(changed)));
+      expect(compile).not.toHaveBeenCalled();
+    } finally { compile.mockRestore(); }
+  });
+
+  it("keeps platform case matching while reusing fixed credential patterns", () => {
+    vi.stubEnv("AVE_HOME", join(root, ".SSH"));
+    if (process.platform === "darwin" || process.platform === "win32") expect(getConfiguredSessionReadRoot()).toBeUndefined();
+    else expect(getConfiguredSessionReadRoot()).toBe(canonicalizePathForMatch(sessionStorePath(join(root, ".SSH"))));
+  });
+
   it("keeps read and write evidence separate while sharing root observations", () => {
     const evidence = createPermissionPathEvidence(context.cwd);
     const read = evidence({ lexical: transcript, canonical: canonical(transcript), effect: "read" });

