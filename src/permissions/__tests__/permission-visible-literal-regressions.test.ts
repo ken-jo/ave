@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Session, type Profiler } from "node:inspector";
+import { gzipSync } from "node:zlib";
 import { PermissionManager } from "../permission-manager.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { canonicalRuleSpecifier } from "../rules/rule-specifier.js";
@@ -37,24 +39,50 @@ function check(command: string, dialect: ShellRuleDialect, sandboxed = false, he
 
 function measured(command: string, dialect: ShellRuleDialect, sandboxed: boolean) {
   const samples: number[] = [];
+  const starts: number[] = [];
   const results = [];
   for (let observation = 0; observation < 3; observation += 1) {
     const start = performance.now();
+    starts.push(start);
     const result = check(command, dialect, sandboxed);
     samples.push(performance.now() - start);
     results.push(result);
   }
-  return { samples, median: [...samples].sort((a, b) => a - b)[1]!, results };
+  return { starts, samples, median: [...samples].sort((a, b) => a - b)[1]!, results };
+}
+
+async function captureCostProfile<T>(observe: () => T): Promise<T> {
+  if (process.platform !== "win32") return observe();
+  const session = new Session();
+  session.connect();
+  const post = (method: "Profiler.enable" | "Profiler.start") => new Promise<void>((resolve, reject) => {
+    session.post(method, error => error ? reject(error) : resolve());
+  });
+  await post("Profiler.enable");
+  await post("Profiler.start");
+  process.stdout.write(`literal cost profile clock ${JSON.stringify({ now: performance.now(), monotonicMicros: Number(process.hrtime.bigint() / 1000n) })}\n`);
+  try { return observe(); }
+  finally {
+    try {
+      const profile = await new Promise<Profiler.Profile>((resolve, reject) => {
+        session.post("Profiler.stop", (error, result) => error ? reject(error) : resolve(result.profile));
+      });
+      const packed = gzipSync(JSON.stringify(profile)).toString("base64");
+      for (let offset = 0; offset < packed.length; offset += 6000) {
+        process.stdout.write(`literal cost profile ${offset / 6000} ${packed.slice(offset, offset + 6000)}\n`);
+      }
+    } finally { session.disconnect(); }
+  }
 }
 
 describe("visible literal decision regressions", () => {
-  it("bounds literal-body inspection without treating serialized argv as new code", () => {
+  it("bounds literal-body inspection without treating serialized argv as new code", async () => {
     manager.setMode("allow");
-    const observations = [64, 128, 256].map((repetitions) => {
+    const observations = await captureCostProfile(() => [64, 128, 256].map((repetitions) => {
       const command = `printf %s './${"AppData/Local/a/User Data/b/".repeat(repetitions)}tail'`;
       const timing = measured(command, "bash", true);
       return { repetitions, chars: command.length, ...timing };
-    });
+    }));
     process.stdout.write(`literal path timing ${JSON.stringify(observations)}\n`);
     for (const { repetitions, median, results } of observations) {
       expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
