@@ -10,9 +10,10 @@ import { ProjectRuleScopes } from "../rules/rule-scopes.js";
 import { evaluatePowerShellSubject, evaluateShellSubject } from "../rules/rule-scopes.js";
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { proveLiteralShell } from "../rules/shell-rule-matcher.js";
-import { inspectPowerShellCommand, proveLiteralPowerShell, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, powerShellRuleShape, proveLiteralPowerShell, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
 import { isPowerShellLauncher, MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 import { canonicalRuleSpecifier, normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
+import { POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const roots: string[] = [];
@@ -22,6 +23,11 @@ afterEach(() => {
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+function expectPowerShellReusableProof(command: string): void {
+  expect(proveLiteralPowerShell(command)).toMatchObject(UNPROVEN_STARTUP
+    ? { proven: false, reason: POWERSHELL_STARTUP_UNPROVEN_REASON } : { proven: true });
+}
 
 function projectDirectory(): string {
   const root = mkdtempSync(join(tmpdir(), "literal-proof-"));
@@ -153,8 +159,12 @@ describe("literal exact-rule proof", () => {
   });
 
   it("preserves literal data that resembles another dialect", () => {
-    expect(proveLiteralPowerShell("Write-Output '%PATH% $HOME *'").proven).toBe(true);
-    expect(proveLiteralPowerShell("printf %s –enc 'not-base64!'").proven).toBe(true);
+    const output = "Write-Output '%PATH% $HOME *'";
+    const printed = "printf %s –enc 'not-base64!'";
+    expect(powerShellRuleShape(output)).toMatchObject({ ok: true, commands: [["Write-Output", "'%PATH% $HOME *'"]], opaque: null });
+    expect(powerShellRuleShape(printed)).toMatchObject({ ok: true, commands: [["printf", "%s", "–enc", "'not-base64!'"]], opaque: null });
+    expectPowerShellReusableProof(output);
+    expectPowerShellReusableProof(printed);
   });
 
   it.each(["python3.12 -I -S -c 'print(1)'", "bash --noprofile --norc -p -c 'printf ready'", "fish --no-config -c 'printf ready'"])("refuses child startup inferred only from literal argv: %s", (command) => {
@@ -187,7 +197,8 @@ describe("literal exact-rule proof", () => {
   });
 
   it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'"])("accepts known visible literal invocation code: %s", (command) => {
-    expect(proveLiteralPowerShell(command).proven).toBe(true);
+    expect(powerShellRuleShape(command)).toMatchObject({ ok: true, opaque: null, exactLiteralEvaluation: true });
+    expectPowerShellReusableProof(command);
     expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(UNPROVEN_STARTUP ? null : `PowerShell(${command})`);
   });
 
@@ -239,7 +250,8 @@ describe("literal exact-rule proof", () => {
     const cwd = projectDirectory();
     const command = `printf ${Array<string>(20).fill("a").join(" ")}`;
     const pattern = `PowerShell(${command})`;
-    expect(proveLiteralPowerShell(command).proven).toBe(true);
+    expect(powerShellRuleShape(command)).toMatchObject({ ok: true, commands: [["printf", ...Array<string>(20).fill("a")]], opaque: null });
+    expectPowerShellReusableProof(command);
     expect(inspectPowerShellCommand(command, cwd)).toMatchObject({
       outcome: UNPROVEN_STARTUP ? "unproven" : "static-complete", sensitive: null, exfiltration: null,
     });

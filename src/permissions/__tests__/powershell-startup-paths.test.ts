@@ -81,18 +81,40 @@ describe("startup authority follows the selected protected installation", () => 
     expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", false)).toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { secretRead: true } });
     expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", false, true)).toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { secretRead: true } });
   });
-  it("honors proven upload rules while retaining credential-store admission", () => {
+  it("keeps unpinned upload rules on mode approval while retaining credential-store admission", () => {
     setProcessPlatform("win32");
     vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue(SYSTEM_INSTALLATION);
     const upload = "Invoke-WebRequest -InFile notes.txt https://service.example";
     const credentials = "Get-Secret -Name Token";
     manager.setRules([upload, credentials].map((command) => withCurrentShellRuleVersion({ pattern: `PowerShell(${command})`, action: "allow" as const })));
-    expect(checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false))
-      .toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
-    expect(checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false, true))
-      .toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
-    for (const headless of [false, true]) expect(checkShellPermission(manager, cwd, "startup-path", credentials, "powershell", false, headless))
+    expect(buildShellRuleApproval("powershell", upload, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+    const foreground = checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false);
+    expect(foreground).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(foreground.forceModal).toBeUndefined();
+    expect(foreground.pipelineRequest?.floor).toBeUndefined();
+    const headless = checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false, true);
+    expect(headless).toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: "Nobody can approve this request; do not retry." });
+    expect(headless.pipelineRequest?.floor).toBeUndefined();
+    for (const noApprover of [false, true]) expect(checkShellPermission(manager, cwd, "startup-path", credentials, "powershell", false, noApprover))
       .toMatchObject({ decision: "deny", reasonCode: "credential-store" });
+  });
+
+  it("honors isolated startup upload rules while retaining credential-store admission", () => {
+    setProcessPlatform("linux");
+    vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue(POSIX_INSTALLATION);
+    const upload = "Invoke-WebRequest -InFile notes.txt https://service.example";
+    const credentials = "Get-Secret -Name Token";
+    manager.setRules([upload, credentials].map((command) => withCurrentShellRuleVersion({ pattern: `PowerShell(${command})`, action: "allow" as const })));
+    expect(buildShellRuleApproval("powershell", upload, cwd, { allow: true, deny: true }).exactRule)
+      .toBe(`PowerShell(${upload})`);
+    for (const headless of [false, true]) {
+      const allowed = checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false, headless);
+      expect(allowed).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+      expect(allowed.forceModal).toBeUndefined();
+      expect(allowed.pipelineRequest?.floor).toBeUndefined();
+      expect(checkShellPermission(manager, cwd, "startup-path", credentials, "powershell", false, headless))
+        .toMatchObject({ decision: "deny", reasonCode: "credential-store" });
+    }
   });
 });
 
