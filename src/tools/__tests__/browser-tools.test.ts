@@ -662,15 +662,14 @@ describe("browser tools", () => {
       expect(result.isError, url).toBe(true);
     }
     expect(page.calls).toEqual([]);
-    // Non-HTTP targets fail admission; credential-carrying HTTP still requires exfil consent.
+    // Non-HTTP targets fail admission; credential-carrying HTTP follows ordinary upload consent.
     const invalidNavigationCards = cards.filter((card) => card.toolName === BROWSER_TOOL.navigate);
     expect(invalidNavigationCards).toHaveLength(1);
     expect(invalidNavigationCards[0].requireExplicit).toBe(true);
     expect(JSON.stringify(invalidNavigationCards[0].args)).not.toContain("user:pw@");
-    for (const card of invalidNavigationCards) {
-      expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-      expect(card.persistentAllowAllowed).toBe(false);
-    }
+    expect(invalidNavigationCards[0].allowedChoices).toBeUndefined();
+    expect(invalidNavigationCards[0].persistentAllowAllowed).toBe(true);
+    expect(invalidNavigationCards[0].approvalMemory).toMatchObject({ scope: { kind: "browser-origin", tabOpener: "agent" } });
     const refused = await run(BROWSER_TOOL.tabNew, { url: "javascript:alert(1)" });
     expect(refused.isError).toBe(true);
     expect(refused.output).toContain("Network target must use HTTP or HTTPS");

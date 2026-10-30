@@ -226,10 +226,10 @@ afterEach(() => {
 
 function requireLaneBehavior(fixture: EncodedCase): void {
   const { command, dialect } = fixture;
-  // #223 executable-bound startup admission: win32 outer startup stays unproven, including literal evaluators.
+  // Unproven outer startup cannot authorize reusable rules, including literal evaluators.
   const { expectedOutcome, exactEligible } = dialect === "powershell" && process.platform === "win32"
     && (fixture.expectedOutcome === "static-complete" || fixture.exactEligible)
-    ? EXPECTED_UNPROVEN : fixture;
+    ? { ...EXPECTED_UNPROVEN, expectedOutcome: fixture.expectedOutcome === "visible-floor" ? "visible-floor" : "unproven" } : fixture;
   const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
   const signals = dialect === "bash"
     ? shellFloors.inspectShellCommand(command, cwd)

@@ -1426,3 +1426,24 @@ The initial e528 restoration was narrowed for genuine safety-budget changes (not
 - shell-static-analysis existing eval payload loop: local project delete still matches an exact allow rule; literal upload from ~/.ssh/config remains ungrantable through this reusable proof because the independent sensitive-path proof restriction survives. Updated only the null-decision reason from exfiltration to the exact sensitive path reason; prior sensitive/exfil evidence assertions remain unchanged.
 
 Additional effect and origin cells: URL-open/auth/view/fetch requests now assert each ordinary mode, reviewer invocation and headless denial without a forced card. A simultaneous other-principal floor still forces once-only consent. Remembered-origin tests retain fresh assessment and origin checks, with normal consent replacing the former forced/no-memory condition. Scoped redirects preserve original-origin authority and reject a new origin outside that consent. Pipeline golden data separately covers genuine-floor precedence, explicit rules/grants and the exfil-specific headless case.
+
+### Hosted consumer follow-up for ordinary upload consent
+
+The complete four-shard and platform failure logs at `9b4fba34c` were checked against the same UG/R/F rows. This follow-up preserves the original upload commands; no upload fixture is silently replaced with a different operation.
+
+| Reader or boundary | Assertion change or source repair | Contract row |
+| --- | --- | --- |
+| permission-review-scenario-board | Original curl upload in Allow completes once with no forced card. Original critical delete and added protected mutation still force consent. | UG / F |
+| host-terminal-rules | Original upload uses the normal default surface card; a surface-session Allow permits it. Bash ask/deny precedence and a separate protected-write control remain. | UG / R / T / F |
+| executor-broker-shell-route | Original upload reaches the auto reviewer and ordinary cache; genuine protected mutation and critical deletion remain one-shot and skip that cache. | UG / J / F |
+| shell-unsandboxed-rules | Original uploads on each uncontained route honor their applicable explicit allow rule. Test-only output prevents a permitted fixture from making a real network call; exact rule reason, route, command and absence of card/review are asserted. Protected controls remain forced. | UG / R / F |
+| host-shell-execution-permit | Original upload no longer substitutes for a mandatory floor. Preserve its ordinary mode/rule result and separately prove that protected mutations cannot issue a rule execution permit. | UG / R / F |
+| judge-dispatch | Original secret-file curl upload in Allow uses allow-mode with no judge; the same upload with a grant uses rule-allow, and auto dispatches the configured judge once with original input, HIGH/model choice and one audit row. Protected and critical controls bypass the judge. | UG / R / J / F |
+| browser-tools | Credential HTTP still gets one normal consent card, with ordinary remembered-origin scope and choices; argument masking, rejection of unsupported URLs and exact approved-origin transport assertions remain. | UG / R / P |
+| shell-exfiltration (native Windows) | Eleven existing socket destinations × four modes, plus one secret/socket case, retain the independent protected-path floor for unresolved POSIX write identities. Broad shell grants cannot override that floor. Native POSIX ordinary upload/grant assertions remain. | F precedes UG / R |
+| powershell-network-rules | Literal child root deletion retains critical-delete in both dialects on Windows. Bare unresolved POSIX root behavior remains separately asserted. | F |
+| encoded-bypass-battery | Positive upload evidence retains its visible-floor inspection tag even on unpinned Windows startup; exact/session/persistent rule eligibility remains false. This evidence label grants no permission. | UG / R |
+| powershell reusable startup proof | Fix source rather than relaxing saved/exact rule expectations: positive visible upload/secret evidence is not startup authority. Canonical reusable proof independently requires pinned startup; saved allow replay uses that proof. Deny/ask visibility remains. | R / S |
+| runtime guidance and repository identity | Tighten permission prose to the unchanged 8,000-byte prompt budget; append only the current shipped guidance hash, retaining all historical hashes that protect customized guidance from replacement. No budget or identity assertion is changed. | Documentation integrity |
+
+Native Windows startup-proof and filesystem distinctions are not new skips or mode exceptions. The host startup refusal remains independent of ordinary Allow-mode authority.

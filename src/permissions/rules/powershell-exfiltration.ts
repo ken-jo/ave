@@ -1039,6 +1039,7 @@ export function proveLiteralPowerShell(input: PowerShellCommandInput): { proven:
   if (!shape.ok) return { proven: false, reason: shape.reason };
   if (shape.opaque !== null) return { proven: false, reason: shape.opaque };
   if (shape.commands.length === 0) return { proven: false, reason: "no command" };
+  if (!isPowerShellStartupPinned()) return { proven: false, reason: POWERSHELL_STARTUP_UNPROVEN_REASON };
   return { proven: true, commands: shape.commands as readonly (readonly string[])[] };
 }
 
