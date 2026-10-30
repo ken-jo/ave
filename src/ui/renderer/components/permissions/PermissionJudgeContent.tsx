@@ -88,7 +88,7 @@ function transportFor(stage: JudgeStage): JudgeTransport {
   return stage.provider === "builtin-llm" ? "builtin-llm" : stage.external?.url !== undefined ? "url" : "command";
 }
 
-export function PermissionJudgeContent() {
+export function PermissionJudgeContent({ reviewerModeInvalid = false }: { reviewerModeInvalid?: boolean }) {
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<PermissionJudgeSnapshot | null>(null);
   const [draft, setDraft] = useState<PermissionJudgeSettings | null>(null);
@@ -254,11 +254,20 @@ export function PermissionJudgeContent() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="permission-judge-mode">{t("permissionJudge.mode")}</Label>
-              <select id="permission-judge-mode" className={SELECT_CLASS} value={draft.chain.length === 0 ? "off" : draft.mode} onChange={(event) => {
-                const mode = event.target.value;
-                if (mode === "off") update({ ...draft, chain: [], mode: "shadow" });
-                else if (mode === "shadow" || mode === "active") update({ ...draft, mode, chain: draft.chain.length ? draft.chain : [nextStage([])] });
-              }}>
+              <select
+                id="permission-judge-mode"
+                className={SELECT_CLASS}
+                disabled={reviewerModeInvalid}
+                aria-describedby={reviewerModeInvalid ? "reviewer-mode-fault" : undefined}
+                value={reviewerModeInvalid ? "" : draft.chain.length === 0 ? "off" : draft.mode}
+                onChange={(event) => {
+                  if (reviewerModeInvalid) return;
+                  const mode = event.target.value;
+                  if (mode === "off") update({ ...draft, chain: [], mode: "shadow" });
+                  else if (mode === "shadow" || mode === "active") update({ ...draft, mode, chain: draft.chain.length ? draft.chain : [nextStage([])] });
+                }}
+              >
+                {reviewerModeInvalid && <option value="" disabled>{t("permissionJudge.modeChoiceRequired")}</option>}
                 <option value="off">{t("permissionJudge.off")}</option>
                 <option value="shadow">{t("permissionJudge.shadow")}</option>
                 <option value="active">{t("permissionJudge.active")}</option>

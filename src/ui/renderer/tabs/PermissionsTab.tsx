@@ -1068,6 +1068,7 @@ export function PermissionsTab({
           <div
             className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-3 text-sm"
             data-testid="reviewer-mode-fault"
+            id="reviewer-mode-fault"
             role="alert"
           >
             <p className="font-medium">{t("permissionsTab.reviewerModeFaultTitle")}</p>
@@ -1087,7 +1088,7 @@ export function PermissionsTab({
           </div>
         ) : null}
 
-        <PermissionJudgeContent />
+        <PermissionJudgeContent reviewerModeInvalid={reviewerModeInvalid} />
 
         {/* ── Section A: Permission Policy Preset ── */}
         <SettingsSection

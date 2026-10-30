@@ -2937,3 +2937,7 @@ approval, chain escalation, settings/model validation,
 the settings write floor, active-turn breaker sharing and recently denied routing.
 Module or mocked-classifier tests alone do not prove dispatch parity, Settings
 interaction or live-provider behavior; those require their own observed checks.
+
+#### Custom evaluators within automatic review
+
+The settings panel distinguishes reviewer availability (`llm | disabled`) from optional evaluator configuration within RV. The latter configures evidence providers for the single reviewer node, not another permission stage. Observation records the custom result while ordinary automatic review remains authoritative; applying custom results uses them only for requests already routed to RV. HIGH retains model choice and errors retain the normal card. Removing custom evaluators leaves ordinary review enabled. An invalid reviewer-mode fault leaves the custom evaluation selector disabled and unselected until explicit repair; saving other panel fields preserves that fault and the stored reviewer value. See inventory rows C15/C17, I03 and Q04 in the [decision inventory](../design/permission-decision-inventory.md).

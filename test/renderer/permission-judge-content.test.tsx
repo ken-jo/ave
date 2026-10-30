@@ -61,10 +61,10 @@ describe("approval judge settings", () => {
   it("defaults an added stage to shadow and saves a configured provider model exactly", async () => {
     const view = mount();
     try {
-      await screen.findByLabelText("Judge mode");
-      expect(screen.getByLabelText("Judge mode")).toHaveValue("off");
-      fireEvent.click(screen.getByRole("button", { name: "Add judge stage" }));
-      expect(screen.getByLabelText("Judge mode")).toHaveValue("shadow");
+      await screen.findByLabelText("Custom evaluation behavior");
+      expect(screen.getByLabelText("Custom evaluation behavior")).toHaveValue("off");
+      fireEvent.click(screen.getByRole("button", { name: "Add custom evaluator" }));
+      expect(screen.getByLabelText("Custom evaluation behavior")).toHaveValue("shadow");
       // Unset stage model: the stage runs on the permission reviewer model.
       expect(screen.getByLabelText("Judge model")).toHaveTextContent("Permission reviewer model");
       expect(view.judgeSet).not.toHaveBeenCalled();
@@ -132,12 +132,12 @@ describe("approval judge settings", () => {
     stored.chain = [{ id: "review", provider: "builtin-llm" }];
     const view = mount({ settings: stored });
     try {
-      await screen.findByLabelText("Judge mode");
-      for (let count = 0; count < 3; count++) fireEvent.click(screen.getByRole("button", { name: "Add judge stage" }));
-      expect(screen.getByRole("button", { name: "Add judge stage" })).toBeDisabled();
+      await screen.findByLabelText("Custom evaluation behavior");
+      for (let count = 0; count < 3; count++) fireEvent.click(screen.getByRole("button", { name: "Add custom evaluator" }));
+      expect(screen.getByRole("button", { name: "Add custom evaluator" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Remove stage 2" }));
-      expect(screen.getByRole("button", { name: "Add judge stage" })).toBeEnabled();
-      fireEvent.change(screen.getByLabelText("Judge mode"), { target: { value: "off" } });
+      expect(screen.getByRole("button", { name: "Add custom evaluator" })).toBeEnabled();
+      fireEvent.change(screen.getByLabelText("Custom evaluation behavior"), { target: { value: "off" } });
       expect(screen.queryByLabelText("Judge model")).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
       await screen.findByText("Judge settings saved.");
@@ -161,7 +161,7 @@ describe("approval judge settings", () => {
   it("refreshes clean windows and preserves unsaved edits until reload", async () => {
     const view = mount();
     try {
-      await screen.findByLabelText("Judge mode");
+      await screen.findByLabelText("Custom evaluation behavior");
       const current = settings();
       current.chain = [{ id: "saved-review", provider: "builtin-llm" }];
       view.judgeGet.mockResolvedValueOnce({ ok: true, settings: current, issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false, storedChainRejected: false });
@@ -185,7 +185,7 @@ describe("approval judge settings", () => {
   ] as const)("shows the recovery state for %s", async (error, message) => {
     const view = mount();
     try {
-      await screen.findByLabelText("Judge mode");
+      await screen.findByLabelText("Custom evaluation behavior");
       view.judgeSet.mockResolvedValueOnce({ ok: false, error });
       fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
       await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(message));

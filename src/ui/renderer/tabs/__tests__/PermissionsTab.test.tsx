@@ -2410,6 +2410,11 @@ describe("reviewer mode recovery", () => {
       expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultDescription"));
       expect(screen.getByTestId("reviewer-mode-repair-llm")).toHaveTextContent(locale === "ko" ? "자동 리뷰 사용" : "Use automatic review");
       expect(screen.getByTestId("reviewer-mode-repair-disabled")).toHaveTextContent(locale === "ko" ? "리뷰 끄기: auto 모드에서도 카드로 확인" : "Turn off review: auto asks with a card");
+      const judgeMode = screen.getByLabelText(t("permissionJudge.mode"));
+      expect(judgeMode).toBeDisabled();
+      expect(judgeMode).toHaveValue("");
+      expect(judgeMode).toHaveDisplayValue(locale === "ko" ? "선택 필요" : "Choose a mode");
+      expect(judgeMode).toHaveAttribute("aria-describedby", "reviewer-mode-fault");
       expect(screen.queryByTestId("permissions-load-error")).toBeNull();
       expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
       expect(document.body.textContent).not.toContain("private unsupported reviewer value");
@@ -2419,6 +2424,8 @@ describe("reviewer mode recovery", () => {
 
       expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", `mode ${recoveredMode}`]);
       expect(screen.queryByTestId("reviewer-mode-fault")).toBeNull();
+      expect(screen.getByLabelText(t("permissionJudge.mode"))).toBeEnabled();
+      expect(screen.getByLabelText(t("permissionJudge.mode"))).toHaveValue("off");
       expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
       expect(api.permission.setMode).not.toHaveBeenCalled();
       expect(settings.updateSettings).not.toHaveBeenCalled();
@@ -2426,6 +2433,40 @@ describe("reviewer mode recovery", () => {
     } finally {
       setLocale(previousLocale);
     }
+  });
+
+  it("saves an unrelated reviewer model without replacing an invalid reviewer mode or evaluator chain", async () => {
+    const api = installApi([[]]);
+    api.permission.reviewerDispatch.mockResolvedValue(invalidReviewerResult());
+    const judgeGet = mockJudgeGet({
+      modelOptions: [{ vendor: "claude", model: "available-reviewer" }],
+    });
+    const judgeSet = vi.fn(async (patch: { model: unknown }) => ({
+      ...(await judgeGet()), settings: { ...(await judgeGet()).settings, model: patch.model },
+    }));
+    Object.assign(api.permission, { judgeGet, judgeSet });
+    await renderPermissionsTab();
+
+    const judgeMode = screen.getByLabelText(t("permissionJudge.mode"));
+    expect(judgeMode).toBeDisabled();
+    expect(judgeMode).toHaveValue("");
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    const option = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+        .find((row) => row.textContent?.includes("available-reviewer"));
+      if (!found) throw new Error("chooser not open yet");
+      return found;
+    });
+    option.focus();
+    fireEvent.keyDown(option, { key: "Enter" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") })); });
+
+    expect(judgeSet).toHaveBeenCalledExactlyOnceWith({ model: { vendor: "claude", model: "available-reviewer" } });
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+    expect(screen.getByTestId("reviewer-mode-fault")).toBeVisible();
+    expect(screen.getByLabelText(t("permissionJudge.mode"))).toBeDisabled();
+    expect(screen.getByLabelText(t("permissionJudge.mode"))).toHaveValue("");
   });
 
   it("refreshes the saved repair choice while keeping a reconnect error visible", async () => {
