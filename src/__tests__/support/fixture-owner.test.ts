@@ -1,16 +1,36 @@
-import { mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { createLocalAppDataFixtureRoot, setFixtureOwner } from "./fixture-owner.js";
+import { createLocalAppDataFixtureRoot, resetFixtureAcls, setFixtureOwner } from "./fixture-owner.js";
 import { cleanupTmpDir } from "./tmp-dir-teardown.js";
+import { ensureAveHomePrivate } from "../../shared/ave-home.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const roots: string[] = [];
 afterEach(async () => {
-  for (const root of roots.splice(0)) await cleanupTmpDir(root);
+  for (const root of roots.splice(0)) {
+    resetFixtureAcls(root);
+    await cleanupTmpDir(root);
+  }
 });
 
 const refusal = /inside the test temporary directory or a registered %LOCALAPPDATA% fixture root/;
+
+it.runIf(process.platform === "win32")("deletes protected owner-only home descriptors after restoring fixture inheritance", async () => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-fixture-acl-")));
+  roots.push(root);
+  setFixtureOwner(root);
+  const home = join(root, "ave");
+  expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
+  mkdirSync(join(home, "config", "nested"));
+  writeFileSync(join(home, "config", "nested", "state.json"), "{}");
+  resetFixtureAcls(root);
+  await cleanupTmpDir(root);
+  expect(existsSync(root)).toBe(false);
+  roots.splice(roots.indexOf(root), 1);
+});
 
 it.runIf(process.platform === "win32")("accepts a directory inside the test temporary directory", () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "ave-fixture-owner-")));

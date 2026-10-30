@@ -1477,7 +1477,7 @@ keyed by conversation and surface. Missing/dismissed choice means ask; choices
 never persist across sessions. Auto reviews logical task/target consistency
 only, with normal-card fallback. Global mode and remembered generic grants do
 not bypass the choice; headless always denies. Admission, deny rules, genuine
-principal/taint floors and credential/payment protections remain enforced.
+principal/taint floors and credential/payment protections remain enforced. Upload evidence on either user-owned surface always uses a normal human card, bypassing session Allow/Auto and logical review; headless denies.
 
 The [terminal permission policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal)
 is canonical for exact command approval, authorized-project containment,

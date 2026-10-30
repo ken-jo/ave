@@ -509,6 +509,21 @@ describe("browser tools", () => {
     expect(cards).toHaveLength(1);
   });
 
+  it.each(["allow", "auto", "ask"] as const)("asks once without logical review for a credential URL under %s", async choice => {
+    const logical = vi.fn(async () => ({ consistent: true, reason: "Requested action." }));
+    const { run, cards, page, userTab, manager } = harness({ mode: "allow", logicalReview: logical, surfaceChoice: choice });
+    const tab = userTab("https://a.example/");
+    manager.setUserOwnedSurfaceChoice(HOST_SESSION, "browser", choice);
+    const result = await run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://user:pw@a.example/" });
+    expect(result.isError).toBe(true);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ userOwnedSurface: "browser", userOwnedSurfaceReviewFallback: true, allowedChoices: ["allow-once", "deny-once"] });
+    expect(cards[0].reason).toContain("credential");
+    expect(logical).not.toHaveBeenCalled();
+    expect(page.calls).toEqual([]);
+    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "browser")).toBe(choice);
+  });
+
   it("uses a native normal fallback card when current Auto review cannot confirm the action", async () => {
     const logical = vi.fn(async () => ({ consistent: false, reason: "The requested action is outside the current step." }));
     const { run, cards, page, userTab } = harness({ surfaceChoice: "auto", logicalReview: logical });

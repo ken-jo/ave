@@ -8,7 +8,7 @@ export function userOwnedSurfaceCardFacts(permission: PermissionCheckResult): Pi
   if (!request?.userOwnedSurface || permission.forceModal || request.floor || request.manualRerun) return {};
   return {
     userOwnedSurface: request.userOwnedSurface.kind,
-    ...(request.userOwnedSurface.choice === "auto" && request.reviewer !== undefined
+    ...(request.exfiltration !== undefined || request.userOwnedSurface.choice === "auto" && request.reviewer !== undefined
       ? { userOwnedSurfaceReviewFallback: true as const } : {}),
   };
 }

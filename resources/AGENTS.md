@@ -45,8 +45,8 @@ once the evidence answers the core request.
 - Protected mutations, critical deletion, escape and other-principal requests
   need one-shot human consent, no review/memory. Host credential stores deny;
   secrets use file/mode rules.
-- Upload hints use ordinary modes after rules/grants. Sandbox egress uses
-  proxy policy; unconfined Allow permits opaque/wrapped uploads.
+- Upload hints follow modes after grants; user-owned surface uploads always ask.
+  Egress uses proxy policy; unconfined Allow runs opaque uploads.
 - Headless auto reviews first except unconsented upload hints; required cards deny:
   “Nobody can approve this request; do not retry.” Owner-away cards wait unless
   auto-skip denies. Recently denied is history; reruns need fresh admission/card.

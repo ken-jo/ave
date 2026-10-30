@@ -13,11 +13,12 @@ describe.each(["browser", "host-terminal"] as const)("%s session surface policy"
         expect(result.reviewRequired).toBe(!headless && choice === "auto" ? true : undefined);
       }
     });
-    it(`${mode}/${choice} keeps an exfiltration guardrail on the consented surface route`, () => {
+    it(`${mode}/${choice} requires human consent for an exfiltration guardrail before the session route`, () => {
       const request = { ...base, mode, userOwnedSurface: { kind, choice }, exfiltration: { reason: "Upload signal" } };
       const result = decidePermission(request);
-      expect(result.outcome).toBe(choice === "allow" ? "allow" : "ask");
-      expect(result.reviewRequired).toBe(choice === "auto" ? true : undefined);
+      expect(result).toEqual({ outcome: "ask", reasonCode: "exfiltration-guardrail", reason: "Upload signal" });
+      expect(result.reviewRequired).toBeUndefined();
+      expect(decidePermission({ ...request, reviewer: { status: "success", level: "low" } })).toEqual(result);
       expect(decidePermission({ ...request, headless: true })).toMatchObject({ outcome: "deny", reason: NO_APPROVER_MESSAGE });
       expect(decidePermission({ ...request, rules: { ask: "Ask explicitly." } }))
         .toMatchObject({ outcome: "ask", reasonCode: "rule-ask" });

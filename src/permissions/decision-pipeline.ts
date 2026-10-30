@@ -82,6 +82,7 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
       ? askHuman(request, "rule-ask", request.rules.ask)
       : applyMode(request, "rule-ask", request.rules.ask);
   }
+  if (request.userOwnedSurface && request.exfiltration) return askHuman(request, "exfiltration-guardrail", request.exfiltration.reason);
   if (request.userOwnedSurface) {
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
     if (request.userOwnedSurface.choice === "allow") return { outcome: "allow", reasonCode: "user-owned-surface-allow", reason: "The user allowed this surface for the session." };

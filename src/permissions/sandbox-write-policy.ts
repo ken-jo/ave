@@ -320,7 +320,7 @@ function addConfiguredGitHookPaths(
   if (content !== undefined || protectMissing) {
     paths.add(configuration);
     paths.add(configPath);
-    addProtectedRoutingPins(configuration, routingPins);
+    addProtectedRoutingPins(configuration, routingPins, paths);
   }
   if (content === undefined) return;
   let section = "";
@@ -357,14 +357,51 @@ function addConfiguredGitHookPaths(
   }
 }
 
+function regularFileAncestor(path: string): string | undefined {
+  let ancestor = dirname(path);
+  for (let depth = 0; depth < MAX_MISSING_PATH_ANCESTORS; depth += 1) {
+    let entry: Stats;
+    try { entry = lstatSync(ancestor); }
+    catch (error) {
+      if (!isMissingPath(error)) throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return undefined;
+      ancestor = parent;
+      continue;
+    }
+    return entry.isFile() || entry.isSymbolicLink() && lstatSync(resolvePolicyPath(ancestor, process.cwd())).isFile()
+      ? ancestor : undefined;
+  }
+  throw new Error("Sandbox Git configuration ancestor limit exceeded");
+}
+
 function addInheritedGitConfigHookPaths(workingDirectories: readonly string[], paths: Set<string>, routingPins: Set<string>, budget: GitDiscoveryBudget): void {
   const home = process.env.HOME ?? process.env.USERPROFILE;
+  const userConfigDirectory = !process.env.GIT_CONFIG_GLOBAL && home
+    ? join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "git") : undefined;
+  if (userConfigDirectory !== undefined && regularFileAncestor(userConfigDirectory) === undefined) {
+    // Protect the loader directory itself before probing its possibly impossible child.
+    paths.add(userConfigDirectory);
+    paths.add(resolvePolicyDenyPath(userConfigDirectory));
+    addProtectedRoutingPins(userConfigDirectory, routingPins, paths);
+  }
   const configs = new Set([
     ...(process.env.GIT_CONFIG_NOSYSTEM === "1" ? [] : [process.env.GIT_CONFIG_SYSTEM ?? "/etc/gitconfig"]),
     ...(process.platform === "darwin" && process.env.GIT_CONFIG_SYSTEM === undefined ? ["/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"] : []),
-    ...(process.env.GIT_CONFIG_GLOBAL ? [process.env.GIT_CONFIG_GLOBAL] : home ? [join(home, ".gitconfig"), join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "git", "config")] : []),
+    ...(process.env.GIT_CONFIG_GLOBAL ? [process.env.GIT_CONFIG_GLOBAL] : home ? [join(home, ".gitconfig"), join(userConfigDirectory!, "config")] : []),
   ]);
-  for (const config of configs) addConfiguredGitHookPaths(config, workingDirectories, paths, routingPins, budget);
+  const explicitConfigs = new Set([process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_SYSTEM]);
+  for (const config of configs) {
+    // Only optional defaults may be omitted below regular files. An explicit
+    // override remains a required deny even when its current parent blocks it.
+    const blocker = regularFileAncestor(config);
+    if (explicitConfigs.has(config) || blocker === undefined) {
+      addConfiguredGitHookPaths(config, workingDirectories, paths, routingPins, budget);
+    } else if (!paths.has(blocker) && workingDirectories.some(root =>
+      isPhysicalPathWithin(root, blocker) || isPhysicalPathWithin(root, resolvePolicyPath(blocker, process.cwd())))) {
+      throw Object.assign(new Error("ENOTDIR: inherited sandbox configuration has a writable regular-file ancestor"), { code: "ENOTDIR" });
+    }
+  }
 }
 
 function addInheritedGitHookPaths(roots: readonly string[], paths: Set<string>, routingPins: Set<string>, budget: GitDiscoveryBudget): void {

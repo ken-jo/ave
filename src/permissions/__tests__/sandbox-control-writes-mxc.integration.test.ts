@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { resetFixtureAcls } from "../../__tests__/support/fixture-owner.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { win32SystemBinary, windowsSystemRoot } from "../../shared/windows-system-path.js";
@@ -94,7 +96,8 @@ describe.runIf(process.platform === "win32")("container control-file write bound
       await resetAsrtSandbox();
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
-      rmSync(root, { recursive: true, force: true });
+      resetFixtureAcls(root);
+      await cleanupTmpDir(root);
     }
   });
 });

@@ -114,6 +114,78 @@ describe("mandatory sandbox control-file writes", () => {
       .toThrow(/ENOTDIR/);
   });
 
+  it.each(["darwin", "linux", "win32"] as const)("retains an inherited regular configuration directory deny on %s", async platform => {
+    const project = join(root, "project");
+    const configDirectory = join(root, ".config", "git");
+    mkdirSync(project);
+    mkdirSync(dirname(configDirectory));
+    writeFileSync(configDirectory, "protected placeholder");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", join(root, ".config"));
+    for (const reportsMissingChild of [false, true]) {
+      if (reportsMissingChild) await reportMissingChildrenUnder(configDirectory);
+      const policy = withPlatform(platform, () => buildMandatorySandboxWritePolicy([project]));
+      expect(policy.allowWrite).toEqual([project]);
+      expectLiteralDenyCovers(policy.denyWrite, configDirectory);
+      expectLiteralDenyCovers(policy.denyWrite, join(configDirectory, "config"));
+      expect(filesystem.readFileSync(configDirectory, "utf8")).toBe("protected placeholder");
+    }
+  });
+
+  it("fails closed when an inherited configuration directory cannot be inspected", async () => {
+    const project = join(root, "project");
+    const configDirectory = join(root, ".config", "git");
+    mkdirSync(project);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", join(root, ".config"));
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((path, options) => {
+      if (String(path) === configDirectory) throw Object.assign(new Error("Configuration inspection denied"), { code: "EACCES" });
+      return actual.lstatSync(path, options);
+    }) as typeof filesystem.lstatSync);
+    expect(() => buildMandatorySandboxWritePolicy([project])).toThrow("Configuration inspection denied");
+  });
+
+  it.each(["darwin", "linux", "win32"] as const)("omits only impossible inherited probes below an ordinary regular ancestor on %s", platform => {
+    const project = join(root, "project");
+    const blocker = join(root, ".config");
+    mkdirSync(project);
+    writeFileSync(blocker, "ordinary file");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", blocker);
+    const policy = withPlatform(platform, () => buildMandatorySandboxWritePolicy([project]));
+    expect(policy.allowWrite).toEqual([project]);
+    expect(policy.denyWrite).not.toContain(blocker);
+    expect(policy.denyWrite).not.toContain(join(blocker, "git", "config"));
+    expectLiteralDenyCovers(policy.denyWrite, join(project, ".config", "git"));
+    expect(filesystem.readFileSync(blocker, "utf8")).toBe("ordinary file");
+  });
+
+  it.each(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"] as const)("refuses an obstructed explicit %s target in a writable project", variable => {
+    const project = join(root, "project");
+    const blocker = join(project, "ordinary-blocker");
+    mkdirSync(project);
+    writeFileSync(blocker, "replaceable file");
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "0");
+    vi.stubEnv(variable, join(blocker, "config"));
+    expect(() => buildMandatorySandboxWritePolicy([project])).toThrow(/ENOTDIR/);
+    expect(filesystem.readFileSync(blocker, "utf8")).toBe("replaceable file");
+  });
+
+  it("refuses an optional inherited probe when its unprotected blocker is writable", () => {
+    const project = join(root, "project");
+    const home = join(project, "home");
+    const blocker = join(home, ".config");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(blocker, "replaceable file");
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", blocker);
+    expect(() => buildMandatorySandboxWritePolicy([project])).toThrow(/ENOTDIR/);
+    expect(filesystem.readFileSync(blocker, "utf8")).toBe("replaceable file");
+  });
+
   it("retains literal control denies for an absent grant root", () => {
     const missing = join(root, "absent", "project");
     const policy = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([missing]));

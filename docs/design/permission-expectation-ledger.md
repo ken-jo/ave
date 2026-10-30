@@ -18,7 +18,7 @@ The [expectation continuation](permission-expectation-continuation.md) extends t
 | S | Known-safe read-only shell row | Proven sandboxed ordinary reads allow; proof and saved-rule eligibility remain independent. |
 | U | Host/escalation or unproven shell rows | Normal mode/human handling; 허용 allows when no enumerated floor/admission deny exists. Opacity alone is not a floor. |
 | F | 질문† row / stage 2 | Actual protected mutation, critical delete, escape and other-principal requests stay forced in every mode, deny headless, and beat grants. Literal executable bodies remain evidence. |
-| UG | Ordinary command-text upload guardrail | After applicable rules/grants: normal card in Default/Allow writes, reviewer/model choice in auto, allow in Allow; unconsented headless denies before review. Surface session choices retain their ordinary authority. |
+| UG | Ordinary command-text upload guardrail | After applicable rules/grants: normal card in Default/Allow writes, reviewer/model choice in auto, allow in Allow; unconsented headless denies before review. User-owned surfaces instead always use a normal human card for upload evidence, skipping logical review; session Allow is not an applicable explicit rule or remembered grant. |
 | A | Admission stage / bounded input integrity | Real complete-input evidence exhaustion denies before rules/modes. Reusable-rule length limits alone do not authorize skipping mandatory evidence. |
 | C | Admission credential-store contract note | Host credential stores deny before modes/reviewer/cards. Ordinary secret files are a separate row. |
 | R | Ask/allow rules and remembered grants stage | Ask beats grants; applicable allow authority precedes ordinary kind/mode handling, after floors. Prefix support does not invent exact proof. |
@@ -27,7 +27,7 @@ The [expectation continuation](permission-expectation-continuation.md) extends t
 | B | Reviewer breaker contract note | Three consecutive or twenty per turn sends only subsequent reviewer-bound requests to normal cards; count one denial per resolved request. |
 | P | Resolved conflict 3 | Each plugin effect has its own governed decision and explicit wire denial. |
 | K | Normalized actual tool kind, before stage 4 | Authenticated shell-session lifecycle input uses only consumed fields; command-looking unused data does not invent executable effects or authority. |
-| T | User-owned surface resolved conflicts 2 and 7 | Session allow/auto/ask choices govern agent actions, including ordinary upload hints; ask/deny rules and genuine forced restrictions still win. |
+| T | User-owned surface resolved conflicts 2 and 7 | Session allow/auto/ask choices govern actions without upload evidence. Upload evidence always asks a human in every choice, without logical review; headless denies. Ask/deny rules and genuine forced restrictions still win. |
 | E | No changed decision cell | Source/fixture/clock/path-spelling/native-deny representation correction. Original substantive denial, cancellation, containment, budget or authority assertion must remain. |
 
 ## Superseded upload assertions and retained safety checks
@@ -1453,3 +1453,18 @@ The subsequent hosted shard-4 run at `e4d9133b9` caught one mislabeled upload fi
 The completed Windows path job at the same head ran 7,277 passing cases and exposed six reader failures: five literal-proof cases asserted pure literal success without the now-explicit startup prerequisite, and one judge root-delete fixture used the POSIX critical-delete reason on an unresolved Windows POSIX path. Literal-proof retains positive raw-shape assertions while requiring the exact unproven-startup result on Windows; adjacent exact-card and rule-replay refusals remain. The judge fixture still forces consent and bypasses review, with protected-path on Windows and critical-delete on POSIX. Basis: R/S independent reusable startup authority and F mandatory-floor identity. No production decision, path proof or capability skip is changed.
 
 Three other shards in that run failed while downloading the build artifact, before test execution; the recorded artifact failure is not counted as a product-test result.
+
+### Human consent and native filesystem boundaries
+
+The owner decision of 2026-10-31 supersedes historical T/UG surface-upload cells: browser and host-terminal Allow/Auto/Ask all require one normal human card when upload evidence exists. Auto never enters logical review for that request. Ordinary non-surface tool rules and remembered grants still precede the ordinary upload guardrail. The shared card adapter uses the existing normal-confirmation path, so approving the upload does not select Auto, trigger a second card or run the logical reviewer. Non-upload session Allow remains unchanged.
+
+| Reader / fixture | Final assertion / reason | Basis |
+| --- | --- | --- |
+| decision-user-owned-surface / every mode and choice | Upload evidence always gives normal ask, even with favorable reviewer evidence; headless denies; ask/deny and genuine floor priority remain. | T / UG / owner decision |
+| permission-manager-user-owned / original upload fixture and parsed secret-to-curl command | Each surface and choice gives a normal ask without reviewer metadata; non-upload Allow passes. Host-terminal headless retains its admission code and the exact no-retry message. | T / UG / admission |
+| host-terminal-rules / original curl upload | Default and session Allow both give normal exfiltration-guardrail ask; protected mutation remains forced. | T / UG / F |
+| actual browser and host-terminal card flows | Exactly one normal card, no logical dispatch, no session-choice mutation; host bytes require that human approval; headless writes no bytes. | T / UG |
+| powershell-exfiltration-gate / original Copy-Item to external share | Removes only this fixture from the broad Allow table; preserves it as forced project-escape across four modes and denies headless. Read/printed paths and Out-Printer retain their ordinary role. | F / project-escape |
+| inherited config and fixture teardown | Impossible inherited config probes do not change decisions; protected blocking files remain pinned and unknown errors fail closed. Teardown restores only sanctioned fixture ACLs and propagates errors. | OS boundary / fixture integrity |
+
+The native Windows CI selection previously omitted powershell-exfiltration-gate, so its earlier green result did not validate that native case. The workflow now includes that gate and its focused UNC boundary reader, and the native owner-only cleanup reader runs independently of sandbox capability. The existing path-kind build remains before the Windows regression step and is pinned by the packaging source test. No native capability skip is broadened.

@@ -667,6 +667,8 @@ jobs:
           src/permissions/__tests__/shell-native-path-floors.test.ts
           src/shared/__tests__/shell-native-path.test.ts
           src/permissions/__tests__/powershell-exfiltration.test.ts
+          src/tools/__tests__/powershell-exfiltration-gate.test.ts
+          src/permissions/__tests__/powershell-unc-write-boundary.test.ts
           src/permissions/__tests__/encoded-bypass-battery.test.ts
           src/permissions/__tests__/literal-proof.test.ts
           src/permissions/__tests__/literal-rule-identity.test.ts
@@ -715,6 +717,7 @@ jobs:
           src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
           src/__tests__/support/native-executable.test.ts
           src/__tests__/support/fixture-owner.test.ts
+          src/__tests__/support/fixture-acl-reset.test.ts
           src/tools/__tests__/background-shell-windows-job.test.ts
           src/tools/__tests__/bash-dialect.test.ts
           src/lib/__tests__/admin-policy-file.test.ts

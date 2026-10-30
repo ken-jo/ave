@@ -35,6 +35,7 @@ import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.j
 import { inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { homedir } from "node:os";
+import { win32 } from "node:path";
 
 class SharedPowerShellContext extends PowerShellAnalysisContext {
   readonly floor = new ShellFloorContext("powershell");
@@ -1302,6 +1303,14 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     const absolute = /^(?:[a-z]:[\\/]|[\\/])/i.test(value);
     if (!absolute && directory === null && effect === "write") unknownProtectedWrite ??= "The shell write location may be a protected directory.";
     const base = directory ?? cwd;
+    const uncRelative = isUncPath(value) ? win32.relative(cwd, value) : undefined;
+    if (effect === "write" && !binding.dynamic && uncRelative !== undefined
+      && (!isUncPath(cwd) || win32.isAbsolute(uncRelative) || uncRelative === ".." || uncRelative.startsWith("..\\"))) {
+      // A parsed external share write has a known boundary even when the share is unavailable locally.
+      paths.push({ ...evidenceForPath({ lexical: value, canonical: win32.normalize(value), effect }), projectEscape: true,
+        ...(deleting ? { deleteIntent: true as const } : {}) });
+      return;
+    }
     const modeled = modelShellPath(value, { dialect: "powershell", location: base });
     let canonical = modeled.normalizedPath;
     if (modeled.nativePath !== undefined) {
