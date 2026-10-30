@@ -44,6 +44,14 @@ function expectLiteralDenyCovers(entries: readonly FilesystemPathEntry[] | undef
   }), path).toBe(true);
 }
 
+async function reportMissingChildrenUnder(file: string): Promise<void> {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  vi.spyOn(filesystem, "lstatSync").mockImplementation(((path, options) => {
+    if (String(path).startsWith(file + sep) && typeof options === "object" && options?.throwIfNoEntry === false) return undefined;
+    return actual.lstatSync(path, options);
+  }) as typeof filesystem.lstatSync);
+}
+
 describe("mandatory sandbox control-file writes", () => {
   let root: string;
   beforeEach(async () => {
@@ -64,13 +72,15 @@ describe("mandatory sandbox control-file writes", () => {
 
   const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
 
-  it.each([".claude", ".idea"])("retains %s protection when an earlier Linux deny left a regular placeholder", entry => {
+  it.each([".claude", ".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
+  ("retains $entry protection after a regular placeholder with native missing-child reporting=$reportsMissingChild", async ({ entry, reportsMissingChild }) => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const initial = withPlatform("linux", () => buildMandatorySandboxWritePolicy([project]));
+    const placeholder = join(project, entry);
+    writeFileSync(placeholder, "");
+    if (reportsMissingChild) await reportMissingChildrenUnder(placeholder);
     withPlatform("linux", () => {
-      const project = join(root, "project");
-      mkdirSync(project);
-      const initial = buildMandatorySandboxWritePolicy([project]);
-      const placeholder = join(project, entry);
-      writeFileSync(placeholder, "");
       const child = join(placeholder, entry === ".claude" ? "settings.json" : "workspace.xml");
       const repeated = buildMandatorySandboxWritePolicy([project], undefined, [child]);
       expect(repeated.allowWrite).toEqual(initial.allowWrite);
@@ -94,10 +104,12 @@ describe("mandatory sandbox control-file writes", () => {
     expect(policy.denyWrite).toEqual(expect.arrayContaining([link, target]));
   });
 
-  it("refuses an obstructed child when its regular ancestor is not write-denied", () => {
+  it.each([false, true])("refuses an unprotected regular ancestor when native missing-child reporting is %s", async reportsMissingChild => {
     const project = join(root, "project");
     mkdirSync(project);
-    writeFileSync(join(project, ".config"), "not protected as a whole project directory");
+    const blocker = join(project, ".config");
+    writeFileSync(blocker, "not protected as a whole project directory");
+    if (reportsMissingChild) await reportMissingChildrenUnder(blocker);
     expect(() => withPlatform("linux", () => buildMandatorySandboxWritePolicy([project])))
       .toThrow(/ENOTDIR/);
   });

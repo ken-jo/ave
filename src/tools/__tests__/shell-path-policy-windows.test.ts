@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -132,17 +132,38 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
     ["sort '-ro1\\..\\.GIT\\hooks\\pre-commit' input.txt", ".git/hooks/pre-commit", ".git"],
     ["wget '-O1\\..\\.NPMRC' https://example.invalid/", ".npmrc", ".npmrc"],
   ] as const)("retains the protected mutation floor for a canonical short-option target: %s", (command, target, protectedControl) => {
-    const root = mkdtempSync(join(tmpdir(), "shell-protected-option-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "shell-protected-option-")));
     roots.push(root);
     const canonical = caseFoldForMatch(canonicalizePathForMatch(join(root, target)));
     const evidence = inspectShellPermissionPaths(command, root);
     const mutation = evidence.paths.find(path => path.effect === "write" && caseFoldForMatch(foldCanonicalPathSeparators(path.canonical)) === canonical);
     expect(mutation).toBeDefined();
     expect(mutation).toMatchObject({ effect: "write", admissionDenial: null, protectedControl });
+    expect(mutation!.projectEscape).toBe(false);
     const manager = new PermissionManager(join(root, "permissions.json"));
-    manager.setMode("allow");
-    expect(manager.checkDetailed("bash", "builtin", "shell", undefined, { paths: [mutation!] }))
-      .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      manager.setMode(mode);
+      for (const headless of [false, true]) {
+        expect(manager.checkDetailed("bash", "builtin", "shell", undefined, {
+          paths: [mutation!], ruleSubject: { kind: "shell", dialect: "bash", command, cwd: root },
+          shellExecution: { runsSandboxed: true }, headless,
+        })).toMatchObject(headless ? { decision: "deny", reasonCode: "no-approver" }
+          : { decision: "ask", forceModal: true, reasonCode: "protected-path" });
+      }
+    }
+  });
+
+  it("keeps an actual parent traversal outside the project on the escape floor", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "shell-option-escape-")));
+    roots.push(root);
+    const command = "sort '-o..\\outside.txt' input.txt";
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      manager.setMode(mode);
+      expect(manager.checkDetailed("bash", "builtin", "shell", undefined, {
+        ruleSubject: { kind: "shell", dialect: "bash", command, cwd: root }, shellExecution: { runsSandboxed: true },
+      })).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape" });
+    }
   });
 
   it.each([

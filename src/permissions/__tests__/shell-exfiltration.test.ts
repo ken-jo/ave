@@ -879,9 +879,9 @@ describe("credential floor: recursive searches after cd", () => {
           .toMatchObject({ decision: "deny", layer: 1, reasonCode: "credential-store" });
       }
       const readOnly = pm.checkDetailed("bash", "builtin", "shell", null, subject("cd src && rg y"));
-      expect(readOnly).toMatchObject(process.platform === "win32"
-        ? { decision: "ask", reasonCode: "shell-approval" }
-        : { decision: "allow", reasonCode: "read-only-shell" });
+      expect(readOnly).toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
+      expect(readOnly.pipelineRequest?.shell).toMatchObject({ sandboxed: true, readOnlyProven: true, unproven: false, destructive: false });
+      expect(readOnly.pipelineRequest?.floor).toBeUndefined();
       expect(readOnly.forceModal).toBeUndefined();
       for (const command of ["git ls-files | xargs rg foo", "fd -e ts | xargs rg foo"]) {
         const result = pm.checkDetailed("bash", "builtin", "shell", null, subject(command));
