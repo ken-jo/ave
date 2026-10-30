@@ -68,6 +68,10 @@ Notes that are part of the contract:
   proxy (default-deny host allow-list). Command-text screening is not extended to an ever-growing list of wrappers.
   A non-sandboxed host shell in 허용 runs opaque or wrapped uploads, as the other hosts do in full-access modes.
   This limit is disclosed.
+  Headless denies an exfil signal before the reviewer, superseding resolved conflict 6 for this signal. An applicable
+  explicit allow rule or remembered grant precedes the exfil guardrail, by tree order. A surface session choice is
+  not such a grant. An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), regardless
+  of its session choice; it uses a normal card, skips the logical reviewer, and denies headless.
 - 기본 mode: writes and shell that would be allowed also go to the card. Reads stay allowed.
 - Sandbox-auto blocked by the sandbox (escalation) goes to 모드 · 사람.
 - The reviewer breaker is 3 consecutive or 20 per turn. The rest of the turn goes to a human.
@@ -125,6 +129,7 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
    - **이 세션 모두 허용 / Allow all this session**: later actions in user-owned tabs run without asking.
    - **오토 / Auto**: each action goes to the reviewer, which performs only a LOGICAL check. Does this action follow from the user's request and the current task step? Is the target the tab and page the task is about? Is it free of steps the user did not ask for? The reviewer does not judge general risk. Fail or uncertain means a normal card.
    - **모두 질문 / Ask every time**: every action asks. This is the default, and it is the behaviour when the card is dismissed.
+   An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), including Allow all and Auto; it uses a normal card, skips logical review, and denies headless.
    deny rules, admission, credential entry and payment/irreversible-submit protections still apply in every choice. Headless means deny. The choice is per session and is never remembered across sessions.
 3. Plugin effects are evaluated per actual effect through this same pipeline. An approval binds to that exact effect; a tool-level reviewer allow never opens every effect. Headless effects follow the headless rule.
 4. A user-configured read boundary (an outside-path read restriction) is an explicit rule. It is evaluated in stage 1/3 before modes, and it is preserved.
@@ -134,4 +139,4 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
    - 이 세션 모두 허용: agent commands run in that tab without asking.
    - 오토: the reviewer does a logical consistency check only. Does the command follow from the user's request and task step, in the tab the task is about?
    - 모두 질문: every command asks. This is the default, and it is the behaviour when the card is dismissed.
-   Together, the browser tab and the host terminal tab are the "user-owned surfaces". The choice is per session and is never persisted. Deny rules, the exfil guardrail and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
+   Together, the browser tab and the host terminal tab are the "user-owned surfaces". The choice is per session and is never persisted. An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), in every session choice, using a normal card and skipping logical review. These surfaces have no sandbox egress boundary. Deny rules and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
