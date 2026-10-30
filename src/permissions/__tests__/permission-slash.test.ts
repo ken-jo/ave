@@ -410,7 +410,7 @@ describe("writePermissionSettings — the retired alias is inert, not honoured",
     expect(readPermissionSettings(path).permissions.additionalDirectories).toEqual(["/new"]);
   });
 
-  it("normalizes the reviewer block on every persist path, not just the patch path", async () => {
+  it("preserves an invalid reviewer setting until an explicit mode repair", async () => {
     const path = tmpSettingsPath();
     writeFileSync(
       path,
@@ -419,8 +419,11 @@ describe("writePermissionSettings — the retired alias is inert, not honoured",
     );
     await addAllowedDirectoryPersist("/new", path);
     const raw = JSON.parse(readFileSync(path, "utf-8"));
-    // "llm" is the read-time default; what matters is that the garbage is gone.
-    expect(raw.permissions.reviewer.mode).toBe("llm");
+    expect(raw.permissions.reviewer.mode).toBe("nonsense-from-a-hand-edit");
+    expect(raw.permissions.additionalDirectories).toHaveLength(1);
+    const settings = readPermissionSettings(path);
+    expect(settings.fault).toMatchObject({ kind: "reviewer-mode-invalid" });
+    expect(settings.permissions.reviewer.mode).toBe("disabled");
   });
 });
 

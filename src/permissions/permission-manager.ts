@@ -527,6 +527,7 @@ export class PermissionManager {
   private policyGeneration = 0;
   private permissionStoreError: string | undefined;
   private reviewerSettingsError: string | undefined;
+  private reviewerReconfiguration: object | undefined;
   // Optional broadcast for memory-hit auto-approve disclosure.
   private broadcastUserApprovalHit: ((payload: UserApprovalHitPayload) => void) | null = null;
   // Architectural choke point for permission config fan-out — every persisted mutation through PermissionManager (addAlwaysAllowedPersist, addAlwaysDeniedPersist, removeRule) fires this callback so multi-window PermissionsTab refreshes without each call site re-implementing the broadcast wiring. Wired by boot from `ipc/domains/permissions.ts:broadcastPermissionConfigChanged`.
@@ -741,6 +742,24 @@ export class PermissionManager {
 
   getMode(): ExecutionMode {
     return this.mode;
+  }
+
+  // Host-owned tokens cannot be reconstructed by settings, tool arguments or renderer decisions.
+  beginReviewerReconfiguration(): object {
+    const token = Object.freeze({});
+    this.reviewerReconfiguration = token;
+    this.policyGeneration += 1;
+    return token;
+  }
+
+  completeReviewerReconfiguration(token: object): void {
+    if (this.reviewerReconfiguration === undefined || token !== this.reviewerReconfiguration) {
+      this.reviewerReconfiguration ??= Object.freeze({});
+      this.policyGeneration += 1;
+      throw new JudgeContractError("Reviewer reconfiguration requires its current host token");
+    }
+    this.reviewerReconfiguration = undefined;
+    this.policyGeneration += 1;
   }
 
   // Monotonic host policy identity for sealed rationale revalidation.
@@ -1531,7 +1550,9 @@ export class PermissionManager {
     routineScope?: Record<string, unknown>,
     options?: { lane?: ReviewerLane; abortSignal?: AbortSignal; purpose?: "approval-scope" },
   ): Promise<ReviewerDispatchResult> {
-    const settingsError = this.refreshReviewerSettingsError();
+    const settingsError = this.reviewerReconfiguration !== undefined
+      ? "Permission reviewer reconfiguration did not complete; automatic review is unavailable."
+      : this.refreshReviewerSettingsError();
     if (settingsError !== undefined) {
       return { verdict: { level: "high", reason: settingsError }, outcome: "error", cacheReason: "miss-not-found",
         judge: { judged: true, mode: "active", decision: options?.lane === "headless" ? "deny" : "ask", applied: true, source: "fallback", fallback: "error", rationale: settingsError, breakerTripped: false } };

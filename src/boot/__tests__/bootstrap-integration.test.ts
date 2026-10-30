@@ -111,6 +111,8 @@ vi.mock("../conversation.js", () => ({
       setBroadcastConfigChanged: vi.fn(),
       // Every reviewer rewire must apply the settings read fence.
       setBlockReadsOutsideWorkingDirectories: vi.fn(),
+      beginReviewerReconfiguration: vi.fn(() => Object.freeze({})),
+      completeReviewerReconfiguration: vi.fn(),
       getJudgeBreaker: vi.fn(() => ({})),
       setJudge: vi.fn(),
     };

@@ -183,6 +183,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     };
   };
   const rewireReviewerAgent = (): void => {
+    const reconfiguration = permissionManager.beginReviewerReconfiguration();
     // Reapply the read fence on every settings rewire; its generation invalidates verdicts from the prior policy.
     permissionManager.setBlockReadsOutsideWorkingDirectories(
       readPermissionSettings().permissions.blockReadsOutsideWorkingDirectories,
@@ -240,6 +241,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     ctx.approvalSentenceSelector = reviewerResult.approvalSentenceSelector;
     // Broadcast configuration changes after rewiring so open settings views stop showing stale degradation.
     broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
+    permissionManager.completeReviewerReconfiguration(reconfiguration);
   };
   rewireReviewerAgent();
 

