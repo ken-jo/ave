@@ -178,7 +178,7 @@ function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, rou
 function addProtectedRoutingPins(path: string, routingPins: Set<string>, deniedPaths?: ReadonlySet<string>): void {
   try {
     const resolved = inspectPhysicalFilesystemPath(path, process.cwd(), MAX_MISSING_PATH_ANCESTORS);
-    if (resolved.firstMissingPath !== undefined && lstatSync(dirname(resolved.firstMissingPath)).isFile()) {
+    if (resolved.firstMissingPath !== undefined && lstatSync(dirname(resolved.firstMissingPath), { throwIfNoEntry: false })?.isFile()) {
       // Some native APIs report a child below a regular file as missing. The
       // existing ancestor proof must still establish that the blocker is denied.
       throw Object.assign(new Error("ENOTDIR: sandbox control path has a regular-file ancestor"), { code: "ENOTDIR" });

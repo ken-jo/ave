@@ -114,6 +114,27 @@ describe("mandatory sandbox control-file writes", () => {
       .toThrow(/ENOTDIR/);
   });
 
+  it("retains literal control denies for an absent grant root", () => {
+    const missing = join(root, "absent", "project");
+    const policy = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([missing]));
+    expect(policy.allowWrite).toEqual([missing]);
+    expect(policy.narrowedWriteRoots).toEqual([]);
+    expect(policy.denyWrite).toContain(join(missing, ".bash_profile"));
+    expectLiteralDenyCovers(policy.denyWrite, join(missing, ".claude", "settings.json"));
+    expect(filesystem.existsSync(missing)).toBe(false);
+  });
+
+  it("does not treat a denied ancestor inspection as an absent path", async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((path, options) => {
+      if (String(path) === root && typeof options === "object" && options?.throwIfNoEntry === false) {
+        throw Object.assign(new Error("Access denied"), { code: "EACCES" });
+      }
+      return actual.lstatSync(path, options);
+    }) as typeof filesystem.lstatSync);
+    expect(() => withPlatform("darwin", () => buildMandatorySandboxWritePolicy([join(root, "missing")]))).toThrow("Access denied");
+  });
+
   it.each(["darwin", "linux", "win32"] as const)("protects existing and absent loader paths in the shared policy on %s", platform => {
     withPlatform(platform, () => {
       for (const existing of [false, true]) {
