@@ -14,6 +14,10 @@ describe("request-owned shell rule analysis", () => {
     const read = vi.spyOn(ruleSpecifier, "literalRuleWord");
     const parsed = parseShellCommand("echo 'literal text' plain");
     const first = analyzeShellForRules(parsed);
+    const parentRawWords = ["echo", "'literal text'", "plain"];
+    expect(read.mock.calls.filter(([raw, dialect]) => dialect === "bash" && parentRawWords.includes(raw))).toEqual([
+      ["echo", "bash"], ["'literal text'", "bash"], ["plain", "bash"],
+    ]);
     const proof = proveLiteralShell(parsed);
     expect(analyzeShellForRules(parsed)).toBe(first);
     expect(proof).toMatchObject({ proven: true });
@@ -21,7 +25,8 @@ describe("request-owned shell rule analysis", () => {
       ok: true,
       commands: [{ argv: ["echo", "literal text", "plain"], rawWords: ["echo", "'literal text'", "plain"] }],
     });
-    expect(read.mock.calls.filter(([, dialect]) => dialect === "bash")).toHaveLength(3);
+    expect(read.mock.calls.filter(([, dialect]) => dialect === "bash").map(([raw]) => raw).sort())
+      .toEqual([...parentRawWords, "literal", "text"].sort());
   });
 
   it.each(["bash", "powershell"] as const)("parses a repeated scoped %s rule once per evaluation", (dialect) => {

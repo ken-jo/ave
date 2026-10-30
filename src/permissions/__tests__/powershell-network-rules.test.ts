@@ -110,7 +110,8 @@ describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) r
   it("uses the literal prefix grant for host and sandboxed calls", () => {
     manager.setRules(([{ pattern: "PowerShell(Get-ChildItem *)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(powershell("Get-ChildItem src", false)).toMatchObject(EXACT_ALLOW);
-    expect(powershell("Get-ChildItem src", true)).toMatchObject(EXACT_ALLOW);
+    expect(powershell("Get-ChildItem src", true)).toMatchObject(UNPROVEN_STARTUP
+      ? { decision: "allow", reasonCode: "read-only-shell" } : EXACT_ALLOW);
   });
 
   it("keeps the dialects apart: a Bash rule never runs PowerShell, nor the reverse", () => {
@@ -264,7 +265,7 @@ describe("PowerShell encoded code and literal rule proof", () => {
     }
     const literalChild = check('pwsh -Command "rm -rf /"', dialect, true);
     expect(literalChild).toMatchObject({ decision: "ask", forceModal: true });
-    expect(literalChild.reasonCode).toBe("critical-delete");
+    expect(literalChild.reasonCode).toBe(process.platform === "win32" ? "protected-path" : "critical-delete");
     expect(check('pwsh -Command "rm -rf /"', dialect, true, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     for (const flag of ["-EncodedCommand", "-enc", "-e", "-ec"]) {
       const command = `pwsh -NoProfile ${flag} ${PAYLOAD}`;

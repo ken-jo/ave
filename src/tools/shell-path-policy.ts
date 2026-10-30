@@ -1,6 +1,6 @@
 import { readShellOptionValue as readOptionValue } from "../shared/shell-option-value.js";
 import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
-import { literalShellBodies, literalShellPathFacts, shellLiteralFragments, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
+import { literalShellBodies, literalShellPathFacts, literalShellPathSnapshot, shellLiteralFragments, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
 import { isAbsolute, join } from "node:path";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
@@ -8,7 +8,7 @@ import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWor
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
@@ -1663,8 +1663,9 @@ export function findShellPathPolicyViolation(
   argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean },
   credentialStoreEvidence?: { reason?: string },
 ): ShellPathPolicyViolation | null {
-  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot) : undefined;
-  const resolvedEvidencePaths = evidence ? new Map<string, string>() : undefined;
+  const pathSnapshot = evidence ? literalShellPathSnapshot(literalBudget, sandboxRoot) : undefined;
+  const evidenceForPath = pathSnapshot?.evidenceForPath;
+  const resolvedEvidencePaths = pathSnapshot?.resolved;
   let unresolvedEvidence: ShellPathPolicyViolation | null = null;
   if (!evidence) {
     const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
@@ -1704,7 +1705,7 @@ export function findShellPathPolicyViolation(
     }
     let absolute: string;
     try {
-      const key = resolvedEvidencePaths ? JSON.stringify([cwd, path]) : undefined;
+      const key = resolvedEvidencePaths ? JSON.stringify(["bash", cwd ?? sandboxRoot, path]) : undefined;
       absolute = key === undefined ? resolveShellFilesystemPath(path, cwd ?? sandboxRoot, { dialect: "bash" })
         : resolvedEvidencePaths!.get(key) ?? resolveShellFilesystemPath(path, cwd ?? sandboxRoot, { dialect: "bash" });
       if (key !== undefined) resolvedEvidencePaths!.set(key, absolute);

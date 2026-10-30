@@ -1,4 +1,4 @@
-import type { PermissionPathEvidence } from "../permissions/sensitive-paths.js";
+import { createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { classifySedArgumentSlots } from "./shell-sed-arguments.js";
 import { classifySqliteArgumentSlots } from "../tools/shell-sqlite-arguments.js";
 import type { ShellWord } from "./shell-analysis.js";
@@ -114,4 +114,25 @@ export function literalShellPathFacts(result: {
     unknownProtectedWrite: result.unknownProtectedWrite,
     evidenceLimitExceeded: result.evidenceLimitExceeded === true || typeof result.unproven === "object" && result.unproven?.kind === "analysis-limit",
   };
+}
+
+interface LiteralPathSnapshot {
+  resolved: Map<string, string>;
+  evidence: Map<string, ReturnType<typeof createPermissionPathEvidence>>;
+}
+const literalPathSnapshots = new WeakMap<LiteralBodyBudget["tokens"], LiteralPathSnapshot>();
+
+/** Grammar children share one filesystem observation snapshot during a decision. */
+export function literalShellPathSnapshot(budget: LiteralBodyBudget, projectRoot: string) {
+  let snapshot = literalPathSnapshots.get(budget.tokens);
+  if (snapshot === undefined) {
+    snapshot = { resolved: new Map(), evidence: new Map() };
+    literalPathSnapshots.set(budget.tokens, snapshot);
+  }
+  let evidenceForPath = snapshot.evidence.get(projectRoot);
+  if (evidenceForPath === undefined) {
+    evidenceForPath = createPermissionPathEvidence(projectRoot);
+    snapshot.evidence.set(projectRoot, evidenceForPath);
+  }
+  return { resolved: snapshot.resolved, evidenceForPath };
 }

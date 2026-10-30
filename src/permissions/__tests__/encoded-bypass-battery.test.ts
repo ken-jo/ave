@@ -152,11 +152,14 @@ const UNRESOLVED_OPERAND_CASES = ([
   { name: "an earlier matching name in ordinary data from a structured shell", dialect: "powershell", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
 ] as const).map((fixture) => ({ ...EXPECTED_UNPROVEN, ...fixture }));
 
+const WINDOWS_LITERAL_ROOT_FLOOR = process.platform === "win32"
+  ? { permissionFloor: "protected-path" as const } : {};
+
 const PIPELINE_CASES: readonly EncodedCase[] = [
-  { ...EXPECTED_UNPROVEN, name: "literal text piped to a shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | sh`, allowBody: "sh *" },
-  { ...EXPECTED_UNPROVEN, name: "literal text piped to an alternate shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | bash`, allowBody: "bash *" },
-  { ...EXPECTED_UNPROVEN, name: "literal text piped to an explicit stdin shell", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | pwsh -`, allowBody: "pwsh *" },
-  { ...EXPECTED_UNPROVEN, name: "literal text piped to an expression evaluator", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | iex`, allowBody: "iex *" },
+  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to a shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | sh`, allowBody: "sh *" },
+  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to an alternate shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | bash`, allowBody: "bash *" },
+  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to an explicit stdin shell", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | pwsh -`, allowBody: "pwsh *" },
+  { ...EXPECTED_UNPROVEN, ...WINDOWS_LITERAL_ROOT_FLOOR, name: "literal text piped to an expression evaluator", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | iex`, allowBody: "iex *" },
   { ...EXPECTED_UNPROVEN, name: "UTF-8 Base64 decoded into a shell pipeline", allowCommands: [`printf %s ${DESTRUCTIVE_UTF8_PAYLOAD}`, "base64 -d", "sh"], dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh`, allowBody: "sh *" },
   { ...EXPECTED_UNPROVEN, name: "UTF-8 Base64 decoded into a shell through a wrapper", allowCommands: [`printf %s ${DESTRUCTIVE_UTF8_PAYLOAD}`, "base64 -d", "env sh"], dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | env sh`, allowBody: "env *" },
   { ...EXPECTED_UNPROVEN, name: "text piped to an interpreter's explicit stdin", allowCommands: ["printf %s 'print(1)'", "python3 -"], dialect: "bash", command: "printf %s 'print(1)' | python3 -", allowBody: "python3 *" },

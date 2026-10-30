@@ -236,7 +236,10 @@ describe("shell confinement and escape rules", () => {
       expect(result).toMatchObject(readOnlyListing ? { decision: "allow", reasonCode: "read-only-shell" } : staticConfined
         ? { decision: "allow", reasonCode: "sandboxed-shell" }
         : { decision: "ask", reasonCode: "shell-approval" });
-      if (staticGrammar) expect(result.pipelineRequest?.shell).toMatchObject({ sandboxed: true, unproven: !staticConfined, destructive: false });
+      if (staticGrammar) expect(result.pipelineRequest?.shell).toMatchObject({
+        sandboxed: true, readOnlyProven: readOnlyListing,
+        unproven: readOnlyListing ? false : !staticConfined, destructive: false,
+      });
       expect(result.forceModal).toBeUndefined();
       expect(result.pipelineRequest?.floor).toBeUndefined();
       manager.setMode("allow");

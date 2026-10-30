@@ -1,4 +1,4 @@
-import { literalShellBodies, literalShellPathFacts, literalShellFlow, recordLiteralShellFlow, type LiteralShellArgument, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
+import { literalShellBodies, literalShellPathFacts, literalShellPathSnapshot, literalShellFlow, recordLiteralShellFlow, type LiteralShellArgument, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 // One bounded parse supplies both exact raw identity and a single static floor pass.
 // Runtime values, generated code, callbacks and file mutation are never simulated.
 import {
@@ -27,7 +27,7 @@ import {
   type PowerShellTraversalValue,
 } from "../../shared/powershell-recursive-traversal.js";
 
-import { createPermissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
+import { type PermissionPathEvidence } from "../sensitive-paths.js";
 import { modelShellPath } from "../../shared/shell-native-path.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { shellExecutableBodySlots, inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
@@ -1372,7 +1372,8 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   budget.tokens.count += parsed.context.visits.grammarRecords;
   if (parsed.analysisLimited || budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: true, credentialStore: null, evidenceLimitExceeded: true };
   const paths: PermissionPathEvidence[] = [];
-  const evidenceForPath = createPermissionPathEvidence(cwd);
+  const pathSnapshot = literalShellPathSnapshot(budget, cwd);
+  const evidenceForPath = pathSnapshot.evidenceForPath;
   const redirectFacts = parsed.facts.get("filesystem-redirections") as readonly PsRedirection[] | undefined;
   const evidencePipelines = parsed.syntax.pipelines ?? parsed.syntax.permissionPipelines;
   const fallback = parsed.syntax.pipelines === null && evidencePipelines === undefined ? inspectPosixShellPermissionPaths(parsed.command, cwd, { dialect: "bash", environment: {} }, undefined, budget, inspectPowerShellPermissionPaths) : undefined;
@@ -1413,7 +1414,11 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     const modeled = modelShellPath(value, { dialect: "powershell", location: base });
     let canonical = modeled.normalizedPath;
     if (modeled.nativePath !== undefined) {
-      try { canonical = resolveShellFilesystemPath(modeled.nativePath, base); }
+      try {
+        const key = JSON.stringify(["powershell", base, modeled.nativePath]);
+        canonical = pathSnapshot.resolved.get(key) ?? resolveShellFilesystemPath(modeled.nativePath, base);
+        pathSnapshot.resolved.set(key, canonical);
+      }
       catch { unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths."; }
     } else { unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths."; }
     const lexical = absolute ? value : base + "/" + value;
