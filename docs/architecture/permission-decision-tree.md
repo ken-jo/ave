@@ -36,7 +36,12 @@ flowchart TD
   Q -->|auto| RV{"리뷰어"}
   Q -->|"사람 없음: 모델에 알림"| DENY
   RV -->|"low · medium"| ALLOW
-  RV -->|"high · 오류 · 3연속 / 턴 20회 거부 뒤"| ASK
+  RV -->|"high"| MC{"모델 선택"}
+  MC -->|"거절 수용"| DENY
+  MC -->|"사용자 명시 허용 근거로 재요청 (1회)"| RR["근거 보강: 모델 사유 + 사용자 발언 + 호스트 사실"]
+  RR -->|재심사| RV
+  MC -->|"사용자에게 카드 요청"| ASK
+  RV -->|"재요청 뒤 high · 오류 · 3연속 / 턴 20회 거부 뒤"| ASK
   ASK -->|"승인 (한 번 · 세션 · 항상 · 폴더 · 접두사)"| ALLOW
   ASK -->|"거절 · 부재 중 자동 스킵(옵션)"| DENY
   ASKF -->|승인| ALLOW
@@ -49,7 +54,7 @@ flowchart TD
   class ALLOW allow
   class AUTO sbx
   class ASK,ASKF ask
-  class RV rev
+  class RV,RR,MC rev
   class DENY deny
 ```
 
@@ -60,6 +65,22 @@ Notes that are part of the contract:
 - 기본 mode: writes and shell that would be allowed also go to the card. Reads stay allowed.
 - Sandbox-auto blocked by the sandbox (escalation) goes to 모드 · 사람.
 - The reviewer breaker is 3 consecutive or 20 per turn. The rest of the turn goes to a human.
+- Reviewer denial → model choice (owner decision 2026-10-30). When the reviewer returns high, the model receives
+  the denial with three choices and picks one:
+  1. **Accept the denial**: the call is denied, and the model continues without it.
+  2. **Resubmit with strengthened grounds (once per request)**: allowed only when the user explicitly permitted this
+     action in this session. The model's rationale must cite that user message. The host verifies that the cited
+     text exists in a user-role turn (never model text or tool output) and attaches it with host-verified safety
+     facts (target path, sandbox state, reversibility/checkpoint, change scope). The reviewer re-judges once. A
+     second high, or a missing or unverifiable citation, goes to the normal card (headless: deny).
+  3. **Ask the user with a permission card**: a normal card (headless: deny + do not retry).
+  - The model rationale is an untrusted claim. Only the verified user quote and host facts count as evidence.
+  - A reviewer error or a tripped breaker goes straight to the card. 질문† and deny outcomes never reach this choice.
+  - The choice grants no execution authority by itself. The breaker counts one denial per request, after the
+    choice resolves.
+  - Basis: Codex's escalation request, where the model sends a `justification` with `require_escalated`, the
+    reviewer re-judges with it, and otherwise the request goes to the user (owner reference 2026-10-30). Ave adds a
+    verified user quote and host facts as the only trusted evidence.
 - Headless means deny, and the model is told not to retry. There is no deferred queue; a "recently denied" list
   lets the user re-run a call.
 - An owner-away turn means the card waits. The default is unlimited; an optional auto-skip after N minutes denies.
