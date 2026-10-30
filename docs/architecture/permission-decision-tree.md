@@ -74,6 +74,9 @@ Notes that are part of the contract:
      facts (target path, sandbox state, reversibility/checkpoint, change scope). The reviewer re-judges once. A
      second high, or a missing or unverifiable citation, goes to the normal card (headless: deny).
   3. **Ask the user with a permission card**: a normal card (headless: deny + do not retry).
+  - Model choice is offered only to requests with a sealed resumable anchor. An already-running nested effect or
+    egress request without that anchor uses a normal permission card instead; headless fallback denies with
+    "Nobody can approve this request; do not retry." No continuation or replay of prior effects is introduced.
   - The model rationale is an untrusted claim. Only the verified user quote and host facts count as evidence.
   - A reviewer error or a tripped breaker goes straight to the card. 질문† and deny outcomes never reach this choice.
   - The choice grants no execution authority by itself. The breaker counts one denial per request, after the

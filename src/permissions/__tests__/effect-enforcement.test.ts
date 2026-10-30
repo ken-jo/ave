@@ -949,6 +949,31 @@ describe("common policy at each actual effect", () => {
     return { verdict: { level, reason: "Effect review." }, outcome, cacheReason: "miss-not-found", judge: { judged: false, skip: "judge-off" } };
   }
 
+  it.each([false, true])("uses the normal fallback for an unanchored nested HIGH effect with headless=%s", async (headless) => {
+    permissionManager.setMode("auto");
+    const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("high"));
+    const resolve = vi.spyOn(permissionManager, "resolveReviewedPermission");
+    const { gate, requests } = makeGate("allow-once");
+    const log: string[] = [];
+    const api = enforceMutatingEffects(makeApi(log), deps(gate));
+    await runWithEffectGateContext({ headless, toolName: "already-running-outer", sessionId: "nested-session" }, async () => {
+      if (headless) await expect(api.storage.write("a.txt", "payload")).rejects.toThrow("Nobody can approve this request; do not retry.");
+      else await api.storage.write("a.txt", "payload");
+    });
+    expect(review).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    const decision = resolve.mock.results[0]?.value;
+    expect(decision).toMatchObject({ decision: headless ? "deny" : "ask" });
+    expect(decision.pipelineRequest.rationaleAvailable).not.toBe(true);
+    expect(decision.forceModal).not.toBe(true);
+    expect(requests).toHaveLength(headless ? 0 : 1);
+    if (!headless) {
+      expect(requests[0]).toMatchObject({ kind: "agent-action", reviewerVerdict: { level: "high" } });
+      expect(requests[0].forceExplicit).not.toBe(true);
+    }
+    expect(log).toEqual(headless ? [] : ["write"]);
+  });
+
   it("reviews an exact headless effect before allowing it", async () => {
     permissionManager.setMode("auto");
     const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("low"));

@@ -326,6 +326,21 @@ describe("shell egress uses the common decision pipeline", () => {
     return { verdict: { level, reason: "Destination review." }, outcome, cacheReason: "miss-not-found", judge: { judged: false, skip: "judge-off" } };
   }
 
+  it("uses a normal destination card after an unanchored HIGH review", async () => {
+    permissionManager.setMode("auto");
+    const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("high"));
+    const resolve = vi.spyOn(permissionManager, "resolveReviewedPermission");
+    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const })) };
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toMatchObject({ allow: false });
+    expect(review).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve.mock.results[0]?.value).toMatchObject({ decision: "ask", reasonCode: "reviewer-human-required" });
+    expect(resolve.mock.results[0]?.value.pipelineRequest.rationaleAvailable).not.toBe(true);
+    expect(resolve.mock.results[0]?.value.forceModal).not.toBe(true);
+    expect(gate.requestAndWait).toHaveBeenCalledOnce();
+    expect(gate.requestAndWait.mock.calls[0][0]).toMatchObject({ kind: "egress-host", reviewerVerdict: { level: "high" } });
+  });
+
   it("reviews a headless destination before permitting one connection", async () => {
     permissionManager.setMode("auto");
     const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("medium"));
