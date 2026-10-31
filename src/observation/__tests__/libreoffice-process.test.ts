@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmod, mkdtemp, mkdir, writeFile, readFile, rm, stat, symlink } from "node:fs/promises";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,8 @@ import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 
 const residentStartup = { publish: true };
 const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, broken: false, registrationFails: false }));
+// win32 chmod maps only the read-only attribute, so a 0o400 create reads back as 0o444 (r--r--r--).
+const READ_ONLY_FILE_MODE = process.platform === "win32" ? 0o444 : 0o400;
 
 vi.mock("../../permissions/offline-process-sandbox.js", () => ({ wrapOfflineProcess: vi.fn(async input => ({
   argv: [input.command, ...input.args], env: input.env, release: vi.fn(),
@@ -35,6 +37,9 @@ vi.mock("node:fs/promises", async importOriginal => {
 import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
 import { spawnManaged, forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { fakeFixtureAclTransport, installFixtureAclTransport } from "../../__tests__/support/native-executable.js";
+import { _setWindowsAclTransportForTest } from "../../main/windows-acl-host.js";
 
 interface ConversionJob { source: string; outputDirectory: string; extension: string; filter: string; inputFilter?: string }
 
@@ -92,6 +97,14 @@ async function eventually(predicate: () => boolean): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  // On win32 the private-temp ownership claim resolves the path-kind helper through host resources and
+  // spawns the ACL host; configure the resources and route the host through the fixture transport so the
+  // claim resolves deterministically without the real PowerShell host. POSIX claims via chmod/chown and
+  // needs neither, so this is scoped to win32 to keep POSIX behaviour unchanged.
+  if (process.platform === "win32") {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    installFixtureAclTransport(fakeFixtureAclTransport(execFile));
+  }
   javaFixture.home = undefined;
   javaFixture.broken = false;
   javaFixture.registrationFails = false;
@@ -138,7 +151,7 @@ beforeEach(async () => {
         void handler(emitter, resident).catch(error => { emitter.stderr.write(String(error)); emitter.end(1); });
       });
     }
-    else if (command.endsWith("/bin/java")) queueMicrotask(() => { emitter.stderr.write(javaFixture.broken ? "runtime cannot start" : 'openjdk version "17.0.1"'); emitter.end(javaFixture.broken ? 1 : 0); });
+    else if (command.endsWith(join("bin", "java"))) queueMicrotask(() => { emitter.stderr.write(javaFixture.broken ? "runtime cannot start" : 'openjdk version "17.0.1"'); emitter.end(javaFixture.broken ? 1 : 0); });
     else if (args.includes("add") || args.includes("list")) queueMicrotask(() => {
       if (javaFixture.registrationFails) { emitter.stderr.write("ERROR: unopkg failed."); emitter.end(1); return; }
       emitter.stdout.write("H2Orestart registered");
@@ -150,7 +163,7 @@ beforeEach(async () => {
   pool = new LibreOfficeSessionPool();
 });
 
-afterEach(async () => { await pool.dispose(); await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { await pool.dispose(); _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
 
 describe("private conversion process ownership", () => {
   it("keeps one resident profile and revalidates each launch while preserving the immutable input", async () => {
@@ -159,7 +172,7 @@ describe("private conversion process ownership", () => {
     conversion = async (client, resident) => {
       const source = client.job!.source;
       received = await readFile(source);
-      expect((await stat(source)).mode & 0o777).toBe(0o400);
+      expect((await stat(source)).mode & 0o777).toBe(READ_ONLY_FILE_MODE);
       await publish(client, resident);
     };
     expect((await pool.convert(installation, "one", input, "docx", new AbortController().signal)).pdf.toString()).toContain("%PDF-");
@@ -210,7 +223,7 @@ describe("private conversion process ownership", () => {
     await writeFile(join(dirname(resident.holder!), `.~lock.${basename(resident.holder!)}#`), "");
     await pending;
     expect(probes()).toHaveLength(1);
-    expect(resident.holder!.startsWith(`${dirname(resident.ipc)}/holder/`)).toBe(true);
+    expect(dirname(resident.holder!)).toBe(join(dirname(resident.ipc), "holder"));
   });
 
   it("forwards host-selected recalculation exports for workbooks", async () => {
@@ -345,9 +358,9 @@ describe("private conversion process ownership", () => {
     expect(jobs().map(child => [child.job!.extension, child.job!.inputFilter])).toEqual([["pdf", "Hwp2002_Reader"], ["odt", "Hwp2002_Reader"]]);
     const add = vi.mocked(wrapOfflineProcess).mock.calls.find(call => call[0].args.includes("add"))![0];
     const staged = add.args.at(-1)!;
-    expect(staged.startsWith(`${add.inputDirectory}/`)).toBe(true);
+    expect(dirname(staged)).toBe(add.inputDirectory);
     expect(staged).not.toBe(installation.extensionPath);
-    expect((await stat(staged)).mode & 0o777).toBe(0o400);
+    expect((await stat(staged)).mode & 0o777).toBe(READ_ONLY_FILE_MODE);
     expect(await readFile(staged)).toEqual(extension);
     expect(add.runtimeDirectories).toEqual([installation.root, home]);
     expect(add.env.UNO_JAVA_JFW_JREHOME).toMatch(/^file:/u);
