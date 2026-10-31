@@ -26,17 +26,23 @@ import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
-import { caseFoldForMatch } from "../../permissions/sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
+import { modelShellPath } from "../../shared/shell-native-path.js";
 import { ToolExecutor } from "../executor.js";
 import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
+
+// win32 yields separator-folded canonicals ("c:/users/..."); compare against the same fold, never the raw backslash spelling.
+const directoryIdentity = (path: string | undefined): string | undefined =>
+  path === undefined ? undefined : canonicalForMatch(modelShellPath(path, { dialect: "bash" }).nativePath ?? path);
+const canonicalForMatch = (path: string): string => foldCanonicalPathSeparators(caseFoldForMatch(path));
 
 const resources = new PermissionTestResources();
 let root: string;
@@ -131,10 +137,28 @@ describe("native invocation permission evidence", () => {
     expect(result.is_error, result.content).not.toBe(true);
     expect(execute).toHaveBeenCalledOnce();
     expect(requests).toHaveLength(0);
-    expect(childEnvironment?.PWD).toBe(project);
+    // win32 prepares PWD in shell form (/c/...) while the fixture holds the host form (C:\...): compare one canonical identity.
+    expect(directoryIdentity(childEnvironment?.PWD)).toBe(directoryIdentity(project));
     const permissionCall = check.mock.calls.findLast((call) => call[4]?.shellExecution?.environmentSnapshot !== undefined);
     expect(permissionCall?.[4]?.shellExecution?.environmentSnapshot).toBe(childEnvironment);
     expect(check.mock.results.at(-1)?.value.pipelineRequest?.floor).toBeUndefined();
+  });
+
+  it("keeps a write through a changed PWD forced", async () => {
+    manager.setMode("allow");
+    await mkdir(join(project, "sub"));
+    const tool = new BashTool();
+    const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "must not execute", isError: false });
+    registry.register(tool);
+    const check = vi.spyOn(manager, "checkDetailed");
+    const [result] = await run(executor(), tool.name, { command: 'cd sub && echo x > "$PWD/out.txt"',
+      executionMode: "host", justification: "Write the project fixture" });
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
+    expect(check.mock.results.at(-1)?.value).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true,
+      pipelineRequest: { floor: { code: "protected-path" } } });
   });
 
   it("does not borrow a stripped parent variable as a deterministic child write target", async () => {
@@ -166,7 +190,7 @@ describe("native invocation permission evidence", () => {
     expect(requests).toHaveLength(1);
     expect(check.mock.results.at(-1)?.value).toMatchObject({
       decision: "ask", reasonCode: "secret-read", pipelineRequest: { secretRead: true,
-        paths: [{ lexical: path, canonical: caseFoldForMatch(path), effect: "read" }] },
+        paths: [{ lexical: path, canonical: canonicalForMatch(path), effect: "read" }] },
     });
   });
 
@@ -403,7 +427,7 @@ describe("native invocation permission evidence", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ category: "tool", forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
     expect(check.mock.results.at(-1)?.value).toMatchObject({ reasonCode: "project-escape", pipelineRequest: {
-      floor: { code: "project-escape" }, paths: [{ canonical: caseFoldForMatch(outside), effect: "read" }],
+      floor: { code: "project-escape" }, paths: [{ canonical: canonicalForMatch(outside), effect: "read" }],
     } });
   });
 
@@ -485,7 +509,7 @@ describe("native invocation permission evidence", () => {
       permissionContext: { trustOrigin: "llm-tool-arg", headless, additionalDirectories: [], onTurnDirectoryGrant: grant } });
     expect(outcome.outcome).toBe("rationale-required");
     if (outcome.outcome !== "rationale-required") throw new Error("Expected model choice for the outside write");
-    expect(outcome.control.control.action.canonicalTargets).toContain(caseFoldForMatch(path));
+    expect(outcome.control.control.action.canonicalTargets).toContain(canonicalForMatch(path));
     expect(materialize).toHaveBeenCalledOnce();
     expect(classify).toHaveBeenCalledOnce();
     expect(execute).not.toHaveBeenCalled();
@@ -567,12 +591,12 @@ describe("native invocation permission evidence", () => {
     const pending = coordinator.promptForApproval(control.ticketId);
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     const card = cards[0]!;
-    expect(card).toMatchObject({ kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: path, suggestedParent: caseFoldForMatch(outside) } });
+    expect(card).toMatchObject({ kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: path, suggestedParent: canonicalForMatch(outside) } });
     if (change === "late-owner") vi.spyOn(Date, "now").mockReturnValue(control.anchor.expiresAt + 60_001);
     gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: scope === "session" ? "allow-session" : "allow-always", rememberPattern: outside, nonce: card.nonce, hmac: card.hmac }, contents as never);
     const approval = await pending;
     expect(approval, JSON.stringify({ outcome: approval?.outcome, reason: approval !== null && "reason" in approval ? approval.reason : undefined, directorySaveFailure })).toMatchObject({ outcome: "allowed-once" });
-    expect(directories).toEqual([scope === "always" ? outside : caseFoldForMatch(outside)]);
+    expect(directories).toEqual([scope === "always" ? foldCanonicalPathSeparators(outside) : canonicalForMatch(outside)]);
     const protectedTarget = join(project, ".git", "config");
     if (change === "unrelated-folder") directories = [...directories, join(root, "unrelated-folder")];
     if (change === "deny-rule") manager.setRules([{ pattern: "write_file", action: "deny" }]);

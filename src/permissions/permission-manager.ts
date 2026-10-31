@@ -34,7 +34,7 @@ import { inspectShellCommand } from "./rules/literal-shell-inspection.js";
 import { shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
-import type { DisposablePathPolicyRelaxation } from "./execution-router.js";
+import { isActiveBrokerGuestSubstrate, type DisposablePathPolicyRelaxation } from "./execution-router.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -1485,8 +1485,11 @@ export class PermissionManager {
     if (shellInspectionExhausted) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
     if (shellSignals?.exfiltration) exfiltration ??= { reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited && !ruleProofLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
+    // A confirmed broker guest route resolves drive-less operands as guest (Linux) paths. Host routes, and any substrate the live broker does not confirm, keep host semantics and the unchanged floor.
+    const brokerGuestRoute = category === "shell" && source === "builtin" && shellExecution.runsSandboxed && isActiveBrokerGuestSubstrate(context.disposableSubstrate);
     const shellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
-      ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {} }, parsed) : undefined;
+      ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {},
+          ...(brokerGuestRoute ? { guestPosixPaths: true as const } : {}) }, parsed) : undefined;
     const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && ruleSubject.cwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, ruleSubject.cwd, shellExecution.environmentSnapshot ?? {}) : undefined;
     if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };

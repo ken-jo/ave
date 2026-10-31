@@ -17,6 +17,7 @@ import {
   type OperatorContainerRevalidationLease,
 } from "./operator-container-attestation.js";
 import {
+  getActiveWorkloadBrokerProjection,
   isIssuedActiveBrokeredWorkloadCapability,
   issueWorkloadToolCorrelationAuthority,
   type BrokeredWorkloadCapability,
@@ -160,6 +161,18 @@ export interface ShellExecutionGrant {
   readonly disposableCapabilityGeneration: string | null;
   readonly route: ExecutionRoute;
   readonly pathPolicyRelaxations: readonly DisposablePathPolicyRelaxation[];
+}
+
+/** The one test for a broker guest route; the runner's route gates and the permission floor must share it. */
+export function isBrokerGuestRoutePlan(
+  plan: Pick<ExecutionPlan, "route" | "disposableCapability"> | undefined,
+): boolean {
+  return plan?.route === "disposable-container" && plan.disposableCapability?.kind === "workload-broker";
+}
+
+/** The runner derives the substrate from `isBrokerGuestRoutePlan`; the floor additionally requires it to name the live broker workload, so a forged value earns nothing. */
+export function isActiveBrokerGuestSubstrate(substrate: { readonly authority: string; readonly id: string } | undefined): boolean {
+  return substrate?.authority === "workload-broker" && getActiveWorkloadBrokerProjection()?.workload.id === substrate.id;
 }
 
 export interface BrokeredToolExecutionGrant {

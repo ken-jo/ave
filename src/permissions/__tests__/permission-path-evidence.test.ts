@@ -130,6 +130,12 @@ describe("permission path facts", () => {
   it("distinguishes critical delete intent from ordinary recursive deletion", () => {
     for (const command of ["rm -rf /", "rm -rf .", "rm -rf .."]) {
       const result = inspectShellPermissionPaths(command, project);
+      if (process.platform === "win32" && command === "rm -rf /") {
+        // win32 cannot resolve a drive-less POSIX root, so it fails closed as an unresolved protected write (protected-path) instead.
+        expect(result.unknownProtectedWrite, command).toBeDefined();
+        expect(result.unproven, command).toBeTruthy();
+        continue;
+      }
       expect(result.paths.some((path) => path.deleteIntent && criticalDeleteTargetFor(path, [project]) !== undefined), command).toBe(true);
     }
     const ordinary = inspectShellPermissionPaths("rm -rf src", project);
@@ -433,7 +439,7 @@ describe("shell target operand roles", () => {
         shellExecution: { runsSandboxed: true }, headless,
       });
       expect(result).toMatchObject(headless ? { decision: "deny", reasonCode: "no-approver" }
-        : { decision: "ask", reasonCode: "critical-delete", forceModal: true });
+        : { decision: "ask", reasonCode: process.platform === "win32" ? "protected-path" : "critical-delete", forceModal: true });
       expect(result.reviewer).toBeUndefined();
     }
   });
@@ -452,7 +458,8 @@ describe("shell target operand roles", () => {
     try {
       const facts = inspectShellPermissionPaths("cat notes.txt notes.txt notes.txt", project);
       expect(facts.paths.filter(path => path.canonical === target)).toHaveLength(3);
-      expect(physicalReads.mock.calls.filter(([path]) => path === target)).toHaveLength(1);
+      // Once per decision on posix; win32 resolves both the lexical and the physical-parent reading (link-ambiguity check), so twice.
+      expect(physicalReads.mock.calls.filter(([path]) => path === target)).toHaveLength(process.platform === "win32" ? 2 : 1);
     } finally { physicalReads.mockRestore(); }
   });
 

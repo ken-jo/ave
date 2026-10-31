@@ -98,6 +98,7 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
 import {
+  isBrokerGuestRoutePlan,
   isDisposablePathPolicyRelaxation,
   getExecutionGrantCorrelationAuthority,
   type DisposablePathPolicyRelaxation,
@@ -1142,9 +1143,7 @@ export async function runToolInvocation(
       return await returnExecutionRouteFailure(error);
     }
     const brokeredHostShellRouteSelected = (): boolean =>
-      hostShellToolName !== undefined &&
-      executionRoutePlan?.route === "disposable-container" &&
-      executionRoutePlan.disposableCapability?.kind === "workload-broker";
+      hostShellToolName !== undefined && isBrokerGuestRoutePlan(executionRoutePlan);
     const hostShellRequiresExplicitApproval =
       hostShellExecutionPlan !== undefined &&
       requiresExplicitHostShellApproval(hostShellExecutionPlan, hostShellToolName) &&
@@ -1367,9 +1366,7 @@ export async function runToolInvocation(
     // grade a host-routed call as a guest. The operator-attested container is
     // deliberately not a substrate (see `DisposableSubstrate`).
     const disposableSubstrate: DisposableSubstrate | undefined =
-      executionRoutePlan?.route === "disposable-container" &&
-      executionRoutePlan.disposableCapability !== null &&
-      executionRoutePlan.disposableCapability.kind === "workload-broker"
+      isBrokerGuestRoutePlan(executionRoutePlan) && executionRoutePlan?.disposableCapability?.kind === "workload-broker"
         ? { authority: "workload-broker", id: executionRoutePlan.disposableCapability.id }
         : brokeredFileRouteSelected && brokeredFileCapability !== undefined
           ? { authority: "workload-broker", id: brokeredFileCapability.workload.id }
