@@ -20,12 +20,8 @@ keeps it. The full documentation map is in the [documentation index](../README.m
   done; phase 7 (public release and server retirement) remains.
 - [Composer message queue](./composer-redesign-message-queue.md): busy-turn
   queueing, interrupts, and turn-end sending in the composer; implemented.
-- [Headless relay separation](./headless-relay-separation.md): design, not
-  implemented; separates the chat relay server from the desktop window.
 - [Memory governance P1](./memory-governance-p1-consolidation.md): the
   long-term memory consolidation decision; implemented.
-- [MCP app per-resource capabilities](./mcp-app-per-resource-capabilities.md):
-  design note, not implemented.
 - [Selective borrow record](./openharness-selective-borrow-plan.md): what was
   ported from an MIT-licensed agent harness and the license obligations;
   `LICENSE` points here.

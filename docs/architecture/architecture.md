@@ -778,10 +778,8 @@ transports are transport-agnostic and free of Electron runtime imports, which is
 what lets the same host services run under a windowless host process rather than
 only inside the Electron boot. Consent for an external-origin mutating request
 is still resolved at the single `ApprovalGate` chokepoint; when no consent
-surface can present the request, the gate denies it for that call. The layer's
-separation plan and the consent-surface security analysis live in
-[docs/blueprints/headless-relay-separation.md](../blueprints/headless-relay-separation.md);
-this section records only the boundary the rest of the host depends on.
+surface can present the request, the gate denies it for that call. This section
+records only the boundary the rest of the host depends on.
 
 ## Project Identity
 
