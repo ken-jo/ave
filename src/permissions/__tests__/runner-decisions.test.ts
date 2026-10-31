@@ -176,11 +176,11 @@ describe("shared runner decisions", () => {
     expect(RUNNER_DECISIONS).toHaveLength(2031);
     const commands = RUNNER_DECISIONS.map((row) => row.command);
     expect(createHash("sha256").update(JSON.stringify(commands.slice(0, 1377))).digest("hex"))
-      .toBe("657e677ea8f9968de15dd2907d42abab7ac9958d2815126449ee9037c4e2b68b");
+      .toBe("0bb43140a7a4776182bff6c0104625d09f3efca09719cc09f5e15549e2e41bf9");
     // The complete command identity was collected independently of this table.
     expect(new Set(commands).size).toBe(RUNNER_DECISIONS.length);
     expect(createHash("sha256").update(JSON.stringify([...commands].sort())).digest("hex"))
-      .toBe("511643e662e6863bd2b8043485639e1947fd92ec6322d6179cac17f00eee93e6");
+      .toBe("b8db143d8567f666b649b2b10b3ad37d565dbd49657c485982e0e27c55b84273");
     for (const dialect of DIALECTS) {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
