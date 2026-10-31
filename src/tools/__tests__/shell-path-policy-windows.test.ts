@@ -167,6 +167,59 @@ describe.skipIf(process.platform !== "win32")("native shell path aliases", () =>
     }
   });
 
+  for (const mode of ["strict", "default", "auto", "allow"] as const) {
+    it.each(["copy.exe /b src .git/config", "COPY.EXE /b src .git/config", '"copy.exe" /b src .git/config', "C:/tools/copy.exe src .git/config",
+      '"C:/tools/Copy.EXE" /b src .git/config', String.raw`'C:\tools\copy.exe' /b src .git/config`])(`forces the protected-write floor for a typed copy.exe destination in ${mode}: %s`, command => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "shell-copyexe-")));
+      roots.push(root);
+      const manager = new PermissionManager(join(root, "permissions.json"));
+      manager.setMode(mode);
+      for (const headless of [false, true]) {
+        const result = manager.checkDetailed("bash", "builtin", "shell", undefined, {
+          ruleSubject: { kind: "shell", dialect: "bash", command, cwd: root }, shellExecution: { runsSandboxed: true }, headless,
+        });
+        expect(result).toMatchObject(headless ? { decision: "deny", reasonCode: "no-approver" }
+          : { decision: "ask", forceModal: true, reasonCode: "protected-path" });
+      }
+    });
+  }
+
+  it.each(["copy.exe src out.txt", "COPY.EXE /b src out.txt"])("keeps an ordinary copy.exe destination free of the protected floor: %s", command => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "shell-copyexe-")));
+    roots.push(root);
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    const result = manager.checkDetailed("bash", "builtin", "shell", undefined, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd: root }, shellExecution: { runsSandboxed: true },
+    });
+    expect(result.forceModal).not.toBe(true);
+    expect(result.reasonCode).not.toBe("protected-path");
+    const facts = inspectShellPermissionPaths(command, root);
+    expect(facts.paths).toContainEqual(expect.objectContaining({ canonical: join(root, "out.txt"), effect: "write" }));
+    expect(facts.paths.filter(path => path.protectedControl !== undefined)).toEqual([]);
+  });
+
+  it("keeps bare copy's non-native handling unchanged (no copy.exe collision)", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "shell-copyexe-")));
+    roots.push(root);
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    const expected = {
+      strict: { decision: "ask", reasonCode: "shell-approval" },
+      default: { decision: "ask", reasonCode: "shell-approval" },
+      auto: { decision: "ask", reasonCode: "review-required" },
+      allow: { decision: "allow", reasonCode: "allow-mode" },
+    } as const;
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      manager.setMode(mode);
+      const result = manager.checkDetailed("bash", "builtin", "shell", undefined, {
+        ruleSubject: { kind: "shell", dialect: "bash", command: "copy /b src .git/config", cwd: root }, shellExecution: { runsSandboxed: true },
+      });
+      expect(result).toMatchObject(expected[mode]);
+      expect(result.forceModal).not.toBe(true);
+      expect(result.reasonCode).not.toBe("protected-path");
+    }
+  });
+
   it.each([
     "sort -oresultsave-secrets.json in",
     "sort '-ooutput\\result.txt' in",

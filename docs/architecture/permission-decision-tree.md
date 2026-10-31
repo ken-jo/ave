@@ -62,6 +62,8 @@ Notes that are part of the contract:
 - 질문† triggers only: protected paths (Claude Code list: .git .vscode .idea .husky .cargo .devcontainer .yarn
   .mvn .claude .config/git .bashrc .zshrc .zprofile .profile .envrc .gitconfig .npmrc .mcp.json .claude.json,
   plus Ave config/home dirs), critical delete, project escape, other-principal turn.
+- Native copy-class operand grammar (destination slot, protected-write floor) is matched by the executable spelling as typed,
+  extension included (`copy.exe`), before the extension-stripped verb. Bare `copy` stays the cmd builtin / copy-item alias.
 - Exfil (owner decision 2026-10-30, aligned with Codex, Claude Code and Hermes): an upload/exfil signal found in
   command text is a guardrail, not 질문†. It makes the call an ordinary ask: a card in 기본 and 쓰기 허용, the
   reviewer in auto, allowed in 허용, denied headless. The security boundary for network egress is the sandbox egress
