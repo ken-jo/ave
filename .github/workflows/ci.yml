@@ -691,6 +691,7 @@ jobs:
           src/permissions/judge/__tests__/judge-dispatch.test.ts
           src/main/__tests__/document-open.test.ts
           src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
+          src/permissions/__tests__/canonicalizer-8dot3.test.ts
           src/permissions/__tests__/policy-home.test.ts
           src/shared/__tests__/windows-configuration-handles.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
