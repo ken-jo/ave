@@ -6,6 +6,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
+import { AveHomeConfigurationUntrustedError, ensureAveHomePrivate, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { migrateAveHomeConfiguration } from "../../shared/ave-home-configuration.js";
 import { createPermissionManager } from "../../boot/conversation.js";
 import { SettingsService } from "../../data/settings-store.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
@@ -31,16 +34,31 @@ beforeEach(() => {
   project = join(directory, "project");
   const home = join(directory, "home");
   mkdirSync(project);
-  mkdirSync(home, { mode: 0o700 });
-  vi.stubEnv("AVE_HOME", home);
-  policyPath = permissionSettingsPath();
-  writeFileSync(policyPath, JSON.stringify({ permissions: { additionalDirectories: [] } }));
+  const initial = JSON.stringify({ permissions: { additionalDirectories: [] } });
+  if (process.platform === "win32") {
+    // The product refuses a configuration home that is not owner-only and protected, so provision it
+    // the way the other win32 home tests do rather than with a bare mkdir (which inherits the temp
+    // DACL and is rejected). ensureAveHomePrivate stamps the protected owner-only descriptor and
+    // creates the home; migrate moves the settings file into the config boundary, matching production.
+    setFixtureOwner(directory);
+    vi.stubEnv("AVE_HOME", home);
+    expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
+    writeFileSync(join(home, "settings.json"), initial);
+    migrateAveHomeConfiguration(home);
+    policyPath = permissionSettingsPath();
+  } else {
+    mkdirSync(home, { mode: 0o700 });
+    vi.stubEnv("AVE_HOME", home);
+    policyPath = permissionSettingsPath();
+    writeFileSync(policyPath, initial);
+  }
 });
 
 afterEach(async () => {
   for (const gate of gates.splice(0)) gate.disposeAll();
   for (const cache of caches.splice(0)) await cache.flush();
   vi.unstubAllEnvs();
+  _resetAveHomePrivacyForTest();
   await cleanupTmpDir(directory);
 });
 
@@ -147,4 +165,22 @@ it.each(["strict", "rule", "unrecognized"])("keeps readable policy active while 
     expect(manager.resolveReviewedPermission(initial, review)).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
   }
   expect(classify).not.toHaveBeenCalled();
+});
+
+// Pins the floor the provisioning above satisfies: a home whose DACL is inherited rather than
+// owner-only and protected must never be trusted to read permission settings.
+it.runIf(process.platform === "win32")("refuses an unprotected, inherited-ACL configuration home as unverified", () => {
+  const unprotected = join(directory, "unprotected-home");
+  mkdirSync(unprotected);
+  writeFileSync(join(unprotected, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [] } }));
+  vi.stubEnv("AVE_HOME", unprotected);
+  let caught: unknown;
+  try {
+    readPermissionSettings();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(AveHomeConfigurationUntrustedError);
+  // Pin the home-root floor specifically, not the sibling "boundary protection is unverified".
+  expect((caught as Error).message).toMatch(/home protection is unverified/);
 });
