@@ -1,6 +1,6 @@
 # Windows Setup
 
-Status: Active. Covers running Ave from source on Windows 10 or 11. Korean version: [Windows 개발 환경](../ko/guides/windows-setup.md).
+Status: Active. Covers running Ave from source on Windows 10 or 11.
 
 The general setup is in [Getting started](./getting-started.md). This page covers only what differs on Windows. `bun run start` applies the Windows launch defaults itself, so a clean checkout should start without extra configuration.
 

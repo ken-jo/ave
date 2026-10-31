@@ -4,8 +4,6 @@ Status: **Active** (2026-09-25). Replaces the server marketplace's publisher
 flow, which was removed by the switch to the
 [multi-source git marketplace](../blueprints/multi-source-git-marketplace.md).
 
-Korean mirror: [docs/ko mirror](../ko/guides/marketplace-publishing.md).
-
 A marketplace is a git repository. The app reads it over git, pins what it read
 to a commit, and installs a package only from bytes that commit names. There is
 no upload, no approval queue and no publisher key: publishing is a merge, and

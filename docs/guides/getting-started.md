@@ -1,9 +1,7 @@
 # Getting Started
 
 Status: Active. This page is the clean-checkout path for running and testing
-the desktop app and for the first run. A Korean mirror,
-[docs/ko/guides/getting-started.md](../ko/guides/getting-started.md), changes in
-the same commit; when the two disagree, this page and the source are
+the desktop app and for the first run. This page and the source are
 authoritative. What Ave is for is stated in [Vision](../vision/README.md).
 
 ## Clean-Checkout Setup

@@ -65,7 +65,3 @@ IPC; they never reach host internals directly. The code entry points are
 The git marketplace architecture lives in its
 [design specification](../design/multi-source-git-marketplace.md) and
 [blueprint](../blueprints/multi-source-git-marketplace.md).
-
-Older Korean specifications of the architecture, permission policy, and plugin
-tool schema remain under `docs/ko` because source comments cite their section
-numbers; see the [Korean index](../ko/README.md).

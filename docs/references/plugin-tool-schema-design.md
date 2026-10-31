@@ -1,8 +1,7 @@
 # Plugin Tool Schema Design
 
 This reference defines the current plugin Tool contract interpreted by the Ave
-Host. Korean source history is preserved at
-[docs/ko/references/plugin-tool-schema-design.md](../ko/references/plugin-tool-schema-design.md).
+Host.
 
 ## Sources Of Truth
 

@@ -33,7 +33,7 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-exclude_re='^(docs/blueprints/|docs/ko/|\.github/|.*/__tests__/|.*/__mocks__/|test/|tests/|.*\.test\.|.*\.spec\.|.*\.lock|.*lock\.json|CHANGELOG)'
+exclude_re='^(docs/blueprints/|\.github/|.*/__tests__/|.*/__mocks__/|test/|tests/|.*\.test\.|.*\.spec\.|.*\.lock|.*lock\.json|CHANGELOG)'
 include_re='\.(ts|tsx|py|js|mjs|cjs|md)$'
 
 # Narrow the path list to what this gate reads. `grep` exit 1 means "no path

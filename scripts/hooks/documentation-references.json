@@ -9,10 +9,6 @@
     "docs/design/permission-review-scenario-board-v2.html",
     "docs/design/plugin-hostapi-protocol.md",
     "docs/development/knip-baseline.md",
-    "docs/ko/app-readme.md",
-    "docs/ko/architecture/architecture.md",
-    "docs/ko/guides/local-plugin-development.md",
-    "docs/ko/guides/windows-setup.md",
     "docs/protocols/ave-a2a-exact-send-replay.md",
     "docs/references/production-release-checklist.md",
     "resources/AGENTS.md",
@@ -61,18 +57,6 @@
       "src/permissions/__tests__/permission-review-scenario-board.test.ts"
     ],
     "docs/development/knip-baseline.md": [
-      "test/scripts/repository-identity.test.ts"
-    ],
-    "docs/ko/app-readme.md": [
-      "src/plugins/__tests__/registry-atomicity.test.ts",
-      "test/scripts/repository-identity.test.ts"
-    ],
-    "docs/ko/guides/local-plugin-development.md": [
-      "src/plugins/__tests__/registry-atomicity.test.ts",
-      "test/scripts/repository-identity.test.ts"
-    ],
-    "docs/ko/guides/windows-setup.md": [
-      "src/plugins/__tests__/registry-atomicity.test.ts",
       "test/scripts/repository-identity.test.ts"
     ],
     "web/DEPLOY.md": [

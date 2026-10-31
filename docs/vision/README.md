@@ -5,8 +5,6 @@ where it is going. Other pages (the README, the docs index, the architecture
 intro, `package.json`) describe Ave in one line and link here instead of
 restating it.
 
-Korean mirror: [docs/ko/vision/README.md](../ko/vision/README.md).
-
 ## Hello, I'm Ave
 
 *Ave* is Latin for a bright "hello". Ave is a comprehensive agent browser: the

@@ -128,9 +128,6 @@ describe("plugin registry transaction atomicity", () => {
   it("keeps local-install guidance on the host-owned Settings flow", async () => {
     const activeReferences = [
       "README.md",
-      "docs/ko/app-readme.md",
-      "docs/ko/guides/local-plugin-development.md",
-      "docs/ko/guides/windows-setup.md",
       "scripts/plugins-cli.ts",
       "scripts/run-electron-dev.mjs",
       "src/plugins/registry.ts",

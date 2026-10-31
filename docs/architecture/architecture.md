@@ -6,9 +6,6 @@ invariant: the host owns trust, storage, project identity,
 and tool execution; plugins and renderer surfaces request capabilities through
 explicit contracts.
 
-Korean source history is preserved at
-[docs/ko/architecture/architecture.md](../ko/architecture/architecture.md).
-
 ## System Goals
 
 - Keep project context first-class across chat, memory, insights, work board,
@@ -2649,9 +2646,7 @@ Security-sensitive areas are intentionally centralized:
 - tool executor and sandbox helpers for runtime enforcement.
 
 Changes spanning these areas merit proportionate cross-cutting review. That
-review is advisory, never a merge gate. Documentation-only mirrors under `docs/ko`
-are excluded from naming-process gates because they preserve historical source
-text; production paths remain covered.
+review is advisory, never a merge gate.
 
 ### Windows object ownership
 
@@ -2826,11 +2821,9 @@ contract for all of them.
 ## Documentation Language Policy
 
 English is the canonical default for app docs, generated examples, comments,
-logs, and user-facing fallback copy. Korean pages under `docs/ko` are kept only
-where a reader or a test needs them; the
-[documentation index](../README.md#language-policy) states the rule. Runtime Korean
-support remains in locale catalogs, intent parsing, and keyword matching where
-the app must understand Korean user input.
+logs, and user-facing fallback copy. Runtime Korean support remains in locale
+catalogs, intent parsing, and keyword matching where the app must understand
+Korean user input.
 
 ## Verification Expectations
 

@@ -1,8 +1,7 @@
 # Extension Development Guide
 
 This guide describes how to build Ave extensions against the current host
-runtime. Korean source history is preserved in the
-[Korean historical reference](../ko/guides/plugin-development.md).
+runtime.
 
 ## Extension Model
 
@@ -359,6 +358,6 @@ Before publishing or merging an extension change:
 ## Language Policy
 
 Default extension examples, docs, logs, and visible fallback copy should be English.
-Korean extension docs may live under `docs/ko` or extension-local localization files.
+Korean extension docs may live in extension-local localization files.
 Runtime Korean support should be implemented through locale catalogs or explicit
 keyword/intent support, not by making English default docs Korean-only.

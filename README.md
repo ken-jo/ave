@@ -4,8 +4,6 @@ Hello, I'm Ave. Ave is a comprehensive agent browser: the desktop place where yo
 
 This repository owns the Electron main/renderer/preload layers, extension runtime, git marketplace install flow, Python runtime bootstrap, and OS installer packaging.
 
-Korean documentation: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
-
 ## What This Repository Owns
 
 - Electron main, renderer, preload, and `plugin-preload` bundles.
@@ -290,8 +288,6 @@ A retired historical E2E script is no longer the source of truth. Current host-s
 
 ## Documentation
 
-- Korean app README: [docs/ko/app-readme.md](./docs/ko/app-readme.md)
-- Korean documentation hub: [docs/ko/README.md](./docs/ko/README.md)
 - Architecture: [docs/architecture/README.md](./docs/architecture/README.md)
 - Design: [docs/design/README.md](./docs/design/README.md)
 - Tiled chat groups: [docs/design/tiled-chat-groups.md](./docs/design/tiled-chat-groups.md)

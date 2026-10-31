@@ -233,7 +233,6 @@ describe("repository identity source of truth", () => {
       ".github/CONTRIBUTING.md",
       ".github/workflows/ci.yml",
       ".github/workflows/web-deploy.yml",
-      "docs/ko/guides/windows-setup.md",
       "package.json",
       "src/__tests__/packaging-discipline-source.test.ts",
       "web/DEPLOY.md",
