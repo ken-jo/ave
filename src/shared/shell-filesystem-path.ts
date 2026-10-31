@@ -1,11 +1,19 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
-import { modelShellPath, type ShellPathModel } from "./shell-native-path.js";
+import { isWindowsNetworkOrDevicePath, modelShellPath, type ShellPathModel } from "./shell-native-path.js";
+
+function rejectNetworkOrDevicePath(path: string): void {
+  if (isWindowsNetworkOrDevicePath(path)) {
+    throw Object.assign(new Error(`Shell path requires network or device authority: ${path}`), { code: "ENETWORKSHAREPATH", path });
+  }
+}
 
 // Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.
 export function resolveShellFilesystemPath(path: string, cwd: string, model: Omit<ShellPathModel, "location"> = { dialect: "native" }): string {
+  rejectNetworkOrDevicePath(path);
   if (sep === "\\") {
     const absolute = anchorFilesystemPath(path, cwd, model);
+    rejectNetworkOrDevicePath(absolute);
     const { normalizedPath, volumeRoot: root } = modelShellPath(absolute, { dialect: "native" });
     const lexical = resolveExistingShellPath(normalizedPath);
     // Children can collapse parents before following links or follow each prefix first. Neither reading alone establishes the operand's identity.
@@ -29,6 +37,7 @@ function physicalParentPath(absolute: string, root: string): string {
 
 /** Win32 APIs fold ".." lexically; this reading follows each existing link before its "..". */
 export function physicalParentReading(absolute: string): string {
+  rejectNetworkOrDevicePath(absolute);
   return physicalParentPath(absolute, modelShellPath(absolute, { dialect: "native" }).volumeRoot);
 }
 
@@ -77,10 +86,12 @@ function anchorFilesystemPath(path: string, cwd: string, model: Omit<ShellPathMo
 }
 
 function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: number): BasicPhysicalFilesystemPathResolution {
+  rejectNetworkOrDevicePath(path);
   if (maxMissingAncestors < 0 || (!Number.isSafeInteger(maxMissingAncestors) && maxMissingAncestors !== Number.POSITIVE_INFINITY)) {
     throw new RangeError("Missing ancestor limit must be a non-negative integer");
   }
   const anchored = anchorFilesystemPath(path, cwd);
+  rejectNetworkOrDevicePath(anchored);
   const absolute = sep === "\\"
     ? modelShellPath(anchored, { dialect: "native" }).normalizedPath : anchored;
   const suffix: string[] = [];
@@ -114,9 +125,11 @@ function resolveFilesystemPath(path: string, cwd: string, maxMissingAncestors: n
 }
 
 function inspectRoutingSymlinks(path: string, cwd: string, maxComponents: number): string[] {
+  rejectNetworkOrDevicePath(path);
   const absolute = isAbsolute(path);
   if (absolute) path = anchorFilesystemPath(path, cwd);
   const root = absolute ? modelShellPath(path, { dialect: "native", location: cwd }).volumeRoot : cwd;
+  rejectNetworkOrDevicePath(root);
   const remainder = absolute ? path.slice(root.length) : path;
   const components = remainder.split(sep === "\\" ? /[\\/]+/u : /\/+/u).filter(Boolean);
   if (components.length > maxComponents) {

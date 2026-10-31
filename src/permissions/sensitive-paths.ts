@@ -37,6 +37,7 @@ import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
+import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
 export const MAX_WALK_UP = 64;
@@ -408,6 +409,7 @@ function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: 
 
 // Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
 export function canonicalizePathForMatch(rawPath: string, spend?: () => void): string {
+  if (isWindowsNetworkOrDevicePath(rawPath)) return foldCanonicalPathSeparators(rawPath);
   let canonical = pathResolve(rawPath);
 
   // Step 2 — realpath walk-up. Try the path itself first; if missing, walk up to the nearest existing ancestor and compose the unresolved tail.
@@ -477,7 +479,9 @@ export function createPathCanonicalizer(): (rawPath: string, normalized?: boolea
     paths.set(path, result);
     return result;
   };
-  return (rawPath, normalized = false) => resolvePath(normalized ? rawPath : pathResolve(rawPath), 0).folded;
+  return (rawPath, normalized = false) => isWindowsNetworkOrDevicePath(rawPath)
+    ? foldCanonicalPathSeparators(rawPath)
+    : resolvePath(normalized ? rawPath : pathResolve(rawPath), 0).folded;
 }
 
 // Steps 3–5 of canonicalizePathForMatch: separator folding, duplicate collapse, NFC, and the win32 drive-letter case fold. Exported with an explicit `platform` because the Windows shapes cannot be exercised through canonicalizePathForMatch anywhere else: `resolve` and `realpath` follow the HOST's rules, so a `\\server\share\…` input is just a filename with backslashes in it on macOS/Linux, and a win32-only assertion would never run on the machines this is developed and CI'd on.

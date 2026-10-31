@@ -1,7 +1,7 @@
 import { readShellOptionValue as readOptionValue } from "../shared/shell-option-value.js";
 import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
 import { literalShellBodies, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
 import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
@@ -1477,6 +1477,15 @@ export function inspectImplicitGitWriteTargets(
   onCommand?: (verb: string) => void,
 ): string | undefined {
   if (argv[0] === undefined || stripCommandPath(argv[0]).toLowerCase().replace(/\.exe$/u, "") !== "git") return undefined;
+  const resolveDirectory = (path: string, base: string): string => {
+    try { return resolveShellFilesystemPath(path, base); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
+      // Retain lexical routing and feed the refused identity to the same collector.
+      checkPath(path, path, base, "read");
+      return win32.resolve(base, path);
+    }
+  };
   let index = 1;
   let directory = cwd;
   let gitDirectory: string | undefined = environment.GIT_DIR;
@@ -1489,11 +1498,11 @@ export function inspectImplicitGitWriteTargets(
     if (arg === "-C") {
       const value = argv[++index];
       if (value === undefined || directory === null) directory = null;
-      else directory = resolveShellFilesystemPath(value, directory);
+      else directory = resolveDirectory(value, directory);
       index++; continue;
     }
     if (arg?.startsWith("-C") && arg.length > 2) {
-      directory = directory === null ? null : resolveShellFilesystemPath(arg.slice(2), directory);
+      directory = directory === null ? null : resolveDirectory(arg.slice(2), directory);
       index++; continue;
     }
     if (arg === "--git-dir" || arg?.startsWith("--git-dir=")) {
@@ -1544,7 +1553,7 @@ export function inspectImplicitGitWriteTargets(
       return undefined;
     }
     if (directory === null || unknownGitDirectory) return query ? undefined : "The implicit repository write target is unresolved.";
-    const base = gitDirectory === undefined ? join(directory, ".git") : resolveShellFilesystemPath(gitDirectory, directory);
+    const base = gitDirectory === undefined ? join(directory, ".git") : resolveDirectory(gitDirectory, directory);
     checkPath(join(base, "config"), "repository configuration", directory, effect);
     return query ? undefined : "The command mutates protected repository configuration.";
   }
@@ -1596,13 +1605,13 @@ export function inspectImplicitGitWriteTargets(
       }
       if (arg.startsWith("--separate-git-dir=")) { gitDirectory = arg.slice(19); continue; }
       if (["--template", "--initial-branch", "-b", "--object-format", "--ref-format"].includes(arg)) { cursor++; continue; }
-      if (!arg.startsWith("-") && arg !== "--") destination = resolveShellFilesystemPath(arg, directory);
+      if (!arg.startsWith("-") && arg !== "--") destination = resolveDirectory(arg, directory);
     }
-    const base = gitDirectory === undefined ? bare ? destination : join(destination, ".git") : resolveShellFilesystemPath(gitDirectory, directory);
+    const base = gitDirectory === undefined ? bare ? destination : join(destination, ".git") : resolveDirectory(gitDirectory, directory);
     checkPath(join(base, "hooks"), "implicit repository hooks write", directory, "write");
     return "The command mutates protected repository control metadata.";
   }
-  const base = gitDirectory === undefined ? join(directory, ".git") : resolveShellFilesystemPath(gitDirectory, directory);
+  const base = gitDirectory === undefined ? join(directory, ".git") : resolveDirectory(gitDirectory, directory);
   checkPath(join(base, metadataTarget), "implicit repository control write", directory, "write");
   return "The command mutates protected repository control metadata.";
 }
@@ -1692,6 +1701,15 @@ export function findShellPathPolicyViolation(
     }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error)) throw error;
+      if (error.code === "ENETWORKSHAREPATH") {
+        if (evidence) {
+          const lexical = isAbsolute(path) ? path : win32.resolve(cwd ?? sandboxRoot, path);
+          evidence.push({ ...evidenceForPath!({ lexical, canonical: win32.normalize(lexical), effect }), projectEscape: true,
+            ...(deleting ? { deleteIntent: true as const } : {}) });
+          return;
+        }
+        throw new PathPolicyError({ kind: "sandbox-boundary", reason: `Shell path policy: network or device operand escapes the project: ${label}`, candidate: label, path });
+      }
       if (evidence) {
         unresolvedEvidence ??= { kind: "invalid-path", reason: "Shell path policy: cannot resolve command operand", candidate: label };
         if (effect === "write") onUnknownWrite?.(`The write target's identity is unresolved: ${label}`);
