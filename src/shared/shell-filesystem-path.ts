@@ -10,6 +10,10 @@ function rejectNetworkOrDevicePath(path: string, platform: NodeJS.Platform = pro
 
 const MAX_FILESYSTEM_SYMLINK_HOPS = 64;
 
+function tryRealpathNative(path: string): string | undefined {
+  try { return realpathSync.native(path); } catch { return undefined; }
+}
+
 /** Check each link from a local volume root before any syscall can follow it. */
 export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platform = process.platform, maxSymlinkHops = MAX_FILESYSTEM_SYMLINK_HOPS, facts?: {
   knownPath: (path: string) => { canonical: string; missing: boolean } | undefined;
@@ -62,8 +66,9 @@ export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platfo
         if (walk(effectiveTarget) === undefined) return undefined;
         physicalParent = realpathSync.native(candidate);
       } else {
-        // The physical parent and this non-link entry establish the next parent.
-        physicalParent = candidate;
+        // The physical parent and this non-link entry establish the next parent. Facts consumers match on the
+        // canonical spelling, so expand 8.3 aliases and casing; other callers keep the input spelling.
+        physicalParent = facts ? (tryRealpathNative(candidate) ?? candidate) : candidate;
       }
       facts?.onLocalPath(lexicalParent, physicalParent, false);
     }
