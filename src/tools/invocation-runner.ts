@@ -13,7 +13,7 @@ import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook } from "./invocation-services.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
-import { isCodeCheckpointAvailable, withRequiredCodeCheckpoint } from "../memory/code-checkpoints.js";
+import { checkpointMutationIdentity, isCodeCheckpointAvailable, withRequiredCodeCheckpoint } from "../memory/code-checkpoints.js";
 import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js";
 import { areProjectWriteTargetsInside } from "./project-write-scope.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
@@ -2251,7 +2251,11 @@ export async function runToolInvocation(
       && !(typeof finalInput.sourcePath === "string" && await isFileCopyCheckpointSupported(finalInput.sourcePath, executionCwd))));
     const checkpointAvailable = !nativeFileWrite || unsupportedTransfer
       ? false
-      : insideProject ? await isCodeCheckpointAvailable(canonicalTargets.map((target) => target.runtimePath)) : undefined;
+      // The recorder keys each mutation on the realpath-native identity
+      // (canonicalPath∘resolve); feed the pre-check the same spelling so a win32
+      // in-project write is not rejected by the matching form's lowercased drive
+      // letter. The matching form stays on the membership test above.
+      : insideProject ? await isCodeCheckpointAvailable(await Promise.all(canonicalTargets.map((target) => checkpointMutationIdentity(target.filePath)))) : undefined;
     const fileWritePolicy = isCanonicalFileTool(tool) && invocationCategory === "write" ? { insideProject, checkpointAvailable, directoryApproved: false } : undefined;
 
     // A saved Edit scope grants only the sealed file targets of this call.

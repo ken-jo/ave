@@ -349,6 +349,27 @@ async function canonicalPath(path: string): Promise<string> {
   }
 }
 
+/**
+ * The realpath-native identity the recorder keys a mutation on
+ * (`checkpointMutation` → `canonicalPath(resolve(effect.path))`). The
+ * availability pre-check must be fed the SAME spelling: the permission matching
+ * form (`canonicalizePathForMatch`) lowercases the win32 drive letter, so
+ * `resolve()` yields `c:\…` while realpath yields `C:\…` and the identity
+ * compare in `isCodeCheckpointAvailable` never matches — every win32 in-project
+ * write is wrongly judged unrecoverable. Computed at the call site so the
+ * compare itself stays unchanged.
+ */
+export async function checkpointMutationIdentity(filePath: string): Promise<string> {
+  const resolved = resolve(filePath);
+  // canonicalPath rethrows non-ENOENT realpath errors (ENOTDIR, EACCES, ELOOP,
+  // EPERM). Returning the pre-canonical path on error lets that same error
+  // resurface inside isCodeCheckpointAvailable's own guard, where it is caught
+  // and degraded to "unavailable" (an ask) — the graceful path this used to take
+  // when the matching form was passed straight in.
+  try { return await canonicalPath(resolved); }
+  catch { return resolved; }
+}
+
 async function snapshot(path: string): Promise<{ bytes: Buffer | null; mode: number }> {
   // Refuse changed parent links, file links and special files, including dangling links.
   if (await canonicalPath(path) !== path) throw new Error("Code checkpoint path changed");
