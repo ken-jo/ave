@@ -7,12 +7,7 @@ vi.mock("node:child_process", () => ({
 import { execFileSync } from "node:child_process";
 import { resolveShell, ShellMismatchError, __resetShellResolverCache } from "../shell-resolver.js";
 
-beforeEach(() => {
-  vi.stubEnv("SystemRoot", "C:\\Windows");
-  // Pin the Program Files roots so the hardcoded-C: expectations hold on any host, not just a C: machine.
-  for (const key of ["ProgramW6432", "ProgramFiles"]) vi.stubEnv(key, "C:\\Program Files");
-  vi.stubEnv("ProgramFiles(x86)", "C:\\Program Files (x86)");
-});
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
 
 afterEach(() => {
   __resetShellResolverCache();
@@ -73,22 +68,6 @@ describe("shell-resolver", () => {
     expect(shell.windowsFlavor).toBe("msys");
   });
 
-  it("resolves the native shell under a Program Files root on a non-system drive", () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("win32" as NodeJS.Platform);
-    for (const key of ["ProgramW6432", "ProgramFiles"]) vi.stubEnv(key, "D:\\Program Files");
-    vi.stubEnv("ProgramFiles(x86)", "D:\\Program Files (x86)");
-    vi.mocked(execFileSync).mockImplementation((cmd, args) => {
-      if (cmd === "D:\\Program Files\\Git\\usr\\bin\\sh.exe" && args?.[1] === "printf __ave_shell_ok__") return "__ave_shell_ok__";
-      if (cmd === "D:\\Program Files\\Git\\usr\\bin\\sh.exe" && args?.[1] === "uname -s") return "MINGW64_NT";
-      throw new Error("unexpected command");
-    });
-
-    const shell = resolveShell();
-
-    expect(shell.cmd).toBe("D:\\Program Files\\Git\\usr\\bin\\sh.exe");
-    expect(shell.windowsFlavor).toBe("msys");
-  });
-
   it("falls back to bash on Windows when sh is missing", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32" as NodeJS.Platform);
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
@@ -114,6 +93,24 @@ describe("shell-resolver", () => {
     expect(shell.cmd).toBe("bash");
     expect(shell.shellArgs("echo hi")).toEqual(["-lc", "echo hi"]);
     expect(shell.windowsFlavor).toBe("msys");
+  });
+
+  it("ignores an env-redirected Program Files root; a drive root is user-writable by default", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    // A non-admin can set these process-env vars and create a folder at a drive root (Authenticated
+    // Users may create subdirectories at C:\ by default), so an env-derived root would be attacker
+    // controllable. The shell roots stay hardcoded and admin-owned by construction: no D:\evil candidate.
+    for (const key of ["ProgramW6432", "ProgramFiles"]) vi.stubEnv(key, "D:\\evil");
+    vi.stubEnv("ProgramFiles(x86)", "D:\\evil (x86)");
+    vi.mocked(execFileSync).mockImplementation((cmd) => {
+      if (cmd === "C:\\Program Files\\Git\\bin\\bash.exe") return "__ave_shell_ok__";
+      throw new Error("not installed");
+    });
+
+    const shell = resolveShell("bash");
+
+    expect(shell.cmd).toBe("C:\\Program Files\\Git\\bin\\bash.exe");
+    expect(vi.mocked(execFileSync).mock.calls.every(([cmd]) => !/^d:\\evil/i.test(String(cmd)))).toBe(true);
   });
 
   it("returns sh on POSIX", () => {

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { win32SystemBinary, windowsProgramFilesRoots, windowsSystemRoot } from "../windows-system-path.js";
+import { win32SystemBinary, windowsSystemRoot } from "../windows-system-path.js";
 import { readWindowsDirectoryDacls } from "../ave-home.js";
 import { resolveManualShell } from "../../main/terminal/manual-shell.js";
 import { sanitizedAcpSubscriptionEnvironment } from "../../main/acp-subscription-runtime-client.js";
@@ -74,35 +74,6 @@ describe("system executable admission", () => {
       expect(source, file).not.toContain("windows-system-path.js");
       expect(source, file).not.toMatch(/process\.env\.(?:SystemRoot|WINDIR|windir)/u);
     }
-  });
-
-  it("prefers the 64-bit Program Files root then the 32-bit root and dedupes the shared native root", () => {
-    expect(windowsProgramFilesRoots({ ProgramW6432: "C:\\Program Files", ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)" }))
-      .toEqual(["C:\\Program Files", "C:\\Program Files (x86)"]);
-  });
-
-  it("accepts any drive and normalizes separators without touching PATH", () => {
-    expect(windowsProgramFilesRoots({ ProgramW6432: "D:/Tools", "ProgramFiles(x86)": "D:/Tools (x86)" }))
-      .toEqual(["D:\\Tools", "D:\\Tools (x86)"]);
-  });
-
-  it("skips malformed Program Files roots and never throws", () => {
-    expect(windowsProgramFilesRoots({ ProgramW6432: "relative", ProgramFiles: "C:Program Files", "ProgramFiles(x86)": "C:\\good (x86)" }))
-      .toEqual(["C:\\good (x86)"]);
-  });
-
-  it("refuses a Program Files root below a drive root and falls back to the safe system-drive roots", () => {
-    expect(windowsProgramFilesRoots({ ProgramFiles: "C:\\Users\\alice\\pf", SystemRoot: "C:\\Windows" }))
-      .toEqual(["C:\\Program Files", "C:\\Program Files (x86)"]);
-  });
-
-  it("derives the conventional roots from the system drive when no Program Files variable is set", () => {
-    expect(windowsProgramFilesRoots({ SystemDrive: "D:" })).toEqual(["D:\\Program Files", "D:\\Program Files (x86)"]);
-    expect(windowsProgramFilesRoots({ SystemRoot: "E:\\Windows" })).toEqual(["E:\\Program Files", "E:\\Program Files (x86)"]);
-  });
-
-  it("returns nothing when neither Program Files nor a system drive can be resolved", () => {
-    expect(windowsProgramFilesRoots({})).toEqual([]);
   });
 
   it.runIf(process.platform === "win32")("refuses private-helper effects without OS directory proof and legacy readers without a system root", async () => {
