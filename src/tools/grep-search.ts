@@ -178,6 +178,27 @@ interface RipgrepRun {
   readonly stderr: string;
 }
 
+// A grep result path is inside the admitted secret root when it equals the root
+// or sits beneath it at a separator boundary. ripgrep echoes result paths under
+// the search root in the root's own spelling, so on win32 both carry backslashes
+// — fold `\` to `/` there before comparing. Fold ONLY on win32: on POSIX a
+// backslash is a legal filename byte, not a separator, so folding it would admit
+// a sibling literally named `.ssh\id_rsa` into the `.ssh` root. Case is NOT
+// folded on either platform: ripgrep preserves the root's case, and case-folding
+// would widen a per-directory case-sensitive admission (`.ssh` must not admit
+// `.SSH`). The `root + "/"` boundary keeps a prefix-sharing sibling (`.ssh-other`)
+// out; a trailing-separator root yields a `//` boundary and so admits nothing.
+export function isWithinAdmittedRoot(
+  entryPath: string,
+  root: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const fold = (p: string): string => (platform === "win32" ? p.replace(/\\/g, "/") : p);
+  const foldedRoot = fold(root);
+  const foldedPath = fold(entryPath);
+  return foldedPath === foldedRoot || foldedPath.startsWith(foldedRoot + "/");
+}
+
 function runRipgrep(
   executable: string,
   args: string[],
@@ -221,8 +242,7 @@ function runRipgrep(
       if (entry === null) return;
       // Check every result path: the search engine does not know the host's sensitive-path floor.
       if (entry.kind !== "gap") {
-        const explicit = explicitSecretRoot !== undefined
-          && (entry.path === explicitSecretRoot || entry.path.startsWith(explicitSecretRoot + "/"));
+        const explicit = explicitSecretRoot !== undefined && isWithinAdmittedRoot(entry.path, explicitSecretRoot);
         if (admissionDeniedFilePattern(entry.path) !== null || (!explicit && sensitiveFilePattern(entry.path) !== null)) return;
       }
       if (entry.kind === "gap") {

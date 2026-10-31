@@ -9,6 +9,13 @@ import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-r
 import { evaluatePowerShellSubject } from "../rules/rule-scopes.js";
 import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
+import { POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
+
+// win32 cannot pin PowerShell startup ($PROFILE / registry-selected startup is
+// not isolable), so no PowerShell literal ALLOW rule is ever provable here. The
+// upload is still detected and a DENY rule is still offered — deny-only on
+// win32, which is equal-or-stricter than the POSIX allow/deny pair.
+const POWERSHELL_ALLOW_PROVABLE = process.platform !== "win32";
 
 let directory: string;
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "upload-rule-")); });
@@ -21,15 +28,26 @@ const COMMANDS = [
 
 describe("ordinary upload rule consent", () => {
   it.each(COMMANDS)("offers a complete literal rule for a proven upload in $dialect", ({ dialect, command, pattern }) => {
-    expect(buildShellRuleApproval(dialect, command, directory, { allow: true, deny: true }, "session"))
-      .toMatchObject({ exactRule: pattern, sessionAllowed: true, persistentAllowed: true });
-    expect(shellRuleCoversCommand(dialect, pattern, "allow", command, directory)).toBe(true);
+    const approval = buildShellRuleApproval(dialect, command, directory, { allow: true, deny: true }, "session");
+    if (dialect === "powershell" && !POWERSHELL_ALLOW_PROVABLE) {
+      // Floor on win32: upload detected, DENY offered, ALLOW not provable.
+      expect(approval).toMatchObject({ exactRule: null, sessionAllowed: false, persistentAllowed: false, denyRule: pattern, denyAllowed: true });
+      expect(shellRuleCoversCommand(dialect, pattern, "deny", command, directory)).toBe(true);
+    } else {
+      expect(approval).toMatchObject({ exactRule: pattern, sessionAllowed: true, persistentAllowed: true });
+      expect(shellRuleCoversCommand(dialect, pattern, "allow", command, directory)).toBe(true);
+    }
   });
 
   it.each(COMMANDS)("matches a saved literal upload rule in $dialect", ({ dialect, command, pattern }) => {
     if (dialect === "powershell") {
-      expect(evaluatePowerShellSubject({ command, cwd: directory, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" })]))
-        .toMatchObject({ decision: "allow", patterns: [pattern] });
+      const subject = evaluatePowerShellSubject({ command, cwd: directory, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" })]);
+      if (POWERSHELL_ALLOW_PROVABLE) {
+        expect(subject).toMatchObject({ decision: "allow", patterns: [pattern] });
+      } else {
+        // win32: the saved ALLOW rule cannot be proven, so it is not applied.
+        expect(subject).toMatchObject({ decision: null, reason: POWERSHELL_STARTUP_UNPROVEN_REASON });
+      }
     } else {
       const spec = parseRuleSpecifier(pattern);
       if (spec.kind !== "bash") throw new Error("Expected shell rule");

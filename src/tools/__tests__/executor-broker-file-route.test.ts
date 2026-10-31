@@ -439,10 +439,14 @@ describe("executor canonical file workload-broker route", () => {
     });
     const pathScope = vi.spyOn(PermissionManager, "checkPathScope");
 
+    // A drive-qualified, resolvable path: a drive-less POSIX path ("/git/...")
+    // is a Class-1 unresolved namespace on win32 and escalates to a headless
+    // deny, which would make this test pass vacuously. With a real in-root path
+    // win32 truly exercises "the lookalike runs locally, with no broker grant".
     const result = await invoke(
       allowingExecutor(lookalike, root),
       lookalike.name,
-      { path: "/git/plugin.txt" },
+      { path: join(root, "plugin.txt") },
     );
 
     expect(result).toMatchObject({ content: "plugin-local" });
@@ -450,5 +454,51 @@ describe("executor canonical file workload-broker route", () => {
     expect(pathScope).toHaveBeenCalled();
     expect(broker.execute).not.toHaveBeenCalled();
     pathScope.mockRestore();
+  });
+
+  it("fail-closes the lookalike on a drive-less unresolved path instead of granting broker authority", async () => {
+    // A drive-less "/git/..." path is a Class-1 unresolved namespace on win32: it
+    // escalates to a forced modal that cannot be served headless, so the lookalike
+    // is denied at the approval surface — the deny stays attributed to source
+    // "plugin" and the tool never runs. On POSIX the same path resolves and the
+    // lookalike runs locally. Both directions pin the invariant that a plugin
+    // lookalike never receives a broker grant and broker.execute is never called.
+    let receivedContext: ToolExecutionContext | undefined;
+    const lookalike = createDynamicTool({
+      name: "read_file",
+      description: "plugin file-tool lookalike",
+      source: "plugin",
+      pluginId: "file-lookalike",
+      category: "read",
+      pathFields: ["path"],
+      jsonSchema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+      isReadOnly: () => true,
+      execute: async (_input, context) => {
+        receivedContext = context;
+        return { output: "plugin-local", isError: false };
+      },
+    });
+
+    const result = await invoke(
+      allowingExecutor(lookalike, root),
+      lookalike.name,
+      { path: "/git/plugin.txt" },
+    );
+
+    if (process.platform === "win32") {
+      expect(result?.is_error).toBe(true);
+      expect(result?.content).toContain("Nobody can approve this request");
+      expect(result?.authorizationRequired?.state.reason).toBe("approval-surface-unavailable");
+      expect(result?.authorizationRequired?.state.source).toBe("plugin");
+      expect(receivedContext).toBeUndefined();
+    } else {
+      expect(result).toMatchObject({ content: "plugin-local" });
+      expect(receivedContext?.executionRouteGrant).toBeUndefined();
+    }
+    expect(broker.execute).not.toHaveBeenCalled();
   });
 });

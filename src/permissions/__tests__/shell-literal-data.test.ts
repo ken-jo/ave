@@ -6,6 +6,11 @@ import { PermissionManager } from "../permission-manager.js";
 import { prepareShellFloorInput, SHELL_LITERAL_DATA_LIMIT } from "../rules/shell-literal-data.js";
 import * as shellPaths from "../rules/literal-shell-inspection.js";
 
+// A drive-less "/" is an unresolved-namespace protected path on win32, so the
+// protected-path floor fires before the critical-delete heuristic. Same gate
+// (ask + forceModal), equal-or-stricter; only the reason label differs.
+const ROOT_DELETE_REASON_CODE = process.platform === "win32" ? "protected-path" : "critical-delete";
+
 let root: string;
 let manager: PermissionManager;
 beforeEach(() => {
@@ -117,7 +122,7 @@ describe("literal heredoc data bounds", () => {
     const bounded = `${receiver} <<'EOF'\nrm -rf /\nEOF\n`;
     expect(prepareShellFloorInput(bounded, "bash")).not.toBeNull();
     expect(check(bounded)).toMatchObject(executesShell
-      ? { decision: "ask", forceModal: true, reasonCode: "critical-delete" }
+      ? { decision: "ask", forceModal: true, reasonCode: ROOT_DELETE_REASON_CODE }
       : { decision: "allow", reasonCode: "allow-mode" });
   });
   it("keeps original source and all expansion checks when heredoc quoting is mixed", () => {

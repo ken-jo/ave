@@ -13,6 +13,11 @@ import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 
+// A drive-less "/" is an unresolved-namespace protected path on win32, so the
+// protected-path floor fires before the critical-delete heuristic. Same gate
+// (ask + forceModal), equal-or-stricter; only the reason label differs.
+const ROOT_DELETE_REASON_CODE = process.platform === "win32" ? "protected-path" : "critical-delete";
+
 let root: string;
 let project: string;
 let permissionsFile: string;
@@ -130,7 +135,7 @@ describe("missing shell route", () => {
     manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready") })).toMatchObject({ decision: "allow" });
     expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("rm -rf build") })).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
-    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("rm -rf /") })).toMatchObject({ decision: "ask", reasonCode: "critical-delete", forceModal: true });
+    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("rm -rf /") })).toMatchObject({ decision: "ask", reasonCode: ROOT_DELETE_REASON_CODE, forceModal: true });
     expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("cat ~/.ssh/id_rsa") })).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     manager.setMode("default");
     const secret = manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("cat ~/.ssh/id_rsa") });

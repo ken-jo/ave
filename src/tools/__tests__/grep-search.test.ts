@@ -8,6 +8,7 @@ import { GrepFilesTool } from "../file-tools.js";
 import {
   buildRipgrepArgs,
   GrepFilesInputSchema,
+  isWithinAdmittedRoot,
   resolveBundledRipgrep,
   searchWithRipgrep,
 } from "../grep-search.js";
@@ -50,6 +51,19 @@ describe("grep_files ripgrep engine", () => {
     expect(result.isError, result.output).toBe(false);
     expect(result.output).toContain("synthetic-key");
     expect(result.output).not.toContain("host-token");
+  });
+
+  it("does not admit a sibling directory that only shares the admitted secret dir's name prefix", async () => {
+    mkdirSync(join(workDir, ".ssh"));
+    writeFileSync(join(workDir, ".ssh", "id_rsa"), "needle synthetic-key\n");
+    mkdirSync(join(workDir, ".ssh-other"));
+    writeFileSync(join(workDir, ".ssh-other", "id_rsa"), "needle sibling-secret\n");
+    // The admitted-root membership test uses a separator boundary (root + sep),
+    // not a bare string prefix, so admitting ".ssh" never admits ".ssh-other".
+    const result = await grep({ path: ".ssh", pattern: "needle" });
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("synthetic-key");
+    expect(result.output).not.toContain("sibling-secret");
   });
 
   it("resolves the ripgrep build of the pinned per-platform package", () => {
@@ -178,5 +192,36 @@ describe("grep_files ripgrep engine", () => {
       controller.signal,
     );
     expect(result).toMatchObject({ isError: true, output: "turn aborted" });
+  });
+});
+
+describe("isWithinAdmittedRoot", () => {
+  // Explicit platform arguments so every case runs on every host.
+  it("admits the root and its descendants at a separator boundary on win32", () => {
+    expect(isWithinAdmittedRoot("C:\\h\\.ssh", "C:\\h\\.ssh", "win32")).toBe(true);
+    expect(isWithinAdmittedRoot("C:\\h\\.ssh\\id_rsa", "C:\\h\\.ssh", "win32")).toBe(true);
+    // ripgrep may echo a mixed/forward-slash spelling under the same root.
+    expect(isWithinAdmittedRoot("C:/h/.ssh/id_rsa", "C:\\h\\.ssh", "win32")).toBe(true);
+  });
+
+  it("admits the root and its descendants at a separator boundary on posix", () => {
+    expect(isWithinAdmittedRoot("/h/.ssh", "/h/.ssh", "linux")).toBe(true);
+    expect(isWithinAdmittedRoot("/h/.ssh/id_rsa", "/h/.ssh", "linux")).toBe(true);
+  });
+
+  it("does not fold a backslash into a separator on posix (it is a legal filename byte)", () => {
+    // A file literally named ".ssh\id_rsa" sits beside .ssh, not inside it, so
+    // admitting the .ssh directory must not admit that sibling file.
+    expect(isWithinAdmittedRoot("/h/.ssh\\id_rsa", "/h/.ssh", "linux")).toBe(false);
+  });
+
+  it("keeps a prefix-sharing sibling out on both platforms", () => {
+    expect(isWithinAdmittedRoot("C:\\h\\.ssh-other\\id_rsa", "C:\\h\\.ssh", "win32")).toBe(false);
+    expect(isWithinAdmittedRoot("/h/.ssh-other/id_rsa", "/h/.ssh", "linux")).toBe(false);
+  });
+
+  it("is case-exact, so a differently-cased sibling dir is not admitted on either platform", () => {
+    expect(isWithinAdmittedRoot("C:\\h\\.SSH\\id_rsa", "C:\\h\\.ssh", "win32")).toBe(false);
+    expect(isWithinAdmittedRoot("/h/.SSH/id_rsa", "/h/.ssh", "linux")).toBe(false);
   });
 });

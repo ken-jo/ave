@@ -166,7 +166,9 @@ export interface ShellExecutionGrant {
 /** The one test for a broker guest route; the runner's route gates and the permission floor must share it. */
 export function isBrokerGuestRoutePlan(
   plan: Pick<ExecutionPlan, "route" | "disposableCapability"> | undefined,
-): boolean {
+): plan is Pick<ExecutionPlan, "route" | "disposableCapability"> & {
+  readonly disposableCapability: Extract<DisposableExecutionCapabilityProjection, { kind: "workload-broker" }>;
+} {
   return plan?.route === "disposable-container" && plan.disposableCapability?.kind === "workload-broker";
 }
 
