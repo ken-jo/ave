@@ -806,7 +806,6 @@ jobs:
           test/scripts/smoke-windows-nsis-installer.test.ts
           src/permissions/__tests__/permission-adversarial-performance.test.ts
           src/permissions/__tests__/permission-decision-cost.test.ts
-          src/permissions/__tests__/permission-settings-admission.test.ts
           src/main/__tests__/document-engine-payload.test.ts
           src/main/__tests__/document-engine-installation.test.ts
           src/main/__tests__/document-observation.test.ts
