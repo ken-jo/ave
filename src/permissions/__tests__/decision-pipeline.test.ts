@@ -1,5 +1,6 @@
 // Golden expectations transcribed from docs/architecture/permission-decision-tree.md.
 import { describe, expect, it } from "vitest";
+import { MODES, QUESTION_MODE_CELLS as QUESTION } from "./fixtures/mode-matrix.js";
 import {
   decidePermission,
   NO_APPROVER_MESSAGE,
@@ -9,7 +10,6 @@ import {
 } from "../decision-pipeline.js";
 
 const EXPECTED_NO_APPROVER_MESSAGE = "Nobody can approve this request; do not retry.";
-const MODES = ["strict", "default", "auto", "allow"] as const;
 type ExpectedAction = PermissionPipelineOutcome | "reviewer";
 type ActionRow = {
   name: string;
@@ -21,7 +21,6 @@ const READ = { name: "read_file", source: "builtin", kind: "read" } as const;
 const WRITE = { name: "write_file", source: "builtin", kind: "file-write" } as const;
 const SHELL = { name: "shell", source: "builtin", kind: "shell" } as const;
 const SAFE_SHELL = { sandboxed: true, readOnlyProven: true, unproven: false, destructive: false };
-const QUESTION = ["ask", "ask", "reviewer", "allow"] as const;
 
 // Ordinary actions and user-owned surfaces have separate mode matrices; human fallbacks are checked below.
 const ACTION_ROWS: readonly ActionRow[] = [

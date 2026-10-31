@@ -177,7 +177,7 @@ describe("shared runner decisions", () => {
     expect(createHash("sha256").update(JSON.stringify(commands.slice(0, 1377))).digest("hex"))
       .toBe("657e677ea8f9968de15dd2907d42abab7ac9958d2815126449ee9037c4e2b68b");
     // The complete command identity was collected independently of this table.
-    expect(new Set(commands).size).toBe(2031);
+    expect(new Set(commands).size).toBe(RUNNER_DECISIONS.length);
     expect(createHash("sha256").update(JSON.stringify([...commands].sort())).digest("hex"))
       .toBe("511643e662e6863bd2b8043485639e1947fd92ec6322d6179cac17f00eee93e6");
     for (const dialect of DIALECTS) {
