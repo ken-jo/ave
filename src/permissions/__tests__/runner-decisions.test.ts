@@ -219,10 +219,11 @@ describe("shared runner decisions", () => {
     }
     if (disposition === "project-escape") {
       const unconsented = checkCommand(manager, dialect, command);
-      expect(unconsented).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "project-escape",
+      expect(unconsented).toMatchObject({ decision: "ask", forceModal: true, reasonCode: platform?.reasonCode ?? "project-escape",
         pipelineRequest: { floor: { code: "project-escape" } } });
       expect(unconsented.reviewer).toBeUndefined();
-      expect(unconsented.pipelineRequest?.exfiltration?.reason).toEqual(expect.any(String));
+      if (platform?.exfiltration === false) expect(unconsented.pipelineRequest?.exfiltration).toBeUndefined();
+      else expect(unconsented.pipelineRequest?.exfiltration?.reason).toEqual(expect.any(String));
       expect(checkCommand(manager, dialect, command, false, true)).toMatchObject({
         decision: "deny", reasonCode: "no-approver", reason: "Nobody can approve this request; do not retry.",
       });
