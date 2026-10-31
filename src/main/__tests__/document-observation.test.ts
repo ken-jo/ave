@@ -253,12 +253,18 @@ describe("document observation desktop ownership", () => {
     runtime.dispose();
     let finish!: () => void;
     const gate = new Promise<void>((resolve) => { finish = resolve; });
-    const parse = vi.fn(async (bytes: Buffer) => { await gate; return table(bytes.toString()); });
+    let parseEntered!: () => void;
+    const parseStarted = new Promise<void>((resolve) => { parseEntered = resolve; });
+    const parse = vi.fn(async (bytes: Buffer) => { parseEntered(); await gate; return table(bytes.toString()); });
     runtime = new DocumentObservationRuntime(deps, { id: "table-reader", parse });
     baseline();
     const saving = agentWrite("agent value");
-    // Generous timeout: the parse callback can be starved under full-suite worker concurrency.
-    await vi.waitFor(() => expect(parse).toHaveBeenCalledTimes(1), { timeout: 5000, interval: 20 });
+    // Await the parse callback being entered, not a deadline: the reconcile debounce and the
+    // pre-image read that precede it can be starved under full-suite worker load, which raced the
+    // old timed waitFor (the flake). If the mutation is never observed, scheduleReconciliation
+    // returns early and `saving` settles first, so the count assertion fails fast instead of hanging.
+    await Promise.race([parseStarted, saving]);
+    expect(parse, "the agent write was never observed, so parse was not entered").toHaveBeenCalledTimes(1);
     state.registered = false;
     sender.send.mockClear();
     finish();
