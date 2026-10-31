@@ -1366,7 +1366,7 @@ export async function runToolInvocation(
     // grade a host-routed call as a guest. The operator-attested container is
     // deliberately not a substrate (see `DisposableSubstrate`).
     const disposableSubstrate: DisposableSubstrate | undefined =
-      isBrokerGuestRoutePlan(executionRoutePlan) && executionRoutePlan?.disposableCapability?.kind === "workload-broker"
+      isBrokerGuestRoutePlan(executionRoutePlan)
         ? { authority: "workload-broker", id: executionRoutePlan.disposableCapability.id }
         : brokeredFileRouteSelected && brokeredFileCapability !== undefined
           ? { authority: "workload-broker", id: brokeredFileCapability.workload.id }
