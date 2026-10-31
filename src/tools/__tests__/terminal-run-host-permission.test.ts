@@ -11,6 +11,7 @@ import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { formatRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
+import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -169,7 +170,12 @@ describe("terminal_run host permission", () => {
 
   it("judges the command as a host terminal subject in the shell's physical directory", async () => {
     const { context } = await run("printf ready");
-    expect(context?.ruleSubject).toEqual({ kind: "shell", dialect: "bash", command: "printf ready", cwd: dir, hostTerminal: { shell: "zsh", cwd: dir } });
+    // The host subject cwd is stored in the permission matching form
+    // (canonicalizePathForMatch): identity on POSIX, lowercase-drive + forward
+    // slash on win32. Derive the expected spelling from the same fold rather
+    // than baking a platform literal.
+    const matchDir = canonicalizePathForMatch(dir);
+    expect(context?.ruleSubject).toEqual({ kind: "shell", dialect: "bash", command: "printf ready", cwd: matchDir, hostTerminal: { shell: "zsh", cwd: matchDir } });
     expect(context?.shellExecution).toEqual({ runsSandboxed: false, pathPolicyRelaxations: [] });
   });
 
@@ -180,7 +186,7 @@ describe("terminal_run host permission", () => {
       toolName: "terminal_run",
       userOwnedSurface: "host-terminal",
       durableApprovalRecordAllowed: false,
-      hostTerminal: { tabId: HOST, sessionId: "pane", shell: "zsh", physicalCwd: dir, command: "printf ready" },
+      hostTerminal: { tabId: HOST, sessionId: "pane", shell: "zsh", physicalCwd: canonicalizePathForMatch(dir), command: "printf ready" },
       approvalMemory: { kind: "key", scope: { kind: "terminal-command", lane: "manual", tabId: HOST, sessionId: "pane", turnId: "turn-1", controlGeneration: 1 } },
     });
     expect(denied.request).not.toHaveProperty("allowedChoices");

@@ -439,10 +439,14 @@ describe("executor canonical file workload-broker route", () => {
     });
     const pathScope = vi.spyOn(PermissionManager, "checkPathScope");
 
+    // A drive-qualified, resolvable path: a drive-less POSIX path ("/git/...")
+    // is a Class-1 unresolved namespace on win32 and escalates to a headless
+    // deny, which would make this test pass vacuously. With a real in-root path
+    // win32 truly exercises "the lookalike runs locally, with no broker grant".
     const result = await invoke(
       allowingExecutor(lookalike, root),
       lookalike.name,
-      { path: "/git/plugin.txt" },
+      { path: join(root, "plugin.txt") },
     );
 
     expect(result).toMatchObject({ content: "plugin-local" });

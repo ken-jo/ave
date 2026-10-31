@@ -25,6 +25,7 @@ import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import type { ToolExecutionContext } from "../types.js";
 import { runWithHostTerminalTurn } from "../host-terminal-turn.js";
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
+import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
 
 import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRINT_FORMAT_COMMANDS, TERMINAL_PRINT_TARGET_COMMANDS, TERMINAL_PRINTF_DATA_COMMANDS, TERMINAL_PRINTF_UNCHECKED_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../__tests__/support/terminal-registry-commands.js";
@@ -809,7 +810,10 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
     expect(scope).toEqual({
       kind: "terminal-command", lane: "manual", commandSha256: sha256Hex("npm test"), tabId: HOST, terminalSessionId: `${HOST}/manual`,
-      sessionId: "main", shell: "zsh", cwd: hostDir, physicalCwd: hostDir, cwdDevice: identity.dev.toString(), cwdInode: identity.ino.toString(),
+      // physicalCwd is stored in the permission matching form (identity on
+      // POSIX, lowercase-drive + forward slash on win32); cwd stays the raw
+      // reported path. Derive the expected spelling from the same fold.
+      sessionId: "main", shell: "zsh", cwd: hostDir, physicalCwd: canonicalizePathForMatch(hostDir), cwdDevice: identity.dev.toString(), cwdInode: identity.ino.toString(),
       turnId: "turn-1", controlGeneration: 4, cwdForMatch: expect.any(String),
     });
     expect(ensureConversationTerminal).not.toHaveBeenCalled();

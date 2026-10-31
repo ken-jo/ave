@@ -702,6 +702,13 @@ jobs:
           src/tools/__tests__/executor-broker-shell-route.test.ts
           src/tools/__tests__/executor-native-permission-pipeline.test.ts
           src/tools/__tests__/executor-in-project-write.test.ts
+          src/tools/__tests__/executor-broker-file-route.test.ts
+          src/tools/__tests__/terminal-run-host-permission.test.ts
+          src/tools/__tests__/terminal-run.test.ts
+          src/tools/__tests__/grep-search.test.ts
+          src/permissions/__tests__/shell-literal-data.test.ts
+          src/permissions/__tests__/shell-rule-boundaries.test.ts
+          src/permissions/__tests__/exfiltration-guardrail-rules.test.ts
           src/tools/pipeline/__tests__/rationale-host-coordinator.test.ts
           src/tools/pipeline/__tests__/rationale-host-service.test.ts
           src/tools/pipeline/__tests__/rationale-invocation-journal.test.ts
