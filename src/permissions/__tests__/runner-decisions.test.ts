@@ -3,7 +3,7 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -21,7 +21,7 @@ import { RUNNER_DECISIONS, RUNNER_POLICY_CASES, RUNNER_SECURITY_CASES } from "./
 const startup = vi.hoisted(() => ({ pinned: true }));
 vi.mock("../../shared/powershell-startup-policy.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../../shared/powershell-startup-policy.js")>(), isPowerShellStartupPinned: () => startup.pinned }));
 
-const CWD = "/work/project";
+const CWD = process.platform === "win32" ? resolve("/work/project").replaceAll("\\", "/") : "/work/project";
 const DIALECTS = ["bash", "powershell"] as const;
 const RUNNER_NAMES = ["npx", "bunx", "pnpx", "uvx", "pipx", "corepack", "yarnpkg", "deno", "npm", "pnpm", "yarn", "bun"];
 type ShellDialect = typeof DIALECTS[number];
@@ -242,6 +242,18 @@ describe("shared runner decisions", () => {
       ? { decision: "deny", reasonCode: disposition }
       : { decision: "ask", forceModal: true, reasonCode: disposition });
     expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+  });
+
+  it("keeps an unresolved write forced despite a saved grant", async () => {
+    const command = 'echo ready > "$UNRESOLVED_TARGET"';
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addAlwaysAllowedPersist(actionKey("bash", command));
+    expect(checkCommand(manager, "bash", command)).toMatchObject({
+      decision: "ask", reasonCode: "protected-path", forceModal: true,
+      pipelineRequest: { floor: { code: "protected-path" } },
+    });
+    expect(checkCommand(manager, "bash", command, false, true).decision).toBe("deny");
   });
 
   it("retains background uncertainty without hiding subsequent literal effects", () => {

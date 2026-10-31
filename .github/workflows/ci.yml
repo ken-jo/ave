@@ -664,6 +664,7 @@ jobs:
           src/main/terminal/__tests__/host-shell-integration.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/shell-exfiltration.test.ts
+          src/permissions/__tests__/runner-decisions.test.ts
           src/permissions/__tests__/shell-native-path-floors.test.ts
           src/shared/__tests__/shell-native-path.test.ts
           src/permissions/__tests__/powershell-exfiltration.test.ts
