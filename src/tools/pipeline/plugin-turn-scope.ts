@@ -1,4 +1,4 @@
-// Apply one plugin turn-scope rule to both tools and builtin skill loading (docs/development/skill-loading-policy.md).
+// Apply one plugin turn-scope rule to both tools and builtin skill loading (docs/development/README.md#skill-loading-policy).
 import { parsePluginSkillSelector } from "../../shared/plugin-skill-selector.js";
 
 export interface PluginTurnScopeToolFacts {

@@ -1,4 +1,4 @@
-/** Resource bound rationale lives in docs/development/mcp-resources-policy.md; keep contracts process-neutral. */
+/** Resource bound rationale lives in docs/development/README.md#mcp-resource-consumption-policy; keep contracts process-neutral. */
 import { hasInvisibleOrReorderingChars } from "./display-safe-text.js";
 
 export const MCP_RESOURCE_MAX_PER_SERVER = 200;

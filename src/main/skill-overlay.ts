@@ -1,5 +1,5 @@
 // Skill bodies enter only visible tool results, preserving prompt-cache stability, history continuity, and data provenance. The registry holds approved
-// resource identity until conversation teardown or plugin retirement; see docs/development/skill-loading-policy.md.
+// resource identity until conversation teardown or plugin retirement; see docs/development/README.md#skill-loading-policy.
 import { SKILL_MAX_BODY_BYTES, type LoadedSkill } from "./skill-store.js";
 import { escapeHtml } from "../shared/escape-html.js";
 

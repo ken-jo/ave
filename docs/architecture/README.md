@@ -22,6 +22,11 @@ IPC; they never reach host internals directly. The code entry points are
   allowed directories, hooks, and the audit chain.
 - [Session model v2](./session-model-v2.md): how sessions are stored, loaded,
   and restored.
+- [Permission decision tree](./permission-decision-tree.md): the owner-approved
+  quick reference and single source of truth for permission-decision work; read
+  it alongside the [permission policy](./permission-policy-design.md).
+- [File identity](./file-identity.md): identifying a file exactly by device and
+  inode, and why those identifiers are persisted as decimal strings.
 
 ## Surfaces and runtime
 
@@ -34,6 +39,17 @@ IPC; they never reach host internals directly. The code entry points are
 - [Image preparation](./image-preparation.md): the `view_image` pipeline.
 - [Native host secret encryption](./headless-secret-encryption.md):
   the native host's secret store.
+
+## Documents
+
+- [Document previews](./document-previews.md): the read-only table and page
+  preview surfaces and their parsing budgets.
+- [Document conversion engine](./document-observation-engine.md): the optional,
+  replaceable engine that renders documents and recalculates workbooks offline.
+- [Agent document tools](./agent-document-tools.md): the host builtins
+  `read_document` and `open_document`.
+- [XLSX editing](./xlsx-skill-editing.md): the `xlsx-edit` skill's sandbox-shell
+  editing contract and read-only live view.
 
 ## Extensions, MCP, and hooks
 
