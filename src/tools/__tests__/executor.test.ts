@@ -14,6 +14,7 @@ import { join, resolve as pathResolve } from "node:path";
 import { ToolExecutor } from "../executor.js";
 import { initPiiRedactionPolicy } from "../../shared/dlp.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { makePermissionManager } from "./executor-reviewer-fixtures.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool } from "../base.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
@@ -937,16 +938,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-interactive-p3-"));
     try {
-      const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("auto");
-
-      setReviewerForTest(permMgr, {
-        classifier: {
-          classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
-        },
-        cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-      });
+      const permMgr = makePermissionManager(dir, vi.fn(() => ({ level: "low", reason: "reviewer says safe" })), "auto");
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
         prevHash: "h",
@@ -1032,15 +1024,8 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-interactive-p3-off-"));
     try {
-      const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("default");
-
       const classifySpy = vi.fn(() => ({ level: "low" as const, reason: "reviewer says safe" }));
-      setReviewerForTest(permMgr, {
-        classifier: { classify: classifySpy },
-        cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-      });
+      const permMgr = makePermissionManager(dir, classifySpy);
       const auditLogger = {
         log: vi.fn(),
         isPermissionAuditChainReady: vi.fn(() => true),
@@ -1099,18 +1084,11 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-interactive-medium-"));
     try {
-      const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("auto");
-
       const classifySpy = vi.fn((ctx: import("../../permissions/reviewer/risk-classifier.js").ToolInvocationContext) => ({
         level: "high" as const,
         reason: `reviewed ${String(ctx.finalInput.payload)}`,
       }));
-      setReviewerForTest(permMgr, {
-        classifier: { classify: classifySpy },
-        cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-      });
+      const permMgr = makePermissionManager(dir, classifySpy, "auto");
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
         choice: "deny-once" as const,
@@ -1194,18 +1172,11 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     __resetSessionStoreForTest();
     const auditLogger = new AuditLogger(join(dir, "audit"));
     try {
-      const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("default");
-
       const classifySpy = vi.fn(() => ({
         level: "medium" as const,
         reason: "needs user confirmation",
       }));
-      setReviewerForTest(permMgr, {
-        classifier: { classify: classifySpy },
-        cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-      });
+      const permMgr = makePermissionManager(dir, classifySpy);
       // Persist the exact tuple with the host-captured frozen directory before resolving allow-always.
       const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
         const workingDirectory = req.approvalRuleBasis?.workingDirectory;
@@ -1372,18 +1343,11 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-interactive-retry-changed-"));
     try {
-      const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("auto");
-
       const classifySpy = vi.fn(() => ({
         level: "high" as const,
         reason: "needs user confirmation",
       }));
-      setReviewerForTest(permMgr, {
-        classifier: { classify: classifySpy },
-        cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-      });
+      const permMgr = makePermissionManager(dir, classifySpy, "auto");
       const executor = new ToolExecutor(registry, undefined, permMgr);
 
       const first = await executor.executeAll(
@@ -1443,16 +1407,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-reviewer-audit-"));
     try {
-      const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("auto");
-
-      setReviewerForTest(permMgr, {
-        classifier: {
-          classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
-        },
-        cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-      });
+      const permMgr = makePermissionManager(dir, vi.fn(() => ({ level: "low", reason: "reviewer says safe" })), "auto");
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
         prevHash: "h",
@@ -4715,15 +4670,8 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
     const { registry } = makeDivergentTool(source, name);
     const dir = mkdtempSync(join(tmpdir(), `ave-executor-hcr-${source}-`));
     try {
-      const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("auto");
-
       const classifySpy = vi.fn(() => ({ level: "medium" as const, reason: "review" }));
-      setReviewerForTest(permMgr, {
-        classifier: { classify: classifySpy },
-        cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-      });
+      const permMgr = makePermissionManager(dir, classifySpy, "auto");
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
         choice: "deny-once" as const,
