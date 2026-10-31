@@ -7,7 +7,12 @@ vi.mock("node:child_process", () => ({
 import { execFileSync } from "node:child_process";
 import { resolveShell, ShellMismatchError, __resetShellResolverCache } from "../shell-resolver.js";
 
-beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+beforeEach(() => {
+  vi.stubEnv("SystemRoot", "C:\\Windows");
+  // Pin the Program Files roots so the hardcoded-C: expectations hold on any host, not just a C: machine.
+  for (const key of ["ProgramW6432", "ProgramFiles"]) vi.stubEnv(key, "C:\\Program Files");
+  vi.stubEnv("ProgramFiles(x86)", "C:\\Program Files (x86)");
+});
 
 afterEach(() => {
   __resetShellResolverCache();

@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmod, mkdtemp, mkdir, writeFile, readFile, rm, stat, symlink } from "node:fs/promises";
 import { spawn, spawnSync, execFile } from "node:child_process";
@@ -37,7 +37,6 @@ vi.mock("node:fs/promises", async importOriginal => {
 import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
 import { spawnManaged, forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
-import { configureHostResources } from "../../main/host-resources.js";
 import { fakeFixtureAclTransport, installFixtureAclTransport } from "../../__tests__/support/native-executable.js";
 import { _setWindowsAclTransportForTest } from "../../main/windows-acl-host.js";
 
@@ -97,14 +96,10 @@ async function eventually(predicate: () => boolean): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  // On win32 the private-temp ownership claim resolves the path-kind helper through host resources and
-  // spawns the ACL host; configure the resources and route the host through the fixture transport so the
-  // claim resolves deterministically without the real PowerShell host. POSIX claims via chmod/chown and
-  // needs neither, so this is scoped to win32 to keep POSIX behaviour unchanged.
-  if (process.platform === "win32") {
-    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
-    installFixtureAclTransport(fakeFixtureAclTransport(execFile));
-  }
+  // On win32 the private-temp ownership claim spawns the ACL host; route it through the fixture transport
+  // so the claim resolves deterministically without the real PowerShell host (the transport also configures
+  // host resources). POSIX claims via chmod/chown and needs neither, so this is scoped to win32.
+  if (process.platform === "win32") installFixtureAclTransport(fakeFixtureAclTransport(execFile));
   javaFixture.home = undefined;
   javaFixture.broken = false;
   javaFixture.registrationFails = false;
@@ -151,7 +146,7 @@ beforeEach(async () => {
         void handler(emitter, resident).catch(error => { emitter.stderr.write(String(error)); emitter.end(1); });
       });
     }
-    else if (command.endsWith(join("bin", "java"))) queueMicrotask(() => { emitter.stderr.write(javaFixture.broken ? "runtime cannot start" : 'openjdk version "17.0.1"'); emitter.end(javaFixture.broken ? 1 : 0); });
+    else if (command.endsWith(sep + join("bin", "java"))) queueMicrotask(() => { emitter.stderr.write(javaFixture.broken ? "runtime cannot start" : 'openjdk version "17.0.1"'); emitter.end(javaFixture.broken ? 1 : 0); });
     else if (args.includes("add") || args.includes("list")) queueMicrotask(() => {
       if (javaFixture.registrationFails) { emitter.stderr.write("ERROR: unopkg failed."); emitter.end(1); return; }
       emitter.stdout.write("H2Orestart registered");
@@ -163,7 +158,7 @@ beforeEach(async () => {
   pool = new LibreOfficeSessionPool();
 });
 
-afterEach(async () => { await pool.dispose(); _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { await pool.dispose(); if (process.platform === "win32") _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
 
 describe("private conversion process ownership", () => {
   it("keeps one resident profile and revalidates each launch while preserving the immutable input", async () => {

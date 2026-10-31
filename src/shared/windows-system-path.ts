@@ -23,6 +23,12 @@ export function windowsProgramFilesRoots(env: NodeJS.ProcessEnv = process.env): 
     if (!value || value.length > 512 || !/^[a-z]:[\\/]/i.test(value) || /[\u0000-\u001f\u007f*?"<>|]/.test(value)
       || value.slice(2).includes(":")) return;
     const normalized = win32.normalize(value);
+    // A Program Files root is always a direct child of a drive root (e.g. C:\Program Files). Refusing a
+    // deeper path keeps an environment-redirected interpreter out of a user-writable tree: the old code
+    // only ever executed the hardcoded admin-only roots, so this preserves that floor while allowing any
+    // drive. A rejected value falls through to the system-drive roots below, which is the safe answer.
+    const parsed = win32.parse(normalized);
+    if (parsed.dir !== parsed.root) return;
     const key = normalized.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);

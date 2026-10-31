@@ -91,6 +91,11 @@ describe("system executable admission", () => {
       .toEqual(["C:\\good (x86)"]);
   });
 
+  it("refuses a Program Files root below a drive root and falls back to the safe system-drive roots", () => {
+    expect(windowsProgramFilesRoots({ ProgramFiles: "C:\\Users\\alice\\pf", SystemRoot: "C:\\Windows" }))
+      .toEqual(["C:\\Program Files", "C:\\Program Files (x86)"]);
+  });
+
   it("derives the conventional roots from the system drive when no Program Files variable is set", () => {
     expect(windowsProgramFilesRoots({ SystemDrive: "D:" })).toEqual(["D:\\Program Files", "D:\\Program Files (x86)"]);
     expect(windowsProgramFilesRoots({ SystemRoot: "E:\\Windows" })).toEqual(["E:\\Program Files", "E:\\Program Files (x86)"]);

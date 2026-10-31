@@ -810,6 +810,7 @@ jobs:
           src/main/__tests__/document-engine-payload.test.ts
           src/main/__tests__/document-engine-installation.test.ts
           src/main/__tests__/document-observation.test.ts
+          src/main/__tests__/document-engine-platform-support.test.ts
           src/observation/__tests__/libreoffice-process.test.ts
           src/observation/__tests__/libreoffice-engine.test.ts
           src/lib/__tests__/shell-resolver.test.ts
