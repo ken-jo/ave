@@ -1,7 +1,7 @@
 import { readShellOptionValue as readOptionValue } from "../shared/shell-option-value.js";
 import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
 import { literalShellBodies, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
 import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
@@ -43,7 +43,7 @@ const SHELL_DEVICE_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 /** Native aliases must not evade the deny floor or acquire wider path authority. */
-function windowsShellPathViolation(path: string, label: string, effect: PathEffect): ShellPathPolicyViolation | null {
+function windowsShellPathViolation(path: string, label: string, effect: PathEffect, canonicalize: (path: string) => string = canonicalizePathForMatch): ShellPathPolicyViolation | null {
   if (process.platform !== "win32") return null;
   const slashed = path.replaceAll("\\", "/");
   const namespaced = /^\/\/[?.]\//.test(slashed);
@@ -54,10 +54,10 @@ function windowsShellPathViolation(path: string, label: string, effect: PathEffe
     return part.split(":", 1)[0]!.replace(/[. ]+$/, "");
   }).join("/");
   const modeled = modelShellPath(normalized, { dialect: "bash" });
-  const canonical = modeled.nativePath === undefined ? undefined : caseFoldForMatch(canonicalizePathForMatch(modeled.nativePath));
-  let sensitive = canonical === undefined ? null : isAdmissionDeniedPath(canonical, effect);
+  const canonical = modeled.nativePath === undefined ? undefined : caseFoldForMatch(canonicalize(modeled.nativePath));
+  let sensitive = canonical === undefined ? null : isAdmissionDeniedPath(canonical, effect, canonicalize);
   const sessionRead = effect === "read" && canonical !== undefined && isConfiguredSessionReadPath(canonical);
-  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isAdmissionDeniedPath(caseFoldForMatch(candidate), effect);
+  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isAdmissionDeniedPath(caseFoldForMatch(candidate), effect, canonicalize);
   if (sensitive) return {
     kind: "sensitive-path",
     reason: `Sensitive path: command operand ${label} matches ${sensitive}`,
@@ -80,10 +80,11 @@ export function validateShellWorkingDirectory(
   cwd: string,
   sandboxRoot: string,
   extraAllowedDirectories: readonly string[],
+  canonicalize: (path: string) => string = canonicalizePathForMatch,
 ): string | null {
-  const nativeViolation = windowsShellPathViolation(cwd, cwd, "write");
+  const nativeViolation = windowsShellPathViolation(cwd, cwd, "write", canonicalize);
   if (nativeViolation) return nativeViolation.reason;
-  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalizePathForMatch(cwd)));
+  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalize(cwd)), "write", canonicalize);
   if (sensitive) {
     return `Sensitive path: cwd ${cwd} matches ${sensitive}`;
   }
@@ -98,11 +99,12 @@ export function findResolvedShellPathViolation(
   extraAllowedDirectories: readonly string[],
   effect: PathEffect,
   blockReadsOutsideWorkingDirectories: boolean,
+  canonicalize: (path: string) => string = canonicalizePathForMatch,
 ): ShellPathPolicyViolation | null {
-  const nativeViolation = windowsShellPathViolation(absolute, label, effect);
+  const nativeViolation = windowsShellPathViolation(absolute, label, effect, canonicalize);
   if (nativeViolation) return nativeViolation;
-  const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(absolute));
-  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(absolute), effect) ?? isAdmissionDeniedPath(canonicalPath, effect);
+  const canonicalPath = caseFoldForMatch(canonicalize(absolute));
+  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(absolute), effect, canonicalize) ?? isAdmissionDeniedPath(canonicalPath, effect, canonicalize);
   if (sensitive) {
     return {
       kind: "sensitive-path",
@@ -1477,6 +1479,15 @@ export function inspectImplicitGitWriteTargets(
   onCommand?: (verb: string) => void,
 ): string | undefined {
   if (argv[0] === undefined || stripCommandPath(argv[0]).toLowerCase().replace(/\.exe$/u, "") !== "git") return undefined;
+  const resolveDirectory = (path: string, base: string): string => {
+    try { return resolveShellFilesystemPath(path, base); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
+      // Retain lexical routing and feed the refused identity to the same collector.
+      checkPath(path, path, base, "read");
+      return win32.resolve(base, path);
+    }
+  };
   let index = 1;
   let directory = cwd;
   let gitDirectory: string | undefined = environment.GIT_DIR;
@@ -1489,11 +1500,11 @@ export function inspectImplicitGitWriteTargets(
     if (arg === "-C") {
       const value = argv[++index];
       if (value === undefined || directory === null) directory = null;
-      else directory = resolveShellFilesystemPath(value, directory);
+      else directory = resolveDirectory(value, directory);
       index++; continue;
     }
     if (arg?.startsWith("-C") && arg.length > 2) {
-      directory = directory === null ? null : resolveShellFilesystemPath(arg.slice(2), directory);
+      directory = directory === null ? null : resolveDirectory(arg.slice(2), directory);
       index++; continue;
     }
     if (arg === "--git-dir" || arg?.startsWith("--git-dir=")) {
@@ -1544,7 +1555,7 @@ export function inspectImplicitGitWriteTargets(
       return undefined;
     }
     if (directory === null || unknownGitDirectory) return query ? undefined : "The implicit repository write target is unresolved.";
-    const base = gitDirectory === undefined ? join(directory, ".git") : resolveShellFilesystemPath(gitDirectory, directory);
+    const base = gitDirectory === undefined ? join(directory, ".git") : resolveDirectory(gitDirectory, directory);
     checkPath(join(base, "config"), "repository configuration", directory, effect);
     return query ? undefined : "The command mutates protected repository configuration.";
   }
@@ -1596,13 +1607,13 @@ export function inspectImplicitGitWriteTargets(
       }
       if (arg.startsWith("--separate-git-dir=")) { gitDirectory = arg.slice(19); continue; }
       if (["--template", "--initial-branch", "-b", "--object-format", "--ref-format"].includes(arg)) { cursor++; continue; }
-      if (!arg.startsWith("-") && arg !== "--") destination = resolveShellFilesystemPath(arg, directory);
+      if (!arg.startsWith("-") && arg !== "--") destination = resolveDirectory(arg, directory);
     }
-    const base = gitDirectory === undefined ? bare ? destination : join(destination, ".git") : resolveShellFilesystemPath(gitDirectory, directory);
+    const base = gitDirectory === undefined ? bare ? destination : join(destination, ".git") : resolveDirectory(gitDirectory, directory);
     checkPath(join(base, "hooks"), "implicit repository hooks write", directory, "write");
     return "The command mutates protected repository control metadata.";
   }
-  const base = gitDirectory === undefined ? join(directory, ".git") : resolveShellFilesystemPath(gitDirectory, directory);
+  const base = gitDirectory === undefined ? join(directory, ".git") : resolveDirectory(gitDirectory, directory);
   checkPath(join(base, metadataTarget), "implicit repository control write", directory, "write");
   return "The command mutates protected repository control metadata.";
 }
@@ -1644,13 +1655,31 @@ export function findShellPathPolicyViolation(
   inspectPowerShellBody?: PowerShellPathInspector,
   argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean },
 ): ShellPathPolicyViolation | null {
-  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot) : undefined;
+  // One decision-scoped cache for the sensitive-path scan, which canonicalizes the same Ave-home chain
+  // for every operand. `chainFacts` shares the Step 1 lstat walk so the common prefix is walked once;
+  // `canonMemo` returns one result per distinct spelling. Output comes from the free canonicalizer's
+  // unchanged Step 2, so it stays byte-identical (incl. win32 8.3/casing expansion); only I/O is saved.
+  // Scope is this single call (not process-wide), preserving the per-decision symlink re-walk.
+  const chainFacts = new Map<string, { canonical: string; missing: boolean }>();
+  const chainFactsHooks = {
+    knownPath: (path: string) => chainFacts.get(path),
+    onLocalPath: (path: string, canonical: string, missing: boolean) => { chainFacts.set(path, { canonical, missing }); },
+  };
+  const canonMemo = new Map<string, string>();
+  const canonicalize = (path: string): string => {
+    const hit = canonMemo.get(path);
+    if (hit !== undefined) return hit;
+    const resolved = canonicalizePathForMatch(path, undefined, chainFactsHooks);
+    canonMemo.set(path, resolved);
+    return resolved;
+  };
+  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot, canonicalize) : undefined;
   const resolvedEvidencePaths = evidence ? new Map<string, string>() : undefined;
   let unresolvedEvidence: ShellPathPolicyViolation | null = null;
   if (!evidence) {
-    const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
+    const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write", canonicalize);
     if (nativeCwdViolation) return nativeCwdViolation;
-    const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
+    const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories, canonicalize);
     if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
   }
   const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect, deleting = false, role?: "directory"): void => {
@@ -1664,7 +1693,7 @@ export function findShellPathPolicyViolation(
     // Check prepared HOME and OS home tilde anchors without granting either workspace authority.
     if (!evidence && (label === "~" || label.startsWith("~/"))) {
       for (const candidate of expandShellTildePaths(label)) {
-        const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalizePathForMatch(candidate)), effect);
+        const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalize(candidate)), effect, canonicalize);
         if (sensitive) throw new PathPolicyError({ kind: "sensitive-path", reason: `Sensitive path: command operand ${label} matches ${sensitive}`, candidate: label, path: candidate });
       }
     }
@@ -1680,7 +1709,7 @@ export function findShellPathPolicyViolation(
     }
     if (!evidence) {
       const lexical = isAbsolute(path) ? path : `${cwd ?? sandboxRoot}/${path}`;
-      const admission = isAdmissionDeniedPath(caseFoldForMatch(lexical), effect);
+      const admission = isAdmissionDeniedPath(caseFoldForMatch(lexical), effect, canonicalize);
       if (admission) throw new PathPolicyError({ kind: "sensitive-path", reason: `Sensitive path: command operand ${label} matches ${admission}`, candidate: label, path: lexical });
     }
     let absolute: string;
@@ -1692,6 +1721,15 @@ export function findShellPathPolicyViolation(
     }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error)) throw error;
+      if (error.code === "ENETWORKSHAREPATH") {
+        if (evidence) {
+          const lexical = isAbsolute(path) ? path : win32.resolve(cwd ?? sandboxRoot, path);
+          evidence.push({ ...evidenceForPath!({ lexical, canonical: win32.normalize(lexical), effect }), projectEscape: true,
+            ...(deleting ? { deleteIntent: true as const } : {}) });
+          return;
+        }
+        throw new PathPolicyError({ kind: "sandbox-boundary", reason: `Shell path policy: network or device operand escapes the project: ${label}`, candidate: label, path });
+      }
       if (evidence) {
         unresolvedEvidence ??= { kind: "invalid-path", reason: "Shell path policy: cannot resolve command operand", candidate: label };
         if (effect === "write") onUnknownWrite?.(`The write target's identity is unresolved: ${label}`);
@@ -1707,7 +1745,7 @@ export function findShellPathPolicyViolation(
       evidence.push({ ...evidenceForPath!({ lexical, canonical: absolute, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
       return;
     }
-    const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);
+    const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories, canonicalize);
     if (violation) throw new PathPolicyError(violation);
   };
   // A projected argv reuses its original input charge and separately inspected bodies.

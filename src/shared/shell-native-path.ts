@@ -1,6 +1,16 @@
 import { isAbsolute, normalize, parse, resolve, sep, win32 } from "node:path";
 import { existsSync } from "node:fs";
 
+/** Classify native network/device identities without opening their namespace. */
+export function isWindowsNetworkOrDevicePath(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "win32") return false;
+  // Exactly two leading separators and a non-separator select a UNC host or
+  // device namespace, including incomplete host/share names. A single separator
+  // is drive-root-relative. The extended absolute drive form alone is local;
+  // other extended/device names (including drive-relative ones) stay opaque.
+  return /^[\\/]{2}[^\\/]/u.test(path) && !/^[\\/]{2}\?[\\/][A-Za-z]:[\\/]/u.test(path);
+}
+
 export type ShellPathDialect = "native" | "powershell" | "bash";
 export interface ShellPathModel {
   dialect: ShellPathDialect;

@@ -1315,7 +1315,15 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     let canonical = modeled.normalizedPath;
     if (modeled.nativePath !== undefined) {
       try { canonical = resolveShellFilesystemPath(modeled.nativePath, base); }
-      catch { unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths."; }
+      catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH" && (effect === "write" || deleting)) {
+          const lexical = absolute ? value : win32.resolve(base, value);
+          paths.push({ ...evidenceForPath({ lexical, canonical: win32.normalize(lexical), effect }), projectEscape: true,
+            ...(deleting ? { deleteIntent: true as const } : {}) });
+          return;
+        }
+        unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths.";
+      }
     } else { unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths."; }
     const lexical = absolute ? value : base + "/" + value;
     paths.push({ ...evidenceForPath({ lexical, canonical, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
