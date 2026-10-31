@@ -4,8 +4,6 @@ Status: **Active** (2026-09-25). Replaces the local server-marketplace loop,
 removed with the server stack by the switch to the
 [multi-source git marketplace](../blueprints/multi-source-git-marketplace.md).
 
-Korean mirror: [docs/ko mirror](../ko/guides/local-marketplace-testing.md).
-
 A marketplace is a git repository, so testing one locally means serving a
 repository to a development build and adding it the way a user would. For the
 file formats, see [Publishing To A Git Marketplace](./marketplace-publishing.md).

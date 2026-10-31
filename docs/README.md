@@ -91,8 +91,5 @@ deleted rather than archived; git history keeps them.
 
 ## Language policy
 
-English is the documentation language. The [Korean pages](./ko/README.md) are
-kept only where a reader or a test needs them: the Korean app README and setup
-guides, the Korean vision, and three older Korean specifications whose section
-numbers source comments still cite. When an English page and a Korean page
-disagree, the English page and the source are authoritative.
+English is the documentation language; the source and these English pages are
+authoritative.

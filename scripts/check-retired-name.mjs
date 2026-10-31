@@ -25,26 +25,7 @@ export const ALLOWLIST = Object.freeze([]);
 
 // Mask only exact allowed text, preserving surrounding boundaries.
 // {id} and {Id} expand the stored id without spelling retired names here.
-export const RETIRED_PLUGIN_ALLOWLIST = Object.freeze([
-  Object.freeze({
-    path: "docs/ko/architecture/architecture.md",
-    words: Object.freeze(["agent", "hub"]),
-    text: "](#10-{id}--사용자-레플리카-메시지-보드-및-업무-보드)",
-    reason: "table-of-contents link to the kept section heading; the anchor is generated from the heading's prose name",
-  }),
-  Object.freeze({
-    path: "docs/ko/architecture/architecture.md",
-    words: Object.freeze(["page", "index"]),
-    text: "{Id}",
-    reason: "the third-party tree-indexing library of that name, not the plugin id",
-  }),
-  Object.freeze({
-    path: "docs/ko/architecture/architecture.md",
-    words: Object.freeze(["page", "index"]),
-    text: "`{id}==0.2.8`",
-    reason: "the third-party library's pip pin, not the plugin id",
-  }),
-]);
+export const RETIRED_PLUGIN_ALLOWLIST = Object.freeze([]);
 
 const BINARY_PROBE_BYTES = 8000;
 

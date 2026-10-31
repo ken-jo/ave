@@ -1,7 +1,7 @@
 # Local Extension Development
 
 Status: Active. Describes the development-build loop as the code implements it
-today. Korean version: [local-plugin-development.md](../ko/guides/local-plugin-development.md).
+today.
 
 This page covers building an extension and running it in a development build
 without a marketplace. The manifest, HostApi and tool rules live in the
@@ -167,4 +167,4 @@ git marketplace.
 - [Testing A Marketplace Locally](./local-marketplace-testing.md)
 - [Publishing To A Git Marketplace](./marketplace-publishing.md)
 - [Extension Deployment Model](../architecture/plugin-deployment-model.md)
-- [Windows setup (Korean)](../ko/guides/windows-setup.md)
+- [Windows setup](./windows-setup.md)

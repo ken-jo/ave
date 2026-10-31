@@ -3,8 +3,6 @@
 Status: Active. The goals themselves are stated once, in [Vision](./README.md).
 This page records the principles Ave follows while pursuing them.
 
-Korean mirror: [docs/ko/vision/philosophy.md](../ko/vision/philosophy.md).
-
 ## Principles
 
 - **Side by side, not behind a wall.** The agent works in surfaces the user can

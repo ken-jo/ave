@@ -270,10 +270,6 @@ describe("pre-push fast source tier", () => {
     });
     expect(result.documentationEntries.map(({ path }) => path)).toEqual(["web/DEPLOY.md"]);
     expect(result.reason).toContain("readers of 1 test-read document(s)");
-    expect(selectFastSourceChecks([modified("docs/ko/app-readme.md")]).testFiles).toEqual([
-      "src/plugins/__tests__/registry-atomicity.test.ts",
-      "test/scripts/repository-identity.test.ts",
-    ]);
     // Consumed documents without recorded readers require full checks.
     expect(selectFastSourceChecks([modified("web/NOT-RECORDED.md")])).toMatchObject({
       eligible: false,

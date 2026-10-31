@@ -1,8 +1,7 @@
 # Permission Policy Design
 
 This document describes the current permission-policy contract for Ave tool
-execution. A Korean summary is available at
-[docs/ko/architecture/permission-policy-design.md](../ko/architecture/permission-policy-design.md).
+execution.
 
 ## Purpose
 

@@ -3,8 +3,7 @@
 This guide describes shared-tab control, private host terminals, and conversation-owned isolated commands. The
 [architecture](../architecture/architecture.md#browser-and-terminal-workspace)
 and [permission policy](../architecture/permission-policy-design.md#shared-browser-control-and-effects)
-define the host contract. The [Korean guide](../ko/guides/browser-terminal-workspace.md)
-describes the same surface choices. Native interaction and provider-authentication
+define the host contract. Native interaction and provider-authentication
 validation remain separate from this guide; these descriptions do not establish
 a release or measured performance improvement.
 
