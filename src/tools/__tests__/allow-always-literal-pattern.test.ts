@@ -1,4 +1,3 @@
-import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Always-grants match the exact (tool, args, source, trustOrigin, approvalCacheKey, directory) tuple.
 // Literal wildcards in cache keys or legacy rememberPattern values must never widen grants into glob rules.
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -10,10 +9,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
-import { PermissionManager } from "../../permissions/permission-manager.js";
+import { makePermissionManager } from "./executor-reviewer-fixtures.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
-import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import {
   __resetSessionStoreForTest,
@@ -60,15 +57,8 @@ function harness(
   }));
 
   const permissionsFile = join(dir, "permissions.json");
-  const permMgr = new PermissionManager(permissionsFile);
-  permMgr.setMode("auto");
-
   // A HIGH reviewer result reaches the normal card that persists an exact grant.
-  setReviewerForTest(permMgr, {
-    classifier: { classify: vi.fn(() => ({ level: "high" as const, reason: "needs confirmation" })) },
-    cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-    recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
-  });
+  const permMgr = makePermissionManager(dir, vi.fn(() => ({ level: "high" as const, reason: "needs confirmation" })), "auto");
 
   const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
     // Persist the host-issued frozen directory identity; unscoped legacy records cannot be reused.

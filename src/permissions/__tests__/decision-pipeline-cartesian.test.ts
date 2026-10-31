@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { decidePermission, type PermissionDecisionRequest } from "../decision-pipeline.js";
+import { MODES, QUESTION_MODE_CELLS as ASK_RULE_CELLS } from "./fixtures/mode-matrix.js";
 
 // Golden data transcribed from docs/architecture/permission-decision-tree.md,
 // including its mode matrix and resolved host-shell/headless conflicts.
 // Expectations use contract cells and dimensions, never production classifiers.
 type ContractCell = "allow" | "sandbox-auto" | "ask" | "reviewer";
 type ExpectedOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
-type Mode = "strict" | "default" | "auto" | "allow";
 type Boundary = "inside-project" | "outside-project";
 type ModeCells = readonly [ContractCell, ContractCell, ContractCell, ContractCell];
 interface ActionRow {
@@ -20,7 +20,6 @@ interface ActionRow {
   outside: ModeCells;
 }
 
-const MODES: readonly Mode[] = ["strict", "default", "auto", "allow"];
 const BOUNDARIES: readonly Boundary[] = ["inside-project", "outside-project"];
 const FLOORS = [undefined, "protected-path", "critical-delete", "project-escape", "other-principal"] as const;
 const RULES = ["none", "deny", "ask", "allow", "remembered", "ask+allow"] as const;
@@ -54,7 +53,6 @@ const RULE_EVIDENCE: Record<(typeof RULES)[number], PermissionDecisionRequest["r
   remembered: { remembered: "A matching approval was remembered." },
   "ask+allow": { ask: "An explicit ask rule matches.", allow: "An explicit allow rule also matches." },
 };
-const ASK_RULE_CELLS: ModeCells = ["ask", "ask", "reviewer", "allow"];
 
 interface GoldenCase {
   name: string;
