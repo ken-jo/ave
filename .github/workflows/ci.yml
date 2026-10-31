@@ -804,6 +804,12 @@ jobs:
           src/tools/__tests__/shell-tools.test.ts
           src/workload/__tests__/runtime.test.ts
           test/scripts/smoke-windows-nsis-installer.test.ts
+          src/permissions/__tests__/permission-adversarial-performance.test.ts
+          src/permissions/__tests__/permission-decision-cost.test.ts
+          src/main/__tests__/document-engine-payload.test.ts
+          src/main/__tests__/document-engine-installation.test.ts
+          src/main/__tests__/document-observation.test.ts
+          src/boot/steps/__tests__/model-catalog-refresh.test.ts
 
       - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'

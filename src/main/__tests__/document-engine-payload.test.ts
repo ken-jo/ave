@@ -51,7 +51,12 @@ describe("authenticated document engine payloads", () => {
       const { path, held, identity } = await heldArchive();
       try {
         const before = await stat(path, { bigint: true });
-        await settleCtime(); await chmod(path, 0o600);
+        await settleCtime();
+        // A no-op chmod bumps ctime on POSIX, but win32 chmod maps only the read-only bit, so
+        // re-applying the existing 0o600 changes nothing there. Toggle the read-only attribute and
+        // restore it to produce a real metadata-only change that moves ChangeTime without mtime/size.
+        if (process.platform === "win32") { await chmod(path, 0o444); await chmod(path, 0o600); }
+        else { await chmod(path, 0o600); }
         const after = await stat(path, { bigint: true });
         expect(after.ctimeNs).not.toBe(before.ctimeNs);
         expect(after.mtimeNs).toBe(before.mtimeNs);

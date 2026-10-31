@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
-import { permissionDecisionCostTargetMs } from "../../__tests__/support/permission-decision-cost.js";
+import { calibratePermissionDecisionBudget } from "../../__tests__/support/permission-decision-cost.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
@@ -109,6 +109,8 @@ const CASES: readonly TimingCase[] = [
 describe("bounded complete decision cost", () => {
   it.each(CASES)("$name", ({ name, command, dialect, runsSandboxed, expected, words, executableChars, dataBytes }) => {
     expect(command.length).toBe(executableChars + (dataBytes ?? 0));
+    const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
+      checkShellPermission(manager, cwd, SESSION_ID, `printf %s ./p${iteration.toString(36)}`, dialect, runsSandboxed));
     const samples: number[] = [];
     const results = [];
     for (let observation = 0; observation < 3; observation += 1) {
@@ -118,11 +120,11 @@ describe("bounded complete decision cost", () => {
       results.push(result);
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, executableChars, dataBytes, words, samples, median, target: permissionDecisionCostTargetMs, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
+    process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, executableChars, dataBytes, words, samples, median, referenceMs, budgetMs, ratio: median / referenceMs, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
     for (const result of results) expect(result).toMatchObject(expected === "deny"
       ? { decision: "deny", reasonCode: "shell-analysis-limit" }
       : { decision: "ask", reasonCode: "shell-approval" });
-    expect(median).toBeLessThan(permissionDecisionCostTargetMs);
+    expect(median).toBeLessThan(budgetMs);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
@@ -175,6 +177,8 @@ describe("bounded complete decision cost", () => {
     { name: "empty-arithmetic", command: "(())\n".repeat(1_600), expected: "ask" },
   ])("bounds low-record representation $name", ({ name, command, expected }) => {
     expect(command.length).toBe(8_000);
+    const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
+      checkShellPermission(manager, cwd, SESSION_ID, `printf %s ./p${iteration.toString(36)}`, "bash", true));
     const samples: number[] = [];
     const results = [];
     for (let observation = 0; observation < 3; observation += 1) {
@@ -184,11 +188,11 @@ describe("bounded complete decision cost", () => {
       results.push(result);
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`decision shape cost ${JSON.stringify({ name, chars: command.length, samples, median, results })}\n`);
+    process.stdout.write(`decision shape cost ${JSON.stringify({ name, chars: command.length, samples, median, referenceMs, budgetMs, ratio: median / referenceMs, results })}\n`);
     for (const result of results) expect(result).toMatchObject(expected === "deny"
       ? { decision: "deny", reasonCode: "shell-analysis-limit" }
       : { decision: "ask", reasonCode: "shell-approval" });
-    expect(median).toBeLessThan(permissionDecisionCostTargetMs);
+    expect(median).toBeLessThan(budgetMs);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true);
