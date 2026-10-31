@@ -196,25 +196,32 @@ describe("grep_files ripgrep engine", () => {
 });
 
 describe("isWithinAdmittedRoot", () => {
-  it("admits the root and its descendants only, at a separator boundary", () => {
-    // Backslash (win32) root spelling: the root itself and files beneath it.
-    expect(isWithinAdmittedRoot("C:\\u\\.ssh", "C:\\u\\.ssh")).toBe(true);
-    expect(isWithinAdmittedRoot("C:\\u\\.ssh\\id_rsa", "C:\\u\\.ssh")).toBe(true);
-    // A sibling that only shares the root's name prefix is not a descendant.
-    expect(isWithinAdmittedRoot("C:\\u\\.ssh-other\\id_rsa", "C:\\u\\.ssh")).toBe(false);
+  // Explicit platform arguments so every case runs on every host.
+  it("admits the root and its descendants at a separator boundary on win32", () => {
+    expect(isWithinAdmittedRoot("C:\\h\\.ssh", "C:\\h\\.ssh", "win32")).toBe(true);
+    expect(isWithinAdmittedRoot("C:\\h\\.ssh\\id_rsa", "C:\\h\\.ssh", "win32")).toBe(true);
+    // ripgrep may echo a mixed/forward-slash spelling under the same root.
+    expect(isWithinAdmittedRoot("C:/h/.ssh/id_rsa", "C:\\h\\.ssh", "win32")).toBe(true);
   });
 
-  it("is case-exact, so a differently-cased sibling dir is not admitted", () => {
-    // On a per-directory case-sensitive NTFS folder, .SSH is a different dir
-    // than .ssh; folding case would wrongly admit it.
-    expect(isWithinAdmittedRoot("C:\\u\\.SSH\\id_rsa", "C:\\u\\.ssh")).toBe(false);
+  it("admits the root and its descendants at a separator boundary on posix", () => {
+    expect(isWithinAdmittedRoot("/h/.ssh", "/h/.ssh", "linux")).toBe(true);
+    expect(isWithinAdmittedRoot("/h/.ssh/id_rsa", "/h/.ssh", "linux")).toBe(true);
   });
 
-  it("treats either separator spelling of the root the same after folding", () => {
-    // Forward-slash (POSIX, or a mixed win32) root behaves like the backslash one.
-    expect(isWithinAdmittedRoot("/home/u/.ssh/id_rsa", "/home/u/.ssh")).toBe(true);
-    expect(isWithinAdmittedRoot("/home/u/.ssh-other/id_rsa", "/home/u/.ssh")).toBe(false);
-    // Root and entry spelled with different separators still match once folded.
-    expect(isWithinAdmittedRoot("C:/u/.ssh\\id_rsa", "C:\\u\\.ssh")).toBe(true);
+  it("does not fold a backslash into a separator on posix (it is a legal filename byte)", () => {
+    // A file literally named ".ssh\id_rsa" sits beside .ssh, not inside it, so
+    // admitting the .ssh directory must not admit that sibling file.
+    expect(isWithinAdmittedRoot("/h/.ssh\\id_rsa", "/h/.ssh", "linux")).toBe(false);
+  });
+
+  it("keeps a prefix-sharing sibling out on both platforms", () => {
+    expect(isWithinAdmittedRoot("C:\\h\\.ssh-other\\id_rsa", "C:\\h\\.ssh", "win32")).toBe(false);
+    expect(isWithinAdmittedRoot("/h/.ssh-other/id_rsa", "/h/.ssh", "linux")).toBe(false);
+  });
+
+  it("is case-exact, so a differently-cased sibling dir is not admitted on either platform", () => {
+    expect(isWithinAdmittedRoot("C:\\h\\.SSH\\id_rsa", "C:\\h\\.ssh", "win32")).toBe(false);
+    expect(isWithinAdmittedRoot("/h/.SSH/id_rsa", "/h/.ssh", "linux")).toBe(false);
   });
 });
