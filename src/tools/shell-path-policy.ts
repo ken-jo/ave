@@ -43,7 +43,7 @@ const SHELL_DEVICE_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 /** Native aliases must not evade the deny floor or acquire wider path authority. */
-function windowsShellPathViolation(path: string, label: string, effect: PathEffect): ShellPathPolicyViolation | null {
+function windowsShellPathViolation(path: string, label: string, effect: PathEffect, canonicalize: (path: string) => string = canonicalizePathForMatch): ShellPathPolicyViolation | null {
   if (process.platform !== "win32") return null;
   const slashed = path.replaceAll("\\", "/");
   const namespaced = /^\/\/[?.]\//.test(slashed);
@@ -54,10 +54,10 @@ function windowsShellPathViolation(path: string, label: string, effect: PathEffe
     return part.split(":", 1)[0]!.replace(/[. ]+$/, "");
   }).join("/");
   const modeled = modelShellPath(normalized, { dialect: "bash" });
-  const canonical = modeled.nativePath === undefined ? undefined : caseFoldForMatch(canonicalizePathForMatch(modeled.nativePath));
-  let sensitive = canonical === undefined ? null : isAdmissionDeniedPath(canonical, effect);
+  const canonical = modeled.nativePath === undefined ? undefined : caseFoldForMatch(canonicalize(modeled.nativePath));
+  let sensitive = canonical === undefined ? null : isAdmissionDeniedPath(canonical, effect, canonicalize);
   const sessionRead = effect === "read" && canonical !== undefined && isConfiguredSessionReadPath(canonical);
-  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isAdmissionDeniedPath(caseFoldForMatch(candidate), effect);
+  if (!sessionRead) for (const candidate of modeled.floorPaths) sensitive ??= isAdmissionDeniedPath(caseFoldForMatch(candidate), effect, canonicalize);
   if (sensitive) return {
     kind: "sensitive-path",
     reason: `Sensitive path: command operand ${label} matches ${sensitive}`,
@@ -80,10 +80,11 @@ export function validateShellWorkingDirectory(
   cwd: string,
   sandboxRoot: string,
   extraAllowedDirectories: readonly string[],
+  canonicalize: (path: string) => string = canonicalizePathForMatch,
 ): string | null {
-  const nativeViolation = windowsShellPathViolation(cwd, cwd, "write");
+  const nativeViolation = windowsShellPathViolation(cwd, cwd, "write", canonicalize);
   if (nativeViolation) return nativeViolation.reason;
-  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalizePathForMatch(cwd)));
+  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalize(cwd)), "write", canonicalize);
   if (sensitive) {
     return `Sensitive path: cwd ${cwd} matches ${sensitive}`;
   }
@@ -98,11 +99,12 @@ export function findResolvedShellPathViolation(
   extraAllowedDirectories: readonly string[],
   effect: PathEffect,
   blockReadsOutsideWorkingDirectories: boolean,
+  canonicalize: (path: string) => string = canonicalizePathForMatch,
 ): ShellPathPolicyViolation | null {
-  const nativeViolation = windowsShellPathViolation(absolute, label, effect);
+  const nativeViolation = windowsShellPathViolation(absolute, label, effect, canonicalize);
   if (nativeViolation) return nativeViolation;
-  const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(absolute));
-  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(absolute), effect) ?? isAdmissionDeniedPath(canonicalPath, effect);
+  const canonicalPath = caseFoldForMatch(canonicalize(absolute));
+  const sensitive = isAdmissionDeniedPath(caseFoldForMatch(absolute), effect, canonicalize) ?? isAdmissionDeniedPath(canonicalPath, effect, canonicalize);
   if (sensitive) {
     return {
       kind: "sensitive-path",
@@ -1653,13 +1655,31 @@ export function findShellPathPolicyViolation(
   inspectPowerShellBody?: PowerShellPathInspector,
   argumentView?: { rootAlreadyParsed: true; literalBodiesAlreadyInspected: boolean },
 ): ShellPathPolicyViolation | null {
-  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot) : undefined;
+  // One decision-scoped cache for the sensitive-path scan, which canonicalizes the same Ave-home chain
+  // for every operand. `chainFacts` shares the Step 1 lstat walk so the common prefix is walked once;
+  // `canonMemo` returns one result per distinct spelling. Output comes from the free canonicalizer's
+  // unchanged Step 2, so it stays byte-identical (incl. win32 8.3/casing expansion); only I/O is saved.
+  // Scope is this single call (not process-wide), preserving the per-decision symlink re-walk.
+  const chainFacts = new Map<string, { canonical: string; missing: boolean }>();
+  const chainFactsHooks = {
+    knownPath: (path: string) => chainFacts.get(path),
+    onLocalPath: (path: string, canonical: string, missing: boolean) => { chainFacts.set(path, { canonical, missing }); },
+  };
+  const canonMemo = new Map<string, string>();
+  const canonicalize = (path: string): string => {
+    const hit = canonMemo.get(path);
+    if (hit !== undefined) return hit;
+    const resolved = canonicalizePathForMatch(path, undefined, chainFactsHooks);
+    canonMemo.set(path, resolved);
+    return resolved;
+  };
+  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot, canonicalize) : undefined;
   const resolvedEvidencePaths = evidence ? new Map<string, string>() : undefined;
   let unresolvedEvidence: ShellPathPolicyViolation | null = null;
   if (!evidence) {
-    const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write");
+    const nativeCwdViolation = windowsShellPathViolation(cwd, cwd, "write", canonicalize);
     if (nativeCwdViolation) return nativeCwdViolation;
-    const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories);
+    const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories, canonicalize);
     if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
   }
   const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect, deleting = false, role?: "directory"): void => {
@@ -1673,7 +1693,7 @@ export function findShellPathPolicyViolation(
     // Check prepared HOME and OS home tilde anchors without granting either workspace authority.
     if (!evidence && (label === "~" || label.startsWith("~/"))) {
       for (const candidate of expandShellTildePaths(label)) {
-        const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalizePathForMatch(candidate)), effect);
+        const sensitive = isAdmissionDeniedPath(caseFoldForMatch(canonicalize(candidate)), effect, canonicalize);
         if (sensitive) throw new PathPolicyError({ kind: "sensitive-path", reason: `Sensitive path: command operand ${label} matches ${sensitive}`, candidate: label, path: candidate });
       }
     }
@@ -1689,7 +1709,7 @@ export function findShellPathPolicyViolation(
     }
     if (!evidence) {
       const lexical = isAbsolute(path) ? path : `${cwd ?? sandboxRoot}/${path}`;
-      const admission = isAdmissionDeniedPath(caseFoldForMatch(lexical), effect);
+      const admission = isAdmissionDeniedPath(caseFoldForMatch(lexical), effect, canonicalize);
       if (admission) throw new PathPolicyError({ kind: "sensitive-path", reason: `Sensitive path: command operand ${label} matches ${admission}`, candidate: label, path: lexical });
     }
     let absolute: string;
@@ -1725,7 +1745,7 @@ export function findShellPathPolicyViolation(
       evidence.push({ ...evidenceForPath!({ lexical, canonical: absolute, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
       return;
     }
-    const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories);
+    const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories, canonicalize);
     if (violation) throw new PathPolicyError(violation);
   };
   // A projected argv reuses its original input charge and separately inspected bodies.

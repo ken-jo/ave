@@ -398,8 +398,8 @@ const ADMISSION_PATH_PATTERNS = new Set([
 ]);
 
 /** Match host credential admission patterns against an already normalized absolute spelling. */
-export function isAdmissionDeniedPath(absPath: string, effect: PathEffect = "write"): string | null {
-  return absPath ? createAdmissionDeniedPathMatcher(effect)(absPath) : null;
+export function isAdmissionDeniedPath(absPath: string, effect: PathEffect = "write", canonicalize?: (path: string) => string): string | null {
+  return absPath ? createAdmissionDeniedPathMatcher(effect, undefined, canonicalize)(absPath) : null;
 }
 
 function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
@@ -409,10 +409,14 @@ function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: 
 // Public helpers
 
 // Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
-export function canonicalizePathForMatch(rawPath: string, spend?: () => void): string {
+// `facts` shares a decision-scoped cache across the Step 1 chain walk only, so the common Ave-home prefix is walked once per decision; it never feeds Step 2, so the returned canonical is byte-identical to the uncached call.
+export function canonicalizePathForMatch(rawPath: string, spend?: () => void, facts?: {
+  knownPath: (path: string) => { canonical: string; missing: boolean } | undefined;
+  onLocalPath: (path: string, canonical: string, missing: boolean) => void;
+}): string {
   if (isWindowsNetworkOrDevicePath(rawPath)) return foldCanonicalPathSeparators(rawPath);
   let canonical = pathResolve(rawPath);
-  try { verifyLocalFilesystemChain(canonical, process.platform, MAX_WALK_UP); }
+  try { verifyLocalFilesystemChain(canonical, process.platform, MAX_WALK_UP, facts); }
   catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
     // Matching stays lexical for opaque network identities, as for direct operands.
@@ -576,7 +580,7 @@ export interface PermissionPathEvidence {
 }
 
 /** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
-export function createPermissionPathEvidence(projectRoot: string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
+export function createPermissionPathEvidence(projectRoot: string, canonicalize?: (path: string) => string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
   const root = normalize(projectRoot);
   const within = (value: string) => value === root || value.startsWith(root + "/");
@@ -590,7 +594,7 @@ export function createPermissionPathEvidence(projectRoot: string): (path: { lexi
     if (previous) return { ...path, ...previous };
     let matcher = matchers.get(path.effect);
     if (!matcher) {
-      matcher = { secret: createSensitivePathMatcher(path.effect), admission: createAdmissionDeniedPathMatcher(path.effect) };
+      matcher = { secret: createSensitivePathMatcher(path.effect, undefined, canonicalize), admission: createAdmissionDeniedPathMatcher(path.effect, undefined, canonicalize) };
       matchers.set(path.effect, matcher);
     }
     const observation = {
@@ -843,7 +847,7 @@ function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | 
     const eligible = candidatesFor(normalizedPath);
     if (effect === "write") {
       for (const path of hostScriptWriteDenyPaths()) {
-        const bases = [canonicalizePathForMatch(path), pathResolve(path)].map((value) => caseFoldForMatch(value).replace(/\/+$/u, ""));
+        const bases = [canonicalize(path), pathResolve(path)].map((value) => caseFoldForMatch(value).replace(/\/+$/u, ""));
         if (candidates.some((candidate) => bases.some((base) => {
           const folded = caseFoldForMatch(candidate);
           return folded === base || folded.startsWith(`${base}/`);
