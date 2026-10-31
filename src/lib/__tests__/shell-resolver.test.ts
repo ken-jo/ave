@@ -68,6 +68,22 @@ describe("shell-resolver", () => {
     expect(shell.windowsFlavor).toBe("msys");
   });
 
+  it("resolves the native shell under a Program Files root on a non-system drive", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32" as NodeJS.Platform);
+    for (const key of ["ProgramW6432", "ProgramFiles"]) vi.stubEnv(key, "D:\\Program Files");
+    vi.stubEnv("ProgramFiles(x86)", "D:\\Program Files (x86)");
+    vi.mocked(execFileSync).mockImplementation((cmd, args) => {
+      if (cmd === "D:\\Program Files\\Git\\usr\\bin\\sh.exe" && args?.[1] === "printf __ave_shell_ok__") return "__ave_shell_ok__";
+      if (cmd === "D:\\Program Files\\Git\\usr\\bin\\sh.exe" && args?.[1] === "uname -s") return "MINGW64_NT";
+      throw new Error("unexpected command");
+    });
+
+    const shell = resolveShell();
+
+    expect(shell.cmd).toBe("D:\\Program Files\\Git\\usr\\bin\\sh.exe");
+    expect(shell.windowsFlavor).toBe("msys");
+  });
+
   it("falls back to bash on Windows when sh is missing", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32" as NodeJS.Platform);
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {

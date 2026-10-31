@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { delimiter, dirname, isAbsolute, join, win32 } from "node:path";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { win32SystemBinary } from "../shared/windows-system-path.js";
+import { win32SystemBinary, windowsProgramFilesRoots } from "../shared/windows-system-path.js";
 
 export class ShellMismatchError extends Error {
   readonly code = "SHELL_MISMATCH" as const;
@@ -112,15 +112,16 @@ export function resolveShell(dialect: ShellDialect = "posix"): ResolvedShellComm
 }
 
 function windowsShellCandidates(): ResolvedShellCommand[] {
-  return [
-    // Prefer the installed native shell; subsystem launchers use a different path dialect and may stall under concurrency.
-    { cmd: "C:\\Program Files\\Git\\usr\\bin\\sh.exe", shellArgs: (script: string) => ["-c", script] },
-    { cmd: "C:\\Program Files\\Git\\bin\\bash.exe", shellArgs: (script: string) => ["-lc", script] },
-    { cmd: "C:\\Program Files (x86)\\Git\\usr\\bin\\sh.exe", shellArgs: (script: string) => ["-c", script] },
-    { cmd: "C:\\Program Files (x86)\\Git\\bin\\bash.exe", shellArgs: (script: string) => ["-lc", script] },
-    { cmd: "sh", shellArgs: (script: string) => ["-c", script] },
-    { cmd: "bash", shellArgs: (script: string) => ["-lc", script] },
-  ];
+  const candidates: ResolvedShellCommand[] = [];
+  // Prefer the installed native shell under each Program Files root; subsystem launchers use a different
+  // path dialect and may stall under concurrency.
+  for (const root of windowsProgramFilesRoots()) {
+    candidates.push({ cmd: win32.join(root, "Git", "usr", "bin", "sh.exe"), shellArgs: (script: string) => ["-c", script] });
+    candidates.push({ cmd: win32.join(root, "Git", "bin", "bash.exe"), shellArgs: (script: string) => ["-lc", script] });
+  }
+  candidates.push({ cmd: "sh", shellArgs: (script: string) => ["-c", script] });
+  candidates.push({ cmd: "bash", shellArgs: (script: string) => ["-lc", script] });
+  return candidates;
 }
 
 function resolveWindowsShellCandidate(cmd: string, dialect: ShellDialect): string {
