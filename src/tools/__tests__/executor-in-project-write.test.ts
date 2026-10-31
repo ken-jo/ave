@@ -274,4 +274,58 @@ describe("checkpointed project file writes", () => {
     expect(requestAndWait).not.toHaveBeenCalled();
     await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  // The permission matching form lowercases the win32 drive letter. The checkpoint
+  // identity must resolve the realpath-native spelling anyway, or every in-project
+  // write shows a card. (win32-only: POSIX has no drive letter.)
+  const lowerDrive = (p: string) => p.replace(/^([A-Za-z]:)/, (m) => m.toLowerCase());
+
+  it.runIf(process.platform === "win32")("auto-allows an in-project write whose path carries a lowercase drive letter", async () => {
+    await turn(async () => {
+      expect((await run("write_file", { path: lowerDrive(join(project, "lower.txt")), content: "ok" }))[0].is_error).toBeFalsy();
+    });
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(await restoreCodeCheckpoint(sessionId, "turn", { cwd: project, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    await expect(readFile(join(project, "lower.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.runIf(process.platform === "win32")("auto-allows an edit whose path carries a lowercase drive letter (covers the edit branch)", async () => {
+    const path = join(project, "edit.txt");
+    await writeFile(path, "before\n");
+    await turn(async () => {
+      await run("read_file", { path: lowerDrive(path) });
+      expect((await run("edit_file", { path: lowerDrive(path), oldText: "before", newText: "after" }))[0].is_error).toBeFalsy();
+    });
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(await readFile(path, "utf8")).toBe("after\n");
+    // Prove the edit branch actually recorded a checkpoint, not just that no card showed.
+    expect(await restoreCodeCheckpoint(sessionId, "turn", { cwd: project, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    expect(await readFile(path, "utf8")).toBe("before\n");
+  });
+
+  it("asks before writing through a leaf symlink because the checkpoint cannot snapshot it", async () => {
+    const realTarget = join(project, "real.txt");
+    await writeFile(realTarget, "orig");
+    const linkPath = join(project, "link.txt");
+    await symlink(realTarget, linkPath);
+    await turn(() => run("write_file", { path: linkPath, content: "via link" }));
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+  });
+
+  it.runIf(process.platform === "win32")("keeps a junction escape behind the out-of-project card (B: membership denies)", async () => {
+    await symlink(root, join(project, "jxescape"), "junction");
+    await turn(() => run("write_file", { path: join(project, "jxescape", "outside.txt"), content: "ok" }));
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
+  });
+
+  it.runIf(process.platform === "win32")("auto-allows a write through an in-project junction (B: followed because it stays undoable)", async () => {
+    const sub = join(project, "sub"); await mkdir(sub);
+    await symlink(sub, join(project, "projlink"), "junction");
+    await turn(async () => {
+      expect((await run("write_file", { path: join(project, "projlink", "auto.txt"), content: "ok" }))[0].is_error).toBeFalsy();
+    });
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(await restoreCodeCheckpoint(sessionId, "turn", { cwd: project, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    await expect(readFile(join(sub, "auto.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

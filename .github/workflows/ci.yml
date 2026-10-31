@@ -701,6 +701,7 @@ jobs:
           src/tools/__tests__/executor-rationale-batch.test.ts
           src/tools/__tests__/executor-broker-shell-route.test.ts
           src/tools/__tests__/executor-native-permission-pipeline.test.ts
+          src/tools/__tests__/executor-in-project-write.test.ts
           src/tools/pipeline/__tests__/rationale-host-coordinator.test.ts
           src/tools/pipeline/__tests__/rationale-host-service.test.ts
           src/tools/pipeline/__tests__/rationale-invocation-journal.test.ts
