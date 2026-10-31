@@ -79,6 +79,7 @@ vi.mock("../../workload/runtime.js", async (importOriginal) => {
   return {
     ...actual,
     isWorkloadBrokerActive: () => broker.active,
+    getActiveWorkloadBrokerProjection: () => (broker.active ? broker.capability : undefined),
     acquireBrokeredWorkloadCapability: broker.acquire,
     resolveBrokeredWorkloadPath: (_capability: unknown, input: string) => posix.resolve(broker.capability.workload.cwd, input),
     isIssuedActiveBrokeredWorkloadCapability: (value: unknown) =>
@@ -402,5 +403,45 @@ describe("mandatory broker shell floors", () => {
     expect(hostToolPathInspection).not.toHaveBeenCalled();
     expect(hostToolCwdValidation).not.toHaveBeenCalled();
     expect(localSpawn).not.toHaveBeenCalled();
+  });
+});
+
+describe("broker guest-aware protected-write floor", () => {
+  const guest = () => ({ authority: "workload-broker" as const, id: broker.capability.workload.id });
+  const forged = () => ({ authority: "workload-broker" as const, id: "9".repeat(64) });
+  const check = (command: string, substrate: { authority: "workload-broker"; id: string } | undefined) => {
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    return manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd: root },
+      shellExecution: { runsSandboxed: substrate !== undefined },
+      ...(substrate === undefined ? {} : { disposableSubstrate: substrate }),
+    });
+  };
+
+  it("resolves a confirmed guest write target with guest semantics instead of flooring it", () => {
+    expect(check("printf x > /logs/result", guest())).toMatchObject({ decision: "allow" });
+  });
+
+  it("keeps the critical-delete floor for a guest root delete", () => {
+    expect(check("rm -rf /", guest())).toMatchObject({ decision: "ask", reasonCode: "critical-delete", forceModal: true });
+  });
+
+  it("keeps a guest dynamic write forced", () => {
+    expect(check('echo x > "$UNRESOLVED_TARGET"', guest())).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true });
+  });
+
+  it("keeps a guest protected control write forced", () => {
+    expect(check("printf x > /work/.git/config", guest())).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true });
+  });
+
+  it.skipIf(process.platform !== "win32")("keeps a host-routed write to a drive-less target forced", () => {
+    expect(check("printf x > /logs/result", undefined)).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true });
+  });
+
+  it.skipIf(process.platform !== "win32")("gives a forged guest route no skip", () => {
+    expect(check("printf x > /logs/result", forged())).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true });
+    broker.active = false;
+    expect(check("printf x > /logs/result", guest())).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true });
   });
 });

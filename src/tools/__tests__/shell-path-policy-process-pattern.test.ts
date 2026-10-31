@@ -67,7 +67,8 @@ describe("process-selection pattern operands", () => {
     'pgrep -f "worker" > /not-authorized/output',
     'kill $(pgrep -f "worker") > /not-authorized/output',
   ])("retains containment: %s", (command) => {
-    expect(check(command, true)?.kind).toBe("sandbox-boundary");
+    // win32 cannot resolve a drive-less POSIX absolute path, so it fails closed as an unresolved namespace instead.
+    expect(check(command, true)?.kind).toBe(process.platform === "win32" ? "dynamic-path" : "sandbox-boundary");
   });
 
   it("does not make process mutation read-only", () => {

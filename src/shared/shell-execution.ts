@@ -59,6 +59,8 @@ export interface ShellExecutionFacts {
   /** Present only after a fixed probe of the selected interpreter and locale. */
   unicodeEscapes?: boolean;
   prefixAssignmentRhs?: "incoming" | "sequential";
+  /** Set only for a confirmed broker guest route: drive-less absolute operands name the guest's Linux namespace, not the host's. */
+  guestPosixPaths?: true;
 }
 interface ShellState {
   cwd: string | null;

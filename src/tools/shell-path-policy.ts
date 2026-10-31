@@ -1,14 +1,14 @@
 import { readShellOptionValue as readOptionValue } from "../shared/shell-option-value.js";
 import { classifySedArgumentSlots } from "../shared/shell-sed-arguments.js";
 import { literalShellBodies, type LiteralBodyBudget } from "../shared/shell-literal-bodies.js";
-import { isAbsolute, join, win32 } from "node:path";
+import { isAbsolute, join, posix, win32 } from "node:path";
 import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/host-script-runtime.js";
 import { t } from "../i18n/index.js";
 import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
 import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import { parseTarListing } from "../shared/shell-tar-listing.js";
@@ -1645,9 +1645,18 @@ function evidenceBudgetExceeded(error: ShellExecutionError): boolean {
     || ["execution-state limit exceeded", "execution-step limit exceeded", "execution analysis depth exceeded", "loop expansion limit exceeded", "loop authority state does not converge within the execution-state limit"].includes(reason);
 }
 
+// win32 prepares PWD in shell form (/c/x) while analysis tracks the host form (C:\x). Both name one directory, so compare their canonical identity; any other change of value, or any other variable, still compares byte-for-byte.
+function sameBoundValue(name: string, incoming: string, current: string | undefined): boolean {
+  if (incoming === current) return true;
+  if (name !== "PWD" || current === undefined || process.platform !== "win32") return false;
+  const left = modelShellPath(incoming, { dialect: "bash" }).nativePath;
+  const right = modelShellPath(current, { dialect: "bash" }).nativePath;
+  return left !== undefined && right !== undefined && caseFoldForMatch(foldCanonicalPathSeparators(left)) === caseFoldForMatch(foldCanonicalPathSeparators(right));
+}
+
 function hostBoundPathWord(word: ShellWord, incoming: Readonly<Record<string, string | undefined>>, current: Readonly<Record<string, string | undefined>>): boolean {
   return word.parts.some((part) => part.kind === "parameter") && word.parts.every((part) => part.kind === "literal"
-    || part.kind === "parameter" && part.index === undefined && incoming[part.name] !== undefined && incoming[part.name] === current[part.name]);
+    || part.kind === "parameter" && part.index === undefined && incoming[part.name] !== undefined && sameBoundValue(part.name, incoming[part.name]!, current[part.name]));
 }
 
 export function findShellPathPolicyViolation(
@@ -1736,6 +1745,12 @@ export function findShellPathPolicyViolation(
           return;
         }
         throw new PathPolicyError({ kind: "sandbox-boundary", reason: `Shell path policy: network or device operand escapes the project: ${label}`, candidate: label, path });
+      }
+      // A confirmed broker guest names its own Linux namespace; resolve that operand lexically with guest semantics so the same floors (protected control, critical delete) apply, never a host-win32 resolution failure.
+      if (evidence && facts.guestPosixPaths === true && error.code === "EUNRESOLVEDSHELLPATH" && /^\/(?!\/)/.test(path)) {
+        const guestPath = posix.normalize(path);
+        evidence.push({ ...evidenceForPath!({ lexical: guestPath, canonical: guestPath, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
+        return;
       }
       if (evidence) {
         unresolvedEvidence ??= { kind: "invalid-path", reason: "Shell path policy: cannot resolve command operand", candidate: label };

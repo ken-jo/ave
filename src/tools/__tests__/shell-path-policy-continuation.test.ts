@@ -40,7 +40,9 @@ describe("shell path policy across logical lines", () => {
   });
 
   it("retains output containment", () => {
-    expect(check('openssl req -subj "/CN=example.test" \\\n -out /not-authorized/cert.pem')?.kind).toBe("sandbox-boundary");
+    // win32 cannot resolve a drive-less POSIX absolute path, so it fails closed as an unresolved namespace instead.
+    expect(check('openssl req -subj "/CN=example.test" \\\n -out /not-authorized/cert.pem')?.kind)
+      .toBe(process.platform === "win32" ? "dynamic-path" : "sandbox-boundary");
   });
 
   it.each([

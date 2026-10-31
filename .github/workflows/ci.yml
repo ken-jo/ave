@@ -677,6 +677,7 @@ jobs:
           src/permissions/__tests__/permission-lane-budgets.test.ts
           src/permissions/__tests__/permission-nested-semantics.test.ts
           src/permissions/__tests__/permission-ordinary-performance.test.ts
+          src/permissions/__tests__/permission-path-evidence.test.ts
           src/permissions/__tests__/permission-static-evaluation.test.ts
           src/permissions/__tests__/permission-visible-literal-regressions.test.ts
           src/permissions/__tests__/powershell-catalogue-parity.test.ts
@@ -697,6 +698,8 @@ jobs:
           src/tools/__tests__/executor.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
           src/tools/__tests__/executor-rationale-batch.test.ts
+          src/tools/__tests__/executor-broker-shell-route.test.ts
+          src/tools/__tests__/executor-native-permission-pipeline.test.ts
           src/tools/pipeline/__tests__/rationale-host-coordinator.test.ts
           src/tools/pipeline/__tests__/rationale-host-service.test.ts
           src/tools/pipeline/__tests__/rationale-invocation-journal.test.ts
@@ -739,6 +742,8 @@ jobs:
           src/tools/__tests__/file-read-core.test.ts
           src/tools/__tests__/preview-document-process.test.ts
           src/tools/__tests__/shell-path-policy.test.ts
+          src/tools/__tests__/shell-path-policy-continuation.test.ts
+          src/tools/__tests__/shell-path-policy-process-pattern.test.ts
           src/tools/__tests__/prepared-shell-invocation.test.ts
           src/permissions/__tests__/windows-sandbox-logic.test.ts
           src/permissions/__tests__/sandbox-write-policy.test.ts
