@@ -69,6 +69,8 @@ export function modelShellPath(path: string, model: ShellPathModel): NativeShell
     if (model.dialect === "bash") {
       const drive = /^\/([A-Za-z])(?:\/(.*))?$/.exec(native);
       if (drive && existsSync(`${drive[1]}:/`)) absolute = `${drive[1]}:/${drive[2] ?? ""}`;
+      // A leading backslash is drive-root-relative; a leading slash remains in the unresolved shell root namespace.
+      else if (!drive && /^\\/.test(native)) absolute = win32.parse(win32.resolve("/")).root + native.slice(1);
     } else if (model.location !== undefined) {
       const locationRoot = win32.parse(model.location).root;
       if (/^[A-Za-z]:[\\/]$/.test(locationRoot)) absolute = locationRoot + native.slice(1);

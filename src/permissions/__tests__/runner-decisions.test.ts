@@ -3,7 +3,7 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -15,13 +15,14 @@ import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-ma
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
+import { modelShellPath } from "../../shared/shell-native-path.js";
 import { RUNNER_DECISIONS, RUNNER_POLICY_CASES, RUNNER_SECURITY_CASES } from "./fixtures/runner-decisions.js";
 
 // Startup pinning is a host fact; cover both states instead of inheriting it (win32 is never pinned).
 const startup = vi.hoisted(() => ({ pinned: true }));
 vi.mock("../../shared/powershell-startup-policy.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../../shared/powershell-startup-policy.js")>(), isPowerShellStartupPinned: () => startup.pinned }));
 
-const CWD = "/work/project";
+const CWD = process.platform === "win32" ? resolve("/work/project").replaceAll("\\", "/") : "/work/project";
 const DIALECTS = ["bash", "powershell"] as const;
 const RUNNER_NAMES = ["npx", "bunx", "pnpx", "uvx", "pipx", "corepack", "yarnpkg", "deno", "npm", "pnpm", "yarn", "bun"];
 type ShellDialect = typeof DIALECTS[number];
@@ -70,19 +71,19 @@ function runnerManager(permissionsPath = join(directory, `${managerSequence++}.j
   return manager;
 }
 
-function actionKey(dialect: ShellDialect, command: string): string {
-  return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, CWD])).digest("hex")}`;
+function actionKey(dialect: ShellDialect, command: string, cwd = CWD): string {
+  return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, cwd])).digest("hex")}`;
 }
 
-function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string, runsSandboxed = false, headless = false) {
+function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string, runsSandboxed = false, headless = false, cwd = CWD) {
   // Absolute credential suffixes do not depend on the host's account lookup. Keep native drive syntax intact on platforms without the account mount.
   const source = process.platform === "win32"
     ? command
     : command.replaceAll("/home/u/", `${accountDirectory}/u/`);
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
-    ruleSubject: { kind: "shell", dialect, command: source, cwd: CWD },
+    ruleSubject: { kind: "shell", dialect, command: source, cwd },
     shellExecution: { runsSandboxed },
-    approvalCacheKey: actionKey(dialect, command),
+    approvalCacheKey: actionKey(dialect, command, cwd),
     headless,
   });
 }
@@ -175,11 +176,11 @@ describe("shared runner decisions", () => {
     expect(RUNNER_DECISIONS).toHaveLength(2031);
     const commands = RUNNER_DECISIONS.map((row) => row.command);
     expect(createHash("sha256").update(JSON.stringify(commands.slice(0, 1377))).digest("hex"))
-      .toBe("657e677ea8f9968de15dd2907d42abab7ac9958d2815126449ee9037c4e2b68b");
+      .toBe("0bb43140a7a4776182bff6c0104625d09f3efca09719cc09f5e15549e2e41bf9");
     // The complete command identity was collected independently of this table.
     expect(new Set(commands).size).toBe(RUNNER_DECISIONS.length);
     expect(createHash("sha256").update(JSON.stringify([...commands].sort())).digest("hex"))
-      .toBe("511643e662e6863bd2b8043485639e1947fd92ec6322d6179cac17f00eee93e6");
+      .toBe("b8db143d8567f666b649b2b10b3ad37d565dbd49657c485982e0e27c55b84273");
     for (const dialect of DIALECTS) {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
@@ -202,9 +203,10 @@ describe("shared runner decisions", () => {
   });
 
   it.each(RUNNER_SECURITY_CASES)("retains reviewed security disposition in Allow with saved grants: $dialect $command", async (row) => {
-    const { dialect, command } = row;
     const platform = "platforms" in row && process.platform === "win32" ? row.platforms.win32 : undefined;
+    const { dialect, command } = row;
     const disposition = platform?.disposition ?? row.disposition;
+    const reasonCode = platform?.reasonCode ?? row.disposition;
     const manager = runnerManager();
     manager.setMode("allow");
     if (disposition === "exfiltration") {
@@ -242,10 +244,83 @@ describe("shared runner decisions", () => {
       }
       return;
     }
-    expect(checkCommand(manager, dialect, command)).toMatchObject(disposition === "credential-store"
-      ? { decision: "deny", reasonCode: disposition }
-      : { decision: "ask", forceModal: true, reasonCode: disposition });
-    expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
+    const consented = checkCommand(manager, dialect, command);
+    expect(consented).toMatchObject(disposition === "credential-store"
+      ? { decision: "deny", reasonCode }
+      : { decision: "ask", forceModal: true, reasonCode });
+    if (platform?.exfiltration === false) expect(consented.pipelineRequest?.exfiltration).toBeUndefined();
+    const headless = checkCommand(manager, dialect, command, false, true);
+    expect(headless.decision).toBe("deny");
+    if (platform) expect(headless.reasonCode).toBe("no-approver");
+  });
+
+  it.runIf(process.platform === "win32").each(["C:/work/project", "D:/work/project"])("retains the saved-grant backslash operand disposition with cwd %s", async (cwd) => {
+    const cwdProbe = process.platform === "win32" ? vi.spyOn(process, "cwd").mockReturnValue(cwd) : undefined;
+    try {
+      if (process.platform === "win32") {
+        expect(modelShellPath("\\es", { dialect: "bash", location: cwd }).nativePath).toBe(resolve("/es"));
+      }
+      const row = RUNNER_SECURITY_CASES.find((entry) => entry.dialect === "bash" && entry.command.startsWith("Copy-Item ~/.ssh/id_rsa "))!;
+      const manager = runnerManager();
+      manager.setMode("allow");
+      await manager.addAlwaysAllowedPersist(actionKey(row.dialect, row.command, cwd));
+      manager.setRules(([{ pattern: actionKey(row.dialect, row.command, cwd), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+      for (const headless of [false, true]) {
+        expect(checkCommand(manager, row.dialect, row.command, false, headless, cwd)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+      }
+    } finally {
+      cwdProbe?.mockRestore();
+    }
+  });
+
+  it.each(DIALECTS)("keeps a backslash root delete forced in %s", (dialect) => {
+    const manager = runnerManager();
+    manager.setMode("allow");
+    expect(checkCommand(manager, dialect, "rm -rf \\")).toMatchObject({ decision: "ask", reasonCode: "critical-delete", forceModal: true });
+    expect(checkCommand(manager, dialect, "rm -rf \\", false, true).decision).toBe("deny");
+  });
+
+  it.each(DIALECTS)("keeps a slash root delete forced in %s", (dialect) => {
+    const manager = runnerManager();
+    manager.setMode("allow");
+    const reasonCode = process.platform === "win32" ? (dialect === "bash" ? "protected-path" : "critical-delete") : "critical-delete";
+    expect(checkCommand(manager, dialect, "rm -rf /")).toMatchObject({ decision: "ask", reasonCode, forceModal: true });
+    expect(checkCommand(manager, dialect, "rm -rf /", false, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+  });
+
+  it("keeps an unresolved write forced despite a saved grant", async () => {
+    const command = 'echo ready > "$UNRESOLVED_TARGET"';
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addAlwaysAllowedPersist(actionKey("bash", command));
+    expect(checkCommand(manager, "bash", command)).toMatchObject({
+      decision: "ask", reasonCode: "protected-path", forceModal: true,
+      pipelineRequest: { floor: { code: "protected-path" } },
+    });
+    expect(checkCommand(manager, "bash", command, false, true).decision).toBe("deny");
+  });
+
+  it("resolves a present-drive write to ordinary under a saved grant", async () => {
+    const command = "echo ready > /c/x";
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addAlwaysAllowedPersist(actionKey("bash", command));
+    manager.setRules(([{ pattern: actionKey("bash", command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+    expect(checkCommand(manager, "bash", command).decision).toBe("allow");
+    expect(checkCommand(manager, "bash", command, false, true).decision).toBe("allow");
+  });
+
+  // The MSYS shell-root namespace has no native drive, so a drive-less absolute write is unresolvable on win32 regardless of which volumes exist.
+  it.runIf(process.platform === "win32")("keeps an unresolved shell-root write forced despite a saved grant", async () => {
+    const command = "echo ready > /logs/result";
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addAlwaysAllowedPersist(actionKey("bash", command));
+    expect(checkCommand(manager, "bash", command)).toMatchObject({
+      decision: "ask", reasonCode: "protected-path", forceModal: true,
+      pipelineRequest: { floor: { code: "protected-path" } },
+    });
+    expect(checkCommand(manager, "bash", command, false, true).decision).toBe("deny");
   });
 
   it("retains background uncertainty without hiding subsequent literal effects", () => {
