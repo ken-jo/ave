@@ -204,4 +204,4 @@ An **overwrite slot**, not a message: the host stores your latest context and fo
 
 - Spec: [MCP Apps, `2026-01-26`](https://github.com/modelcontextprotocol/ext-apps)
 - SDK: `@modelcontextprotocol/ext-apps` (`/app` for the View side, `/server` for the server side)
-- How the host derives a card's capabilities, and what is still open: [Per-resource card capabilities](../blueprints/mcp-app-per-resource-capabilities.md)
+- How the host derives a card's capabilities, and what is still open: tracked in [issue #334](https://github.com/ken-jo/ave/issues/334)
