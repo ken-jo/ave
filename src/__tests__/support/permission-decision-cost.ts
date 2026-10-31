@@ -9,7 +9,7 @@
 // the same process, test file, dialect, lane and manager mode, times K. Because the reference
 // scales with the host, the ratio stays stable across machines.
 
-export const permissionDecisionCostCeilingMs = 2_000;
+const permissionDecisionCostCeilingMs = 2_000;
 
 // K: how much more the worst-case bounded decision may cost than the small reference, measured
 // the same way in the same test. Chosen from the observed spread of (measured median /
@@ -23,9 +23,9 @@ export const permissionDecisionCostCeilingMs = 2_000;
 // reference scales with them so the ratio is expected to hold; CI ratios are confirmed from the
 // first windows-permission-tests run and K tightened if the measured headroom warrants it. The
 // absolute ceiling still fails a real blow-up even if the reference itself happened to be slow.
-export const permissionDecisionCostRatio = 30;
+const permissionDecisionCostRatio = 30;
 
-export function medianOf(samples: readonly number[]): number {
+function medianOf(samples: readonly number[]): number {
   if (samples.length === 0) throw new Error("median of empty sample set");
   return [...samples].sort((left, right) => left - right)[samples.length >> 1]!;
 }
