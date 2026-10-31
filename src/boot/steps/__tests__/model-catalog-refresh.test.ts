@@ -1,9 +1,10 @@
 /** User settings, managed policy, and a catalog pin must stop refresh before network access. */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "../../../data/settings-store.js";
+import { configureHostResources } from "../../../main/host-resources.js";
 
 const hooks: Array<() => void> = [];
 vi.mock("../../../main/app-shutdown.js", () => ({
@@ -28,6 +29,11 @@ function settings(refresh?: "auto" | "off") {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "model-catalog-wire-"));
   calls = [];
+  // The win32 managed-policy read consults host resources before the policy file; without a
+  // configured resource root getHostResources() throws, the policy read is treated as
+  // untrusted, and refresh fails closed to "off" so the default-on test sees no fetch. Point
+  // the resources root at the repo tree (packaged=false) as the native-executable fixtures do.
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   vi.stubEnv("AVE_MODEL_CATALOG", "");
   vi.stubEnv("AVE_HOME", dir);
 });

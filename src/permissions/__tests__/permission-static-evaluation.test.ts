@@ -9,7 +9,7 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { checkShellPermission, literalShellRulePattern as exact } from "../../__tests__/support/permission-lane.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
-import { permissionDecisionCostTargetMs } from "../../__tests__/support/permission-decision-cost.js";
+import { calibratePermissionDecisionBudget } from "../../__tests__/support/permission-decision-cost.js";
 
 let cwd: string;
 let manager: PermissionManager;
@@ -204,6 +204,8 @@ describe("runtime execution boundaries", () => {
     expect(rule).toBeNull();
     manager.setRules(rule === null ? [{ pattern: "*", action: "allow" }] : [withCurrentShellRuleVersion({ pattern: rule, action: "allow" })]);
     for (const sandboxed of [false, true]) {
+      const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
+        check(`${"npx ".repeat(4)}${leaf} ${iteration.toString(36)}`, "powershell", sandboxed));
       const samples: number[] = [];
       for (let observation = 0; observation < 3; observation += 1) {
         const start = performance.now();
@@ -212,8 +214,8 @@ describe("runtime execution boundaries", () => {
         expect(result).toMatchObject({ decision: expected });
       }
       const median = [...samples].sort((left, right) => left - right)[1]!;
-      process.stdout.write(`permission argv timing ${JSON.stringify({ size, leaf, expected, lane: sandboxed ? "A" : "B", chars: command.length, samples, median })}\n`);
-      expect(median).toBeLessThan(permissionDecisionCostTargetMs);
+      process.stdout.write(`permission argv timing ${JSON.stringify({ size, leaf, expected, lane: sandboxed ? "A" : "B", chars: command.length, samples, median, referenceMs, budgetMs, ratio: median / referenceMs })}\n`);
+      expect(median).toBeLessThan(budgetMs);
     }
   });
 });

@@ -95,8 +95,18 @@ describe("optional document engine installation", () => {
     expect(installation).not.toBeNull();
     expect(states).toContain("verifying"); expect(states).toContain("installing"); expect(states.at(-1)).toBe("ready");
     expect(fixtures.verifyRelease).toHaveBeenCalledOnce();
-    expect(fixtures.verifyPlatform).toHaveBeenCalledOnce();
-    expect(fixtures.verifyPlatform.mock.calls[0]![3]).toEqual({ assess: true });
+    if (process.platform === "win32") {
+      // win32 adds an Authenticode check of the downloaded archive before extraction (call 0,
+      // win32 platform, no assess); the extracted-executable signer check is the second call and
+      // carries the assess option. Pin both so neither check can silently drop.
+      expect(fixtures.verifyPlatform).toHaveBeenCalledTimes(2);
+      expect(fixtures.verifyPlatform.mock.calls[0]![1]).toBe("win32");
+      expect(fixtures.verifyPlatform.mock.calls[0]![3]).toBeUndefined();
+      expect(fixtures.verifyPlatform.mock.calls[1]![3]).toEqual({ assess: true });
+    } else {
+      expect(fixtures.verifyPlatform).toHaveBeenCalledOnce();
+      expect(fixtures.verifyPlatform.mock.calls[0]![3]).toEqual({ assess: true });
+    }
     const options = fixtures.fetch.mock.calls[0]![1];
     expect(options).toMatchObject({ credentials: "omit", maxRedirects: 0 });
     await expect(options.authorizeTarget(new URL("http://download.documentfoundation.org/file"))).rejects.toMatchObject({ code: "download-failed" });

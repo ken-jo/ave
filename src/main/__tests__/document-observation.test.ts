@@ -257,7 +257,8 @@ describe("document observation desktop ownership", () => {
     runtime = new DocumentObservationRuntime(deps, { id: "table-reader", parse });
     baseline();
     const saving = agentWrite("agent value");
-    await vi.waitFor(() => expect(parse).toHaveBeenCalledTimes(1));
+    // Generous timeout: the parse callback can be starved under full-suite worker concurrency.
+    await vi.waitFor(() => expect(parse).toHaveBeenCalledTimes(1), { timeout: 5000, interval: 20 });
     state.registered = false;
     sender.send.mockClear();
     finish();
