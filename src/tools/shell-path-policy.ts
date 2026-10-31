@@ -690,6 +690,14 @@ function transferCommandVerb(head: string): "curl" | "wget" | null {
   return verb === "curl" || verb === "wget" ? verb : null;
 }
 
+// Native policies are keyed by spelling ("copy.exe" has no bare key: "copy" is copy-item's alias); stripCommandPath drops the extension, so try the typed leaf first.
+function nativeOperandPolicy(head: string, verb: string): (typeof POWERSHELL_COMMAND_POLICIES)[string] | undefined {
+  const typed = process.platform === "win32"
+    ? head.slice(Math.max(head.lastIndexOf("/"), head.lastIndexOf("\\")) + 1).toLowerCase().split(":", 1)[0]!.replace(/[. ]+$/, "")
+    : verb;
+  return POWERSHELL_COMMAND_POLICIES[typed] ?? POWERSHELL_COMMAND_POLICIES[verb] ?? POWERSHELL_COMMAND_POLICIES[verb.replace(/\.exe$/u, "")];
+}
+
 function ambiguousTransferPath(): never {
   throw new PathPolicyError({
     kind: "invalid-path",
@@ -960,7 +968,7 @@ function classifyOperandSlots(argv: readonly string[]): OperandSlotClassificatio
   if (head === undefined) return empty;
   const verb = transferCommandVerb(head) ?? stripCommandPath(head).toLowerCase();
   const tarCreation = verb === "tar" && tarCreatesArchive(argv);
-  const filePolicy = POWERSHELL_COMMAND_POLICIES[verb] ?? POWERSHELL_COMMAND_POLICIES[verb.replace(/\.exe$/u, "")];
+  const filePolicy = nativeOperandPolicy(head, verb);
   if (filePolicy?.native !== undefined && filePolicy.destination?.position !== undefined) {
     const nativeCopySwitches = /^(?:\/[a-z?]+(?:\/-?[a-z]+)*|\/-y|\/d(?::[^\\/]*)?|\/(?:[a-z]\/)+d:[^\r\n]*|\/(?:mir|purge|mov|move|compress|noclone|-?sparse|lev:\d+|mt(?::\d+)?|r:\d+|w:\d+|copy:[a-z]+|dcopy:[a-z]+|sec|secfix|timfix|xo|xn|xc|xx|xl|is|it|sl|sj|xj|xjd|xjf|fft|dst|256|njh|njs|ndl|nfl|np|eta|tee))$/iu;
     const positional: number[] = [];
@@ -1383,8 +1391,7 @@ function isUnknownWriteTarget(verb: string, index: number, argv: readonly (strin
   if (slots.extraCandidates.some((candidate) => candidate.index === index && candidate.effect === "write")) return true;
   if (slots.programIndices?.has(index)) return false;
   if (slots.extraCandidates.some((candidate) => candidate.index === index && candidate.effect === "read")) {
-    const name = stripCommandPath(knownArgv[0] ?? "").toLowerCase();
-    const policy = POWERSHELL_COMMAND_POLICIES[name] ?? POWERSHELL_COMMAND_POLICIES[name.replace(/\.exe$/u, "")];
+    const policy = nativeOperandPolicy(knownArgv[0] ?? "", stripCommandPath(knownArgv[0] ?? "").toLowerCase());
     const fixedPathPrefix = prefix.length > 0 && (!/^[-/]/u.test(prefix) || /[\\/]/u.test(prefix.slice(1)));
     return policy?.native !== undefined && policy.destination?.position !== undefined && argv[index] === undefined && !fixedPathPrefix;
   }
