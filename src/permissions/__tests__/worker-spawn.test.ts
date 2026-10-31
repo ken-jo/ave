@@ -124,7 +124,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
 }));
 
 // Module imports AFTER the mocks.
-import { __resetActiveWrappedWorkersForTest, spawnWorker, waitForPluginWorkersStopped } from "../worker-spawn.js";
+import { __resetActiveWrappedWorkersForTest, spawnWorker, type SpawnWorkerSpec, waitForPluginWorkersStopped } from "../worker-spawn.js";
 import { aveHome } from "../../shared/ave-home.js";
 import {
   resolveReviewerSandboxCapability,
@@ -170,6 +170,10 @@ function setEnvForTest(values: Record<string, string | undefined>): () => void {
 }
 
 const REAL_PLATFORM = process.platform;
+
+function workerOptions(overrides: Partial<SpawnWorkerSpec> = {}): SpawnWorkerSpec {
+  return { pluginId: "local-indexer", workerId: "embed", command: "/opt/worker", ...overrides };
+}
 
 // The control socket lives under the Ave home, and a Unix socket path is limited to 103 bytes on macOS. The per-file test home sits under `$HOME/.ave/test-tmp/<run>/<file>`, so with a HOME of a little over 20 bytes the longest plugin/worker pair here passes the limit and every gate-ON case fails with the length error instead of testing what it names. These cases run in a short Ave home of their own; `/tmp` rather than `os.tmpdir`, which on macOS is itself about 50 bytes. The guard allows it: it is outside the account's `~/.ave`.
 const REAL_AVE_HOME = process.env.AVE_HOME;
@@ -280,12 +284,9 @@ describe("spawnWorker — gate OFF (default)", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    const worker = await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
+    const worker = await spawnWorker(workerOptions({
       args: ["--serve"],
-    });
+    }));
 
     // No wrap, no UDS dir creation.
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
@@ -310,11 +311,7 @@ describe("spawnWorker — gate OFF (default)", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    await spawnWorker(workerOptions());
 
     // An 'error' with no listener throws out of the emitter — on a real child that is the unhandled event a late EPIPE on the liveness pipe would raise.
     expect(child.stdin.listenerCount("error")).toBeGreaterThan(0);
@@ -375,15 +372,12 @@ describe("spawnWorker — gate ON (macOS)", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    const worker = await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
+    const worker = await spawnWorker(workerOptions({
       args: ["--serve"],
       allowReadPaths: ["/opt/worker", "/opt/scripts/embed.py"],
       allowWritePaths: ["/data/index"],
       udsArgName: "--uds",
-    });
+    }));
 
     const commandId = (wrapWorkerCommandMock.mock.calls[0]![1] as { commandId: string }).commandId;
     expect(egressInvocationOwner(commandId)).toEqual({ kind: "worker", role: "worker", pluginId: "local-indexer", instanceId: "embed" });
@@ -465,12 +459,9 @@ describe("spawnWorker — gate ON (macOS)", () => {
       return new StubWorkerChild();
     });
 
-    await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
+    await spawnWorker(workerOptions({
       udsArgName: { env: "AVE_CONTROL_SOCKET" },
-    });
+    }));
 
     const socketPath = join(aveHome(), "plugins", "local-indexer", "run", "embed", "control.sock");
     expect(capturedEnv.AVE_CONTROL_SOCKET).toBe(socketPath);
@@ -487,7 +478,7 @@ describe("spawnWorker — a symlinked control dir", () => {
     gateActive = true;
     chmodSyncMock.mockClear();
     lstatSyncMock.mockImplementationOnce(() => ({ isSymbolicLink: () => true }));
-    await expect(spawnWorker({ pluginId: "local-indexer", workerId: "embed", command: "/opt/worker" }))
+    await expect(spawnWorker(workerOptions()))
       .rejects.toThrow(/refusing symlinked control dir/);
     expect(chmodSyncMock).not.toHaveBeenCalled();
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
@@ -521,11 +512,7 @@ describe("spawnWorker — gate ON (linux)", () => {
     });
     spawnMock.mockReturnValueOnce(new StubWorkerChild());
 
-    await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    await spawnWorker(workerOptions());
 
     const socketDir = join(aveHome(), "plugins", "local-indexer", "run", "embed");
     // Platform-uniform: the socketDir is registered on the shared config (the linux allowAllUnixSockets weakening is applied inside asrt-sandbox's withWorkerUnixSockets, asserted in the asrt-sandbox unit tests).
@@ -559,11 +546,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    const worker = await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    const worker = await spawnWorker(workerOptions());
     expect(isPluginWorkerWrapped("local-indexer", "embed")).toBe(true);
 
     const socketDir = join(aveHome(), "plugins", "local-indexer", "run", "embed");
@@ -593,11 +576,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    const worker = await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    const worker = await spawnWorker(workerOptions());
 
     worker.stop();
     expect(cleanupMock).not.toHaveBeenCalled();
@@ -627,11 +606,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    const worker = await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    const worker = await spawnWorker(workerOptions());
 
     // The consumer owns lifecycle via the handle — onExit is how it learns the worker died (a crash with no onExit would leave the consumer's state stuck).
     const exits: Array<{ code: number | null; signal: NodeJS.Signals | null }> = [];
@@ -659,11 +634,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    const worker = await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    const worker = await spawnWorker(workerOptions());
     child.stdout.write("already written");
     child.stderr.write("already warned");
     child.emit("exit", 7, null);
@@ -764,11 +735,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    const worker = await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    const worker = await spawnWorker(workerOptions());
     for (const chunk of chunks()) child.stdout.write(chunk);
 
     expect(() => worker.onStdout(() => {})).toThrow(/pre-listener buffer/);
@@ -785,11 +752,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
 
-    await spawnWorker({
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    });
+    await spawnWorker(workerOptions());
 
     child.emit("error", new Error("kill failed"));
     expect(isPluginWorkerWrapped("local-indexer", "embed")).toBe(true);
@@ -811,11 +774,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const oldChild = new StubWorkerChild();
     const replacementChild = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(oldChild).mockReturnValueOnce(replacementChild);
-    const spec = {
-      pluginId: "local-indexer",
-      workerId: "embed",
-      command: "/opt/worker",
-    };
+    const spec = workerOptions();
 
     const oldWorker = await spawnWorker(spec);
     oldWorker.stop();
