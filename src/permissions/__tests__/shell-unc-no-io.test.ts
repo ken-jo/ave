@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
+import type { ExecutionMode } from "../../shared/permission-mode.js";
 import { canonicalizePathForMatch, createPathCanonicalizer } from "../sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import { inspectPhysicalFilesystemPath, physicalParentReading, resolvePhysicalFilesystemPath, resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../../shared/shell-filesystem-path.js";
@@ -65,12 +66,12 @@ let sequence = 0;
 beforeAll(() => { directory = mkdtempSync(join(tmpdir(), "ave-unc-no-io-")); mkdirSync(join(directory, "project")); });
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
-function check(dialect: "bash" | "powershell", command: string, headless = false) {
+function check(dialect: "bash" | "powershell", command: string, headless = false, opts: { mode?: ExecutionMode; sandboxed?: boolean } = {}) {
   const manager = new PermissionManager(join(directory, `${sequence++}.json`));
-  manager.setMode("allow");
+  manager.setMode(opts.mode ?? "allow");
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
     ruleSubject: { kind: "shell", dialect, command, cwd: join(directory, "project") },
-    shellExecution: { runsSandboxed: false }, headless,
+    shellExecution: { runsSandboxed: opts.sandboxed ?? false }, headless,
   });
 }
 
@@ -82,8 +83,6 @@ describe("network operands before approval", () => {
     probes.calls.length = 0;
     const result = check("powershell", command);
     const uncCalls = probes.calls.filter(call => call.unc).length;
-    console.info("UNC-P2-SPY read-share", JSON.stringify({ command, decision: result.decision, reasonCode: result.reasonCode,
-      floor: result.pipelineRequest?.floor?.code, forced: result.forceModal, uncCalls }));
     if (process.platform === "win32") {
       expect(result).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       expect(result.forceModal).toBeUndefined();
@@ -94,13 +93,71 @@ describe("network operands before approval", () => {
     }
   });
 
-  it("reports a bash share read for diagnosis", () => {
+  it.each([
+    {
+      dialect: "bash", command: String.raw`cat '\\host\share\notes.txt'`,
+      // bash routes any UNC operand to the project-escape floor: a forced ask in
+      // every mode, "allow" included, because shell-path-policy pushes projectEscape
+      // on a refused network identity without gating on write/delete effect (unlike
+      // the PowerShell twin). A read therefore over-asks here rather than allowing.
+      foreground: {
+        strict: { decision: "ask", reasonCode: "project-escape", forceModal: true },
+        default: { decision: "ask", reasonCode: "project-escape", forceModal: true },
+        auto: { decision: "ask", reasonCode: "project-escape", forceModal: true },
+        allow: { decision: "ask", reasonCode: "project-escape", forceModal: true },
+      },
+    },
+    {
+      dialect: "powershell", command: String.raw`Get-Content '\\host\share\notes.txt'`,
+      // PowerShell routes a UNC read through the exfiltration guardrail: an ordinary
+      // (unforced) ask that tracks the mode and drops to allow-mode only in "allow".
+      foreground: {
+        strict: { decision: "ask", reasonCode: "exfiltration-guardrail" },
+        default: { decision: "ask", reasonCode: "exfiltration-guardrail" },
+        auto: { decision: "ask", reasonCode: "review-required" },
+        allow: { decision: "allow", reasonCode: "allow-mode" },
+      },
+    },
+  ] as const)("never lets a UNC read earn the read-only proof; headless always denies, zero UNC calls: $dialect", ({ dialect, command, foreground }) => {
+    if (process.platform !== "win32") {
+      expect(isWindowsNetworkOrDevicePath(String.raw`\\host\share\notes.txt`)).toBe(false);
+      return;
+    }
+    // A UNC/device read reaches SMB through the filesystem redirector, which the
+    // sandbox's socket egress control never sees. It must therefore never earn the
+    // sandboxed read-only proof (which would auto-allow and open the share at
+    // execution); in both sandboxed and non-sandboxed shells headless denies for
+    // lack of an approver, and no probe ever opens the share.
+    for (const sandboxed of [false, true]) {
+      for (const mode of ["strict", "default", "auto", "allow"] as const) {
+        probes.calls.length = 0;
+        const result = check(dialect, command, false, { mode, sandboxed });
+        expect(result).toMatchObject(foreground[mode]);
+        expect(result.reasonCode).not.toBe("read-only-shell");
+        const headless = check(dialect, command, true, { mode, sandboxed });
+        expect(headless).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+        expect(headless.reasonCode).not.toBe("read-only-shell");
+        expect(probes.calls.filter(call => call.unc)).toEqual([]);
+      }
+    }
+  });
+
+  it("excludes a UNC operand from the sandboxed read-only proof a local read earns", () => {
+    if (process.platform !== "win32") {
+      expect(isWindowsNetworkOrDevicePath(String.raw`\\host\share\notes.txt`)).toBe(false);
+      return;
+    }
+    // A sandboxed local read verb is proven read-only and auto-allows, even in strict.
     probes.calls.length = 0;
-    const result = check("bash", String.raw`cat '\\host\share\notes.txt'`);
-    const { decision, reasonCode } = result;
-    const floor = result.pipelineRequest?.floor?.code;
-    const uncCalls = probes.calls.filter(call => call.unc).length;
-    console.info("UNC-P2-SPY bash-read-share", JSON.stringify({ decision, reasonCode, floor, uncCalls }));
+    const local = check("bash", "cat ./notes.txt", false, { mode: "strict", sandboxed: true });
+    expect(local).toMatchObject({ decision: "allow", reasonCode: "read-only-shell" });
+    // The UNC variant must NOT earn that proof: it lands on the project-escape floor,
+    // a forced ask, and no share is opened.
+    probes.calls.length = 0;
+    const unc = check("bash", String.raw`cat '\\host\share\notes.txt'`, false, { mode: "strict", sandboxed: true });
+    expect(unc).toMatchObject({ decision: "ask", reasonCode: "project-escape", forceModal: true });
+    expect(unc.reasonCode).not.toBe("read-only-shell");
+    expect(probes.calls.filter(call => call.unc)).toEqual([]);
   });
 
   it("retains delete intent through a network link", () => {
@@ -111,9 +168,6 @@ describe("network operands before approval", () => {
       probes.calls.length = 0;
       const result = check("powershell", "rm link/notes.txt");
       const evidence = inspectPowerShellPermissionPaths("rm link/notes.txt", join(directory, "project"));
-      console.info("UNC-P2-SPY delete-share", JSON.stringify({ decision: result.decision, reasonCode: result.reasonCode,
-        floor: result.pipelineRequest?.floor?.code, deleteIntent: evidence.paths.some(path => path.projectEscape && path.deleteIntent),
-        uncCalls: probes.calls.filter(call => call.unc).length }));
       if (process.platform === "win32") {
         expect(result).toMatchObject({ decision: "ask", reasonCode: "project-escape", forceModal: true,
           pipelineRequest: { floor: { code: "project-escape" } } });
@@ -138,8 +192,6 @@ describe("network operands before approval", () => {
         const result = check(dialect, command);
         const headless = check(dialect, command, true);
         const unc = probes.calls.filter(call => call.unc);
-        console.info("UNC-P2-SPY", JSON.stringify({ target, dialect, command, decision: result.decision, reasonCode: result.reasonCode,
-          floor: result.pipelineRequest?.floor?.code, forced: result.forceModal, headless: headless.decision, headlessReason: headless.reasonCode, uncCalls: unc.length }));
         if (process.platform === "win32") {
           expect(result).toMatchObject({ decision: "ask", reasonCode: "project-escape", forceModal: true,
             pipelineRequest: { floor: { code: "project-escape" } } });
@@ -158,9 +210,6 @@ describe("network operands before approval", () => {
     try {
       probes.calls.length = 0;
       const result = check("powershell", "Set-Content unresolved x");
-      console.info("UNC-P2-SPY non-network pin", JSON.stringify({ decision: result.decision, floor: result.pipelineRequest?.floor?.code,
-        forced: result.forceModal, resolverCalls: probes.calls.filter(call => call.path.replaceAll("\\", "/").toLowerCase() === target).length,
-        uncCalls: probes.calls.filter(call => call.unc).length }));
       expect(probes.calls.some(call => call.path.replaceAll("\\", "/").toLowerCase() === target)).toBe(true);
       expect(result).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true,
         pipelineRequest: { floor: { code: "protected-path" } } });
@@ -186,8 +235,6 @@ describe("network operands before approval", () => {
         expect(probes.calls).toEqual([]);
       }
       expect(probes.calls.filter(call => call.unc)).toEqual([]);
-      console.info("UNC-P2-SPY nested chain", JSON.stringify({ platform, readlinks: probes.calls.filter(call => call.operation === "readlinkSync").length,
-        uncCalls: probes.calls.filter(call => call.unc).length }));
     } finally { probes.links.clear(); probes.syntheticRoot = ""; }
   });
 
@@ -212,7 +259,6 @@ describe("network operands before approval", () => {
       probes.calls.length = 0;
       expect(resolvePhysicalFilesystemPath(join(directory, "project", "link", "y"), directory, 64)).toBe(join(directory, "sub", "y"));
       const realpaths = probes.calls.filter(call => call.operation.startsWith("realpathSync"));
-      console.info("UNC-P2-SPY local control", JSON.stringify({ realpaths: realpaths.length, uncCalls: probes.calls.filter(call => call.unc).length }));
       expect(realpaths.length).toBeGreaterThan(0);
       expect(probes.calls.filter(call => call.unc)).toEqual([]);
     } finally { probes.links.clear(); }
@@ -233,8 +279,6 @@ describe("network operands before approval", () => {
     const result = check(dialect, command);
     const headless = check(dialect, command, true);
     const unc = probes.calls.filter(call => call.unc);
-    console.info("UNC-SPY", JSON.stringify({ dialect, command, decision: result.decision, reasonCode: result.reasonCode, uncCalls: unc.length,
-      sites: unc.map(call => ({ operation: call.operation, path: call.path, stack: call.stack })) }));
     if (process.platform === "win32") {
       expect(result).toMatchObject({ decision: "ask", reasonCode: "project-escape", forceModal: true,
         pipelineRequest: { floor: { code: "project-escape" } } });
@@ -315,7 +359,6 @@ describe("network operands before approval", () => {
     } else {
       expect(probes.calls).toEqual([]);
     }
-    console.info("UNC-P2-SPY device root", JSON.stringify({ path, calls: probes.calls.map(call => ({ operation: call.operation, path: call.path })), uncCalls: probes.calls.filter(call => call.unc).length }));
   });
 
   it("reuses verified local ancestors while checking a new network link", () => {
@@ -341,22 +384,14 @@ describe("network operands before approval", () => {
     probes.calls.length = 0;
     check("bash", "cp x out.txt");
     const realpaths = probes.calls.filter(call => call.operation.startsWith("realpathSync"));
-    console.info("UNC-SPY positive control", JSON.stringify({ realpaths: realpaths.length, uncCalls: probes.calls.filter(call => call.unc).length }));
     expect(realpaths.length).toBeGreaterThan(0);
   });
 
   it("audits operand and host-root filesystem calls on the classification path", () => {
-    const sites = ["shell-filesystem-path.ts", "sensitive-paths.ts", "scoped-rule-matcher.ts", "asrt-sandbox.ts",
-      "replay-root-binding.ts", "git-repository-inputs.ts", "project-rule-files.ts", "persisted-policy-version.ts",
-      "permission-audit-runner.ts", "permission-settings-store.ts"];
     probes.calls.length = 0;
     for (const command of [String.raw`cp x '\\e\s'`, String.raw`git -C '\\e\s' status`, "git status"])
       check("bash", command);
     const classificationCalls = [...probes.calls];
-    console.info("UNC-AUDIT", JSON.stringify(sites.map(site => ({ site,
-      calls: classificationCalls.filter(call => call.stack.includes(site)).length,
-      uncCalls: classificationCalls.filter(call => call.unc && call.stack.includes(site)).length,
-    }))));
     if (process.platform === "win32") expect(classificationCalls.filter(call => call.unc)).toEqual([]);
     // The approval-depth UI accepts model paths, but the shared resolver rejects
     // a native share before its stat(target) and subsequent root discovery.
@@ -366,7 +401,6 @@ describe("network operands before approval", () => {
       expect(choices).toEqual([]);
       expect(probes.calls.filter(call => call.unc)).toEqual([]);
     }
-    console.info("UNC-AUDIT depth", JSON.stringify({ choices: choices.length, uncCalls: probes.calls.filter(call => call.unc).length }));
   });
 
   it("probes root-only readers with an explicit host working directory", () => {
@@ -380,7 +414,6 @@ describe("network operands before approval", () => {
       const calls = probes.calls.filter(call => call.stack.includes(site));
       expect(calls.length).toBeGreaterThan(0);
       expect(calls.filter(call => call.unc)).toEqual([]);
-      console.info("UNC-AUDIT host root", JSON.stringify({ site, calls: calls.length, uncCalls: 0 }));
     }
   });
 
