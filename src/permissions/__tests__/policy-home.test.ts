@@ -10,7 +10,8 @@ import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, protectedReadDenyCovering } from "../asrt-sandbox.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
-import { sensitivePathInArgumentText, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { sensitivePathInArgumentText } from "../rules/shell-exfiltration.js";
+import { shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -119,15 +120,15 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
     if (anchor === "profile") {
       expect(findShellPathPolicyViolation("cat ~/alias/key", home, home, [explicitHome], false, {
         dialect: "bash", environment: { HOME: explicitHome, USERPROFILE: home },
-      })?.kind).toBe("sensitive-path");
-    } else {
-      expect(sensitivePathInArgumentText("~/alias/key", home)).not.toBeNull();
-      expect(shellSensitivePathSignal("cat ~/alias/key", home)).not.toBeNull();
+      })).toBeNull();
     }
+    expect(sensitivePathInArgumentText("~/alias/key", home)).not.toBeNull();
+    expect(shellSensitivePathSignal("cat ~/alias/key", home)).not.toBeNull();
     for (const root of [home, explicitHome]) {
       expect(findShellPathPolicyViolation("cat ~/.ssh/key", home, home, [explicitHome], false, {
         dialect: "bash", environment: { HOME: root, USERPROFILE: home },
-      })?.kind).toBe("sensitive-path");
+      })).toBeNull();
+      expect(sensitivePathInArgumentText(join(root, ".ssh", "key"), home)).not.toBeNull();
     }
   });
 
@@ -267,7 +268,7 @@ describe("independent home anchors", () => {
     symlinkSync(join(passwd, ".ssh"), join(passwd, "alias"), platform === "win32" ? "junction" : "dir");
     expect(findShellPathPolicyViolation("cat ~/alias/key", scratch, home, [home, shellHome, passwd], false, {
       dialect: "bash", environment: { HOME: shellHome },
-    })?.kind).toBe("sensitive-path");
+    })).toBeNull();
     expect(sensitivePathInArgumentText("~/alias/key", scratch)).not.toBeNull();
     expect(shellSensitivePathSignal("cat ~/alias/key", scratch)).not.toBeNull();
     expect(expandLeadingTilde("~")).toBe(home);

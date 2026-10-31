@@ -56,10 +56,7 @@ import type { PluginStudioApi } from "../../shared/plugin-studio.js";
 import type { GitRuntimeApi } from "../../shared/git-runtime.js";
 import type { InstalledContentApi } from "../../shared/installed-content.js";
 import type { TelegramConnectionOwnerApi } from "../../shared/telegram-connection.js";
-import type { AwayAuthorityOwnerApi } from "../../shared/away-authority-arm.js";
 import type { RolePreset } from "../../data/role-presets.js";
-import type { PermissionEvaluationContext as PermissionEvaluationContextShape } from "../../permissions/evaluation-context.js";
-import type { ToolCategory, ToolSource, RiskLevel, DeferredApprovalSource, DeferredGrantScope } from "../../shared/permission-review-status.js";
 import type {
   AssistantAgentSummary,
   AssistantSkillSummary,
@@ -132,9 +129,10 @@ export type { AppSettings, MemoryCaptureMode };
 // ApprovalRequest crosses the IPC boundary — see approval-gate.ts IPC_APPROVAL_REQUEST).
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
-import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
+import type { ApprovalRuleSaveResult } from "../../permissions/approval-rule-save.js";
+import type { PermissionSettingsFault, ReviewerSettingsBlock, ReviewerMode, ReviewerFallbackOnError } from "../../permissions/permission-settings-store.js";
 import type { PreviewReadDocumentResult } from "../../shared/preview-document.js";
-export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
+export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule };
 
 export type PluginUiExtension = PluginUiExtensionView;
 export type PluginManifestUiExtensionSummary = PluginUiExtensionView["extension"];
@@ -516,7 +514,6 @@ export type AveApi = {
   /** Installed content packages: themes, languages and fonts, and installed language catalogs. */
   installedContent: InstalledContentApi;
   telegramConnection: TelegramConnectionOwnerApi;
-  awayAuthority: AwayAuthorityOwnerApi;
   /**
    * Deterministic file:// URL of the bundled `plugin-ui-shell.html`. Same
    * stability guarantee as `pluginPreloadUrl` — read directly from the host
@@ -1439,7 +1436,7 @@ export type AveUserApprovalApi = {
     trustOrigin?: string;
     /** Propagate cache key for record/lookup key symmetry. */
     approvalCacheKey?: string;
-  }) => Promise<{ ok: boolean; error?: string; message?: string; warning?: "wildcard-allow-sandboxed-only" }>;
+  }) => Promise<{ ok: boolean; error?: string; message?: string; warning?: Extract<ApprovalRuleSaveResult, { ok: true }>["warning"] }>;
   revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
   listSession: () => ReturnType<AveUserApprovalApi["list"]>;
   list: () => Promise<Array<{
@@ -1466,58 +1463,18 @@ export type RemoveRuleResult =
   | { ok: true }
   | { ok: false; error: string; message?: string };
 
-/** Permission policy — deferred-queue entry shape mirrored from main process. */
-export interface DeferredQueueEntry {
-  id: string;
-  ts: string;
-  /** Conversation that raised the entry; absent when there was none. */
-  sessionId?: string;
-  toolName: string;
-  source: ToolSource;
-  category: ToolCategory;
-  inputSummary: string;
-  /** Captured policy/sandbox context for user review. */
-  evaluationContext?: PermissionEvaluationContextShape;
-  verdict: { level: RiskLevel; reason: string };
-  /**
-   * What approving this entry grants. Absent ⇒ approval is unavailable: the
-   * original call is dead and this lane recorded nothing to grant forward, so
-   * the UI must not offer an approve control. Mirrors `DeferredGrant`.
-   */
-  grant?: { kind: "directory"; path: string };
-  status: "pending" | "approved" | "rejected";
-  resolvedAt?: string;
-  resolvedScope?: DeferredGrantScope;
-  resolutionReason?: string;
-}
+export type { RecentlyDeniedEntry } from "../../shared/recently-denied.js";
 
-export type PermissionReviewerMode = "disabled" | "rule" | "llm" | "strict";
-export type PermissionReviewerFallbackOnError = "deny" | "rule";
-/** Issue #690 — interactive reviewer auto-approve scope. */
-export type PermissionReviewerInteractiveAutoApprove = "off" | "low" | "medium";
-
-interface PermissionReviewerParentAdjudication {
-  maxVerdict: ParentAdjudicationMaxVerdict;
-  timeoutMs: number;
-  maxPerChildRun: number;
-  /** Parent conversation turns quoted into the evidence. `0` sends none. */
-  includeParentContextTurns: number;
-  backgroundEscalation: ParentAdjudicationBackgroundEscalation;
-  model: ParentAdjudicationModelSource;
-}
-
-export interface PermissionReviewerSettings {
-  mode: PermissionReviewerMode;
-  fallbackOnError: PermissionReviewerFallbackOnError;
-  interactive: { autoApprove: PermissionReviewerInteractiveAutoApprove };
-  parentAdjudication: PermissionReviewerParentAdjudication;
-}
+export type PermissionReviewerMode = ReviewerMode;
+export type PermissionReviewerFallbackOnError = ReviewerFallbackOnError;
+export type PermissionReviewerSettings = ReviewerSettingsBlock;
 
 export type PermissionReviewerDispatchResult =
   | {
       ok: true;
-      verb: "show" | "mode" | "fallback" | "interactive" | "adjudication";
+      verb: "show" | "mode" | "fallback";
       settings: PermissionReviewerSettings;
+      fault?: PermissionSettingsFault;
       /**
        * Runtime degrade flag — true when the persisted reviewer mode is "llm"
        * but boot wiring could not instantiate the LLM provider (no chat
@@ -1546,11 +1503,9 @@ export type AvePermissionApi = {
   removeScopedRule: (rule: ScopedPermissionRule) => Promise<{ ok: boolean; error?: string; message?: string }>;
   addRule: (pattern: string, action: "allow" | "deny") => Promise<AddRuleResult>;
   removeRule: (pattern: string, action: "allow" | "deny" | "ask") => Promise<RemoveRuleResult>;
-  /** Permission policy — list pending HIGH-risk deferred entries from reviewer. */
-  deferredList: () => Promise<
-    | { ok: true; pending: DeferredQueueEntry[]; total: number }
-    | { ok: false; error: string }
-  >;
+  recentlyDeniedList: () => Promise<{ ok: true; entries: import("../../shared/recently-denied.js").RecentlyDeniedEntry[] } | { ok: false; error: string }>;
+  recentlyDeniedRerun: (id: string) => Promise<import("../../shared/recently-denied.js").RecentlyDeniedRerunResult | { ok: false; error: string }>;
+  onRecentlyDeniedChanged: (cb: (summary: { total: number }) => void) => () => void;
   /** Permission policy issue #633 — list active + quarantined script hooks. */
   hookTrustList: () => Promise<
     | { ok: true; active: HookTrustRow[]; disabled: HookTrustRow[]; totalDisabled: number }
@@ -1565,34 +1520,6 @@ export type AvePermissionApi = {
     | { ok: true; verb: "list"; defaults: string[]; userAdditions: string[]; effective: string[] }
     | { ok: false; error: string }
   >;
-  /**
-   * Permission policy — resolve a pending entry with user gesture.
-   *
-   * `approvalSource` records which surface the user gestured on. The renderer
-   * only ever gestures on the queue panel button; `"question-card"` is written
-   * by main, for the answer to the question the host asked in the tile whose
-   * turn deferred the call. Required: every deferred resolution must
-   * explicitly declare provenance before main writes the tamper-evident audit
-   * row.
-   */
-  deferredResolve: (
-    id: string,
-    decision: "approved" | "rejected",
-    reason: string | undefined,
-    approvalSource: DeferredApprovalSource,
-    options?: { scope?: DeferredGrantScope; acknowledgeWarnings?: boolean },
-  ) => Promise<
-    | { ok: true; entry: DeferredQueueEntry }
-    | {
-        ok: false;
-        error: string;
-        /** Adjacency gate — the caller must ask before retrying with ack. */
-        requiresAcknowledgement?: boolean;
-        warnings?: string[];
-      }
-  >;
-  /** Permission policy — subscribe to foreground-entry deferred-pending events. */
-  onDeferredPending: (cb: (summary: { pending: number }) => void) => () => void;
   /** Permission policy — subscribe to manifest-integrity violation notifications. */
   onManifestViolation: (
     handler: (payload: {

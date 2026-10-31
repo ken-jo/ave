@@ -300,7 +300,7 @@ export type ScreenshotOptions = {
   // Null leaves the normal seeded provider; scripts supply one entry per model call.
   scriptedScript: ScriptedScript | null;
   // Plugin seeding owns reviewer defaults unless the scenario overrides them.
-  reviewerMode: 'disabled' | 'rule' | 'llm' | 'strict' | null;
+  reviewerMode: 'disabled' | 'llm' | null;
   // Foreground tool calls reach the reviewer only in auto execution mode.
   executionMode: 'default' | 'strict' | 'auto' | 'allow' | null;
   // Seed fabricated files inside the isolated allowed data home so captures never need real user content.

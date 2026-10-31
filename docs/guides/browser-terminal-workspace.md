@@ -4,9 +4,9 @@ This guide describes shared-tab control, private host terminals, and conversatio
 [architecture](../architecture/architecture.md#browser-and-terminal-workspace)
 and [permission policy](../architecture/permission-policy-design.md#shared-browser-control-and-effects)
 define the host contract. The [Korean guide](../ko/guides/browser-terminal-workspace.md)
-has not yet been updated for the terminal ownership changes described here. Native interaction and provider-authentication
-validation remain pending; these descriptions do not establish a release or
-measured performance improvement.
+describes the same surface choices. Native interaction and provider-authentication
+validation remain separate from this guide; these descriptions do not establish
+a release or measured performance improvement.
 
 ## Keep the workspace together
 
@@ -51,6 +51,12 @@ matches an armed agent click's position, button, and phase at the same time
 cannot be distinguished. Other observed input mismatches interrupt the agent.
 Use Stop in browser chrome for an explicit takeover independent of this
 mouse-event ambiguity.
+
+## Choose how the agent uses your tabs and shell
+
+On the first eligible action in one of your browser tabs or your host terminal, choose **Allow all this session**, **Auto**, or **Ask every time**. Auto checks whether the action follows your request and the current task step in the intended tab/page or command; an uncertain, failed or unavailable check asks you normally. Ask every time confirms only the current action and keeps asking. Closing the card does not run the action.
+
+Each conversation keeps one browser choice and one host-terminal choice until that conversation session ends. The browser choice covers its eligible user-owned tabs; terminal access still requires that conversation's own bound workspace terminal. These choices determine ordinary actions independently of the global permission mode. Headless requests (with no human approval surface) are denied. Deny rules, caller identity and content-influence checks, private-data export safeguards, credential entry and payment/irreversible-action protections remain enforced. The [surface contract](../architecture/permission-policy-design.md#user-owned-surface-choices) owns the details. Your direct terminal keystrokes remain user actions. A request entered in the terminal pane's chat asks the agent to act under this surface policy.
 
 ## Follow agent browsing
 
@@ -170,8 +176,8 @@ runtime evidence before claiming a resource-use improvement.
 
 Visible terminals have no lane selector. Each workspace or side-work-panel terminal contains one native
 shell. In the side work panel it is labeled **My terminal (host) · No agent
-access**; in a workspace pane it is labeled **My terminal (host) · Agent commands
-need your approval**. It uses your real HOME,
+access**; agent commands in a workspace pane use your per-session surface
+choice. It uses your real HOME,
 profile and validated initial directory. Moving or hiding the pane preserves its
 shell; closing the terminal tab ends that host shell.
 
@@ -214,22 +220,13 @@ it. Side-work-panel host terminals have no agent read/write access.
 ### Agent commands in your terminal
 
 The chat in a workspace terminal's own pane can ask to run a command in that
-terminal, only while answering a message you typed in that chat; a routine, a
-plugin or app message, or a sub-agent cannot. If a plugin, app or agent message,
-or a sub-agent's report, arrives during that answer, the chat cannot run
-commands in your terminal for the rest of it; guidance you type yourself does
-not stop it. Once any tool result (a page, a file, another command's output,
-an error) has come back in that answer, each further
-command shows a fresh card even if you saved a rule for it, and that card
-offers no lasting allow. Unless you saved an exact rule for
-that command, shell and folder, you decide each command on an approval card that
-names the terminal, shell and folder and shows no automatic review; your
-permission mode does not approve it for you, and nothing is approved while you
-are away or from another device. **Always allow this exact command in this
-folder** saves only that exact command in that folder for that shell; **Always
-deny** saves a Bash rule that applies everywhere. If you type in the terminal or
-move it while the card is open, approving it types nothing.
-
+terminal, only while answering an eligible message you typed in that chat; a
+routine, plugin/app message or sub-agent cannot acquire that native authority.
+The shared [surface choice](#choose-how-the-agent-uses-your-tabs-and-shell)
+controls ordinary permission for each action. It does not clear genuine
+principal/taint or exfiltration floors. Every command still targets the exact
+terminal, turn, shell and physical directory; a changed binding or terminal
+state during a card prevents typing.
 While the agent types or runs the command, a strip above the terminal shows it
 with **Take over** and **Stop** (typing takes over too). Typing anything,
 pressing Take over or Stop, moving the terminal to the side panel, closing the
@@ -249,11 +246,11 @@ isolated badge and color band. There is no separate isolated terminal tab or
 side-work-panel surface. Shell-tool activity uses the same authenticated
 observation path; the display grants no extra execution authority.
 
-`terminal_run` resolves only the invoking conversation's isolated shell.
-`terminal_read` inventories and reads only that conversation's existing isolated
-shell, including continuations. Neither accepts a host or another conversation's
-terminal as a substitute. A terminal-bound pane turn receives an explicit
-host-typing-unavailable refusal in this delivery.
+An ordinary conversation uses its own isolated shell. An eligible terminal-bound
+pane chat may target its own host terminal under the surface choice and native
+recipient checks above. Neither path may silently substitute another
+conversation's terminal. Host output disclosure remains bound to the approved
+current turn and block.
 
 Existing one-shot shell tools retain their explicit approved host/outside-sandbox
 execution route. Their inline badge reflects the actual execution mode: an

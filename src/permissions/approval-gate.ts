@@ -1,5 +1,4 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { recordManualApproval } from "./judge/manual-approval.js";
 import type { WebContents } from "electron";
 import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
 import { t } from "../i18n/index.js";
@@ -11,56 +10,25 @@ import type { NotificationService } from "../main/notification-service.js";
 import type { ToolCategory } from "../tools/types.js";
 import type { RiskVerdict } from "./reviewer/risk-classifier.js";
 import type { RiskLevel, ToolSource } from "../shared/permission-review-status.js";
-import type {
-  ParentAdjudicationEvidence,
-  ParentAdjudicationOptions,
-  ParentAdjudicationResult,
-  ParentAdjudicator,
-} from "./parent-adjudicator.js";
-import type { ParentContextTurn } from "./parent-context-evidence.js";
-import {
-  PARENT_ADJUDICATION_MODEL_SOURCES,
-  type ParentAdjudicationModelSource,
-  type ReviewerParentAdjudicationBlock,
-} from "./permission-settings-store.js";
-import type { DeferredQueue } from "./reviewer/deferred-queue.js";
 import {
   resolveReviewerSandboxCapability,
   type SandboxCapability,
 } from "./sandbox-capability.js";
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
-import {
-  isSensitivePath,
-  canonicalizePathForMatch,
-  caseFoldForMatch,
-} from "./sensitive-paths.js";
+import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
+import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
-import { displaySafeLabel } from "../shared/display-safe-text.js";
-import type {
-  ParentEscalationNotice,
-} from "../shared/parent-escalation-notice.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { resolveUserApprovalVerdict, type ApprovalMemory } from "../shared/permissions-events.js";
-import { buildHostTerminalRuleApproval, buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
+import { isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
+import { buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
 import type {
   RemoteControllerAuthority,
   RemoteControllerOrigin,
 } from "../shared/chat-origin.js";
-import {
-  AwayAuthority,
-  parseAwayAuthorityGrant,
-  type AwayAuthorityArmInput,
-  type AwayAuthorityCandidate,
-  type AwayAuthoritySnapshot,
-} from "./away-authority.js";
-import {
-  parseRationaleApprovalDisplay,
-  type RationaleApprovalDisplay,
-  sealMaskedRationaleApprovalDisplay,
-} from "../shared/rationale-approval-display.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import {
@@ -106,56 +74,9 @@ function maskApprovalPurposeForDisplay(
   return { ...purpose, text: masked };
 }
 
-// Tier-2 (parent adjudication) constants
-
-// Verdict order, for the ceiling the host enforces before asking a parent.
-const RISK_LEVEL_RANK: Record<RiskLevel, number> = {
-  low: 1,
-  medium: 2,
-  high: 3,
-};
-
-// Consecutive parent denials of the same tool by the same child before the ask goes to the user instead. A child that keeps reaching for a tool its parent keeps refusing is in a loop neither of them can end: the parent has already given its answer, and the child is not persuaded by it. The user is the only party who can resolve that, so the third denial is escalated rather than answered again.
-const PARENT_DENIAL_ESCALATION_THRESHOLD = 3;
-
-// Denial counters retained at once. Bounded for the reason the adjudicator's budget map is: child runs end without telling the gate. Eviction is least-recently-used, so it can only reset a streak for a child that has been idle behind this many others.
-const MAX_TRACKED_PARENT_DENIAL_KEYS = 1_000;
-
-// Longest parent reason written to an audit row.
-const MAX_AUDIT_REASON_CHARS = 160;
-
-// Longest serialized argument payload shown to an adjudicating parent. The dock's copy of the arguments crosses local IPC, so its size was never anyone's problem. This copy crosses the network to a paid provider, once per ask, up to the per-run budget — and the adjudicator answers one ask at a time, so a child writing megabytes into a tool argument would bill the user for them and stall every other child's ask behind them.
-const MAX_EVIDENCE_ARGS_CHARS = 4_000;
-
-// Bound the argument payload before it leaves the host. Truncation is safe in exactly one direction, and this is that direction: evidence a parent cannot see is evidence it cannot approve on, so a truncated payload can only move the answer toward escalate — which is the user. Bounding happens BEFORE masking, not after. DLP masking walks every string in the structure with a battery of patterns, and on a multi-megabyte tool argument that walk costs minutes on this process's only thread — so a bound applied to the masking OUTPUT would have prevented the network cost and kept the stall. The preview is masked like everything else: it is the input to the masking pass, never its output.
-function boundedEvidenceArgs(args: unknown): unknown {
-  let serialized: string;
-  try {
-    serialized = canonicalStringify(args);
-  } catch {
-    // Unserializable arguments are not evidence. Say so rather than guess.
-    return { omitted: "arguments could not be rendered" };
-  }
-  if (serialized.length <= MAX_EVIDENCE_ARGS_CHARS) return args;
-  return {
-    truncated: true,
-    preview: serialized.slice(0, MAX_EVIDENCE_ARGS_CHARS),
-  };
-}
-
-// Replace whitespace and = at the audit boundary so untrusted text cannot forge following key=value fields; apply the same rule to host identifiers.
-function auditSafeText(value: string): string {
-  return value
-    .slice(0, MAX_AUDIT_REASON_CHARS)
-    .replace(/[\s=]+/g, "_");
-}
-
-// ask_all still shows the dock for read-only calls; absence uses default read auto-approval.
-export type ApprovalMode = "default" | "ask_all" | "full_auto";
-
 // Permission policy.5 — discriminated kinds for the approval dock. Default `"tool"` is the normal Layer 3 ask; `"out-of-allowed-dir"` is the Layer 1 directory-confirm variant; and `"agent-action"` is a plugin-origin host approval request that does not correspond to a host tool execution.
-export type ApprovalKind =
-  "tool" | "out-of-allowed-dir" | "agent-action" | "rationale" | "egress-host";
+type ApprovalKind =
+  "tool" | "out-of-allowed-dir" | "agent-action" | "egress-host";
 
 // The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell call or workspace terminal tab wants to reach `host:port`, and the person picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.
 interface EgressHostApproval {
@@ -175,6 +96,10 @@ interface EgressHostApproval {
 
 export interface ApprovalRequest {
   id: string;
+  userOwnedSurface?: UserOwnedSurface;
+  userOwnedSurfaceReviewFallback?: true;
+  // Display-only projection of the host terminal's current-turn provenance; never an approval capability.
+  hostTerminalAfterExternalContent?: true;
   category: "tool" | "agent-action";
   // Permission policy.5 — discriminator for the renderer to pick the right card. Defaults to `"tool"` when omitted (backwards-compatible).
   kind?: ApprovalKind;
@@ -199,11 +124,9 @@ export interface ApprovalRequest {
   evaluationContext?: PermissionEvaluationContext;
   // Suggested natural-language purpose shown in the approval dock.
   approvalPurpose?: ApprovalPurposeSuggestion;
-  // Present iff tier 2 ran for this ask and handed the decision back to the user. It is the dock's only account of a stage the user never saw, and without it a parent-escalated ask is indistinguishable from one that was never eligible for a parent at all. Host-composed and outbound-only: the host writes it after the parent answers, the renderer displays it, and no decision field echoes it back. It is deliberately NOT part of the signApprovalRequest preimage — that signature authenticates the renderer round trip, and a field with no echoed copy has nothing to authenticate (see that function for the same argument applied to `remoteControllerOrigin`).
-  parentEscalation?: ParentEscalationNotice;
   args: unknown;
   reason: string;
-  // Host-composed label naming the cross-agent message that was influencing the caller when this ask was raised (`[Sub-Agent: <title>]`), when one was. The same string is already the leading segment of reason, so carrying it structurally discloses nothing new — it just stops the consumers that need the FACT from having to parse it back out of prose. Host-composed and outbound-only, for the reason parentEscalation is: the host writes it, no decision field echoes it back, and it is not part of the signApprovalRequest preimage.
+  // Host-composed label naming the cross-agent message that was influencing the caller when this ask was raised (`[Sub-Agent: <title>]`), when one was. The same string is already the leading segment of reason, so carrying it structurally discloses nothing new — it just stops the consumers that need the FACT from having to parse it back out of prose. Host-composed and outbound-only: the host writes it, no decision field echoes it back, and it is not part of the signApprovalRequest preimage.
   approvalReasonPrefix?: string;
   source?: ToolSource;
   // Plugin id that issued this approval request, when source === "plugin".
@@ -234,10 +157,6 @@ export interface ApprovalRequest {
   target?: {
     filePath?: string;
   };
-  // Read-only calls skip the dock unless ask_all requires every prompt.
-  isReadOnly?: boolean;
-  // ask_all still prompts for reads; other modes retain read auto-approval.
-  mode?: ApprovalMode;
   // Sensitive-pattern metadata is diagnostic only; requestAndWait owns the authoritative hard block before any dock.
   sensitivePathPattern?: string | null;
   // Cache key for approval record/lookup symmetry. Propagated from executor's approvalCacheKeyFor result so the renderer can record and look up entries using the same key that dispatchReviewer uses. Without this field the renderer receives undefined and the record key mismatches the lookup key → approval cache hit rate 0% for tools like routine_schedule / bash / fs_write.
@@ -286,36 +205,36 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-owned assessment provenance; never inferred from the displayed reason.
   readonly reviewerOutcome?: ReviewerDispatchOutcome;
   readonly reviewerApprovalBasis?: ReviewerApprovalBasis;
+  readonly approvalRuleBasis?: ApprovalRuleBasis;
   // Host-issued safe projection; structural lookalikes are rejected before IPC.
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
   readonly forceExplicit?: true;
+  readonly ownerUnattended?: boolean;
+  // Host-only execution budget handle for approval requests arriving through a transport callback.
+  readonly toolApprovalWait?: ToolApprovalWait;
   // Host-only memory capability for this request. One-shot approval routes set this false so a renderer cannot turn a per-invocation decision into a user-approval-store record. It is retained only in pending state.
   readonly durableApprovalRecordAllowed?: boolean;
   // Host-only binding for an explicit plain-shell fallback permit. It is retained only in the pending entry and never serialized to the renderer or audit payload.
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
   // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
-  // parked observer or away answer), it is never remembered, and its saves store only the exact `HostTerminal(...)` rule. Set by the
+  // parked observer or away answer), it is never remembered and offers no rule saves. Set by the
   // executor from the sealed terminal target, never by a renderer.
   readonly hostTerminal?: HostTerminalApprovalBinding;
   // Derive remote origin only from host-owned controller authority, never reason text or renderer input. Keep it off ApprovalRequest and all renderer payloads; absence means no host-observed remote controller.
   readonly remoteControllerOrigin?: RemoteControllerOrigin;
-  // Host-only: the live authority object the marker above was projected from. The marker records what was true when the request was built; this is the thing that can still be asked. AwayAuthority re-checks it at the moment it answers, so a share revoked while the turn was in flight is not answered by a grant that was valid when the turn started. Nothing else in the gate reads it, and like the marker it never reaches the renderer, the audit payload, or pending state.
+  // Host-only live controller authority. Its presence requires a one-shot human answer and never reaches renderer or audit payloads.
   readonly remoteControllerAuthority?: RemoteControllerAuthority;
-  // Host-only: EVERY path this call would touch, for scope checks that must not be satisfied by the single path the dock happens to display. `target.filePath` is a display field and is the FIRST extracted path only. A tool declaring more than one path field — `move_file` names a source and a destination — would pass a check that read the display value while the other path went anywhere. Like the other host-only fields it is destructured out before the renderer payload is built.
-  readonly scopeTargetFilePaths?: readonly string[];
   // Observe turn abort while parked so Stop releases the execution lease immediately instead of waiting for approval timeout. Keep the live signal out of renderer, pending-entry and audit payloads; absent means no turn cancellation.
   readonly abortSignal?: AbortSignal;
-  // Only host-tracked child provenance and the parent-authored truncated task may enable parent adjudication; child args/reasons/prose cannot assert it. Keep these inputs out of renderer requests.
+  // Host-tracked child provenance forces one-shot human approval and stays off renderer requests.
   readonly childProvenance?: ChildAgentProvenance;
-  // Host-only: the caller's assertion that this ask cleared the preconditions for tier 2 that only the caller can see — the permission layer it came from, and whether policy forced it to a modal. It is a NECESSARY condition, never a sufficient one. The gate re-derives every check it can see for itself (request kind, one-shot high-risk plan, remote origin, verdict ceiling) regardless of this value, so a caller that set it wrongly widens nothing the gate owns.
-  readonly parentAdjudicationEligible?: boolean;
 };
 
 // The sub-agent run behind an approval ask. Every field is host-owned: the ids come from the run registry and the summary from the parent's own spawn input.
@@ -332,124 +251,13 @@ interface ChildAgentProvenance {
   background?: boolean;
 }
 
-// Why the sub-agent approval chain reached the user after tier 2 ran. Every cause the adjudicator itself can answer with, plus one the gate owns: the module answers one call at a time and cannot see that it is answering the same call for the third time, so the repetition cause can only be raised here, where the counter lives.
-// Display bound for ParentEscalationNotice.childTitle. The dock line is one row; a run titled with a whole paragraph would push the parent's reason and the buttons off the visible card.
-const PARENT_ESCALATION_CHILD_TITLE_MAX = 120;
-
-// Make a child run's title safe to put in front of the user. The title reads like host metadata and is not: `agent_spawn` takes it from the parent model's tool arguments, unbounded and unfiltered, and the run registry carries it verbatim. Every other place that shows a sub-agent title masks it (`maskSubAgentText` in the runner), and the sibling fields of this very notice are masked and sanitized too — so this one is masked for secrets and normalized for the invisible/bidi characters that let a label lie about what it says.
-function displaySafeChildTitle(title: string): string {
-  return displaySafeLabel(
-    maskSensitiveData(title).masked,
-    PARENT_ESCALATION_CHILD_TITLE_MAX,
-  );
-}
-
-// Bound for the deferred queue's one-line description of a queued ask.
-const DEFERRED_ESCALATION_SUMMARY_MAX = 1_000;
-
-// (child run, tool) pairs whose queue entry is remembered for coalescing.
-const MAX_TRACKED_DEFERRED_PAIRS = 500;
-
-// The line the deferred-queue panel shows for a queued sub-agent escalation. Every part is host-owned: the cause is one of a closed set the gate itself assigns, the child title is masked and display-normalised, and the arguments go through the same bound-then-mask pass the evidence uses. The adjudicator's sentence is not here — see the caller.
-function deferredEscalationSummary(
-  request: ApprovalRequest,
-  notice: ParentEscalationNotice,
-  childProvenance: ChildAgentProvenance,
-): string {
-  let masked: string;
-  try {
-    masked = canonicalStringify(
-      maskArgsForDisplay(boundedEvidenceArgs(request.args), new Set<string>()),
-    );
-  } catch {
-    masked = "[unserializable input]";
-  }
-  const head = `[sub-agent escalation cause=${notice.cause} child=${displaySafeChildTitle(childProvenance.childTitle)}] `;
-  return `${head}${masked}`.slice(0, DEFERRED_ESCALATION_SUMMARY_MAX);
-}
-
-// Everything the gate needs to run tier 2, supplied by boot. All three are accessors rather than values, and for the same reason: the gate is constructed before the reviewer is wired and outlives every re-wire of it. A captured adjudicator would still be the boot-time stand-in after a login healed the reviewer, and a captured policy would still be the boot-time ceiling after the user narrowed it. Absent deps mean no tier 2 at all — the chain is then exactly the two-tier one that shipped before it.
-export interface ParentAdjudicationGateDeps {
-  // The live adjudicator for the model source the policy names, re-read per ask. The source is passed rather than resolved here so one setting change moves the next ask onto the other model with nothing to re-wire.
-  adjudicator: (source: ParentAdjudicationModelSource) => ParentAdjudicator;
-  // The feature flag. False means the stage does not run at all.
-  isEnabled: () => boolean;
-  // The live tier-2 policy block.
-  policy: () => ReviewerParentAdjudicationBlock;
-  // Recent parent-conversation turns for the evidence, when the policy asks for any. Absent — or throwing, or returning nothing — simply means the evidence carries no conversation block: this is context that can improve an answer, never a precondition for producing one.
-  parentContext?: (
-    parentSessionId: string,
-    maxTurns: number,
-  ) => readonly ParentContextTurn[];
-  // The deferred-approval queue, for escalations raised by a run nobody is watching. Absent means every escalation paints a dock, which is the behaviour of the chain before this route existed.
-  deferredQueue?: () => DeferredQueue | null;
-  // Whether somebody could see a dock right now — the app window existing, visible, and not minimised. The load-bearing half of "unattended". A child run's own `background` flag is not that fact by itself: this desktop host starts every locally spawned child in the background, so a route keyed on it alone would divert EVERY tier-3 escalation away from a user sitting in front of the app — taking away the one tier the chain exists to preserve. Absent, or throwing, means the host cannot establish that nobody is there, and an unestablished absence is treated as presence: the dock is painted.
-  isDeskAttended?: () => boolean;
-}
-
-// Host-only provenance for a decision a parent agent made. A `WeakMap` for the reason the timeout and host-rejected markers above are `WeakSet`s: provenance is a fact about the exact object the host created, and a structural `{ choice: "allow-once" }` arriving from anywhere else can never be in it. The reason rides here rather than on ApprovalDecision because that type is renderer-supplied — a field on it would be a field a renderer could author.
-const parentAdjudicatedDecisions = new WeakMap<
-  ApprovalDecision,
-  ParentAdjudicationProvenance
->();
-
-// What the parent answered, for the consumers of the child's turn.
-interface ParentAdjudicationProvenance {
-  outcome: "allow-once" | "deny";
-  reason: string;
-}
-
-// The parent's answer behind a decision, or undefined if no parent answered.
-export function parentAdjudicationOf(
-  decision: ApprovalDecision | null | undefined,
-): ParentAdjudicationProvenance | undefined {
-  if (decision === null || decision === undefined) return undefined;
-  return parentAdjudicatedDecisions.get(decision);
-}
-
-function markParentAdjudicatedDecision(
-  decision: ApprovalDecision,
-  provenance: ParentAdjudicationProvenance,
-): ApprovalDecision {
-  parentAdjudicatedDecisions.set(decision, provenance);
-  return decision;
-}
-
-// Host-only provenance for an escalation that went to the deferred queue instead of to a dock. A `WeakMap` for the reason the one above it is: this is a fact about the exact object the gate created.
-const deferredEscalatedDecisions = new WeakMap<
-  ApprovalDecision,
-  DeferredEscalationProvenance
->();
-
-// What the child's turn is told about an ask that was queued, not shown.
-interface DeferredEscalationProvenance {
-  // Why tier 2 gave up on answering it.
-  cause: ParentEscalationNotice["cause"];
-  // Queue entry the user will review.
-  deferredId: string;
-}
-
-// The queue entry behind a decision, or undefined if none was created.
-export function deferredParentEscalationOf(
-  decision: ApprovalDecision | null | undefined,
-): DeferredEscalationProvenance | undefined {
-  if (decision === null || decision === undefined) return undefined;
-  return deferredEscalatedDecisions.get(decision);
-}
-
-// How the tier-2 stage ended, for the one caller that runs it.
-type ParentAdjudicationStageOutcome =
-  // The parent answered, and its answer is the decision.
-  | { kind: "answered"; decision: ApprovalDecision }
-  // The ask continues to the dock, carrying this notice.
-  | { kind: "escalate"; notice: ParentEscalationNotice };
-
 export type ApprovalChoice =
   "allow-once" | "allow-session" | "allow-always" | "deny-once" | "deny-always";
 
 export interface ApprovalDecision {
   requestId: string;
   choice: ApprovalChoice;
+  userOwnedSurfaceChoice?: UserOwnedSurfaceChoice;
   // For an `egress-host` ask answered `allow-once`: how long the allow lasts, one of the request's `egressHost.scopes`. Required there, ignored everywhere else; a missing or unoffered scope makes the answer a deny.
   egressScope?: EgressGrantScope;
 
@@ -616,10 +424,27 @@ export function consumeHostApprovedOneShotExecutionBinding(
   return sameHostShellExecutionPermitBinding(actual, expected);
 }
 
+interface ApprovalPolicyTransition {
+  readonly from: string;
+  to: string;
+  valid: boolean;
+  saving: boolean;
+}
+
+export interface ApprovalPolicyMutation {
+  readonly permission?: { readonly from: string; readonly to: string };
+  readonly approvals?: { readonly from: string; readonly to: string; readonly scope: string };
+  readonly directories?: { readonly from: readonly string[]; readonly to: readonly string[]; readonly directory: string; readonly scope: "session" | "always" };
+}
+
 interface PendingEntry {
+  exactSaveTransition?: ApprovalPolicyTransition & { scope: string };
+  userOwnedSurface?: UserOwnedSurface;
+  userOwnedSurfaceReviewFallback?: true;
+  ruleSaveTransition?: ApprovalPolicyTransition;
   resolve: (decision: ApprovalDecision) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
   // Permission origin captured with the approval prompt.
   trustOrigin: string;
   // Conversation attribution captured with the prompt, so the decided / timeout / cancelled audit rows name the same conversation the requested row did even though the request object is long gone by then.
@@ -693,7 +518,7 @@ export interface PendingApprovalView {
   readonly hmac: string;
 }
 
-// Host-internal observer of the gate's pending set. `onPending` fires when a request is parked for an interactive answer — after every host-only short circuit (sensitive-path block, read-only auto-approve, away answer, parent answer), so an observer can never offer a decision the desk was never offered. `onSettled` fires exactly when the parked request stops being answerable, whatever settled it: a desk answer, a remote answer, the timeout, a turn abort, a cancel, or shutdown. Observers must tolerate `onSettled` for ids they never saw and must never throw; a throwing observer is swallowed so it cannot alter approval flow.
+// Host-internal observer of the gate's pending set. `onPending` fires when a request is parked for an interactive answer — after transport and card-integrity checks, so an observer can never offer a decision the desk was never offered. `onSettled` fires exactly when the parked request stops being answerable, whatever settled it: a desk answer, a remote answer, the timeout, a turn abort, a cancel, or shutdown. Observers must tolerate `onSettled` for ids they never saw and must never throw; a throwing observer is swallowed so it cannot alter approval flow.
 export interface PendingApprovalObserver {
   onPending(view: PendingApprovalView): void;
   onSettled(requestId: string, decision: ApprovalDecision): void;
@@ -703,11 +528,7 @@ export interface PendingApprovalObserver {
 const APPROVAL_ANSWERER_AUDIT_TOKENS = {
   // The app window: a renderer response to the approval dock.
   desk: "desk",
-  // The desk-armed AwayAuthority: no window was involved, and the authorization is a local gesture the owner made in advance. Distinct from `desk` precisely so a reviewer can partition "the owner decided this call" from "the owner pre-authorized a class of calls and this was one".
-  "away-authority": "away-authority",
-  // The parent agent of the sub-agent whose turn raised this ask (tier 2 of the sub-agent approval chain). Distinct from both of the above for the reason the dimension exists at all: a row a reviewer reads later must say whether a person decided this call or whether a model the person delegated to did, and neither `desk` nor `away-authority` can carry that fact. A parent answer is one-shot by construction, so a row bearing this token can never be the origin of a durable approval record.
-  "parent-agent": "parent-agent",
-  // The paired chat-platform surface: the owner pressed a decision button on a bridge card. Distinct from `desk` for the reason the dimension exists — a reviewer partitioning rows by where the owner was must not have to infer "away from the desk" from surrounding rows — and distinct from `away-authority` because a human answered THIS call rather than pre-authorizing a class of calls. Only host code relaying a verified paired owner's button press may pass it; the renderer's IPC route cannot.
+  // Only a verified paired owner button press may identify this host-only answerer.
   "platform-bridge": "platform-bridge",
   // The headless one-shot runner (`--exec`): no window, no owner, no dock. It answers every parked request with a deny so an unattended process cannot sit on the gate's timeout. Distinct from every token above for the reason the dimension exists — a reviewer must be able to tell "the owner declined this call" from "nobody was there and the host declined it on their behalf", and only this token can carry the second.
   "headless-exec": "headless-exec",
@@ -800,64 +621,6 @@ function formatApprovalAuditFields(
     ]),
   ].join(" ");
 }
-// Rationale cards have a narrow, host-audited display contract. Reject every malformed or semantically mismatched request before it can mint integrity material, notify the user, or cross the main-to-renderer boundary.
-function parseValidRationaleApprovalDisplay(
-  request: Omit<ApprovalRequest, "requireExplicit">,
-): RationaleApprovalDisplay | null {
-  if (request.kind !== "rationale") return null;
-  try {
-    const display = parseRationaleApprovalDisplay(request.args);
-    return display !== null &&
-      request.category === "tool" &&
-      request.toolName === display.toolName &&
-      request.reviewerVerdict !== undefined &&
-      canonicalStringify(request.reviewerVerdict) ===
-        canonicalStringify(display.effectiveVerdict)
-      ? display
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-// Rationale requests are assembled from a host-sealed projection, but callers still supply the generic ApprovalRequest shape. Never let that generic `reason` field become notification, audit, pending-state, or renderer data: it is not part of the rationale display contract and could otherwise carry model-controlled text.
-const RATIONALE_HOST_OWNED_REASON =
-  "Review the host-sealed action and its permission rationale.";
-
-// The renderer needs an opaque request id to respond and a bounded rationale display card to inform the one-shot decision. It does not need execution metadata. Keep the full request in the main process for sensitive-path enforcement, audit, pending state, and HMAC verification, then whitelist this separate IPC payload after signing.
-function createRendererSafeRationaleApprovalRequest(
-  request: ApprovalRequest,
-  display: RationaleApprovalDisplay,
-  detections: Set<string>,
-): ApprovalRequest {
-  const maskedVerdict = maskSensitiveData(display.effectiveVerdict.reason);
-  for (const hit of maskedVerdict.detections) detections.add(hit);
-  return {
-    id: request.id,
-    category: "tool",
-    kind: "rationale",
-    allowedChoices: ["allow-once", "deny-once"],
-    toolName: display.toolName,
-    reviewerVerdict: {
-      level: display.effectiveVerdict.level,
-      reason: maskedVerdict.masked,
-    },
-    // Emission integrity: the display was parse-guaranteed at construction and masking was the one mutation applied after that guarantee — a mask token pushing a near-cap field over its limit made the renderer's parse return null and the card lost its tool identity entirely. Seal per field with parser-identical validators so what ships ALWAYS parses; the renderer's null branch stays as defense-in-depth for forged payloads only.
-    args: sealMaskedRationaleApprovalDisplay(display, (value) => {
-      const { masked, detections: hits } = maskSensitiveData(value);
-      for (const hit of hits) detections.add(hit);
-      return masked;
-    }) as unknown as Record<string, unknown>,
-    reason: RATIONALE_HOST_OWNED_REASON,
-    createdAt: request.createdAt,
-    requireExplicit: true,
-    // Attribution is an opaque host-owned id, not conversation content, and a rationale card blocks a conversation the same way a tool ask does.
-    ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
-    nonce: request.nonce,
-    hmac: request.hmac,
-  };
-}
-
 // Constant-time comparison of the echoed (nonce, hmac) pair against the pending entry's expected values (confused-deputy defense). Returns false if either field is missing or malformed; returns true only when both the nonce and HMAC match byte-for-byte.
 function verifyApprovalIntegrity(
   entry: PendingEntry,
@@ -888,6 +651,106 @@ export type ApprovalSurfaceResolver = (
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
+  private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
+  private readonly approvedPolicyTransitions = new WeakMap<ApprovalDecision, { from: string; to: string }>();
+  private readonly approvedPolicyMutations = new WeakMap<ApprovalDecision, ApprovalPolicyMutation>();
+  private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
+  private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
+  private readonly approvedSurfaceChoices = new WeakMap<ApprovalDecision, { sessionId: string; surface: UserOwnedSurface; choice: UserOwnedSurfaceChoice }>();
+
+  consumeUserOwnedSurfaceChoice(decision: ApprovalDecision, sessionId: string, surface: UserOwnedSurface): UserOwnedSurfaceChoice | undefined {
+    const selection = this.approvedSurfaceChoices.get(decision);
+    this.approvedSurfaceChoices.delete(decision);
+    return selection?.sessionId === sessionId && selection.surface === surface ? selection.choice : undefined;
+  }
+
+  /** Bind a successful exact-memory write to the same live card, never a renderer claim. */
+  beginExactApprovalSave(requestId: string, before: string): object | undefined {
+    const entry = this.pending.get(requestId);
+    if (!entry) return undefined;
+    const transition = entry.exactSaveTransition ??= { from: before, to: before, valid: true, saving: false, scope: "" };
+    if (transition.saving || transition.to !== before) transition.valid = false;
+    transition.saving = true;
+    const token = Object.freeze({});
+    this.exactSaveTokens.set(token, { requestId, entry, before });
+    return token;
+  }
+
+  completeExactApprovalSave(token: object | undefined, after: string, scope: string): void {
+    if (!token) return;
+    const saved = this.exactSaveTokens.get(token);
+    this.exactSaveTokens.delete(token);
+    if (!saved || this.pending.get(saved.requestId) !== saved.entry) return;
+    const transition = saved.entry.exactSaveTransition!;
+    transition.saving = false;
+    const before = Number(saved.before);
+    if (!Number.isSafeInteger(before) || before < 0 || after !== String(before + 1) ||
+        !["session", "persistent", "global"].includes(scope)) transition.valid = false;
+    transition.to = after;
+    transition.scope = scope;
+  }
+
+  /** Record only the exact folder delta after its authenticated card's host-side grant succeeds. */
+  recordApprovedDirectoryMutation(decision: ApprovalDecision, mutation: NonNullable<ApprovalPolicyMutation["directories"]>): void {
+    const expectedChoice = mutation.scope === "session" ? "allow-session" : "allow-always";
+    const canonical = (values: readonly string[]) => [...new Set(values)].sort();
+    const expected = canonical([...mutation.from, mutation.directory]);
+    if (!this.authenticatedDirectoryAnswers.has(decision) || decision.choice !== expectedChoice ||
+        !mutation.directory || canonicalStringify(expected) !== canonicalStringify(canonical(mutation.to))) {
+      throw new Error("Approval directory mutation was not authorized by this card");
+    }
+    this.authenticatedDirectoryAnswers.delete(decision);
+    this.approvedPolicyMutations.set(decision, { ...this.approvedPolicyMutations.get(decision),
+      directories: { ...mutation, from: canonical(mutation.from), to: canonical(mutation.to) } });
+  }
+
+  /** Consume native same-card mutation evidence; copies of a decision carry no proof. */
+  consumeApprovalPolicyMutation(decision: ApprovalDecision): ApprovalPolicyMutation | undefined {
+    const mutation = this.approvedPolicyMutations.get(decision);
+    this.approvedPolicyMutations.delete(decision);
+    return mutation;
+  }
+
+  /** Capture a live card before its host-validated rule save. Tokens never cross IPC. */
+  beginApprovalRuleSave(requestId: string, before: string): object | undefined {
+    const entry = this.pending.get(requestId);
+    if (!entry) return undefined;
+    const transition = entry.ruleSaveTransition ??= { from: before, to: before, valid: true, saving: false };
+    if (transition.saving || transition.to !== before) transition.valid = false;
+    transition.saving = true;
+    const token = Object.freeze({});
+    this.ruleSaveTokens.set(token, { requestId, entry, before });
+    return token;
+  }
+
+  /** Complete only a successful, validated allow save; any other mutation breaks the chain. */
+  completeApprovalRuleSave(token: object | undefined, after: string, scope?: "session" | "project" | "always"): void {
+    if (!token) return;
+    const saved = this.ruleSaveTokens.get(token);
+    this.ruleSaveTokens.delete(token);
+    if (!saved || this.pending.get(saved.requestId) !== saved.entry) return;
+    const transition = saved.entry.ruleSaveTransition!;
+    transition.saving = false;
+    const beforeParts = saved.before.split(":");
+    const afterParts = after.split(":");
+    const generation = Number(beforeParts[0]);
+    const revision = Number(beforeParts[1]);
+    // Rule saves increment the manager generation once and, for project rules,
+    // the project revision once. Concurrent policy changes cannot join this receipt.
+    if (scope === undefined || beforeParts.length !== 3 || afterParts.length !== 3 ||
+      !Number.isSafeInteger(generation) || !Number.isSafeInteger(revision) || generation < 0 || revision < 0 ||
+      afterParts[0] !== String(generation + 1) ||
+      afterParts[1] !== String(revision + (scope === "project" ? 1 : 0)) ||
+      afterParts[2] !== beforeParts[2]) transition.valid = false;
+    transition.to = after;
+  }
+
+  /** Consume the exact authenticated answer's same-card policy transition once. */
+  allowsPolicyTransition(decision: ApprovalDecision, before: string, current: string): boolean {
+    const transition = this.approvedPolicyTransitions.get(decision);
+    this.approvedPolicyTransitions.delete(decision);
+    return transition !== undefined && transition.from === before && transition.to === current;
+  }
   private readonly lifetime = new AbortController();
   // Renderers that displayed a pending card, including a former owner after a conversation move. Settlement removes stale cards from each of them.
   private readonly refetchedBy = new Map<string, Set<WebContents>>();
@@ -908,17 +771,7 @@ export class ApprovalGate {
   // Host-internal observers of the pending set; see observePendingApprovals.
   private readonly pendingObservers = new Set<PendingApprovalObserver>();
 
-  // The desk-armed second answerer. Owned by the gate rather than reachable beside it: an answerer that could be consulted anywhere else would be a second answer surface, and the whole argument for this feature is that there is exactly one and it sits below every hard gate.
-  private readonly awayAuthority = new AwayAuthority();
-
-  // Tier 2 of the sub-agent approval chain, when boot wired one. Owned by the gate for the same reason the away answerer is: an answerer reachable beside the gate would be a second answer surface, and the argument for both is that there is exactly one and it sits below every hard check.
-  private readonly parentAdjudication?: ParentAdjudicationGateDeps;
-
-  // Consecutive parent denials, keyed by child run and tool.
-  private readonly parentDenialStreaks = new Map<string, number>();
-
-  // Queue entries already raised for a (child run, tool) pair. A child that has spent its adjudication budget escalates on EVERY subsequent call, and a route that appended a row and rang the OS for each of them would turn one runaway loop into hundreds of identical rows and toasts — burying the entries a user might actually act on. The first ask of a pair is recorded and announced; the rest are still denied, and are told they belong to the entry already waiting. Bounded and evicted oldest-first, because a run ends without telling this map. Eviction only costs a second queue row for a pair that has been idle behind this many others, which no live run reaches.
-  private readonly deferredEscalationEntries = new Map<string, string>();
+  private ownerAwayAutoSkipMinutes = 0;
 
   private readonly headlessDenied?: (requestId: string, toolName: string) => void;
 
@@ -928,7 +781,6 @@ export class ApprovalGate {
     timeoutMs = TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
     auditLogger?: AuditLogger,
     notificationService?: NotificationService,
-    parentAdjudication?: ParentAdjudicationGateDeps,
     headlessExec?: { onDenied: (requestId: string, toolName: string) => void },
   ) {
     if (headlessExec && webContents !== null) throw new Error("Headless approval mode requires no desktop surface");
@@ -944,7 +796,6 @@ export class ApprovalGate {
     this.timeoutMs = timeoutMs;
     this.auditLogger = auditLogger;
     this.notificationService = notificationService;
-    this.parentAdjudication = parentAdjudication;
     this.currentPolicy = initialPolicy ?? {
       version: 1,
       requireExplicitApproval: true,
@@ -953,11 +804,18 @@ export class ApprovalGate {
     };
   }
 
+  setOwnerAwayAutoSkipMinutes(minutes: number): void {
+    if (!Number.isFinite(minutes) || !Number.isInteger(minutes) || minutes < 0) {
+      throw new Error("Owner-away auto-skip minutes must be a nonnegative integer");
+    }
+    this.ownerAwayAutoSkipMinutes = minutes;
+  }
+
   setConversationTitleResolver(resolve: (sessionId: string) => string): void {
     this.conversationTitleResolver = resolve;
   }
 
-  private notificationBody(request: ApprovalRequest, deferred = false): string {
+  private notificationBody(request: ApprovalRequest): string {
     const action = approvalActionSummary({
       ...request,
       args: maskArgsForDisplay(request.args, new Set<string>()),
@@ -972,11 +830,11 @@ export class ApprovalGate {
       return characters.length > 30 ? characters.slice(0, 29).join("") + "…" : characters.join("");
     };
     const maskedAction = maskSensitiveData(action).masked;
-    if (request.sessionId === undefined && !deferred) return maskedAction;
+    if (request.sessionId === undefined) return maskedAction;
     const title = request.sessionId === undefined ? ""
       : this.conversationTitleResolver?.(request.sessionId)
         ?? resolveConversationTitle({ sessionId: request.sessionId }, t);
-    return t(deferred ? "be_approvalGate.deferredEscalationBody" : "be_approvalGate.conversationNotification", {
+    return t("be_approvalGate.conversationNotification", {
       action: maskedAction, title: segment(title),
     });
   }
@@ -984,40 +842,6 @@ export class ApprovalGate {
   // Replace the runtime policy immediately from the ave:policy:set IPC handler.
   setPolicy(p: PolicyFile): void {
     this.currentPolicy = p;
-  }
-
-  // Arm the away answerer from a desk gesture. Returns whether it took. The single entry point: the raw request is validated by `parseAwayAuthorityGrant`, which is where every bound on a legal grant lives, and a rejected request arms nothing. A caller cannot hand this method a pre-built grant, so there is no second place that decides what a legal grant is.
-  armAwayAuthority(input: AwayAuthorityArmInput): boolean {
-    const grant = parseAwayAuthorityGrant(input, Date.now());
-    if (grant === null) return false;
-    this.awayAuthority.arm(grant);
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId: grant.conversationId,
-      type: "approval",
-      // The directory count, not the directories: an audit row states what was armed, and local paths are exactly the material the rest of this feature exists to keep off a remote transport.
-      output: `[approval:away-armed] categories=${grant.categories.join(",")} directories=${grant.directories.length} budget=${grant.budget} expiresAt=${new Date(grant.expiresAt).toISOString()}`,
-    });
-    return true;
-  }
-
-  // Retire any armed grant. Called for desk disarm and — the reason it is public rather than private to the answerer's own expiry logic — from the share lifecycle chokepoint. A revoke, re-share, pause, disconnect or re-pair mints a fresh authority that the per-call re-check would happily accept; the grant behind it was made for the share that no longer exists.
-  retireAwayAuthority(reason: "desk-disarm" | "share-lifecycle"): boolean {
-    const retired = this.awayAuthority.retireAll();
-    if (retired) {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:away-retired] reason=${reason}`,
-      });
-    }
-    return retired;
-  }
-
-  // Current grant state for the desk surface that displays it.
-  awayAuthoritySnapshot(): AwayAuthoritySnapshot | null {
-    return this.awayAuthority.snapshot();
   }
 
   // Register a host-internal observer of parked approvals. Returns the unsubscribe. See PendingApprovalView for what an observer receives and why registration is the only way to receive it.
@@ -1077,413 +901,6 @@ export class ApprovalGate {
     }
   }
 
-  // Count one parent denial and report the streak length including it. The key pairs the child run with the tool: a parent refusing `fs_write` has said nothing about the same child's `web_fetch`, and a streak that mixed them would escalate an unrelated call.
-  private recordParentDenial(childSessionId: string, toolName: string): number {
-    const key = canonicalStringify([childSessionId, toolName]);
-    const streak = (this.parentDenialStreaks.get(key) ?? 0) + 1;
-    // Re-insert so map order stays least-recently-used for eviction.
-    this.parentDenialStreaks.delete(key);
-    this.parentDenialStreaks.set(key, streak);
-    if (this.parentDenialStreaks.size > MAX_TRACKED_PARENT_DENIAL_KEYS) {
-      const oldest = this.parentDenialStreaks.keys().next();
-      if (!oldest.done) this.parentDenialStreaks.delete(oldest.value);
-    }
-    return streak;
-  }
-
-  // End a streak. Called by an allow, and by the escalation the streak causes.
-  private clearParentDenialStreak(
-    childSessionId: string,
-    toolName: string,
-  ): void {
-    this.parentDenialStreaks.delete(
-      canonicalStringify([childSessionId, toolName]),
-    );
-  }
-
-  // Release what tier 2 holds for one child run, now that the run has ended. Both counters are per run: the adjudication budget (`maxPerChildRun`) and the consecutive-denial streaks. They are keyed by the child session id, which a resumed run reuses, so without this a resume would start already charged with the previous run's budget and streaks — and the maps would only ever shrink through eviction. Every adjudicator the policy can name is told, because the policy may have moved the run between them mid-run. The deferred-escalation coalescing map is deliberately left alone: its entries describe queue rows that outlive the run until the user acts.
-  forgetChildRun(childSessionId: string): void {
-    for (const key of [...this.parentDenialStreaks.keys()]) {
-      const [keyChild] = JSON.parse(key) as [string, string];
-      if (keyChild === childSessionId) this.parentDenialStreaks.delete(key);
-    }
-    const lane = this.parentAdjudication;
-    if (!lane) return;
-    // Each adjudicator is released on its own: one that throws must not keep the next from releasing what it charged. The failure still surfaces — after every source has had its turn — so the caller can report it.
-    const failures: unknown[] = [];
-    for (const source of PARENT_ADJUDICATION_MODEL_SOURCES) {
-      try {
-        lane.adjudicator(source).forgetChildRun(childSessionId);
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) {
-      throw new AggregateError(failures, `forgetChildRun failed on ${failures.length} adjudicators`);
-    }
-  }
-
-  // Recheck all observable parent-lane prerequisites synchronously; caller eligibility is necessary but insufficient. Run only after every hard gate so adjudication cannot reopen blocked paths, bindings or destroyed windows.
-  private parentAdjudicationLane(input: {
-    request: ApprovalRequest;
-    // The caller's assertion about the facts only the caller can see.
-    callerEligible: boolean;
-    forceExplicit: boolean;
-    oneShotPermitBound: boolean;
-    highRiskOneShot: boolean;
-    remoteControllerOrigin?: RemoteControllerOrigin;
-  }): {
-    deps: ParentAdjudicationGateDeps;
-    policy: ReviewerParentAdjudicationBlock;
-    verdict: RiskVerdict;
-  } | null {
-    const deps = this.parentAdjudication;
-    if (deps === undefined) return null;
-
-    const { request } = input;
-    const verdict = request.reviewerVerdict;
-    // The flag and the ceiling are read from disk-backed settings, so both are an external boundary that can fail. A failure here means the host cannot establish that this lane is permitted, and an unestablished permission is a denied one: the ask falls through to the user, which is the behaviour of the chain with the lane switched off.
-    let policy: ReviewerParentAdjudicationBlock;
-    try {
-      // The flag first, and the policy only after it: reading the policy opens the permission settings file, and a lane that is switched off must not put a synchronous file read on the approval path of every sub-agent ask it is not going to touch.
-      if (!deps.isEnabled()) return null;
-      policy = deps.policy();
-    } catch {
-      return null;
-    }
-    // Parent adjudication excludes non-tool asks, ask_all, remote origins, explicit/one-shot consent, missing/HIGH verdicts and requiresExplicitApproval. These decisions concern user authority or unknown effects and must stay with the user regardless of caller eligibility.
-    const withinCeiling =
-      verdict !== undefined &&
-      verdict.requiresExplicitApproval !== true &&
-      RISK_LEVEL_RANK[verdict.level] <= RISK_LEVEL_RANK[policy.maxVerdict];
-    const eligible =
-      input.callerEligible &&
-      (request.kind === undefined || request.kind === "tool") &&
-      request.category === "tool" &&
-      request.toolCategory !== "meta" &&
-      request.mode !== "ask_all" &&
-      input.remoteControllerOrigin === undefined &&
-      !input.forceExplicit &&
-      !input.oneShotPermitBound &&
-      !input.highRiskOneShot &&
-      withinCeiling;
-    if (!eligible || verdict === undefined) return null;
-    return { deps, policy, verdict };
-  }
-
-  // The evidence's optional parent-conversation block, or nothing. Nothing is the default and nothing is also every failure: the reader opens a transcript file, which is an external boundary, and a lane that could not read it still has a task summary and a verdict to judge with. The turns themselves are composed by the reader the host wired — bounding, masking and the exclusion of child-authored entries all live there, in one place, rather than at each of this method's would-be call sites.
-  private parentContextBlock(
-    policy: ReviewerParentAdjudicationBlock,
-    parentSessionId: string,
-  ): { parentContext?: readonly ParentContextTurn[] } {
-    const read = this.parentAdjudication?.parentContext;
-    if (read === undefined || policy.includeParentContextTurns <= 0) return {};
-    let turns: readonly ParentContextTurn[];
-    try {
-      turns = read(parentSessionId, policy.includeParentContextTurns);
-    } catch {
-      return {};
-    }
-    return turns.length === 0 ? {} : { parentContext: turns };
-  }
-
-  // Whether anyone could see a dock right now. Unknown counts as yes. A throwing accessor is a destroyed or half-torn-down window, and the answer that keeps the user's tier is "assume they are there": the cost of being wrong that way is a dock nobody reads, and the cost of being wrong the other way is an approval the user never got the chance to give.
-  private deskAttended(): boolean {
-    const read = this.parentAdjudication?.isDeskAttended;
-    if (read === undefined) return true;
-    try {
-      return read();
-    } catch {
-      return true;
-    }
-  }
-
-  // Unattended escalation records an ungrantable deferred entry and denies once with no remembered pattern or live pending approval. Queue failure returns to the dock rather than hiding the ask; later review must never authorize an ended call.
-  private async deferParentEscalation(input: {
-    request: ApprovalRequest;
-    childProvenance: ChildAgentProvenance;
-    policy: ReviewerParentAdjudicationBlock;
-    notice: ParentEscalationNotice;
-    verdict: RiskVerdict;
-    auditFields: string;
-    abortSignal: AbortSignal;
-  }): Promise<ApprovalDecision | null> {
-    const { request, childProvenance, policy, notice } = input;
-    if (policy.backgroundEscalation !== "deferred") return null;
-    // Host facts only, and deliberately narrow. A background run whose window nobody can see is one case; a desk the user armed the away answerer before leaving is the other. The background flag ALONE is not enough — every locally spawned child is a background run on this host, so keying on it would take the dock away from a user who is sitting right there.
-    const unattended =
-      this.awayAuthority.snapshot() !== null ||
-      (childProvenance.background === true && !this.deskAttended());
-    if (!unattended) return null;
-    const queue = this.parentAdjudication?.deferredQueue?.();
-    if (!queue) return null;
-    // A queue row states what the call was. Neither field is defaulted here — an entry that called an unknown source "builtin" or an unknown category "read" would be a record of a call that did not happen, and the honest answer for an ask the host cannot describe is the dock it would have painted anyway.
-    const { source, toolCategory } = request;
-    if (source === undefined || toolCategory === undefined) return null;
-
-    const sessionId = request.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID;
-    const pairKey = canonicalStringify([
-      childProvenance.childSessionId,
-      request.toolName,
-    ]);
-    const alreadyQueued = this.deferredEscalationEntries.get(pairKey);
-    if (alreadyQueued !== undefined) {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: "approval",
-        output: `[approval:parent-escalation-deferred] ${request.id} ${input.auditFields} deferredId=${auditSafeText(alreadyQueued)} child=${auditSafeText(childProvenance.childSessionId)} parent=${auditSafeText(childProvenance.originSessionId)} cause=${notice.cause} coalesced=true → deny-once`,
-      });
-      const repeat = markHostApprovalRejectedDecision({
-        requestId: request.id,
-        choice: "deny-once",
-      });
-      deferredEscalatedDecisions.set(repeat, {
-        cause: notice.cause,
-        deferredId: alreadyQueued,
-      });
-      return repeat;
-    }
-    let deferredId: string;
-    try {
-      const appended = await this.waitForApprovalStage(queue.append({
-        toolName: request.toolName,
-        source,
-        category: toolCategory,
-        // Host-composed and host-owned: the cause, the child's masked title and the masked arguments. The adjudicator's own sentence is deliberately absent — the queue panel has no way to attribute a model's words to the model, and this field is read as a description of the call. It is in the audit row below instead.
-        inputSummary: deferredEscalationSummary(request, notice, childProvenance),
-        ...(request.evaluationContext === undefined
-          ? {}
-          : { evaluationContext: request.evaluationContext }),
-        verdict: input.verdict,
-      }), input.abortSignal, () => null);
-      if (appended === null || input.abortSignal.aborted) return null;
-      deferredId = appended;
-    } catch {
-      return null;
-    }
-
-    this.deferredEscalationEntries.set(pairKey, deferredId);
-    if (this.deferredEscalationEntries.size > MAX_TRACKED_DEFERRED_PAIRS) {
-      const oldest = this.deferredEscalationEntries.keys().next();
-      if (!oldest.done) this.deferredEscalationEntries.delete(oldest.value);
-    }
-    this.auditLogger?.log({
-      timestamp: new Date().toISOString(),
-      sessionId,
-      type: "approval",
-      output: `[approval:parent-escalation-deferred] ${request.id} ${input.auditFields} deferredId=${auditSafeText(deferredId)} child=${auditSafeText(childProvenance.childSessionId)} parent=${auditSafeText(childProvenance.originSessionId)} cause=${notice.cause} reason=${auditSafeText(notice.reason)} → deny-once`,
-    });
-    try {
-      this.notificationService?.fire({
-        kind: "approval",
-        title: t("be_approvalGate.notificationTitle"),
-        body: this.notificationBody(request, true),
-        contextRef: { approvalId: request.id, sessionId: request.sessionId },
-        urgent: true,
-      });
-    } catch {
-      // A notification that failed must not un-record the queue entry.
-    }
-    const decision = markHostApprovalRejectedDecision({
-      requestId: request.id,
-      choice: "deny-once",
-    });
-    deferredEscalatedDecisions.set(decision, {
-      cause: notice.cause,
-      deferredId,
-    });
-    return decision;
-  }
-
-  // Await the parent's answer, but no longer than the turn behind it lasts. The adjudicator is handed the abort signal and a well-behaved provider ends its call on it, but "well-behaved" is an assumption about code this gate does not own. Watching the signal here makes the bound structural: whatever the adapter does with it, a stopped turn stops waiting.
-  private async adjudicateWithin(
-    deps: ParentAdjudicationGateDeps,
-    modelSource: ParentAdjudicationModelSource,
-    evidence: ParentAdjudicationEvidence,
-    options: ParentAdjudicationOptions,
-  ): Promise<ParentAdjudicationResult> {
-    const answer = deps.adjudicator(modelSource).adjudicate(evidence, options);
-    return this.waitForApprovalStage(answer, options.abortSignal, () => ({
-      outcome: "escalate", cause: "turn-aborted", reason: "the turn was stopped",
-    }));
-  }
-
-  private async waitForApprovalStage<T>(answer: Promise<T>, signal: AbortSignal | undefined, cancelled: () => T): Promise<T> {
-    if (signal === undefined) return answer;
-    if (signal.aborted) {
-      // Nothing will fire a listener for an abort that already happened.
-      void answer.catch(() => undefined);
-      return cancelled();
-    }
-    let onAbort: (() => void) | undefined;
-    const stopped = new Promise<T>((resolve) => {
-      onAbort = (): void => resolve(cancelled());
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-    try {
-      return await Promise.race([answer, stopped]);
-    } finally {
-      if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
-      // The losing side of the race still settles. Without this, an adjudication that rejects after the abort won is an unhandled rejection, which this process treats as fatal.
-      void answer.catch(() => undefined);
-    }
-  }
-
-  // Ask the parent, and turn its answer into what happens to this ask. Reached only through parentAdjudicationLane, which is what decided that asking is permitted at all. Its only non-escalating answers are one allow-once and one deny-once, neither carrying a `rememberPattern`: a parent may decide one call and may not mint a rule that outlives it. Everything else — a timeout, a spent budget, an unparseable answer, a missing adjudicator, a thrown provider, an explicit "I cannot tell", or one denial too many — ends at the user's dock carrying a ParentEscalationNotice, so the user is told that a stage they never saw has already run.
-  private async askParent(
-    lane: {
-      deps: ParentAdjudicationGateDeps;
-      policy: ReviewerParentAdjudicationBlock;
-      verdict: RiskVerdict;
-    },
-    input: {
-      request: ApprovalRequest;
-      childProvenance: ChildAgentProvenance;
-      abortSignal?: AbortSignal;
-      // Pre-rendered audit fields for this request.
-      auditFields: string;
-    },
-  ): Promise<ParentAdjudicationStageOutcome> {
-    const { request, childProvenance } = input;
-    const { deps, policy, verdict } = lane;
-    const sessionId = request.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID;
-    const logRow = (row: string): void => {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId,
-        type: "approval",
-        output: row,
-      });
-    };
-
-    const detections = new Set<string>();
-    let result: ParentAdjudicationResult;
-    try {
-      // Host-composed evidence only. The masking is the same display masking the dock gets, so the parent cannot be shown a secret the user would not have been shown, and no prose a child wrote is in it. Composed INSIDE the try, not before it. Masking walks a structure the child chose the shape of, and a throw out of that walk would reject this method, reject `requestAndWait`, and surface as a tool error — the one failure of this lane that would never reach the dock.
-      const evidence: ParentAdjudicationEvidence = {
-        toolName: request.toolName,
-        ...(request.toolCategory === undefined
-          ? {}
-          : { toolCategory: request.toolCategory }),
-        ...(request.source === undefined ? {} : { source: request.source }),
-        maskedArgs: maskArgsForDisplay(
-          boundedEvidenceArgs(request.args),
-          detections,
-        ),
-        verdict,
-        ...(request.target?.filePath === undefined
-          ? {}
-          : {
-              targetFilePath: maskArgsForDisplay(
-                request.target.filePath,
-                detections,
-              ) as string,
-            }),
-        // The scope the permission decision actually used, when the pipeline captured one. An empty list is weaker evidence, never a wider one.
-        allowedDirectories: request.evaluationContext?.allowedDirectories ?? [],
-        child: {
-          childSessionId: childProvenance.childSessionId,
-          childTitle: childProvenance.childTitle,
-          spawnTaskSummary: childProvenance.spawnTaskSummary,
-        },
-        // Host-composed, and the one fact about this ask the parent cannot otherwise see: a sibling's message is what prompted the call. It is already the leading segment of the `reason` the dock would have shown, so a parent-answered ask is the ONLY lane where omitting it hides something the human path displays.
-        ...(request.approvalReasonPrefix === undefined
-          ? {}
-          : { a2aInfluenceLabel: request.approvalReasonPrefix }),
-        ...this.parentContextBlock(policy, childProvenance.originSessionId),
-      };
-      if (detections.size > 0) {
-        // The dock path writes this row when it masks a payload; a parent-answered ask never reaches that path, and an ask whose arguments held credentials must not be the one class of ask with no record that masking happened — especially since this payload leaves the machine.
-        logRow(
-          `[approval:args-dlp-masked] ${request.id} toolName=${request.toolName} lane=parent-adjudication detections=${[...detections].join(",")}`,
-        );
-      }
-      result = await this.adjudicateWithin(deps, policy.model, evidence, {
-        parentSessionId: childProvenance.originSessionId,
-        timeoutMs: policy.timeoutMs,
-        maxPerChildRun: policy.maxPerChildRun,
-        ...(input.abortSignal === undefined
-          ? {}
-          : { abortSignal: input.abortSignal }),
-      });
-    } catch {
-      // A throwing adjudicator is a broken adjudicator, and this lane's whole contract is that nothing about it can produce an allow. Caught rather than propagated because an exception out of here would abandon the ask entirely — the user would never be offered the call at all.
-      result = {
-        outcome: "escalate",
-        cause: "llm-error",
-        reason: "the adjudication call failed",
-      };
-    }
-
-    if (result.outcome === "allow-once") {
-      this.clearParentDenialStreak(
-        childProvenance.childSessionId,
-        request.toolName,
-      );
-      logRow(
-        `[approval:parent-adjudicated] ${request.id} ${input.auditFields} answeredBy=${approvalAnswererAuditToken("parent-agent")} child=${auditSafeText(childProvenance.childSessionId)} parent=${auditSafeText(childProvenance.originSessionId)} reason=${auditSafeText(result.reason)} → allow-once`,
-      );
-      // No pending entry is ever created for this ask, so there is nothing for `resolve` to bind a later choice to and nothing for a user-approval record to be minted from. No `rememberPattern` either — the away answer sets none for the same reason, and its only consumers persist it as a durable rule.
-      return {
-        kind: "answered",
-        decision: markParentAdjudicatedDecision(
-          { requestId: request.id, choice: "allow-once" },
-          { outcome: "allow-once", reason: result.reason },
-        ),
-      };
-    }
-
-    if (result.outcome === "deny") {
-      const streak = this.recordParentDenial(
-        childProvenance.childSessionId,
-        request.toolName,
-      );
-      if (streak < PARENT_DENIAL_ESCALATION_THRESHOLD) {
-        logRow(
-          `[approval:parent-adjudicated] ${request.id} ${input.auditFields} answeredBy=${approvalAnswererAuditToken("parent-agent")} child=${auditSafeText(childProvenance.childSessionId)} parent=${auditSafeText(childProvenance.originSessionId)} streak=${streak} reason=${auditSafeText(result.reason)} → deny-once`,
-        );
-        // Deliberately no `rememberPattern`: a parent that could set one would be minting a durable deny rule for a user who never saw the request. Its reason travels on the host-only provenance map, which a renderer cannot read or write.
-        return {
-          kind: "answered",
-          decision: markParentAdjudicatedDecision(
-            { requestId: request.id, choice: "deny-once" },
-            { outcome: "deny", reason: result.reason },
-          ),
-        };
-      }
-      // The streak is cleared as it escalates, so the user is asked once per run of denials rather than for every ask from here on.
-      this.clearParentDenialStreak(
-        childProvenance.childSessionId,
-        request.toolName,
-      );
-      logRow(
-        `[approval:parent-escalated] ${request.id} ${input.auditFields} child=${auditSafeText(childProvenance.childSessionId)} parent=${auditSafeText(childProvenance.originSessionId)} cause=repeated-denial streak=${streak} reason=${auditSafeText(result.reason)}`,
-      );
-      return {
-        kind: "escalate",
-        notice: {
-          cause: "repeated-denial",
-          reason: result.reason,
-          childTitle: displaySafeChildTitle(childProvenance.childTitle),
-        },
-      };
-    }
-
-    logRow(
-      `[approval:parent-escalated] ${request.id} ${input.auditFields} child=${auditSafeText(childProvenance.childSessionId)} parent=${auditSafeText(childProvenance.originSessionId)} cause=${result.cause} reason=${auditSafeText(result.reason)}`,
-    );
-    return {
-      kind: "escalate",
-      notice: {
-        cause: result.cause,
-        reason: result.reason,
-        childTitle: displaySafeChildTitle(childProvenance.childTitle),
-      },
-    };
-  }
-
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
     assertEgressHostRequestShape(req);
@@ -1491,24 +908,46 @@ export class ApprovalGate {
       return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once" });
     }
     const {
-      forceExplicit = false,
+      forceExplicit: requestedForceExplicit = false,
+      ownerUnattended = false,
+      toolApprovalWait,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
       hostTerminal,
+      hostTerminalAfterExternalContent: _requestedAfterExternalContent,
+      userOwnedSurface: requestedUserOwnedSurface,
+      userOwnedSurfaceReviewFallback: requestedSurfaceReviewFallback,
       executionPlan: requestedExecutionPlan,
       executionCwd: _requestedExecutionCwd,
       sandboxCapability: requestedSandboxCapability,
       remoteControllerOrigin,
       remoteControllerAuthority,
-      scopeTargetFilePaths,
       abortSignal,
       childProvenance,
-      parentAdjudicationEligible,
       reviewerOutcome,
       reviewerApprovalBasis,
+      approvalRuleBasis,
       verifiedShellCommand,
       ...request
-    } = req;
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown };
+    if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
+      return markHostApprovalRejectedDecision({
+        requestId: req.id,
+        choice: "deny-once",
+        rememberPattern: "Approval execution budget was not issued by the host",
+      });
+    }
+    const forceExplicit = requestedForceExplicit || childProvenance !== undefined ||
+      remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined;
+    if ((requestedUserOwnedSurface !== undefined && (!isUserOwnedSurface(requestedUserOwnedSurface) || !req.sessionId)) ||
+      (requestedSurfaceReviewFallback !== undefined && (requestedSurfaceReviewFallback !== true || requestedUserOwnedSurface === undefined))) {
+      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: "Invalid user-owned surface approval" });
+    }
+    const userOwnedSurface = !forceExplicit && req.category === "tool" && (req.kind === undefined || req.kind === "tool" || req.kind === "out-of-allowed-dir")
+      ? requestedUserOwnedSurface : undefined;
+    if (requestedUserOwnedSurface !== undefined && req.evaluationContext?.headless === true) {
+      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: NO_APPROVER_MESSAGE });
+    }
     // Strip bindings, controller authority, abort signals and child eligibility/provenance before spreading renderer requests; live host capability must not reach renderer or audit. Audit only allowlisted plan fields and inject origin into every row so absence cannot masquerade as desk provenance.
     const auditFieldsFor = (
       fields: ApprovalAuditFields,
@@ -1518,23 +957,6 @@ export class ApprovalGate {
         { ...fields, remoteControllerOrigin },
         executionPlan,
       );
-    const rationaleDisplay = parseValidRationaleApprovalDisplay(req);
-
-    // Rationale is a host-owned, one-shot approval surface. Validate its narrow explanatory card before any enrichment, notification, nonce minting, or renderer IPC so a malformed/mismatched request cannot turn into a clickable approval dock.
-    if (req.kind === "rationale" && rationaleDisplay === null) {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:rationale-display-invalid] ${req.id} ${auditFieldsFor(req)} -> deny-once`,
-      });
-      return markHostApprovalRejectedDecision({
-        requestId: req.id,
-        choice: "deny-once",
-        rememberPattern: "invalid rationale approval display",
-      });
-    }
-
     const suppliedExecutionPlan = requestedExecutionPlan === undefined
       ? undefined
       : isIssuedHostShellExecutionPlanAuditProjection(requestedExecutionPlan)
@@ -1557,31 +979,23 @@ export class ApprovalGate {
 
     const requestedChoices = req.allowedChoices;
     const verdictAtApproval = resolveUserApprovalVerdict(req);
-    const assessmentUnavailable = reviewerOutcome === "unavailable" || reviewerOutcome === "error" ||
-      reviewerOutcome === "timeout" || reviewerOutcome === "malformed";
-    const scopedOrdinaryRequest =
-      (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
-      req.evaluationContext?.headless === false &&
-      Boolean(req.evaluationContext.executionCwd) &&
-      !forceExplicit && req.mode !== "ask_all" &&
-      remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
-    const assessmentBasis = matchesReviewerApprovalBasis(reviewerApprovalBasis, req)
-      ? reviewerApprovalBasis : undefined;
     const hasOneShotApprovalChoiceContract =
       requestedChoices?.length === 2 &&
       requestedChoices.includes("allow-once") &&
       requestedChoices.includes("deny-once");
-    // Exact one-shot requests and rationale prompts are never eligible for a durable user-approval record. Treat this as an invariant instead of a caller preference: a future emitter must not be able to widen a per-invocation decision by setting the host-only option to `true`.
+    // Exact one-shot requests are never eligible for a durable user-approval record. Treat this as an invariant instead of a caller preference: a future emitter must not be able to widen a per-invocation decision by setting the host-only option to `true`.
     const durableApprovalRecordAllowed =
-      req.kind !== "rationale" &&
+      userOwnedSurface === undefined && !forceExplicit &&
       !hasOneShotApprovalChoiceContract &&
       requestedDurableApprovalRecordAllowed !== false;
     const hasOneShotHostShellApprovalContract =
       forceExplicit === true &&
       hasOneShotApprovalChoiceContract;
+    const rawShellArgs = req.args && typeof req.args === "object" && !Array.isArray(req.args)
+      ? req.args as Record<string, unknown> : undefined;
     // A regular builtin command dock may save an escape rule and then answer allow-once. Its native action still uses the same authenticated receipt.
     if (hostTerminal !== undefined && (req.toolName !== "terminal_run" || req.source !== "builtin" || req.toolCategory !== "shell"
-      || requestedDurableApprovalRecordAllowed !== false || req.sessionId !== hostTerminal.sessionId)) {
+      || requestedDurableApprovalRecordAllowed !== false || req.sessionId !== hostTerminal.sessionId || typeof rawShellArgs?.command !== "string" || rawShellArgs.command !== hostTerminal.command)) {
       throw new Error("approval: host terminal binding does not describe this request");
     }
     const hasShellRuleApprovalContract = !forceExplicit && requestedChoices === undefined &&
@@ -1648,7 +1062,7 @@ export class ApprovalGate {
         requestId: req.id,
         choice: "deny-once",
         rememberPattern: this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null
-          ? "explicit host execution requires a local desktop approval: no approval surface"
+          ? NO_APPROVER_MESSAGE
           : "explicit host execution requires a local desktop approval",
       });
     }
@@ -1656,64 +1070,61 @@ export class ApprovalGate {
     // Sandbox capability injection is scoped to the tool-execution approval surface. Non-execution surfaces (out-of-allowed-dir directory confirm, agent-action/mode-change config asks) have no sandbox row in their DOM and showing "isolation: none" on a config change is misleading because no tool will run. The injection guard checks BOTH `kind` AND `toolCategory`: - `kind === "out-of-allowed-dir"` → no injection - `kind === "agent-action"` → no injection - `toolCategory === "meta"` → no injection (catches mode-change asks that default `kind` to "tool") - else (tool execution) → inject Caller-supplied capability is always preserved (`??` semantics).
     const isExecutionKind =
       (req.kind === undefined ||
-        req.kind === "tool" ||
-        req.kind === "rationale") &&
+        req.kind === "tool") &&
       req.toolCategory !== "meta";
     const displayedSandboxCapability = requestedSandboxCapability ??
       (isExecutionKind && req.source !== undefined
         ? resolveReviewerSandboxCapability(req.source, req.toolName)
         : undefined);
-    const riskCeilingAtApproval = assessmentUnavailable && scopedOrdinaryRequest
-      ? assessmentBasis?.ruleVerdict : undefined;
-    const highRiskOneShot = verdictAtApproval === "high" &&
-      (riskCeilingAtApproval === undefined || riskCeilingAtApproval === "high");
-    const canRememberRequest = durableApprovalRecordAllowed && !highRiskOneShot &&
-      riskCeilingAtApproval !== "high" &&
+    const canRememberRequest = durableApprovalRecordAllowed &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
-      !forceExplicit && req.mode !== "ask_all" &&
+      !forceExplicit &&
       remoteControllerOrigin === undefined && remoteControllerAuthority === undefined &&
       (requestedChoices === undefined || requestedChoices.includes("allow-always"));
+    const assessmentUnavailable = reviewerOutcome === "unavailable" || reviewerOutcome === "error" ||
+      reviewerOutcome === "timeout" || reviewerOutcome === "malformed";
+    const unreviewed = reviewerOutcome === undefined || reviewerOutcome === "host-determined";
+    const verifiedApprovalBasis = canRememberRequest && req.evaluationContext?.headless === false
+      ? unreviewed && matchesApprovalRuleBasis(approvalRuleBasis, req)
+        ? approvalRuleBasis
+        : assessmentUnavailable && matchesReviewerApprovalBasis(reviewerApprovalBasis, req)
+          ? reviewerApprovalBasis
+          : undefined
+      : undefined;
+    const riskCeilingAtApproval = verifiedApprovalBasis?.ruleVerdict;
     // One-shot requests never persist a working-directory identity. Do not make their approval depend on validating an unrelated persistent-store scope.
     const workingDirectory = canRememberRequest
-      ? assessmentBasis?.workingDirectory ??
-        (req.evaluationContext?.executionCwd
+      ? verifiedApprovalBasis?.workingDirectory ?? (req.evaluationContext?.executionCwd
           ? captureApprovalWorkingDirectory(req.evaluationContext.executionCwd) : undefined)
       : undefined;
     const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
-    const rawShellArgs = req.args && typeof req.args === "object" && !Array.isArray(req.args)
-      ? req.args as Record<string, unknown> : undefined;
     const shellRuleCwd = req.evaluationContext?.executionCwd;
-    // A shell card saves only the exact rule for this one command, which the person reads on the card; floors, destructive and secret-bearing commands have no such rule (`buildShellRuleApproval`), and a deny or ask rule still wins over a saved allow. So a save is open to every card with the shell-rule contract (Plan B and explicit host included, owner 2026-10-25), whether or not the exact-approval store (Store B) may record this request, and never to a one-shot (a high-risk verdict included), rationale, remote-controller or ask-all request.
-    const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract && !highRiskOneShot &&
-      req.mode !== "ask_all" && remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
+    // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
+    const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract &&
+      remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
     const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
-    const shellRule = hostTerminal !== undefined
-      // The person's own host terminal: an exact HostTerminal(...) allow, always user-global, never a session rule; a Bash deny still narrows.
-      ? typeof rawShellArgs?.command === "string" && rawShellArgs.command === hostTerminal.command
-        ? buildHostTerminalRuleApproval(hostTerminal, { allow: shellRuleSaveAllowed, deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined })
-        : (() => { throw new Error("approval: host terminal command does not match the request"); })()
-      : req.source === "builtin" && shellRuleDialect !== undefined &&
+    if (hostTerminal !== undefined && rawShellArgs?.command !== hostTerminal.command) throw new Error("approval: host terminal command does not match the request");
+    const shellRule = userOwnedSurface !== undefined || hostTerminal !== undefined ? undefined : req.source === "builtin" && shellRuleDialect !== undefined &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       typeof rawShellArgs?.command === "string" && shellRuleCwd
       ? buildShellRuleApproval(shellRuleDialect, rawShellArgs.command, shellRuleCwd, {
         allow: shellRuleSaveAllowed,
         // A deny only narrows, so "Always deny" stays on one-shot cards too; never for a remote controller.
-        deny: remoteControllerOrigin === undefined && remoteControllerAuthority === undefined,
+        deny: !forceExplicit && remoteControllerOrigin === undefined && remoteControllerAuthority === undefined,
       }, req.sessionId, verifiedShellCommand)
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
+      ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
+      ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
       ...(executionPlanAudit === undefined
         ? {}
         : { executionPlan: executionPlanAudit }),
       ...(oneShotPermitBinding === undefined
         ? {}
         : { executionCwd: oneShotPermitBinding.resolvedCwd }),
-      // Rationale's generic reason is deliberately not caller-controlled. Set this before all downstream handling, including audit, OS notification, HMAC sealing, pending state, and renderer narrowing.
-      reason:
-        req.kind === "rationale" && rationaleDisplay !== null
-          ? RATIONALE_HOST_OWNED_REASON
-          : req.reason,
+      reason: req.reason,
       // A sealed execution plan is the only renderer-safe authority description for canonical host shells. Its projection deliberately excludes the host capability's free-form reason, so never retain or inject the raw capability alongside it.
       ...(executionPlanAudit === undefined
         ? {
@@ -1723,62 +1134,16 @@ export class ApprovalGate {
           }
         : {}),
       allowedChoices:
-        req.kind === "rationale" || highRiskOneShot
+        userOwnedSurface !== undefined || hostTerminal !== undefined || forceExplicit
           ? ["allow-once", "deny-once"]
           : req.allowedChoices,
       persistentAllowAllowed,
       exactRecordAllowed: durableApprovalRecordAllowed,
       ...(shellRule === undefined ? {} : { shellRule }),
       persistentApprovalCwd: persistentAllowAllowed ? workingDirectory?.path : undefined,
-      requireExplicit:
-        req.kind === "rationale"
-          ? true
-          // Only an explicit false relaxes it: a policy object that lost the field stays explicit.
-          : oneShotPermitBinding !== undefined || hostTerminal !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
+      // Only an explicit false relaxes it: a policy object that lost the field stays explicit.
+      requireExplicit: userOwnedSurface !== undefined || oneShotPermitBinding !== undefined || hostTerminal !== undefined || forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
     };
-
-    // Sensitive paths hard-block before all approval/mode/admin paths; canonicalize before matching so traversal, Unicode, spaces, case and slash variants cannot bypass it.
-    const rawCandidate = fullReq.target?.filePath;
-    if (rawCandidate) {
-      const caseFolded = caseFoldForMatch(canonicalizePathForMatch(rawCandidate));
-      const effect = fullReq.isReadOnly === true && fullReq.kind !== "out-of-allowed-dir" ? "read" : "write";
-      const matchedPattern = isSensitivePath(caseFolded, effect);
-      if (matchedPattern) {
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:sensitive-path-blocked] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} raw=${rawCandidate} canonical=${caseFolded} pattern=${matchedPattern} → deny-once (hard-block)`,
-        });
-        return markHostApprovalRejectedDecision({
-          requestId: fullReq.id,
-          choice: "deny-once",
-          rememberPattern: `Sensitive credential path blocked: ${matchedPattern}`,
-        });
-      }
-    }
-
-    // Read-only auto-approval never applies to directory-scope grants; widening scope always needs explicit consent.
-    if (
-      fullReq.isReadOnly === true &&
-      oneShotPermitBinding === undefined &&
-      fullReq.mode !== "ask_all" &&
-      fullReq.kind !== "out-of-allowed-dir" &&
-      fullReq.kind !== "agent-action" &&
-      fullReq.kind !== "rationale"
-    ) {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:read-only-auto-approve] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} mode=${fullReq.mode ?? "default"} → allow-once`,
-      });
-      return {
-        requestId: fullReq.id,
-        choice: "allow-once",
-        rememberPattern: "read-only auto-approve",
-      };
-    }
 
     // Missing or destroyed registered owners have the same fail-closed semantics as headless runs.
     if (this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
@@ -1795,7 +1160,7 @@ export class ApprovalGate {
       return markHostApprovalRejectedDecision({
         requestId: fullReq.id,
         choice: "deny-once",
-        rememberPattern: "no approval surface",
+        rememberPattern: NO_APPROVER_MESSAGE,
       });
     }
 
@@ -1808,7 +1173,7 @@ export class ApprovalGate {
       input: `[approval:requested] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)}`,
     });
 
-    // Aborted turns receive host-rejected deny-once with no remembered pattern, never a user-authored denial. Share the cancelled audit marker with rationale retirement and retain the stop reason to distinguish owner Stop from host tile release.
+    // Aborted turns receive host-rejected deny-once with no remembered pattern, never a user-authored denial. Share the cancelled audit marker with host retirement and retain the stop reason to distinguish owner Stop from host tile release.
     const abortCause = (): string => {
       const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : abortSignal?.reason;
       if (reason instanceof Error) return reason.message;
@@ -1828,100 +1193,6 @@ export class ApprovalGate {
     };
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
     if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
-
-    // Away authority runs after all path, binding, plan, rationale and window hard checks and after requested audit, before notifications/rendering. It reads only the request and local grant; inbound messages cannot influence this decision.
-    const away = this.awayAuthority.consume(
-      {
-        remoteControllerOrigin,
-        remoteControllerAuthority,
-        sessionId: fullReq.sessionId,
-        // The request's own field, strictly. Deliberately not `getRequestSnapshot`, which defaults a missing source to "builtin".
-        source: fullReq.source,
-        kind: fullReq.kind,
-        category: fullReq.category,
-        toolCategory: fullReq.toolCategory,
-        allowedChoices: fullReq.allowedChoices,
-        // The gate's derived value, not the caller's requested one.
-        durableApprovalRecordAllowed,
-        hostShellExecutionPermitBound:
-          hostShellExecutionPermitBinding !== undefined,
-        hostTerminalBound: hostTerminal !== undefined,
-        // The full set, not `target.filePath` — that is the display value and is only the first extracted path.
-        targetFilePaths: scopeTargetFilePaths ?? [],
-      } satisfies AwayAuthorityCandidate,
-      Date.now(),
-    );
-    if (away.answer) {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:away-answered] ${fullReq.id} ${auditFieldsFor({ ...fullReq, answeredBy: "away-authority" }, executionPlanAudit)} remaining=${away.remaining} → allow-once`,
-      });
-      if (away.remaining === 0) {
-        // The grant retired itself spending its last unit. Said here because this is the only moment it can be said: from the next call on there is no grant left to explain why the away answers stopped.
-        this.auditLogger?.log({
-          timestamp: new Date().toISOString(),
-          sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-          type: "approval",
-          output: `[approval:away-retired] reason=budget-spent`,
-        });
-      }
-      // Returning here is what makes the answer one-shot in the strongest available sense: no pending entry is created, so there is nothing for `resolve` to accept a later choice against and nothing for `getRequestSnapshot` to bind a user-approval record to. No `rememberPattern` either. Its only consumers persist it as an allow/deny pattern, and this answer must leave nothing behind.
-      return { requestId: fullReq.id, choice: "allow-once" };
-    }
-    if (away.reportable) {
-      // An armed grant saw a paired-platform ask and did not answer it. The call now falls through to a desk nobody is at, so without this row the only trace would be a timeout with no stated cause.
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:away-declined] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} reason=${away.refusal}`,
-      });
-    }
-
-    // Tier 2: parent adjudication Its position mirrors the away answerer's above it and is load-bearing for the same reason: every hard check has already run, so a parent answer cannot re-open one, and it sits above the OS notification and the renderer send so a call it answers never rings a phone or paints a dock. It runs only for asks that carry host-set child provenance, which is a fact no renderer and no child can author.
-    let parentEscalation: ParentEscalationNotice | undefined;
-    const parentLane =
-      childProvenance === undefined
-        ? null
-        : this.parentAdjudicationLane({
-            request: fullReq,
-            callerEligible: parentAdjudicationEligible === true,
-            forceExplicit,
-            oneShotPermitBound: oneShotPermitBinding !== undefined,
-            highRiskOneShot,
-            ...(remoteControllerOrigin === undefined
-              ? {}
-              : { remoteControllerOrigin }),
-          });
-    if (parentLane !== null && childProvenance !== undefined) {
-      const parentAbortSignal = AbortSignal.any([this.lifetime.signal, ...(abortSignal === undefined ? [] : [abortSignal])]);
-      const stage = await this.askParent(parentLane, {
-        request: fullReq,
-        childProvenance,
-        abortSignal: parentAbortSignal,
-        auditFields: auditFieldsFor(fullReq, executionPlanAudit),
-      });
-      // The stage awaits a model call, and the turn behind this ask can end during it. Checked before the outcome is honoured, and before the pending entry that the abort listener would otherwise cover exists: an abort that arrives in this window has no listener to fire, so without this check a stopped turn would sit on the dock until the five-minute timeout.
-      if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
-      if (stage.kind === "answered") return stage.decision;
-      if (stage.kind === "escalate") {
-        // Tier 3, for a run nobody is watching. Returns null — and falls through to the dock below — whenever the route does not apply or could not record the ask.
-        const deferred = await this.deferParentEscalation({
-          request: fullReq,
-          childProvenance,
-          policy: parentLane.policy,
-          notice: stage.notice,
-          verdict: parentLane.verdict,
-          auditFields: auditFieldsFor(fullReq, executionPlanAudit),
-          abortSignal: parentAbortSignal,
-        });
-        if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
-        if (deferred !== null) return deferred;
-        parentEscalation = stage.notice;
-      }
-    }
 
     if (oneShotPermitBinding !== undefined) {
       const displayedArgs = maskArgsForDisplay(fullReq.args, new Set<string>());
@@ -1968,13 +1239,12 @@ export class ApprovalGate {
     const signedReq: ApprovalRequest = {
       ...fullReq,
       // Added after the preimage above rather than before it, deliberately. The signature authenticates what the renderer echoes back, and this field is outbound-only — see its declaration.
-      ...(parentEscalation === undefined ? {} : { parentEscalation }),
       nonce,
       hmac: expectedHmac,
     };
 
-    return new Promise<ApprovalDecision>((resolve, reject) => {
-      // One teardown authority for every way this request can end. `settle` is what the pending entry stores, so the renderer answer, the timeout, the rationale cancel and the shutdown sweep each detach the abort listener without any of them having to know it exists. Otherwise a turn that asks a hundred times leaves a hundred live listeners on one signal, and `AbortSignal` is an `EventTarget`, which starts warning about exactly that at eleven.
+    const waitForHuman = (): Promise<ApprovalDecision> => new Promise((resolve, reject) => {
+      // One teardown authority for every way this request can end. `settle` is what the pending entry stores, so the renderer answer, the timeout, host cancellation and the shutdown sweep each detach the abort listener without any of them having to know it exists. Otherwise a turn that asks a hundred times leaves a hundred live listeners on one signal, and `AbortSignal` is an `EventTarget`, which starts warning about exactly that at eleven.
       let detachAbortListener: (() => void) | undefined;
       // The renderer the card was sent to; the settle announcement reaches it and whichever renderer shows the session by then.
       let sentTo: WebContents | null = null;
@@ -2004,7 +1274,19 @@ export class ApprovalGate {
           });
         }
       };
-      const timer = setTimeout(() => {
+      const waitMs = ownerUnattended
+        ? this.ownerAwayAutoSkipMinutes * 60_000
+        : this.timeoutMs;
+      const deadline = Date.now() + waitMs;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expire = (): void => {
+        const remaining = deadline - Date.now();
+        if (remaining > 0) {
+          timer = setTimeout(expire, Math.min(remaining, 2_147_483_647));
+          const entry = this.pending.get(fullReq.id);
+          if (entry) entry.timer = timer;
+          return;
+        }
         this.pending.delete(fullReq.id);
         // Timeout denies once without persisting authority.
         this.auditLogger?.log({
@@ -2016,10 +1298,12 @@ export class ApprovalGate {
         const timeoutDecision: ApprovalDecision = {
           requestId: fullReq.id,
           choice: "deny-once",
+          ...(ownerUnattended ? { rememberPattern: NO_APPROVER_MESSAGE } : {}),
         };
         hostTimeoutDecisions.add(timeoutDecision);
         settle(timeoutDecision);
-      }, this.timeoutMs);
+      };
+      if (waitMs > 0) timer = setTimeout(expire, Math.min(waitMs, 2_147_483_647));
 
       if (abortSignal !== undefined) {
         const onAbort = (): void => {
@@ -2034,6 +1318,8 @@ export class ApprovalGate {
       }
 
       this.pending.set(fullReq.id, {
+        ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
+        ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
         resolve: settle,
         reject,
         timer,
@@ -2096,7 +1382,7 @@ export class ApprovalGate {
 
       // Announce the parked request to host-internal observers. Positioned after `pending.set` so an observer's answer through `resolve` finds the entry, and below every host-only short circuit above (which all returned before a pending entry existed).
       // Desktop-only requests are never announced to host-internal observers (Telegram and other remote surfaces answer through them).
-      if (oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
+      if (userOwnedSurface === undefined && oneShotPermitBinding?.executionMode !== "host" && hostTerminal === undefined) this.notifyPendingParked({
         requestId: fullReq.id,
         toolName: fullReq.toolName,
         ...(fullReq.source === undefined ? {} : { source: fullReq.source }),
@@ -2117,14 +1403,7 @@ export class ApprovalGate {
       // Sealing is total by construction (the closing constructor throws rather than emitting an unparseable display), so this throw path should be unreachable — but an unreachable throw that would strand the pending entry until timeout is still a liveness hole. Mirror the send-failure branch below: clear pending, audit, deny once.
       let maskedSignedReq: ApprovalRequest;
       try {
-        maskedSignedReq =
-        fullReq.kind === "rationale" && rationaleDisplay !== null
-          ? createRendererSafeRationaleApprovalRequest(
-              signedReq,
-              rationaleDisplay,
-              dlpHits,
-            )
-          : {
+        maskedSignedReq = {
               ...signedReq,
               args: maskArgsForDisplay(fullReq.args, dlpHits),
               ...(signedReq.approvalPurpose
@@ -2190,10 +1469,16 @@ export class ApprovalGate {
           markHostApprovalRejectedDecision({
             requestId: fullReq.id,
             choice: "deny-once",
-            ...(surfaceUnavailable ? { rememberPattern: "no approval surface" } : {}),
+            ...(surfaceUnavailable ? { rememberPattern: NO_APPROVER_MESSAGE } : {}),
           }),
         );
       }
+    });
+    return (toolApprovalWait ?? withToolApprovalWait)(() => {
+      if (this.lifetime.signal.aborted || abortSignal?.aborted) {
+        return Promise.resolve(denyForAbortedTurn());
+      }
+      return waitForHuman();
     });
   }
 
@@ -2264,7 +1549,7 @@ export class ApprovalGate {
       // damage the owner's pending request, even with valid signed contents.
       return null;
     }
-    if ((entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
+    if ((entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -2295,6 +1580,15 @@ export class ApprovalGate {
       return forcedDecision;
     }
 
+    if ((decision.userOwnedSurfaceChoice !== undefined &&
+      (entry.userOwnedSurface === undefined || entry.userOwnedSurfaceReviewFallback === true || decision.choice !== "allow-once" || !isUserOwnedSurfaceChoice(decision.userOwnedSurfaceChoice))) ||
+      (entry.userOwnedSurface !== undefined && entry.userOwnedSurfaceReviewFallback !== true && decision.choice === "allow-once" && !isUserOwnedSurfaceChoice(decision.userOwnedSurfaceChoice))) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Invalid user-owned surface choice" });
+      entry.resolve(rejected);
+      return rejected;
+    }
     if (
       entry.allowedChoices &&
       !entry.allowedChoices.includes(decision.choice)
@@ -2349,21 +1643,45 @@ export class ApprovalGate {
         return forcedDecision;
       }
     }
-    // A rationale response is a sealed, one-shot verdict. Do not pass any renderer-provided auxiliary text or structured content to audit or the caller after the authenticated choice has been accepted.
+    // User-owned surface choices carry only their authenticated selection, never auxiliary renderer content.
     const resolvedDecision: ApprovalDecision =
-      entry.kind === "rationale"
+      entry.userOwnedSurface !== undefined
         ? {
             requestId,
             choice: decision.choice,
             nonce: decision.nonce,
             hmac: decision.hmac,
+            ...(entry.userOwnedSurface !== undefined && decision.choice === "allow-once" ? { userOwnedSurfaceChoice: decision.userOwnedSurfaceChoice } : {}),
           }
         : decision;
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
+    if (nativeRenderer && entry.userOwnedSurface !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isUserOwnedSurfaceChoice(resolvedDecision.userOwnedSurfaceChoice)) {
+      this.approvedSurfaceChoices.set(resolvedDecision, { sessionId: entry.sessionId, surface: entry.userOwnedSurface, choice: resolvedDecision.userOwnedSurfaceChoice });
+    }
+    const exactTransition = entry.exactSaveTransition;
+    if (nativeRenderer && entry.kind === "out-of-allowed-dir" && resolvedDecision.choice.startsWith("allow")) {
+      this.authenticatedDirectoryAnswers.add(resolvedDecision);
+    }
+    const transition = entry.ruleSaveTransition;
+    if (nativeRenderer && resolvedDecision.choice.startsWith("allow")) {
+      const permission = transition?.valid && !transition.saving && transition.from !== transition.to
+        ? { from: transition.from, to: transition.to } : undefined;
+      const approvals = exactTransition?.valid && !exactTransition.saving && exactTransition.from !== exactTransition.to
+        ? { from: exactTransition.from, to: exactTransition.to, scope: exactTransition.scope } : undefined;
+      if (permission || approvals) this.approvedPolicyMutations.set(resolvedDecision, {
+        ...(permission ? { permission } : {}), ...(approvals ? { approvals } : {}),
+      });
+    }
+    if (nativeRenderer && transition?.valid && !transition.saving && transition.from !== transition.to &&
+      (resolvedDecision.choice === "allow-once" || resolvedDecision.choice === "allow-session" || resolvedDecision.choice === "allow-always")) {
+      this.approvedPolicyTransitions.set(resolvedDecision, { from: transition.from, to: transition.to });
+    }
     if (
       entry.hostShellExecutionPermitBinding !== undefined &&
-      resolvedDecision.choice === "allow-once"
+      (resolvedDecision.choice === "allow-once" ||
+        resolvedDecision.choice === "allow-session" ||
+        resolvedDecision.choice === "allow-always")
     ) {
       hostApprovedOneShotExecutionBindings.set(
         resolvedDecision,
@@ -2377,18 +1695,18 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
-    if (nativeRenderer && entry.sessionId !== undefined) recordManualApproval(resolvedDecision, entry.sessionId);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }
 
-  // Fail-closed cancellation boundary for the host-owned rationale flow. This deliberately refuses to cancel ordinary approval requests: callers may retire only the exact pending rationale request they own. Removing the entry before resolving it makes a late renderer response a harmless unknown-request replay.
-  cancelPendingRationale(
+  // Host cancellation binds the exact pending card and conversation; late renderer answers cannot revive it.
+  cancelPendingRequest(
     requestId: string,
+    sessionId: string,
     reason: "caller-abort" | "session-close" = "caller-abort",
   ): boolean {
     const entry = this.pending.get(requestId);
-    if (!entry || entry.kind !== "rationale") return false;
+    if (!entry || entry.sessionId !== sessionId || entry.category !== "tool") return false;
 
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
@@ -2402,7 +1720,7 @@ export class ApprovalGate {
       markHostApprovalRejectedDecision({
         requestId,
         choice: "deny-once",
-        rememberPattern: `rationale approval cancelled: ${reason}`,
+        rememberPattern: `approval cancelled: ${reason}`,
       }),
     );
     return true;
@@ -2427,7 +1745,7 @@ export class ApprovalGate {
     verdictAtApproval: RiskVerdict["level"];
   } | null {
     const entry = this.pending.get(requestId);
-    if (!entry || entry.kind === "rationale") return null;
+    if (!entry) return null;
     return {
       toolName: entry.toolName,
       args: entry.args,

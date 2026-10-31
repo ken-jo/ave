@@ -105,8 +105,6 @@ export function createElicitationResolverFactory(deps: {
         source: "mcp",
         createdAt: Date.now(),
         trustOrigin: "plugin-emitted",
-        isReadOnly: false,
-        mode: "default",
       });
 
       if (decision.choice !== "allow-once") return { action: "decline" };

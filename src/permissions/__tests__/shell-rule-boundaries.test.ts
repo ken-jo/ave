@@ -52,9 +52,14 @@ describe("stored broad wildcard compatibility", () => {
       ruleSubject: shellSubject(command), shellExecution: plainRoute, projectRulesCwd: project,
     });
     expect(manager.getRulesLoadError()).toBeUndefined();
-    expect(check("printf ready")).toMatchObject({ decision: "allow", layer: 3 });
-    expect(check("git status")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(check("npm run build")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(check("printf ready")).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(check("git status")).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(check("git status").pipelineRequest?.rules?.allow).toBeUndefined();
+    expect(check("npm run build")).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(check("npm run build").pipelineRequest?.rules?.allow).toBeUndefined();
+    manager.setMode("default");
+    expect(check("npm run build")).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+    expect(check("npm run build").forceModal).not.toBe(true);
     const listed = await manager.listScopedRules();
     expect(listed.errors).toEqual([]);
     const row = listed.rules.find((rule) => rule.pattern === inert.pattern)!;
@@ -69,8 +74,8 @@ describe("stored broad wildcard compatibility", () => {
     const restarted = new PermissionManager(permissionsFile);
     await restarted.loadRulesFromFile();
     await restarted.ensureProjectRulesLoaded(project);
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready"), projectRulesCwd: project })).toMatchObject({ decision: "allow", layer: 3 });
-    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject("git status"), projectRulesCwd: project })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready"), projectRulesCwd: project })).toMatchObject({ decision: "allow" });
+    expect(restarted.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject("git status"), projectRulesCwd: project })).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
   });
 });
 
@@ -111,7 +116,7 @@ describe("bounded rule consent", () => {
     expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute }).decision).toBe(pattern === "Bash(eval id)" ? "allow" : "ask");
     if (approval.exactRule !== null) {
       manager.setRules(([{ pattern: approval.exactRule, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-      expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute })).toMatchObject({ decision: "allow", layer: 3 });
+      expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute })).toMatchObject({ decision: "allow" });
     }
   });
 });
@@ -121,12 +126,16 @@ describe("missing shell route", () => {
     const manager = new PermissionManager(permissionsFile);
     manager.setMode("allow");
     manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready") })).toMatchObject({ decision: "ask", layer: 6 });
+    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready") })).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
     manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready") })).toMatchObject({ decision: "allow", layer: 3 });
-    for (const command of ["rm -rf build", "cat ~/.ssh/id_rsa"]) {
-      expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject(command) })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    }
+    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready") })).toMatchObject({ decision: "allow" });
+    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("rm -rf build") })).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("rm -rf /") })).toMatchObject({ decision: "ask", reasonCode: "critical-delete", forceModal: true });
+    expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("cat ~/.ssh/id_rsa") })).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    manager.setMode("default");
+    const secret = manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("cat ~/.ssh/id_rsa") });
+    expect(secret).toMatchObject({ decision: "ask" });
+    expect(secret.forceModal).not.toBe(true);
   });
 
   // Owner 2026-10-25 (five-choice shell card): This session saves the same exact rule as the persistent scopes, so it needs no sandbox evidence, only a conversation to hold it.

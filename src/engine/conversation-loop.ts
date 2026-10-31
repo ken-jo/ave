@@ -578,6 +578,7 @@ export class ConversationLoop {
         throw new Error("workload-broker:session-cleanup-unproven");
       }
       this.deps.closeRationaleSession?.(ownedLease.sessionId);
+      this.deps.permissionManager?.clearUserOwnedSurfaceChoices?.(ownedLease.sessionId);
       this.deps.pluginRuntime?.clearSessionActivated?.(ownedLease.sessionId);
       updateApprovalSurface({ kind: "release", sessionId: ownedLease.sessionId });
     };
@@ -801,7 +802,15 @@ export class ConversationLoop {
       throw new Error("conversation-loop:session-transition-in-progress");
     }
     return turnExtensionPolicyContext.run(
-      resolveTurnExtensionPolicy(options?.remoteControllerAuthority, this.deps.headless === true),
+      resolveTurnExtensionPolicy(options?.remoteControllerAuthority, this.deps.headless === true, {
+        ownerUnattended: options?.unattendedAuthority !== undefined,
+        approvalSurface: this.deps.approvalSurface,
+        overlayTriggerOrigin: options?.originSource,
+        ...(options?.approvalReasonPrefix ? { floor: {
+          code: "other-principal", reason: options.approvalReasonPrefix,
+        } } : {}),
+        abortSignal,
+      }),
       () => runTurn(this, input, callbacks, abortSignal, options),
     );
   }

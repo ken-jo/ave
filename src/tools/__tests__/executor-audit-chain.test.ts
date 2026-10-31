@@ -63,8 +63,8 @@ describe("ToolExecutor permission audit chain", () => {
     const permissionManager = new PermissionManager(join(testHome, "permissions.json"));
     permissionManager.checkDetailed = (toolName) =>
       toolName === "blocked_tool"
-        ? { decision: "deny", reason: "test deny", layer: 3 }
-        : { decision: "allow", reason: "test allow", layer: 3 };
+        ? { decision: "deny", reason: "test deny", }
+        : { decision: "allow", reason: "test allow", };
 
     const auditLogger = createAuditLogger();
     await auditLogger.setupPermissionAuditChain(SECRET);
@@ -112,7 +112,7 @@ describe("ToolExecutor permission audit chain", () => {
     }));
 
     const permissionManager = new PermissionManager(join(testHome, "permissions.json"));
-    permissionManager.checkDetailed = () => ({ decision: "allow", reason: "test allow", layer: 3 });
+    permissionManager.checkDetailed = () => ({ decision: "allow", reason: "test allow", });
     const auditLogger = createAuditLogger();
     await auditLogger.setupPermissionAuditChain(SECRET);
     vi.spyOn(auditLogger, "appendPermissionAuditEntry").mockRejectedValue(new Error("append boom"));
@@ -146,7 +146,7 @@ describe("ToolExecutor permission audit chain", () => {
     }));
 
     const permissionManager = new PermissionManager(join(testHome, "permissions.json"));
-    permissionManager.checkDetailed = () => ({ decision: "allow", reason: "test allow", layer: 3 });
+    permissionManager.checkDetailed = () => ({ decision: "allow", reason: "test allow", });
     const auditLogger = createAuditLogger();
     await auditLogger.setupPermissionAuditChain(SECRET);
     vi.spyOn(auditLogger, "assertPermissionAuditWritable").mockImplementation(() => {

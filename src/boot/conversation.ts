@@ -15,10 +15,10 @@ import type { BashAstValidator } from "../main/bash-ast-validator.js";
 import type { PluginRuntime } from "../plugins/runtime.js";
 import { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import { PermissionManager } from "../permissions/permission-manager.js";
+import { readPermissionSettings } from "../permissions/permission-settings-store.js";
 import {
   ApprovalGate,
   type ApprovalSurfaceResolver,
-  type ParentAdjudicationGateDeps,
 } from "../permissions/approval-gate.js";
 import { loadPolicy } from "../permissions/policy-store.js";
 import { registerStandardCategories } from "../permissions/category-registry.js";
@@ -74,7 +74,11 @@ export function createSystemPromptBuilder(opts: {
 export async function createPermissionManager(): Promise<PermissionManager> {
   // Register category descriptors before any permission check; registration is idempotent.
   registerStandardCategories();
-  const permissionManager = new PermissionManager();
+  const permissionManager = new PermissionManager(undefined, () => {
+    const fault = readPermissionSettings().fault;
+    return fault === null || fault.kind === "reviewer-mode-invalid" ? undefined : `Permission settings are unreadable (${fault.kind}: ${fault.filePath}).`;
+  }, () => readPermissionSettings().fault?.kind === "reviewer-mode-invalid"
+    ? "Permission reviewer settings are invalid; choose llm or disabled in Permissions settings." : undefined);
 
   // Standing allows belong only to host-registry reads without private-data access or network egress.
   permissionManager.setRules([
@@ -110,8 +114,6 @@ export async function createApprovalGate(
   surface: ApprovalSurfaceResolver | null,
   auditLogger: AuditLogger,
   notificationService?: NotificationService,
-  /** Without a reviewer, eligible sub-agent approval requests go directly to the user. */
-  parentAdjudication?: ParentAdjudicationGateDeps,
 ): Promise<ApprovalGate> {
 
   const bootPolicy = await loadPolicy();
@@ -121,7 +123,6 @@ export async function createApprovalGate(
     5 * 60 * 1000,
     auditLogger,
     notificationService,
-    parentAdjudication,
     surface === null ? {
       onDenied: (requestId, toolName) => {
         process.stderr.write(`exec: auto-denied approval ${requestId} tool=${toolName}\n`);

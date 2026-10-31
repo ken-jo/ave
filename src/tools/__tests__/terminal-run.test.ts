@@ -166,6 +166,21 @@ describe("terminal_run", () => {
     expect(isCanonicalTerminalRunTool({ ...tool })).toBe(false);
   });
 
+  it.each(["en", "ko"])("describes session authority and ordinary upload guardrails in %s", async locale => {
+    const previous = getLocale();
+    try {
+      await loadLocaleMessages(locale);
+      setLocale(locale);
+      const tool = createTerminalRunTool(depsWith());
+      expect(tool.description).toBe(t("be_terminalRun.toolDescription"));
+      expect(tool.description).toContain(locale === "ko" ? "일반 업로드·유출 방지 가드레일" : "ordinary upload/exfiltration guardrails");
+      expect(tool.description).toContain(locale === "ko" ? "모두 질문(기본값)" : "asking every time (the default)");
+      expect(tool.description).toContain(locale === "ko" ? "이 세션 모두 허용" : "allowing all actions");
+      expect(tool.description).toContain(locale === "ko" ? "논리적 일관성을 확인하는 자동 리뷰" : "automatic logical review");
+      expect(tool.description).not.toContain(locale === "ko" ? "정확한 호스트 터미널 규칙" : "exact host terminal rule");
+    } finally { setLocale(previous); }
+  });
+
   describe("target, sealed before approval", () => {
     it("resolves the conversation terminal and seals its id and directory", async () => {
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker("/repo/app"), WINDOW);

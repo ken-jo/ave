@@ -1,5 +1,7 @@
 /** Shared mode spelling keeps renderer consumers independent of the permission manager runtime. */
-export const EXECUTION_MODES = ["default", "strict", "auto", "allow"] as const;
+export const EXECUTION_MODES = ["strict", "default", "auto", "allow"] as const;
+
+export const DEFAULT_EXECUTION_MODE = "strict" as const;
 
 export type ExecutionMode = (typeof EXECUTION_MODES)[number];
 

@@ -12,18 +12,18 @@ import {
   canUseLlmVendorWithoutApiKey,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
-import { LlmReviewerProviderAdapter, wireReviewerAgent } from "./reviewer-wiring.js";
+import { wireReviewerAgent } from "./reviewer-wiring.js";
 import { readJudgeSettings, readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { formatJudgeModel, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { wireJudgeAgent } from "./judge-wiring.js";
-import type { ParentAdjudicationTarget } from "../../permissions/parent-adjudicator.js";
 import {
   bindManifestIntegrityAudit,
   manifestIntegrityState,
 } from "../../permissions/manifest-integrity.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import { createRecentlyDeniedReplayResolver } from "../../permissions/reviewer/recently-denied-replay.js";
 import { errorMessage } from "../../shared/error-message.js";
 
 const log = createLogger("ave");
@@ -40,10 +40,16 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     subscriptionProviderFactory,
   } = ctx;
 
+  const applyOwnerAwayAutoSkip = () => ctx.approvalGate.setOwnerAwayAutoSkipMinutes(
+    settingsService.get("permissions")?.ownerAwayAutoSkipMinutes ?? 0,
+  );
+  applyOwnerAwayAutoSkip();
+  settingsService.onChanged("permissions", applyOwnerAwayAutoSkip);
+
   // Apply visibility deny rules after the registry exists; permission services must already exist for plugin construction.
   toolRegistry.setDenyRules(permissionManager.getVisibilityDenyRules());
 
-  // Bind the classifier, verdict cache, and deferred queue; streaming providers are adapted to one-shot review calls.
+  // Bind the classifier, verdict cache, and denial history; streaming providers are adapted to one-shot review calls.
   const reviewerStreamProviderFor = (vendor: string, selectedModel?: string): LLMProvider | null => {
     const llmSettings = settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
@@ -53,7 +59,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       return subscriptionProviderFactory(activeChatRuntime);
     }
 
-    // Parent-session adjudication uses this same factory, so an unresolved API selection cannot answer an approval through another host key.
+    // An unresolved active provider selection cannot use another host credential.
     if (llmSettings.retiredProvider) return null;
 
     const llmVendor = isLLMVendor(vendor) ? vendor : null;
@@ -176,20 +182,8 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       } : {}),
     };
   };
-  /** Resolve the parent chat identity per ask; missing configuration escalates to the user without substituting another model.
-   * Session IDs are reserved for future per-session identity; current settings apply globally. */
-  const resolveParentSessionAdjudicationTarget = (
-    _parentSessionId: string,
-  ): ParentAdjudicationTarget | null => {
-    const identity = readActiveReviewerLlm();
-    const upstream = reviewerStreamProviderFor(identity.provider);
-    if (!upstream) return null;
-    return {
-      provider: new LlmReviewerProviderAdapter(upstream),
-      model: identity.model,
-    };
-  };
   const rewireReviewerAgent = (): void => {
+    const reconfiguration = permissionManager.beginReviewerReconfiguration();
     // Reapply the read fence on every settings rewire; its generation invalidates verdicts from the prior policy.
     permissionManager.setBlockReadsOutsideWorkingDirectories(
       readPermissionSettings().permissions.blockReadsOutsideWorkingDirectories,
@@ -221,11 +215,16 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
         ? (vendor) => reviewerStreamProviderFor(vendor, selectedReviewerModel.model)
         : reviewerStreamProviderFor,
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
-      resolveParentSessionAdjudicationTarget,
-      onDeferredPendingChange: (summary) => {
-        sendToWindow(getMainWindow(), PERMISSIONS.deferredPending, summary, log);
+      onRecentlyDeniedChanged: (summary) => {
+        for (const window of ctx.host.desktop?.getAppWindows() ?? [getMainWindow()]) {
+          sendToWindow(window, PERMISSIONS.recentlyDeniedChanged, summary, log);
+        }
       },
     });
+    reviewerResult.recentlyDenied.setReplayResolver(createRecentlyDeniedReplayResolver({
+      memoryManager: ctx.memoryManager, toolRegistry,
+      executeAll: (...args) => ctx.conversationLoop.toolExecutor.executeAll(...args),
+    }));
     wireJudgeAgent({
       permissionManager,
       reviewer: reviewerResult,
@@ -240,11 +239,9 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     });
     ctx.rationaleScopeReviewer = reviewerResult.rationaleScopeReviewer;
     ctx.approvalSentenceSelector = reviewerResult.approvalSentenceSelector;
-    // Resolve through an accessor because rewiring replaces the adjudicator; captured instances would remain unavailable after login.
-    ctx.parentAdjudicator = reviewerResult.parentAdjudicator;
-    ctx.parentSessionAdjudicator = reviewerResult.parentSessionAdjudicator;
     // Broadcast configuration changes after rewiring so open settings views stop showing stale degradation.
     broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
+    permissionManager.completeReviewerReconfiguration(reconfiguration);
   };
   rewireReviewerAgent();
 

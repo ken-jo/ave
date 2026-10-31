@@ -9,7 +9,7 @@
  * gate is not reported as either.
  */
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,8 +35,8 @@ function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined)
       listRules: vi.fn(async () => []),
       listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
       removeScopedRule: vi.fn(async () => ({ ok: true })),
-      deferredList: vi.fn(async () => ({ ok: true as const, pending: [], total: 0 })),
-      onDeferredPending: vi.fn(() => () => undefined),
+      recentlyDeniedList: vi.fn(async () => ({ ok: true as const, entries: [], total: 0 })),
+      onRecentlyDeniedChanged: vi.fn(() => () => undefined),
       hookTrustList: vi.fn(async () => ({
         ok: true as const,
         active: [],
@@ -54,10 +54,8 @@ function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined)
         ok: true as const,
         verb: "show" as const,
         settings: {
-          mode: "rule" as const,
+          mode: "llm" as const,
           fallbackOnError: "deny" as const,
-          parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-          interactive: { autoApprove: "low" as const },
         },
         reviewerDegradedToRule: false,
       })),

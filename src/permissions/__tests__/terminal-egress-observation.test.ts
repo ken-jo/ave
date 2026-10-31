@@ -7,7 +7,7 @@ import { ObservationDaemon } from "../../observation/daemon.js";
 import { TerminalObservationAdapter } from "../../observation/terminal-adapter.js";
 import { setAgentTerminalObservationSink } from "../../tools/agent-terminal-observation.js";
 import type { TerminalObservationEvent } from "../../shared/agent-observation.js";
-import { createEgressAskCallback } from "../egress-ask.js";
+import { createEgressAskCallback } from "../../__tests__/support/egress-permission.js";
 import { EgressGrantStore } from "../egress-grants.js";
 import { egressInvocationOwner, openEgressInvocation, type EgressInvocation } from "../egress-invocations.js";
 import { startEgressDenyMonitor } from "../egress-deny-monitor.js";

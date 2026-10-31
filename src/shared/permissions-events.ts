@@ -10,13 +10,24 @@ import type { RiskLevel } from "./permission-review-status.js";
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
 export type UserApprovalScope = "session" | "persistent" | "global";
 
+export type UserOwnedSurface = "browser" | "host-terminal";
+export type UserOwnedSurfaceChoice = "allow" | "auto" | "ask";
+
+export function isUserOwnedSurface(value: unknown): value is UserOwnedSurface {
+  return value === "browser" || value === "host-terminal";
+}
+
+export function isUserOwnedSurfaceChoice(value: unknown): value is UserOwnedSurfaceChoice {
+  return value === "allow" || value === "auto" || value === "ask";
+}
+
 export interface ScopedPermissionRuleError {
   filePath: string;
   errorCode: "rules-file-unavailable";
 }
 
 /** Why a stored rule is listed but never matched (see `storedRuleInvalidReason`). */
-export type StoredRuleInvalidReason = "wildcard-not-allowlisted";
+export type StoredRuleInvalidReason = "wildcard-not-allowlisted" | "retired-host-terminal";
 
 /** Rule-store row with its host-owned persistence scope. */
 export interface ScopedPermissionRule extends ShellRuleVersion {
@@ -69,10 +80,6 @@ export interface ShellRuleApproval {
   sessionAllowed: boolean;
   /** "Always allow in this project" and "Always allow everywhere" are offered. */
   persistentAllowed: boolean;
-  /** A command for the user's own host terminal: its allow saves only `exactRule` (a `HostTerminal(...)` rule for this shell and physical
-   * directory) as "Always allow"; there is no session or project allow. */
-  /** `afterExternalContent`: tool results reached the model earlier in this turn, so saved rules do not apply and no lasting allow is offered. */
-  hostTerminal?: { readonly shell: "zsh" | "bash"; readonly cwd: string; readonly afterExternalContent?: true };
 }
 
 /** Exact-tuple decision stored for a user-reviewed tool invocation. Legacy entries pre-date this field and therefore normalize to `"allow"`.
@@ -80,8 +87,9 @@ export interface ShellRuleApproval {
 export type UserApprovalDecision = "allow" | "deny";
 
 /** The target a remembered decision covers when a tool opts into target-wide memory (`Tool.approvalMemoryScope`). Host-derived from the final input, and the only source the approval card uses to say what "remember" will cover. - `origin`: every web_fetch to `scheme://host:port`
- * (public network only). - `path`: this resolved path, any content. - `paths`: this exact resolved path set, any content. - `transfer`: this tool from source to destination, with its overwrite flag. - `command`: this exact shell command (by digest) in this working directory and sandbox plan; timeout and justification may vary. */
+ * (public network only). - `mcp-tool`: this server and tool, regardless of arguments; admission rules and mandatory approvals still apply. - `path`: this resolved path, any content. - `paths`: this exact resolved path set, any content. - `transfer`: this tool from source to destination, with its overwrite flag. - `command`: this exact shell command (by digest) in this working directory and sandbox plan; timeout and justification may vary. */
 export type ApprovalMemoryScope =
+  | { readonly kind: "mcp-tool"; readonly serverId: string; readonly toolName: string }
   | { readonly kind: "origin"; readonly origin: string }
   | { readonly kind: "path"; readonly path: string }
   | { readonly kind: "paths"; readonly paths: readonly string[] }
@@ -118,9 +126,8 @@ export type ApprovalMemoryScope =
       readonly cwd: string;
       readonly cwdForMatch: string;
     }
-  // One exact command typed into the user's own host terminal by that tab's pane chat. Never remembered: each command is the person's
-  // decision unless an exact `HostTerminal(...)` rule names this shell, physical directory and command. Every field is sealed before the card
-  // and rechecked immediately before the first byte is typed.
+  // One exact command typed into the user's own host terminal by that tab's pane chat. Session surface choices do not widen this
+  // target binding: every field is sealed before approval and rechecked immediately before the first byte is typed.
   | {
       readonly kind: "terminal-command";
       readonly lane: "manual";
@@ -153,7 +160,7 @@ export function isSessionOnlyApprovalMemoryScope(scope: ApprovalMemoryScope): bo
 }
 
 /** What a remembered user decision is keyed on, besides tool name, source, trust origin and working directory. - `args`: the exact canonical input (the default for every tool; an `approvalCacheKey` only narrows it). - `key`: the tool
- * opted in with a scope; `key` is the host-derived identity of that scope (including any sealed shell plan), and repeat calls with other arguments inside it may reuse the decision; after a fresh review (see approval-memory-skip.ts). */
+ * opted in with a scope; `key` is the host-derived identity of that scope (including any sealed shell plan), and repeat calls with other arguments inside it may reuse the decision; after a fresh review unless the scope explicitly grants all arguments of one external tool (see approval-memory-skip.ts). */
 export type ApprovalMemory =
   | { readonly kind: "args" }
   | { readonly kind: "key"; readonly key: string; readonly scope: ApprovalMemoryScope };

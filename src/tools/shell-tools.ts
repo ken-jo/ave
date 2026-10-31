@@ -1,3 +1,5 @@
+import { attachSandboxBlock, sandboxBlockForResult, issueFilesystemSandboxBlock } from "../shared/sandbox-block.js";
+import { captureToolApprovalWait } from "./executor-ceiling.js";
 import type {
   ToolOutputArtifactInfo,
   ToolOutputCapture,
@@ -77,6 +79,7 @@ import {
 import {
   wrapToolCommand,
   annotateWithSandboxViolations,
+  filesystemSandboxBlockForCommand,
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
   getDefaultSensitiveWriteDenyPaths,
@@ -86,7 +89,7 @@ import { openEgressInvocation, type ShellEgressContext } from "../permissions/eg
 import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
-import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
+import { captureEffectNoApprover, currentEffectGateContext } from "../permissions/effect-enforcement.js";
 import { currentToolExecutionCwd } from "./execution-context.js";
 import {
   getHostShellExecutionPlan,
@@ -1487,16 +1490,15 @@ export async function endShellSession(sessionId: string): Promise<BrokerSessionC
 
 const hostShellExecutionFields = {
   executionMode: z.enum(["default", "host"]).optional().describe(
-    "Use default execution, or explicitly request one foreground execution as the current user without OS sandboxing. Host requires a fresh desktop allow-once approval.",
+    "Use default execution, or explicitly request one foreground execution as the current user without OS sandboxing. Host execution follows the current permission mode and approval rules.",
   ),
   justification: z.string().optional().describe("Required nonblank reason for explicit host execution"),
 };
 
 /**
  * Opt-in memory scope shared by bash and powershell: the command and its cwd
- * override. `run_in_background` keeps exact-args identity — a background
- * process outlives the turn — and `executionMode: "host"` is one-shot and
- * never recorded, so both fall back to the exact input.
+ * override. Background and host requests keep the complete input identity;
+ * reusable rules and approval persistence are decided by the permission pipeline.
  */
 function shellApprovalMemoryScope(input: unknown): ApprovalMemoryScope | undefined {
   const args = input && typeof input === "object" ? input as Record<string, unknown> : {};
@@ -1754,8 +1756,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
 
 
     // Explicit host requests and the Windows Plan B select a plain host child.
-    // Its opaque permit exists only after an allow-once approval (or, for an
-    // explicit host request, a matching allow rule) for this exact
+    // Its opaque permit follows the current policy decision for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
     let hostSpawnAuthorization: HostShellSpawnAuthorization | undefined;
     if (!disposableExecution && requiresExplicitHostShellApproval(hostShellPlan)) {
@@ -1840,7 +1841,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     // corrupt the shared sandbox state; background execution is therefore
     // confined to the unsandboxed plain path, and the one-shot-permit routes
     // (explicit host, Windows Plan B: requiresExplicitUserApproval) are
-    // excluded so a one-shot-approved command cannot outlive its approval. A
+    // excluded so a command cannot outlive its single-use authorization. A
     // requested-but-unavailable sandbox follows the normal rules and may
     // background like sandbox-off.
     if (
@@ -1908,7 +1909,7 @@ function recordsUnsandboxedExecutionPlan(plan: HostShellExecutionPlan): boolean 
 
 function withoutReportedCwd(result: SpawnResult): SpawnResult {
   const { reportedCwd: _reportedCwd, ...rest } = result;
-  return rest;
+  return carrySandboxBlock(result, rest);
 }
 
 /**
@@ -1931,12 +1932,12 @@ function trackSessionCwd(result: SpawnResult, startCwd: string, ctx: ToolExecuti
     return rest;
   }
   recordShellSessionCwd(sessionId, ctx.cwd, ctx.cwd);
-  return {
+  return carrySandboxBlock(rest, {
     ...rest,
     output: `${rest.output}\n\nShell working directory reset to ${pathResolve(ctx.cwd)}: ` +
       `${finalCwd} is outside the workspace and allowed directories.`,
     metadata: { ...rest.metadata, cwdReset: true },
-  };
+  });
 }
 
 /** Post-run clamp seam: path policy keeps real commands from reaching it. */
@@ -1957,20 +1958,20 @@ function sessionIdFromContext(ctx: ToolExecutionContext): string {
  */
 function withBackgroundUnavailable(result: SpawnResult, requested: boolean): SpawnResult {
   if (!requested) return result;
-  return { ...result, metadata: { ...result.metadata, backgroundUnavailable: true } };
+  return carrySandboxBlock(result, { ...result, metadata: { ...result.metadata, backgroundUnavailable: true } });
 }
 
 function withDisposableExecutionMetadata<
   T extends { readonly metadata?: Record<string, unknown> },
 >(result: T): T & { metadata: Record<string, unknown> } {
-  return {
+  return carrySandboxBlock(result, {
     ...result,
     metadata: {
       ...(result.metadata ?? {}),
       sandboxed: true,
       isolation: "disposable-container",
     },
-  };
+  });
 }
 
 async function captureBrokerForegroundOutput(
@@ -2298,6 +2299,11 @@ function ambientShellEgressContext(): ShellEgressContext {
   const gate = currentEffectGateContext();
   return {
     sessionId: gate?.sessionId,
+    headless: gate?.headless === true,
+    ownerUnattended: gate?.permissionContext?.ownerUnattended === true,
+    toolApprovalWait: captureToolApprovalWait(),
+    onNoApprover: captureEffectNoApprover(),
+    permissionContext: gate?.permissionContext,
     workspaceRoot: currentToolExecutionCwd(),
     approvalSurface: gate !== undefined && !gate.headless && gate.approvalSurface !== "unavailable" ? "interactive" : "unavailable",
   };
@@ -2329,15 +2335,27 @@ async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>)
   return failures;
 }
 
+function carrySandboxBlock<T extends object>(source: object, target: T): T {
+  const block = sandboxBlockForResult(source);
+  if (block !== undefined) attachSandboxBlock(target, block);
+  return target;
+}
+
+async function attachFilesystemBlock(result: SpawnResult, commandId: string, command: string, cwd: string): Promise<SpawnResult> {
+  const block = await filesystemSandboxBlockForCommand(commandId, command, cwd);
+  if (block !== undefined) attachSandboxBlock(result, block);
+  return result;
+}
+
 // Release failures make the result an error, like an ASRT cleanup failure.
 function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly string[]): T {
   if (failures.length === 0) return result;
-  return {
+  return carrySandboxBlock(result, {
     ...result,
     output: `${result.output}\nShell resource release failed: ${failures.join("; ")}`,
     isError: true,
     metadata: { ...result.metadata, sandboxCleanupFailed: true },
-  };
+  });
 }
 
 // For a release that runs after the result has already settled.
@@ -2517,13 +2535,15 @@ export async function spawnWithSandbox(
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
         }, released));
       } else {
-        resolveResult(withReleaseFailures({
+        const result = withReleaseFailures({
           output: formatted,
           isError: lifetime.aborted || code !== 0 || sandboxCleanupFailed,
           metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, sandboxed: true,
             ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
           ...reportedHostCwd(shell, lifetime.aborted ? undefined : outputCollector.reportedCwd()),
-        }, released));
+        }, released);
+        resolveResult(!lifetime.aborted && code !== null && code !== 0
+          ? await attachFilesystemBlock(result, egress.token, command, resolvedCwd) : result);
       }
     };
     const fault = finalizationFault("tool:bash:asrt", resolveResult);
@@ -3261,8 +3281,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       return { output: "PowerShell spawn failed: verified shell command is no longer available for this invocation.", isError: true };
     }
     // Explicit host requests and the Windows Plan B select a plain host child.
-    // Its opaque permit exists only after an allow-once approval (or, for an
-    // explicit host request, a matching allow rule) for this exact
+    // Its opaque permit follows the current policy decision for this exact
     // command/cwd/tool-use tuple and is consumed before spawn.
     // A pinned parser precedes permit consumption. An unpinned host parser may
     // start only after the exact one-shot authority was verified and consumed.
@@ -3302,6 +3321,8 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
           undefined, runtimeReads, verified,
         ), ctx.verifiedShellCommand, verifiedIdentity);
+        const block = sandboxBlockForResult(checked.result);
+        if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
         return checked.result;
       }
       const checked = await checkedShellResult(() => spawnPowerShellWithSandbox(
@@ -3313,6 +3334,8 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
         runtimeReads, verified,
       ), ctx.verifiedShellCommand, verifiedIdentity);
+      const block = sandboxBlockForResult(checked.result);
+      if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
       return checked.result;
     }
 
@@ -3780,14 +3803,16 @@ async function spawnPowerShellWithSandbox(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
       )), command, lifecycleCleaned);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
-      resolveResult(withReleaseFailures({
+      const result = withReleaseFailures({
         output: lifetime.timedOut
           ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
           : output,
         isError: lifetime.aborted || lifetime.timedOut || code !== 0 || sandboxCleanupFailed,
         metadata: { ...artifactMetadata, ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true,
           ...(sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {}) },
-      }, released));
+      }, released);
+      resolveResult(!lifetime.aborted && !lifetime.timedOut && code !== null && code !== 0
+        ? await attachFilesystemBlock(result, egress.token, command, cwd) : result);
     };
     const fault = finalizationFault("tool:powershell:asrt", resolveResult, "PowerShell ");
 
@@ -3995,7 +4020,9 @@ async function spawnPowerShellInMxc(
       }]);
       const released = await cleanupAfterTermination();
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
-      resolveResult(withReleaseFailures(completed, [...finalized, ...released]));
+      const result = withReleaseFailures(completed, [...finalized, ...released]);
+      resolveResult(!lifetime.aborted && !lifetime.timedOut && code !== null && code !== 0
+        ? await attachFilesystemBlock(result, egress.token, command, cwd) : result);
     };
     const fault = finalizationFault("tool:powershell:mxc", resolveResult, "PowerShell ");
 

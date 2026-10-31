@@ -100,6 +100,7 @@ function applyFreshSessionState(
   self.sessionSource = "clear";
   self.turnAdditionalDirectories = [];
   self.history.clear();
+  self.history.clearUserQuoteEvidence();
   self.cumulativeUsage = { inputTokens: 0, outputTokens: 0 };
   self.lastRoundProviderInputTokens = 0;
   self.lastReportedSubscriptionContextWindow = null;
@@ -215,6 +216,7 @@ export async function newConversation(
     // Require terminal resource-zero cleanup proof before mutating session identity or scoped state.
     await settleOutgoingSession(self, lease);
     self.deps.closeRationaleSession?.(outgoingSessionId);
+    self.deps.permissionManager?.clearUserOwnedSurfaceChoices?.(outgoingSessionId);
     self.deps.skillOverlay?.clear(outgoingSessionId);
     // Clear old session activations before replacing its ID or the runtime entry will be orphaned.
     self.deps.pluginRuntime?.clearSessionActivated?.(outgoingSessionId);
@@ -267,6 +269,7 @@ export async function loadSession(
     }
     await settleOutgoingSession(self, lease);
     self.deps.closeRationaleSession?.(outgoingSessionId);
+    self.deps.permissionManager?.clearUserOwnedSurfaceChoices?.(outgoingSessionId);
 
     // Clear old session activations before replacing its ID or the runtime entry will be orphaned.
     self.deps.pluginRuntime?.clearSessionActivated?.(outgoingSessionId);
@@ -294,6 +297,7 @@ export async function loadSession(
         }
       : self.deps.getDefaultProject?.());
     self.history.clear();
+    self.history.clearUserQuoteEvidence();
     self.history.restore(withSummaryBoundary(normalized.messages, {
       compactNum: sessionMeta?.branchedFromCompactNum ?? 0,
       summary: sessionMeta?.summaryPreamble,

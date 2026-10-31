@@ -24,7 +24,7 @@ const HOST_RENDERER = "file:///dist/src/index.html";
 /** Read-only, and each discloses something a plugin can act on. `args` are the minimum a handler
  * needs to reach its guard; the guard runs first, so these never have to be valid beyond that. */
 const SENSITIVE_READ_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = [
-  ["deferredList", PERMISSIONS.deferredList, []],
+  ["recentlyDeniedList", PERMISSIONS.recentlyDeniedList, []],
   ["userApprovalList", PERMISSIONS.userApprovalList, []],
   ["listScopedRules", PERMISSIONS.listScopedRules, []],
   ["egressGrantsList", PERMISSIONS.egressGrantsList, []],

@@ -32,7 +32,7 @@ describe("request-owned shell rule analysis", () => {
     const read = vi.spyOn(ruleSpecifier, "parseRuleSpecifier");
     const decision = dialect === "bash"
       ? evaluateShellSubject({ command }, [deny, allow], [deny])
-      : evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, [deny, allow], [deny]);
+      : evaluatePowerShellSubject({ command, exactAllowOnly: true }, [deny, allow], [deny]);
     expect(decision).toMatchObject({ decision: "deny", pattern });
     expect(read.mock.calls.filter(([text]) => text === pattern)).toHaveLength(1);
   });

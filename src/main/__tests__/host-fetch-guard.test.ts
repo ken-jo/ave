@@ -1023,3 +1023,37 @@ describe("REDIRECT_STATUSES", () => {
     expect(REDIRECT_STATUSES.has(304)).toBe(false);
   });
 });
+
+describe("runHostFetchHops exact-hop authorization", () => {
+  it("authorizes each actual destination and rewritten verb before sending", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([redirect(303, "https://sso.example.com/next"), new Response("done")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/start", "POST"), { redirect: "follow", body: "payload" }, transport);
+    const authorized: unknown[] = [];
+    await runHostFetchHops({ ...options, authorizeHop: async (hop) => {
+      expect(calls).toHaveLength(hop.index);
+      authorized.push({ url: hop.url.toString(), method: hop.method, body: hop.body });
+    } });
+    expect(authorized).toEqual([{ url: "https://api.example.com/start", method: "POST", body: "payload" }, { url: "https://sso.example.com/next", method: "GET", body: undefined }]);
+  });
+
+  it("a denied redirect permission never reaches its transport", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([redirect(302, "https://sso.example.com/next"), new Response("unused")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/start"), { redirect: "follow" }, transport);
+    await expect(runHostFetchHops({ ...options, authorizeHop: async (hop) => {
+      if (hop.index === 1) throw new Error("Destination permission denied");
+    } })).rejects.toThrow("Destination permission denied");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("manifest destination denial precedes permission for a redirect", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([redirect(302, "https://off-list.example/next")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/start"), { redirect: "follow" }, transport);
+    const authorizeHop = vi.fn(async () => {});
+    await expect(runHostFetchHops({ ...options, authorizeHop })).rejects.toThrow(/not in networkAccess.allowedDomains/u);
+    expect(authorizeHop).toHaveBeenCalledOnce();
+    expect(calls).toHaveLength(1);
+  });
+});

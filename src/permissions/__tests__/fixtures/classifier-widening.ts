@@ -10,9 +10,9 @@ interface WideningFixture {
   readonly saved: "allow" | "ask"; // Saved exact grant, both confinement modes.
   readonly headless: "allow" | "deny"; // Saved exact grant, both confinement modes.
 }
-const EVALUATION = { installation: true, plan: true, exact: true, sandbox: "ask", saved: "allow", headless: "allow" } as const;
+const EVALUATION = { installation: true, plan: true, exact: true, sandbox: "allow", saved: "allow", headless: "allow" } as const;
 const READ_ONLY = { installation: true, plan: true, exact: true, sandbox: "allow", saved: "allow", headless: "allow" } as const;
-const UNPROVEN = { installation: true, plan: false, exact: false, sandbox: "ask", saved: "ask", headless: "deny" } as const;
+const UNPROVEN = { installation: true, plan: false, exact: false, sandbox: "allow", saved: "allow", headless: "allow" } as const;
 
 // Representative regressions, not the complete argument grammar.
 // Verdicts and exact eligibility are fixed policy expectations, not analysis output.
@@ -28,7 +28,7 @@ export const CLASSIFIER_WIDENING_FIXTURES: readonly WideningFixture[] = [
   { ...READ_ONLY, command: "git rev-parse --show-toplevel" },
   { ...READ_ONLY, command: "git branch --list" },
   { ...EVALUATION, command: "bash --noprofile --norc -p -c 'printf ready'" },
-  { ...EVALUATION, command: "bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'" },
+  { ...EVALUATION, command: "bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'", exact: false },
   { ...UNPROVEN, command: "git status" },
   { ...UNPROVEN, command: "git diff" },
   { ...UNPROVEN, command: "git diff HEAD" },
@@ -51,7 +51,7 @@ export const CLASSIFIER_WIDENING_FIXTURES: readonly WideningFixture[] = [
   { ...UNPROVEN, command: "git --exec-path=bin log" },
   { ...UNPROVEN, command: "git --git-dir=other log" },
   { ...UNPROVEN, command: "git --work-tree=other log" },
-  { ...UNPROVEN, command: "git -C .. log" },
+  { ...UNPROVEN, command: "git -C .. log", sandbox: "ask", saved: "ask", headless: "deny" },
   { ...UNPROVEN, command: "git -C . log" },
   { ...UNPROVEN, command: "git --paginate log" },
   { ...UNPROVEN, command: "git alias-name" },

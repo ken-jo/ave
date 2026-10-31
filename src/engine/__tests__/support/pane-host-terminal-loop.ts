@@ -1,6 +1,6 @@
-// A pane chat bound to its host terminal, with the exact HostTerminal rule for `printf ready` saved, so no card stands between the
-// turn and the PTY. Shared by the turn-level tests and the side-chat IPC test that drives the same loop through the real send handler.
-import { vi } from "vitest";
+// A pane chat with an explicit session choice allowing its host terminal and an exact command rule.
+// Shared by turn-level tests and the side-chat IPC test driving the real send handler.
+import { afterEach, vi } from "vitest";
 import { join } from "node:path";
 
 import { ConversationLoop } from "../../conversation-loop.js";
@@ -8,6 +8,8 @@ import { TOOL_SEARCH_TOOL_NAME, ToolRegistry } from "../../../tools/registry.js"
 import { createDynamicTool } from "../../../tools/base.js";
 import { makeBasicConversationLoopDeps } from "./conversation-loop-fixtures.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../../permissions/approval-gate.js";
+import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { formatRuleSpecifier } from "../../../permissions/rules/rule-specifier.js";
 import { createTerminalRunTool } from "../../../tools/terminal-run.js";
 import { TerminalBlockTracker, registerTerminalBlockTracker } from "../../../main/terminal/terminal-blocks.js";
@@ -17,8 +19,14 @@ import { A2ASubAgentMessageBus } from "../../a2a-subagent-message-bus.js";
 import type { ParentMailboxEntry, SubAgentMessageMailbox } from "../../subagent-message-mailbox.js";
 import { A2A_ROLE_AGENT } from "../../../shared/a2a.js";
 
+const approvalGates = new Set<ApprovalGate>();
+afterEach(() => {
+  for (const gate of approvalGates) gate.disposeAll();
+  approvalGates.clear();
+});
+
 /** What a card was asked with: `reason` names the forced layer-2 ask, `afterExternalContent` makes the gate offer no lasting allow. */
-export interface Asked { typedBefore: number; afterExternalContent: boolean; durable: boolean; adjudicable: boolean; reason: string }
+export interface Asked { toolName: string; typedBefore: number; afterExternalContent: boolean; durable: boolean; reason: string }
 
 export interface PaneHostTerminalLoop {
   loop: ConversationLoop;
@@ -38,23 +46,28 @@ export async function createPaneHostTerminalLoop(
   const permissionManager = new PermissionManager(join(dir, "permissions.json"));
   if (options.exactRule !== false) {
     await permissionManager.addRulePersist({
-      pattern: formatRuleSpecifier({ kind: "host-terminal", shell: "zsh", cwd: dir, tokens: ["printf", "ready"] }), action: "allow",
+      pattern: formatRuleSpecifier({ kind: "bash", wildcard: false, tokens: ["printf", "ready"] }), action: "allow",
     }, { kind: "user" });
   }
   const typed: string[] = [];
   const asked: Asked[] = [];
   // The person approves each card once; the record says what had reached the PTY by then and what the card was told.
-  const approvalGate = { requestAndWait: vi.fn(async (request: {
-    id: string; hostTerminal?: { afterExternalContent?: true }; durableApprovalRecordAllowed?: boolean; parentAdjudicationEligible?: boolean;
-    reason?: string;
-  }) => {
+  const contents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    if (channel !== IPC_APPROVAL_REQUEST) return;
+    queueMicrotask(() => approvalGate.resolveFromDesktopRenderer(request.id, allowOnceCardAnswer(request), contents as never));
+  } };
+  const approvalGate = new ApprovalGate(contents as never);
+  const requestAndWait = approvalGate.requestAndWait.bind(approvalGate);
+  vi.spyOn(approvalGate, "requestAndWait").mockImplementation((request) => {
     asked.push({
+      toolName: request.toolName,
       typedBefore: typed.length, afterExternalContent: request.hostTerminal?.afterExternalContent === true,
-      durable: request.durableApprovalRecordAllowed !== false, adjudicable: request.parentAdjudicationEligible === true,
+      durable: request.durableApprovalRecordAllowed !== false,
       reason: request.reason ?? "",
     });
-    return { requestId: request.id, choice: "allow-once" };
-  }) };
+    return requestAndWait(request);
+  });
+  approvalGates.add(approvalGate);
   const toolRegistry = new ToolRegistry();
   // The pane chat is whatever session the loop holds now, so a send that starts a fresh conversation stays bound to its terminal.
   const paneSession = (): string => loop.getSessionId();
@@ -138,6 +151,7 @@ export async function createPaneHostTerminalLoop(
     systemPromptBuilder: { build: () => "system", setToolScope: () => {} },
     pluginRuntime: { listPluginIds: () => ["com.example.meeting"], isPluginEnabled: () => true },
   }));
+  permissionManager.setUserOwnedSurfaceChoice(loop.getSessionId(), "host-terminal", "allow");
   let mailboxEntries: ParentMailboxEntry[] = [];
   const mailbox = {
     enqueue: async (entry: ParentMailboxEntry) => { mailboxEntries.push(entry); return { ok: true as const }; },

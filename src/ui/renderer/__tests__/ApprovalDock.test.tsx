@@ -7,13 +7,14 @@ import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers } from "../compon
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
+import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../shared/permission-reviewer-framework.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { selectDecision } from "../components/__tests__/support/decision-bar.js";
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
   return {
     version: "permission-evaluation-context/v1",
-    reviewerFrameworkVersion: "permission-reviewer-framework/v3",
+    reviewerFrameworkVersion: PERMISSION_REVIEWER_FRAMEWORK_VERSION,
     policyMode: "auto",
     headless: false,
     source: "builtin",
@@ -112,46 +113,6 @@ describe("ApprovalDock", () => {
     expect(dock?.getAttribute("data-approval-request-id")).toBe("req-1");
     expect(dock?.getAttribute("data-approval-tool-name")).toBe("read_file");
     expect(dock?.getAttribute("data-approval-args")).toBe('{"path":"/tmp/test.txt"}');
-  });
-
-  it("never exposes untrusted generic request identity for rationale approvals", () => {
-    const rawToolName = "untrusted-request-tool";
-    const { container } = render(
-      <ApprovalDock conversationLabel="conversation"
-        queue={[makeRequest({
-          id: "rationale-1",
-          kind: "rationale",
-          allowedChoices: ["allow-once", "deny-once"],
-          toolName: rawToolName,
-          reason: "UNTRUSTED request reason: do not render this",
-          requireExplicit: true,
-          args: {
-            contractVersion: 1,
-            display: "rationale-approval-display",
-            toolName: "host-sealed-tool",
-            canonicalTargets: ["/workspace/project/status.txt"],
-            requestedEffects: ["Create a status file"],
-            affectedResources: ["/workspace/project"],
-            requiredAuthority: "Project workspace write access",
-            effectiveVerdict: { level: "medium", reason: "Host-sealed rationale" },
-            scopeAlignment: "aligned",
-            scopeReasons: ["Inside the current workspace"],
-            rationaleStatus: "ready",
-            suggestion: "Review the host-sealed facts",
-            modalFallbackRequired: false,
-          },
-        })]}
-        onDecide={vi.fn()}
-      />,
-    );
-
-    const dock = container.querySelector(testIdSelector(TEST_IDS.approvalDock));
-    expect(container.textContent).toContain("host-sealed-tool");
-    expect(container.textContent).not.toContain(rawToolName);
-    expect(container.textContent).not.toContain("UNTRUSTED request reason");
-    expect(dock?.getAttribute("data-approval-request-id")).toBeNull();
-    expect(dock?.getAttribute("data-approval-tool-name")).toBeNull();
-    expect(dock?.getAttribute("data-approval-args")).toBeNull();
   });
 
   it("labels agent-action approval requests separately from tool execution", async () => {
@@ -639,27 +600,6 @@ describe("ApprovalDock", () => {
     });
   });
 
-  it("keeps Reject as the sole tab stop when approval is invalid", async () => {
-    render(
-      <ApprovalDock conversationLabel="conversation"
-        queue={[makeRequest({
-          kind: "rationale",
-          toolCategory: "shell",
-          args: { malformed: true },
-        })]}
-        onDecide={vi.fn()}
-      />,
-    );
-
-    const deny = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))!;
-    await waitFor(() => expect(deny.tabIndex).toBe(0));
-    expect(deny).toBeEnabled();
-    // Reject is the sole tab stop because it is the sole DECISION: the allow options are not rendered at all for an unverifiable seal.
-    expect(document.body.querySelector(testIdSelector(TEST_IDS.allowSessionButton))).toBeNull();
-    expect(document.body.querySelector(testIdSelector(TEST_IDS.approveButton))).toBeNull();
-    expect(document.activeElement).toBe(deny);
-  });
-
   it("does not show tool name when queue is empty", () => {
     render(
       <ApprovalDock conversationLabel="conversation" queue={[]} onDecide={vi.fn()} />,
@@ -819,7 +759,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("검증 환경 / 샌드박스 평가");
       expect(document.body.textContent).toContain("permission-evaluation-context/v1");
-      expect(document.body.textContent).toContain("permission-reviewer-framework/v3");
+      expect(document.body.textContent).toContain(PERMISSION_REVIEWER_FRAMEWORK_VERSION);
       expect(document.body.textContent).toContain("C:\\Users\\example\\workspace\\ave-project\\ave");
     });
   });

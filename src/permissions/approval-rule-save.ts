@@ -11,6 +11,7 @@ type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]
 
 // The card warns before saving an edited wildcard allow; the host repeats it in the result so the warning is never only a renderer claim.
 const WILDCARD_ALLOW_SANDBOXED_ONLY = "wildcard-allow-sandboxed-only" as const;
+const WILDCARD_ALLOW_BROADER_SCOPE = "wildcard-allow-broader-scope" as const;
 
 export type ApprovalRuleSaveResult =
   | {
@@ -19,7 +20,7 @@ export type ApprovalRuleSaveResult =
     readonly scope: ShellRuleSaveScope;
     readonly pattern: string;
     readonly edited: boolean;
-    readonly warning?: typeof WILDCARD_ALLOW_SANDBOXED_ONLY;
+    readonly warning?: typeof WILDCARD_ALLOW_SANDBOXED_ONLY | typeof WILDCARD_ALLOW_BROADER_SCOPE;
   }
   | { readonly ok: false; readonly error: string; readonly message?: string };
 
@@ -39,10 +40,6 @@ function targetOf(snapshot: RequestSnapshot): Target | undefined {
 
 // Where an allow at `scope` may be saved for this request, or the error that refuses it.
 function allowRefusal(target: Target, scope: ShellRuleSaveScope): string | undefined {
-  // A host terminal rule already names its exact directory; it is user-global and never lives only for a session.
-  if (target.kind === "shell" && target.context.hostTerminal !== undefined) {
-    return scope === "always" && target.context.persistentAllowed ? undefined : "scope-not-offered";
-  }
   if (target.kind === "shell") {
     const offered = scope === "session" ? target.context.sessionAllowed : target.context.persistentAllowed;
     return offered ? undefined : "one-shot-not-recordable";
@@ -72,10 +69,6 @@ function editedRule(text: string): { ok: true; pattern: string } | { ok: false; 
 
 // True when `pattern`, as `action`, decides this request: a shell rule of the card's own dialect that allows (or refuses) its command, or a host rule naming its destination.
 function decidesRequest(target: Target, pattern: string, action: "allow" | "deny"): boolean {
-  if (target.kind === "shell" && action === "allow" && target.context.hostTerminal !== undefined) {
-    // Only the host-derived exact rule for this shell, directory and command; an edited allow is never a host terminal rule.
-    return target.context.exactRule !== null && pattern === target.context.exactRule;
-  }
   if (target.kind === "shell") {
     const command = target.snapshot.args && typeof target.snapshot.args === "object"
       ? (target.snapshot.args as Record<string, unknown>).command : undefined;
@@ -87,8 +80,8 @@ function decidesRequest(target: Target, pattern: string, action: "allow" | "deny
   return spec.kind === "network" && matchesWebFetchHost(spec, target.context.host, target.context.port);
 }
 
-// A wildcard allow: a shell rule ending in ` *`, or a host rule for every subdomain (`Network(*.example.com)`). Either reaches only sandboxed runs —
-// a host rule decides only a sandboxed command's connections — so the card warns on both.
+// Wildcards extend the allow beyond this exact action. Network rules decide
+// sandboxed connections; shell prefixes also apply to matching host commands.
 function isWildcardAllow(target: Target, pattern: string): boolean {
   if (target.kind === "shell") return isWildcardShellRule(pattern);
   const spec = parseRuleSpecifier(pattern);
@@ -159,6 +152,8 @@ export async function saveApprovalCardRule(
     // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.
     return fail("rule-save-failed", errorMessage(error));
   }
-  const warning = action === "allow" && isWildcardAllow(target, pattern) ? WILDCARD_ALLOW_SANDBOXED_ONLY : undefined;
+  const warning = action === "allow" && isWildcardAllow(target, pattern)
+    ? target.kind === "shell" ? WILDCARD_ALLOW_BROADER_SCOPE : WILDCARD_ALLOW_SANDBOXED_ONLY
+    : undefined;
   return { ok: true, action, scope, pattern, edited: edited !== undefined, ...(warning === undefined ? {} : { warning }) };
 }

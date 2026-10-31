@@ -1,5 +1,14 @@
 // i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
+  "permissionsTab.reviewerModeFaultTitle": "Choose a supported permission reviewer setting",
+  "permissionsTab.reviewerModeFaultDescription": "The saved reviewer mode is no longer supported. Automatic review is unavailable until you choose a setting. Your other settings are unchanged.",
+  "permissionsTab.reviewerModeRepairLlm": "Use automatic review",
+  "permissionsTab.reviewerModeRepairDisabled": "Turn off review: auto asks with a card",
+  "permissionsTab.reviewerModeRecovered": "Permission reviewer setting updated.",
+  "permissionsTab.reviewerModeRecoveryRewireFailed": "Your reviewer choice was saved, but the reviewer could not reconnect. Automatic review remains unavailable.",
+  "permissionsTab.ownerAwayAutoSkipLabel": "Owner-away auto-skip (minutes)",
+  "permissionsTab.ownerAwayAutoSkipHint": "0 waits without a limit. After the configured wait, deny the request and tell the model not to retry.",
+  "permissionsTab.ownerAwaySaveFailed": "Could not save owner-away auto-skip.",
   "permissionsTab.osSandboxWindowsProfileReadDenyReadable": "{path} is readable by {principals} and cannot be protected by the sandbox",
   "permissionsTab.osSandboxWindowsProfileReadDenyUnverified": "{path} has unverified read protection and cannot be protected by the sandbox",
   "permissionsTab.invalidAdminPolicy": "Administrative policy could not be trusted or parsed. Approval is required and policy edits are locked. {reason}",
@@ -15,28 +24,16 @@ export const en = {
   "permissionsTab.sandboxRestartUnsupported": "Restart is unavailable in this host. Restart Ave manually.",
   "permissionsTab.sandboxRestartFailed": "Ave could not restart. Try again.",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "The Windows sandbox helper failed its integrity check. Ave blocked it from running. Reinstall Ave to restore the verified helper.",
-  // Reviewer interactive options
-  "permissionsTab.interactiveAutoApproveLabel": "Automatic approval threshold",
-  "permissionsTab.interactiveOffLabel": "Off",
-  "permissionsTab.interactiveOffDescription": "Always shows the foreground approval dock before a tool runs.",
-  "permissionsTab.interactiveLowLabel": "Auto-approve low risk",
-  "permissionsTab.interactiveLowDescription": "Actions judged as low risk are automatically allowed without confirmation. Medium and high risk still require a decision in the foreground approval dock.",
-  "permissionsTab.interactiveMediumLabel": "Auto-approve medium risk",
-  "permissionsTab.interactiveMediumDescription": "Actions judged as low or medium risk are automatically allowed without confirmation. High risk still requires confirmation.",
 
   // Reviewer mode options
-  "permissionsTab.reviewerModeDisabledLabel": "Validation off (auto-pass)",
-  "permissionsTab.reviewerModeDisabledDescription": "Disables the permission reviewer and applies only category default policies. Per-tool block/allow rules remain in effect.",
-  "permissionsTab.reviewerModeRuleLabel": "Rule-based validation",
-  "permissionsTab.reviewerModeRuleDescription": "Only low-risk actions pass through local rules; medium and high risk are queued for review.",
+  "permissionsTab.reviewerModeDisabledLabel": "Review off (auto asks)",
+  "permissionsTab.reviewerModeDisabledDescription": "Disables automatic review. Requests that need review use a permission card even in auto mode; without a person, they are denied. Permission rules and mandatory protections remain in effect.",
   "permissionsTab.reviewerModeLlmLabel": "LLM validation",
   "permissionsTab.reviewerModeLlmDescription": "After rule validation, an LLM can raise the risk level. It cannot lower it.",
-  "permissionsTab.reviewerModeStrictLabel": "Strict (all pending)",
-  "permissionsTab.reviewerModeStrictDescription": "All mutating actions from both automated (headless) runs and interactive chat are sent to the pending queue. The user must manually approve before execution.",
 
   // Reviewer fallback options
   "permissionsTab.fallbackDenyLabel": "Block",
-  "permissionsTab.fallbackDenyDescription": "On LLM error or response parse failure, sends to the pending queue.",
+  "permissionsTab.fallbackDenyDescription": "Automatic review errors ask a person. Requests without an approver are denied.",
   "permissionsTab.fallbackRuleLabel": "Use rule result",
   "permissionsTab.fallbackRuleDescription": "On LLM failure, applies the local rule result as-is.",
 
@@ -107,7 +104,8 @@ export const en = {
 
   // Policy section
   "permissionsTab.policyTitle": "Permission Policy",
-  "permissionsTab.policyDescription": "Default allows reads and recoverable project file edits. Writes outside the project and protected paths still require approval; unavailable checkpoints also require approval. Confirm all asks even for reads. Auto-verify allows the same project edits before reviewing other eligible calls. Allow all preserves hard blocks and approval outside allowed directories.",
+  "permissionsTab.autoReviewBehavior": "auto allows low and medium risk. After a high-risk denial, the agent can accept it, cite your instructions once for another review, or ask you. Review errors or interruptions ask you. Protected actions need one-time approval without review.",
+  "permissionsTab.policyDescription": "Default allows ordinary reads and proven read-only sandboxed commands; other actions ask. Allow writes also allows recoverable project edits and safe sandboxed commands. auto reviews other actions. Allow still enforces deny rules and one-time approval for protected actions.",
   "permissionsTab.policyAriaLabel": "Select permission policy",
 
   // Reviewer section
@@ -126,16 +124,11 @@ export const en = {
   "permissionsTab.llmProviderManagedNote": "Provider, model, API key, baseUrl, and Vertex project/region changes are managed in Intelligence Settings.",
 
   // Auto-approve low risk
-  "permissionsTab.autoApproveLowRiskLabel": "Auto-approve low risk",
-  "permissionsTab.autoApproveLowRiskDescription": "Tool executions judged as low risk are automatically allowed without confirmation. Medium and high risk executions always require a decision in the foreground approval dock.",
-  "permissionsTab.autoApproveLowRiskAriaLabel": "Auto-approve low risk setting",
 
   // Inline warning banners
-  "permissionsTab.warnReviewerDisabledAutoApproveInactive": "⚠ The permission reviewer is off, so auto-approve low risk is not active. Enable the reviewer with \"Rule-based validation\" or \"LLM validation\".",
   "permissionsTab.warnAutoModeAutoApproveOff": "⚠ Auto-approve low risk is off in \"Auto-validate\" mode. To allow low-risk actions without confirmation, enable \"Auto-approve low risk\" above.",
-  "permissionsTab.warnStrictLowContradiction": "⛔ \"Ask All\" mode confirms all actions, but \"Auto-approve low risk\" is on — settings conflict. To keep the confirm-all policy, set auto-approve low risk to \"Off\".",
-  "permissionsTab.warnAllowModeReviewerIgnored": "⚠ \"Allow All\" mode auto-allows all actions, so the permission reviewer and auto-approve low risk settings have no effect.",
-  "permissionsTab.warnReviewerLlmDegradedToRule": "⚠ LLM validation is inactive (no LLM provider/API key configured) — currently running on rule-based validation. Configure a chat LLM provider to enable LLM validation; it switches on automatically.",
+  "permissionsTab.warnAllowModeReviewerIgnored": "Allow mode bypasses automatic review. Deny rules and one-time approval for protected actions remain in effect.",
+  "permissionsTab.warnReviewerLlmDegradedToRule": "Automatic review is unavailable because no model provider is configured. Auto mode asks with a card. Configure a provider to enable automatic review.",
 
   // CLI mapping panel
   "permissionsTab.cliMappingTitle": "CLI Mapping (slash commands)",
@@ -251,34 +244,6 @@ export const en = {
   "permissionsTab.osSandboxWindowsReloginHeading": "Windows setup incomplete",
   "permissionsTab.osSandboxWindowsReloginPending": "The sandbox user or network filters are not ready yet. Click Re-provision and approve the administrator prompt, then restart Ave. Signing out is not required.",
 
-  // Sub-agent parent adjudication
-  "permissionsTab.adjudicationTitle": "Sub-agent parent adjudication",
-  "permissionsTab.adjudicationDescription": "Lets a parent agent answer a sub-agent's permission request on your behalf, within host-enforced ceilings.",
-  "permissionsTab.adjudicationCheckboxAriaLabel": "Enable sub-agent parent adjudication",
-  "permissionsTab.adjudicationEnabled": "On",
-  "permissionsTab.adjudicationDisabled": "Off",
-  "permissionsTab.adjudicationChainNote": "Three-tier chain: automatic lane → parent adjudication → your approval dialog. Anything the parent may not or cannot decide still reaches you.",
-  "permissionsTab.adjudicationToggleFailed": "Could not change the parent adjudication setting.",
-  "permissionsTab.adjudicationToggleError": "Parent adjudication setting error: {message}",
-  "permissionsTab.adjudicationMaxVerdictLabel": "Verdict ceiling",
-  "permissionsTab.adjudicationMaxVerdictHint": "Highest risk the parent may decide. High risk always goes to your approval dialog.",
-  "permissionsTab.adjudicationMaxVerdictLow": "Low risk only",
-  "permissionsTab.adjudicationMaxVerdictMedium": "Up to medium risk",
-  "permissionsTab.adjudicationModelLabel": "Adjudicating model",
-  "permissionsTab.adjudicationModelHint": "Parent session model judges with your chat model — one extra billed call per adjudication.",
-  "permissionsTab.adjudicationModelReviewer": "Reviewer model",
-  "permissionsTab.adjudicationModelParentSession": "Parent session model",
-  "permissionsTab.adjudicationBackgroundEscalationLabel": "Unattended escalation",
-  "permissionsTab.adjudicationBackgroundEscalationHint": "Where an escalation goes when a background run has nobody watching it.",
-  "permissionsTab.adjudicationBackgroundEscalationDeferred": "Deferred queue (fail-closed)",
-  "permissionsTab.adjudicationBackgroundEscalationModal": "Approval dialog",
-  "permissionsTab.adjudicationTimeoutLabel": "Adjudication timeout (seconds)",
-  "permissionsTab.adjudicationTimeoutHint": "Timed from the moment the request is queued. Past it the request escalates to you. {min}–{max} seconds.",
-  "permissionsTab.adjudicationMaxPerChildRunLabel": "Adjudications per child run",
-  "permissionsTab.adjudicationMaxPerChildRunHint": "Past this count a child run escalates to you instead. {min}–{max}.",
-  "permissionsTab.adjudicationContextTurnsLabel": "Parent conversation turns in evidence",
-  "permissionsTab.adjudicationContextTurnsHint": "{min} keeps the parent conversation out of the request entirely. {min}–{max}.",
-  "permissionsTab.adjudicationContextTurnsPrivacyNote": "Above 0, a DLP-masked summary of your most recent conversation turns — your own words — is sent to the adjudicating model's provider. This is the only setting here that widens what leaves this machine.",
 
   // Rules section
   "permissionsTab.rulesEmpty": "No saved rules.",
@@ -333,6 +298,7 @@ export const en = {
   "permissionsTab.scopeProject": "Project",
   "permissionsTab.scopeUser": "Everywhere",
   "permissionsTab.revokeNamedRule": "Revoke {pattern}",
+  "permissionsTab.ruleRetiredHostTerminal": "No longer used: host terminal actions use session choices. Delete this stored rule.",
   "permissionsTab.ruleInvalidWildcardNotAllowlisted": "Not in force: this stored wildcard prefix is too broad. Remove it or save a narrower prefix or exact command.",
   "permissionsTab.exactApprovalLabel": "Exact approval",
 
@@ -394,6 +360,15 @@ export const en = {
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity: the proxy cannot tell which extension process opened a connection the way it can for a contained shell command.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "permissionsTab.reviewerModeFaultTitle": "지원되는 권한 리뷰어 설정을 선택하세요",
+  "permissionsTab.reviewerModeFaultDescription": "저장된 리뷰어 모드는 더 이상 지원되지 않습니다. 설정을 선택하기 전까지 자동 검토를 사용할 수 없습니다. 다른 설정은 유지됩니다.",
+  "permissionsTab.reviewerModeRepairLlm": "자동 리뷰 사용",
+  "permissionsTab.reviewerModeRepairDisabled": "리뷰 끄기: auto 모드에서도 카드로 확인",
+  "permissionsTab.reviewerModeRecovered": "권한 리뷰어 설정을 변경했습니다.",
+  "permissionsTab.reviewerModeRecoveryRewireFailed": "리뷰어 선택은 저장했지만 리뷰어를 다시 연결하지 못했습니다. 자동 검토는 계속 사용할 수 없습니다.",
+  "permissionsTab.ownerAwayAutoSkipLabel": "부재 중 자동 스킵 (분)",
+  "permissionsTab.ownerAwayAutoSkipHint": "0은 무제한 대기입니다. 설정한 시간이 지나면 요청을 거부하고 모델에 재시도하지 않도록 알립니다.",
+  "permissionsTab.ownerAwaySaveFailed": "부재 중 자동 스킵 설정을 저장하지 못했습니다.",
   "permissionsTab.osSandboxWindowsProfileReadDenyReadable": "{path} 경로는 {principals} 주체가 읽을 수 있으며 샌드박스로 보호할 수 없습니다",
   "permissionsTab.osSandboxWindowsProfileReadDenyUnverified": "{path} 경로의 읽기 보호가 검증되지 않았으며 샌드박스로 보호할 수 없습니다",
   "permissionsTab.invalidAdminPolicy": "관리자 정책을 신뢰하거나 읽을 수 없습니다. 승인이 필수이며 정책을 수정할 수 없습니다. {reason}",
@@ -409,25 +384,14 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.sandboxRestartUnsupported": "이 호스트에서는 다시 시작할 수 없습니다. Ave를 직접 다시 시작해 주세요.",
   "permissionsTab.sandboxRestartFailed": "Ave를 다시 시작하지 못했습니다. 다시 시도해 주세요.",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "Windows 샌드박스 도우미의 무결성 검사에 실패하여 Ave가 실행을 차단했습니다. Ave를 다시 설치하여 검증된 도우미를 복원하세요.",
-  "permissionsTab.interactiveAutoApproveLabel": "자동 허용 위험도",
-  "permissionsTab.interactiveOffLabel": "끔",
-  "permissionsTab.interactiveOffDescription": "도구가 실행되기 전 항상 전경 승인 도크를 표시합니다.",
-  "permissionsTab.interactiveLowLabel": "저위험 자동 허용",
-  "permissionsTab.interactiveLowDescription": "저위험으로 판단된 작업은 확인 없이 자동으로 허용합니다. 중·고위험은 전경 승인 도크에서 사용자 결정을 요구합니다.",
-  "permissionsTab.interactiveMediumLabel": "중위험까지 자동 허용",
-  "permissionsTab.interactiveMediumDescription": "저위험과 중위험으로 판단된 작업은 확인 없이 자동으로 허용합니다. 고위험은 계속 확인이 필요합니다.",
 
-  "permissionsTab.reviewerModeDisabledLabel": "검증 끔 (자동 통과)",
-  "permissionsTab.reviewerModeDisabledDescription": "권한 리뷰어를 끄고 카테고리 기본 정책만 적용합니다. 도구별 차단/허용 규칙은 그대로 유지됩니다.",
-  "permissionsTab.reviewerModeRuleLabel": "규칙 기반 검증",
-  "permissionsTab.reviewerModeRuleDescription": "로컬 규칙으로 저위험 작업만 통과시키고 중·고위험은 대기시킵니다.",
+  "permissionsTab.reviewerModeDisabledLabel": "리뷰 끄기 (auto에서도 확인)",
+  "permissionsTab.reviewerModeDisabledDescription": "자동 리뷰를 끕니다. 리뷰가 필요한 요청은 auto 모드에서도 카드로 확인하고, 승인할 사람이 없으면 거부합니다. 권한 규칙과 필수 보호는 그대로 적용됩니다.",
   "permissionsTab.reviewerModeLlmLabel": "LLM 검증",
   "permissionsTab.reviewerModeLlmDescription": "규칙 검증 뒤 LLM이 위험도를 올릴 수 있습니다. 낮출 수는 없습니다.",
-  "permissionsTab.reviewerModeStrictLabel": "엄격 (모두 보류)",
-  "permissionsTab.reviewerModeStrictDescription": "자동(헤드리스) 실행과 대화형 채팅의 변경 작업을 모두 보류 대기열로 보냅니다. 사용자가 직접 승인해야 실행됩니다.",
 
   "permissionsTab.fallbackDenyLabel": "차단",
-  "permissionsTab.fallbackDenyDescription": "LLM 오류나 응답 파싱 실패 시 보류 대기열로 보냅니다.",
+  "permissionsTab.fallbackDenyDescription": "자동 검증 오류는 사용자에게 확인합니다. 승인할 사람이 없으면 거부합니다.",
   "permissionsTab.fallbackRuleLabel": "규칙 결과 사용",
   "permissionsTab.fallbackRuleDescription": "LLM 실패 시 로컬 규칙 결과를 그대로 적용합니다.",
 
@@ -484,7 +448,8 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.summaryCloseDenies": "Escape 키는 거부 처리",
 
   "permissionsTab.policyTitle": "권한 정책",
-  "permissionsTab.policyDescription": "기본은 읽기와 복구 가능한 프로젝트 파일 변경을 허용합니다. 프로젝트 밖 쓰기와 보호 경로는 계속 승인을 요청하고, 체크포인트를 사용할 수 없어도 승인을 요청합니다. 모두 확인은 읽기까지 확인합니다. 자동 검증은 같은 프로젝트 변경을 허용한 뒤 나머지 검증 대상에 리뷰어를 적용합니다. 모두 허용도 하드 차단과 허용 디렉터리 밖 접근 승인을 유지합니다.",
+  "permissionsTab.autoReviewBehavior": "auto는 저·중위험은 허용합니다. 고위험으로 거부되면 에이전트가 거부를 받아들이거나, 사용자의 지시를 근거로 한 번 더 검토를 요청하거나, 사용자에게 확인을 요청합니다. 오류나 검증 중단은 사용자에게 확인합니다. 보호 대상은 리뷰어를 거치지 않고 이번 한 번 승인이 필요합니다.",
+  "permissionsTab.policyDescription": "기본은 일반 읽기와 입증된 읽기 전용 샌드박스 명령을 허용하고 나머지는 확인합니다. 쓰기 허용은 복구 가능한 프로젝트 변경과 안전한 샌드박스 명령도 허용합니다. auto는 나머지 작업을 리뷰어가 검증하며, 허용도 거부 규칙과 보호 대상의 이번 한 번 승인은 유지합니다.",
   "permissionsTab.policyAriaLabel": "권한 정책 선택",
 
   "permissionsTab.reviewerTitle": "권한 리뷰어",
@@ -500,15 +465,10 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.errorHandlingLabel": "오류 처리",
   "permissionsTab.llmProviderManagedNote": "공급자, 모델, API 키, baseUrl, Vertex 프로젝트/리전 변경은 지능 설정에서 관리합니다.",
 
-  "permissionsTab.autoApproveLowRiskLabel": "저위험 자동 허용",
-  "permissionsTab.autoApproveLowRiskDescription": "위험도가 낮다고 판단된 도구 실행은 확인 없이 자동으로 허용합니다. 중간·높은 위험도의 실행은 전경 승인 도크에서 항상 사용자 결정을 요구합니다.",
-  "permissionsTab.autoApproveLowRiskAriaLabel": "저위험 자동 허용 설정",
 
-  "permissionsTab.warnReviewerDisabledAutoApproveInactive": "⚠ 권한 리뷰어가 꺼져 있어 저위험 자동 허용이 동작하지 않습니다. 권한 리뷰어를 \"규칙 기반 검증\" 또는 \"LLM 검증\"으로 켜세요.",
   "permissionsTab.warnAutoModeAutoApproveOff": "⚠ \"자동 검증\" 모드에서 저위험 자동 허용이 꺼져 있습니다. 저위험 작업을 확인 없이 허용하려면 위에서 \"저위험 자동 허용\"을 켜세요.",
-  "permissionsTab.warnStrictLowContradiction": "⛔ \"전체 물어보기\" 모드는 모든 작업을 확인하지만 \"저위험 자동 허용\"이 켜져 있어 설정이 충돌합니다. 모두 확인 정책을 유지하려면 저위험 자동 허용을 \"끔\"으로 변경하세요.",
-  "permissionsTab.warnAllowModeReviewerIgnored": "⚠ \"전체 허용\" 모드는 모든 작업을 자동 허용하므로 권한 리뷰어와 저위험 자동 허용 설정이 적용되지 않습니다.",
-  "permissionsTab.warnReviewerLlmDegradedToRule": "⚠ LLM 검증이 비활성 상태입니다 (LLM 공급자/API 키 미구성) — 현재 규칙 기반 검증으로 동작 중입니다. 채팅 LLM 공급자를 구성하면 LLM 검증이 자동으로 켜집니다.",
+  "permissionsTab.warnAllowModeReviewerIgnored": "허용 모드에서는 자동 검증을 생략합니다. 거부 규칙과 보호 대상의 이번 한 번 승인은 유지합니다.",
+  "permissionsTab.warnReviewerLlmDegradedToRule": "모델 공급자가 구성되지 않아 자동 리뷰를 사용할 수 없습니다. auto 모드에서도 카드로 확인합니다. 공급자를 구성하면 자동 리뷰를 사용할 수 있습니다.",
 
   "permissionsTab.cliMappingTitle": "CLI 매핑 (슬래시 명령)",
   "permissionsTab.cliMappingDescription": "동일 설정을 채팅 입력창에서 슬래시 명령으로도 변경할 수 있습니다.",
@@ -618,33 +578,6 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.osSandboxWindowsReloginHeading": "Windows 설정 미완료",
   "permissionsTab.osSandboxWindowsReloginPending": "샌드박스 사용자 또는 네트워크 필터가 아직 준비되지 않았습니다. 재설정을 누르고 관리자 확인 창을 허용한 뒤 Ave를 재시작하세요. 로그아웃은 필요하지 않습니다.",
 
-  "permissionsTab.adjudicationTitle": "서브에이전트 부모 판정",
-  "permissionsTab.adjudicationDescription": "호스트가 강제하는 상한 안에서, 부모 에이전트가 서브에이전트의 권한 요청을 사용자 대신 판정하도록 합니다.",
-  "permissionsTab.adjudicationCheckboxAriaLabel": "서브에이전트 부모 판정 사용",
-  "permissionsTab.adjudicationEnabled": "켬",
-  "permissionsTab.adjudicationDisabled": "끔",
-  "permissionsTab.adjudicationChainNote": "3단계 체인: 자동 레인 → 부모 판정 → 사용자 모달. 부모가 판정할 수 없거나 허용되지 않은 요청은 그대로 사용자에게 올라옵니다.",
-  "permissionsTab.adjudicationToggleFailed": "부모 판정 설정을 변경하지 못했습니다.",
-  "permissionsTab.adjudicationToggleError": "부모 판정 설정 변경 중 오류: {message}",
-  "permissionsTab.adjudicationMaxVerdictLabel": "판정 허용 상한",
-  "permissionsTab.adjudicationMaxVerdictHint": "부모가 판정할 수 있는 최고 위험도입니다. 고위험은 항상 사용자 모달로 올라옵니다.",
-  "permissionsTab.adjudicationMaxVerdictLow": "저위험만",
-  "permissionsTab.adjudicationMaxVerdictMedium": "중위험까지",
-  "permissionsTab.adjudicationModelLabel": "판정 모델",
-  "permissionsTab.adjudicationModelHint": "부모 세션 모델은 채팅 모델로 판정하므로 판정 1건마다 과금이 추가됩니다.",
-  "permissionsTab.adjudicationModelReviewer": "리뷰어 모델",
-  "permissionsTab.adjudicationModelParentSession": "부모 세션 모델",
-  "permissionsTab.adjudicationBackgroundEscalationLabel": "무인 에스컬레이션",
-  "permissionsTab.adjudicationBackgroundEscalationHint": "아무도 보고 있지 않은 백그라운드 실행에서 에스컬레이션을 어디로 보낼지 정합니다.",
-  "permissionsTab.adjudicationBackgroundEscalationDeferred": "보류 큐 (fail-closed)",
-  "permissionsTab.adjudicationBackgroundEscalationModal": "승인 모달",
-  "permissionsTab.adjudicationTimeoutLabel": "판정 제한 시간 (초)",
-  "permissionsTab.adjudicationTimeoutHint": "요청이 큐에 들어간 시점부터 측정합니다. 초과하면 사용자에게 올라옵니다. {min}–{max}초.",
-  "permissionsTab.adjudicationMaxPerChildRunLabel": "자식 실행당 판정 횟수",
-  "permissionsTab.adjudicationMaxPerChildRunHint": "이 횟수를 넘으면 해당 자식 실행은 사용자 승인으로 넘어갑니다. {min}–{max}.",
-  "permissionsTab.adjudicationContextTurnsLabel": "판정 근거에 포함할 부모 대화 턴",
-  "permissionsTab.adjudicationContextTurnsHint": "{min}이면 부모 대화를 판정 요청에 전혀 넣지 않습니다. {min}–{max}.",
-  "permissionsTab.adjudicationContextTurnsPrivacyNote": "0보다 크면 최근 대화 턴 — 사용자가 직접 한 말 — 의 DLP 마스킹 요약이 판정 모델 제공자에게 전송됩니다. 이 화면에서 기기 밖으로 나가는 정보를 넓히는 유일한 설정입니다.",
 
   "permissionsTab.rulesEmpty": "저장된 규칙이 없습니다.",
   "permissionsTab.rulesColPattern": "패턴",
@@ -695,6 +628,7 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.scopeProject": "프로젝트",
   "permissionsTab.scopeUser": "모든 프로젝트",
   "permissionsTab.revokeNamedRule": "{pattern} 철회",
+  "permissionsTab.ruleRetiredHostTerminal": "더 이상 사용되지 않음: 호스트 터미널 동작은 세션 선택을 사용합니다. 저장된 이 규칙을 삭제하세요.",
   "permissionsTab.ruleInvalidWildcardNotAllowlisted": "적용되지 않음: 저장된 와일드카드 접두사의 범위가 너무 넓습니다. 삭제하거나 더 구체적인 접두사 또는 정확한 명령으로 저장하세요.",
   "permissionsTab.exactApprovalLabel": "정확히 일치하는 승인",
 

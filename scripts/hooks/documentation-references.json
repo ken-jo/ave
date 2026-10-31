@@ -7,7 +7,6 @@
     "README.md",
     "docs/blueprints/a2a-subagent-messaging.md",
     "docs/design/permission-review-scenario-board-v2.html",
-    "docs/design/permissions-always-allow-and-judge.md",
     "docs/design/plugin-hostapi-protocol.md",
     "docs/development/knip-baseline.md",
     "docs/ko/app-readme.md",
@@ -39,6 +38,7 @@
     "docs/architecture/architecture.md",
     "docs/architecture/hook-runtime-expansion-design.md",
     "docs/architecture/mcp-alignment-design.md",
+    "docs/architecture/permission-decision-tree.md",
     "docs/architecture/permission-policy-design.md",
     "docs/architecture/proposals/suggested-replies-ghost-text.md",
     "docs/blueprints/composer-redesign-message-queue.md",
@@ -59,9 +59,6 @@
   "readers": {
     "docs/design/permission-review-scenario-board-v2.html": [
       "src/permissions/__tests__/permission-review-scenario-board.test.ts"
-    ],
-    "docs/design/permissions-always-allow-and-judge.md": [
-      "src/permissions/__tests__/fixtures/runner-decisions.ts"
     ],
     "docs/development/knip-baseline.md": [
       "test/scripts/repository-identity.test.ts"

@@ -13,6 +13,19 @@ function commands(result: ShellAnalysis): readonly ShellCommand[] {
 }
 
 describe("whole-input grammar token admission", () => {
+  it("retains parsed compound input for evidence without proving executable syntax", () => {
+    const command = "( bash ) <<'EOF'\nrm -rf /\nEOF";
+    const result = analyzeShell(command, "bash", LIMITS);
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.program.kind !== "sequence") throw new Error("Expected a parsed command list");
+    const group = result.program.statements[0];
+    expect(group).toMatchObject({ kind: "unsupported", reason: "Unsupported compound input or dynamic descriptor redirection",
+      redirected: { body: { kind: "subshell" }, redirects: [{ effect: "read", descriptor: false }] } });
+    if (group?.kind !== "unsupported") throw new Error("Expected unsupported executable syntax");
+    expect(group.redirected?.redirects[0]?.data && staticShellWord(group.redirected.redirects[0].data)).toContain("rm -rf /");
+    expect(analyzeShell(command, "bash", { totalTokens: 1 })).toEqual({ ok: false, reason: "Shell analysis total token limit exceeded" });
+  });
+
   it("counts words across simple command boundaries before serialization", () => {
     const at = analyzeShell(":;".repeat(MAX_SHELL_ANALYSIS_TOKENS), "bash", LIMITS);
     expect(at.ok && at.totalTokens).toBe(MAX_SHELL_ANALYSIS_TOKENS);

@@ -40,13 +40,6 @@ describe("parsePermissionReviewerCommand", () => {
     });
   });
 
-  it("parses 'mode rule'", () => {
-    expect(parsePermissionReviewerCommand("mode rule")).toEqual({
-      verb: "mode",
-      value: "rule",
-    });
-  });
-
   it("parses 'mode llm'", () => {
     expect(parsePermissionReviewerCommand("mode llm")).toEqual({
       verb: "mode",
@@ -71,25 +64,8 @@ describe("parsePermissionReviewerCommand", () => {
     });
   });
 
-  it("parses 'interactive off' (issue #690)", () => {
-    expect(parsePermissionReviewerCommand("interactive off")).toEqual({
-      verb: "interactive",
-      value: "off",
-    });
-  });
-
-  it("parses 'interactive low' (issue #690)", () => {
-    expect(parsePermissionReviewerCommand("interactive low")).toEqual({
-      verb: "interactive",
-      value: "low",
-    });
-  });
-
-  it("parses 'interactive medium'", () => {
-    expect(parsePermissionReviewerCommand("interactive medium")).toEqual({
-      verb: "interactive",
-      value: "medium",
-    });
+  it.each(["off", "low", "medium"])("rejects the removed interactive %s command", value => {
+    expect(parsePermissionReviewerCommand(`interactive ${value}`)).toMatchObject({ ok: false, error: expect.stringMatching(/^unknown subcommand/) });
   });
 
   it("rejects empty input", () => {
@@ -108,112 +84,12 @@ describe("parsePermissionReviewerCommand", () => {
   });
 
   it("rejects 'mode' with too many args", () => {
-    const r = parsePermissionReviewerCommand("mode rule extra");
+    const r = parsePermissionReviewerCommand("mode llm extra");
     expect(r).toEqual({ ok: false, error: expect.stringMatching(/single value/) });
   });
 
-  it("parses 'adjudication <field> <value>'", () => {
-    expect(parsePermissionReviewerCommand("adjudication maxVerdict low")).toEqual({
-      verb: "adjudication",
-      value: "low",
-      field: "maxVerdict",
-    });
-  });
-
-  it("rejects 'adjudication' with no field", () => {
-    const r = parsePermissionReviewerCommand("adjudication");
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/requires a field and a value/) });
-  });
-
-  it("rejects an unknown adjudication field", () => {
-    const r = parsePermissionReviewerCommand("adjudication bogus 1");
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/unknown adjudication field/) });
-  });
-
-  it("rejects 'adjudication' with too many args", () => {
-    const r = parsePermissionReviewerCommand("adjudication timeoutMs 1000 extra");
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/single value/) });
-  });
-});
-
-describe("dispatchPermissionReviewerCommand — parent adjudication", () => {
-  it("persists one ceiling without disturbing the other five", async () => {
-    const path = tmpSettingsPath();
-    const r = await dispatchPermissionReviewerCommand(
-      { verb: "adjudication", value: "low", field: "maxVerdict" },
-      path,
-    );
-    expect(r.ok).toBe(true);
-    const block = readPermissionSettings(path).permissions.reviewer.parentAdjudication;
-    expect(block.maxVerdict).toBe("low");
-    expect(block.timeoutMs).toBe(30_000);
-    expect(block.maxPerChildRun).toBe(200);
-    expect(block.includeParentContextTurns).toBe(0);
-    expect(block.backgroundEscalation).toBe("deferred");
-    expect(block.model).toBe("reviewer");
-  });
-
-  it("persists every writable field", async () => {
-    const path = tmpSettingsPath();
-    for (const [field, value] of [
-      ["timeoutMs", "45000"],
-      ["maxPerChildRun", "50"],
-      ["includeParentContextTurns", "2"],
-      ["backgroundEscalation", "modal"],
-      ["model", "parent-session"],
-    ] as const) {
-      const r = await dispatchPermissionReviewerCommand(
-        { verb: "adjudication", value, field },
-        path,
-      );
-      expect(r.ok, `${field}=${value}`).toBe(true);
-    }
-    const block = readPermissionSettings(path).permissions.reviewer.parentAdjudication;
-    expect(block.timeoutMs).toBe(45_000);
-    expect(block.maxPerChildRun).toBe(50);
-    expect(block.includeParentContextTurns).toBe(2);
-    expect(block.backgroundEscalation).toBe("modal");
-    expect(block.model).toBe("parent-session");
-  });
-
-  it("rejects an out-of-range number rather than clamping it", async () => {
-    const path = tmpSettingsPath();
-    const r = await dispatchPermissionReviewerCommand(
-      { verb: "adjudication", value: "900000", field: "timeoutMs" },
-      path,
-    );
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/expected 1000\.\.120000/) });
-    expect(readPermissionSettings(path).permissions.reviewer.parentAdjudication.timeoutMs)
-      .toBe(30_000);
-  });
-
-  it("rejects a non-integer number", async () => {
-    const path = tmpSettingsPath();
-    const r = await dispatchPermissionReviewerCommand(
-      { verb: "adjudication", value: "2.5", field: "includeParentContextTurns" },
-      path,
-    );
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/expected an integer/) });
-  });
-
-  it("rejects a verdict ceiling the type does not allow", async () => {
-    const path = tmpSettingsPath();
-    const r = await dispatchPermissionReviewerCommand(
-      { verb: "adjudication", value: "high", field: "maxVerdict" },
-      path,
-    );
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/invalid maxVerdict/) });
-    expect(readPermissionSettings(path).permissions.reviewer.parentAdjudication.maxVerdict)
-      .toBe("medium");
-  });
-
-  it("rejects an unknown adjudicating model source", async () => {
-    const path = tmpSettingsPath();
-    const r = await dispatchPermissionReviewerCommand(
-      { verb: "adjudication", value: "gpt-4o", field: "model" },
-      path,
-    );
-    expect(r).toEqual({ ok: false, error: expect.stringMatching(/invalid model/) });
+  it.each(["adjudication", "adjudication maxVerdict low", "adjudication timeoutMs 1000"])("rejects retired reviewer command %s", command => {
+    expect(parsePermissionReviewerCommand(command)).toMatchObject({ ok: false, error: expect.stringMatching(/^unknown subcommand/) });
   });
 });
 
@@ -223,23 +99,23 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     const r = await dispatchPermissionReviewerCommand({ verb: "show", value: "" }, path);
     expect(r.ok).toBe(true);
     if (r.ok && r.verb === "show") {
-      // Default reviewer is "llm" (strongest classifier). Boot wiring degrades to rule at runtime when no LLM provider is configured (fresh install), but the persisted/default mode is "llm" so intent stays visible. interactive.autoApprove defaults to "medium" so LOW/MEDIUM foreground calls are silently allowed; HIGH still surfaces.
+      // Default reviewer is "llm" (strongest classifier). Boot wiring degrades to rule at runtime when no LLM provider is configured (fresh install), but the persisted/default mode is "llm" so intent stays visible.
       expect(r.settings.mode).toBe("llm");
       expect(r.settings).not.toHaveProperty("provider");
       expect(r.settings).not.toHaveProperty("model");
       expect(r.settings.fallbackOnError).toBe("deny");
-      expect(r.settings.interactive.autoApprove).toBe("medium");
+      expect(r.settings).not.toHaveProperty("interactive");
     }
   });
 
-  it("mode rule persists to settings.json", async () => {
+  it("mode llm persists to settings.json", async () => {
     const path = tmpSettingsPath();
-    await dispatchPermissionReviewerCommand({ verb: "mode", value: "rule" }, path);
+    await dispatchPermissionReviewerCommand({ verb: "mode", value: "llm" }, path);
     const settings = readPermissionSettings(path);
-    expect(settings.permissions.reviewer.mode).toBe("rule");
+    expect(settings.permissions.reviewer.mode).toBe("llm");
   });
 
-  it("loads an older file's reviewer provider/model cleanly and drops them on the next save", async () => {
+  it("ignores retired reviewer fields without rewriting until an ordinary settings change", async () => {
     const path = tmpSettingsPath();
     writeFileSync(
       path,
@@ -255,15 +131,19 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
         },
       }),
     );
+    const original = readFileSync(path, "utf8");
     const loaded = readPermissionSettings(path).permissions.reviewer;
-    expect(loaded).toMatchObject({ mode: "llm", fallbackOnError: "rule", interactive: { autoApprove: "low" } });
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(loaded).not.toHaveProperty("interactive");
+    expect(loaded).toMatchObject({ mode: "llm", fallbackOnError: "rule" });
     expect(loaded).not.toHaveProperty("provider");
     expect(loaded).not.toHaveProperty("model");
 
-    const result = await dispatchPermissionReviewerCommand({ verb: "mode", value: "rule" }, path);
+    const result = await dispatchPermissionReviewerCommand({ verb: "mode", value: "llm" }, path);
     expect(result.ok).toBe(true);
     const saved = JSON.parse(readFileSync(path, "utf-8")).permissions.reviewer;
-    expect(saved).toMatchObject({ mode: "rule", fallbackOnError: "rule", interactive: { autoApprove: "low" } });
+    expect(saved).toMatchObject({ mode: "llm", fallbackOnError: "rule" });
+    expect(saved).not.toHaveProperty("interactive");
     expect(saved).not.toHaveProperty("provider");
     expect(saved).not.toHaveProperty("model");
   });
@@ -271,9 +151,28 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
   it("rejects a reviewer patch that names the removed provider/model keys", async () => {
     const path = tmpSettingsPath();
     await expect(
-      setReviewerSettingsPersist({ mode: "rule", provider: "openai" } as never, path),
+      setReviewerSettingsPersist({ mode: "llm", provider: "openai" } as never, path),
     ).rejects.toThrow(/unsupported keys: provider.*permissions\.judge\.model/);
     expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("llm");
+  });
+
+  it("ignores retired parent settings on read and omits them on ordinary write", async () => {
+    const path = tmpSettingsPath();
+    const original = JSON.stringify({ untouched: "keep", permissions: { reviewer: { mode: "llm", fallbackOnError: "rule", parentAdjudication: { model: "parent-session", maxVerdict: "medium" } } } });
+    writeFileSync(path, original);
+    expect(readPermissionSettings(path).permissions.reviewer).toMatchObject({ mode: "llm", fallbackOnError: "rule" });
+    expect(readPermissionSettings(path).permissions.reviewer).not.toHaveProperty("parentAdjudication");
+    expect(readFileSync(path, "utf8")).toBe(original);
+    await expect(setReviewerSettingsPersist({ parentAdjudication: { model: "reviewer" } } as never, path)).rejects.toThrow(/unsupported keys: parentAdjudication/);
+    expect(readFileSync(path, "utf8")).toBe(original);
+    const rejected = await dispatchPermissionReviewerCommand({ verb: "adjudication", value: "low" } as never, path);
+    expect(rejected).toMatchObject({ ok: false, error: expect.stringContaining("unknown reviewer command") });
+    expect(readFileSync(path, "utf8")).toBe(original);
+    await setReviewerSettingsPersist({ fallbackOnError: "deny" }, path);
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    expect(saved.untouched).toBe("keep");
+    expect(saved.permissions.reviewer).toMatchObject({ mode: "llm", fallbackOnError: "deny" });
+    expect(saved.permissions.reviewer).not.toHaveProperty("parentAdjudication");
   });
 
   it("fallback rule persists when explicitly selected", async () => {
@@ -283,34 +182,12 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     expect(settings.permissions.reviewer.fallbackOnError).toBe("rule");
   });
 
-  it("interactive low persists (issue #690 — opt-in for auto-approve LOW)", async () => {
+  it("rejects an inactive interactive setting patch without changing the file", async () => {
     const path = tmpSettingsPath();
-    const r = await dispatchPermissionReviewerCommand(
-      { verb: "interactive", value: "low" },
-      path,
-    );
-    expect(r.ok).toBe(true);
-    const settings = readPermissionSettings(path);
-    expect(settings.permissions.reviewer.interactive.autoApprove).toBe("low");
-  });
-
-  it("interactive off persists as an explicit fail-closed choice", async () => {
-    const path = tmpSettingsPath();
-    await dispatchPermissionReviewerCommand({ verb: "interactive", value: "low" }, path);
-    await dispatchPermissionReviewerCommand({ verb: "interactive", value: "off" }, path);
-    const settings = readPermissionSettings(path);
-    expect(settings.permissions.reviewer.interactive.autoApprove).toBe("off");
-  });
-
-  it("interactive medium persists as the LOW+MEDIUM foreground threshold", async () => {
-    const path = tmpSettingsPath();
-    const r = await dispatchPermissionReviewerCommand(
-      { verb: "interactive", value: "medium" },
-      path,
-    );
-    expect(r.ok).toBe(true);
-    const settings = readPermissionSettings(path);
-    expect(settings.permissions.reviewer.interactive.autoApprove).toBe("medium");
+    await dispatchPermissionReviewerCommand({ verb: "mode", value: "llm" }, path);
+    const before = readFileSync(path, "utf8");
+    await expect(setReviewerSettingsPersist({ interactive: { autoApprove: "low" } } as never, path)).rejects.toThrow(/unsupported keys: interactive/);
+    expect(readFileSync(path, "utf8")).toBe(before);
   });
 
   it("invalid mode returns ok:false", async () => {
@@ -351,15 +228,15 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
   it("setReviewerSettingsPersist preserves additionalDirectories", async () => {
     const path = tmpSettingsPath();
     await writePermissionSettings({ additionalDirectories: ["/foo"] }, path);
-    await setReviewerSettingsPersist({ mode: "rule" }, path);
+    await setReviewerSettingsPersist({ mode: "llm" }, path);
     const settings = readPermissionSettings(path);
     expect(settings.permissions.additionalDirectories).toEqual(["/foo"]);
-    expect(settings.permissions.reviewer.mode).toBe("rule");
+    expect(settings.permissions.reviewer.mode).toBe("llm");
   });
 
   it("rolls back reviewer settings when runtime rewire fails", async () => {
     const path = tmpSettingsPath();
-    await setReviewerSettingsPersist({ mode: "rule" }, path);
+    await setReviewerSettingsPersist({ mode: "llm" }, path);
     const rewire = vi.fn(() => {
       throw new Error("missing provider");
     });
@@ -374,7 +251,7 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
       ok: false,
       error: expect.stringContaining("reviewer-rewire-failed"),
     });
-    expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("rule");
+    expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("llm");
     expect(rewire).toHaveBeenCalledTimes(2);
   });
 });
@@ -383,22 +260,13 @@ describe("normalizePermissionSettings — reviewer block", () => {
   it("missing reviewer block → defaults", () => {
     const settings = normalizePermissionSettings({}, SETTINGS_PATH);
     expect(settings.permissions.reviewer).toEqual({
-      // Default reviewer mode is "llm" (strongest classifier; degrades to rule at boot when no provider is configured). interactive.autoApprove "medium" silently allows LOW/MEDIUM foreground calls.
+      // Default reviewer mode is "llm" (strongest classifier; degrades to rule at boot when no provider is configured).
       mode: "llm",
       fallbackOnError: "deny",
-      interactive: { autoApprove: "medium" },
-      parentAdjudication: {
-        maxVerdict: "medium",
-        timeoutMs: 30_000,
-        maxPerChildRun: 200,
-        includeParentContextTurns: 0,
-        backgroundEscalation: "deferred",
-        model: "reviewer",
-      },
     });
   });
 
-  it("invalid enum values fall back to defaults", () => {
+  it("invalid reviewer enum values carry an explicit no-authority fault", () => {
     const settings = normalizePermissionSettings({
       permissions: {
         reviewer: {
@@ -409,14 +277,14 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
-    // Unknown enum values fall back to the new "llm" default (external boundary: hand-edited settings file with bad values).
-    expect(settings.permissions.reviewer.mode).toBe("llm");
+    expect(settings.fault).toMatchObject({ kind: "reviewer-mode-invalid" });
+    expect(settings.permissions.reviewer.mode).toBe("disabled");
     expect(settings.permissions.reviewer.fallbackOnError).toBe("deny");
     expect(settings.permissions.reviewer).not.toHaveProperty("provider");
     expect(settings.permissions.reviewer).not.toHaveProperty("model");
   });
 
-  it("valid reviewer block round-trips (absent interactive → default medium)", () => {
+  it("valid reviewer block round-trips", () => {
     const settings = normalizePermissionSettings({
       permissions: {
         reviewer: {
@@ -432,24 +300,15 @@ describe("normalizePermissionSettings — reviewer block", () => {
       mode: "llm",
       fallbackOnError: "deny",
       // Only absent fields take the new default; explicit fields above are kept.
-      interactive: { autoApprove: "medium" },
-      parentAdjudication: {
-        maxVerdict: "medium",
-        timeoutMs: 30_000,
-        maxPerChildRun: 200,
-        includeParentContextTurns: 0,
-        backgroundEscalation: "deferred",
-        model: "reviewer",
-      },
     });
   });
 
-  it("explicit mode:rule + autoApprove:off are preserved (not overwritten by new defaults)", () => {
+  it("preserves explicit reviewer mode while ignoring retired interactive settings", () => {
     // Backward-compat: a user who explicitly configured the pre-change defaults must keep them. Only ABSENT fields fall to the new "llm"/"low" defaults.
     const settings = normalizePermissionSettings({
       permissions: {
         reviewer: {
-          mode: "rule",
+          mode: "llm",
           provider: "openai",
           model: "gpt-4o-mini",
           fallbackOnError: "deny",
@@ -457,8 +316,8 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
-    expect(settings.permissions.reviewer.mode).toBe("rule");
-    expect(settings.permissions.reviewer.interactive.autoApprove).toBe("off");
+    expect(settings.permissions.reviewer.mode).toBe("llm");
+    expect(settings.permissions.reviewer).not.toHaveProperty("interactive");
   });
 });
 
@@ -482,7 +341,7 @@ describe("settings file persistence — reviewer block format", () => {
     expect(parsed.permissions.reviewer).not.toHaveProperty("provider");
   });
 
-  it("hand-edited bad enum is normalized on read but bad write rejected", async () => {
+  it("hand-edited unknown reviewer mode reports a fault without granting model-review authority", async () => {
     const path = tmpSettingsPath();
     writeFileSync(
       path,
@@ -490,8 +349,9 @@ describe("settings file persistence — reviewer block format", () => {
         permissions: { reviewer: { mode: "yolo", provider: "openai", model: "x", fallbackOnError: "rule" } },
       }),
     );
-    // Read normalises silently (external boundary). Bad enum → "llm" default.
+    // A readable file keeps its unrelated settings; the invalid reviewer cannot run.
     const r = readPermissionSettings(path);
-    expect(r.permissions.reviewer.mode).toBe("llm");
+    expect(r.permissions.reviewer.mode).toBe("disabled");
+    expect(r.fault).toMatchObject({ kind: "reviewer-mode-invalid" });
   });
 });

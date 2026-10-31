@@ -1,3 +1,4 @@
+import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,8 +25,10 @@ describe("domain grant management boundary", () => {
     const wc = { send: vi.fn(), isDestroyed: () => false };
     const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(wc as never, undefined, 5_000, auditLogger as never);
-    registerPermissionsHandlers({ conversationLoop: { permissionManager: undefined }, approvalGate: gate, auditLogger, settingsService: { get: () => undefined } } as never);
-    const ask = createEgressAskRuntimeCallback({ approvalGate: gate, shellAskEnabled: () => true });
+    const permissionManager = new PermissionManager(join(home, "permissions.json"));
+    permissionManager.setMode("strict");
+    registerPermissionsHandlers({ conversationLoop: { permissionManager }, approvalGate: gate, auditLogger, settingsService: { get: () => undefined } } as never);
+    const ask = createEgressAskRuntimeCallback({ approvalGate: gate, permissionManager, shellAskEnabled: () => true });
     const owner = { kind: "shell" as const, toolName: "bash" as const, toolUseId: undefined, context: { sessionId: "domain-session", workspaceRoot: home, approvalSurface: "interactive" as const } };
     const first = openEgressInvocation(owner);
     const second = openEgressInvocation(owner);

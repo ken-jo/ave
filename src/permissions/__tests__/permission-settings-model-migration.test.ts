@@ -33,9 +33,9 @@ describe("retired reviewer model keys", () => {
 
   it("removes the retired keys from the file on the next save without losing unrelated settings", async () => {
     const path = writeProfile({ mode: "llm", provider: "openai", model: "gpt-4o-mini" });
-    await setReviewerSettingsPersist({ mode: "rule" }, path);
+    await setReviewerSettingsPersist({ mode: "llm" }, path);
     const saved = JSON.parse(readFileSync(path, "utf8"));
-    expect(saved.permissions.reviewer.mode).toBe("rule");
+    expect(saved.permissions.reviewer.mode).toBe("llm");
     expect(saved.permissions.reviewer).not.toHaveProperty("provider");
     expect(saved.permissions.reviewer).not.toHaveProperty("model");
     expect(saved.unrelated).toEqual({ preserved: true });

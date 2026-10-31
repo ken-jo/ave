@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import type { PermissionRule } from "./permission-manager.js";
-import type { ExecutionMode } from "../shared/permission-mode.js";
+import { DEFAULT_EXECUTION_MODE, type ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
 import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, validateRuleList } from "./rules/rule-files.js";
@@ -77,7 +77,7 @@ export async function updatePermissionsFile(
       const file: PermissionsFile = existing ?? {
         version: 1,
         rules: [],
-        mode: "default",
+        mode: DEFAULT_EXECUTION_MODE,
         updatedAt: new Date().toISOString(),
       };
       const inert = inertRulePatterns(existing?.rules);

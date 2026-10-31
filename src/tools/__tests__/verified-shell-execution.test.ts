@@ -1,3 +1,4 @@
+import { issueFilesystemSandboxBlock, sandboxBlockForResult } from "../../shared/sandbox-block.js";
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -209,13 +210,13 @@ function controlledChild() {
   return { child, stdout, stderr };
 }
 
-function completedChild(output: string, beforeClose?: () => void, errorOutput = "") {
+function completedChild(output: string, beforeClose?: () => void, errorOutput = "", exitCode = 0) {
   const { child, stdout, stderr } = controlledChild();
   queueMicrotask(() => {
     stdout.end(output); stderr.end(errorOutput);
     beforeClose?.();
-    Object.assign(child, { exitCode: 0 });
-    child.emit("exit", 0, null); child.emit("close", 0, null);
+    Object.assign(child, { exitCode });
+    child.emit("exit", exitCode, null); child.emit("close", exitCode, null);
   });
   return child as ReturnType<typeof childProcess.spawn>;
 }
@@ -488,4 +489,26 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
     setAgentTerminalObservationSink(undefined);
     daemon.dispose();
   }
+});
+
+
+it("preserves trusted filesystem block evidence through native result copies without replay", async () => {
+  const command = "git log HEAD";
+  const { cwd, identity } = fixture(true, command);
+  vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
+  vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
+  vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
+  const block = issueFilesystemSandboxBlock(command, cwd);
+  const observed = vi.spyOn(sandbox, "filesystemSandboxBlockForCommand").mockResolvedValue(block);
+  const spawned = vi.spyOn(childProcess, "spawn").mockImplementation(() => completedChild("partially completed", undefined, "blocked", 1));
+  const result = await new BashTool().execute({ command, timeoutSeconds: 5, run_in_background: true }, {
+    cwd, extraAllowedDirectories: [], metadata: {}, hostShellExecutionPlan: identity.plan,
+    verifiedShellCommand: prepareVerifiedShellCommand({ command, dialect: "bash", cwd }),
+  });
+  expect(result.isError, result.output).toBe(true);
+  expect(result.metadata?.backgroundUnavailable).toBe(true);
+  expect(sandboxBlockForResult(result)).toBe(block);
+  expect(sandboxBlockForResult({ ...result })).toBeUndefined();
+  expect(spawned).toHaveBeenCalledTimes(1);
+  expect(observed).toHaveBeenCalledTimes(1);
 });

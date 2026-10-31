@@ -71,9 +71,6 @@ import {
   createPermissionManager,
   createApprovalGate,
 } from "./boot/conversation.js";
-import { readPermissionSettings } from "./permissions/permission-settings-store.js";
-import { summarizeParentContextTurns } from "./permissions/parent-context-evidence.js";
-import type { ParentContextTurn } from "./permissions/parent-context-evidence.js";
 import { McpAppModelContextStore } from "./mcp/mcp-app-model-context.js";
 import { initPluginRuntime } from "./boot/steps/plugin-runtime.js";
 import { feedRevocationsFromSnapshots } from "./boot/steps/revocation-bootstrap.js";
@@ -81,7 +78,6 @@ import { createServiceClient } from "./boot/steps/service-endpoint.js";
 import { wireModelCatalogRefresh } from "./boot/steps/model-catalog-refresh.js";
 import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
-import { migrateCanonicalization } from "./permissions/user-approval-store.js";
 import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler.js";
 import { createLogger } from "./lib/logger.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
@@ -126,47 +122,6 @@ import { PluginBundleLifecycle } from "./plugins/plugin-bundle-lifecycle.js";
 import { configureChatGptPlanRuntime } from "./main/chatgpt-plan/runtime.js";
 import { configureClaudeCodeReleaseFetch } from "./main/claude-code-authenticity.js";
 const log = createLogger("ave");
-
-/**
- * How long one parent transcript read is reused for tier-2 evidence.
- *
- * `loadSession` reads and parses the whole session file synchronously on this
- * process's only thread. One adjudicated tool call is worth that; a burst of
- * them from one child run is not, and the approval path is the worst place to
- * spend it. A few seconds of staleness costs at most one very recent turn out
- * of the quoted block.
- */
-const PARENT_CONTEXT_CACHE_MS = 5_000;
-
-const parentContextCache = new Map<
-  string,
-  { readAt: number; turns: readonly ParentContextTurn[] }
->();
-
-/**
- * Compose the parent-context block, reusing a recent read of the same session.
- *
- * Keyed by session AND turn count because the count bounds what the summariser
- * returns. The map is bounded by clearing it whenever it outgrows a handful of
- * sessions — this is a burst cache, not a store.
- */
-function readParentContextTurns(
-  memoryManager: { loadSession: (sessionId: string) => unknown[] | null },
-  parentSessionId: string,
-  maxTurns: number,
-): readonly ParentContextTurn[] {
-  const key = `${parentSessionId}\u0000${maxTurns}`;
-  const now = Date.now();
-  const cached = parentContextCache.get(key);
-  if (cached && now - cached.readAt < PARENT_CONTEXT_CACHE_MS) return cached.turns;
-  const turns = summarizeParentContextTurns(
-    memoryManager.loadSession(parentSessionId) ?? [],
-    maxTurns,
-  );
-  if (parentContextCache.size > 16) parentContextCache.clear();
-  parentContextCache.set(key, { readAt: now, turns });
-  return turns;
-}
 
 export type { AppServices } from "./boot/types.js";
 
@@ -307,11 +262,6 @@ export async function bootstrap(
   ctx.toolRegistry = toolRegistry;
   ctx.routeEngine = routeEngine;
 
-  // One-shot idempotent migration: re-canonicalize user-approval keys for the
-  // RFC 8785 JCS deep-recursion canonicalStringify. Runs after bootstrapCoreServices so any failure is
-  // caught internally and logged without aborting boot. Noop if marker present.
-  await migrateCanonicalization();
-
   // Shared AuditLogger + NotificationService + plugin auth-partition seeding.
   await setupAuditAndNotification(ctx);
   notifyHomeBoundaryRepairs(homePrivacy, ctx);
@@ -326,67 +276,7 @@ export async function bootstrap(
     mainWindow === null ? null : approvalSurfaceResolver(),
     ctx.bootAuditLogger,
     ctx.notificationService,
-    // Tier 2 of the sub-agent approval chain, supplied as accessors rather
-    // than values: the gate is built here, the reviewer that backs the
-    // adjudicator is wired much later in this same boot, and both the
-    // adjudicator and the policy are replaced whenever settings or login
-    // re-fire that wiring. Reading them per ask is what keeps the gate on the
-    // current one. In the window before the reviewer is wired the accessor has
-    // nothing to return, which the gate treats as it treats every other
-    // failure of this lane — the ask escalates to the user.
-    {
-      // Both adjudicators are replaced on every reviewer re-wire, so the
-      // policy's model source is resolved per ask here rather than captured —
-      // the reason this whole block is accessors.
-      adjudicator: (source) =>
-        source === "parent-session"
-          ? ctx.parentSessionAdjudicator
-          : ctx.parentAdjudicator,
-      // The flag itself ships ON: `settings-defaults.ts` sets it, and the
-      // settings service merges stored flags over those defaults, so both an
-      // absent key and a non-boolean one resolve to the default rather than to
-      // this `?? false`. What `?? false` covers is the narrower case of a
-      // settings service with no feature block at all — an uninitialised read,
-      // where the host cannot establish the flag's state and therefore does
-      // not act on it.
-      isEnabled: () =>
-        settingsService.get("features")?.subAgentParentAdjudication ?? false,
-      policy: () =>
-        readPermissionSettings().permissions.reviewer.parentAdjudication,
-      // The parent conversation's recent turns, when the operator opted in.
-      // Read from the main session store the parent's own loop writes, and
-      // composed by the summariser — which is where the exclusion of
-      // child-authored entries, the bounds and the masking all live.
-      //
-      // Memoised for a few seconds because `loadSession` is a synchronous
-      // whole-file read and parse on this process's only thread, and a busy
-      // child can raise adjudications in a tight burst (up to `maxPerChildRun`
-      // of them). Once per burst is the cost this feature is worth; once per
-      // ask is a main-process stall on the approval path. Staleness is bounded
-      // by the same few seconds and costs at most one missing recent turn.
-      parentContext: (parentSessionId, maxTurns) =>
-        readParentContextTurns(memoryManager, parentSessionId, maxTurns),
-      // Whether a dock would be seen by anyone. Visible and not minimised, not
-      // focused: a user reading the window beside another app is still there.
-      //
-      // A headless run answers no before asking the window. Window visibility
-      // is the right signal for a launch that has an operator, but it is the
-      // wrong one for `--exec`, where it reports whatever the boot window
-      // happens to be doing: it read `true` while a bootstrap splash was up,
-      // and the `second-instance` and `activate` handlers can still reveal
-      // that window mid-run, flipping the answer under a run nobody joined.
-      // The launch mode is the fact; the window is a proxy for it.
-      isDeskAttended: () => {
-        if (headless) return false;
-        // Any open main window on screen counts: several may be open.
-        const windows = host.desktop?.getAppWindows() ?? [getMainWindow()];
-        return windows.some((win) => !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized());
-      },
-      // The queue a tier-3 escalation lands in when nobody is watching the
-      // run. Reached through the permission manager rather than captured: the
-      // queue instance is replaced on every reviewer re-wire.
-      deferredQueue: () => ctx.permissionManager?.getDeferredQueue() ?? null,
-    },
+
   );
   ctx.approvalGate = approvalGate;
   const remoteA2AAgentActionApprover = buildSingleFlightAgentActionApprover(

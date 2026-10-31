@@ -1,3 +1,4 @@
+import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { allowOnceCardAnswer } from "../../__tests__/support/approval-card-answer.js";
 import { EventEmitter } from "node:events";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -171,7 +172,7 @@ async function setup() {
   const gate = new ApprovalGate(approvalSurfaceRegistry.resolve.bind(approvalSurfaceRegistry), undefined, undefined, audit);
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode("default");
-  manager.setInteractiveAutoApprove("off");
+
   const registry = new ToolRegistry();
   const execute = vi.fn(async () => "approved action executed");
   registry.register(makeWriteProbeTool(execute));
@@ -339,7 +340,7 @@ describe("production run construction approval ownership", () => {
         expect(approvalSurfaceRegistry.resolve(loop.sessionId)).toBeNull();
         const result = await f.start(loop);
         expect(result[0].is_error).toBe(true);
-        expect(result[0].content).toContain("no approval surface");
+        expect(result[0].content).toContain(NO_APPROVER_MESSAGE);
         expect(f.owner.send).not.toHaveBeenCalled();
         expect(f.foreign.send).not.toHaveBeenCalled();
         expect(f.execute).not.toHaveBeenCalled();
@@ -411,12 +412,12 @@ describe("production run construction approval ownership", () => {
       await f.proveOwnerApproval(running);
     } else {
       const result = await running;
-      expect(JSON.stringify(result.entries)).toContain("no approval surface");
+      expect(JSON.stringify(result.entries)).toContain(NO_APPROVER_MESSAGE);
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.owner.send).not.toHaveBeenCalled();
       expect(f.foreign.send).not.toHaveBeenCalled();
       expect(f.gate.pendingCount).toBe(0);
-      expect(f.auditLog.mock.calls.some(([entry]) => entry.output?.includes("no approval surface"))).toBe(true);
+      expect(f.auditLog.mock.calls.some(([entry]) => entry.output?.includes(NO_APPROVER_MESSAGE))).toBe(true);
     }
   });
 });

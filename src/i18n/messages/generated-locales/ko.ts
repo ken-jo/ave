@@ -9,7 +9,6 @@ import { ko as ko_assistantCard } from "../generated/assistantCard.js";
 import { ko as ko_attachmentChip } from "../generated/attachmentChip.js";
 import { ko as ko_auditPanel } from "../generated/auditPanel.js";
 import { ko as ko_auditTab } from "../generated/auditTab.js";
-import { ko as ko_awayAuthority } from "../generated/awayAuthority.js";
 import { ko as ko_be_a2aSubAgentMessage } from "../generated/be_a2aSubAgentMessage.js";
 import { ko as ko_be_agentList } from "../generated/be_agentList.js";
 import { ko as ko_be_agentModeMap } from "../generated/be_agentModeMap.js";
@@ -24,7 +23,6 @@ import { ko as ko_be_chatDomain } from "../generated/be_chatDomain.js";
 import { ko as ko_be_chatStreamState } from "../generated/be_chatStreamState.js";
 import { ko as ko_be_conversationLoop } from "../generated/be_conversationLoop.js";
 import { ko as ko_be_costEstimator } from "../generated/be_costEstimator.js";
-import { ko as ko_be_deferredApproval } from "../generated/be_deferredApproval.js";
 import { ko as ko_be_dlp } from "../generated/be_dlp.js";
 import { ko as ko_be_errorClassifier } from "../generated/be_errorClassifier.js";
 import { ko as ko_be_executor } from "../generated/be_executor.js";
@@ -38,7 +36,6 @@ import { ko as ko_be_mcpResourceTools } from "../generated/be_mcpResourceTools.j
 import { ko as ko_be_memoryManager } from "../generated/be_memoryManager.js";
 import { ko as ko_be_memoryWrite } from "../generated/be_memoryWrite.js";
 import { ko as ko_be_parentDirective } from "../generated/be_parentDirective.js";
-import { ko as ko_be_permissionManager } from "../generated/be_permissionManager.js";
 import { ko as ko_be_permissionModeApply } from "../generated/be_permissionModeApply.js";
 import { ko as ko_be_pluginExpansion } from "../generated/be_pluginExpansion.js";
 import { ko as ko_be_pluginRuntime } from "../generated/be_pluginRuntime.js";
@@ -91,8 +88,6 @@ import { ko as ko_composerProjectSelector } from "../generated/composerProjectSe
 import { ko as ko_constants } from "../generated/constants.js";
 import { ko as ko_customTitleBar } from "../generated/customTitleBar.js";
 import { ko as ko_defaultTourScenarios } from "../generated/defaultTourScenarios.js";
-import { ko as ko_deferredQueueDialog } from "../generated/deferredQueueDialog.js";
-import { ko as ko_deferredQueuePanel } from "../generated/deferredQueuePanel.js";
 import { ko as ko_devToolsPanel } from "../generated/devToolsPanel.js";
 import { ko as ko_dockedApprovalCard } from "../generated/dockedApprovalCard.js";
 import { ko as ko_egressApprovalCard } from "../generated/egressApprovalCard.js";
@@ -135,6 +130,7 @@ import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
 import { ko as ko_privacyTab } from "../generated/privacyTab.js";
 import { ko as ko_ptyTerminal } from "../generated/ptyTerminal.js";
 import { ko as ko_reasoningCard } from "../generated/reasoningCard.js";
+import { ko as ko_recentlyDenied } from "../generated/recentlyDenied.js";
 import { ko as ko_remoteA2aActionButton } from "../generated/remoteA2aActionButton.js";
 import { ko as ko_remoteSurfacesTab } from "../generated/remoteSurfacesTab.js";
 import { ko as ko_rolesTab } from "../generated/rolesTab.js";
@@ -200,7 +196,6 @@ export const koMessages: Record<string, string> = {
   ...ko_attachmentChip,
   ...ko_auditPanel,
   ...ko_auditTab,
-  ...ko_awayAuthority,
   ...ko_be_a2aSubAgentMessage,
   ...ko_be_agentList,
   ...ko_be_agentModeMap,
@@ -215,7 +210,6 @@ export const koMessages: Record<string, string> = {
   ...ko_be_chatStreamState,
   ...ko_be_conversationLoop,
   ...ko_be_costEstimator,
-  ...ko_be_deferredApproval,
   ...ko_be_dlp,
   ...ko_be_errorClassifier,
   ...ko_be_executor,
@@ -229,7 +223,6 @@ export const koMessages: Record<string, string> = {
   ...ko_be_memoryManager,
   ...ko_be_memoryWrite,
   ...ko_be_parentDirective,
-  ...ko_be_permissionManager,
   ...ko_be_permissionModeApply,
   ...ko_be_pluginExpansion,
   ...ko_be_pluginRuntime,
@@ -282,8 +275,6 @@ export const koMessages: Record<string, string> = {
   ...ko_constants,
   ...ko_customTitleBar,
   ...ko_defaultTourScenarios,
-  ...ko_deferredQueueDialog,
-  ...ko_deferredQueuePanel,
   ...ko_devToolsPanel,
   ...ko_dockedApprovalCard,
   ...ko_egressApprovalCard,
@@ -326,6 +317,7 @@ export const koMessages: Record<string, string> = {
   ...ko_privacyTab,
   ...ko_ptyTerminal,
   ...ko_reasoningCard,
+  ...ko_recentlyDenied,
   ...ko_remoteA2aActionButton,
   ...ko_remoteSurfacesTab,
   ...ko_rolesTab,

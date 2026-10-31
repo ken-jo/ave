@@ -1,6 +1,7 @@
 // Link parent cancellation and the execution ceiling; return promptly even if the task ignores abort.
 
 import type { Tool } from "./base.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { MAX_TIMER_DELAY_MS, resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 type ToolCeilingTerminationReason = "ceiling" | "user-abort" | "error";
@@ -47,6 +48,42 @@ export type ToolCeilingOutcome<T> = ToolTaskOutcome<T> & {
   readonly settlement?: Promise<ToolTaskOutcome<T>>;
 };
 
+interface ExecutionBudget {
+  pause(): () => void;
+}
+
+const executionBudgets = new AsyncLocalStorage<readonly ExecutionBudget[]>();
+
+// Host-only waiter; capture it before crossing an asynchronous transport boundary.
+export type ToolApprovalWait = <T>(wait: () => Promise<T>) => Promise<T>;
+const issuedApprovalWaiters = new WeakSet<ToolApprovalWait>();
+
+function approvalWaitForBudgets(budgets: readonly ExecutionBudget[]): ToolApprovalWait {
+  return async <T>(wait: () => Promise<T>): Promise<T> => {
+    const resume = budgets.map((budget) => budget.pause());
+    try {
+      return await wait();
+    } finally {
+      for (const release of resume.reverse()) release();
+    }
+  };
+}
+
+export function captureToolApprovalWait(): ToolApprovalWait {
+  const waiter = approvalWaitForBudgets(executionBudgets.getStore() ?? []);
+  issuedApprovalWaiters.add(waiter);
+  return waiter;
+}
+
+export function isIssuedToolApprovalWait(value: unknown): value is ToolApprovalWait {
+  return typeof value === "function" && issuedApprovalWaiters.has(value as ToolApprovalWait);
+}
+
+// Human waiting consumes no execution time. Other invocations keep their own timers.
+export function withToolApprovalWait<T>(wait: () => Promise<T>): Promise<T> {
+  return captureToolApprovalWait()(wait);
+}
+
 // Always clear the timer and detach parent listeners after ceiling, parent abort, or task failure.
 export async function runWithCeiling<T>(
   task: (signal: AbortSignal) => Promise<T>,
@@ -69,15 +106,49 @@ export async function runWithCeiling<T>(
       ? parentAbortSignal.reason
       : new Error(String(parentAbortSignal?.reason ?? "parent aborted"));
   let ceilingFired = false;
-  const timer = setTimeout(() => {
+  let remainingMs = ceilingMs;
+  let resumedAt = performance.now();
+  let pauseCount = 0;
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expire = (): void => {
+    if (disposed || ceilingFired) return;
     ceilingFired = true;
     const err = new Error(`tool execution exceeded global ceiling (${ceilingMs}ms): ${taskName}`);
     resolveInterruption({ ok: false, reason: "ceiling", error: err });
     ceilingController.abort(err);
-  }, ceilingMs);
+  };
+  const armTimer = (): void => {
+    resumedAt = performance.now();
+    timer = setTimeout(expire, remainingMs);
+  };
+  const budget: ExecutionBudget = {
+    pause() {
+      if (disposed || ceilingFired) return () => {};
+      if (pauseCount === 0) {
+        clearTimeout(timer);
+        timer = undefined;
+        remainingMs = Math.max(0, remainingMs - (performance.now() - resumedAt));
+        if (remainingMs === 0) {
+          expire();
+          return () => {};
+        }
+      }
+      pauseCount += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        pauseCount -= 1;
+        if (pauseCount === 0 && !disposed && !ceilingFired) armTimer();
+      };
+    },
+  };
+  armTimer();
 
   // Already-aborted signals do not fire newly attached listeners; skip the task to avoid hanging.
   if (parentAbortSignal?.aborted) {
+    disposed = true;
     clearTimeout(timer);
     return { ok: false, reason: "user-abort", error: parentAbortError() };
   }
@@ -93,7 +164,10 @@ export async function runWithCeiling<T>(
   }
 
   const taskOutcome: Promise<ToolTaskOutcome<T>> = Promise.resolve()
-    .then(() => task(ceilingController.signal))
+    .then(() => executionBudgets.run(
+      [...(executionBudgets.getStore() ?? []), budget],
+      () => task(ceilingController.signal),
+    ))
     .then((value): ToolTaskOutcome<T> => ({ ok: true, value }))
     .catch((err): ToolTaskOutcome<T> => {
       if (ceilingFired) {
@@ -131,6 +205,7 @@ export async function runWithCeiling<T>(
       ? winner.outcome
       : { ...winner.outcome, settlement: taskOutcome };
   } finally {
+    disposed = true;
     interruptionSettled = true;
     clearTimeout(timer);
     if (parentAbortListener && parentAbortSignal) {

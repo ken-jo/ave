@@ -102,7 +102,6 @@ async function emitHookQuarantineAudit(
         source: "builtin",
         category: "meta",
         denyReasons: [{
-          layer: 6,
           reason: `hook.quarantined:${entry.hook.fileName}:${entry.state}`,
           source: "hook-trust-workflow",
         }],

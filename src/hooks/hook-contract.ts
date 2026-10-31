@@ -93,7 +93,7 @@ interface HookJsonFields {
   PermissionRequest: ToolJsonFields;
   UserPromptSubmit: { prompt: string };
   PostToolUseFailure: { tool_name?: string; error?: string; duration_ms?: number };
-  PermissionDenied: { tool_name?: string; deny_reason?: { layer: number | undefined; source: string; reason?: string } };
+  PermissionDenied: { tool_name?: string; deny_reason?: { source: string; reason?: string } };
   SessionStart: { source?: "startup" | "resume" | "clear"; session_meta?: Record<string, unknown> };
   SessionEnd: { reason?: string; session_meta?: Record<string, unknown>; stop_reason?: string };
   Notification: { message?: string; notification_type?: string };

@@ -1,5 +1,7 @@
 /** Child host calls must restore the originating invocation context through the real session and effect gate. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
+import { randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
 import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -148,11 +150,13 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
       return { status: "raised", alertId: `alert-${String(input.key)}` };
     },
   };
+  const permissionManager = new PermissionManager(join(moduleDir, `permissions-${randomUUID()}.json`));
+  permissionManager.setMode("strict");
   // Wrap the implementation with the effect gate before binding dispatch.
   const hostApi = enforceMutatingEffects(plain, {
     pluginId: PLUGIN_ID,
     approvalGate: { requestAndWait } as unknown as ApprovalGate,
-    flagEnabled: () => true,
+    permissionManager,
     assertActive: () => undefined,
   }) as unknown as PluginHostApi;
   const context: PluginRuntimeContext = {
@@ -193,7 +197,7 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
       expect(probe.requestAndWait.mock.calls[0]![0]).toMatchObject({
         toolName: "raise",
         sessionId: "session-1",
-        approvalScope: "raiseAlert",
+        approvalScope: expect.stringMatching(/^[a-f0-9]{64}$/u),
         sourcePluginId: PLUGIN_ID,
       });
       expect(probe.raised).toEqual([{ key: "now", toolName: "raise" }]);
@@ -246,7 +250,7 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
       expect(probe.requestAndWait.mock.calls[0]![0]).toMatchObject({
         toolName: "raise_after_return",
         sessionId: "session-2",
-        approvalScope: "raiseAlert",
+        approvalScope: expect.stringMatching(/^[a-f0-9]{64}$/u),
       });
       expect(probe.raised).toEqual([{ key: "late", toolName: "raise_after_return" }]);
     } finally {

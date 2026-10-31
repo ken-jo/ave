@@ -158,8 +158,8 @@ describe("shell approval card: the shared decision row", () => {
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("deny-once"));
   });
 
-  it("Edit rule sends the edited rule and warns that a wildcard allow covers only sandboxed runs", async () => {
-    const record = vi.fn().mockResolvedValue({ ok: true, warning: "wildcard-allow-sandboxed-only" }); const onDecide = vi.fn();
+  it("Edit rule sends the edited rule and warns that a wildcard allow covers matching future commands", async () => {
+    const record = vi.fn().mockResolvedValue({ ok: true, warning: "wildcard-allow-broader-scope" }); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(shellRequest(), onDecide);
     selectDecision("allow-project");
@@ -168,7 +168,7 @@ describe("shell approval card: the shared decision row", () => {
     expect(input).toHaveValue(EXACT_RULE);
     expect(screen.queryByTestId("approval-rule-wildcard-warning")).toBeNull();
     fireEvent.change(input, { target: { value: "Bash(printf %s *)" } });
-    expect(screen.getByTestId("approval-rule-wildcard-warning")).toHaveTextContent(t("toolApprovalDialog.wildcardAllowSandboxedOnly"));
+    expect(screen.getByTestId("approval-rule-wildcard-warning")).toHaveTextContent(t("toolApprovalDialog.wildcardAllowBroaderScope"));
     fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" }, scope: "persistent" }));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));

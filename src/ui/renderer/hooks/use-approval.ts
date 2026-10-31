@@ -14,7 +14,7 @@ import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../types
 import type { ReviewerSuggestion } from "./use-permission-signals.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
-export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope">;
+export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice">;
 
 /** One window FIFO routes each card to the surface claiming its session or children.
  * Use live ownership predicates; the window dock receives only unclaimed requests. */
@@ -207,6 +207,7 @@ export function useApproval(): ApprovalQueueApi {
           nonce: current.nonce,
           hmac: current.hmac,
           ...(extras?.egressScope === undefined ? {} : { egressScope: extras.egressScope }),
+          ...(extras?.userOwnedSurfaceChoice === undefined ? {} : { userOwnedSurfaceChoice: extras.userOwnedSurfaceChoice }),
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }
             : {}),
@@ -230,42 +231,6 @@ export function useApproval(): ApprovalQueueApi {
   );
 
   return useMemo(() => ({ queue, decide, dropSettled, claims }), [queue, decide, dropSettled, claims]);
-}
-
-const NO_DEFERRED_SESSIONS: readonly string[] = Object.freeze([]);
-
-/** The conversations the reviewer's deferred entries are waiting on. A deferred approval is a parked answer like any other, so the window has to be able to mark its conversation's row. The list is read once and again on
- * every `onDeferredPending`, which is the host's word that the set changed; the entries themselves stay in the panel that resolves them. Identity is kept while the ids are unchanged so readers keyed on it do not re-derive. */
-export function useDeferredSessionIds(
-  permission: {
-    deferredList?: () => Promise<{ ok: true; pending: { sessionId?: string }[] } | { ok: false }>;
-    onDeferredPending?: (cb: (summary: { pending: number }) => void) => () => void;
-  } | undefined,
-): readonly string[] {
-  const [sessionIds, setSessionIds] = useState<readonly string[]>(NO_DEFERRED_SESSIONS);
-  useEffect(() => {
-    if (!permission?.deferredList) return;
-    let cancelled = false;
-    const read = async () => {
-      try {
-        const result = await permission.deferredList?.();
-        if (cancelled || !result?.ok) return;
-        const next = [...new Set(result.pending.flatMap((entry) =>
-          entry.sessionId === undefined ? [] : [entry.sessionId]))];
-        setSessionIds((prev) =>
-          prev.length === next.length && prev.every((id, index) => id === next[index]) ? prev : next);
-      } catch {
-        // A host that cannot list has nothing parked to mark.
-      }
-    };
-    void read();
-    const off = permission.onDeferredPending?.(() => { void read(); });
-    return () => {
-      cancelled = true;
-      off?.();
-    };
-  }, [permission]);
-  return sessionIds;
 }
 
 /** The window's approval queue plus the decisions only the window can host; the exact-deny draft in Settings and the `/allow` sentence proposal. Every

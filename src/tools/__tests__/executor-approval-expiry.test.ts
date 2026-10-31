@@ -95,7 +95,7 @@ describe("tool approval expiration attribution", () => {
     { kind: "directory", locale: "ko", marker: "승인 대기 시간 만료" },
   ] as const)("reports $kind expiration in $locale without claiming a user refusal", async ({ kind, locale, marker }) => {
     setLocale(locale);
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const run = start(kind);
     const request = await run.sent;
     expect(request.kind ?? "tool").toBe(kind === "directory" ? "out-of-allowed-dir" : "tool");

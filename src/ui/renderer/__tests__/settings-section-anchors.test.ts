@@ -34,7 +34,6 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
     "tabs/TailnetObserverSection.tsx",
     "tabs/MessagingConnectionsSection.tsx",
     "tabs/TelegramConnectionContent.tsx",
-    "tabs/AwayAuthorityContent.tsx",
     "tabs/LocalApiSurfacesSection.tsx",
   ],
   roles: ["tabs/RolesTab.tsx"],

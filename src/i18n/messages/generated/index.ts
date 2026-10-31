@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 189
+ * Fragments: 185
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";
@@ -18,7 +18,6 @@ import { en as en_assistantCard } from "./assistantCard.js";
 import { en as en_attachmentChip } from "./attachmentChip.js";
 import { en as en_auditPanel } from "./auditPanel.js";
 import { en as en_auditTab } from "./auditTab.js";
-import { en as en_awayAuthority } from "./awayAuthority.js";
 import { en as en_be_a2aSubAgentMessage } from "./be_a2aSubAgentMessage.js";
 import { en as en_be_agentList } from "./be_agentList.js";
 import { en as en_be_agentModeMap } from "./be_agentModeMap.js";
@@ -33,7 +32,6 @@ import { en as en_be_chatDomain } from "./be_chatDomain.js";
 import { en as en_be_chatStreamState } from "./be_chatStreamState.js";
 import { en as en_be_conversationLoop } from "./be_conversationLoop.js";
 import { en as en_be_costEstimator } from "./be_costEstimator.js";
-import { en as en_be_deferredApproval } from "./be_deferredApproval.js";
 import { en as en_be_dlp } from "./be_dlp.js";
 import { en as en_be_errorClassifier } from "./be_errorClassifier.js";
 import { en as en_be_executor } from "./be_executor.js";
@@ -47,7 +45,6 @@ import { en as en_be_mcpResourceTools } from "./be_mcpResourceTools.js";
 import { en as en_be_memoryManager } from "./be_memoryManager.js";
 import { en as en_be_memoryWrite } from "./be_memoryWrite.js";
 import { en as en_be_parentDirective } from "./be_parentDirective.js";
-import { en as en_be_permissionManager } from "./be_permissionManager.js";
 import { en as en_be_permissionModeApply } from "./be_permissionModeApply.js";
 import { en as en_be_pluginExpansion } from "./be_pluginExpansion.js";
 import { en as en_be_pluginRuntime } from "./be_pluginRuntime.js";
@@ -100,8 +97,6 @@ import { en as en_composerProjectSelector } from "./composerProjectSelector.js";
 import { en as en_constants } from "./constants.js";
 import { en as en_customTitleBar } from "./customTitleBar.js";
 import { en as en_defaultTourScenarios } from "./defaultTourScenarios.js";
-import { en as en_deferredQueueDialog } from "./deferredQueueDialog.js";
-import { en as en_deferredQueuePanel } from "./deferredQueuePanel.js";
 import { en as en_devToolsPanel } from "./devToolsPanel.js";
 import { en as en_dockedApprovalCard } from "./dockedApprovalCard.js";
 import { en as en_egressApprovalCard } from "./egressApprovalCard.js";
@@ -144,6 +139,7 @@ import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
 import { en as en_privacyTab } from "./privacyTab.js";
 import { en as en_ptyTerminal } from "./ptyTerminal.js";
 import { en as en_reasoningCard } from "./reasoningCard.js";
+import { en as en_recentlyDenied } from "./recentlyDenied.js";
 import { en as en_remoteA2aActionButton } from "./remoteA2aActionButton.js";
 import { en as en_remoteSurfacesTab } from "./remoteSurfacesTab.js";
 import { en as en_rolesTab } from "./rolesTab.js";
@@ -209,7 +205,6 @@ export const generatedEn: Record<string, string> = {
   ...en_attachmentChip,
   ...en_auditPanel,
   ...en_auditTab,
-  ...en_awayAuthority,
   ...en_be_a2aSubAgentMessage,
   ...en_be_agentList,
   ...en_be_agentModeMap,
@@ -224,7 +219,6 @@ export const generatedEn: Record<string, string> = {
   ...en_be_chatStreamState,
   ...en_be_conversationLoop,
   ...en_be_costEstimator,
-  ...en_be_deferredApproval,
   ...en_be_dlp,
   ...en_be_errorClassifier,
   ...en_be_executor,
@@ -238,7 +232,6 @@ export const generatedEn: Record<string, string> = {
   ...en_be_memoryManager,
   ...en_be_memoryWrite,
   ...en_be_parentDirective,
-  ...en_be_permissionManager,
   ...en_be_permissionModeApply,
   ...en_be_pluginExpansion,
   ...en_be_pluginRuntime,
@@ -291,8 +284,6 @@ export const generatedEn: Record<string, string> = {
   ...en_constants,
   ...en_customTitleBar,
   ...en_defaultTourScenarios,
-  ...en_deferredQueueDialog,
-  ...en_deferredQueuePanel,
   ...en_devToolsPanel,
   ...en_dockedApprovalCard,
   ...en_egressApprovalCard,
@@ -335,6 +326,7 @@ export const generatedEn: Record<string, string> = {
   ...en_privacyTab,
   ...en_ptyTerminal,
   ...en_reasoningCard,
+  ...en_recentlyDenied,
   ...en_remoteA2aActionButton,
   ...en_remoteSurfacesTab,
   ...en_rolesTab,

@@ -23,11 +23,11 @@ import {
 const NOW = 1_900_000_000_000;
 const permission = {
   decision: "ask",
-  reason: "reviewer medium",
-  layer: 5,
+  reason: "Automatic review requires human approval.",
+  reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
-    verdict: { level: "medium", reason: "bounded workspace deletion" },
+    verdict: { level: "high", reason: "bounded workspace deletion" },
     outcome: "fresh",
   },
 } as const satisfies PermissionCheckResult;

@@ -1,12 +1,12 @@
-import { analyzeShell, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
+import { analyzeShell, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
 import { commandLeaf, effectiveShellCommand, type ShellLeaf } from "./shell-effective-command.js";
 export { stripCommandPath, type ShellLeaf } from "./shell-effective-command.js";
 
 export interface TokenizeResult { leaves: ShellLeaf[]; parseError: boolean }
 
 /** Conservative risk projection of canonical syntax; authority uses the state walker. */
-export function tokenizeShell(command: string): TokenizeResult {
-  const analysis = analyzeShell(command);
+export function tokenizeShell(command: string, prepared?: PreparedShellAnalysis): TokenizeResult {
+  const analysis = prepared === undefined ? analyzeShell(command) : validatePreparedShellAnalysis(command, prepared);
   if (!analysis.ok) return { leaves: [], parseError: true };
   const leaves: ShellLeaf[] = [];
   let parseError = false;

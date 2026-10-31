@@ -1,5 +1,7 @@
-/** Foreground remembered approval shares canonical finalized-input identity with recorded requests; one-shot choices never persist.
- * Reclassify and refuse escalation or missing stored verdict provenance; only a non-revoked matching grant skips the dock. */
+import { isIssuedUserOwnedBrowserScope } from "../../permissions/user-owned-browser-scope.js";
+/** Remembered approval shares finalized-input identity with recorded requests; one-shot choices never persist.
+ * Target-wide changes retain risk checks except an explicitly granted external tool whose scope covers every argument. */
+import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
@@ -18,6 +20,7 @@ import { buildSandboxAuditEntry } from "../../audit/sandbox-audit.js";
 import { emitSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import type { ToolPermissionContext } from "../executor.js";
+import { issueApprovalRuleBasis, type ApprovalRuleBasis } from "../../permissions/approval-rule-evidence.js";
 
 /** The deterministic rule-classifier verdict for one invocation, built exactly as the memory-skip escalation guard builds it. also attaches it to every foreground approval
  * request that has no reviewer verdict, so the dock grades an unreviewed shell call by what it is (read-only → LOW, ordinary → MEDIUM, destructive → HIGH) instead of a blanket HIGH. */
@@ -36,9 +39,10 @@ export function classifyApprovalRuleVerdict(input: {
   workerId?: string;
   pluginId?: string;
   hostShellExecutionPlan?: HostShellExecutionPlan;
-  /** The capability this call actually runs under, when the caller knows it better than the tool name does (the user's own host terminal). */
+  approvalCacheKey?: string;
+  /** Actual capability for a host terminal that runs outside isolated terminal routes. */
   sandboxCapability?: SandboxCapability;
-}): { ctx: ToolInvocationContext; verdict: ReturnType<RuleBasedRiskClassifier["classify"]> } {
+}): { ctx: ToolInvocationContext; verdict: ReturnType<RuleBasedRiskClassifier["classify"]>; basis: ApprovalRuleBasis } {
   // Substrate-aware (NOT process-global): a plugin/MCP or in-process builtin call resolves to a "none" capability so the audit + any sandbox-sensitive rule reflect that
   // this call's effects are NOT ASRT-isolated; except a genuinely ASRT-wrapped external MCP worker (keyed on id) or host-spawned plugin worker (keyed on pluginId + workerId).
   const sandboxCapability = input.sandboxCapability ?? resolveReviewerSandboxCapability(
@@ -66,7 +70,8 @@ export function classifyApprovalRuleVerdict(input: {
       ? { ownerPluginSandboxRoot: input.sandboxAttestation.ownerPluginSandboxRoot }
       : {}),
   };
-  return { ctx, verdict: new RuleBasedRiskClassifier().classify(ctx) };
+  const verdict = new RuleBasedRiskClassifier().classify(ctx);
+  return { ctx, verdict, basis: issueApprovalRuleBasis(ctx, verdict, input.approvalCacheKey ?? input.context.approvalCacheKey) };
 }
 
 export async function tryUserApprovalMemorySkip(
@@ -104,9 +109,9 @@ export async function tryUserApprovalMemorySkip(
   // Built outside the storage catch: a policy key without its memory mode is an internal contract violation, not a storage failure.
   const canonicalArgs = canonicalStringify(finalInput);
   const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
-  if (hostShellExecutionPlan?.mode === "plain") return null;
-  // A command for the user's own host terminal is the person's decision each time: no remembered approval ever stands in for it.
+  // User-owned surfaces use only their session choice, never generic remembered grants.
   if (context.approvalMemory?.kind === "key" && context.approvalMemory.scope.kind === "terminal-command" && context.approvalMemory.scope.lane === "manual") return null;
+  if (context.approvalMemory?.kind === "key" && isIssuedUserOwnedBrowserScope(context.approvalMemory.scope)) return null;
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,
@@ -130,16 +135,20 @@ export async function tryUserApprovalMemorySkip(
     return null;
   }
 
+  const explicitToolGrant = matchesMcpToolApprovalMemory({
+    source, toolName, mcpServerId, approvalCacheKey, approvalMemory: context.approvalMemory,
+  });
+
   // Verdict escalation guard. Re-run the deterministic rule classifier on the CURRENT args; if it now ranks higher than the stored verdict, the invocation became more dangerous since approval; re-prompt. Substrate-aware (NOT process-global): a plugin/MCP or in-process
   // builtin call resolves to a "none" capability so the audit + any sandbox-sensitive rule reflect that this call's effects are NOT ASRT-isolated; except a genuinely ASRT-wrapped external MCP worker (keyed on id) or host-spawned plugin worker (keyed on pluginId + workerId).
   const { ctx, verdict: ruleVerdict } = classifyApprovalRuleVerdict({
     toolName, source, category, pathFields, finalInput, executionCwd, allowedDirectories,
-    sensitivePathsAdjacent, context, sandboxAttestation, mcpServerId, workerId, pluginId, hostShellExecutionPlan,
+    sensitivePathsAdjacent, context, sandboxAttestation, mcpServerId, workerId, pluginId, hostShellExecutionPlan, approvalCacheKey,
   });
   const storedLevel: UserApprovalVerdict = approval.riskCeilingAtApproval ?? approval.verdictAtApproval;
   const storedVerdict = { level: storedLevel, reason: "stored approval verdict at approval time" };
   const composed = maxVerdict(ruleVerdict, storedVerdict);
-  if (composed.level !== storedLevel) {
+  if (!explicitToolGrant && composed.level !== storedLevel) {
     // Fresh rule verdict exceeded the stored one → escalation, re-prompt.
     console.warn(
       `[permission] foreground memory skip — fresh rule verdict (${ruleVerdict.level}) exceeds stored (${storedLevel}), forcing fresh approval (tool=${toolName})`,
@@ -151,7 +160,9 @@ export async function tryUserApprovalMemorySkip(
   // A target-wide hit on arguments other than the ones the user approved is reviewed exactly like a fresh request; risk screen and LLM reviewer lane. The remembered
   // grant then only stands in for the prompt when that fresh, actually-assessed verdict is no riskier than the stored one. An exact-args hit keeps the rule-only guard above.
   let freshReviewLevel: UserApprovalVerdict | null = null;
-  if (!isExactArgsDecision(approval, canonicalArgs, toolName)) {
+  // A per-tool approval expressly covers all arguments. The caller re-enters the
+  // central pipeline with this consent, retaining deny/ask rules and mandatory floors.
+  if (!explicitToolGrant && !isExactArgsDecision(approval, canonicalArgs, toolName)) {
     if (!dispatchFreshReview) return null;
     const reviewed = await dispatchFreshReview(
       toolName,
@@ -184,7 +195,7 @@ export async function tryUserApprovalMemorySkip(
         additionalDirectories: context.additionalDirectories ?? [],
       },
       // Assess the saved grant through the builtin chain before optional stages.
-      { defer: "none", purpose: "approval-scope" },
+      { lane: "foreground-auto", purpose: "approval-scope" },
     );
     const assessed = reviewed !== null &&
       reviewed.judge?.judged === true && reviewed.judge.pause === undefined && reviewed.judge.fallback === undefined &&
@@ -262,6 +273,5 @@ export async function tryUserApprovalMemorySkip(
   return {
     decision: "allow",
     reason: `prior user approval (scope=${approval.scope})`,
-    layer: 5,
-  };
+    };
 }

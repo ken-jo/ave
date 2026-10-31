@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi, mockJudgeGet } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi, mockJudgeGet } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +25,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
-import type { HookTrustRow, ScopedPermissionRuleError } from "../../types.js";
+import type { HookTrustRow, PermissionReviewerDispatchResult, ScopedPermissionRuleError } from "../../types.js";
 import { isPolicyUserEditable, type AdminPolicyDiagnostic, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
@@ -47,14 +47,13 @@ function policyGetPayload(loaded: {
 }
 
 function reviewerResult(
-  verb: "show" | "mode" | "fallback" | "interactive",
+  verb: "show" | "mode" | "fallback",
   mode: "disabled" | "llm",
   fallbackOnError: "deny" | "rule",
-  autoApprove: "off" | "low" | "medium",
 ) {
   return {
     ok: true as const, verb,
-    settings: { mode, fallbackOnError, parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION, interactive: { autoApprove } },
+    settings: { mode, fallbackOnError },
   };
 }
 
@@ -69,6 +68,8 @@ function installApi(
   const ave = {
     relaunchApp: vi.fn<() => Promise<import("../../../../shared/app-relaunch.js").AppRelaunchResult>>(async () => ({ ok: true })),
     permission: {
+      recentlyDeniedList: vi.fn(async () => ({ ok: true as const, entries: [], total: 0 })),
+      onRecentlyDeniedChanged: vi.fn(() => () => undefined),
       egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
       egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "default" })),
@@ -81,9 +82,7 @@ function installApi(
       removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
-      deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
-      deferredResolve: vi.fn(async () => ({ ok: true })),
-      onDeferredPending: vi.fn(() => () => undefined),
+      recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
       auditShow: vi.fn(async () => ({ ok: true as const, entries: [], total: 0, summary: { files: 0, bytes: 0 } })),
       auditVerify: vi.fn(async () => ({ ok: true as const, intact: true, totalFiles: 0, totalEntries: 0, perDay: [] })),
       hookTrustList,
@@ -94,24 +93,18 @@ function installApi(
         userAdditions: [],
         effective: [],
       })),
-      reviewerDispatch: vi.fn(async (rawArgs: string) => {
+      reviewerDispatch: vi.fn<(rawArgs: string) => Promise<PermissionReviewerDispatchResult>>(async (rawArgs: string) => {
         if (rawArgs === "show") {
-          return reviewerResult("show", "disabled", "deny", "off");
+          return reviewerResult("show", "disabled", "deny");
         }
         if (rawArgs === "mode llm") {
-          return reviewerResult("mode", "llm", "deny", "off");
+          return reviewerResult("mode", "llm", "deny");
         }
         if (rawArgs === "mode disabled") {
-          return reviewerResult("mode", "disabled", "deny", "off");
+          return reviewerResult("mode", "disabled", "deny");
         }
         if (rawArgs === "fallback rule") {
-          return reviewerResult("fallback", "llm", "rule", "off");
-        }
-        if (rawArgs === "interactive low" || rawArgs === "interactive medium") {
-          return reviewerResult("interactive", "llm", "deny", rawArgs === "interactive medium" ? "medium" : "low");
-        }
-        if (rawArgs === "interactive off") {
-          return reviewerResult("interactive", "disabled", "deny", "off");
+          return reviewerResult("fallback", "llm", "rule");
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
@@ -367,13 +360,13 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     await renderPermissionsTab();
 
-    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("프로젝트 밖 쓰기 확인");
-    expect(screen.getByText(/읽기와 복구 가능한 프로젝트 파일 변경은 허용/)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("전체 확인");
-    expect(screen.getByText(/읽기까지 포함해 모든 도구/)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("자동 검증");
-    expect(screen.getByText(/나머지 대화형 검증 대상은 리뷰어 임계값/)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("allow"))).toHaveTextContent("모두 허용");
+    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("쓰기 허용");
+    expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("복구 가능한 프로젝트 파일 변경");
+    expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("기본");
+    expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("일반 읽기와 읽기 전용으로 입증된 샌드박스 명령을 허용");
+    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("auto");
+    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("나머지는 리뷰어가 검증");
+    expect(screen.getByTestId(execModeTestId("allow"))).toHaveTextContent("허용");
   });
 
   it("keeps the rendered mode unchanged when durable mode confirmation fails", async () => {
@@ -414,8 +407,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    // Round-2 test-engineer MAJOR; exec-mode-auto must ALSO fire the `interactive medium` dispatch so the global LOW+MEDIUM threshold stays coupled to the legacy `auto` UX.
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("interactive medium");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
     expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
       api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
     );
@@ -428,10 +420,10 @@ describe("PermissionsTab hook quarantine notice", () => {
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return reviewerResult("show", "llm", "deny", "off");
+        return reviewerResult("show", "llm", "deny");
       }
       if (rawArgs === "mode disabled") {
-        return reviewerResult("mode", "disabled", "deny", "off");
+        return reviewerResult("mode", "disabled", "deny");
       }
       throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
     });
@@ -510,7 +502,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.queryByTestId("reviewer-llm-degraded-banner")).toBeNull();
   });
 
-  it("keeps hidden reviewer auto-wiring and shows only the prompt collapse inside 자동 검증", async () => {
+  it("keeps hidden reviewer auto-wiring and shows only the prompt collapse inside auto", async () => {
     const api = installApi([[]]);
 
     await renderPermissionsTab();
@@ -520,7 +512,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     });
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("interactive medium");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
     expect(screen.queryByTestId("reviewer-active-llm-source")).toBeNull();
     expect(screen.queryByTestId("reviewer-provider-select")).toBeNull();
     expect(screen.queryByTestId("reviewer-fallback-select")).toBeNull();
@@ -649,28 +641,40 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByTestId("permission-reviewer-model")).toHaveTextContent("retired-reviewer");
   });
 
-  it("renders the off/low/medium threshold control when the stored mode is auto", async () => {
-    const api = installApi([[]]);
-    api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
-    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return reviewerResult("show", "llm", "deny", "off");
-      }
-      throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
-    });
+  it.each(["en", "ko"] as const)("shows the reviewer model choices without a threshold control in auto (%s)", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const api = installApi([[]]);
+      api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
+      api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
+        if (rawArgs === "show") {
+          return reviewerResult("show", "llm", "deny");
+        }
+        throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
+      });
 
-    await renderPermissionsTab();
-    expect(screen.getByTestId("interactive-auto-approve-select")).toBeTruthy();
-    expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
-    expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
-    expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
+      await renderPermissionsTab();
+      expect(screen.queryByTestId("interactive-auto-approve-select")).toBeNull();
+      const behavior = screen.getByTestId("auto-review-behavior");
+      const expected = locale === "en"
+        ? ["low and medium risk", "accept it", "cite your instructions once for another review", "or ask you", "Review errors or interruptions ask you", "one-time approval without review"]
+        : ["저·중위험은 허용", "거부를 받아들이거나", "사용자의 지시를 근거로 한 번 더 검토를 요청하거나", "사용자에게 확인을 요청", "오류나 검증 중단은 사용자에게 확인", "리뷰어를 거치지 않고 이번 한 번 승인"];
+      for (const outcome of expected) expect(behavior).toHaveTextContent(outcome);
+      expect(api.permission.reviewerDispatch).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
+      expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
+      expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
   it("surfaces the reviewer rewire failure when entering the auto-verification mode", async () => {
     const api = installApi([[]]);
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny", "off");
+        return reviewerResult("show", "disabled", "deny");
       }
       if (rawArgs === "mode llm") {
         return { ok: false as const, error: "reviewer-rewire-failed: missing provider" };
@@ -842,10 +846,9 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByText("/tmp/project/.git")).toBeTruthy();
   });
 
-  it("renders only the prompt panel when mode=auto + interactive.autoApprove=off", async () => {
+  it("renders fixed review behavior and the prompt panel for auto", async () => {
     const api = installApi([[]]);
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
-    // reviewerDispatch("show") default returns interactive.autoApprove="off".
     await renderPermissionsTab();
     expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
@@ -854,7 +857,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
   });
 
-  // The reviewer config only exists under 자동 검증, so other modes show none of its panels or banners.
+  // The reviewer config only exists under auto, so other modes show none of its panels or banners.
   function hiddenReviewerCase(mode: "strict" | "allow") {
     return async () => {
       const api = installApi([[]]);
@@ -1227,9 +1230,9 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       removeScopedRule: vi.fn(async () => ({ ok: true })),
         addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
         removeRule: vi.fn(async () => ({ ok: true })),
-        deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
-        deferredResolve: vi.fn(async () => ({ ok: true })),
-        onDeferredPending: vi.fn(() => () => undefined),
+        recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [], total: 0 })),
+        recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
+        onRecentlyDeniedChanged: vi.fn(() => () => undefined),
         hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
         dirDispatch: vi.fn(async () => ({
           ok: true as const,
@@ -1238,7 +1241,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           userAdditions: [],
           effective: [],
         })),
-        reviewerDispatch: vi.fn(async () => (reviewerResult("show", "disabled", "deny", "off"))),
+        reviewerDispatch: vi.fn(async () => (reviewerResult("show", "disabled", "deny"))),
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
@@ -1924,7 +1927,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         const { registerPermissionsHandlers } = await import("../../../../ipc/domains/permissions.js");
         mainHandlers.clear();
         registerPermissionsHandlers({
-          conversationLoop: { permissionManager: { getMode: () => "default", setDeferredEntryAsk: vi.fn() } },
+          conversationLoop: { permissionManager: { getMode: () => "default" } },
           approvalGate: {}, auditLogger: { log: vi.fn() }, toolRegistry: { setDenyRules: vi.fn() },
           settingsService: { get: () => ({ osToolSandbox: false }) }, getAppWindows: () => [],
         } as never);
@@ -2112,7 +2115,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     const api = installApi([[]]);
     mock(api.permission.reviewerDispatch).mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny", "off");
+        return reviewerResult("show", "disabled", "deny");
       }
       return { ok: false, error: "unknown subcommand 'llm' — expected show|mode|model" };
     });
@@ -2269,6 +2272,21 @@ describe("PermissionsTab unified permission rules", () => {
     expect(table).toHaveTextContent(healthy.pattern);
   });
 
+  it.each(["en", "ko"] as const)("lists a retired host terminal rule with a delete action in %s", async (locale) => {
+    setLocale(locale);
+    const api = installApi([[]]);
+    const retired = { pattern: 'HostTerminal(zsh "/workspace" printf ready)', action: "allow", scope: "user", invalidReason: "retired-host-terminal" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValueOnce({ rules: [retired], errors: [] }).mockResolvedValue({ rules: [], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    const reason = await screen.findByTestId("permissions-rule-invalid");
+    expect(reason).toHaveTextContent(t("permissionsTab.ruleRetiredHostTerminal"));
+    expect(reason.closest("tr")).toHaveTextContent(retired.pattern);
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: retired.pattern }) }));
+    await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(retired));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rule-invalid")).toBeNull());
+  });
+
   it("refreshes the scoped list after adding or revoking a rule", async () => {
     const api = installApi([[]]);
     const rule = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
@@ -2320,5 +2338,157 @@ describe("PermissionsTab unified permission rules", () => {
     expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.unifiedRulesLoadError"));
     expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("/ave-home/permissions/projects/project.json");
     expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+  });
+});
+
+
+describe("owner-away approval auto-skip", () => {
+  function settingsApi() {
+    return window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn>; updateSettings: ReturnType<typeof vi.fn> };
+  }
+
+  it("shows unlimited by default and saves the chosen number of minutes", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 0 } });
+    settingsApi().updateSettings.mockResolvedValue({ ok: true });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    expect(input).toHaveValue(0);
+    fireEvent.change(input, { target: { value: "7" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(settingsApi().updateSettings).toHaveBeenCalledWith({ permissions: { ownerAwayAutoSkipMinutes: 7 } }));
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(7));
+  });
+
+  it("restores the saved value after an invalid edit or rejected save", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    settingsApi().updateSettings.mockResolvedValue({ ok: false, error: "invalid-owner-away-auto-skip" });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    fireEvent.change(input, { target: { value: "-1" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+    expect(settingsApi().updateSettings).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId("owner-away-auto-skip"), { target: { value: "9" } });
+    fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
+    await waitFor(() => expect(settingsApi().updateSettings).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+  });
+});
+
+describe("reviewer mode recovery", () => {
+  function invalidReviewerResult() {
+    return {
+      ...reviewerResult("show", "disabled", "deny"),
+      fault: {
+        kind: "reviewer-mode-invalid" as const,
+        filePath: "/ave-home/config/settings.json",
+        detail: "private unsupported reviewer value",
+      },
+    };
+  }
+
+  it.each([
+    ["en", "llm"], ["en", "disabled"], ["ko", "llm"], ["ko", "disabled"],
+  ] as const)("repairs the saved mode with one %s action to %s", async (locale, recoveredMode) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const api = installApi([[]]);
+      api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
+        if (rawArgs === "show") return invalidReviewerResult();
+        if (rawArgs === `mode ${recoveredMode}`) return reviewerResult("mode", recoveredMode, "deny");
+        throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
+      });
+      const settings = window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn>; updateSettings: ReturnType<typeof vi.fn> };
+      settings.getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 9 } });
+
+      await renderPermissionsTab();
+
+      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultTitle"));
+      expect(screen.getByTestId("reviewer-mode-fault")).toHaveTextContent(t("permissionsTab.reviewerModeFaultDescription"));
+      expect(screen.getByTestId("reviewer-mode-repair-llm")).toHaveTextContent(locale === "ko" ? "자동 리뷰 사용" : "Use automatic review");
+      expect(screen.getByTestId("reviewer-mode-repair-disabled")).toHaveTextContent(locale === "ko" ? "리뷰 끄기: auto 모드에서도 카드로 확인" : "Turn off review: auto asks with a card");
+      const judgeMode = screen.getByLabelText(t("permissionJudge.mode"));
+      expect(judgeMode).toBeDisabled();
+      expect(judgeMode).toHaveValue("");
+      expect(judgeMode).toHaveDisplayValue(locale === "ko" ? "선택 필요" : "Choose a mode");
+      expect(judgeMode).toHaveAttribute("aria-describedby", "reviewer-mode-fault");
+      expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+      expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
+      expect(document.body.textContent).not.toContain("private unsupported reviewer value");
+      expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+
+      await act(async () => { fireEvent.click(screen.getByTestId(`reviewer-mode-repair-${recoveredMode}`)); });
+
+      expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", `mode ${recoveredMode}`]);
+      expect(screen.queryByTestId("reviewer-mode-fault")).toBeNull();
+      expect(screen.getByLabelText(t("permissionJudge.mode"))).toBeEnabled();
+      expect(screen.getByLabelText(t("permissionJudge.mode"))).toHaveValue("off");
+      expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
+      expect(api.permission.setMode).not.toHaveBeenCalled();
+      expect(settings.updateSettings).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("saves an unrelated reviewer model without replacing an invalid reviewer mode or evaluator chain", async () => {
+    const api = installApi([[]]);
+    api.permission.reviewerDispatch.mockResolvedValue(invalidReviewerResult());
+    const judgeGet = mockJudgeGet({
+      modelOptions: [{ vendor: "claude", model: "available-reviewer" }],
+    });
+    const judgeSet = vi.fn(async (patch: { model: unknown }) => ({
+      ...(await judgeGet()), settings: { ...(await judgeGet()).settings, model: patch.model },
+    }));
+    Object.assign(api.permission, { judgeGet, judgeSet });
+    await renderPermissionsTab();
+
+    const judgeMode = screen.getByLabelText(t("permissionJudge.mode"));
+    expect(judgeMode).toBeDisabled();
+    expect(judgeMode).toHaveValue("");
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    const option = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+        .find((row) => row.textContent?.includes("available-reviewer"));
+      if (!found) throw new Error("chooser not open yet");
+      return found;
+    });
+    option.focus();
+    fireEvent.keyDown(option, { key: "Enter" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") })); });
+
+    expect(judgeSet).toHaveBeenCalledExactlyOnceWith({ model: { vendor: "claude", model: "available-reviewer" } });
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+    expect(screen.getByTestId("reviewer-mode-fault")).toBeVisible();
+    expect(screen.getByLabelText(t("permissionJudge.mode"))).toBeDisabled();
+    expect(screen.getByLabelText(t("permissionJudge.mode"))).toHaveValue("");
+  });
+
+  it("refreshes the saved repair choice while keeping a reconnect error visible", async () => {
+    const api = installApi([[]]);
+    let repaired = false;
+    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
+      if (rawArgs === "show") return repaired ? reviewerResult("show", "llm", "deny") : invalidReviewerResult();
+      if (rawArgs === "mode llm") {
+        repaired = true;
+        return { ok: false, error: "reviewer-rewire-failed: private reviewer transport failure" };
+      }
+      throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
+    });
+    await renderPermissionsTab();
+
+    await act(async () => { fireEvent.click(screen.getByTestId("reviewer-mode-repair-llm")); });
+
+    expect(screen.queryByTestId("reviewer-mode-fault")).toBeNull();
+    expect(screen.getByText(t("permissionsTab.reviewerModeRecoveryRewireFailed"), { exact: false })).toBeVisible();
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm", "show"]);
+    expect(document.body.textContent).not.toContain("private reviewer transport failure");
+    expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+    expect(api.permission.setMode).not.toHaveBeenCalled();
   });
 });

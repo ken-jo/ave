@@ -5,9 +5,11 @@ import {
 } from "../../permissions/host-shell-execution-plan.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
 import type { ApprovalMemory } from "../../shared/permissions-events.js";
+import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { parsePatchEnvelope } from "../../shared/patch-envelope.js";
 import type { Tool } from "../base.js";
+import { preserveUserOwnedBrowserScope } from "../../permissions/user-owned-browser-scope.js";
 import type {
   ToolCallMeta,
   ToolExecutorCallbacks,
@@ -96,12 +98,14 @@ async function approvalMemoryFor(
     ? parsePatchEnvelope(input.patch) : undefined;
   const deletesFile = patch?.ok === true && patch.operations.some((operation) => operation.kind === "delete");
   const memoryTool = deletesFile ? "apply_patch-delete" : tool.name;
+  const frozenScope = Object.freeze({ ...scope });
+  if (frozenScope.kind === "browser-origin") preserveUserOwnedBrowserScope(scope, frozenScope);
   return Object.freeze({
     kind: "key",
     key: `${tool.source === "builtin" && scope.kind === "path" && executionPlan === null
       && ["write_file", "edit_file", "multi_edit", "apply_patch"].includes(tool.name)
       ? "file-write-path" : memoryTool}:${canonicalStringify({ scope: memoryScope, executionPlan })}`,
-    scope: Object.freeze({ ...scope }),
+    scope: frozenScope,
   });
 }
 
@@ -112,10 +116,16 @@ export async function approvalIdentityFor(
   hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
   sessionId?: string,
 ): Promise<InvocationApprovalIdentity> {
-  return {
+  const identity = {
     approvalCacheKey: approvalCacheKeyFor(tool, input, cwd, hostShellExecutionPlan),
     approvalMemory: await approvalMemoryFor(tool, input, cwd, hostShellExecutionPlan, sessionId),
   };
+  if (identity.approvalMemory.kind === "key" && identity.approvalMemory.scope.kind === "mcp-tool" &&
+      (!matchesMcpToolApprovalMemory({ source: tool.source, toolName: tool.name, mcpServerId: tool.mcpServerId, ...identity }) ||
+       tool.mcpRuleIdentity?.tool !== identity.approvalMemory.scope.toolName)) {
+    throw new Error("Tool approval scope does not match the registered tool");
+  }
+  return identity;
 }
 
 export function approvalCacheKeyFor(

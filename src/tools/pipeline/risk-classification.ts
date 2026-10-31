@@ -13,6 +13,7 @@ export function resolveEnforcedCategory(args: {
   finalInput: Record<string, unknown>;
   correlationId: string;
   hostClassifiesRisk: boolean;
+  sandboxFsContained?: boolean;
   auditLogger: AuditLogger;
   operationFloor?: GovernedRiskFloor;
 }): ToolCategory {
@@ -50,10 +51,10 @@ export function resolveEnforcedCategory(args: {
     auditLogger,
   );
 
-  const baseline = enforced && eligibleForHostDerivation
-    ? hostDerivedCategory
-    : declaredCategory;
+  const inspectedCategory = enforced && eligibleForHostDerivation ? hostDerivedCategory : declaredCategory;
+  const baseline = tool.source === "plugin" && inspectedCategory === "read" && args.sandboxFsContained !== true
+    ? "write" : inspectedCategory;
   return operationFloor === undefined
     ? baseline
-    : maxOperationRisk(declaredCategory, hostDerivedCategory, operationFloor);
+    : maxOperationRisk(baseline, declaredCategory, hostDerivedCategory, operationFloor);
 }

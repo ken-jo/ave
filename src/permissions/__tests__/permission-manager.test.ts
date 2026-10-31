@@ -64,10 +64,6 @@ describe("host shell rule policy epochs", () => {
     ["rules", (manager) => manager.setRules([])],
     ["mode", (manager) => manager.setMode("strict")],
     ["persisted mode", (manager) => manager.setModePersist("strict")],
-    ["tool mode", (manager) => manager.setToolModeOverride("bash", "strict")],
-    ["cleared tool mode", (manager) => manager.clearToolModeOverride("bash")],
-    ["published tool modes", (manager) => manager.prepareToolModeOverrides(["bash"], []).publish()],
-    ["interactive review settings", (manager) => manager.setInteractiveAutoApprove("medium")],
     ["path settings", (manager) => manager.setBlockReadsOutsideWorkingDirectories(true)],
     ["rule reload", (manager) => manager.loadRulesFromFile()],
     ["allow removal", (manager) => manager.removeRule("Bash(echo epoch)", "allow")],
@@ -82,8 +78,8 @@ describe("host shell rule policy epochs", () => {
 
   it.each(mutations)("revokes an outstanding rule proof when %s changes", async (_name, mutate) => {
     const manager = new PermissionManager(join(tmpdir(), "host-epoch-permissions.json"));
+    manager.setMode("default");
     manager.setRules([withCurrentShellRuleVersion({ pattern: "Bash(echo epoch)", action: "allow" })]);
-    manager.setToolModeOverride("bash", "auto");
     const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
       hostShellExecutionPlan: hostPlan,
@@ -118,29 +114,22 @@ describe("PermissionManager (B1 persistence)", () => {
     mockStore.mode = "default";
     _mockLock = Promise.resolve();
     pm = new PermissionManager("/tmp/test-permissions.json");
+    pm.setMode("default");
   });
 
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it("auto-allows local builtin memory writes only after hard policy gates", () => {
-    expect(pm.checkDetailed("memory_write", "builtin", "write")).toMatchObject({
-      decision: "allow", reason: "builtin-local-memory-auto-allow", layer: 6,
-    });
-
+  it("applies ordinary write policy to local memory and preserves immutable gates", () => {
+    expect(pm.checkDetailed("memory_write", "builtin", "write")).toMatchObject({ decision: "ask", reasonCode: "file-write" });
+    pm.setMode("allow");
+    expect(pm.checkDetailed("memory_write", "builtin", "write").decision).toBe("allow");
     pm.setRules([{ pattern: "memory_write", action: "deny" }]);
-    expect(pm.checkDetailed("memory_write", "builtin", "write")).toMatchObject({ decision: "deny", layer: 1 });
-
+    expect(pm.checkDetailed("memory_write", "builtin", "write").decision).toBe("deny");
     pm.setRules([]);
-    pm.setMode("strict");
-    expect(pm.checkDetailed("memory_write", "builtin", "write")).toMatchObject({ decision: "ask", layer: 2 });
-
-    pm.setMode("default");
-    expect(pm.checkDetailed("memory_write", "builtin", "write", "overlay:meeting-detection"))
-      .toMatchObject({ decision: "ask", layer: 2 });
+    expect(pm.checkDetailed("memory_write", "builtin", "write", "overlay:meeting-detection")).toMatchObject({ decision: "ask", forceModal: true });
   });
-
   // addAlwaysAllowedPersist
 
   it("addAlwaysAllowedPersist writes rule to the store and updates in-memory", async () => {
@@ -149,8 +138,7 @@ describe("PermissionManager (B1 persistence)", () => {
     // 인메모리: checkDetailed이 allow 반환해야 함
     const result = pm.checkDetailed("my_tool", "builtin", "write");
     expect(result.decision).toBe("allow");
-    expect(result.reason).toBe("사용자 영구 승인");
-    expect(result.layer).toBe(5);
+    expect(result.reasonCode).toBe("remembered-approval");
 
     // 영구: store에 rule이 추가됐는지 (수동 경로 default write-tier)
     expect(mockStore.rules).toContainEqual({ pattern: "my_tool", action: "allow", tier: "write" });
@@ -183,7 +171,6 @@ describe("PermissionManager (B1 persistence)", () => {
 
     const result = pm.checkDetailed("dangerous_tool", "builtin", "write");
     expect(result.decision).toBe("deny");
-    expect(result.layer).toBe(1);
 
     expect(mockStore.rules).toContainEqual({ pattern: "dangerous_tool", action: "deny" });
     expect(pm.getVisibilityDenyRules()).toEqual([{ pattern: "dangerous_tool" }]);
@@ -217,7 +204,6 @@ describe("PermissionManager (B1 persistence)", () => {
 
     const result = fresh.checkDetailed("pre_allowed_tool", "builtin", "write");
     expect(result.decision).toBe("allow");
-    expect(result.layer).toBe(3);
   });
 
   it("loadRulesFromFile is a no-op when file does not exist", async () => {
@@ -268,7 +254,6 @@ describe("PermissionManager (B1 persistence)", () => {
     // 인메모리에서도 제거됐는지 — write category이므로 ask여야 함
     const result = pm.checkDetailed("removable_tool", "builtin", "write");
     expect(result.decision).toBe("ask");
-    expect(result.layer).toBe(6);
   });
 
   // listPersistedRules
@@ -294,120 +279,48 @@ describe("PermissionManager (B1 persistence)", () => {
     const mcp = pm.checkDetailed("mcp_server__fetch", "mcp", "network");
 
     expect(shell.decision).toBe("allow");
-    expect(shell.reason).toContain("전체 허용 모드");
+    expect(shell.reasonCode).toBe("allow-mode");
     expect(mcp.decision).toBe("allow");
-    expect(mcp.reason).toContain("전체 허용 모드");
+    expect(mcp.reasonCode).toBe("allow-mode");
   });
 
-  it("strict MCP tool override forces ask regardless of global auto mode", async () => {
-    await pm.setModePersist("auto");
-    pm.setToolModeOverride("mcp_server__write_note", "strict");
-
+  it.each(["strict", "default", "auto", "allow"] as const)("routes external tools through the global %s mode", mode => {
+    pm.setMode(mode);
     const result = pm.checkDetailed("mcp_server__write_note", "mcp", "write");
-
-    expect(result.decision).toBe("ask");
-    expect(result.reason).toBe("MCP 서버 strict 모드");
-    expect(result.layer).toBe(2);
+    expect(result.decision).toBe(mode === "allow" ? "allow" : "ask");
+    expect(result.reviewer?.route).toBe(mode === "auto" ? "foreground-auto" : undefined);
+    expect(result.forceModal).toBeUndefined();
+    expect(pm.checkDetailed("mcp_server__read_note", "mcp", "write", undefined, { mcpReadOnlyHint: true }).decision).toBe("allow");
   });
-
-  it("auto MCP tool override stays on the category policy path", () => {
-    pm.setToolModeOverride("mcp_server__fetch", "auto");
-
-    const result = pm.checkDetailed("mcp_server__fetch", "mcp", "network");
-
-    expect(result.decision).toBe("ask");
-    expect(result.reason).toContain("MCP 도구 strict 강제");
-    expect(result.layer).toBe(6);
-
-    pm.setMode("strict");
-    const strictResult = pm.checkDetailed("mcp_server__fetch", "mcp", "network");
-
-    expect(strictResult.decision).toBe("ask");
-    expect(strictResult.reason).toContain("strict 모드");
-    expect(strictResult.layer).toBe(2);
-  });
-
-  it("strict mode asks even when an allow rule matches", () => {
+  it("keeps explicit allow rules before strict-mode kind policy", () => {
     pm.setRules([{ pattern: "read_file", action: "allow" }]);
     pm.setMode("strict");
-
-    const result = pm.checkDetailed("read_file", "builtin", "read");
-
-    expect(result.decision).toBe("ask");
-    expect(result.reason).toContain("strict 모드");
-    expect(result.layer).toBe(2);
+    expect(pm.checkDetailed("read_file", "builtin", "read")).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
   });
-
-  it("strict mode asks even when always-allowed cache matches", async () => {
+  it("keeps remembered grants before strict-mode kind policy", async () => {
     await pm.addAlwaysAllowedPersist("write_report");
     pm.setMode("strict");
-
-    const result = pm.checkDetailed("write_report", "builtin", "write");
-
-    expect(result.decision).toBe("ask");
-    expect(result.reason).toContain("strict 모드");
-    expect(result.layer).toBe(2);
+    expect(pm.checkDetailed("write_report", "builtin", "write")).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
   });
-
-  it("trust-based terminal decision uses a unique layer number", () => {
+  it("trust-based terminal decision retains its mode policy", () => {
     const result = pm.checkDetailed("builtin_read_tool", "builtin", "read");
 
     expect(result.decision).toBe("allow");
-    expect(result.layer).toBe(6);
   });
 
-  it("headless context routes write tools through reviewer before allow rules or auto mode", async () => {
+  it("keeps remembered grants before headless automatic review", async () => {
     await pm.setModePersist("auto");
     await pm.addAlwaysAllowedPersist("write_report");
-
-    const result = pm.checkDetailed(
-      "write_report",
-      "builtin",
-      "write",
-      null,
-      { headless: true },
-    );
-
-    expect(result.decision).toBe("ask");
-    expect(result.reason).toMatch(/reviewer agent/);
-    expect(result.layer).toBe(6);
+    expect(pm.checkDetailed("write_report", "builtin", "write", undefined, { headless: true })).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
+    expect(pm.checkDetailed("write_other", "builtin", "write", undefined, { headless: true }).reviewer?.route).toBe("headless");
   });
-
-  it("owner-unattended context keeps allow rules and durable grants ahead of the reviewer lane", async () => {
+  it("keeps owner-away cards interactive and headless denies explicit", async () => {
     await pm.setModePersist("default");
     await pm.addAlwaysAllowedPersist("write_report");
-    pm.setRules([{ pattern: "bash", action: "allow", source: "builtin" }]);
-
-    const grant = pm.checkDetailed("write_report", "builtin", "write", null, {
-      headless: true,
-      ownerUnattended: true,
-    });
-    expect(grant.decision).toBe("allow");
-    expect(grant.layer).toBe(5);
-
-    const rule = pm.checkDetailed("bash", "builtin", "shell", null, {
-      headless: true,
-      ownerUnattended: true,
-    });
-    expect(rule.decision).toBe("allow");
-    expect(rule.layer).toBe(3);
-
-    // Without a rule or grant the ask still takes the reviewer lane.
-    const unmatched = pm.checkDetailed("write_other", "builtin", "write", null, {
-      headless: true,
-      ownerUnattended: true,
-    });
-    expect(unmatched.decision).toBe("ask");
-    expect(unmatched.reviewer?.route).toBe("headless");
-
-    // A routine headless turn is unchanged: the same grant is not consulted.
-    const routine = pm.checkDetailed("write_report", "builtin", "write", null, {
-      headless: true,
-    });
-    expect(routine.decision).toBe("ask");
-    expect(routine.layer).toBe(6);
+    expect(pm.checkDetailed("write_report", "builtin", "write", undefined, { ownerUnattended: true }).decision).toBe("allow");
+    expect(pm.checkDetailed("write_other", "builtin", "write", undefined, { ownerUnattended: true }).decision).toBe("ask");
+    expect(pm.checkDetailed("write_other", "builtin", "write", undefined, { headless: true })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
   });
-
   it("uses approvalCacheKey for authority-sensitive allow-always cache hits", async () => {
     await pm.addAlwaysAllowedPersist("routine_schedule:scope:allow:meeting");
 
@@ -427,9 +340,7 @@ describe("PermissionManager (B1 persistence)", () => {
     );
 
     expect(sameScope.decision).toBe("allow");
-    expect(sameScope.layer).toBe(5);
     expect(widerScope.decision).toBe("ask");
-    expect(widerScope.layer).toBe(6);
   });
 
   it("does not reuse bare tool-name allow rules when approvalCacheKey is present", async () => {
@@ -444,7 +355,6 @@ describe("PermissionManager (B1 persistence)", () => {
     );
 
     expect(result.decision).toBe("ask");
-    expect(result.layer).toBe(6);
   });
 });
 
@@ -475,9 +385,8 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
       remoteControllerAuthority: authority,
     })).toMatchObject({
       decision: "ask",
-      layer: 2,
       forceModal: true,
-      reason: "Remote controller request requires local allow-once approval",
+      reasonCode: "other-principal",
     });
   });
 
@@ -495,7 +404,7 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
     ] as const) {
       expect(pm.checkDetailed(toolName, "builtin", category, null, {
         remoteControllerAuthority: authority,
-      })).toMatchObject({ decision: "deny", layer: 2 });
+      })).toMatchObject({ decision: "deny" });
     }
 
     expect(pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
@@ -503,8 +412,7 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
       remoteControllerAuthority: authority,
     })).toMatchObject({
       decision: "deny",
-      layer: 2,
-      reason: "Remote controller meta operations are not enabled",
+      reasonCode: "controller-capability",
     });
   });
 
@@ -513,7 +421,7 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
 
     expect(pm.checkDetailed("read_file", "builtin", "read", null, {
       remoteControllerAuthority: authority,
-    })).toMatchObject({ decision: "deny", layer: 1 });
+    })).toMatchObject({ decision: "deny" });
   });
 });
 describe("PermissionManager — platform bridge remote policy", () => {
@@ -553,9 +461,8 @@ describe("PermissionManager — platform bridge remote policy", () => {
       remoteControllerAuthority: authority,
     })).toMatchObject({
       decision: "ask",
-      layer: 2,
       forceModal: true,
-      reason: "Remote controller request requires local allow-once approval",
+      reasonCode: "other-principal",
     });
   });
 });
@@ -587,7 +494,7 @@ describe("PermissionManager — overlay-trigger origin override", () => {
       "overlay:meeting-detection",
     );
     expect(r.decision).toBe("ask");
-    expect(r.reason).toMatch(/overlay trigger 출처/);
+    expect(r.reasonCode).toBe("other-principal");
   });
 
   it("forces ASK on shell tools too", () => {
@@ -603,7 +510,7 @@ describe("PermissionManager — overlay-trigger origin override", () => {
 
   it("forces ASK on ask-meta through the same overlay authority gate", () => {
     pm.setMode("auto");
-    pm.setInteractiveAutoApprove("medium");
+
     const r = pm.checkDetailed(
       "authority_probe",
       "builtin",
@@ -613,12 +520,11 @@ describe("PermissionManager — overlay-trigger origin override", () => {
     );
 
     expect(r.decision).toBe("ask");
-    expect(r.layer).toBe(2);
     expect(r.reviewer).toBeUndefined();
-    expect(r.forceModal).toBeUndefined();
+    expect(r.forceModal).toBe(true);
   });
 
-  it("does NOT force ASK on read tools", async () => {
+  it("requires one-shot approval for reads from another principal", async () => {
     await pm.addAlwaysAllowedPersist("email_read");
     const r = pm.checkDetailed(
       "email_read",
@@ -626,7 +532,8 @@ describe("PermissionManager — overlay-trigger origin override", () => {
       "read",
       "overlay:meeting-detection",
     );
-    expect(r.decision).toBe("allow");
+    expect(r.decision).toBe("ask");
+    expect(r.forceModal).toBe(true);
   });
 
   it("ignores non-overlay originSource strings (forward-compat)", async () => {
@@ -829,7 +736,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     // write/shell/network invocations of the same pattern → NOT covered → ask.
     const write = pm.checkDetailed("dual_tool", "builtin", "write");
     expect(write.decision).toBe("ask");
-    expect(write.layer).toBe(6);
     expect(pm.checkDetailed("dual_tool", "builtin", "shell").decision).toBe("ask");
     expect(pm.checkDetailed("dual_tool", "builtin", "network").decision).toBe("ask");
   });
@@ -840,7 +746,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     for (const cat of ["read", "write", "shell", "network"] as const) {
       const r = pm.checkDetailed("power_tool", "builtin", cat);
       expect(r.decision).toBe("allow");
-      expect(r.layer).toBe(5);
     }
   });
 
@@ -849,7 +754,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     pm.setRules([{ pattern: "legacy_tool", action: "allow" }]);
     const r = pm.checkDetailed("legacy_tool", "builtin", "write");
     expect(r.decision).toBe("allow");
-    expect(r.layer).toBe(3);
   });
 
   // restart-shadow regression (layer-3 gate)
@@ -864,7 +768,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     // …but the write invocation MUST ask — proving the layer-3 gate.
     const write = fresh.checkDetailed("reloaded_tool", "builtin", "write");
     expect(write.decision).toBe("ask");
-    expect(write.layer).toBe(6);
   });
 
   it("restart-shadow: a reloaded write-tier grant still covers write after reload", async () => {
@@ -874,7 +777,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
 
     const write = fresh.checkDetailed("reloaded_writer", "builtin", "write");
     expect(write.decision).toBe("allow");
-    expect(write.layer).toBe(3);
   });
 
   // migration round-trip
@@ -953,7 +855,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
 
     const r = pm.checkDetailed("mem_tool", "builtin", "write");
     expect(r.decision).toBe("allow");
-    expect(r.layer).toBe(3);
   });
 
   // MINOR-2: dup-hit tier reconciliation (boot-default shadow)
@@ -980,7 +881,6 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
       decisionOverride: "ask",
     });
     expect(r.decision).toBe("allow");
-    expect(r.layer).toBe(5);
   });
 
   it("a read-tier grant still does NOT cover a meta invocation", async () => {
@@ -990,8 +890,7 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
       decisionOverride: "ask",
     });
     expect(r.decision).toBe("ask");
-    expect(r.forceModal).toBe(true);
-    expect(r.layer).toBe(6);
+    expect(r.forceModal).toBeUndefined();
   });
 });
 

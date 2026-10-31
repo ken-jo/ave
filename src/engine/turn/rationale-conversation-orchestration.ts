@@ -1,3 +1,4 @@
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import type { LLMProvider, TokenUsage } from "../llm/types.js";
 import type {
   ConversationExecuteOptions,
@@ -45,12 +46,13 @@ export interface RationaleConversationCoordinator extends
     readonly result: RationaleOnlyRoundResult;
     readonly abortSignal?: AbortSignal;
     readonly now?: number;
-  }): Promise<{ readonly autoApproved?: boolean } | null>;
+  }): Promise<{ readonly autoApproved?: boolean; readonly modelDenied?: boolean } | null>;
   promptForApproval(
     ticketId: string,
     input?: { readonly abortSignal?: AbortSignal; readonly now?: number },
   ): Promise<{
     readonly outcome: "allowed-once" | "denied" | "cancelled" | "timed-out";
+    readonly reason?: string;
   } | null>;
   createSealedResume(input: {
     readonly ticketId: string;
@@ -67,6 +69,8 @@ export interface RationaleCoordinatorFactoryInput {
   /** Snapshot at this executable batch boundary, after any prior tool taint. */
   readonly rationaleProvenance: RationaleEligibilityProvenance;
   readonly sessionId: string;
+  readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
 }
 
 export type RationaleCoordinatorFactory = (
@@ -75,6 +79,8 @@ export type RationaleCoordinatorFactory = (
 
 // Resolve null or failed factories before splitting legacy batches; execution still revalidates every action.
 export interface RationaleRuntimePreparationInput {
+  readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
   readonly coordinatorFactory?: RationaleCoordinatorFactory;
   readonly requestAnchor: RequestAnchor | null;
   readonly rationaleProvenance: RationaleEligibilityProvenance;
@@ -82,6 +88,8 @@ export interface RationaleRuntimePreparationInput {
 }
 
 export interface ExecuteRationaleAwareBatchInput {
+  readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
   readonly executor: ToolExecutor;
   readonly toolUses: ToolUseBlock[];
   readonly executeOptions: ConversationExecuteOptions;
@@ -176,6 +184,8 @@ export async function prepareRationaleConversationRuntime(
       requestAnchor: input.requestAnchor,
       rationaleProvenance: input.rationaleProvenance,
       sessionId: input.sessionId,
+      userRoleTexts: input.userRoleTexts,
+      getUserRoleTexts: input.getUserRoleTexts,
     });
     return runtime && runtimeMatchesBatch(
       runtime,
@@ -258,7 +268,8 @@ export async function executeRationaleAwareConversationBatch(
       toolUses: input.toolUses,
       completedResults: batch.completedResults,
       triggeringToolUseId,
-      triggeringContent: content,
+      triggeringContent: control.eligibilityContext.headless && !content.includes(NO_APPROVER_MESSAGE)
+        ? `${content} ${NO_APPROVER_MESSAGE}` : content,
     }),
     rationaleUsage,
     rationaleAttempted: true,
@@ -273,6 +284,7 @@ export async function executeRationaleAwareConversationBatch(
       provider: input.provider,
       model: input.model,
       control,
+      userRoleTexts: input.userRoleTexts,
       llmSettings: input.llmSettings,
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
@@ -296,19 +308,22 @@ export async function executeRationaleAwareConversationBatch(
       );
     }
 
+    if (roundResolution.modelDenied) return terminal(control.eligibilityContext.headless ? NO_APPROVER_MESSAGE : RATIONALE_TRIGGER_DENIED_RESULT);
+
     // Reviewer authorization skips the modal but still uses sealed resume; other outcomes open one approval.
     if (!roundResolution.autoApproved) {
       const approval = await runtime.promptForApproval(ticketId, {
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
       if (approval?.outcome !== "allowed-once") {
+        if (control.eligibilityContext.headless) return terminal(NO_APPROVER_MESSAGE);
         if (approval === null) abortSafely(runtime, ticketId);
         return terminal(
-          approval?.outcome === "denied"
+          approval?.reason ?? (approval?.outcome === "denied"
             ? RATIONALE_TRIGGER_DENIED_RESULT
             : approval?.outcome === "timed-out"
               ? RATIONALE_TRIGGER_TIMED_OUT_RESULT
-              : RATIONALE_TRIGGER_CANCELLED_RESULT,
+              : RATIONALE_TRIGGER_CANCELLED_RESULT),
         );
       }
     }

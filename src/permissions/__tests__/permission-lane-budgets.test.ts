@@ -9,7 +9,8 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 import * as shellPolicy from "../rules/shell-prefix-policy.js";
 import * as powerShellPolicy from "../rules/powershell-exfiltration.js";
-import * as shellFloors from "../rules/shell-exfiltration.js";
+import * as shellFloorSyntax from "../rules/shell-exfiltration.js";
+import * as shellFloors from "../rules/literal-shell-inspection.js";
 import * as riskClassifier from "../reviewer/risk-classifier.js";
 import * as shellDirectory from "../shell-working-directory-identity.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
@@ -53,15 +54,16 @@ describe("complete manager timing", () => {
       const start = performance.now();
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
       const elapsed = performance.now() - start;
-      process.stdout.write(`permission lane timing ${dialect} sandboxed=${runsSandboxed} chars=${length} decision=${result.decision} layer=${result.layer} modal=${result.forceModal === true} ms=${elapsed.toFixed(3)}\n`);
+      process.stdout.write(`permission lane timing ${dialect} sandboxed=${runsSandboxed} chars=${length} decision=${result.decision} modal=${result.forceModal === true} ms=${elapsed.toFixed(3)}\n`);
       expect(result.reason).toEqual(expect.any(String));
       expect(elapsed).toBeLessThan(5_000);
-      if (!runsSandboxed) expect(result).toMatchObject({ decision: "ask", layer: 6 });
+      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       if (MAX_LITERAL_COMMAND_LENGTH === LITERAL_INPUT_LIMIT) {
         expect(spies).toHaveLength(10);
-        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+        for (const spy of spies.filter(spy => spy !== spies[6])) expect(spy).not.toHaveBeenCalled();
+        expect(spies[6]).toHaveBeenCalledOnce();
         expect(elapsed).toBeLessThan(250);
-        if (runsSandboxed) expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+        expect(result.forceModal).toBeUndefined();
       }
     } finally {
       for (const spy of spies) spy.mockRestore();
@@ -71,7 +73,7 @@ describe("complete manager timing", () => {
 
 function analysisSpies() {
   const spies = [
-    vi.spyOn(shellFloors, "parseShellFloorCommand"),
+    vi.spyOn(shellFloorSyntax, "parseShellFloorCommand"),
     vi.spyOn(powerShellPolicy, "inspectPowerShellCommand"),
     vi.spyOn(powerShellPolicy, "powerShellRuleShape"),
     vi.spyOn(powerShellPolicy, "inspectPowerShellVisibleText"),
@@ -81,7 +83,7 @@ function analysisSpies() {
     vi.spyOn(shellDirectory, "captureShellWorkingDirectoryIdentity"),
     vi.spyOn(shellPolicy, "parseShellCommand"),
   ];
-  if ("inspectShellCommand" in shellFloors) spies.push(vi.spyOn(shellFloors, "inspectShellCommand"));
+  spies.push(vi.spyOn(shellFloors, "inspectShellCommand"));
   return spies;
 }
 
@@ -92,12 +94,22 @@ function literalCommand(length: number): string {
 function seedExactAllow(command: string, dialect: ShellRuleDialect): void {
   const kind = dialect === "bash" ? "Bash" : "PowerShell";
   manager.setRules([
-    { pattern: dialect, action: "allow" },
     withCurrentShellRuleVersion<PermissionRule>({ pattern: normalizeRuleSpecifierInput(`${kind}(${command})`), action: "allow" }),
   ]);
 }
 
 describe.each(["bash", "powershell"] as const)("literal lane bounds (%s)", (dialect) => {
+  it("keeps an explicit broad rule separate from reusable command proof", () => {
+    const command = literalCommand(LITERAL_INPUT_LIMIT + 1);
+    manager.setRules([{ pattern: dialect, action: "allow" }]);
+    for (const headless of [false, true]) {
+      const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, headless);
+      expect(result).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+      expect(result.forceModal).toBeUndefined();
+      expect(result.pipelineRequest?.shell?.unproven).toBe(true);
+    }
+  });
+
   it.each([LITERAL_INPUT_LIMIT - 1, LITERAL_INPUT_LIMIT, LITERAL_INPUT_LIMIT + 1])("checks the exact-rule boundary at %i characters", (length) => {
     expect(MAX_LITERAL_COMMAND_LENGTH).toBe(LITERAL_INPUT_LIMIT);
     const command = literalCommand(length);
@@ -106,15 +118,21 @@ describe.each(["bash", "powershell"] as const)("literal lane bounds (%s)", (dial
     try {
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
       if (length > LITERAL_INPUT_LIMIT) {
-        expect(result).toMatchObject({ decision: "ask", layer: 6 });
-        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 6 });
-        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+        expect(result.forceModal).toBeUndefined();
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+        const floorParser = spies[dialect === "bash" ? 0 : 1]!;
+        expect(floorParser).toHaveBeenCalledTimes(2);
+        if (dialect === "bash") expect(spies[9]).toHaveBeenCalledTimes(2);
+        for (const spy of spies.filter(spy => spy !== spies[6] && spy !== floorParser
+          && !(dialect === "bash" && spy === spies[9]))) expect(spy).not.toHaveBeenCalled();
       } else {
-        // #223 executable-bound startup admission: within-cap argv cannot prove win32 startup.
         expect(result).toMatchObject(dialect === "powershell" && process.platform === "win32"
-          ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
-        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision)
-          .toBe(dialect === "powershell" && process.platform === "win32" ? "deny" : "allow");
+          ? { decision: "allow", reasonCode: "allow-mode" }
+          : { decision: "allow", reasonCode: "rule-allow" });
+        if (dialect === "powershell" && process.platform === "win32") expect(result.pipelineRequest?.rules?.allow).toBeUndefined();
+        expect(result.forceModal).toBeUndefined();
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision).toBe("allow");
         expect(spies[dialect === "bash" ? 0 : 1]).toHaveBeenCalled();
       }
     } finally {
@@ -133,29 +151,30 @@ describe.each(["bash", "powershell"] as const)("sandbox floor bounds (%s)", (dia
     else vi.mocked(powerShellPolicy.inspectPowerShellCommand).mockReturnValue({ outcome: "static-complete", sensitive: null, exfiltration: null });
     try {
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, true);
-      if (length > FLOOR_INPUT_LIMIT) {
-        expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
-      } else {
-        expect(result).toMatchObject({ decision: "allow", layer: 3 });
-        expect(result.forceModal).not.toBe(true);
-        expect(dialect === "bash" ? shellFloors.inspectShellCommand : powerShellPolicy.inspectPowerShellCommand).toHaveBeenCalled();
-      }
+      expect(result).toMatchObject(length > FLOOR_INPUT_LIMIT
+        ? { decision: "deny", reasonCode: "shell-analysis-limit" }
+        : { decision: "allow", reasonCode: "allow-mode" });
+      expect(result.forceModal).toBeUndefined();
+      expect(result.pipelineRequest?.shell?.unproven).toBe(true);
+      const floorInspector = dialect === "bash" ? shellFloors.inspectShellCommand : powerShellPolicy.inspectPowerShellCommand;
+      expect(floorInspector).toHaveBeenCalledTimes(length > FLOOR_INPUT_LIMIT ? 0 : 1);
+      expect(spies[2]).not.toHaveBeenCalled();
+      expect(spies[8]).not.toHaveBeenCalled();
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
   });
 });
 
-describe.each(["bash", "powershell"] as const)("floor work exhaustion (%s)", (dialect) => {
-  it.each([false, true])("stops analysis despite stored allows when sandboxed=%s", (runsSandboxed) => {
+describe.each(["bash", "powershell"] as const)("mandatory safety analysis exhaustion (%s)", (dialect) => {
+  it.each([false, true])("denies actual safety exhaustion without reparsing when sandboxed=%s", (runsSandboxed) => {
     const command = "printf ready";
     seedExactAllow(command, dialect);
     const inspect = dialect === "bash"
       ? vi.spyOn(shellFloors, "inspectShellCommand")
       : vi.spyOn(powerShellPolicy, "inspectPowerShellCommand");
     const bashParse = vi.spyOn(shellPolicy, "parseShellCommand");
-    const floorParse = vi.spyOn(shellFloors, "parseShellFloorCommand");
+    const floorParse = vi.spyOn(shellFloorSyntax, "parseShellFloorCommand");
     const powerShellShape = vi.spyOn(powerShellPolicy, "powerShellRuleShape");
     const destructive = vi.spyOn(riskClassifier, "isDestructiveShellText");
     let parsesBeforeBudget = 0;
@@ -166,16 +185,15 @@ describe.each(["bash", "powershell"] as const)("floor work exhaustion (%s)", (di
       return { outcome: "unproven", sensitive: null, exfiltration: null, analysisLimited: true };
     });
     try {
-      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(runsSandboxed
-        ? { decision: "ask", layer: 2, forceModal: true }
-        : { decision: "ask", layer: 6 });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
       expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
-      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 6 });
+      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
       expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
       expect(powerShellShape).not.toHaveBeenCalled();
-      expect(destructive).not.toHaveBeenCalled();
+      expect(inspect).toHaveBeenCalledTimes(runsSandboxed ? 1 : 2);
+      expect(destructive).toHaveBeenCalledTimes(runsSandboxed ? 1 : 2);
     } finally {
       inspect.mockRestore();
       bashParse.mockRestore();

@@ -54,6 +54,24 @@ export async function raceWithTimeout<T>(
   }
 }
 
+/** Stop waiting on caller cancellation; late completion stays observed and the caller owns work cleanup. */
+export async function raceWithAbort<T>(
+  operation: PromiseLike<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return await operation;
+  let rejectAbort: (reason: Error) => void = () => {};
+  const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  const onAbort = (): void => rejectAbort(errorFrom(signal.reason, "caller aborted"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** Link caller cancellation and a hard deadline; the race also bounds work that ignores the signal. */
 export async function runWithAbortableDeadline<T>(
   task: (signal: AbortSignal) => Promise<T>,

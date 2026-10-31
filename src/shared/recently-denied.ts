@@ -1,0 +1,37 @@
+import type { ChatInputOrigin } from "./chat-origin.js";
+import type { ToolCategory, ToolSource } from "./permission-review-status.js";
+
+/** Non-executable references into an existing saved transcript. */
+export interface RecentlyDeniedInvocationRef {
+  toolUseId: string;
+  inputDigest: string;
+  rootDigest: string;
+  /** Restrictive original provenance; never a replay grant. Missing legacy provenance is not replayable. */
+  replayOrigin?: {
+    trustOrigin: ChatInputOrigin;
+    otherPrincipal: boolean;
+    remoteController: boolean;
+    /** A source tag validated by the staged-origin registry; never arbitrary content. */
+    overlayTriggerOrigin?: string;
+  };
+  pluginId?: string;
+  mcpServerId?: string;
+}
+
+/** Display-only denial history. Authority and executable inputs never cross this boundary. */
+export interface RecentlyDeniedEntry {
+  id: string;
+  ts: string;
+  sessionId?: string;
+  toolName: string;
+  source: ToolSource;
+  category: ToolCategory;
+  inputSummary: string;
+  reason: string;
+  rerunAvailable: boolean;
+  invocationRef?: RecentlyDeniedInvocationRef;
+}
+
+export type RecentlyDeniedRerunResult =
+  | { ok: true }
+  | { ok: false; error: "rerun-unavailable" | "rerun-failed" | "rerun-in-progress" };

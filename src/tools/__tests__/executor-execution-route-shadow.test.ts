@@ -97,13 +97,14 @@ afterEach(() => {
 
 function makeExecutor(
   dir: string,
+  mode: "strict" | "default" | "auto" | "allow",
   bashAstValidator?: BashAstValidator,
   scriptHookManager?: object,
 ): { executor: ToolExecutor; appendPermissionAuditEntry: ReturnType<typeof vi.fn> } {
   const registry = new ToolRegistry();
   registry.register(new BashTool());
   const permissions = new PermissionManager(join(dir, "permissions.json"));
-  permissions.checkDetailed = () => ({ decision: "allow", reason: "test", layer: 5 });
+  permissions.setMode(mode);
   const appendPermissionAuditEntry = vi.fn();
   const auditLogger = {
     log: vi.fn(),
@@ -134,16 +135,24 @@ describe("execution route shadow metadata", () => {
     const consume = vi.spyOn(executionRouter, "consumeExecutionGrantForShellInvocation");
     const hooks = {
       runPreToolUse: vi.fn(async () => {
-        activateDisposableCapability();
         return { decision: "allow" as const, reason: "ready", results: [] };
       }),
       runPostToolUse: vi.fn(async () => ({ decision: "allow" as const, reason: "ready", results: [] })),
       runPermissionRequest: vi.fn(async () => ({ decision: "allow" as const, reason: "ready", results: [] })),
     };
     try {
-      const { executor } = makeExecutor(dir, undefined, hooks);
+      const { executor } = makeExecutor(dir, "allow", undefined, hooks);
       const permissions = (executor as unknown as { permissionManager: PermissionManager }).permissionManager;
-      const checked = vi.spyOn(permissions, "checkDetailed");
+      const originalCheck = permissions.checkDetailed.bind(permissions);
+      let changedAfterDecision = false;
+      const checked = vi.spyOn(permissions, "checkDetailed").mockImplementation((...args) => {
+        const decision = originalCheck(...args);
+        if (!changedAfterDecision) {
+          changedAfterDecision = true;
+          activateDisposableCapability();
+        }
+        return decision;
+      });
       const [result] = await executor.executeAll(
         [{ id: "tu-route-mismatch", name: "bash", input: { command: "printf mismatch > marker" } }],
         { sessionId: "sess-route-mismatch", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
@@ -169,7 +178,7 @@ describe("execution route shadow metadata", () => {
     setShellSandboxRequestedAtBoot(false);
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-shadow-"));
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir);
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
       const onToolEnd = vi.fn<(
         name: string,
         result: string,
@@ -195,7 +204,7 @@ describe("execution route shadow metadata", () => {
         is_error: true,
         executionPlan: { mode: "plain" },
       });
-      expect(result.content).toContain("shell-path-policy/dynamic-path");
+      expect(result.content).toContain("Shell path policy: unresolved command operand");
       expect(onToolEnd).toHaveBeenCalledOnce();
       expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
         toolUseId: "tu-route-shadow",
@@ -226,7 +235,7 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-disposable-"));
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir);
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-disposable",
@@ -272,7 +281,7 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-dynamic-"));
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(dir);
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-dynamic",
@@ -306,7 +315,7 @@ describe("execution route shadow metadata", () => {
     const outside = mkdtempSync(join(tmpdir(), "ave-execution-route-outside-"));
     const marker = join(outside, "written-in-guest");
     try {
-      const { executor, appendPermissionAuditEntry } = makeExecutor(workspace);
+      const { executor, appendPermissionAuditEntry } = makeExecutor(workspace, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-boundary",
@@ -343,14 +352,8 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-operator-review-"));
     try {
-      const { executor } = makeExecutor(workspace);
+      const { executor } = makeExecutor(workspace, "auto");
       const permissions = (executor as unknown as { permissionManager: PermissionManager }).permissionManager;
-      permissions.checkDetailed = () => ({
-        decision: "ask",
-        reason: "routine lane",
-        layer: 5,
-        reviewer: { route: "headless" },
-      });
       permissions.hasReviewer = () => true;
       const dispatched: Array<Record<string, unknown>> = [];
       permissions.dispatchReviewer = vi.fn(async (_toolName, input) => {
@@ -390,14 +393,9 @@ describe("execution route shadow metadata", () => {
     setShellSandboxRequestedAtBoot(false);
     const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-host-inherited-"));
     try {
-      const { executor } = makeExecutor(workspace);
+      const { executor } = makeExecutor(workspace, "allow");
       const permissions = (executor as unknown as { permissionManager: PermissionManager }).permissionManager;
-      permissions.checkDetailed = () => ({
-        decision: "ask",
-        reason: "routine lane",
-        layer: 5,
-        reviewer: { route: "headless" },
-      });
+      permissions.setMode("auto");
       permissions.hasReviewer = () => true;
       const dispatched: Array<Record<string, unknown>> = [];
       permissions.dispatchReviewer = vi.fn(async (_toolName, input) => {
@@ -440,7 +438,7 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-explicit-"));
     try {
-      const { executor } = makeExecutor(dir);
+      const { executor } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-explicit",
@@ -473,7 +471,7 @@ describe("execution route shadow metadata", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-changed-"));
     const marker = join(dir, "must-not-exist");
     try {
-      const { executor } = makeExecutor(dir);
+      const { executor } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-changed",
@@ -519,7 +517,7 @@ describe("execution route shadow metadata", () => {
       })),
     };
     try {
-      const { executor } = makeExecutor(dir, undefined, scriptHookManager);
+      const { executor } = makeExecutor(dir, "allow", undefined, scriptHookManager);
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-post-hook-change",
@@ -551,7 +549,7 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-structural-"));
     try {
-      const { executor } = makeExecutor(dir, new BashAstValidator({ mode: "deny" }));
+      const { executor } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }));
       const [result] = await executor.executeAll(
         [{
           id: "tu-route-structural",
@@ -581,7 +579,7 @@ describe("execution route shadow metadata", () => {
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-sensitive-"));
     try {
-      const { executor } = makeExecutor(dir);
+      const { executor } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{ id: "tu-route-sensitive", name: "bash", input: { command } }],
         {
@@ -598,6 +596,27 @@ describe("execution route shadow metadata", () => {
     }
   });
 
+  it.each(["strict", "default", "auto", "allow"] as const)("keeps protected mutations headless-denied in a qualified guest in %s mode", async (mode) => {
+    __resetActiveSandboxCapabilityForTest();
+    setShellSandboxRequestedAtBoot(false);
+    activateDisposableCapability();
+    const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-protected-"));
+    try {
+      const { executor } = makeExecutor(dir, mode);
+      const [result] = await executor.executeAll(
+        [{ id: `tu-route-protected-${mode}`, name: "bash", input: {
+          command: "mkdir -p .git && printf blocked > .git/config",
+        } }],
+        { sessionId: `sess-route-protected-${mode}`, executionCwd: dir,
+          permissionContext: { trustOrigin: "llm-tool-arg", headless: true, approvalSurface: "unavailable" } },
+      );
+      expect(result).toMatchObject({ is_error: true });
+      expect(result?.content).toContain("Nobody can approve this request; do not retry.");
+      expect(operatorHarness.consumeCount).toBe(0);
+      expect(existsSync(join(dir, ".git", "config"))).toBe(false);
+    } finally { await cleanupTmpDir(dir); }
+  });
+
   it("does not reach a control-plane-like path when the process is not a qualified v1 guest", async () => {
     __resetActiveSandboxCapabilityForTest();
     setShellSandboxRequestedAtBoot(false);
@@ -605,7 +624,7 @@ describe("execution route shadow metadata", () => {
     expect(existsSync(marker)).toBe(false);
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-unqualified-"));
     try {
-      const { executor } = makeExecutor(dir);
+      const { executor } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{ id: "tu-route-unqualified", name: "bash", input: {
           command: `printf blocked > ${marker}`,

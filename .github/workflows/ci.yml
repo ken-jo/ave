@@ -630,6 +630,8 @@ jobs:
           }
           node scripts/check-srt-win-integrity.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/fetch-mxc.mjs --arch x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $helper = Join-Path $PWD 'node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
           & $helper install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -657,6 +659,7 @@ jobs:
           src/tools/__tests__/mxc-link-traversal.integration.test.ts
           src/tools/__tests__/mxc-pipe-lifetime.integration.test.ts
           src/permissions/__tests__/asrt-deny-absent-native.test.ts
+          src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           src/permissions/__tests__/windows-deny-acl.test.ts
           src/main/terminal/__tests__/host-shell-integration.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
@@ -664,6 +667,8 @@ jobs:
           src/permissions/__tests__/shell-native-path-floors.test.ts
           src/shared/__tests__/shell-native-path.test.ts
           src/permissions/__tests__/powershell-exfiltration.test.ts
+          src/tools/__tests__/powershell-exfiltration-gate.test.ts
+          src/permissions/__tests__/powershell-unc-write-boundary.test.ts
           src/permissions/__tests__/encoded-bypass-battery.test.ts
           src/permissions/__tests__/literal-proof.test.ts
           src/permissions/__tests__/literal-rule-identity.test.ts
@@ -712,6 +717,7 @@ jobs:
           src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
           src/__tests__/support/native-executable.test.ts
           src/__tests__/support/fixture-owner.test.ts
+          src/__tests__/support/fixture-acl-reset.test.ts
           src/tools/__tests__/background-shell-windows-job.test.ts
           src/tools/__tests__/bash-dialect.test.ts
           src/lib/__tests__/admin-policy-file.test.ts
@@ -783,7 +789,7 @@ jobs:
           src/workload/__tests__/runtime.test.ts
           test/scripts/smoke-windows-nsis-installer.test.ts
 
-      - name: Run native workbook confinement
+      - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         shell: powershell
@@ -791,7 +797,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           node scripts/fetch-mxc.mjs --arch x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
+          bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   macos-permission-tests:

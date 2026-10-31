@@ -146,7 +146,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     expect(executeSpy).not.toHaveBeenCalled();
   });
 
-  it("(b') global strict mode + prior approval → modal shown — Layer 2 hard gate", async () => {
+  it("strict mode honors an exact prior approval before its ordinary write card", async () => {
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(executeSpy));
@@ -185,9 +185,9 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       },
     );
 
-    expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(result[0].is_error).toBe(true);
-    expect(executeSpy).not.toHaveBeenCalled();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(result[0].is_error).not.toBe(true);
+    expect(executeSpy).toHaveBeenCalledOnce();
   });
 
   it("(c) persistent-scope approval recorded via the real store skips the modal on re-call", async () => {
@@ -395,7 +395,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.setMode("auto");
     wireJudgeForTest(manager);
-    manager.setInteractiveAutoApprove("low");
+
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
     const nativeWebContents = {

@@ -1,4 +1,4 @@
-import type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
+import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { RiskVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import type { SandboxCapability } from "../../permissions/sandbox-capability.js";
@@ -26,7 +26,7 @@ import {
 
 type RationaleEligiblePermission = PermissionCheckResult & {
   reviewer: {
-    route: "foreground-auto";
+    route: "foreground-auto" | "headless";
     verdict: RiskVerdict;
     outcome: "fresh" | "cache";
   };
@@ -49,14 +49,13 @@ export interface RationaleControlCandidate {
   readonly mcpServerId?: string;
   readonly workerId?: string;
   readonly invocationTrustOrigin: ToolTrustOrigin;
-  readonly targetFilePaths: readonly string[];
   readonly canonicalTargets: readonly string[];
-  readonly allowedDirectories: readonly string[];
   readonly approvalCacheKey?: string;
+  readonly recordTerminalDenial?: (reason: string) => Promise<void>;
+  readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: Readonly<SandboxCapability>;
   readonly sandboxExecutionPlan: Readonly<Record<string, unknown>>;
   readonly permission: RationaleEligiblePermission;
-  readonly permissionEvaluationContext: Readonly<PermissionEvaluationContext>;
   readonly eligibilityContext: Readonly<HostRationaleEligibilityContext>;
 }
 
@@ -92,14 +91,13 @@ export interface RationaleControlProbe {
   readonly mcpServerId?: string;
   readonly workerId?: string;
   readonly invocationTrustOrigin: ToolTrustOrigin;
-  readonly targetFilePaths: readonly string[];
   readonly canonicalTargets: readonly string[];
-  readonly allowedDirectories: readonly string[];
   readonly approvalCacheKey?: string;
+  readonly recordTerminalDenial?: (reason: string) => Promise<void>;
+  readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: Readonly<SandboxCapability>;
   readonly sandboxExecutionPlan: Readonly<Record<string, unknown>>;
   readonly permission: PermissionCheckResult;
-  readonly permissionEvaluationContext: Readonly<PermissionEvaluationContext>;
   readonly eligibilityContext: Readonly<HostRationaleEligibilityContext>;
 }
 
@@ -199,16 +197,15 @@ export async function maybeMaterializeRationaleControl(
     ...(probe.mcpServerId === undefined ? {} : { mcpServerId: probe.mcpServerId }),
     ...(probe.workerId === undefined ? {} : { workerId: probe.workerId }),
     invocationTrustOrigin: probe.invocationTrustOrigin,
-    targetFilePaths: [...probe.targetFilePaths],
     canonicalTargets: [...probe.canonicalTargets],
-    allowedDirectories: [...probe.allowedDirectories],
     ...(probe.approvalCacheKey === undefined
       ? {}
       : { approvalCacheKey: probe.approvalCacheKey }),
+    ...(probe.requestHumanApproval === undefined ? {} : { requestHumanApproval: probe.requestHumanApproval }),
+    ...(probe.recordTerminalDenial === undefined ? {} : { recordTerminalDenial: probe.recordTerminalDenial }),
     sandboxCapability: probe.sandboxCapability,
     sandboxExecutionPlan: probe.sandboxExecutionPlan,
     permission: eligibility.permission,
-    permissionEvaluationContext: probe.permissionEvaluationContext,
     eligibilityContext: probe.eligibilityContext,
   };
   const materialized = await runtime.materializeRationaleControl(candidate);

@@ -42,8 +42,8 @@ const ELIGIBILITY_CONTEXT = {
 
 const PERMISSION = {
   decision: "ask",
-  reason: "reviewer threshold",
-  layer: 5,
+  reasonCode: "reviewer-human-required",
+  reason: "Automatic review requires human approval.",
   reviewer: {
     route: "foreground-auto",
     verdict: { level: "high", reason: "bounded workspace deletion" },
@@ -238,7 +238,7 @@ describe("runRationaleOnlyRound", () => {
     expect(request.tools).toEqual([RATIONALE_RESPONSE_SCHEMA]);
     expect(request.messages).toEqual([{
       role: "user",
-      content: canonicalStringify(toRationaleProviderEnvelope(control)),
+      content: canonicalStringify({ ...toRationaleProviderEnvelope(control), sessionUserMessages: [] }),
     }]);
     expect(request.messages).toHaveLength(1);
     expect(request).not.toHaveProperty("onTextDelta");

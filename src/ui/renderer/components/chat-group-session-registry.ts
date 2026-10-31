@@ -267,8 +267,6 @@ export interface PendingAnswerInput {
   /** The window's approval queue, every request the host is parked on. */
   approvals: readonly ApprovalRequest[];
   tiles: readonly TileSession[];
-  /** Sessions of the reviewer's deferred entries still awaiting the user. */
-  deferredSessionIds: readonly string[];
   /** Overlay cards that name the conversation they came from. */
   overlayCards: readonly { originSessionId?: string }[];
   /** The conversation list, for the family of a row and a side chat's parent. */
@@ -362,8 +360,6 @@ export function pendingAnswers(input: PendingAnswerInput): PendingAnswers {
       markSideChat(sideChat.sessionId, tile, sideChat.shown && !tile.paneHidden);
     }
   }
-
-  for (const sessionId of input.deferredSessionIds) park(sessionId);
 
   // An overlay card parks no turn: its row is marked only when the card has nowhere visible to be — its conversation is in a
   // hidden pane, or in none.

@@ -173,7 +173,7 @@ describe("Work Board registered approval owner", () => {
     const f = await boardRun();
     const result = await f.engine.runItem(f.itemId);
     expect(result.status).toBe("denied");
-    expect(result.reason).toContain("no approval surface");
+    expect(result.reason).toBe("Nobody can approve this request; do not retry.");
     expect(f.owner.cards).toHaveLength(0);
     expect(f.foreign.cards).toHaveLength(0);
     expect(f.execute).not.toHaveBeenCalled();

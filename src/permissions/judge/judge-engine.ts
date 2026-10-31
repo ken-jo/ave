@@ -1,6 +1,7 @@
 // Judges cannot decide strict mode, capability grants or remote-controller calls and cannot override earlier floors/rules/matrix decisions. Run stages in order; ask, missing/low confidence and failures escalate.
-// Only a confident final allow/deny applies; unresolved or failed chains ask foreground and deny/defer headless, never allow by fallback. Count final denials only; shadow mode audits without changing permission or writing rules/queues.
+// Only a confident final allow/deny applies; unresolved or failed chains ask foreground and deny headless, never allow by fallback. Count final denials only; shadow mode audits without changing permission or writing rules.
 import { randomUUID } from "node:crypto";
+import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { RiskVerdict } from "../reviewer/risk-classifier.js";
@@ -149,10 +150,8 @@ export type JudgeOutcome =
       decision: JudgeDecision;
       // False in shadow mode: the caller must keep its pre-judge path.
       applied: boolean;
-      // Headless non-allow: the call site appends to the deferred queue.
-      defer: boolean;
-      // Present when `defer`: the verdict and summary the deferred entry carries.
-      deferral?: { verdict: RiskVerdict; inputSummary: string };
+      // The caller may retain a redacted history summary, never an approval.
+      recentlyDenied?: { verdict: RiskVerdict; inputSummary: string };
       source: JudgeOutcomeSource;
       // Stage id whose verdict ended the chain.
       decidedBy?: string;
@@ -457,10 +456,10 @@ export async function resolveJudge(
   const headless = request.lane === "headless";
   if (headless && decision === "ask") decision = "deny";
   const applied = mode === "active";
-  // Shadow must never change behavior, so it never asks the call site to defer.
+  // Shadow never changes behavior or creates denial history.
 
   let breakerTripped = false;
-  if (applied && source === "judge" && verdict) {
+  if (applied && source === "judge" && verdict && (!request.deferDenialCounting || verdict.decision === "allow")) {
     // One counter per session across the whole chain: the chain's final verdict.
     breakerTripped = deps.breaker.record(request.sessionId, verdict.decision, request.invocationId);
     pause = deps.breaker.pauseReason(request.sessionId);
@@ -470,7 +469,7 @@ export async function resolveJudge(
       rationale = `Automated approval paused: ${pause === "consecutive" ? "3 consecutive" : "20 total"} classifier blocks`;
     }
   }
-  const defer = applied && headless && decision !== "allow";
+  const deniedWithoutApprover = applied && headless && decision !== "allow";
 
   // The audit always describes the call that executes, not the judge's view.
   const redacted = redactJudgeRequest(request);
@@ -512,10 +511,9 @@ export async function resolveJudge(
     mode,
     decision,
     applied,
-    defer,
-    ...(defer
+    ...(deniedWithoutApprover
       ? {
-          deferral: {
+          recentlyDenied: {
             verdict: { level: "high", reason: `judge ${source}: ${safeRationale}` },
             inputSummary: JSON.stringify(redacted.tool.input).slice(0, 2_000),
           },
@@ -525,7 +523,7 @@ export async function resolveJudge(
     ...(decidedBy ? { decidedBy: decidedBy.settings.id } : {}),
     ...(fallback ? { fallback } : {}),
     ...(verdict?.suggestedRule ? { suggestedRule: verdict.suggestedRule } : {}),
-    rationale: safeRationale,
+    rationale: deniedWithoutApprover ? NO_APPROVER_MESSAGE : safeRationale,
     breakerTripped,
     ...(pause ? { pause } : {}),
   };

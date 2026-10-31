@@ -260,11 +260,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     const permissionManager = new PermissionManager(
       join(dir, "permissions.json"),
     );
-    permissionManager.checkDetailed = () => ({
-      decision: "allow",
-      reason: "receiver auto-allow",
-      layer: 3,
-    });
+    permissionManager.setMode("allow");
     const approvalGate = {
       requestAndWait: vi.fn(async (request: { id: string }) => ({
         requestId: request.id,
@@ -291,7 +287,8 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
       expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
         expect.objectContaining({
-          reason: "[Sub-Agent: researcher] receiver auto-allow",
+          reason: expect.stringContaining("[Sub-Agent: researcher]"),
+          forceExplicit: true,
         }),
       );
     } finally {
@@ -363,8 +360,6 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     for (const request of requests) {
       expect(request).toMatchObject({
         toolCategory: "meta",
-        isReadOnly: false,
-        mode: "ask_all",
       });
       expect(request.reason).toContain("[Sub-Agent: researcher]");
     }
@@ -777,7 +772,10 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
       return true;
     });
     provider.beforeNextTurn = () => {
-      loop.queueGuidanceWithDisposition("guide across a compaction", { onDropped: dropped });
+      expect(loop.queueUserGuidance("guide across a compaction")).toBe("queued");
+      const guidance = loop.guidanceQueue[0];
+      if (!guidance) throw new Error("Expected native user guidance");
+      guidance.onDropped = dropped;
     };
 
     await loop.runTurn("start the agent turn", undefined, undefined, {
@@ -793,6 +791,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     ).toHaveLength(0);
     expect(dropped).toHaveBeenCalledTimes(1);
     expect(loop.guidanceQueue).toEqual([]);
+    expect(loop.history.getUserQuoteTexts(loop.sessionId)).not.toContain("guide across a compaction");
   });
 
   it("runs one preflight on a round that both drained a guide and crossed the threshold", async () => {

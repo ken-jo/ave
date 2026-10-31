@@ -4749,7 +4749,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       execute: async () => { served += 1; return { output: "served", isError: false }; },
     }));
     const permissions = new PermissionManager(join(f.fixture.rootDir, "permissions.json"));
-    permissions.checkDetailed = () => ({ decision: "allow", reason: "fixture", layer: 3 });
+    permissions.checkDetailed = () => ({ decision: "allow", reason: "fixture" });
     const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, () => lifecycle);
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });

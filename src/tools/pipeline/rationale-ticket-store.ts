@@ -3,6 +3,8 @@ import { canonicalStringify } from "../../permissions/user-approval-store.js";
 import {
   RATIONALE_CONTROL_CONTRACT_VERSION,
   verifyRationaleRequiredControl,
+  verifyRationaleTicketControl,
+  isRationaleHumanApprovalActive,
   type RationaleRequiredControl,
   sealRationaleCanonicalJson,
 } from "./rationale-control.js";
@@ -118,7 +120,7 @@ interface TicketTombstone {
 
 interface AuthenticReceiptEntry {
   readonly sessionId: string;
-  readonly expiresAt: number;
+  readonly expiresAt: number | null;
   readonly receipt: HostConsumedAllowOnceReceipt;
 }
 
@@ -272,11 +274,11 @@ export class InProcessRationaleTicketStore {
     const entry = this.#entries.get(input.ticketId);
     if (!entry || entry.sessionId !== input.sessionId) return null;
     this.#assertMonotonicTime(entry, now);
-    if (now >= entry.control.anchor.expiresAt) {
+    if (now >= entry.control.anchor.expiresAt && !verifyRationaleTicketControl(entry.control, { now })) {
       this.#applyEvent(entry, "expire", null, now);
       return null;
     }
-    if (!verifyRationaleRequiredControl(entry.control, { now })) {
+    if (!verifyRationaleTicketControl(entry.control, { now })) {
       this.#retireUnexpected(entry, "identity-mismatch", now);
       return null;
     }
@@ -333,6 +335,18 @@ export class InProcessRationaleTicketStore {
     return this.transition({ expectation, event: "prompt-user", now });
   }
 
+  acceptDenial(expectation: RationaleTicketCasExpectation, now = Date.now()): HostRationaleTicketSnapshot | null {
+    return this.transition({ expectation, event: "accept-denial", now });
+  }
+
+  denyByPolicy(expectation: RationaleTicketCasExpectation, now = Date.now()): HostRationaleTicketSnapshot | null {
+    return this.transition({ expectation, event: "deny-by-policy", now });
+  }
+
+  denyWithoutApprover(expectation: RationaleTicketCasExpectation, now = Date.now()): HostRationaleTicketSnapshot | null {
+    return this.transition({ expectation, event: "deny-no-approver", now });
+  }
+
   deny(
     expectation: RationaleTicketCasExpectation,
     now = Date.now(),
@@ -375,7 +389,7 @@ export class InProcessRationaleTicketStore {
     return this.#consumeOnce(expectation, now, "allow-once", "allow-once-consumed");
   }
 
-  // Fresh, aligned, non-high review consumes one-shot authority from rationale_ready with distinct audit provenance.
+  // Fresh low/medium review consumes one-shot authority from rationale_ready with distinct audit provenance.
   // A second consume must fail CAS after the allowed_once terminal.
   consumeReviewerAuthorizedOnce(
     expectation: RationaleTicketCasExpectation,
@@ -435,7 +449,7 @@ export class InProcessRationaleTicketStore {
       receipt.receiptId,
       {
         sessionId: entry.sessionId,
-        expiresAt: entry.control.anchor.expiresAt,
+        expiresAt: isRationaleHumanApprovalActive(entry.control, now) ? null : entry.control.anchor.expiresAt,
         receipt,
       },
     );
@@ -443,6 +457,16 @@ export class InProcessRationaleTicketStore {
       throw new Error(`${event} CAS failed to commit terminal state`);
     }
     return receipt;
+  }
+
+  releaseConsumedReceipt(receipt: HostConsumedAllowOnceReceipt): boolean {
+    const stored = this.#receipts.get(receipt.receiptId);
+    if (!stored) return false;
+    if (canonicalStringify(stored.receipt) !== canonicalStringify(receipt)) {
+      throw new Error("Completed invocation receipt is not authentic");
+    }
+    this.#receipts.delete(receipt.receiptId);
+    return true;
   }
 
   isAuthenticConsumedAllowOnceReceipt(
@@ -461,7 +485,7 @@ export class InProcessRationaleTicketStore {
         return false;
       }
       if (now < stored.receipt.consumedAt) return false;
-      if (now >= stored.expiresAt) {
+      if (stored.expiresAt !== null && now >= stored.expiresAt) {
         this.#emitReceiptRevoked(stored, "expire", now);
         this.#receipts.delete(candidate.receiptId);
         return false;
@@ -555,13 +579,13 @@ export class InProcessRationaleTicketStore {
       this.#retireUnexpected(entry, "stale-replay", now);
       return null;
     }
-    if (now >= entry.control.anchor.expiresAt && requestedEvent !== "expire") {
+    if (now >= entry.control.anchor.expiresAt && requestedEvent !== "expire" && !verifyRationaleTicketControl(entry.control, { now })) {
       this.#applyEvent(entry, "expire", null, now);
       return null;
     }
     if (
       !EXPIRY_SAFE_EVENTS.includes(requestedEvent) &&
-      !verifyRationaleRequiredControl(entry.control, { now })
+      !verifyRationaleTicketControl(entry.control, { now })
     ) {
       this.#retireUnexpected(entry, "identity-mismatch", now);
       return null;

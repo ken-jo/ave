@@ -6,7 +6,6 @@ import { SETTINGS_TABS } from "../../src/shared/settings-tabs.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import type { ToolActivityState } from "../../src/ui/renderer/components/ToolActivity.js";
 import { ApprovalSurfaceClaims, type ApprovalSurfaceContextValue } from "../../src/ui/renderer/hooks/use-approval.js";
-import type { DeferredQueueEntry } from "../../src/ui/renderer/types.js";
 import { expect, vi } from "vitest";
 export { relativeLuminance } from "../contrast-helpers.js";
 export { deferred } from "../../src/__tests__/support/deferred.js";
@@ -131,24 +130,6 @@ export async function focusTile(tile: RenderedTile): Promise<void> {
   await act(async () => {
     fireEvent.mouseDown(frame);
   });
-}
-
-// Grantable deferred entries need directory authority; use grant: null for non-grantable cases.
-export function makeDeferredQueueEntry(
-  overrides: Partial<DeferredQueueEntry> = {},
-): DeferredQueueEntry {
-  return {
-    id: "id-1",
-    ts: "2026-05-09T13:00:00.000Z",
-    toolName: "fs_write",
-    source: "builtin",
-    category: "write",
-    inputSummary: '{"path":"<redacted>"}',
-    verdict: { level: "high", reason: "write outside allowed dirs" },
-    grant: { kind: "directory", path: "/srv/app/data" },
-    status: "pending",
-    ...overrides,
-  };
 }
 
 // Enable development and E2E flags to expose the live message queue store.

@@ -39,7 +39,6 @@
  *   remote-a2a    ave:a2a-remote:*
  *   tailnet-sharing     ave:tailnet-sharing:*
  *   telegram-connection ave:telegram-connection:*
- *   away-authority      ave:away-authority:*
  *   dev           ave:dev:*  (registered only when `getIsPackaged()` is false)
  *
  * `ave:trigger:*` is absent on purpose. The constants exist in
@@ -85,7 +84,6 @@ import { registerRemoteA2AHandlers } from "./domains/remote-a2a.js";
 import { registerTailnetObserverHandlers } from "./domains/tailnet-observer.js";
 import { registerTailnetSharingHandlers } from "./domains/tailnet-sharing.js";
 import { registerTelegramConnectionHandlers } from "./domains/telegram-connection.js";
-import { registerAwayAuthorityHandlers } from "./domains/away-authority.js";
 import type { IpcDeps } from "./types.js";
 import type { AppServices } from "../boot/types.js";
 import type { BrowserWindow } from "electron";
@@ -176,7 +174,6 @@ export function registerIpcHandlers(
   registerTailnetSharingHandlers(deps);
   registerTailnetObserverHandlers(deps);
   registerTelegramConnectionHandlers(deps);
-  registerAwayAuthorityHandlers(deps);
   // Dev IPC is *not* registered in packaged builds — the channels never
   // exist on `ipcMain`, so a compromised renderer/preload cannot probe them.
   if (!getIsPackaged()) {

@@ -27,7 +27,6 @@ export function stdioApproval(
     allowedCapabilities: ["tools"],
     maxTools: 16,
     toolNamePrefix: id,
-    toolPermissionMode: "default",
     connectionTimeoutMs: 5_000,
     maxConcurrentRequests: 4,
     ...overrides,

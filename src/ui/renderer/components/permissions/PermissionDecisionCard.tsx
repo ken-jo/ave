@@ -11,17 +11,6 @@ export type ReviewBasisRow = {
 
 export type ParsedSummary = Record<string, unknown>;
 
-export function SummaryTile({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0 rounded-md border bg-muted/(--opacity-light) px-3 py-2">
-      <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className="mt-1 break-words text-xs font-medium leading-relaxed">
-        {children}
-      </div>
-    </div>
-  );
-}
-
 export function ReviewRow({
   label,
   children,
@@ -50,7 +39,7 @@ export function ReviewRow({
  * Canonical Korean label for a {@link RiskLevel}.
  *
  * Centralized here so every risk-display site (ToolApprovalContent
- * badge / reviewer-verdict row, DeferredQueuePanel header + review
+ * badge / reviewer-verdict row and denial history
  * row, future surfaces) reads the same translation. Translating only
  * the primary badge is the failure mode this replaced: the remaining
  * `level.toUpperCase()` callers leaked raw English to users.
@@ -88,16 +77,6 @@ export function categoryLabel(category: ToolCategory) {
   return t("permissionDecisionCard.categoryMeta");
 }
 
-export function parseInputSummary(summary: string): ParsedSummary | null {
-  try {
-    const parsed = JSON.parse(summary) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as ParsedSummary;
-  } catch {
-    return null;
-  }
-}
-
 export function pickSummary(parsed: ParsedSummary | null, keys: string[], emptyText: string): string {
   if (!parsed) return emptyText;
   for (const key of keys) {
@@ -113,20 +92,7 @@ function formatSummaryValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function scopeLabel(parsed: ParsedSummary | null): string {
-  const scope = pickSummary(parsed, ["scope", "pathScope", "allowedDir", "allowedDirectories"], "");
-  return scope || t("permissionDecisionCard.scopeFallback");
-}
-
 export function sensitivityLabel(parsed: ParsedSummary | null): string {
   const explicit = pickSummary(parsed, ["sensitivity", "dataClass", "classification"], "");
   return explicit || t("permissionDecisionCard.sensitivityFallback");
-}
-
-export function inputVolumeLabel(summary: string): string {
-  return t("permissionDecisionCard.inputVolumeLabel", { length: summary.length });
-}
-
-export function payloadLabel(summary: string): string {
-  return t("permissionDecisionCard.payloadLabel", { length: summary.length });
 }

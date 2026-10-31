@@ -9,11 +9,13 @@ import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 
 const disconnect = vi.fn(async () => undefined);
 const constructedConfigs: Array<Record<string, unknown>> = [];
 const constructedFetches: unknown[] = [];
+let discoveryReadOnlyHint = false;
 const oauth = vi.hoisted(() => ({ sessions: [] as Array<{ config: { id: string }; credentialKey: string; status: string; fetch: unknown; authenticate: () => Promise<void> }> }));
 vi.mock("../mcp-oauth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../mcp-oauth.js")>();
@@ -52,6 +54,7 @@ vi.mock("../mcp-client.js", () => ({
         description: "read",
         source: "mcp",
         category: "network",
+        mcpReadOnlyHint: discoveryReadOnlyHint,
         mcpServerId: this.config.id,
         jsonSchema: { type: "object", properties: {} },
         execute: async () => ({ output: this.config.id, isError: false }),
@@ -113,6 +116,7 @@ beforeEach(() => {
   disconnect.mockResolvedValue(undefined);
   constructedConfigs.length = 0;
   constructedFetches.length = 0;
+  discoveryReadOnlyHint = false;
   oauth.sessions.length = 0;
 });
 
@@ -122,7 +126,7 @@ describe("McpManager bundled generation", () => {
     const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
       deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-oauth.json")), new ToolRegistry(), unusedNetworkFetch,
-      join(root, "servers-oauth.json"), undefined, undefined, undefined, undefined, secrets,
+      join(root, "servers-oauth.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
     const projection = prepareBundledMcpProjection({ pluginId: "remote-kit", pluginVersion: "1.0.0",
       generationId: "a".repeat(64), activationId: "run-oauth", localId: "remote", fingerprint: "b".repeat(64) },
@@ -164,7 +168,7 @@ describe("McpManager bundled generation", () => {
     const configPath = join(root, "servers-rebuild.json");
     writeFileSync(configPath, JSON.stringify({ servers: [] }));
     const manager = new McpManager(new McpGovernance(join(root, "policy-rebuild.json")), new ToolRegistry(), unusedNetworkFetch,
-      configPath, undefined, undefined, undefined, undefined, secrets,
+      configPath, undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
     const declaration = { packageName: "rebuild-kit", serverName: "remote", transport: "http" as const, url: "https://example.test/mcp",
       auth: "oauth" as const, oauth: {} };
@@ -206,7 +210,7 @@ describe("McpManager bundled generation", () => {
     const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
       deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-registry.json")), new ToolRegistry(), unusedNetworkFetch,
-      join(root, "servers-registry.json"), undefined, undefined, undefined, undefined, secrets,
+      join(root, "servers-registry.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
     manager.registerBundledCredentialSource("plugin", { installedPackages: () => vouchedInstalledPluginIds(registryPath),
       list: () => [], reconnect: async () => {} });
@@ -233,7 +237,7 @@ describe("McpManager bundled generation", () => {
     const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
       deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-reinstall.json")), new ToolRegistry(), unusedNetworkFetch,
-      join(root, "servers-reinstall.json"), undefined, undefined, undefined, undefined, secrets,
+      join(root, "servers-reinstall.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
     let idle = true;
     manager.setPackageTransactionProbe(() => idle);
@@ -288,7 +292,7 @@ describe("McpManager bundled generation", () => {
     const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
       deleteSecret: async (key: string) => { await deletions; stored.delete(key); }, canStoreEncrypted: () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-race.json")), new ToolRegistry(), unusedNetworkFetch,
-      join(root, "servers-race.json"), undefined, undefined, undefined, undefined, secrets,
+      join(root, "servers-race.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
     let idle = true;
     manager.setPackageTransactionProbe(() => idle);
@@ -348,7 +352,7 @@ describe("McpManager bundled generation", () => {
     const secrets = { getSecret: (key: string) => document.get(key), setSecret: (key: string, value: string) => document.set(key, value),
       deleteSecret: async (key: string) => { await document.delete(key); } };
     const manager = new McpManager(new McpGovernance(join(root, "policy-credential.json")), new ToolRegistry(),
-      unusedNetworkFetch, join(root, "servers-credential.json"), undefined, undefined, undefined, undefined, secrets);
+      unusedNetworkFetch, join(root, "servers-credential.json"), undefined, undefined, undefined, secrets);
     const projection = prepareBundledMcpProjection({ pluginId: "agent-plugin/meeting-kit", pluginVersion: "1.0.0",
       generationId: "a".repeat(64), activationId: "run-1", localId: "notes", fingerprint: "b".repeat(64) },
     { transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-Token" }, "d".repeat(64));
@@ -379,7 +383,7 @@ describe("McpManager bundled generation", () => {
       secret: "private-value",
     });
     const restarted = new McpManager(new McpGovernance(join(root, "policy-credential-restart.json")), new ToolRegistry(),
-      unusedNetworkFetch, join(root, "servers-credential-restart.json"), undefined, undefined, undefined, undefined,
+      unusedNetworkFetch, join(root, "servers-credential-restart.json"), undefined, undefined, undefined,
       { getSecret: (name) => reopened.get(name), setSecret: (name, value) => reopened.set(name, value), deleteSecret: async (name) => { await reopened.delete(name); } });
     const successor = prepareBundledMcpProjection({ ...projection.owner, activationId: "run-2" },
       { transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-Token" }, "d".repeat(64));
@@ -556,4 +560,37 @@ describe("McpManager bundled generation", () => {
     await expect(manager.discardBundledGeneration(prepared)).resolves.toBeUndefined();
     expect(disconnect).toHaveBeenCalledTimes(2);
   });
+});
+
+it.each([false, true])("keeps a plugin-hosted MCP tool on the shared MCP permission row with readOnlyHint=%s", async readOnlyHint => {
+  discoveryReadOnlyHint = readOnlyHint;
+  const registry = new ToolRegistry();
+  const manager = new McpManager(new McpGovernance(join(root, `policy-mcp-permission-${readOnlyHint}.json`)), registry, unusedNetworkFetch,
+    join(root, `servers-mcp-permission-${readOnlyHint}.json`));
+  const generationId = `permission-${readOnlyHint}`;
+  const projection = preparePluginMcpGeneration(generation(generationId), root)[0];
+  const trust = new PluginMcpTrustStore();
+  trust.approve(projection);
+  const prepared = await manager.prepareBundledGeneration({ pluginId: "sampleportal", generationId }, [projection], trust);
+  try {
+    manager.publishBundledGeneration(prepared);
+    const tool = registry.findByName("mcp_sampleportal_portal_read")!;
+    expect(tool).toMatchObject({ source: "mcp", mcpReadOnlyHint: readOnlyHint, mcpServerId: projection.serverId,
+      pluginGeneration: { pluginId: "sampleportal", generationId } });
+    const permissions = new PermissionManager(join(root, `tool-permission-${readOnlyHint}.json`));
+    for (const mode of ["strict", "default", "auto", "allow"] as const) {
+      permissions.setMode(mode);
+      const firstUse = permissions.checkDetailed(tool.name, tool.source, tool.category, undefined, { mcpReadOnlyHint: tool.mcpReadOnlyHint });
+      expect(firstUse.decision).toBe(readOnlyHint || mode === "allow" ? "allow" : "ask");
+      expect(firstUse.reviewer?.route).toBe(!readOnlyHint && mode === "auto" ? "foreground-auto" : undefined);
+      expect(firstUse.forceModal).toBeUndefined();
+    }
+    if (!readOnlyHint) {
+      permissions.setMode("default");
+      const firstUse = permissions.checkDetailed(tool.name, tool.source, tool.category, undefined, { mcpReadOnlyHint: false });
+      expect(firstUse).toMatchObject({ decision: "ask", reasonCode: "external-tool" });
+      expect(permissions.resolveRememberedPermission(firstUse, "The user approved this server and tool")).toMatchObject({ decision: "allow", reasonCode: "remembered-approval" });
+      expect(permissions.checkDetailed(`${tool.name}_other`, "mcp", "network")).toMatchObject({ decision: "ask", reasonCode: "external-tool" });
+    }
+  } finally { await manager.disconnectAll(); }
 });

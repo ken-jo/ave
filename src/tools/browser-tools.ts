@@ -1,5 +1,5 @@
 /** Browser tools reach only the calling conversation's window; sub-agents inherit it, while routines and headless lanes receive no schemas.
- * Use session-only origin scopes and per-action approval for user tabs; main resolves origins and execution rechecks opener and origin after approval.
+ * User tabs use their conversation's surface choice; main seals target identities and execution rechecks opener and origin after approval.
  * Refuse changed targets without acting, frame all page content as untrusted, and load main-owned actions on first use. */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
@@ -21,6 +21,7 @@ import type { BrowserSessionActor, BrowserControlLease } from "../shared/browser
 import type { BrowserObservationElement } from "../shared/agent-observation.js";
 import type { BrowserUploadPickerRequest, BrowserUploadResult } from "../main/browser/browser-upload.js";
 import { t } from "../i18n/index.js";
+import { issueUserOwnedBrowserScope } from "../permissions/user-owned-browser-scope.js";
 
 /** What the tools need of the main-side tab registry. */
 interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
@@ -94,6 +95,13 @@ export const BROWSER_PRESSABLE_KEYS = [
 
 const MAX_WAIT_MS = 30_000;
 const canonicalBrowserNavigationTools = new WeakSet<object>();
+const canonicalBrowserTools = new WeakSet<object>();
+
+
+export function userOwnedBrowserScopeOf(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): Extract<ApprovalMemoryScope, { kind: "browser-origin" }> | undefined {
+  return canonicalBrowserTools.has(tool) && memory?.kind === "key" && memory.scope.kind === "browser-origin" && memory.scope.tabOpener === "user"
+    ? memory.scope : undefined;
+}
 
 export function isCanonicalBrowserNavigationTool(tool: unknown): boolean {
   return typeof tool === "object" && tool !== null && canonicalBrowserNavigationTools.has(tool);
@@ -169,8 +177,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     if (scope?.kind === "browser-agent-tabs") return true;
     return policy.resolveTab(asInput(raw), ctx?.sessionId)?.opener === "agent";
   };
-  /** Acting on anything but a tab the agent opened asks every time. */
-  const notAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean => !onAgentTab(raw, ctx);
   const readOnAgentTab = (raw: unknown, ctx?: ToolPolicyContext): ToolCategory =>
     onAgentTab(raw, ctx) ? "read" : "network";
   /** A URL the tools will refuse (not http/https) opens nothing, so asking the user about it would only ask them to approve a refusal: it runs as a read and execute refuses it. */
@@ -208,7 +214,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
   const common = { source: "builtin" as const, arbitraryEgress: true } as const;
   const pageAction = {
     category: "write" as const,
-    requiresPerActionApproval: notAgentTab,
     approvalMemoryScope: pageScope,
   };
   const object = (properties: Record<string, unknown>, required?: string[]) => ({
@@ -225,6 +230,16 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       description: t("be_browserTools.tabsDescription"),
       category: "read",
       isReadOnly: () => true,
+      approvalMemoryScope: (raw, ctx) => {
+        const input = asInput(raw);
+        if (typeof input.select !== "string") return undefined;
+        const resolved = policy.resolveTab({ tabId: input.select }, ctx?.sessionId);
+        if (!resolved) return undefined;
+        return {
+          kind: "browser-origin", origin: resolved.origin ?? resolved.tab.guest!.getURL(), tabOpener: resolved.opener,
+          tabId: resolved.tab.handle, documentId: resolved.tab.documentId, controlGeneration: resolved.tab.controlGeneration,
+        };
+      },
       jsonSchema: object({ select: { type: "string", description: t("be_browserTools.tabsSelectDescription") }, scope: { type: "string", enum: ["window", "conversation"] }, includeDirectChildren: { type: "boolean" } }),
       execute: execute(BROWSER_TOOL.tabs),
     }),
@@ -257,6 +272,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     createDynamicTool({
       ...common,
       name: BROWSER_TOOL.wait,
+      approvalMemoryScope: pageScope,
       description: t("be_browserTools.waitDescription"),
       category: "read",
       isReadOnly: () => true,
@@ -274,7 +290,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       description: t("be_browserTools.navigateDescription"),
       category: "network",
       categoryForInput: urlCategory,
-      requiresPerActionApproval: notAgentTab,
       approvalMemoryScope: async (raw, ctx) => {
         const resolved = await observedTab(raw, ctx);
         return urlScope(raw, resolved?.opener, resolved?.tab);
@@ -301,7 +316,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       ...pageAction,
       name,
       description: t(description),
-      ...(name === BROWSER_TOOL.upload ? { requiresPerActionApproval: () => true } : {}),
       jsonSchema: object({ tabId: tabIdProperty, ...properties }, [...required]),
       execute: execute(name),
     })),
@@ -349,7 +363,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       name: BROWSER_TOOL.tabClose,
       description: t("be_browserTools.tabCloseDescription"),
       category: "write",
-      requiresPerActionApproval: notAgentTab,
       approvalMemoryScope: (raw, ctx) => {
         const resolved = policy.resolveTab(asInput(raw), ctx?.sessionId);
         if (!resolved) return undefined;
@@ -363,6 +376,23 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       execute: execute(BROWSER_TOOL.tabClose),
     }),
   ].map((tool) => {
+    canonicalBrowserTools.add(tool);
+    const resolveScope = tool.approvalMemoryScope;
+    if (resolveScope) tool.approvalMemoryScope = async (raw, ctx) => {
+      const scope = await resolveScope(raw, ctx);
+      if (scope?.kind !== "browser-origin" || scope.tabOpener !== "user") return scope;
+      const observed = policy.resolveTab({ tabId: scope.tabId }, ctx?.sessionId);
+      const guest = observed?.tab.guest;
+      const origin = observed?.origin;
+      const opaqueUrl = origin === null ? guest?.getURL() : undefined;
+      return issueUserOwnedBrowserScope(scope, () => {
+        const current = policy.resolveTab({ tabId: scope.tabId }, ctx?.sessionId);
+        return current !== undefined && current.tab.guest === guest && current.origin === origin &&
+          (opaqueUrl === undefined || current.tab.guest?.getURL() === opaqueUrl) &&
+          current.opener === "user" && current.tab.documentId === scope.documentId &&
+          current.tab.controlGeneration === scope.controlGeneration;
+      });
+    };
     if (tool.name === BROWSER_TOOL.navigate || tool.name === BROWSER_TOOL.tabNew) canonicalBrowserNavigationTools.add(tool);
     return tool;
   });

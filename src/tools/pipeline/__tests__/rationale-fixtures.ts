@@ -36,7 +36,9 @@ export function rationaleResponseFor(
     ticketId: control.ticketId,
     actionDigest: control.action.actionDigest,
     round: 1,
-    suggestion,
+    choice: "resubmit",
+    rationale: suggestion,
+    userQuote: control.anchor.sanitizedIntent,
   } as const;
 }
 

@@ -9,7 +9,7 @@ import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as verifiedCommands from "../../permissions/verified-shell-command.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", join(cwd, "state"));
   auditLogger = new AuditLogger(join(cwd, "audit"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
-  manager.setMode("allow");
+  manager.setMode("default");
   __resetActiveSandboxCapabilityForTest();
   setShellSandboxRequestedAtBoot(false);
   vi.mocked(resolveVerifiedExecutable).mockImplementation((candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
@@ -146,12 +146,13 @@ it.each([
   ["git diff --name-only 'HEAD~1' HEAD", "Bash(git diff *)"],
   ["git rev-parse --verify HEAD", "Bash(git rev-parse *)"],
   ["git branch --list", "Bash(git branch *)"],
-])("executes checked %s headlessly only after its exact grant", async (command, broadRule) => {
+])("executes checked %s headlessly under prefix and exact grants", async (command, broadRule) => {
   const f = fixture(command);
   manager.setRules([withCurrentShellRuleVersion({ pattern: broadRule, action: "allow" })]);
-  const [blocked] = await f.run(true);
-  expect(blocked!.is_error).toBe(true);
-  expect(f.execute).not.toHaveBeenCalled();
+  const [prefixed] = await f.run(true);
+  expect(prefixed!.is_error).not.toBe(true);
+  expect(f.execute).toHaveBeenCalledOnce();
+  f.execute.mockClear();
   manager.setRules([withCurrentShellRuleVersion({ pattern: `Bash(${command})`, action: "allow" })]);
   const [allowed] = await f.run(true);
   expect(allowed!.is_error).not.toBe(true);
@@ -191,7 +192,7 @@ it.each([
 ])("keeps unsupported %s unproven through the canonical executor despite stored grants", async (command, broadRule) => {
   const f = fixture();
   const backend = vi.fn(() => { throw new Error("The reviewer backend must not run for an unproven command"); });
-  manager.setReviewer({ classifier: { classify: backend }, cache: new VerdictCache(join(cwd, "verdicts.jsonl")), deferredQueue: new DeferredQueue(join(cwd, "deferred.jsonl")) });
+  manager.setReviewer({ classifier: { classify: backend }, cache: new VerdictCache(join(cwd, "verdicts.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(cwd, "deferred.jsonl")) });
   await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
   await manager.addRulePersist({ pattern: broadRule, action: "allow" }, { kind: "user" });
   expect(await manager.listPersistedRules()).toEqual(expect.arrayContaining([

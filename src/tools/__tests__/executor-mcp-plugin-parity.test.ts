@@ -1,5 +1,5 @@
 // Both tool sources share deny, approval, audit, and effect gates.
-// Low-trust external tools bypass reviewer auto-approval and must reach user approval.
+// Each non-read-only source uses automatic review before a normal approval fallback.
 import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
@@ -105,11 +105,11 @@ interface ParityRun {
   cleanup: () => Promise<void>;
 }
 
-async function runParityPair(opts: { deny?: boolean } = {}): Promise<ParityRun> {
+async function runParityPair(opts: { deny?: boolean; level?: "medium" | "high" } = {}): Promise<ParityRun> {
   const dir = mkdtempSync(join(tmpdir(), "ave-parity-"));
   const auditDir = mkdtempSync(join(tmpdir(), "ave-parity-audit-"));
 
-  const classifySpy = vi.fn(() => ({ level: "medium" as const, reason: "needs confirm" }));
+  const classifySpy = vi.fn(() => ({ level: opts.level ?? "high" as const, reason: "needs confirm" }));
   const permMgr = makePermissionManager(dir, classifySpy);
   permMgr.setMode("auto");
   if (opts.deny) await permMgr.addAlwaysDeniedPersist(PROBE);
@@ -164,8 +164,6 @@ function stableGateReq(req: Record<string, unknown>): Record<string, unknown> {
     toolName: req.toolName,
     toolCategory: req.toolCategory,
     args: req.args,
-    isReadOnly: req.isReadOnly,
-    mode: req.mode,
     sensitivePathPattern: req.sensitivePathPattern,
     trustOrigin: req.trustOrigin,
     sandboxCapability: req.sandboxCapability,
@@ -190,7 +188,6 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       expect(pluginDeny).toBeDefined();
       expect(mcpDeny).toBeDefined();
       for (const row of [pluginDeny, mcpDeny]) {
-        expect((row.denyReasons as Array<{ layer: number }>)[0].layer).toBe(1);
         expect(row.category).toBe("network");
       }
 
@@ -227,21 +224,21 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       expect((pluginReq.evaluationContext as Record<string, unknown>).source).toBe("plugin");
       expect((mcpReq.evaluationContext as Record<string, unknown>).source).toBe("mcp");
 
-      // Only the plugin enters the reviewer lane and carries its verdict.
-      expect(pluginReq.reviewerVerdict).toMatchObject({ level: "medium" });
-      expect(mcpReq.reviewerVerdict).toBeUndefined();
+      // Both sources retain their high review verdict on the normal card.
+      expect(pluginReq.reviewerVerdict).toMatchObject({ level: "high" });
+      expect(mcpReq.reviewerVerdict).toMatchObject({ level: "high" });
     } finally {
       await run.cleanup();
     }
   });
 
-  // Low-trust external tools must never receive reviewer auto-approval.
-  it("reviewer auto-approve lane is trust-gated — plugin classified, MCP excluded, both still reach the gate", async () => {
+  // Source identity remains evidence while both sources follow the same review order.
+  it("reviews both tool sources before the high-verdict approval card", async () => {
     const run = await runParityPair();
     try {
-      expect(run.classifySpy).toHaveBeenCalledTimes(1);
+      expect(run.classifySpy).toHaveBeenCalledTimes(2);
       const classifiedSources = run.classifySpy.mock.calls.map((c) => (c[0] as { source: string }).source);
-      expect(classifiedSources).toEqual(["plugin"]);
+      expect(classifiedSources).toEqual(["plugin", "mcp"]);
 
       // The host derives the plugin sandbox root from trusted pluginId; external tools have no such root.
       const pluginCtx = run.classifySpy.mock.calls[0][0] as Record<string, unknown>;
@@ -250,8 +247,28 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       expect(typeof pluginCtx.ownerPluginSandboxRoot).toBe("string");
       expect(pluginCtx.ownerPluginSandboxRoot as string).toContain("parity-plugin");
 
-      // Trust-dependent reviewer routing must still converge at approval.
+      const mcpCtx = run.classifySpy.mock.calls[1][0] as Record<string, unknown>;
+      expect(mcpCtx.source).toBe("mcp");
+      expect(mcpCtx.category).toBe("network");
+      expect(mcpCtx.ownerPluginSandboxRoot).toBeUndefined();
+
+      // Both high verdicts converge at approval.
       expect(run.gate.requestAndWait).toHaveBeenCalledTimes(2);
+    } finally {
+      await run.cleanup();
+    }
+  });
+
+  it("allows medium verdicts for both tool sources without a card", async () => {
+    const run = await runParityPair({ level: "medium" });
+    try {
+      expect(run.classifySpy).toHaveBeenCalledTimes(2);
+      expect(run.classifySpy.mock.calls.map(([input]) => input.source)).toEqual(["plugin", "mcp"]);
+      expect(run.pluginResult.is_error).toBeFalsy();
+      expect(run.mcpResult.is_error).toBeFalsy();
+      expect(run.pluginExecuted).toHaveBeenCalledOnce();
+      expect(run.mcpExecuted).toHaveBeenCalledOnce();
+      expect(run.gate.requestAndWait).not.toHaveBeenCalled();
     } finally {
       await run.cleanup();
     }

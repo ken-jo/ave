@@ -6,6 +6,7 @@ import {
   RATIONALE_CONTROL_CONTRACT_VERSION,
   assertRationaleCanonicalJson,
   verifyRationaleRequiredControl,
+  verifyRationaleExecutionControl,
   type RationaleRequiredControl,
   sealRationaleCanonicalJson,
   assertExactOwnKeys,
@@ -73,7 +74,7 @@ export type RationaleTicketState =
 export type RationaleStatus = "not-requested" | "pending" | "ready" | "failed";
 
 export type RationaleTerminalReason =
-  | "allowed-once" | "user-deny" | "user-cancel" | "modal-timeout"
+  | "allowed-once" | "user-deny" | "model-accepted-denial" | "no-approver" | "host-denied" | "user-cancel" | "modal-timeout"
   | "caller-abort" | "session-close" | "identity-mismatch"
   | "stale-replay" | "expired";
 
@@ -102,7 +103,7 @@ export interface HostConsumedAllowOnceReceipt {
 
 export type RationaleTicketEventName =
   | "request-rationale" | "rationale-ready" | "rationale-failed" | "prompt-user"
-  | "allow-once" | "reviewer-authorize-once" | "deny" | "cancel" | "modal-timeout" | "abort"
+  | "allow-once" | "reviewer-authorize-once" | "accept-denial" | "deny-no-approver" | "deny-by-policy" | "deny" | "cancel" | "modal-timeout" | "abort"
   | "session-close" | "identity-mismatch" | "stale-replay" | "expire";
 
 export interface RationaleTicketEvent {
@@ -129,7 +130,7 @@ export const RATIONALE_TICKET_TERMINAL_STATES: readonly RationaleTicketState[] =
 
 const EVENT_NAMES: readonly RationaleTicketEventName[] = [
   "request-rationale", "rationale-ready", "rationale-failed", "prompt-user",
-  "allow-once", "reviewer-authorize-once", "deny", "cancel", "modal-timeout",
+  "allow-once", "reviewer-authorize-once", "accept-denial", "deny-no-approver", "deny-by-policy", "deny", "cancel", "modal-timeout",
   "abort", "session-close", "identity-mismatch", "stale-replay", "expire",
 ];
 
@@ -263,7 +264,7 @@ export function validateRationaleTicketRecord(record: RationaleTicketStateRecord
     throw new TypeError("invalid user_pending status");
   }
   const reasonByState: Partial<Record<RationaleTicketState, readonly RationaleTerminalReason[]>> = {
-    allowed_once: ["allowed-once"], denied: ["user-deny"],
+    allowed_once: ["allowed-once"], denied: ["user-deny", "model-accepted-denial", "no-approver", "host-denied"],
     cancelled: ["user-cancel", "modal-timeout", "caller-abort", "session-close"],
     rejected: ["identity-mismatch", "stale-replay"], expired: ["expired"],
   };
@@ -285,7 +286,7 @@ export function validateHostConsumedAllowOnceReceipt(
   embeddedTicket: RationaleTicketStateRecord,
   now = Date.now(),
 ): void {
-  if (!verifyRationaleRequiredControl(control, { now })) {
+  if (!verifyRationaleExecutionControl(control, { now })) {
     throw new Error("invalid or expired rationale control");
   }
   assertRationaleCanonicalJson(receipt, "HostConsumedAllowOnceReceipt");
@@ -383,9 +384,15 @@ export function transitionRationaleTicket(
       return next(record, "allowed_once", record.rationaleStatus,
         record.generationOutcome, record.reevaluationOutcome, "allowed-once");
     case "rationale_ready:reviewer-authorize-once":
-      // Fresh, aligned, non-high review skips user_pending but uses the same one-shot allowed_once receipt path.
+      // Fresh low/medium review skips user_pending but uses the same one-shot allowed_once receipt path.
       return next(record, "allowed_once", record.rationaleStatus,
         record.generationOutcome, record.reevaluationOutcome, "allowed-once");
+    case "user_pending:accept-denial":
+      return next(record, "denied", record.rationaleStatus, record.generationOutcome, record.reevaluationOutcome, "model-accepted-denial");
+    case "user_pending:deny-no-approver":
+      return next(record, "denied", record.rationaleStatus, record.generationOutcome, record.reevaluationOutcome, "no-approver");
+    case "user_pending:deny-by-policy":
+      return next(record, "denied", record.rationaleStatus, record.generationOutcome, record.reevaluationOutcome, "host-denied");
     case "user_pending:deny":
       return next(record, "denied", record.rationaleStatus,
         record.generationOutcome, record.reevaluationOutcome, "user-deny");
@@ -481,7 +488,7 @@ export function validateHostInvocationStartAuthorization(input: {
     input.now < 0 ||
     input.expectedInvocationVersion !== 0 ||
     typeof input.persistAudit !== "function" ||
-    !verifyRationaleRequiredControl(input.control, { now: input.now }) ||
+    !verifyRationaleExecutionControl(input.control, { now: input.now }) ||
     input.sessionId !== input.control.anchor.sessionId ||
     input.authorized.state !== "authorized" ||
     input.authorized.version !== 0 ||
@@ -680,7 +687,7 @@ export function createAuthorizedInvocationAudit(input: {
   now?: number;
 }): InvocationAuditRecord {
   const now = input.now ?? Date.now();
-  if (!verifyRationaleRequiredControl(input.control, { now })) {
+  if (!verifyRationaleExecutionControl(input.control, { now })) {
     throw new Error("invalid or expired rationale control");
   }
   validateRationaleTicketRecord(input.ticket);

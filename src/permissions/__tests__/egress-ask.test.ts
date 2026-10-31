@@ -10,13 +10,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { SandboxAskCallback, SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
 import {
-  createEgressAskCallback,
   egressAllowlistMatches,
   EGRESS_DENY_REASONS,
   type EgressApprovalRequest,
   type EgressApprovalAnswer,
-  type EgressAskDeps,
 } from "../egress-ask.js";
+import { createEgressAskCallback, type EgressAskDeps } from "../../__tests__/support/egress-permission.js";
 import { EgressGrantStore, egressDestinationNetwork } from "../egress-grants.js";
 import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
@@ -283,7 +282,7 @@ describe.each(["win32", "darwin"] as const)("egress grant reuse after %s identit
     const weak = { ...listener(OTHER_SHELL_TOKEN), identity: platform === "win32" ? "username" as const : "listener" as const };
     askEnabled = false;
     const beforeDisabled = asked.length;
-    expect(await handleProxyAsk(destination, weak)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+    expect(await handleProxyAsk(destination, weak)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
     expect(asked).toHaveLength(beforeDisabled);
     askEnabled = true;
     answer = async () => ({ allow: false, reason: "denied by the user" });
@@ -681,7 +680,11 @@ describe("egress ask callback — shell calls", () => {
     expect(await ask({ host: "GitHub.com", port: 443 }, listener(SHELL_TOKEN)))
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toEqual([{
+      evaluation: expect.objectContaining({ permission: expect.objectContaining({ decision: "ask" }) }),
       origin: "shell",
+      headless: false,
+      ownerUnattended: false,
+      approvalSurface: "interactive",
       workspaceRoot: PROJECT,
       sessionId: "session-1",
       toolName: "bash",
@@ -827,18 +830,20 @@ describe("egress ask callback — shell calls", () => {
     askEnabled = false;
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(SHELL_TOKEN)))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
     expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
     expect(asked).toEqual([]);
   });
 
-  it("denies a background call nobody can answer (I5) and a host with no approval surface", async () => {
-    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, approvalSurface: "unavailable" } });
+  it("strict unavailable shell calls stop before a human-only requester", async () => {
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, headless: true, approvalSurface: "unavailable" } });
+    answer = async () => ({ allow: true, scope: "once" });
     expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN)))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
+    expect(asked).toEqual([]);
     owners.set(SHELL_TOKEN, interactiveShell);
     requesterPresent = false;
-    expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN)))
+    expect(await callback()({ host: "other.example", port: 443 }, listener(SHELL_TOKEN)))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.noSurface });
     expect(asked).toEqual([]);
   });
@@ -986,10 +991,11 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(await byName(SHELL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(await byName(TERMINAL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     askEnabled = false;
-    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
+    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
     expect(await byName(TERMINAL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
     askEnabled = true;
     owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, approvalSurface: "unavailable" } });
+    answer = async () => ({ allow: false, reason: EGRESS_DENY_REASONS.headless });
     expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
     expect(asked).toEqual([]);
   });

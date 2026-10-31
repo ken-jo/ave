@@ -1,6 +1,6 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve } from "node:path";
-import { analyzeShell, literalWord, staticShellWord, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
+import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
 import { resolveShellFilesystemPath } from "./shell-filesystem-path.js";
@@ -26,6 +26,7 @@ export interface ShellCommandEvent {
   unsetVariables: readonly string[];
   dialect: "bash" | "posix";
   testExpression?: ShellTestExpression;
+  inputRedirect?: ShellRedirect;
   inspectNested(
     text: string,
     dialect: "bash" | "posix",
@@ -34,11 +35,19 @@ export interface ShellCommandEvent {
       environment: Readonly<Record<string, string | undefined>>;
       unsetVariables: readonly string[];
     },
+    origin?: ShellWord["source"],
   ): void;
 }
 export interface ShellExecutionInspector {
+  analysisTokens?(count: number): void;
   word?(word: ShellWord): void;
-  path(path: string, raw: string, cwd: string | null, effect: "read" | "write"): void;
+  unresolvedWord?(word: ShellWord, error: ShellExecutionError): boolean | void;
+  /** Evidence-only continuation invalidates execution state after an opaque operation. */
+  unresolvedState?(error: ShellExecutionError): boolean | void;
+  path(path: string, raw: string, cwd: string | null, effect: "read" | "write", role?: "directory"): void;
+  /** Evidence collectors may retain uncertainty and continue visiting later possible effects. */
+  unresolvedPath?(raw: string, cwd: string | null, effect: "read" | "write", error?: ShellExecutionError, role?: "directory"): boolean | void;
+  resolvedRedirect?(target: ShellWord, path: string, effect: "read" | "write", environment: Readonly<Record<string, string | undefined>>): void;
   command(event: ShellCommandEvent): void;
 }
 export class ShellExecutionError extends Error {
@@ -66,12 +75,14 @@ interface ShellState {
   pipeline?: readonly ShellStatement[];
   fromPipe: boolean;
   activeFunctions: readonly string[];
+  inputRedirect?: ShellRedirect;
 }
 type ExitStatus = "success" | "failure" | "unknown";
 interface BreakControl { kind: "break"; levels: number; boundary: number }
 interface StateResult { state: ShellState; status: ExitStatus; control?: BreakControl }
 interface ExecutionContext { boundary: number; loopDepth: number }
 interface WordEvaluation { lastSubstitutionStatus?: ExitStatus; mayFail?: boolean }
+interface CommandRedirectObservation { state?: ShellState; inspected: boolean }
 const EXECUTION_ALTERING_VARIABLES = new Set(["IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH", "PWD"]);
 export function assertStableShellEnvironmentVariable(
   name: string,
@@ -83,13 +94,18 @@ export function assertStableShellEnvironmentVariable(
   }
 }
 function stateKey(state: ShellState): string {
-  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source])]);
+  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, state.inputRedirect?.source, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source])]);
 }
 function decline(reason: string, word?: ShellWord): never {
   throw new ShellExecutionError(reason, word?.source.raw);
 }
 function cloneState(state: ShellState): ShellState {
   return { ...state, variables: new Map(state.variables), arrays: new Map(state.arrays), exported: new Set(state.exported), functions: new Map(state.functions), readonlyVariables: new Set(state.readonlyVariables), unsetVariables: new Set(state.unsetVariables) };
+}
+function standardInputRedirect(redirects: readonly ShellRedirect[], inherited?: ShellRedirect): ShellRedirect | undefined {
+  let input = inherited;
+  for (const redirect of redirects) if (redirect.fileDescriptor === 0 || redirect.fileDescriptor === undefined && redirect.effect === "read") input = redirect;
+  return input;
 }
 function uniqueResults(results: readonly StateResult[]): StateResult[] {
   const unique = new Map<string, StateResult>();
@@ -103,15 +119,26 @@ function uniqueResults(results: readonly StateResult[]): StateResult[] {
 }
 
 /** Same original text and prepared child facts are inspected at both gates. */
-export function inspectShellExecution(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector): void {
-  const analysis = analyzeShell(command);
+export function inspectShellExecution(command: string, cwd: string, facts: ShellExecutionFacts, inspector: ShellExecutionInspector, totalTokenLimit?: number, prepared?: PreparedShellAnalysis): void {
+  const analysis = prepared === undefined ? analyzeShell(command, "bash", totalTokenLimit === undefined ? undefined : { totalTokens: totalTokenLimit }) : validatePreparedShellAnalysis(command, prepared);
   if (!analysis.ok) throw new ShellExecutionError(analysis.reason);
+  let remainingTokens = totalTokenLimit;
+  const chargeAnalysis = (parsed: Extract<ShellAnalysis, { ok: true }>): void => {
+    inspector.analysisTokens?.(parsed.totalTokens ?? 0);
+    if (remainingTokens === undefined) return;
+    if (!Number.isSafeInteger(parsed.totalTokens) || parsed.totalTokens! < 0) throw new Error("Shell analysis token count is unavailable");
+    remainingTokens -= parsed.totalTokens!;
+    if (remainingTokens < 0) throw new ShellExecutionError("Shell analysis total token limit exceeded");
+  };
+  chargeAnalysis(analysis);
+  const nestedAnalyses = new WeakMap<ShellWord["source"], Map<string, Extract<ShellAnalysis, { ok: true }>>>();
   const initial: ShellState = { cwd, dialect: "bash", unicodeEscapes: facts.unicodeEscapes, prefixAssignmentRhs: facts.prefixAssignmentRhs, variables: new Map(Object.entries(facts.environment)), arrays: new Map(), exported: new Set(Object.keys(facts.environment)), functions: new Map(), readonlyVariables: new Set(), unsetVariables: new Set(), backquote: false, fromPipe: false, activeFunctions: [] };
   initial.variables.set("PWD", cwd);
   // Filesystem effects cross process scopes; after possible mutation, pre-execution stat cannot prove a later chdir outcome. Keep this flag analysis-local.
   let filesystemMayChange = false;
   let steps = 0;
   let nextExecutionBoundary = 0;
+  const failedCommandRedirects = new WeakMap<ShellExecutionError, CommandRedirectObservation>();
   const freshExecutionContext = (): ExecutionContext => ({ boundary: ++nextExecutionBoundary, loopDepth: 0 });
   const rootExecutionContext = freshExecutionContext();
   const leaveLoop = (result: StateResult, context: ExecutionContext): StateResult => {
@@ -122,9 +149,13 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       ? { state: result.state, status: "success" }
       : { ...result, control: { ...control, levels: control.levels - 1 } };
   };
-  const checkPath = (path: string, raw: string, state: ShellState, effect: "read" | "write"): void => {
-    if (!isAbsolute(path) && state.cwd === null) decline("working directory is unresolved");
-    inspector.path(path, raw, state.cwd, effect);
+  const checkPath = (path: string, raw: string, state: ShellState, effect: "read" | "write", role?: "directory"): void => {
+    if (!isAbsolute(path) && state.cwd === null) {
+      const error = new ShellExecutionError("working directory is unresolved", raw);
+      if (inspector.unresolvedPath?.(raw, state.cwd, effect, error, role) === true) return;
+      throw error;
+    }
+    inspector.path(path, raw, state.cwd, effect, role);
   };
   const parameterChoice = (part: Extract<ShellWordPart, { kind: "parameter-choice" }>, state: ShellState): "operand" | "value" | "empty" | "unknown" => {
     const knownUnset = state.unsetVariables.has(part.name);
@@ -175,7 +206,12 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       }
       return [word];
     }
-    const resolved = resolveWord(word, state, depth, evaluation);
+    let resolved: string | undefined;
+    try { resolved = resolveWord(word, state, depth, evaluation); }
+    catch (error) {
+      if (error instanceof ShellExecutionError && inspector.unresolvedWord?.(word, error) === true) return [word];
+      throw error;
+    }
     if (resolved === "" && !word.preservesEmpty) return [];
     return [resolved === undefined ? word : literalWord(resolved, word.source)];
   });
@@ -245,9 +281,20 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         : value);
     }
   };
-  const inspectNested = (text: string, state: ShellState, depth: number): void => {
-    const nested = analyzeShell(text, state.dialect);
-    if (!nested.ok) decline(`nested command cannot be analyzed: ${nested.reason}`);
+  const inspectNested = (text: string, state: ShellState, depth: number, origin?: ShellWord["source"]): void => {
+    const key = `${state.dialect}\0${text}`;
+    let nested = origin === undefined ? undefined : nestedAnalyses.get(origin)?.get(key);
+    if (nested === undefined) {
+      const analyzed = analyzeShell(text, state.dialect, remainingTokens === undefined ? undefined : { totalTokens: Math.max(1, remainingTokens) });
+      if (!analyzed.ok) decline(`nested command cannot be analyzed: ${analyzed.reason}`);
+      chargeAnalysis(analyzed);
+      nested = analyzed;
+      if (origin !== undefined) {
+        let cached = nestedAnalyses.get(origin);
+        if (!cached) { cached = new Map(); nestedAnalyses.set(origin, cached); }
+        cached.set(key, nested);
+      }
+    }
     walk(nested.program, state, depth + 1, freshExecutionContext());
   };
   const markRedirectEffects = (redirects: readonly ShellRedirect[]): void => {
@@ -256,22 +303,33 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   const inspectRedirects = (redirects: readonly ShellRedirect[], state: ShellState, depth: number): void => {
     for (const redirect of redirects) {
       if (redirect.target) {
-        const path = resolveWord(redirect.target, state, depth);
-        if (path === undefined) decline("unresolved redirect target", redirect.target);
+        let path: string | undefined;
+        try { path = resolveWord(redirect.target, state, depth); }
+        catch (error) {
+          if (error instanceof ShellExecutionError && inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect, error) === true) continue;
+          throw error;
+        }
+        if (path === undefined) {
+          if (inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect) === true) continue;
+          decline("unresolved redirect target", redirect.target);
+        }
+        inspector.resolvedRedirect?.(redirect.target, path, redirect.effect, Object.fromEntries(state.variables));
         checkPath(path, redirect.target.source.raw, state, redirect.effect);
       }
       if (redirect.data) inspectSubstitutions(redirect.data, state, depth);
     }
   };
-  const executeCommand = (node: ShellCommand, incoming: ShellState, depth: number, context: ExecutionContext): StateResult[] => {
+  const executeCommand = (node: ShellCommand, incoming: ShellState, depth: number, context: ExecutionContext, redirects: CommandRedirectObservation): StateResult[] => {
     const state = cloneState(incoming);
     const resolvedWords = resolveWords(node.words, incoming, depth);
     const assigned = cloneState(incoming);
     const assignmentEvaluation: WordEvaluation = {};
     applyAssignments(node, assigned, incoming, depth, assignmentEvaluation);
+    redirects.state = cloneState(assigned);
     markRedirectEffects(node.redirects);
     if (node.words.length === 0) {
       inspectRedirects(node.redirects, assigned, depth);
+      redirects.inspected = true;
       return [{ state: assigned, status: node.redirects.length || assignmentEvaluation.mayFail ? "unknown" : assignmentEvaluation.lastSubstitutionStatus ?? "success" }];
     }
     const resolvedNode = { ...node, words: resolvedWords };
@@ -286,6 +344,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
     // Builtin recognition requires exact spelling; normalized paths, case variants, and .exe names are external programs.
     const shellBuiltin = head === verb && effective.wrappers.every((wrapper) => wrapper === "command" || wrapper === "time");
     const commandState = cloneState(assigned);
+    commandState.inputRedirect = standardInputRedirect(node.redirects, incoming.inputRedirect);
     for (const assignment of node.assignments) commandState.exported.add(assignment.name);
     for (const transition of effective.environmentTransitions) {
       if (transition.kind === "reset") {
@@ -301,7 +360,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       } else {
         const target = staticShellWord(transition.path);
         if (target === undefined) decline("unresolved wrapper working directory", transition.path);
-        checkPath(target, transition.path.source.raw, commandState, "write");
+        checkPath(target, transition.path.source.raw, commandState, "write", "directory");
         try { commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!, { dialect: "bash" }); }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error)) throw error;
@@ -316,6 +375,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       checkPath(target, path.source.raw, state, "read");
     }
     inspectRedirects(node.redirects, incoming, depth);
+    redirects.inspected = true;
     if (effective.unsupported) decline(effective.unsupported, effective.words[0]);
     const functionBody = effective.wrappers.length === 0 && !head.includes("/") && state.functions.get(head);
     const testForm = functionBody || !shellBuiltin ? undefined
@@ -347,8 +407,9 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       definedFunctions: Object.freeze([...state.functions.keys()]),
       unsetVariables: Object.freeze([...commandState.unsetVariables]),
       dialect: state.dialect,
+      inputRedirect: standardInputRedirect(node.redirects, state.inputRedirect),
       ...(testAnalysis?.ok ? { testExpression: testAnalysis.expression } : {}),
-      inspectNested(text, dialect, nestedContext) {
+      inspectNested(text, dialect, nestedContext, origin) {
         const child = cloneState(commandState);
         child.dialect = dialect;
         child.unicodeEscapes = undefined; child.prefixAssignmentRhs = undefined;
@@ -361,7 +422,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
           child.unsetVariables = new Set(nestedContext.unsetVariables);
         }
         child.variables.set("PWD", child.cwd ?? undefined);
-        inspectNested(text, child, depth);
+        inspectNested(text, child, depth, origin);
       },
     });
     if (functionBody) {
@@ -484,6 +545,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (args.length > 1) return [{ state, status: "failure" }];
       const target = args[0] === "-" ? commandState.variables.get("OLDPWD") : args[0] ?? commandState.variables.get("HOME");
       if (target === undefined) decline("unresolved working-directory destination", effective.words[1]);
+      if (state.cwd === null && !isAbsolute(target)) decline("working directory is unresolved", targetWord);
       const label = targetWord?.source.raw ?? head;
       const modeledTarget = modelShellPath(target, { dialect: "bash", location: state.cwd ?? undefined }).nativePath;
       if (modeledTarget === undefined) decline("working-directory namespace is unresolved", targetWord);
@@ -497,7 +559,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         }
       }
       // Logical cd collapses .., but original components must still be searchable; physical cd follows links.
-      checkPath(destination, label, state, "write");
+      checkPath(destination, label, state, "write", "directory");
       let observedDirectory = false;
       try {
         const original = process.platform === "win32" ? modeledTarget : isAbsolute(target) ? target : `${state.cwd!}/${target}`;
@@ -515,7 +577,13 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
     return [{ state, status: shellBuiltin && ["true", ":"].includes(verb) ? "success" : shellBuiltin && verb === "false" ? "failure" : "unknown" }];
   };
   const inspectCommand = (node: ShellCommand, incoming: ShellState, depth: number, context: ExecutionContext): StateResult[] => {
-    const results = executeCommand(node, incoming, depth, context);
+    const redirects: CommandRedirectObservation = { inspected: false };
+    let results: StateResult[];
+    try { results = executeCommand(node, incoming, depth, context, redirects); }
+    catch (error) {
+      if (error instanceof ShellExecutionError) failedCommandRedirects.set(error, redirects);
+      throw error;
+    }
     // Path admission does not prove redirect I/O success; a failed open prevents the whole body, including state changes and control transfers.
     return node.redirects.length
       ? uniqueResults([...results, { state: cloneState(incoming), status: "failure" }])
@@ -524,13 +592,16 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   const walk = (node: ShellStatement, state: ShellState, depth: number, context: ExecutionContext): StateResult[] => {
     if (++steps > SHELL_ANALYSIS_LIMITS.nodes) decline("execution-step limit exceeded");
     if (depth > SHELL_ANALYSIS_LIMITS.depth) decline("execution analysis depth exceeded");
+    try {
     switch (node.kind) {
       case "unsupported": decline(node.reason);
       case "command": return inspectCommand(node, state, depth, context);
       case "redirected": {
         markRedirectEffects(node.redirects);
         inspectRedirects(node.redirects, state, depth);
-        return uniqueResults([...walk(node.body, cloneState(state), depth + 1, context),
+        const bodyState = cloneState(state);
+        bodyState.inputRedirect = standardInputRedirect(node.redirects, state.inputRedirect);
+        return uniqueResults([...walk(node.body, bodyState, depth + 1, context),
           { state: cloneState(state), status: "failure" }]);
       }
       case "sequence": {
@@ -566,7 +637,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       case "negate": return walk(node.body, state, depth + 1, context).map((result) => result.control ? result : ({ ...result, status: result.status === "success" ? "failure" : result.status === "failure" ? "success" : "unknown" }));
       case "pipeline":
         node.statements.forEach((statement, index) => {
-          const results = walk(statement, { ...cloneState(state), pipeline: node.statements, fromPipe: index > 0 }, depth + 1, freshExecutionContext());
+          const results = walk(statement, { ...cloneState(state), inputRedirect: index === 0 ? state.inputRedirect : undefined, pipeline: node.statements, fromPipe: index > 0 }, depth + 1, freshExecutionContext());
           if (results.some((entry) => entry.control)) decline("control transfer escaped execution boundary");
         });
         return [{ state, status: "unknown" }];
@@ -626,6 +697,44 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         }
         return uniqueResults(results);
       }
+    }
+    } catch (error) {
+      if (!(error instanceof ShellExecutionError) || inspector.unresolvedState?.(error) !== true) throw error;
+      if (node.kind === "unsupported" && node.redirected) {
+        inspectRedirects(node.redirected.redirects, state, depth);
+        const bodyState = cloneState(state);
+        bodyState.inputRedirect = standardInputRedirect(node.redirected.redirects, state.inputRedirect);
+        return uniqueResults([{ state: cloneState(state), status: "unknown" }, ...walk(node.redirected.body, bodyState, depth + 1, context)]);
+      }
+      const uncertain = cloneState(state);
+      uncertain.cwd = null;
+      uncertain.variables.clear(); uncertain.arrays.clear(); uncertain.exported.clear();
+      uncertain.readonlyVariables.clear(); uncertain.unsetVariables.clear();
+      filesystemMayChange = true;
+      // Redirections are recognizable effects even when the executable or its state is opaque.
+      const commandRedirects = failedCommandRedirects.get(error);
+      if (node.kind === "command" && !commandRedirects?.inspected) for (const redirect of node.redirects) {
+        try { inspectRedirects([redirect], commandRedirects?.state ?? uncertain, depth); }
+        catch (redirectError) {
+          if (!(redirectError instanceof ShellExecutionError) || inspector.unresolvedState?.(redirectError) !== true) throw redirectError;
+        }
+      }
+      // Unknown loop values can execute the existing body zero or more times.
+      // Visit it once with unknown bindings through the same bounded walker.
+      if (node.kind === "for") {
+        const dataOnlyValues = error.message === "unresolved loop value" && node.values !== null
+          && node.values.every(word => word.parts.every(part => part.kind === "literal" || part.kind === "parameter"));
+        const loopState = dataOnlyValues ? cloneState(state) : cloneState(uncertain);
+        loopState.variables.set(node.name, undefined);
+        loopState.arrays.delete(node.name); loopState.unsetVariables.delete(node.name);
+        const body = walk(node.body, loopState, depth + 1, { ...context, loopDepth: context.loopDepth + 1 });
+        return uniqueResults([{ state: dataOnlyValues ? state : uncertain, status: "unknown" }, ...body.map(result => result.control ? leaveLoop(result, context) : result)]);
+      }
+      if (node.kind === "redirected") return uniqueResults([
+        { state: uncertain, status: "unknown" },
+        ...walk(node.body, cloneState(uncertain), depth + 1, context),
+      ]);
+      return [{ state: uncertain, status: "unknown" }];
     }
   };
   const results = walk(analysis.program, initial, 0, rootExecutionContext);

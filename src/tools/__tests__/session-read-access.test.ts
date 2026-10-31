@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { ApprovalGate } from "../../permissions/approval-gate.js";
+import { ToolExecutor } from "../executor.js";
+import { ToolRegistry } from "../registry.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { getBuiltinShellSessionReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadRoot, isConfiguredSessionReadPath, isSensitivePath } from "../../permissions/sensitive-paths.js";
@@ -55,13 +57,21 @@ describe("configured saved-session access", () => {
 
   it("protects writes, deletion and moves even with an encompassing directory grant", async () => {
     const broad = { ...context, extraAllowedDirectories: [root] };
-    const results = [
-      await new WriteFileTool().execute({ path: transcript, content: "changed" }, broad),
-      await new WriteFileTool().execute({ path: join(sessions, "new.jsonl"), content: "changed" }, broad),
-      await new DeleteFileTool().execute({ path: transcript }, broad),
-      await new MoveFileTool().execute({ sourcePath: transcript, destinationPath: join(context.cwd, "moved.jsonl") }, broad),
-    ];
-    for (const result of results) expect(result.output).toContain("Sensitive path:");
+    const registry = new ToolRegistry();
+    for (const tool of [new WriteFileTool(), new DeleteFileTool(), new MoveFileTool()]) registry.register(tool);
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    const executor = new ToolExecutor(registry, undefined, manager);
+    const results = await executor.executeAll([
+      { id: "replace", name: "write_file", input: { path: transcript, content: "changed" } },
+      { id: "new", name: "write_file", input: { path: join(sessions, "new.jsonl"), content: "changed" } },
+      { id: "delete", name: "delete_file", input: { path: transcript } },
+      { id: "move", name: "move_file", input: { sourcePath: transcript, destinationPath: join(context.cwd, "moved.jsonl") } },
+    ], { executionCwd: broad.cwd, sessionId: "saved-history", permissionContext: { trustOrigin: "user-keyboard", headless: true, additionalDirectories: broad.extraAllowedDirectories } });
+    for (const result of results) {
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain("Nobody can approve this request; do not retry.");
+    }
     expect(readFileSync(transcript, "utf8")).toBe(CONTENT);
     // Windows directory rows keep their separator for srt-win.
     const sessionsRow = sessions + (process.platform === "win32" ? sep : "");
@@ -71,12 +81,17 @@ describe("configured saved-session access", () => {
     expect(isSensitivePath(canonical(transcript))).not.toBeNull();
   });
 
-  it.each(["secrets", "audit", "routine", "subscription-runtimes"])("keeps the %s namespace private", async (namespace) => {
+  it.each(["secrets", "audit", "routine", "subscription-runtimes"])("separates %s credential admission from ordinary file reads", async (namespace) => {
     const target = join(profile, namespace, "record.jsonl");
     mkdirSync(join(profile, namespace)); writeFileSync(target, "private-store-fixture");
     const result = await new ReadFileTool().execute({ path: target }, { ...context, extraAllowedDirectories: [root] });
-    expect(result.output).toContain("Sensitive path:");
-    expect(result.output).not.toContain("private-store-fixture");
+    if (namespace === "secrets" || namespace === "subscription-runtimes") {
+      expect(result.output).toContain("Sensitive path:");
+      expect(result.output).not.toContain("private-store-fixture");
+    } else {
+      expect(result.isError).toBe(false);
+      expect(result.output).toContain("private-store-fixture");
+    }
     expect(isConfiguredSessionReadPath(canonical(target))).toBe(false);
   });
 
@@ -87,15 +102,20 @@ describe("configured saved-session access", () => {
     }
   });
 
-  it("keeps nested credentials sensitive inside the readable namespace", () => {
+  it("keeps secret-read classification and host credential admission distinct inside saved history", () => {
     const target = join(sessions, ".ssh", "id_rsa");
     mkdirSync(join(sessions, ".ssh")); writeFileSync(target, "inert-credential-fixture");
     expect(isSensitivePath(canonical(target), "read")).not.toBeNull();
-    expect(ensureFileAccess(target, context, "read")?.isError).toBe(true);
+    expect(ensureFileAccess(target, context, "read")).toBeNull();
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    expect(manager.checkDetailed("read_file", "builtin", "read", undefined, { paths: [{ lexical: target, canonical: target, effect: "read" }] })).toMatchObject({ decision: "ask", reasonCode: "secret-read" });
+    const hostCredential = join(sessions, ".ave", "secrets", "token.json");
+    expect(ensureFileAccess(hostCredential, context, "read")).toMatchObject({ isError: true });
     const copiedStore = join(sessions, "copy", ".ave", "sessions", "other.jsonl");
     mkdirSync(join(sessions, "copy", ".ave", "sessions"), { recursive: true });
     writeFileSync(copiedStore, "copied-store-fixture");
-    expect(ensureFileAccess(copiedStore, context, "read")?.isError).toBe(true);
+    expect(ensureFileAccess(copiedStore, context, "read")).toBeNull();
+    expect(manager.checkDetailed("read_file", "builtin", "read", undefined, { paths: [{ lexical: copiedStore, canonical: copiedStore, effect: "read" }] })).toMatchObject({ decision: "ask", reasonCode: "secret-read" });
   });
 
   it.skipIf(process.platform === "win32")("accepts a relocated application root but rejects escaping session links", () => {
@@ -125,14 +145,17 @@ describe("configured saved-session access", () => {
     const canonicalTargets = [{ filePath: transcript, canonicalPath: canonical(transcript) }];
     const common = { canonicalTargets, allowedDirectories: [canonical(context.cwd)], blockReadsOutsideWorkingDirectories: true };
     expect(PermissionManager.checkPathScope({ ...common, effect: "read" })).toMatchObject({ sensitiveHit: null, outOfAllowed: null });
-    expect(PermissionManager.checkPathScope({ ...common, effect: "write" }).sensitiveHit).not.toBeNull();
+    expect(PermissionManager.checkPathScope({ ...common, effect: "write" })).toMatchObject({ sensitiveHit: null, outOfAllowed: expect.anything() });
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    expect(manager.checkDetailed("write_file", "builtin", "write", undefined, { paths: [{ lexical: transcript, canonical: transcript, effect: "write" }] })).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
     const send = vi.fn();
     const gate = new ApprovalGate({ send, isDestroyed: () => false } as never, undefined, 200);
-    const request = { id: "session-read", category: "tool" as const, toolName: "read_file", source: "builtin" as const, mode: "default" as const, args: { path: transcript }, reason: "Read saved conversation", createdAt: Date.now(), target: { filePath: transcript }, isReadOnly: true };
-    expect((await gate.requestAndWait(request)).choice).toBe("allow-once");
-    expect((await gate.requestAndWait({ ...request, id: "session-write", isReadOnly: false })).choice).toBe("deny-once");
+    const request = { id: "session-read", category: "tool" as const, toolName: "read_file", source: "builtin" as const, args: { path: transcript }, reason: "Read saved conversation", createdAt: Date.now(), target: { filePath: transcript } };
+    expect((await gate.requestAndWait(request)).choice).toBe("deny-once");
+    expect((await gate.requestAndWait({ ...request, id: "session-write" })).choice).toBe("deny-once");
     expect((await gate.requestAndWait({ ...request, id: "session-directory-grant", kind: "out-of-allowed-dir" })).choice).toBe("deny-once");
-    expect(send).not.toHaveBeenCalled();
+    expect(send.mock.calls.filter(([channel]) => channel === IPC_APPROVAL_REQUEST)).toHaveLength(3);
     expect(gate.pendingCount).toBe(0);
   });
 });

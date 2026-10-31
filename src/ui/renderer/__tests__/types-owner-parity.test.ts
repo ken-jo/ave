@@ -5,14 +5,12 @@ import type {
   ApprovalChoice,
   ApprovalDecision,
   ApprovalRequest,
-  DeferredQueueEntry,
+  RecentlyDeniedEntry,
   ExecutionMode,
   HookTrustRow,
   MemoryCaptureMode,
-  ParentAdjudicationBackgroundEscalation,
-  ParentAdjudicationMaxVerdict,
-  ParentAdjudicationModelSource,
   PermissionRule,
+  PermissionReviewerSettings,
   PluginContributionTrustRow,
   PluginPerfStats,
   RemoteA2AActionStatus,
@@ -28,19 +26,14 @@ import type {
   ApprovalRequest as GateApprovalRequest,
 } from "../../../permissions/approval-gate.js";
 import type { PermissionRule as HostPermissionRule } from "../../../permissions/permission-manager.js";
-import type {
-  ParentAdjudicationBackgroundEscalation as HostParentAdjudicationBackgroundEscalation,
-  ParentAdjudicationMaxVerdict as HostParentAdjudicationMaxVerdict,
-  ParentAdjudicationModelSource as HostParentAdjudicationModelSource,
-} from "../../../permissions/permission-settings-store.js";
+import type { ReviewerSettingsBlock } from "../../../permissions/permission-settings-store.js";
 import type { HookTrustRow as HostHookTrustRow } from "../../../hooks/hook-trust-commands.js";
 import type { ScriptHookType } from "../../../hooks/script-hook-types.js";
 import type { PluginPerfStats as HostPluginPerfStats } from "../../../plugins/runtime/index.js";
 import type { PluginContributionTrustRow as HostPluginContributionTrustRow } from "../../../plugins/plugin-bundle-lifecycle.js";
 import type { RemoteA2AActionStatus as HostRemoteA2AActionStatus } from "../../../main/remote-a2a-action-controller.js";
-import type { DeferredEntry } from "../../../permissions/reviewer/deferred-queue.js";
+import type { RecentlyDeniedEntry as HostRecentlyDeniedEntry } from "../../../shared/recently-denied.js";
 import type {
-  DeferredGrantScope,
   RiskLevel,
   ToolCategory,
   ToolSource,
@@ -73,9 +66,7 @@ describe("renderer types are the owner types", () => {
     expectTypeOf<ApprovalDecision>().toEqualTypeOf<GateApprovalDecision>();
     expectTypeOf<ApprovalChoice>().toEqualTypeOf<GateApprovalChoice>();
     expectTypeOf<PermissionRule>().toEqualTypeOf<HostPermissionRule>();
-    expectTypeOf<ParentAdjudicationMaxVerdict>().toEqualTypeOf<HostParentAdjudicationMaxVerdict>();
-    expectTypeOf<ParentAdjudicationBackgroundEscalation>().toEqualTypeOf<HostParentAdjudicationBackgroundEscalation>();
-    expectTypeOf<ParentAdjudicationModelSource>().toEqualTypeOf<HostParentAdjudicationModelSource>();
+    expectTypeOf<PermissionReviewerSettings>().toEqualTypeOf<ReviewerSettingsBlock>();
   });
 
   it("plugin, hook and remote-A2A rows are the host row types", () => {
@@ -90,10 +81,9 @@ describe("renderer types are the owner types", () => {
     expectTypeOf<ToolsToolCategory>().toEqualTypeOf<ToolCategory>();
     expectTypeOf<ToolsToolSource>().toEqualTypeOf<ToolSource>();
     expectTypeOf<RiskVerdict["level"]>().toEqualTypeOf<RiskLevel>();
-    expectTypeOf<DeferredQueueEntry["source"]>().toEqualTypeOf<ToolSource>();
-    expectTypeOf<DeferredQueueEntry["category"]>().toEqualTypeOf<ToolCategory>();
-    expectTypeOf<DeferredQueueEntry["verdict"]["level"]>().toEqualTypeOf<RiskLevel>();
-    expectTypeOf<DeferredEntry["resolvedScope"]>().toEqualTypeOf<DeferredGrantScope | undefined>();
+    expectTypeOf<RecentlyDeniedEntry["source"]>().toEqualTypeOf<ToolSource>();
+    expectTypeOf<RecentlyDeniedEntry["category"]>().toEqualTypeOf<ToolCategory>();
+    expectTypeOf<RecentlyDeniedEntry>().toEqualTypeOf<HostRecentlyDeniedEntry>();
   });
 
   it("ExecutionMode is one union across host, slash parser and renderer", () => {

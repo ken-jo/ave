@@ -128,7 +128,6 @@ describe("wireHookSystem permission hook policy", () => {
       category: "meta",
       denyReasons: [
         expect.objectContaining({
-          layer: 6,
           reason: "hook.quarantined:pre-untrusted.sh:new",
           source: "hook-trust-workflow",
         }),

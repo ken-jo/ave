@@ -199,13 +199,11 @@ function serializePermissionReview(
   permissionReview: MessageMeta["permissionReview"] | undefined,
 ): SerializedPermissionReviewMeta | undefined {
   if (!permissionReview) return undefined;
-  // Replay only valid permission outcomes, including parent decisions; labels grant no authority or audit provenance.
+  // Replay only current permission outcomes; labels grant no authority or audit provenance.
   if (
     permissionReview.status !== "reviewing" &&
     permissionReview.status !== "needs_approval" &&
     permissionReview.status !== "auto_approved" &&
-    permissionReview.status !== "parent_approved" &&
-    permissionReview.status !== "parent_denied" &&
     permissionReview.status !== "failed"
   ) {
     return undefined;

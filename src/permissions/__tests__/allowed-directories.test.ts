@@ -195,15 +195,8 @@ describe("pickClosestParent — leaf-parent UX rule", () => {
     expect(pickClosestParent(leaf, [dir])).toBeNull();
   });
 
-  it("returns null when the parent is itself a Layer 0 sensitive directory", () => {
-    // Generic id_rsa under any folder is Layer 0; the parent folder may not be sensitive but a deeper one inside.ssh is.
-    const leaf = fold("/Users/example/.ssh/id_rsa");
-    // The leaf-parent is `~/.ssh` which is NOT itself a sensitive
-    // *directory pattern* in the list (only `**/.ssh/**` entries are).
-    // The parent's parent (`~`) is fine. So the immediate parent is the
-    // .ssh dir — and isSensitivePath('/Users/example/.ssh') matches
-    // `**/.ssh/**` via the directory-form trailing-slash trick.
-    expect(pickClosestParent(leaf, [])).toBeNull();
+  it("returns null when the immediate parent is a host credential store", () => {
+    expect(pickClosestParent(fold("/Users/example/Library/Keychains/login.keychain-db"), [])).toBeNull();
   });
 
   it("never suggests the broadest common-prefix parent (only leaf-parent)", () => {
@@ -234,11 +227,8 @@ describe("pickClosestParent — leaf-parent UX rule", () => {
     expect(pickClosestParent(dir, [dir], true)).toBeNull();
   });
 
-  it("isDirectory=true: returns null for Layer 0 sensitive directories (e.g. .ssh)", () => {
-    // .ssh matches **/.ssh/** via directory-form, so a list_files /Users/example/.ssh
-    // request must NOT auto-suggest .ssh itself.
-    const target = fold("/Users/example/.ssh");
-    expect(pickClosestParent(target, [], true)).toBeNull();
+  it("isDirectory=true: returns null for host credential directories", () => {
+    expect(pickClosestParent(fold("/Users/example/Library/Keychains"), [], true)).toBeNull();
   });
 
   it("isDirectory=true: returns null for filesystem root", () => {
@@ -280,8 +270,8 @@ describe("validateDirectoryAddition", () => {
 
   it("warns when path contains '.env' segment", () => {
     const r = validateDirectoryAddition("/Users/example/work/proj/.env");
-    // .env file is itself sensitive (Layer 0), so this is rejected; adjacency warning is for a directory that *contains* such a child.
-    expect(r.ok).toBe(false); // Layer 0 wins
+    expect(r.ok).toBe(true);
+    expect(r.adjacencyWarnings.some((warning) => warning.includes(".env"))).toBe(true);
   });
 
   it("warns when path contains '.git' adjacency", () => {

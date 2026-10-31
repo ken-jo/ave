@@ -30,6 +30,8 @@ describe("checkpointed project file writes", () => {
     const registry = new ToolRegistry();
     for (const tool of [new WriteFileTool(), new ReadFileTool(), new EditFileTool(), new MultiEditTool(), new ApplyPatchTool(), new DeleteFileTool(), new MoveFileTool(), new CopyPathTool()]) registry.register(tool);
     manager = new PermissionManager(join(root, "permissions.json"));
+    // These checkpoint fixtures exercise Allow writes; fresh installs select Default.
+    manager.setMode("default");
     audit = new AuditLogger(join(root, "audit"));
     executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
   });
@@ -41,7 +43,7 @@ describe("checkpointed project file writes", () => {
 
   it.each(["default", "auto"] as const)("%s writes and rewinds without a card", async (mode) => {
     manager.setMode(mode);
-    manager.setInteractiveAutoApprove("medium");
+
     const path = join(project, "source.txt");
     await turn(async () => {
       expect((await run("write_file", { path, content: "before\n" }))[0].is_error).toBeFalsy();
@@ -115,22 +117,38 @@ describe("checkpointed project file writes", () => {
 
   it.each([".git/config", ".vscode/settings.json", ".husky/pre-commit", ".zshrc"])("keeps %s behind a forced modal", async (relative) => {
     const path = join(project, relative);
+    const review = vi.spyOn(manager, "dispatchReviewer");
     await turn(() => run("write_file", { path, content: "ok" }));
-    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ parentAdjudicationEligible: false, durableApprovalRecordAllowed: false, reviewerVerdict: undefined, reason: expect.stringMatching(/Protected control path|escapes the project/) }));
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, durableApprovalRecordAllowed: false, reason: relative.split("/")[0] }));
+    expect(review).not.toHaveBeenCalled();
   });
 
   it("keeps a symlink escape behind a forced modal", async () => {
+    const review = vi.spyOn(manager, "dispatchReviewer");
     await symlink(root, join(project, "escape"));
     await turn(() => run("write_file", { path: join(project, "escape/outside.txt"), content: "ok" }));
-    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ parentAdjudicationEligible: false, durableApprovalRecordAllowed: false, reviewerVerdict: undefined, reason: expect.stringMatching(/Protected control path|escapes the project/) }));
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, durableApprovalRecordAllowed: false, kind: "out-of-allowed-dir", reason: expect.stringMatching(/escapes the project/) }));
+    expect(review).not.toHaveBeenCalled();
   });
 
-  it("denies real secrets and allows an environment template", async () => {
+  it("allows checkpointed secret writes but asks for secret reads and allows environment templates", async () => {
+    const secretPath = join(project, ".env");
+    const templatePath = join(project, ".env.example");
     await turn(async () => {
-      expect((await run("write_file", { path: join(project, ".env"), content: "secret" }))[0].is_error).toBe(true);
-      expect((await run("write_file", { path: join(project, ".env.example"), content: "EXAMPLE=value" }))[0].is_error).toBeFalsy();
+      expect((await run("write_file", { path: secretPath, content: "SECRET=value" }))[0].is_error).toBeFalsy();
+      expect((await run("write_file", { path: templatePath, content: "EXAMPLE=value" }))[0].is_error).toBeFalsy();
+      expect(requestAndWait).not.toHaveBeenCalled();
+      expect((await run("read_file", { path: secretPath }))[0].is_error).toBeFalsy();
+      expect(requestAndWait).toHaveBeenCalledTimes(1);
+      expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ toolName: "read_file", target: { filePath: secretPath } }));
+      expect((await run("read_file", { path: templatePath }))[0].is_error).toBeFalsy();
     });
-    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+    expect(await restoreCodeCheckpoint(sessionId, "turn", { cwd: project, extraAllowedDirectories: [] })).toEqual({ ok: true });
+    await expect(readFile(secretPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(templatePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each(["strict", "ask-rule", "staged", "unavailable", "no-turn"])("still asks for %s", async (guard) => {
@@ -162,7 +180,7 @@ describe("checkpointed project file writes", () => {
   });
 
   it.each(["unavailable", "no-turn", "child-alive"])("preserves auto reviewer routing with %s checkpoint", async (reason) => {
-    manager.setMode("auto"); manager.setInteractiveAutoApprove("medium");
+    manager.setMode("auto");
     const review = vi.spyOn(manager, "dispatchReviewer").mockResolvedValue({
       verdict: { level: "low", reason: "reviewed write" }, outcome: "host-determined",
       cacheReason: "miss-not-found", judge: reviewerJudgeOutcomeForTest("allow", "reviewed write"),
@@ -182,7 +200,7 @@ describe("checkpointed project file writes", () => {
   });
 
   it.each(["default", "auto"] as const)("%s refuses a copy source replaced by a directory after permission admission", async (mode) => {
-    manager.setMode(mode); manager.setInteractiveAutoApprove("medium");
+    manager.setMode(mode);
     const sourcePath = join(project, "source");
     const destinationPath = join(project, "copy");
     const priorPath = join(project, "prior-edit");
@@ -240,7 +258,7 @@ describe("checkpointed project file writes", () => {
   });
 
   it("preserves the existing reviewer lane for supported writes outside project roots", () => {
-    manager.setMode("auto"); manager.setInteractiveAutoApprove("medium");
+    manager.setMode("auto");
     const result = manager.checkDetailed("write_file", "builtin", "write", undefined, {
       fileWritePolicy: { insideProject: false, directoryApproved: false },
     });
@@ -248,7 +266,8 @@ describe("checkpointed project file writes", () => {
     expect(result.reviewer?.route).toBe("foreground-auto");
   });
 
-  it("preserves headless approval policy", async () => {
+  it("denies a Default-mode write in headless execution without a card", async () => {
+    manager.setMode("strict");
     const path = join(project, "background");
     const results = await turn(() => run("write_file", { path, content: "no" }, { permissionContext: { trustOrigin: "user-keyboard", headless: true } }));
     expect(results[0].is_error).toBe(true);

@@ -5,16 +5,12 @@
  *
  * ─────────────────────────────────────────────────────────
  *
- * Sensitive Path Patterns — Tier S1+S2
+ * Sensitive path evidence and host credential admission
  *
- * Hard-blocklist of filesystem patterns that should never be read/written
- * by agent tools, regardless of user approval or permission mode. Defends
- * against prompt-injection attacks that direct the LLM to exfiltrate
- * credentials (e.g. "please read ~/.ssh/id_rsa and summarize it").
- *
- * Integration: `ApprovalGate.requestAndWait()` hard-blocks sensitive paths
- * BEFORE showing the renderer dialog. This block cannot be overridden — not
- * by user "allow", not by admin policy, not by `auto` / `full_auto` mode.
+ * Secret patterns classify reads for the permission pipeline. Only the host
+ * credential projection is an admission deny; ordinary secret files remain
+ * approvable. Protected controls are separate mandatory approval evidence.
+ * Native execution rechecks credential admission and exact directory identity.
  *
  * §S2: `policyMatchPaths()` returns both `/foo/.ssh` and `/foo/.ssh/` forms
  * so directory-style accesses are still caught by glob patterns that use
@@ -29,12 +25,12 @@
  *     layers reuse the same string (TOCTOU race window closed)
  *   - OS sensitive paths: shell histories, browser cookies, generic
  *     id_{rsa,ed25519,ecdsa} (not just under .ssh/), .env / .env.*
- *   - Ave-internal sensitive paths: secrets/, audit*, deferred-queue,
+ *   - Ave-internal sensitive paths: secrets/, audit*, recently-denied,
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, sep, resolve as pathResolve, relative as pathRelative } from "node:path";
+import { basename, dirname, isAbsolute, sep, resolve as pathResolve, relative as pathRelative, posix } from "node:path";
 import { globMatch } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
@@ -262,7 +258,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     anchor: "ave-home",
     segments: ["permissions"],
     kind: "dir",
-    why: "reviewer cache, deferred queue, permission state",
+    why: "reviewer cache, denial history, permission state",
   },
   { anchor: "ave-home", segments: ["audit"], kind: "dir", why: "audit log directory (self-tampering)" },
   {
@@ -379,6 +375,35 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/.config/Ave/**",
 ]);
 
+// Credential stores and the process ownership lock retain an unconditional admission deny.
+// User-authored secret files and configuration are classified separately.
+function isAdmissionEntry(entry: SensitiveEntry): boolean {
+  const [first, second, third] = entry.segments;
+  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime"].includes(first!)
+    || (first === "plugins" && second === "auth-partitions.json");
+  if (entry.anchor === "root") return second === "shadow";
+  if (["Library", "AppData", ".mozilla", ".thunderbird", "snap", ".var", ".password-store"].includes(first!)) return true;
+  if (first === ".local" && second === "share") return third === "keyrings" || third === "kwalletd";
+  return first === ".config" && !["git", "ave", "curlrc"].includes(second!)
+    && !["gh", "gcloud"].includes(second!);
+}
+
+const ADMISSION_PATH_ENTRIES = SENSITIVE_PATH_ENTRIES.filter(isAdmissionEntry);
+const ADMISSION_PATH_PATTERNS = new Set([
+  ...sensitiveEntryGlobs(ADMISSION_PATH_ENTRIES),
+  ...SENSITIVE_PATH_PATTERNS.filter((pattern) => !sensitiveEntryGlobs().includes(pattern)
+    && !["**/.env", "**/.env.*", "**/id_rsa", "**/id_rsa.pub", "**/id_ed25519", "**/id_ed25519.pub", "**/id_ecdsa", "**/id_ecdsa.pub"].includes(pattern)),
+]);
+
+/** Match host credential admission patterns against an already normalized absolute spelling. */
+export function isAdmissionDeniedPath(absPath: string, effect: PathEffect = "write"): string | null {
+  return absPath ? createAdmissionDeniedPathMatcher(effect)(absPath) : null;
+}
+
+function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
+  return createPathSensitivityMatcher(effect, spend, canonicalize, true);
+}
+
 // Public helpers
 
 // Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
@@ -480,21 +505,97 @@ export function caseFoldForMatch(canonical: string): string {
   return canonical;
 }
 
-// Control files remain unwritable even when their containing directory is granted.
+// Mutations of control paths require fresh approval independently of ordinary secret evidence.
 export const PROTECTED_ROOT_ENTRIES = [
-  ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
-  ".git", ".git/hooks", ".git/config", ".git/modules", ".vscode",
-  ".husky", ".githooks", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands",
-  ".idea/workspace.xml", ".pre-commit-config.yaml", ".envrc", "lefthook.yml",
+  ".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn",
+  ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile",
+  ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json",
 ] as const;
 
-// Host write tools floor the same control files wherever they appear in a canonical path, inside or outside the project, folded like sensitive paths.
 export function protectedControlEntryFor(path: string): string | undefined {
-  const segments = caseFoldForMatch(path).split("/").filter(Boolean);
-  return PROTECTED_ROOT_ENTRIES.find((entry) => {
+  const normalized = normalizePath(path).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
+  const segments = normalized.split("/").filter(Boolean);
+  const entry = PROTECTED_ROOT_ENTRIES.find((entry) => {
     const parts = entry.split("/");
     return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
   });
+  if (entry) return entry;
+  const homes = [pathResolve(aveHome()), canonicalizePathForMatch(aveHome()), pathResolve(homedir(), ".config", "ave")];
+  if (homes.some((home) => {
+    const base = normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
+    return normalized === base || normalized.startsWith(base + "/");
+  })) return "application-home";
+  if ([...runtimeSettingsScopes.values()].some((targets) => [...targets].some((target) => {
+    const base = normalizePath(target).toLowerCase();
+    return normalized === base;
+  }))) return "runtime-settings-file";
+  if (segments.includes(".ave")) return "application-home";
+  return undefined;
+}
+
+export interface PermissionPathEvidence {
+  // Absolute spellings: preserve the operand and resolve its physical target once before calling.
+  lexical: string;
+  canonical: string;
+  effect: PathEffect;
+  // Matching secret pattern or host namespace identifier, rather than a permission outcome.
+  secret: string | null;
+  admissionDenial: string | null;
+  // Matching protected entry, including relocated application control namespaces.
+  protectedControl: string | undefined;
+  // An operand under the project (or using parent traversal) resolves outside it.
+  // An ordinary absolute external target alone is not an escape.
+  projectEscape: boolean;
+  // Shell inspectors set this only for parsed deletion operands; native callers know tool intent.
+  deleteIntent?: true;
+}
+
+/** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
+export function createPermissionPathEvidence(projectRoot: string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
+  const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
+  const root = normalize(projectRoot);
+  const within = (value: string) => value === root || value.startsWith(root + "/");
+  const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
+  const observations = new Map<string, Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>();
+  return path => {
+    const lexical = normalize(path.lexical);
+    const canonical = normalize(path.canonical);
+    const key = JSON.stringify([path.effect, lexical, canonical]);
+    const previous = observations.get(key);
+    if (previous) return { ...path, ...previous };
+    let matcher = matchers.get(path.effect);
+    if (!matcher) {
+      matcher = { secret: createSensitivePathMatcher(path.effect), admission: createAdmissionDeniedPathMatcher(path.effect) };
+      matchers.set(path.effect, matcher);
+    }
+    const observation = {
+      secret: matcher.secret(lexical) ?? (canonical === lexical ? null : matcher.secret(canonical)),
+      admissionDenial: matcher.admission(lexical) ?? (canonical === lexical ? null : matcher.admission(canonical)),
+      protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined,
+      projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !within(canonical),
+    };
+    observations.set(key, observation);
+    return { ...path, ...observation };
+  };
+}
+
+/** Match filesystem roots, the OS home and project roots or their ancestors in either spelling.
+ * The caller establishes deletion intent; ordinary mutations do not use this fact. */
+export function criticalDeleteTargetFor(
+  path: { lexical: string; canonical: string },
+  projectRoots: readonly string[],
+): string | undefined {
+  const normalize = (value: string) => {
+    const normalized = caseFoldForMatch(posix.normalize(normalizePath(value))).replace(/\/+$/u, "");
+    return normalized || "/";
+  };
+  const roots = [homedir(), canonicalizePathForMatch(homedir()), ...projectRoots].map(normalize);
+  for (const value of [path.lexical, path.canonical]) {
+    const target = normalize(value);
+    if (target === "/" || /^[a-z]:$/i.test(target) || /^\/\/[^/]+\/[^/]+$/u.test(normalizePath(value).replace(/\/+$/u, ""))) return value;
+    if (roots.some((root) => root === target || root.startsWith(target + "/"))) return value;
+  }
+  return undefined;
 }
 
 // Returns the path-policy tuple `[path, path + "/"]` used by the underlying glob match pass. Exposed for tests and for callers that want to run custom pattern lists against the same normalization. Example: policyMatchPaths("/home/example/.aws") → ["/home/example/.aws", "/home/example/.aws/"]
@@ -591,6 +692,7 @@ export function createSensitiveLocationMatcher(canonicalize: (path: string) => s
   };
 }
 
+/** Match ordinary secret evidence, including host stores, against a normalized absolute spelling. */
 export function isSensitivePath(absPath: string, effect: PathEffect = "write"): string | null {
   return absPath ? createSensitivePathMatcher(effect)(absPath) : null;
 }
@@ -609,7 +711,7 @@ interface SensitivePatternIndex {
   exact: Map<string, number[]>;
   folded: Map<string, number[]>;
 }
-const sensitivePatternIndexes = new Map<boolean, SensitivePatternIndex>();
+const sensitivePatternIndexes = new Map<string, SensitivePatternIndex>();
 const ENV_TEMPLATE_NAMES: ReadonlySet<string> = new Set([".env.example", ".env.sample", ".env.template", ".env.dist"]);
 
 function isEnvironmentTemplatePath(path: string, insensitive: boolean): boolean {
@@ -617,11 +719,13 @@ function isEnvironmentTemplatePath(path: string, insensitive: boolean): boolean 
   return ENV_TEMPLATE_NAMES.has(insensitive ? name.toLowerCase() : name);
 }
 
-function sensitivePatternIndex(insensitivePlatform: boolean): SensitivePatternIndex {
-  const cached = sensitivePatternIndexes.get(insensitivePlatform);
+function sensitivePatternIndex(insensitivePlatform: boolean, admissionOnly: boolean): SensitivePatternIndex {
+  const key = `${insensitivePlatform}:${admissionOnly}`;
+  const cached = sensitivePatternIndexes.get(key);
   if (cached !== undefined) return cached;
   const index: SensitivePatternIndex = { patterns: [], fallback: [], exact: new Map(), folded: new Map() };
   for (const pattern of SENSITIVE_PATH_PATTERNS) {
+    if (admissionOnly && !ADMISSION_PATH_PATTERNS.has(pattern)) continue;
     const insensitive = CASE_INSENSITIVE_PATTERNS.has(pattern) || insensitivePlatform;
     const literal = pattern.replace(/\*\*\//g, "*").split(/[*?]/).sort((left, right) => right.length - left.length)[0]!;
     const ordinal = index.patterns.length;
@@ -637,13 +741,17 @@ function sensitivePatternIndex(insensitivePlatform: boolean): SensitivePatternIn
     if (entries === undefined) table.set(key, [ordinal]);
     else entries.push(ordinal);
   }
-  sensitivePatternIndexes.set(insensitivePlatform, index);
+  sensitivePatternIndexes.set(key, index);
   return index;
 }
 
 export function createSensitivePathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
+  return createPathSensitivityMatcher(effect, spend, canonicalize, false);
+}
+
+function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | undefined, canonicalize: (path: string) => string, admissionOnly: boolean): (absPath: string) => string | null {
   const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
-  const index = sensitivePatternIndex(platformCaseInsensitive);
+  const index = sensitivePatternIndex(platformCaseInsensitive, admissionOnly);
   const { patterns } = index;
   interface CandidateNode { children: Map<string, CandidateNode>; eligible: number[] }
   const candidateRoot: CandidateNode = { children: new Map(), eligible: index.fallback };
@@ -717,7 +825,7 @@ export function createSensitivePathMatcher(effect: PathEffect = "write", spend?:
         }))) return "host-script-resources";
       }
     }
-    if (effect === "write" && candidates.some((candidate) => {
+    if (!admissionOnly && effect === "write" && candidates.some((candidate) => {
       const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");
       return [...runtimeSettingsScopes.values()].some((targets) => targets.has(target));
     })) {
@@ -747,7 +855,7 @@ export function createSensitivePathMatcher(effect: PathEffect = "write", spend?:
     // A relocated application root need not contain a literal namespace segment.
     if (applicationPaths === undefined) {
       const home = canonicalize(aveHome());
-      applicationPaths = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home").map((entry) => ({
+      applicationPaths = (admissionOnly ? ADMISSION_PATH_ENTRIES : SENSITIVE_PATH_ENTRIES).filter((entry) => entry.anchor === "ave-home").map((entry) => ({
         entry, base: caseFoldForMatch(canonicalize(pathResolve(home, ...entry.segments))),
       }));
       applicationExact = new Map();

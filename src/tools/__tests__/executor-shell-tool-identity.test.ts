@@ -48,7 +48,7 @@ function allowingExecutor(toolName: string) {
   }));
 
   const permMgr = new PermissionManager(join(dir, "permissions.json"));
-  permMgr.checkDetailed = () => ({ decision: "allow", reason: "identity probe", layer: 5 });
+  permMgr.checkDetailed = () => ({ decision: "allow", reason: "identity probe", });
 
   const validator = new BashAstValidator({ mode: "deny" });
   const validateSpy = vi.spyOn(validator, "validate");
@@ -127,12 +127,18 @@ describe("POSIX structural analysis coverage is NAME-shaped, not instance-shaped
 });
 
 describe("command-bearing plugin calls retain independent path containment", () => {
-  it.each(PLUGIN_TOOL_NAMES)("refuses an unresolved pipe program for '%s' before structural validation", async (toolName) => {
+  it.each(PLUGIN_TOOL_NAMES)("keeps structural handling after ordinary unresolved program evidence for '%s'", async (toolName) => {
     const { result, executeSpy, validateSpy } = await runProbe(toolName, PIPE_COMMAND);
-    expect(result.is_error).toBe(true);
-    expect(String(result.content)).toContain("operand: sh (rule: shell-path-policy/dynamic-path)");
-    expect(validateSpy).not.toHaveBeenCalled();
-    expect(executeSpy).not.toHaveBeenCalled();
+    expect(validateSpy).toHaveBeenCalledExactlyOnceWith(toolName, { command: PIPE_COMMAND }, undefined);
+    if (toolName === "bash" || SHELL_SHAPED_PLUGIN_TOOL_NAMES.includes(toolName as typeof SHELL_SHAPED_PLUGIN_TOOL_NAMES[number])) {
+      expect(result.is_error).toBe(true);
+      expect(String(result.content)).toContain("bash-ast/curl-pipe-sh");
+      expect(executeSpy).not.toHaveBeenCalled();
+    } else {
+      expect(result.is_error).toBeFalsy();
+      expect(validateSpy.mock.results[0].value).toEqual({ decision: "allow" });
+      expect(executeSpy).toHaveBeenCalledExactlyOnceWith({ command: PIPE_COMMAND }, expect.anything());
+    }
   });
 
   it.each(PLUGIN_TOOL_NAMES)("runs admitted input for '%s' without issuing builtin shell preparation", async (toolName) => {

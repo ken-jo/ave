@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -459,7 +459,9 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     });
     const wrapped = await wrap("true", { commandId: TEST_COMMAND_ID, filesystem });
     expect(discover).toHaveBeenCalledOnce();
-    expect(discover).toHaveBeenCalledWith([root], undefined, getDefaultSensitiveWriteDenyPaths());
+    const writeDenies = getDefaultSensitiveWriteDenyPaths();
+    expect(discover).toHaveBeenCalledWith([root], undefined, writeDenies,
+      writeDenies.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)));
     expect(h.wrapWithSandboxArgv).toHaveBeenCalledOnce();
     const replay = wrapped.argv[2]!.split(mount("--ro-bind", root))[1]!;
     expect(replay).toContain(mount("--bind", ordinary));

@@ -1,5 +1,5 @@
 import { isDestructiveShellArgv, noReusableRuleReason } from "../rules/shell-prefix-values.js";
-// Disabled mode yields LOW while the matrix still applies; strict always yields HIGH/defer. Rule review is deterministic; model review composes conservatively with rules and DLP-redacts provider input. Missing provider/model configuration fails boot (docs/architecture/permission-policy-design.md).
+// Disabled mode yields LOW while mandatory gates still apply. Model review composes conservatively with deterministic evidence and redacts provider input.
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
 import { isIP } from "node:net";
 import { maskSensitiveData, scrubSecretsForLLM } from "../../audit/dlp-filter.js";
@@ -34,15 +34,17 @@ import {
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 import { resolve as resolvePath } from "node:path";
-import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal, inspectShellCommand } from "../rules/shell-exfiltration.js";
+import { SHELL_EXFIL_VERDICT_REASON } from "../rules/shell-exfiltration.js";
+import { shellExfiltrationSignal, inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { powerShellExfiltrationSignal, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
+import { reviewUserOwnedSurface, type UserOwnedSurfaceReviewInput, type UserOwnedSurfaceReviewResult } from "./user-owned-surface-reviewer.js";
 
 // Verdict shape returned by every classifier.
 export interface RiskVerdict {
   level: RiskLevel;
   reason: string;
-  // Unknown effects require a human even when their display risk permits remembering the answer. Keep explicit approval on its own axis so lowering below HIGH cannot also enable foreground auto-approval or parent adjudication.
+  // Unknown effects require a human even when their display risk permits remembering the answer. Keep explicit approval on its own axis so lowering below HIGH cannot also enable foreground auto-approval through another authority.
   requiresExplicitApproval?: boolean;
 }
 
@@ -108,23 +110,13 @@ export interface ToolInvocationContext {
 
 export interface RiskClassifier {
   classify(input: ToolInvocationContext): RiskVerdict | Promise<RiskVerdict>;
+  reviewUserOwnedSurface?(input: UserOwnedSurfaceReviewInput, signal?: AbortSignal): Promise<UserOwnedSurfaceReviewResult>;
 }
 
-// DisabledRiskClassifier
-
-// Reviewer disabled — every dispatch returns LOW so the reviewer lane is a no-op. The per-tool category × source × trust matrix in PermissionManager (deny rules, allowed-dir checks, overlay-trigger guards, explicit approval dock) is unaffected. pre-fix this classifier returned HIGH+"defer all" which silently queued every plugin write/auth tool in the headless lane (an auth/sign-in tool from a mail/calendar plugin was the original reproducer). The name contradicted the behaviour and broke wrapper UX. Fail-closed semantics moved to StrictRiskClassifier.
-export class DisabledRiskClassifier implements RiskClassifier {
-  classify(_: ToolInvocationContext): RiskVerdict {
-    return { level: "low", reason: "reviewer disabled — pass-through" };
-  }
-}
-
-// StrictRiskClassifier
-
-// Fail-closed reviewer — every dispatch returns HIGH so headless mutations land in the deferred queue. Use this for hardened deployments where the user wants to manually approve every plugin/MCP write before it executes. Equivalent to the pre-"disabled" semantic but under an honest name.
-export class StrictRiskClassifier implements RiskClassifier {
-  classify(_: ToolInvocationContext): RiskVerdict {
-    return { level: "high", reason: "reviewer strict — defer all" };
+// A disabled reviewer supplies no risk assessment or automatic approval authority.
+export class UnavailableRiskClassifier implements RiskClassifier {
+  classify(_: ToolInvocationContext): never {
+    throw new ReviewerDispatchError("error", "Permission reviewer is disabled; automatic review is unavailable.");
   }
 }
 
@@ -1308,11 +1300,11 @@ function isInsideAllowed(path: string, allowed: readonly string[]): boolean {
 }
 
 const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
-  // credential-exfiltration floor First, ahead of the disposable-guest lane: a guest's egress is not confined, and a file-sourced upload is the exfiltration shape whatever substrate runs it. HIGH keeps it once-only at the approval gate.
+  // File-sourced uploads receive a HIGH ordinary-review assessment on every substrate. The pipeline applies modes and model choice; the sandbox egress policy remains the network boundary.
   (ctx) => {
     if (ctx.category !== "shell") return null;
     const cwd = shellInvocationCwd(ctx);
-    // The builtin PowerShell tool's text is read as PowerShell (the reading the permission floor uses); every other shell-category tool as bash.
+    // The builtin PowerShell tool and the host guardrail use the same grammar; every other shell-category tool is read as bash.
     const signalOf = ctx.source === "builtin" && ctx.toolName === "powershell"
       ? powerShellExfiltrationSignal
       : shellExfiltrationSignal;
@@ -1756,6 +1748,10 @@ export class LlmRiskClassifier implements RiskClassifier {
     private readonly retry: LlmReviewerRetryConfig = DEFAULT_REVIEWER_RETRY,
   ) {}
 
+  reviewUserOwnedSurface(input: UserOwnedSurfaceReviewInput, signal?: AbortSignal): Promise<UserOwnedSurfaceReviewResult> {
+    return reviewUserOwnedSurface(this.provider, this.model, input, signal);
+  }
+
   // Run `provider.complete` with bounded retry on transient errors. Returns the attempt count on success so telemetry can record it. Throws the LAST error on exhaustion or on the first terminal error. Honors `abortSignal` at every sleep boundary so user-cancel is not blocked.
   private async runProviderWithRetry(
     userPrompt: string,
@@ -1886,7 +1882,7 @@ export class LlmRiskClassifier implements RiskClassifier {
 
 // Factory
 
-export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
+export type ReviewerMode = "disabled" | "llm";
 
 export interface ReviewerSettings {
   mode: ReviewerMode;
@@ -1903,11 +1899,7 @@ export interface ReviewerSettings {
 export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier {
   switch (settings.mode) {
     case "disabled":
-      return new DisabledRiskClassifier();
-    case "strict":
-      return new StrictRiskClassifier();
-    case "rule":
-      return new RuleBasedRiskClassifier();
+      return new UnavailableRiskClassifier();
     case "llm": {
       if (!settings.provider) {
         throw new Error(

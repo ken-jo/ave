@@ -26,56 +26,6 @@ describe("Category Registry — registerStandardCategories", () => {
     expect(known).toEqual(["meta", "network", "read", "shell", "write"].sort());
   });
 
-  it("read descriptor allows in default/auto/allow, asks in strict", () => {
-    const d = getToolCategoryDescriptor("read");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: false })).toBe("ask");
-  });
-
-  it("write descriptor asks in default/strict/auto, allows in allow, and defers default/auto headless to reviewer", () => {
-    const d = getToolCategoryDescriptor("write");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: true })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: true })).toBe("allow");
-  });
-
-  it("shell descriptor asks in default/auto/strict, allows in allow mode, and routes non-strict headless to reviewer", () => {
-    const d = getToolCategoryDescriptor("shell");
-    for (const mode of ["default", "auto", "strict"] as const) {
-      expect(d.decisionFor({ mode, source: "builtin", headless: false })).toBe("ask");
-    }
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: true })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: true })).toBe("allow");
-  });
-
-  it("network descriptor asks in default/auto, allows in allow, and defers default/auto headless to reviewer", () => {
-    const d = getToolCategoryDescriptor("network");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: false })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: false })).toBe("allow");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "auto", source: "builtin", headless: true })).toBe("reviewer");
-    expect(d.decisionFor({ mode: "strict", source: "builtin", headless: true })).toBe("ask");
-    expect(d.decisionFor({ mode: "allow", source: "builtin", headless: true })).toBe("allow");
-  });
-
-  it("meta descriptor keeps override host-only and denies external sources", () => {
-    const d = getToolCategoryDescriptor("meta");
-    expect(d.decisionFor({ mode: "default", source: "builtin", headless: false })).toBe("override");
-    expect(d.decisionFor({ mode: "auto", source: "plugin", headless: true })).toBe("deny");
-    expect(d.decisionFor({ mode: "allow", source: "mcp", headless: false })).toBe("deny");
-  });
-
   it("riskWeight ordering matches Phase 3 classifier expectation: shell > network > write > read > meta", () => {
     const w = (c: ToolCategory) => getToolCategoryDescriptor(c).riskWeight;
     expect(w("shell")).toBeGreaterThan(w("network"));
@@ -104,7 +54,6 @@ describe("Category Registry — lookup errors", () => {
     registerToolCategory({
       name: "read",
       riskWeight: 0.05,
-      decisionFor: () => "allow",
     });
     const d = getToolCategoryDescriptor("read");
     expect(d.riskWeight).toBe(0.05);
@@ -115,18 +64,11 @@ describe("Category Registry — lookup errors", () => {
     registerToolCategory({
       name: "read",
       riskWeight: 0.1,
-      decisionFor: () => "allow",
     });
     registerToolCategory({
       name: "read",
       riskWeight: 0.3,
-      decisionFor: () => "ask",
     });
     expect(getToolCategoryDescriptor("read").riskWeight).toBe(0.3);
-    expect(getToolCategoryDescriptor("read").decisionFor({
-      mode: "default",
-      source: "builtin",
-      headless: false,
-    })).toBe("ask");
   });
 });

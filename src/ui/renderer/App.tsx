@@ -50,7 +50,7 @@ import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
 import { isInstanceViewKey, parseInlineViewKey, type InlineViewKey, type InstanceViewKey, type PluginViewKey } from "../../shared/view-key.js";
 import { CONTENT_TITLE_INSET, NARROW_DEAD_BAND_PX, SHELL_GUTTER, collapsedBandLeadClearance, sidebarPushThreshold } from "../../shared/shell-geometry.js";
-import { DeferredQueueDialog } from "./dialogs/DeferredQueueDialog.js";
+import { RecentlyDeniedDialog } from "./dialogs/RecentlyDeniedDialog.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
 import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
 import { ApprovalLaneCard, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
@@ -85,7 +85,7 @@ import { DocumentEngineInstallContent } from "./components/DocumentEngineInstall
 import { usePluginLifecycleRefresh } from "./hooks/use-plugin-lifecycle-refresh.js";
 import { useStatusBar, type NotificationToastMeta } from "./hooks/use-status-bar.js";
 import { useSettings } from "./hooks/use-settings.js";
-import { ApprovalSurfaceProvider, useApproval, useDeferredSessionIds, type ApprovalSurfaceContextValue } from "./hooks/use-approval.js";
+import { ApprovalSurfaceProvider, useApproval, type ApprovalSurfaceContextValue } from "./hooks/use-approval.js";
 import { usePermissionSignals } from "./hooks/use-permission-signals.js";
 import { useApprovalSentence } from "./hooks/use-approval-sentence.js";
 import { useSearch } from "./hooks/use-search.js";
@@ -189,7 +189,7 @@ export function App() {
     documentEngineOnboardingOpen,
     dismissDocumentEngineOnboarding,
   } = useOnboardingTourController(api);
-  const [deferredQueueOpen, setDeferredQueueOpen] = useState(false);
+  const [recentlyDeniedOpen, setRecentlyDeniedOpen] = useState(false);
   // Persist the current settings tab and return view so restart resumes the same page.
   const { settingsTab, setSettingsTab, restoresApplied: settingsTabRestoresApplied } =
     useSettingsTab(api);
@@ -728,18 +728,16 @@ export function App() {
   const { queue: approvalQueue, decide: handleApprovalDecide, claims: approvalClaims } = approvals;
   // Conversation cards stay with their owning surface; unowned host/plugin cards use the focused pane. One selector drives
   // both cards and attention dots.
-  const deferredSessionIds = useDeferredSessionIds(api.permission);
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);
   // The pane-chat claim identifies card ownership for chats outside the tile registry.
   const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
     approvals: approvalQueue,
     tiles: tileSessions,
-    deferredSessionIds,
     overlayCards: overlayQueue,
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
-  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
@@ -1206,18 +1204,18 @@ export function App() {
               focusChatGroup(owner);
               setPaneContent(owner, { view: "home" });
             } else setActiveView("home");
-            if (!request && approvalQueue.length === 0) setDeferredQueueOpen(true);
+            if (!request && approvalQueue.length === 0) setRecentlyDeniedOpen(true);
             return;
           }
           void handleLoadSessionAndRefresh(sessionId).then((reached) => {
             if (reached !== false) {
               notificationNavigationRef.current.setActiveView("home");
-              if (!request && approvalQueue.length === 0) setDeferredQueueOpen(true);
+              if (!request && approvalQueue.length === 0) setRecentlyDeniedOpen(true);
             }
           });
         } else {
           setActiveView("home");
-          if (approvalQueue.length === 0) setDeferredQueueOpen(true);
+          if (approvalQueue.length === 0) setRecentlyDeniedOpen(true);
         }
         return;
       }
@@ -1540,7 +1538,7 @@ export function App() {
     onExport: handleExport, onImport: handleImport,
     plugins: pluginEntries,
     onSelectPlugin: handleViewSelectWithDoctor,
-    onOpenApprovalQueue: () => setDeferredQueueOpen(true),
+    onOpenApprovalQueue: () => setRecentlyDeniedOpen(true),
     commandActions, slashPickerOpen, onSlashPickerOpenChange: setSlashPickerOpen,
     approvalSentenceInterceptSubmit: interceptApprovalSentence,
     activeProject: activeProject ?? defaultWorkspaceProject,
@@ -1738,8 +1736,6 @@ export function App() {
       return viewPane("settings", (
         <SettingsInlineView
           api={api}
-          /** Settings away-authority targets the conversation focus came from, not the pane currently showing Settings. */
-          chatGroupId={paneId}
           initialTab={settingsTab}
           sectionTarget={settingsSectionTarget}
           onSectionApplied={clearSettingsSectionTarget}
@@ -2305,7 +2301,7 @@ export function App() {
             </div>
 
             {/* App-level dialogs that remain available after removing setup flows. */}
-            <DeferredQueueDialog open={deferredQueueOpen} onOpenChange={setDeferredQueueOpen} />
+            <RecentlyDeniedDialog open={recentlyDeniedOpen} onOpenChange={setRecentlyDeniedOpen} />
             <SpotlightTour
               api={api}
               onComplete={onTourComplete}

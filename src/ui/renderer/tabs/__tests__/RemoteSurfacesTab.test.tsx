@@ -147,7 +147,7 @@ function makeApi(options: {
 describe("RemoteSurfacesTab", () => {
   it("puts every connection vendor on the page as exactly one row", async () => {
     const { api } = makeApi();
-    const { container } = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    const { container } = render(<RemoteSurfacesTab api={api} />);
 
     await screen.findByTestId("connection:telegram");
     const rows = [...container.querySelectorAll("[data-connection-row]")]
@@ -163,7 +163,7 @@ describe("RemoteSurfacesTab", () => {
     // What a desktop that never installed one actually stores. Telegram is built into this build, so its row cannot depend on
     // that list.
     const { api } = makeApi({ installed: null });
-    const { container } = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    const { container } = render(<RemoteSurfacesTab api={api} />);
 
     await screen.findByTestId("connection:telegram");
     expect([...container.querySelectorAll("[data-connection-row]")]
@@ -176,7 +176,7 @@ describe("RemoteSurfacesTab", () => {
 
   it("keeps every row's detail folded away until it is opened", async () => {
     const { api } = makeApi();
-    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    render(<RemoteSurfacesTab api={api} />);
 
     await screen.findByTestId("connection:telegram");
     expect(screen.queryByTestId("connection:tailnet:detail")).toBeNull();
@@ -186,7 +186,7 @@ describe("RemoteSurfacesTab", () => {
 
   it("opens a row onto the controls that vendor already had", async () => {
     const { api } = makeApi();
-    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    render(<RemoteSurfacesTab api={api} />);
 
     fireEvent.click(await screen.findByTestId("connection:local-api:toggle"));
     expect(await screen.findByTestId("local-api-surfaces-local-api")).toBeTruthy();
@@ -205,7 +205,7 @@ describe("RemoteSurfacesTab", () => {
 
   it("folds a row away when the action it was opened for succeeds", async () => {
     const { api } = makeApi({ telegramState: "paused-by-owner" });
-    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    render(<RemoteSurfacesTab api={api} />);
 
     fireEvent.click(await screen.findByTestId("connection:telegram:toggle"));
     fireEvent.click(await screen.findByTestId("telegram-connection-resume"));
@@ -217,7 +217,7 @@ describe("RemoteSurfacesTab", () => {
 
   it("keeps the row open, with its error, when that action fails", async () => {
     const { api } = makeApi({ telegramState: "paused-by-owner", resumeFails: true });
-    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    render(<RemoteSurfacesTab api={api} />);
 
     fireEvent.click(await screen.findByTestId("connection:telegram:toggle"));
     fireEvent.click(await screen.findByTestId("telegram-connection-resume"));
@@ -231,7 +231,7 @@ describe("RemoteSurfacesTab", () => {
     return async () => {
       const { api } = makeApi();
       const { container } = render(
-        <RemoteSurfacesTab api={api} chatGroupId="main" sectionTarget={sectionTarget} />,
+        <RemoteSurfacesTab api={api} sectionTarget={sectionTarget} />,
       );
 
       await waitFor(() => {
@@ -246,7 +246,7 @@ describe("RemoteSurfacesTab", () => {
 
   it("keeps the messaging group anchor reachable with every row folded", async () => {
     const { api } = makeApi();
-    const { container } = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    const { container } = render(<RemoteSurfacesTab api={api} />);
 
     await screen.findByTestId("connection:telegram");
     expect(container.querySelector("[data-settings-section='remote-messaging-connections']"))
@@ -256,7 +256,7 @@ describe("RemoteSurfacesTab", () => {
 
   it("reads a listener that was never set up as setup-needed", async () => {
     const { api } = makeApi();
-    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    render(<RemoteSurfacesTab api={api} />);
 
     await waitFor(() => {
       expect(screen.getByTestId("connection:tailnet:state").textContent).toBe("설정 필요");
@@ -278,7 +278,7 @@ describe("RemoteSurfacesTab", () => {
       else if (snapshot === "unavailable") {
         read.mockResolvedValue({ ok: false, error: "tailnet-observer-unavailable" } as never);
       } else read.mockResolvedValue({ ok: true, snapshot: { ...observerSnapshot(), ...snapshot } } as never);
-      const view = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+      const view = render(<RemoteSurfacesTab api={api} />);
       let text = "";
       await waitFor(() => {
         text = screen.getByTestId("connection:tailnet:state").textContent ?? "";
@@ -321,7 +321,7 @@ describe("RemoteSurfacesTab", () => {
   it("does not claim a local-API count it could not read", async () => {
     const { api } = makeApi();
     vi.mocked(api.getSettings).mockRejectedValue(new Error("ipc closed"));
-    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    render(<RemoteSurfacesTab api={api} />);
 
     await waitFor(() => {
       expect(screen.getByTestId("connection:local-api:state").textContent).toBe("확인 필요");
@@ -333,7 +333,7 @@ describe("RemoteSurfacesTab", () => {
 
   it("counts the local-API opt-ins on its own line rather than hiding them", async () => {
     const { api } = makeApi();
-    render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+    render(<RemoteSurfacesTab api={api} />);
 
     await waitFor(() => {
       // Off, not "setup needed": four switches all down is a resting state.
@@ -359,7 +359,7 @@ describe("RemoteSurfacesTab", () => {
       else if (status === "start-failed") {
         read.mockResolvedValue({ ok: false, error: "a2a-remote-start-failed", reason: "a2a-remote-outbound-config-incomplete" });
       }
-      const view = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
+      const view = render(<RemoteSurfacesTab api={api} />);
       let text = "";
       await waitFor(() => {
         text = screen.getByTestId("connection:local-api:state").textContent ?? "";

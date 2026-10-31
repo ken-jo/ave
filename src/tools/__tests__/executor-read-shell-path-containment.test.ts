@@ -1,4 +1,4 @@
-// Command-bearing inputs always require sensitive-path and directory checks, even with a read-risk verdict.
+// Command-bearing inputs retain secret-read modes and credential admission after read-risk inspection.
 import { describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { createDynamicTool, type Tool } from "../base.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { inspectHostRisk } from "../../permissions/reviewer/host-risk-inspector.js";
 import type { ToolPermissionContext } from "../executor.js";
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 
 function makeCommandBearingPluginTool(spy: { ran: boolean }): Tool {
   return createDynamicTool({
@@ -35,6 +36,7 @@ function makeCommandBearingPluginTool(spy: { ran: boolean }): Tool {
 
 async function runPluginCommand(
   input: Record<string, unknown>,
+  mode: "default" | "allow" = "default",
 ): Promise<{ isError: boolean; content: string; ran: boolean }> {
   const dir = mkdtempSync(join(tmpdir(), "ave-read-containment-"));
   try {
@@ -42,6 +44,7 @@ async function runPluginCommand(
     const registry = new ToolRegistry();
     registry.register(makeCommandBearingPluginTool(spy));
     const permMgr = new PermissionManager(join(dir, "permissions.json"));
+    permMgr.setMode(mode);
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -68,26 +71,43 @@ async function runPluginCommand(
 }
 
 describe("ToolExecutor — shell path containment runs for read-classified commands", () => {
-  it("blocks a sensitive-path operand on a command the host classifies as read", async () => {
+  it("requires the normal card for a secret-file operand the host classifies as read", async () => {
     const command = `cat ${shellQuote(join(homedir(), ".ssh", "id_rsa"))}`;
-    // A read verdict must still reach shell path containment.
+    // A read verdict does not override the secret-read mode decision.
     expect(inspectHostRisk({ source: "plugin", finalInput: { command } })).toBe("read");
 
     const result = await runPluginCommand({ command });
     expect(result.isError).toBe(true);
-    // Require a path-policy block, not an unrelated approval denial.
-    expect(result.content).toContain("Shell");
-    expect(result.content).toContain("Sensitive path");
+    expect(result.content).toBe(NO_APPROVER_MESSAGE);
     expect(result.ran).toBe(false);
   });
 
-  it("blocks a command carried by a non-primary field (script) too", async () => {
+  it("applies the normal card to secret reads in a non-primary command field too", async () => {
     const result = await runPluginCommand({
       command: "cat ./notes.txt",
       script: `cat ${shellQuote(join(homedir(), ".ssh", "id_rsa"))}`,
     });
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("Sensitive path");
+    expect(result.content).toBe(NO_APPROVER_MESSAGE);
+    expect(result.ran).toBe(false);
+  });
+
+  it.each(["primary", "secondary"] as const)("allows ordinary secret reads in the %s field under Allow mode", async field => {
+    const secret = `cat ${shellQuote(join(homedir(), ".ssh", "id_rsa"))}`;
+    const input = field === "primary" ? { command: secret } : { command: "cat ./notes.txt", script: secret };
+    const result = await runPluginCommand(input, "allow");
+    expect(result.isError).toBe(false);
+    expect(result.content).toBe("ran");
+    expect(result.ran).toBe(true);
+  });
+
+  it.each(["primary", "secondary"] as const)("keeps host credential admission in the %s field despite Allow mode", async field => {
+    const credential = `cat ${shellQuote(join(homedir(), ".ave", "secrets", "token.json"))}`;
+    const input = field === "primary" ? { command: credential } : { command: "cat ./notes.txt", script: credential };
+    const result = await runPluginCommand(input, "allow");
+    expect(result.isError).toBe(true);
+    expect(result.content).not.toBe(NO_APPROVER_MESSAGE);
+    expect(result.content).toMatch(/credential|Sensitive path/i);
     expect(result.ran).toBe(false);
   });
 });

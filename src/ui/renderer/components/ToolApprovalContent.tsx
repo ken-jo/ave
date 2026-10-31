@@ -23,17 +23,10 @@ import { buildApprovalScopeOptions } from "../../../permissions/approval-scope-o
 import { SOURCE_BADGE } from "../constants.js";
 import type { ApprovalDecisionExtras } from "../hooks/use-approval.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
+import { UserOwnedSurfaceApprovalCard } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
-import type {
-  ParentEscalationCause,
-  ParentEscalationNotice,
-} from "../../../shared/parent-escalation-notice.js";
 import { canonicalStringify as canonicalStringifyForRenderer } from "../../../shared/canonical-json.js";
-import {
-  parseRationaleApprovalDisplay,
-  type RationaleApprovalDisplay,
-} from "../../../shared/rationale-approval-display.js";
 import { isNonUserTrustOrigin, trustOriginLabel } from "../utils/trust-origin-label.js";
 import { getActiveSurface } from "../preview/active-surface.js";
 import {
@@ -247,212 +240,6 @@ function hasRequestedElicitationSchema(request: ApprovalRequest | null): boolean
   return isRecord(args) && args.requestedSchema !== undefined;
 }
 
-const RATIONALE_INVALID_APPROVAL_MESSAGE =
-  "Rationale details could not be verified. Approval is unavailable; you can deny this request.";
-const RATIONALE_FAILED_EXPLANATION_MESSAGE =
-  "The model explanation is unavailable. Review the host-sealed action before deciding.";
-
-function rationaleScopeAlignmentLabel(
-  alignment: RationaleApprovalDisplay["scopeAlignment"],
-): string {
-  switch (alignment) {
-    case "aligned":
-      return "Aligned with the current request";
-    case "unclear":
-      return "Needs a closer scope review";
-    case "outside":
-      return "Outside the current request";
-    case "unknown":
-      return "Unavailable";
-  }
-}
-
-function RationaleTextList({
-  values,
-  testId,
-}: {
-  values: readonly string[];
-  testId: string;
-}) {
-  return (
-    <ul className="space-y-1" data-testid={testId}>
-      {values.map((value, index) => (
-        <li key={`${index}:${value}`} className="break-words">
-          {value}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** Rationale approvals expose only the narrow, HMAC-bound display contract. Never reuse the normal request/args review
- * path here: its payload can carry audit-only identifiers and model-provided text that do not belong in the decision card. */
-function RationaleApprovalCard({
-  display,
-}: {
-  display: RationaleApprovalDisplay | null;
-}) {
-  if (display === null) {
-    return (
-      <div
-        className="rounded-md border border-destructive/(--opacity-muted) bg-destructive/(--opacity-faint) p-3 text-xs text-destructive"
-        data-testid="rationale-approval-invalid"
-        id="rationale-approval-invalid"
-        role="alert"
-      >
-        {RATIONALE_INVALID_APPROVAL_MESSAGE}
-      </div>
-    );
-  }
-
-  return (
-    <section
-      className="min-w-0 overflow-hidden rounded-md border"
-      data-testid="rationale-approval-card"
-    >
-      <h4 className="flex min-w-0 flex-wrap items-start justify-between gap-2 border-b px-3 py-2 text-xs font-semibold">
-        <span className="shrink-0">Host-sealed action</span>
-        <code
-          className="min-w-0 max-w-full break-all text-right font-mono"
-          data-testid="rationale-approval-tool"
-        >
-          {display.toolName}
-        </code>
-      </h4>
-      <div className="divide-y">
-        <ReviewRow label={t("toolApprovalDialog.rowTarget")}>
-          <RationaleTextList
-            testId="rationale-approval-targets"
-            values={display.canonicalTargets}
-          />
-        </ReviewRow>
-        <ReviewRow label={t("toolApprovalDialog.rowChange")}>
-          <RationaleTextList
-            testId="rationale-approval-effects"
-            values={display.requestedEffects}
-          />
-        </ReviewRow>
-        <ReviewRow label={t("toolApprovalDialog.rowSideEffects")}>
-          <RationaleTextList
-            testId="rationale-approval-resources"
-            values={display.affectedResources}
-          />
-        </ReviewRow>
-        <ReviewRow label={t("toolApprovalDialog.rowAuthScope")}>
-          <span data-testid="rationale-approval-authority">
-            {display.requiredAuthority}
-          </span>
-        </ReviewRow>
-        <ReviewRow label={t("toolApprovalDialog.rowVerdict")}>
-          <span data-testid="rationale-approval-verdict">
-            {riskLevelKoLabel(display.effectiveVerdict.level)} · {display.effectiveVerdict.reason}
-          </span>
-        </ReviewRow>
-        <ReviewRow label={t("toolApprovalDialog.rowScope")}>
-          <div className="space-y-1" data-testid="rationale-approval-scope">
-            <p>{rationaleScopeAlignmentLabel(display.scopeAlignment)}</p>
-            <RationaleTextList
-              testId="rationale-approval-scope-reasons"
-              values={display.scopeReasons}
-            />
-          </div>
-        </ReviewRow>
-      </div>
-
-      {/* The model's explanation is visibly separate from host-sealed facts.
-          It is rendered as a React text node, never as markup or input. */}
-      <div
-        className="border-t bg-muted/(--opacity-light) px-3 py-2"
-        data-testid="rationale-model-explanation"
-      >
-        <p className="text-xs font-semibold">Model suggestion</p>
-        {display.rationaleStatus === "ready" ? (
-          <p className="mt-1 text-xs" data-testid="rationale-model-suggestion">
-            {display.suggestion}
-          </p>
-        ) : (
-          <p
-            className="mt-1 text-xs text-muted-foreground"
-            data-testid="rationale-model-fallback"
-            role="status"
-          >
-            {RATIONALE_FAILED_EXPLANATION_MESSAGE}
-          </p>
-        )}
-      </div>
-    </section>
-  );
-}
-
-/** Dock label for every cause the parent-adjudication stage can end on. Keyed by the host's own union, so a cause added there fails to compile until this dock
- * has a sentence for it. That is deliberate: the band exists because the user never saw the stage run, and an unlabelled cause would leave exactly that gap open. */
-const PARENT_ESCALATION_CAUSE_KEY: Record<ParentEscalationCause, string> = {
-  "parent-escalated": "toolApprovalDialog.parentEscalationCauseParentEscalated",
-  timeout: "toolApprovalDialog.parentEscalationCauseTimeout",
-  "malformed-output": "toolApprovalDialog.parentEscalationCauseMalformedOutput",
-  "rate-limited": "toolApprovalDialog.parentEscalationCauseRateLimited",
-  "adjudicator-unavailable":
-    "toolApprovalDialog.parentEscalationCauseAdjudicatorUnavailable",
-  "llm-error": "toolApprovalDialog.parentEscalationCauseLlmError",
-  "turn-aborted": "toolApprovalDialog.parentEscalationCauseTurnAborted",
-  "repeated-denial": "toolApprovalDialog.parentEscalationCauseRepeatedDenial",
-};
-
-/** Tells the user that a stage they never saw already ran on this ask, and how it ended. Reading order is the trust order: the host-owned cause first, then the two pieces of text a model wrote; the child's title and the parent's sentence; both quoted and attributed, because model
- * text rendered as dock prose reads like an instruction from the app rather than a quote from a party to the request. The reason arrives already bounded by the adjudicator that parsed it; cutting it again here would silently drop the end of a sentence whose point is usually at the end. */
-function ParentEscalationBand({ notice }: { notice: ParentEscalationNotice }) {
-  const { t: tBand } = useTranslation();
-  const reason = notice.reason.trim();
-  const causeKey: string | undefined = PARENT_ESCALATION_CAUSE_KEY[notice.cause];
-  return (
-    <div
-      className="min-w-0 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-faint) px-3 py-2"
-      data-testid="parent-escalation-band"
-      data-parent-escalation-cause={notice.cause}
-    >
-      <p className="text-xs font-semibold text-info">
-        {tBand("toolApprovalDialog.parentEscalationTitle")}
-      </p>
-      <p
-        className="mt-0.5 break-words text-[11px] leading-relaxed"
-        data-testid="parent-escalation-cause"
-      >
-        {/* A cause this build has no sentence for says so, rather than
-            rendering an empty line: the band's whole job is to account for a
-            stage the user did not see, and a blank account is worse than an
-            unfamiliar one. */}
-        {causeKey
-          ? tBand(causeKey)
-          : tBand("toolApprovalDialog.parentEscalationCauseUnrecognized")}
-      </p>
-      <p
-        className="mt-0.5 break-words text-[10px] text-muted-foreground"
-        data-testid="parent-escalation-child"
-      >
-        <span className="font-medium">
-          {tBand("toolApprovalDialog.parentEscalationChildLabel")}
-        </span>{" "}
-        {/* The title came from the parent's own spawn arguments, so it is
-            quoted for the same reason the parent's sentence below is: a
-            model's words must not wear the app's voice on the one surface
-            where the user decides whether to trust them. */}
-        <q>{notice.childTitle}</q>
-      </p>
-      {reason ? (
-        <p
-          className="mt-1 break-words text-[10px] text-muted-foreground"
-          data-testid="parent-escalation-reason"
-        >
-          <span className="font-medium">
-            {tBand("toolApprovalDialog.parentEscalationReasonLabel")}
-          </span>{" "}
-          <q className="italic">{reason}</q>
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 /** Offers to hand the reviewing over to the LLM reviewer, at the moment the user is answering yet another ask by hand. The suggestion is about the run of approvals the user just made, not about this one request, so it is deliberately
  * quieter than every other band here: it must never read as part of what is being asked. Enabling is one gesture and the failure of that gesture stays inside the band, because the decision the card exists for has to remain answerable either way. */
 function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion }) {
@@ -513,7 +300,6 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
   );
 }
 
-
 /** What "remember" on this card will actually cover. Read only from the host-derived `approvalMemory` on the
  * request; never inferred from args; so the copy cannot promise a narrower scope than the store will apply. */
 function rememberScopeText(
@@ -530,6 +316,8 @@ function rememberScopeText(
     ? "write_file, edit_file, multi_edit, apply_patch"
     : toolName;
   switch (memory.scope.kind) {
+    case "mcp-tool":
+      return t("toolApprovalDialog.rememberScopeMcpTool", { serverId: memory.scope.serverId, toolName: memory.scope.toolName, path });
     case "origin":
       return t("toolApprovalDialog.rememberScopeOrigin", { toolName, origin: memory.scope.origin, path });
     case "path":
@@ -580,17 +368,14 @@ function terminalTargetText(
  * script, such as Korean filenames, are not listed; see terminalCommandLookalikes), and a terminal directory outside the allowed folders (the command still runs there, inside the terminal's sandbox). */
 function terminalCommandNotes(
   t: (key: string, params?: Record<string, string>) => string,
-  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext" | "shellRule">,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext" | "shellRule" | "hostTerminalAfterExternalContent">,
 ): string[] {
-  const memory = request.approvalMemory;
-  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return [];
   const notes: string[] = [];
+  if (request.hostTerminalAfterExternalContent === true) notes.push(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
+  const memory = request.approvalMemory;
+  if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return notes;
   // The user's own shell: no sandbox, and the approved command's output goes back to the model.
   if (memory.scope.lane === "manual") notes.push(t("toolApprovalDialog.hostTerminalWarning"));
-  // Tool results reached the model earlier in this turn: saved rules were set aside and this card saves none.
-  if (memory.scope.lane === "manual" && request.shellRule?.hostTerminal?.afterExternalContent === true) {
-    notes.push(t("toolApprovalDialog.hostTerminalAfterExternalContent"));
-  }
   const command = parseArgs(request.args)?.command;
   if (typeof command === "string") {
     const lookalikes = terminalCommandLookalikes(command);
@@ -690,14 +475,6 @@ export function ToolApprovalContent({
     () => parseElicitationFields(request?.args),
     [request?.args],
   );
-  const isRationaleApproval = request?.kind === "rationale";
-  const rationaleDisplay = useMemo(
-    () => isRationaleApproval
-      ? parseRationaleApprovalDisplay(request?.args)
-      : null,
-    [isRationaleApproval, request?.args],
-  );
-  const rationaleDisplayInvalid = isRationaleApproval && rationaleDisplay === null;
   // Path-grant (out-of-allowed-dir) view-model; the ONE place the shared scope authority is projected for rendering. The card below stays a
   // single layout for every kind; only this data (labels, availability, the pattern the allow-always button must carry) is kind-specific.
   const isOutOfDir = request?.kind === "out-of-allowed-dir";
@@ -748,9 +525,7 @@ export function ToolApprovalContent({
     setElicitationValues(initialElicitationValues(elicitationFields));
   }, [request?.id, elicitationFields]);
 
-  const finalVerdict = isRationaleApproval
-    ? rationaleDisplay?.effectiveVerdict.level ?? "high"
-    : resolveUserApprovalVerdict(request ?? {});
+  const finalVerdict = resolveUserApprovalVerdict(request ?? {});
   const isAgentAction =
     request?.category === "agent-action" && request.kind === "agent-action";
 
@@ -760,24 +535,22 @@ export function ToolApprovalContent({
     [elicitationFields, elicitationValues],
   );
 
-  // HIGH approval is itself the explicit act. The explanatory text is a read-only, one-shot audit
+  // HIGH approval is itself the explicit act. The explanatory text is a read-only audit
   // summary from host-owned context; it is never a renderer-authored prerequisite for the decision.
-  const showsHighRiskReason = finalVerdict === "high" && !isRationaleApproval;
+  const showsHighRiskReason = finalVerdict === "high" && request?.userOwnedSurfaceReviewFallback !== true;
   const highRiskReasonSource = userProvidedPurpose.length > 0
     ? tHook("toolApprovalDialog.reasonFromRequest")
     : tHook("toolApprovalDialog.reasonFromPermissionAudit");
   const approveDisabled =
-    rationaleDisplayInvalid ||
     isUnsupportedElicitationForm ||
     elicitationInvalid;
 
-  // Host-constrained and sealed approvals remain per-invocation. The "Always allow" control
+  // Host-constrained approvals remain per-invocation. The "Always allow" control
   // stays visible for layout/decision consistency but is disabled with an explicit explanation.
   const isHostConstrainedToOneShot =
     request?.allowedChoices !== undefined &&
     !request.allowedChoices.includes("allow-always");
   const approvalIsOneShot =
-    isRationaleApproval ||
     isMcpElicitation ||
     isAgentAction ||
     isHostConstrainedToOneShot;
@@ -1010,21 +783,16 @@ export function ToolApprovalContent({
     }
   }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes]);
 
-  const approveDisabledDescriptionId = rationaleDisplayInvalid
-    ? "rationale-approval-invalid"
-    : (isUnsupportedElicitationForm || elicitationInvalid
-        ? "mcp-elicitation-input-unavailable"
-        : undefined);
+  const approveDisabledDescriptionId = isUnsupportedElicitationForm || elicitationInvalid
+    ? "mcp-elicitation-input-unavailable"
+    : undefined;
   // Path grants keep the A/D shortcuts inert (see handlePanelKeyDown), so their buttons must not advertise them.
   const decisionShortcutsActive = !isOutOfDir;
-  const approveButtonTitle = rationaleDisplayInvalid
-    ? RATIONALE_INVALID_APPROVAL_MESSAGE
-    : (approveDisabled
-        ? tHook("toolApprovalDialog.completeRequiredChoices")
-        : decisionShortcutsActive
-          ? tHook("toolApprovalDialog.shortcutA")
-          : undefined);
-
+  const approveButtonTitle = approveDisabled
+    ? tHook("toolApprovalDialog.completeRequiredChoices")
+    : decisionShortcutsActive
+      ? tHook("toolApprovalDialog.shortcutA")
+      : undefined;
 
   const handlePanelKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.nativeEvent.isComposing) return;
@@ -1084,6 +852,11 @@ export function ToolApprovalContent({
   ]);
 
   if (!open || !request) return null;
+  if (request.userOwnedSurface !== undefined && request.userOwnedSurfaceReviewFallback !== true) {
+    return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
+      targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}
+      notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []} />;
+  }
   if (request.kind === "egress-host") {
     return (
       <EgressHostApprovalCard
@@ -1097,9 +870,7 @@ export function ToolApprovalContent({
 
   // NOTE: argsStr uses JSON.stringify for human-readable display (pretty-printed, insertion-order keys). The IPC approval record uses canonicalStringify
   // which sorts object keys; key ordering may differ between what is shown here and the canonical form used for cache-key lookups in dispatchReviewer.
-  const argsStr = isRationaleApproval
-    ? ""
-    : (JSON.stringify(request.args, null, 2) ?? "");
+  const argsStr = JSON.stringify(request.args, null, 2) ?? "";
   const explicitHostExecution = request.executionPlan !== undefined
     && "executionRequest" in request.executionPlan
     && request.executionPlan.executionRequest === "host";
@@ -1112,13 +883,14 @@ export function ToolApprovalContent({
   const originLabel = trustOriginLabel(request.trustOrigin);
   const category = request.toolCategory ?? "meta";
   // finalVerdict already computed above (before the null-check guard); use it here.
-  const badgeClassName = levelBadgeClass(request?.shellRule?.hostTerminal !== undefined ? "high" : finalVerdict as RiskLevel);
-  // Rationale cards render the sealed table and out-of-dir cards render the path-grant evidence rows;
-  // neither consumes the generic review rows, so skip computing them. The frame around that evidence is shared.
-  const rows = isRationaleApproval || isOutOfDir
+  const isSurfaceReviewFallback = request.userOwnedSurfaceReviewFallback === true;
+  const badgeClassName = isSurfaceReviewFallback ? "text-muted-foreground" : levelBadgeClass(finalVerdict as RiskLevel);
+  const reviewClassName = isSurfaceReviewFallback ? "border-border" : reviewBoxClass(finalVerdict as RiskLevel);
+  // Path-grant cards supply their own evidence rows inside the shared frame.
+  const rows = isOutOfDir
     ? []
     : approvalReviewRows(request, category, argsStr, originLabel, source, sourceBadge);
-  const sandboxSummary = isRationaleApproval ? null : approvalSandboxSummary(request);
+  const sandboxSummary = approvalSandboxSummary(request);
   const categoryImpact = approvalActionSummary(request, tHook);
   const specificReviewerReason = request.reviewerVerdict?.reason.trim() ?? "";
   const specificHostReason = request.reason.trim();
@@ -1131,22 +903,20 @@ export function ToolApprovalContent({
         ? specificHostReason
         : categoryImpact;
   const highRiskReason = (userProvidedPurpose || reviewedImpact || categoryImpact).slice(0, 220);
-  const impactSummary = isRationaleApproval
-    ? ""
-    : (showsHighRiskReason
-        ? highRiskReason
-        : (request.approvalPurpose?.text.trim() || reviewedImpact || categoryImpact)
-      ).slice(0, 220);
+  const impactSummary = (showsHighRiskReason
+    ? highRiskReason
+    : (request.approvalPurpose?.text.trim() || reviewedImpact || categoryImpact)
+  ).slice(0, 220);
 
   return (
     <div
       className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${narrowLaneScroll ? "@max-[14rem]:flex-none" : ""}`}
       data-testid="tool-approval-panel"
       data-pending-count={pendingCount}
-      data-approval-request-id={isRationaleApproval ? undefined : request.id}
-      data-approval-tool-name={isRationaleApproval ? undefined : request.toolName}
+      data-approval-request-id={request.id}
+      data-approval-tool-name={request.toolName}
       data-approval-args={
-        isRationaleApproval ? undefined : canonicalStringifyForRenderer(request.args)
+        canonicalStringifyForRenderer(request.args)
       }
       tabIndex={-1}
       onKeyDown={handlePanelKeyDown}
@@ -1154,44 +924,21 @@ export function ToolApprovalContent({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="tool-approval-card">
         <section className={`min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-2 sm:px-4 sm:py-3 ${narrowLaneScroll ? "@max-[14rem]:overscroll-auto" : ""}`}>
           <div className="space-y-2">
-            {/* Identity strip — host-owned facts (toolName, source, category,
-                origin, risk chip), rendered for EVERY kind including a
-                rationale whose sealed display failed to parse. The sealed
-                table is EVIDENCE; identity must never depend on it — the
-                degenerate card that showed no tool name at all is the bug
-                this unconditional render removes. */}
+            {/* Identity is supplied by the host request for every card. */}
                 <div className="min-w-0 space-y-1">
                   <div className="flex min-w-0 items-center gap-2">
                     <Badge variant="outline" className={`${badgeClassName} shrink-0`}>
-                      {/* A command for the user's own terminal is never graded or auto-reviewed: the person is the only check. */}
-                      {request?.shellRule?.hostTerminal !== undefined
-                        ? <span data-testid="approval-no-automatic-review">{tHook("toolApprovalDialog.noAutomaticReview")}</span>
+                      {isSurfaceReviewFallback ? <span data-testid="approval-logical-review-fallback">{tHook("toolApprovalDialog.surfaceReviewNeedsConfirmation")}</span>
                         : riskLevelKoLabel(finalVerdict as RiskLevel)}
                     </Badge>
                     <code
                       className="min-w-0 flex-1 break-all font-mono text-xs font-semibold"
                       data-testid="approval-tool-identity"
                     >
-                      {/* For a sealed card only the HMAC-sealed display.toolName
-                          is display-trusted; the generic request fields are
-                          deliberately not attested for this kind. When the seal
-                          is invalid the request name is the only identity left —
-                          strictly better than the identity-less card this
-                          replaces, but it must say it is unverified. */}
-                      {isRationaleApproval
-                        ? rationaleDisplay?.toolName ?? request.toolName
-                        : sourceToolToken(request)}
+                      {sourceToolToken(request)}
                     </code>
-                    {rationaleDisplayInvalid ? (
-                      <span
-                        className="shrink-0 rounded-full border border-destructive/(--opacity-medium) bg-destructive/(--opacity-faint) px-1.5 py-px text-[10px] text-destructive"
-                        data-testid="approval-identity-unverified"
-                      >
-                        {tHook("toolApprovalDialog.identityUnverified")}
-                      </span>
-                    ) : null}
+
                   </div>
-                  {!isRationaleApproval && (
                   <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
                     <span>{request.sourcePluginId ?? sourceBadge}</span>
                     <span aria-hidden="true">·</span>
@@ -1203,7 +950,6 @@ export function ToolApprovalContent({
                       {conversationLabel}
                     </span>
                   </div>
-                  )}
                   {request.kind === "agent-action" && request.approvalScope ? (
                     <p className="break-words text-[10px] text-muted-foreground">
                       {tHook("toolApprovalDialog.approvalScopePrefix")}: {request.approvalScope}
@@ -1211,27 +957,12 @@ export function ToolApprovalContent({
                   ) : null}
                 </div>
 
-            {/* Above the impact summary, and outside every kind-specific
-                branch: the fact that a parent agent already looked at this ask
-                and could not settle it is context for the decision itself, so
-                it must not sit below a fold or inside one card variant. */}
-            {request.parentEscalation ? (
-              <ParentEscalationBand notice={request.parentEscalation} />
-            ) : null}
-
-            {/* Below the escalation band, above the impact summary. The
-                escalation band accounts for THIS ask and the user needs it to
-                answer; the reviewer suggestion is about the run of asks around
-                it and offers a settings change. Request context first, standing
-                advice second — the reverse would put an offer the user can
-                ignore ahead of the fact they cannot. */}
+            {/* Standing reviewer suggestions remain separate from this action’s approval. */}
             {reviewerSuggestion ? (
               <ReviewerSuggestionBand suggestion={reviewerSuggestion} />
             ) : null}
 
-            {!isRationaleApproval && (
-              <>
-                <div
+            <div
                   className={`min-w-0 rounded-md border-l-2 px-3 py-2 ${
                     showsHighRiskReason
                       ? "border-destructive bg-destructive/(--opacity-faint)"
@@ -1300,8 +1031,6 @@ export function ToolApprovalContent({
                     </p>
                   ) : null}
                 </div>
-              </>
-            )}
 
             <details
               className="group min-w-0 overflow-hidden rounded-lg border border-border-strong bg-muted/(--opacity-light)"
@@ -1329,11 +1058,9 @@ export function ToolApprovalContent({
                     {request.sessionId ?? tHook("approvalAttribution.unattributed")}
                   </code>
                 </p>
-                {isRationaleApproval ? (
-                  <RationaleApprovalCard display={rationaleDisplay} />
-                ) : isOutOfDir ? (
+                {isOutOfDir ? (
                   <div
-                    className={`min-w-0 overflow-hidden rounded-md border ${reviewBoxClass(finalVerdict as RiskLevel)}`}
+                    className={`min-w-0 overflow-hidden rounded-md border ${reviewClassName}`}
                     data-testid="approval-path-grant-evidence"
                   >
                     <h4 className="border-b px-3 py-2 text-xs font-semibold">
@@ -1362,7 +1089,7 @@ export function ToolApprovalContent({
                     ) : null}
                   </div>
                 ) : (
-                  <div className={`min-w-0 overflow-hidden rounded-md border ${reviewBoxClass(finalVerdict as RiskLevel)}`}>
+                  <div className={`min-w-0 overflow-hidden rounded-md border ${reviewClassName}`}>
                     <h4 className="border-b px-3 py-2 text-xs font-semibold">
                       {reviewTitleForCategory(category)}
                     </h4>
@@ -1385,12 +1112,9 @@ export function ToolApprovalContent({
                   </div>
                 )}
 
-                {!isRationaleApproval && (
-                  <PermissionEvaluationContextPanel context={request.evaluationContext} />
-                )}
+                <PermissionEvaluationContextPanel context={request.evaluationContext} />
 
-                {!isRationaleApproval && (
-                  <div className="min-w-0 overflow-hidden rounded-md border bg-background">
+                <div className="min-w-0 overflow-hidden rounded-md border bg-background">
                     <p className="border-b px-3 py-2 text-xs font-semibold">
                       {tHook("toolApprovalDialog.showFullInput")}
                     </p>
@@ -1409,11 +1133,10 @@ export function ToolApprovalContent({
                       </Button>
                     )}
                   </div>
-                )}
               </div>
             </details>
 
-            {!isRationaleApproval && isElicitationForm && (
+            {isElicitationForm && (
               <div
                 className="mt-3 rounded-md border bg-background p-3"
                 data-testid="mcp-elicitation-form"
@@ -1508,7 +1231,7 @@ export function ToolApprovalContent({
               </div>
             )}
 
-            {!isRationaleApproval && isUnsupportedElicitationForm && (
+            {isUnsupportedElicitationForm && (
               <div
                 className="mt-3 rounded-md border border-destructive/(--opacity-muted) bg-destructive/(--opacity-faint) p-3 text-xs text-destructive"
                 data-testid="mcp-elicitation-unsupported"
@@ -1517,7 +1240,7 @@ export function ToolApprovalContent({
               </div>
             )}
 
-            {!isRationaleApproval && (isUnsupportedElicitationForm || elicitationInvalid) && (
+            {isUnsupportedElicitationForm || elicitationInvalid && (
               <p
                 id="mcp-elicitation-input-unavailable"
                 className="mt-2 text-[10px] text-muted-foreground"
@@ -1533,16 +1256,13 @@ export function ToolApprovalContent({
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
             {shellRule ? (
               <div className="space-y-1" data-testid="approval-shell-rule-context">
-                {/* Only an unconfined run is outside the sandbox; a confined command's card must not claim it. A command for the user's own
-                    terminal has its own warning and a rule scoped to that shell and folder, not to a project. */}
-                {!shellRule.hostTerminal && request.executionPlan?.sandboxed !== true ? (
+                {/* Only unconfined runs display the outside-sandbox warning. */}
+                {request.executionPlan?.sandboxed !== true ? (
                   <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
                 ) : null}
-                {shellRule.hostTerminal ? null : (
-                  <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
+                <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
                     {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
                   </p>
-                )}
                 {/* An -EncodedCommand payload is shown as the script it runs; the host checked that text, and no rule covers it. */}
                 {shellRule.decodedCommands?.map((decoded, index) => (
                   <div key={index} className="min-w-0 space-y-0.5" data-testid="approval-shell-decoded-command">
@@ -1552,9 +1272,6 @@ export function ToolApprovalContent({
                 ))}
               </div>
             ) : null}
-            {/* Fail-closed: a sealed display that cannot be parsed strips the allow options entirely — offering approval for an action whose
-                identity evidence is broken is not an option this card may present. Deny remains: it unblocks the turn and lets the model
-                regenerate the rationale. */}
             <ApprovalDecisionBar
               model={decisionModel}
               state={decision}
@@ -1566,7 +1283,6 @@ export function ToolApprovalContent({
                   }
                 : undefined}
               editInSettingsDisabled={recordingDecision}
-              hideAllows={rationaleDisplayInvalid}
               stackWhenNarrow={narrowLaneScroll}
               slotProps={(slot) => {
                 const slotDisabled = slotsDisabled[slot];
@@ -1637,7 +1353,9 @@ export function ToolApprovalContent({
             {decisionModel.variant === "exact" && allowRefusal === null && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
                 {decision.selected === "allow-everywhere"
-                  ? tHook("toolApprovalDialog.exactScopeEverywhere")
+                  ? request.approvalMemory?.kind === "key" && request.approvalMemory.scope.kind === "mcp-tool"
+                    ? tHook("toolApprovalDialog.rememberScopeMcpToolGlobal", { serverId: request.approvalMemory.scope.serverId, toolName: request.approvalMemory.scope.toolName })
+                    : tHook("toolApprovalDialog.exactScopeEverywhere")
                   : rememberScopeText(tHook, request, request.persistentApprovalCwd)}
               </p>
             ) : null}
@@ -1737,7 +1455,7 @@ function approvalReviewRows(
   _sourceBadge: string,
 ): ReviewBasisRow[] {
   const parsed = parseArgs(request.args);
-  const reviewer = request.reviewerVerdict
+  const reviewer = request.userOwnedSurfaceReviewFallback === true ? request.reviewerVerdict?.reason ?? request.reason : request.reviewerVerdict
     ? `${riskLevelKoLabel(request.reviewerVerdict.level)} · ${request.reviewerVerdict.reason}`
     : request.reason;
   // Source, trust origin, category, conversation and sandbox now live in the compact always-visible summary. Details contain only additional evidence.

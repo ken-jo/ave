@@ -62,12 +62,7 @@ describe("ConversationLoop authorization-required terminal", () => {
     const permissionManager = new PermissionManager(
       join(temporaryDirectory, "permissions.json"),
     );
-    permissionManager.checkDetailed = () => ({
-      decision: "ask",
-      reason: "fixture requires explicit approval",
-      layer: 3,
-      forceModal: true,
-    });
+    permissionManager.setMode("strict");
     const requestAndWait = vi.fn();
     const notificationFire = vi.fn();
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
@@ -108,7 +103,7 @@ describe("ConversationLoop authorization-required terminal", () => {
     )).toHaveLength(1);
   });
 
-  it("routes the same ask through the unattended policy lane when the host issued that authority", async () => {
+  it("routes a headless turn through unattended policy when the host issued that authority", async () => {
     const registry = new ToolRegistry();
     const execute = vi.fn(async () => ({ output: "should not execute", isError: false }));
     registry.register(createDynamicTool({
@@ -139,18 +134,14 @@ describe("ConversationLoop authorization-required terminal", () => {
     const permissionManager = new PermissionManager(
       join(temporaryDirectory, "permissions.json"),
     );
-    permissionManager.checkDetailed = () => ({
-      decision: "ask",
-      reason: "fixture requires explicit approval",
-      layer: 3,
-      forceModal: true,
-    });
+    permissionManager.setMode("strict");
     const requestAndWait = vi.fn();
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
       permissionManager,
       approvalGate: { requestAndWait },
       approvalSurface: "unavailable",
+      headless: true,
       notificationService: { fire: vi.fn() },
       disableSessionPersistence: true,
     }));
@@ -173,7 +164,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       message.role === "tool_result" && message.toolUseId === "unattended-write"
     );
     expect(denial).toBeDefined();
-    expect(String(denial?.content)).toContain("headless");
+    expect(String(denial?.content)).toContain("do not retry");
   });
 
   it("refuses an unattended authority this host did not issue, and a replay of one it did", async () => {
@@ -301,7 +292,9 @@ describe("ConversationLoop authorization-required terminal", () => {
             effect: "write",
             target: "private-target.txt",
             approvalGate,
-            flagEnabled: () => true,
+            permissionManager,
+            input: ["private-target.txt", "fixture payload"],
+            resolveStoragePath: (path) => join(temporaryDirectory!, path),
           });
           mutationReached = true;
         } catch {
@@ -334,11 +327,8 @@ describe("ConversationLoop authorization-required terminal", () => {
     const permissionManager = new PermissionManager(
       join(temporaryDirectory, "permissions.json"),
     );
-    permissionManager.checkDetailed = () => ({
-      decision: "allow",
-      reason: "fixture permits the invocation before its effect is known",
-      layer: 3,
-    });
+    permissionManager.setMode("strict");
+    permissionManager.setRules([{ pattern: "plugin_effect_probe", action: "allow" }]);
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
       permissionManager,
@@ -370,7 +360,7 @@ describe("ConversationLoop authorization-required terminal", () => {
         kind: "tool",
         toolName: "plugin_effect_probe",
         source: "plugin",
-        category: "read",
+        category: "write",
         reason: "approval-surface-unavailable",
       },
     });
@@ -447,7 +437,6 @@ describe("ConversationLoop authorization-required terminal", () => {
     permissionManager.checkDetailed = () => ({
       decision: "allow",
       reason: "fixture pre-authorized spawn",
-      layer: 3,
     });
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,

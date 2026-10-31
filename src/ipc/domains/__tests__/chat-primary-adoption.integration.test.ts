@@ -80,7 +80,7 @@ describe("cached primary conversation adoption", () => {
     registry.register(makeWriteProbeTool(write));
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
-    manager.setInteractiveAutoApprove("off");
+
     const gate = new ApprovalGate((sessionId, tabId) => approvalSurfaceRegistry.resolve(sessionId, tabId), undefined, undefined, audit);
     const memory = new MemoryManager({ aveDir: join(root, "memory") });
     memory.load();

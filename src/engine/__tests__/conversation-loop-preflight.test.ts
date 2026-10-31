@@ -18,6 +18,7 @@ import {
   makeSyntheticCompactResult,
 } from "./conversation-loop-test-helpers.js";
 import { ScriptedTurnProvider as ScriptedProvider } from "./support/conversation-loop-fixtures.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 
 vi.mock("../structured-compact.js", () => ({
   DEFAULT_PRESERVE_RECENT_TURNS: 5,
@@ -798,6 +799,7 @@ async function makeToolLoopSetup(resultChars: number, toolRounds: number) {
       memoryManager: makeMemoryManager([], sessionId),
       memoryReviewer: makeMemoryReviewer(),
       toolRegistry: makeProbeRegistry(resultChars) as unknown as ReturnType<typeof makeDeps>["toolRegistry"],
+      permissionManager: new PermissionManager(),
     }),
   );
   await loop.resetAndResume(sessionId);
@@ -856,6 +858,7 @@ describe("round-loop token preflight — a turn that grows its own context", () 
       memoryManager: makeMemoryManager([], sessionId),
       memoryReviewer: makeMemoryReviewer(),
       toolRegistry: makeProbeRegistry(2_000) as unknown as ReturnType<typeof makeDeps>["toolRegistry"],
+      permissionManager: new PermissionManager(),
     });
     const loop = new ConversationLoop(deps);
     await loop.resetAndResume(sessionId);

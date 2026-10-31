@@ -17,7 +17,7 @@ const EVENT_CASES: Array<{ name: HookEventName; event: HookEvent; payload: Lifec
   { name: "PermissionRequest", event: "perm", payload: {}, expected: { tool_name: "write_file", tool_input: TOOL_INPUT } },
   { name: "UserPromptSubmit", event: "UserPromptSubmit", payload: {}, expected: { prompt: "check this change" } },
   { name: "PostToolUseFailure", event: "PostToolUseFailure", payload: { toolName: "write_file", errorMessage: "disk full", durationMs: 10 }, expected: { tool_name: "write_file", error: "disk full", duration_ms: 10 } },
-  { name: "PermissionDenied", event: "PermissionDenied", payload: { toolName: "write_file", denyReason: { layer: 3, source: "policy", reason: "outside scope" } }, expected: { tool_name: "write_file", deny_reason: { layer: 3, source: "policy", reason: "outside scope" } } },
+  { name: "PermissionDenied", event: "PermissionDenied", payload: { toolName: "write_file", denyReason: { source: "policy", reason: "outside scope" } }, expected: { tool_name: "write_file", deny_reason: { source: "policy", reason: "outside scope" } } },
   { name: "SessionStart", event: "SessionStart", payload: { sessionMeta: { persona: "default" }, sessionSource: "resume" }, expected: { source: "resume", session_meta: { persona: "default" } } },
   { name: "SessionEnd", event: "SessionEnd", payload: { reason: "new-conversation", stopReason: "reset" }, expected: { reason: "new-conversation", stop_reason: "reset" } },
   { name: "Notification", event: "Notification", payload: { message: "Turn complete", notificationType: "agent_completed" }, expected: { message: "Turn complete", notification_type: "agent_completed" } },

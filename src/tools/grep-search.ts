@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import type { ToolExecutionResult } from "./base.js";
-import { sensitiveFilePattern } from "./file-access-policy.js";
+import { admissionDeniedFilePattern, sensitiveFilePattern } from "./file-access-policy.js";
 import { buildSafeChildEnv } from "./safe-env.js";
 import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
@@ -184,6 +184,7 @@ function runRipgrep(
   cwd: string,
   input: GrepFilesInput,
   signal: AbortSignal | undefined,
+  explicitSecretRoot?: string,
 ): Promise<RipgrepRun> {
   signal?.throwIfAborted();
   const wanted = input.offset + input.limit + 1;
@@ -219,7 +220,11 @@ function runRipgrep(
       const entry = parseRecord(record, input.outputMode);
       if (entry === null) return;
       // Check every result path: the search engine does not know the host's sensitive-path floor.
-      if (entry.kind !== "gap" && sensitiveFilePattern(entry.path) !== null) return;
+      if (entry.kind !== "gap") {
+        const explicit = explicitSecretRoot !== undefined
+          && (entry.path === explicitSecretRoot || entry.path.startsWith(explicitSecretRoot + "/"));
+        if (admissionDeniedFilePattern(entry.path) !== null || (!explicit && sensitiveFilePattern(entry.path) !== null)) return;
+      }
       if (entry.kind === "gap") {
         entries.push(entry);
         return;
@@ -327,7 +332,7 @@ export async function searchWithRipgrep(
   signal: AbortSignal | undefined,
   resolveExecutable: () => string = resolveBundledRipgrep,
 ): Promise<ToolExecutionResult> {
-  if (sensitiveFilePattern(root) !== null) {
+  if (admissionDeniedFilePattern(root) !== null) {
     return { output: `Searched ${root}.\n\nNo matches found.`, isError: false, metadata: { path: root, matchCount: 0 } };
   }
   let cwd: string;
@@ -350,7 +355,7 @@ export async function searchWithRipgrep(
 
   let run: RipgrepRun;
   try {
-    run = await runRipgrep(executable, buildRipgrepArgs(root, input), cwd, input, signal);
+    run = await runRipgrep(executable, buildRipgrepArgs(root, input), cwd, input, signal, sensitiveFilePattern(root) !== null ? root : undefined);
   } catch (error) {
     return grepError(errorMessage(error));
   }

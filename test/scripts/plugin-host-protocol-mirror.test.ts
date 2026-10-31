@@ -85,6 +85,27 @@ afterEach(async () => {
 });
 
 describe("host protocol web mirror", () => {
+  it("keeps superseded protocol-4 bytes and provenance immutable", () => {
+    const root = resolve(import.meta.dirname, "../..");
+    const base = "web/public/schemas/plugin-host-protocol";
+    const frozen = readFileSync(join(root, base, "4/v0.14.1/protocol.schema.json"));
+    const sha256 = "9b9a3bfdf0aa6522e9de844fe933e1fbb9dc270debfe42cf37f9232f30981139";
+    expect(createHash("sha256").update(frozen).digest("hex")).toBe(sha256);
+    const manifest = JSON.parse(readFileSync(join(root, base, "mirror.json"), "utf8"));
+    expect(manifest.copies.find((copy: { protocol: string; appVersion: string }) =>
+      copy.protocol === "4" && copy.appVersion === "0.14.1")).toEqual({
+      protocol: "4",
+      appVersion: "0.14.1",
+      sha256,
+      generatedFrom: "6892aff0dfd646f37e860df7a2a3fe7462310c4c",
+      publishedTag: null,
+    });
+    const current = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+    expect(current).not.toBe("0.14.1");
+    expect(readFileSync(join(root, base, `4/v${current}/protocol.schema.json`)))
+      .toEqual(readFileSync(join(root, "schemas/plugin-host-protocol/4/protocol.schema.json")));
+  });
+
   it("keeps published and orphan copies frozen when regenerating the candidate", () => {
     const { root, base } = fixture();
     const frozen = ["0.12.0", "0.12.1"].map((version) =>

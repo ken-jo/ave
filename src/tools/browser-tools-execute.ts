@@ -356,16 +356,24 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (input.text === undefined && input.timeMs === undefined) return failure("give text to wait for, timeMs, or both");
       const target = live(input, ctx);
       if (!target.ok) return target.result;
+      const changed = unchangedSinceApproval(ctx, target.resolved);
+      if (changed) return changed;
       return run(async (actions) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
+        const changed = unchangedSinceApproval(ctx, fresh.resolved);
+        if (changed) return changed;
         const waited = await actions.waitFor(
-          { tab: fresh.resolved.tab, signal: fresh.signal },
+          pageTarget(ctx, fresh),
           {
             ...(typeof input.text === "string" ? { text: input.text } : {}),
             ...(typeof input.timeMs === "number" ? { timeMs: input.timeMs } : {}),
           },
         );
+        const completed = recheck(input, ctx, fresh);
+        if (!completed.ok) return completed.result;
+        const changedAfterWait = unchangedSinceApproval(ctx, completed.resolved);
+        if (changedAfterWait) return changedAfterWait;
         return fenced({ tabId: target.resolved.tab.handle, ...waited });
       });
     },

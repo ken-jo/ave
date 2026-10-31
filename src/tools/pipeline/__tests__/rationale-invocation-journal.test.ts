@@ -20,6 +20,9 @@ import { writeUtf8FileAtomicSync } from "../../../lib/atomic-file.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
 import {
   RATIONALE_CONTROL_CONTRACT_VERSION,
+  beginRationaleHumanApprovalWait,
+  approveRationaleHumanWait,
+  retireRationaleHumanWait,
   InMemoryHostAnchorRoundCasStore,
   createActionIdentity,
   createRationaleRequiredControl,
@@ -200,11 +203,11 @@ function authorized(
     },
     permission: {
       decision: "ask",
-      reason: "reviewer medium",
-      layer: 5,
+      reason: "Automatic review requires human approval.",
+      reasonCode: "reviewer-human-required",
       reviewer: {
         route: "foreground-auto",
-        verdict: { level: "medium", reason: "bounded command" },
+        verdict: { level: "high", reason: "bounded command" },
         outcome: "fresh",
       },
     },
@@ -1142,4 +1145,31 @@ describe("DurableHostInvocationStartCasStore", () => {
       now: now + 1,
     })).rejects.toThrow(/invalid invocation-start CAS expectation/);
   });
+});
+
+
+it("does not restore an expired model authorization from a human-approved journal entry after restart", async () => {
+  const filePath = join(directory(), "human-wait-journal.json");
+  const record = authorized(140, { now: 0, ttlMs: 1000 });
+  const control = controlFor(record);
+  const lease = beginRationaleHumanApprovalWait(control, 100);
+  try {
+    approveRationaleHumanWait(control, lease, 2000);
+    const started: InvocationAuditRecord[] = [];
+    const commit = await journalStore(filePath).commitStart({ sessionId: control.anchor.sessionId,
+      control, authorized: record, expectedInvocationVersion: 0,
+      persistAudit: (audit) => { started.push(audit); }, now: 2000 });
+    expect(commit).not.toBeNull();
+    expect(started.map((audit) => audit.state)).toEqual(["authorized", "started"]);
+    expect(readFileSync(filePath, "utf8")).toContain('"authorizationExpiresAt":null');
+    retireRationaleHumanWait(control, lease);
+    const recovered: InvocationAuditRecord[] = [];
+    const restarted = journalStore(filePath);
+    await expect(restarted.recoverAfterCrash({ persistAudit: (_sessionId, audit) => { recovered.push(audit); }, now: 2100 }))
+      .resolves.toEqual({ recovered: 1, delivered: 1 });
+    expect(recovered.map((audit) => audit.state)).toEqual(["unknown-after-crash"]);
+    await expect(restarted.commitStart({ sessionId: control.anchor.sessionId, control,
+      authorized: record, expectedInvocationVersion: 0, persistAudit: () => {}, now: 2200 }))
+      .rejects.toThrow("invalid invocation-start CAS expectation");
+  } finally { retireRationaleHumanWait(control, lease); }
 });

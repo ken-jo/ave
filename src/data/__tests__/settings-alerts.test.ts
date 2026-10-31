@@ -481,11 +481,16 @@ describe("SettingsService alerts and retired plugin configs", () => {
       retiredPluginConfigs: { waitingfixture: waiting, spentfixture: spent },
     });
 
+    const originalStored = readFileSync(join(userDataPath, SETTINGS_FILE), "utf-8");
     const current = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, appVersion: "0.14.0" });
     expect(current.get("alerts").kinds).toEqual({ "fixturemail:present": present });
     expect(current.get("retiredPluginConfigs")).toEqual({ waitingfixture: waiting, spentfixture: spent });
 
-    const unversioned = load();
+    // Each version reads the original stored input; a migration write-back from
+    // the versioned instance must not turn this into a second read of its result.
+    const unversionedPath = mkdtempSync(join(userDataPath, "unversioned-"));
+    writeFileSync(join(unversionedPath, SETTINGS_FILE), originalStored, "utf-8");
+    const unversioned = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: unversionedPath });
     expect(Object.keys(unversioned.get("alerts").kinds)).toEqual(["fixturemail:absent", "fixturemail:present"]);
     expect(Object.keys(unversioned.get("retiredPluginConfigs"))).toEqual(["waitingfixture", "spentfixture"]);
   });

@@ -59,7 +59,6 @@ import type { HookRunner } from "../hooks/hook-runner.js";
 import type { ScriptHookManager } from "../hooks/script-hook-manager.js";
 import type { RationaleScopeReviewer } from "../permissions/reviewer/rationale-scope-reviewer.js";
 import type { ApprovalSentenceSelector } from "../permissions/reviewer/approval-sentence-selector.js";
-import type { ParentAdjudicator } from "../permissions/parent-adjudicator.js";
 import type { RationaleHostService } from "../tools/pipeline/rationale-host-service.js";
 import type { A2ARemoteRuntime } from "../main/a2a-remote-runtime.js";
 import type { A2ARemoteGateSnapshot } from "../main/a2a-remote-gates.js";
@@ -169,10 +168,6 @@ export class BootContext {
   declare mcpAppModelContext: McpAppModelContextStore;
   declare rationaleScopeReviewer: RationaleScopeReviewer;
   declare approvalSentenceSelector: ApprovalSentenceSelector;
-  /** Replaced on every reviewer rewire. */
-  declare parentAdjudicator: ParentAdjudicator;
-  /** Uses the parent chat model when policy selects it. */
-  declare parentSessionAdjudicator: ParentAdjudicator;
   declare rationaleHostService: RationaleHostService | undefined;
   declare rewireReviewerAgent: () => void;
 
@@ -296,8 +291,6 @@ const BOOT_CONTEXT_FIELDS = [
   "mcpAppModelContext",
   "rationaleScopeReviewer",
   "approvalSentenceSelector",
-  "parentAdjudicator",
-  "parentSessionAdjudicator",
   "rationaleHostService",
   "rewireReviewerAgent",
   "hookRunner",

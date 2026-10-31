@@ -45,8 +45,6 @@ const TYPE_BADGE: Record<string, string> = {
   allow: "bg-success/(--opacity-soft) text-success",
   ask: "bg-warning/(--opacity-soft) text-warning",
   deny: "bg-destructive/(--opacity-soft) text-destructive",
-  deferred: "bg-info/(--opacity-soft) text-info",
-  deferred_resolve: "bg-info/(--opacity-soft) text-info",
   mode_change: "bg-emphasis/(--opacity-soft) text-emphasis",
   manifest_violation: "bg-destructive/(--opacity-soft) text-destructive",
 };

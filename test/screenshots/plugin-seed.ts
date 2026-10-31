@@ -13,10 +13,9 @@ const SCREENSHOT_FIXTURE_PLUGINS: Readonly<Record<string, FixturePlugin>> = {
   [VIEW_FIXTURE.manifest.id]: VIEW_FIXTURE,
 };
 
-// Without disabledMigratedAt, legacy migration changes disabled mode to strict.
 export function seedReviewerMode(
   aveHomeForTest: string,
-  mode: 'disabled' | 'rule' | 'llm' | 'strict',
+  mode: 'disabled' | 'llm',
 ): void {
   const aveHomeSettingsPath = permissionSettingsPath(aveHomeForTest);
   let aveHomeSettings: Record<string, unknown> = {};
@@ -32,7 +31,6 @@ export function seedReviewerMode(
     ...existingPerms,
     reviewer: {
       mode,
-      ...(mode === 'disabled' ? { disabledMigratedAt: new Date().toISOString() } : {}),
     },
   };
   fs.mkdirSync(path.dirname(aveHomeSettingsPath), { recursive: true, mode: 0o700 });

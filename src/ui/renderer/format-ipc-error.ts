@@ -60,7 +60,9 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "permission-audit-not-ready": "formatIpcError.permissionAuditNotReady",
   "permission-audit-write-failed": "formatIpcError.permissionAuditWriteFailed",
   "audit-chain-not-initialized": "formatIpcError.auditChainNotInitialized",
-  "no-deferred-queue": "formatIpcError.noDeferredQueue",
+  "rerun-unavailable": "recentlyDenied.unavailable",
+  "rerun-failed": "recentlyDenied.error",
+  "rerun-in-progress": "recentlyDenied.error",
   "managed": "formatIpcError.managed",
   "durable-mode-denied": "formatIpcError.durableModeDenied",
   "one-shot-not-recordable": "formatIpcError.oneShotNotRecordable",
@@ -89,10 +91,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "telegram-provider-unreachable": "formatIpcError.telegramProviderUnreachable",
   "telegram-webhook-conflict": "formatIpcError.telegramWebhookConflict",
   "telegram-poll-conflict": "formatIpcError.telegramPollConflict",
-  "away-authority-disabled": "formatIpcError.awayAuthorityDisabled",
-  "away-authority-input-invalid": "formatIpcError.invalidInput",
-  "away-authority-operation-rejected": "formatIpcError.awayAuthorityOperationRejected",
-  "away-authority-unavailable": "formatIpcError.awayAuthorityUnavailable",
   "a2a-remote-input-invalid": "formatIpcError.invalidInput",
   "a2a-remote-operation-rejected": "formatIpcError.remoteA2aOperationRejected",
   "a2a-remote-settings-main-owned": "formatIpcError.managed",
@@ -113,6 +111,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-dynamic-menu": "formatIpcError.invalidPayload",
   "invalid-params": "formatIpcError.invalidParams",
   "invalid-input": "formatIpcError.invalidInput",
+  "invalid-id": "formatIpcError.invalidRequestId",
+  "invalid-owner-away-auto-skip": "formatIpcError.invalidInput",
   "invalid-send-request-id": "formatIpcError.invalidInput",
   "invalid-surface": "formatIpcError.invalidInput",
   "invalid-arguments": "formatIpcError.invalidInput",
@@ -253,7 +253,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "add-failed": "formatIpcError.addFailed",
   "remove-failed": "formatIpcError.removeFailed",
 
-  // ── Deferred queue lifecycle ──
+  // ── Recently denied history ──
   "not-found": "formatIpcError.notFound",
   // ── Shell egress grants (ave:permissions:egress-grant*) ──
   "egress-grant-store-unreadable": "formatIpcError.egressGrantStoreUnreadable",

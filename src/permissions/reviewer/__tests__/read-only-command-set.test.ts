@@ -40,12 +40,16 @@ describe("read-only command set", () => {
 describe("sed script file access", () => {
   // The scanner returns the operand SPAN, not just a yes/no, because the shell path policy has to check the file sed will open. sed takes the filename from just after the command letter to end of line, so the space is optional and recovering the name by splitting on whitespace yielded `w/tmp/x`.
   it.each([
-    ["w with no space", "w/tmp/outside/x.txt", ["/tmp/outside/x.txt"]],
-    ["w with a space", "w /tmp/outside/x.txt", ["/tmp/outside/x.txt"]],
-    ["addressed r", "1r/tmp/outside/x.txt", ["/tmp/outside/x.txt"]],
-    ["s///w flag", "s/a/b/w/tmp/outside/x.txt", ["/tmp/outside/x.txt"]],
-    ["R", "R/tmp/outside/x.txt", ["/tmp/outside/x.txt"]],
-    ["two lines", "w/tmp/a\nr/tmp/b", ["/tmp/a", "/tmp/b"]],
+    ["w with no space", "w/tmp/outside/x.txt", [{ value: "/tmp/outside/x.txt", effect: "write" }]],
+    ["w with a space", "w /tmp/outside/x.txt", [{ value: "/tmp/outside/x.txt", effect: "write" }]],
+    ["addressed r", "1r/tmp/outside/x.txt", [{ value: "/tmp/outside/x.txt", effect: "read" }]],
+    ["s///w flag", "s/a/b/w/tmp/outside/x.txt", [{ value: "/tmp/outside/x.txt", effect: "write" }]],
+    ["R", "R/tmp/outside/x.txt", [{ value: "/tmp/outside/x.txt", effect: "read" }]],
+    ["two lines", "w/tmp/a\nr/tmp/b", [{ value: "/tmp/a", effect: "write" }, { value: "/tmp/b", effect: "read" }]],
+    ["W", "W .git/config", [{ value: ".git/config", effect: "write" }]],
+    ["addressed substitution", "1,3s|a|b|w .git/config", [{ value: ".git/config", effect: "write" }]],
+    ["space in a filename", "r input notes.txt", [{ value: "input notes.txt", effect: "read" }]],
+    ["literal filename syntax", "w .git/$NAME;echo data", [{ value: ".git/$NAME;echo data", effect: "write" }]],
   ])("reads the operand of %s", (_label, script, expected) => {
     expect(inspectSedScriptFileAccess(script)).toEqual({
       hasWriteOrExec: true,

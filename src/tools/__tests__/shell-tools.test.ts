@@ -8,7 +8,7 @@ import type { PowerShellArgument, PowerShellValueArgument } from "../powershell-
 import { EventEmitter } from "node:events";
 import childProcess, { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -298,7 +298,7 @@ describe("bash tool", () => {
       }
     });
 
-    it("rejects sensitive path operands before spawning the shell", async () => {
+    it("allows admitted ordinary secret-file operands at execution", async () => {
       const root = mkdtempSync(join(tmpdir(), "ave-bash-sensitive-operand-"));
       const target = join(root, ".ssh", "id_rsa");
       mkdirSync(join(root, ".ssh"), { recursive: true });
@@ -309,14 +309,14 @@ describe("bash tool", () => {
           { command: `cat ${shellQuote(target)}`, timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(root),
         );
-        expect(result.isError).toBe(true);
-        expect(result.output).toContain("Sensitive path:");
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("secret");
       } finally {
         await cleanupTmpDir(root);
       }
     });
 
-    it("rejects bare sensitive filename operands before spawning the shell", async () => {
+    it("allows an admitted bare secret filename at execution", async () => {
       const root = mkdtempSync(join(tmpdir(), "ave-bash-bare-sensitive-"));
       writeFileSync(join(root, ".env"), "SECRET=1\n", "utf8");
       try {
@@ -324,8 +324,8 @@ describe("bash tool", () => {
           { command: "cat .env", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(root),
         );
-        expect(result.isError).toBe(true);
-        expect(result.output).toContain("Sensitive path:");
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("SECRET=1");
       } finally {
         await cleanupTmpDir(root);
       }
@@ -358,17 +358,20 @@ describe("bash tool", () => {
     });
 
     // HOME may be absent on Windows, so each case sets the HOME it means.
-    it("rejects redirection-attached sensitive operands before spawning the shell", async () => {
-      vi.stubEnv("HOME", homedir());
+    it("allows an admitted redirection-attached secret-file read", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-secret-redirect-"));
+      mkdirSync(join(root, ".ssh"));
+      writeFileSync(join(root, ".ssh", "id_rsa"), "inert-key-fixture");
+      vi.stubEnv("HOME", root);
       try {
         const result = await new BashTool().execute(
-          { command: 'cat<"$HOME/.ssh/id_rsa"', timeoutSeconds: SHELL_TIMEOUT_SECONDS },
-          ctx(),
+          { command: 'cat<"$HOME/.ssh/id_rsa"', timeoutSeconds: SHELL_TIMEOUT_SECONDS }, ctx(root),
         );
-        expect(result.isError).toBe(true);
-        expect(result.output).toContain("Sensitive path:");
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("inert-key-fixture");
       } finally {
         vi.unstubAllEnvs();
+        await cleanupTmpDir(root);
       }
     });
 
@@ -1011,11 +1014,11 @@ describe("powershell tool", () => {
       }
     });
 
-    it.each([".ssh/id_rsa", ".env"])("rejects native literal sensitive operand %s", async (operand) => {
+    it.each([".ssh/id_rsa", ".env"])("leaves admitted native literal secret operand %s to the pipeline", async (operand) => {
       const root = mkdtempSync(join(tmpdir(), "ave-pwsh-sensitive-"));
       try {
         const summary = ast([{ name: "Get-Content", arguments: [psLiteral("Get-Content"), psLiteral(operand)] }]);
-        expect(findPowerShellAstPathViolation(summary, root, root, [], false)?.kind).toBe("sensitive-path");
+        expect(findPowerShellAstPathViolation(summary, root, root, [], false)).toBeNull();
       } finally { await cleanupTmpDir(root); }
     });
 

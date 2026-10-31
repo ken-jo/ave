@@ -106,7 +106,6 @@ function governancePolicy(aveHome: string): McpGovernancePolicy {
         allowedCapabilities: ['tools'],
         maxTools: 5,
         toolNamePrefix: 'harbor_notes',
-        toolPermissionMode: 'default',
         connectionTimeoutMs: 30_000,
         maxConcurrentRequests: 4,
       },

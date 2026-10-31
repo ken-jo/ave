@@ -23,15 +23,15 @@ describe("PermissionManager.checkPathScope", () => {
   const allowed = [fold("/Users/example/work/proj")];
 
   describe("Layer 0 — sensitive-path hit", () => {
-    it("flags a ~/.ssh key as sensitiveHit with its pattern", () => {
-      const t = target("/Users/example/.ssh/id_rsa");
+    it("flags a host credential store as sensitiveHit with its pattern", () => {
+      const t = target("/Users/example/.password-store/main.gpg");
       const res = checkWrite({
         canonicalTargets: [t],
         allowedDirectories: allowed,
       });
       expect(res.sensitiveHit).toEqual({
-        filePath: "/Users/example/.ssh/id_rsa",
-        pattern: "**/.ssh/**",
+        filePath: "/Users/example/.password-store/main.gpg",
+        pattern: "**/.password-store/**",
       });
     });
 
@@ -39,13 +39,19 @@ describe("PermissionManager.checkPathScope", () => {
       const res = checkWrite({
         canonicalTargets: [
           target("/Users/example/work/proj/src/index.ts"),
-          target("/Users/example/.aws/credentials"),
-          target("/Users/example/.ssh/id_rsa"),
+          target("/Users/example/Library/Keychains/login.keychain-db"),
+          target("/Users/example/.password-store/main.gpg"),
         ],
         allowedDirectories: allowed,
       });
-      expect(res.sensitiveHit?.filePath).toBe("/Users/example/.aws/credentials");
+      expect(res.sensitiveHit?.filePath).toBe("/Users/example/Library/Keychains/login.keychain-db");
     });
+  });
+
+  it("leaves ordinary secret reads to the decision pipeline", () => {
+    const result = PermissionManager.checkPathScope({ canonicalTargets: [target("/Users/example/work/proj/.env")], allowedDirectories: allowed, effect: "read", blockReadsOutsideWorkingDirectories: false });
+    expect(result.sensitiveHit).toBeNull();
+    expect(result.outOfAllowed).toBeNull();
   });
 
   describe("Layer 1 — out-of-allowed", () => {
@@ -106,14 +112,14 @@ describe("PermissionManager.checkPathScope", () => {
 
   describe("combined — sensitive AND out-of-allowed", () => {
     it("reports both hits independently (executor consumes sensitiveHit first)", () => {
-      // A ~/.ssh key that is also outside the allowed dirs: Layer 0 and Layer 1 both fire in the predicate; the executor's layer-0 deny returns before it ever consults outOfAllowed, but the predicate stays honest.
-      const t = target("/Users/example/.ssh/id_rsa");
+      // A host credential store that is also outside the allowed dirs: Layer 0 and Layer 1 both fire in the predicate; the executor's layer-0 deny returns before it ever consults outOfAllowed, but the predicate stays honest.
+      const t = target("/Users/example/.password-store/main.gpg");
       const res = checkWrite({
         canonicalTargets: [t],
         allowedDirectories: allowed,
       });
-      expect(res.sensitiveHit?.pattern).toBe("**/.ssh/**");
-      expect(res.outOfAllowed?.filePath).toBe("/Users/example/.ssh/id_rsa");
+      expect(res.sensitiveHit?.pattern).toBe("**/.password-store/**");
+      expect(res.outOfAllowed?.filePath).toBe("/Users/example/.password-store/main.gpg");
     });
   });
 
@@ -156,14 +162,14 @@ describe("PermissionManager.checkPathScope", () => {
     });
 
     // Layer 0 runs before the effect is consulted and is not part of the asymmetry: widening reads widened the DIRECTORY boundary, not the deny-list, and a protected path stays unreadable either way.
-    it("keeps the Layer 0 deny for a read of a sensitive path", () => {
+    it("keeps admission denial for a host credential store read", () => {
       const res = PermissionManager.checkPathScope({
-        canonicalTargets: [target("/Users/example/.ssh/id_rsa")],
+        canonicalTargets: [target("/Users/example/.password-store/main.gpg")],
         allowedDirectories: allowed,
         effect: "read",
         blockReadsOutsideWorkingDirectories: false,
       });
-      expect(res.sensitiveHit?.pattern).toBe("**/.ssh/**");
+      expect(res.sensitiveHit?.pattern).toBe("**/.password-store/**");
     });
   });
 

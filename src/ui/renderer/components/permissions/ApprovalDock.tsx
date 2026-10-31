@@ -250,13 +250,12 @@ export function ApprovalDock({
 
   if (!request) return null;
 
-  const isRationale = request.kind === "rationale";
   const title = request.kind === "egress-host"
     ? t("egressApprovalCard.dockTitle")
     : request.kind === "agent-action"
     ? t("toolApprovalDialog.agentActionTitle")
     : t("toolApprovalDialog.toolApprovalTitle");
-  const liveRequestLabel = isRationale ? title : `${title}. ${request.toolName}`;
+  const liveRequestLabel = `${title}. ${request.toolName}`;
   const remaining = Math.max(0, queue.length - 1);
 
   const decide = (
@@ -285,9 +284,9 @@ export function ApprovalDock({
       }}
       data-testid={TEST_IDS.approvalDock}
       data-overlay-position="bottom"
-      data-approval-request-id={isRationale ? undefined : request.id}
-      data-approval-tool-name={isRationale ? undefined : request.toolName}
-      data-approval-args={isRationale ? undefined : canonicalStringify(request.args)}
+      data-approval-request-id={request.id}
+      data-approval-tool-name={request.toolName}
+      data-approval-args={canonicalStringify(request.args)}
       role="region"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
@@ -363,7 +362,6 @@ export function ApprovalLaneCard({
   const titleId = useId();
   const request = queue[0];
   if (!request) return null;
-  const isRationale = request.kind === "rationale";
   const title = request.kind === "egress-host"
     ? t("egressApprovalCard.dockTitle")
     : request.kind === "agent-action"
@@ -374,9 +372,9 @@ export function ApprovalLaneCard({
     <section
       className={`${chatSurface({ elevation: "floating" })} pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(60dvh,28rem)] min-w-0 flex-col overflow-hidden @max-[14rem]:overflow-y-auto text-input-bar-foreground`}
       data-testid="approval-lane-card"
-      data-approval-request-id={isRationale ? undefined : request.id}
-      data-approval-tool-name={isRationale ? undefined : request.toolName}
-      data-approval-args={isRationale ? undefined : canonicalStringify(request.args)}
+      data-approval-request-id={request.id}
+      data-approval-tool-name={request.toolName}
+      data-approval-args={canonicalStringify(request.args)}
       role="region"
       aria-labelledby={titleId}
     >

@@ -1,7 +1,7 @@
 /** Permission policy hidden Settings reviewer controls. Provider/model are no longer reviewer-local
  * controls. In Settings, auto mode exposes the read-only prompt panel only; reviewer config stays slash/internal. */
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,9 +33,9 @@ function installApi() {
       removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
-      deferredList: vi.fn(async () => ({ ok: true as const, pending: [], total: 0 })),
-      deferredResolve: vi.fn(async () => ({ ok: true })),
-      onDeferredPending: vi.fn(() => () => undefined),
+      recentlyDeniedList: vi.fn(async () => ({ ok: true as const, entries: [], total: 0 })),
+      recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
+      onRecentlyDeniedChanged: vi.fn(() => () => undefined),
       hookTrustList: vi.fn(async () => ({
         ok: true as const,
         active: [],
@@ -57,8 +57,6 @@ function installApi() {
             settings: {
               mode: "disabled" as const,
               fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
             },
           };
         }
@@ -69,8 +67,6 @@ function installApi() {
           settings: {
             mode: "disabled" as const,
             fallbackOnError: "deny" as const,
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" as const },
           },
         };
       }),

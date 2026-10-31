@@ -1,6 +1,5 @@
 /** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
-import { randomUUID } from "node:crypto";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
@@ -28,6 +27,7 @@ import {
 import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
+  isUserOwnedSurfaceChoice,
   type PermissionReviewSuggestionPayload,
   type PermissionReviewSuggestionReason,
 } from "../../shared/permissions-events.js";
@@ -41,14 +41,7 @@ import { buildApprovalScopeOptions } from "../../permissions/approval-scope-opti
 import type { ApprovalRequestFacts } from "../../permissions/reviewer/approval-sentence-selector.js";
 import { sendToWindow } from "../safe-send.js";
 import { getWorkspaceRootLifecycle } from "../../permissions/workspace-root-lifecycle.js";
-import {
-  NARROWEST_DEFERRED_SCOPE,
-  type DeferredApprovalSource,
-  type DeferredGrantScope,
-} from "../../shared/permission-review-status.js";
-import type { DeferredEntry } from "../../permissions/reviewer/deferred-queue.js";
 import { createLogger } from "../../lib/logger.js";
-import { t } from "../../i18n/index.js";
 import type { IpcDeps } from "../types.js";
 import type {
   PermissionDirCommand,
@@ -59,6 +52,7 @@ import {
 } from "../../permissions/permission-settings-store.js";
 import {
   recordApproval,
+  getUserApprovalGeneration,
   approvalCacheKeyIdentity,
   revokeApprovalByKey,
   listApprovals,
@@ -199,7 +193,6 @@ function createPermissionReviewSuggestionTracker() {
       const pm = deps.conversationLoop.permissionManager;
       if (!pm) return;
       if (pm.getMode() !== "default") return;
-      if (pm.getInteractiveAutoApprove() !== "off" && pm.hasReviewer()) return;
 
       const now = Date.now();
       samples = samples
@@ -251,7 +244,6 @@ export function broadcastPermissionConfigChanged(deps: PermissionConfigBroadcast
 
 export function registerPermissionsHandlers(deps: IpcDeps): void {
   const { conversationLoop, approvalGate, auditLogger } = deps;
-  const deferredResolveInFlight = new Set<string>();
   const reviewSuggestionTracker = createPermissionReviewSuggestionTracker();
   const isNativeApprovalFrame = (event: IpcMainInvokeEvent): boolean => {
     if (!event.sender || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
@@ -699,8 +691,16 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   // ave:approval:request direction is main→renderer (webContents.send); no ipcMain.handle needed
-  ipcMain.handle(PERMISSIONS.approvalRespond, (e, decision: ApprovalDecision) => {
+  ipcMain.handle(PERMISSIONS.approvalRespond, (e, payload: unknown) => {
     if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    if (typeof body.requestId !== "string" ||
+      body.userOwnedSurface !== undefined || body.userOwnedSurfaceReviewFallback !== undefined ||
+      (body.choice !== "allow-once" && body.choice !== "allow-session" && body.choice !== "allow-always" && body.choice !== "deny-once" && body.choice !== "deny-always") ||
+      (body.userOwnedSurfaceChoice !== undefined && !isUserOwnedSurfaceChoice(body.userOwnedSurfaceChoice))) {
+      return { ok: false, error: "invalid-payload", message: "Invalid approval response" };
+    }
+    const decision = body as unknown as ApprovalDecision;
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
     const honoredDecision = approvalGate?.resolveFromDesktopRenderer(decision.requestId, decision, e.sender);
     if (honoredDecision) reviewSuggestionTracker.record(deps, honoredDecision, snapshot);
@@ -873,16 +873,34 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // Deferred inputs and verdicts are DLP-redacted and host-renderer-only; plugin access would expose pending approval and trust state.
-  ipcMain.handle(PERMISSIONS.deferredList, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.deferredList, e);
+  // Denial history is host-only display data; reruns require a fresh user gesture and executor admission.
+  ipcMain.handle(PERMISSIONS.recentlyDeniedList, async (event) => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(auditLogger, PERMISSIONS.recentlyDeniedList, event);
       return UNAUTHORIZED_FRAME;
     }
-    const pm = conversationLoop.permissionManager;
-    const queue = pm?.getDeferredQueue();
-    if (!queue) return { ok: true, pending: [], total: 0 };
-    return { ok: true, pending: queue.listPending(), total: queue.size() };
+    const entries = await conversationLoop.permissionManager?.getRecentlyDenied()?.list() ?? [];
+    return { ok: true, entries };
+  });
+
+  ipcMain.handle(PERMISSIONS.recentlyDeniedRerun, async (event, payload: unknown) => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(auditLogger, PERMISSIONS.recentlyDeniedRerun, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!isNativeApprovalFrame(event)) return UNAUTHORIZED_FRAME;
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    if (typeof body.id !== "string" || !/^[a-f0-9-]{36}$/.test(body.id)) {
+      return { ok: false, error: "invalid-id" };
+    }
+    const history = conversationLoop.permissionManager?.getRecentlyDenied();
+    if (!history) return { ok: false, error: "rerun-unavailable" };
+    const result = await history.rerun(body.id);
+    auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+      output: JSON.stringify({ action: "recently_denied_rerun", id: body.id, ok: result.ok }) });
+    return result;
   });
 
   ipcMain.handle(PERMISSIONS.hookTrustList, async (e) => {
@@ -901,223 +919,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       totalDisabled: state.disabled.length,
     };
   });
-
-  /** The one resolve path for a deferred entry. Two gestures reach it; the queue dialog's button and the answer to the question the host asks in the tile that deferred the call;
-   * and both must land the same grant, the same audit row, and the same queue mutation. `approvalSource` is the only thing that differs, and it is recorded rather than branched on. */
-  const resolveDeferredEntry = async (request: {
-    id: string;
-    decision: "approved" | "rejected";
-    reason?: string;
-    approvalSource: DeferredApprovalSource;
-    /** Grant breadth for an `"approved"` decision. `"always"` writes settings.json and must therefore be an explicitly confirmed choice, never a default. */
-    scope: DeferredGrantScope;
-    /** Explicit acknowledgement of adjacency warnings. Never defaulted to true: this is the same widening gate the
-     * foreground card enforces with its warning checkbox, and it lives in `dispatchPermissionDirCommand` for both callers. */
-    acknowledgeWarnings: boolean;
-  }) => {
-    const pm = conversationLoop.permissionManager;
-    const queue = pm?.getDeferredQueue();
-    if (!queue) return { ok: false as const, error: "no-deferred-queue" };
-    if (deferredResolveInFlight.has(request.id)) {
-      return { ok: false as const, error: "already-resolving" };
-    }
-    deferredResolveInFlight.add(request.id);
-    try {
-      const current = queue.get(request.id);
-      if (!current) return { ok: false as const, error: "not-found" };
-      if (current.status !== "pending") {
-        if (current.status === request.decision) return { ok: true as const, entry: current };
-        return { ok: false as const, error: "already-resolved", entry: current };
-      }
-      if (!auditLogger.isPermissionAuditChainReady()) {
-        return { ok: false as const, error: "permission-audit-not-ready" };
-      }
-
-      // An approval must GRANT something. The original call is long dead; its turn ended and its tool_use_id is consumed; so approving can only mean "make the next equivalent call succeed".
-      // When the lane recorded no reconstructable grant there is nothing to make succeed, and recording an approval would tell the user their click did something it did not. Refuse instead.
-      if (request.decision === "approved") {
-        if (!current.grant) {
-          return { ok: false as const, error: "no-grant-available" };
-        }
-        const { dispatchPermissionDirCommand } = await import(
-          "../../permissions/permission-slash.js"
-        );
-        const lifecycle = getWorkspaceRootLifecycle();
-        // Mirrors the dirDispatch handler: a settings mutation must never fall back to the slash dispatcher's settings-only path.
-        if (request.scope === "always" && !lifecycle) {
-          return { ok: false as const, error: "workspace lifecycle unavailable" };
-        }
-        const dirResult = await dispatchPermissionDirCommand(
-          {
-            verb: "allow",
-            path: current.grant.path,
-            session: request.scope === "session",
-            acknowledgeWarnings: request.acknowledgeWarnings,
-          },
-          undefined,
-          lifecycle,
-        );
-        if (!dirResult.ok) {
-          // `requiresAcknowledgement` is the adjacency gate; the same one the foreground card renders as a
-          // warning checkbox. Pass it back so the caller can ask, rather than acknowledging on their behalf.
-          return {
-            ok: false as const,
-            error: "grant-failed",
-            reason: dirResult.error,
-            ...(dirResult.requiresAcknowledgement
-              ? { requiresAcknowledgement: true, warnings: dirResult.warnings ?? [] }
-              : {}),
-          };
-        }
-        if (dirResult.verb !== "allow") {
-          return { ok: false as const, error: "grant-failed", reason: "unexpected result" };
-        }
-        if (dirResult.sessionOnly && dirResult.sessionDirectory) {
-          conversationLoop.addSessionAdditionalDirectory(dirResult.sessionDirectory);
-        }
-        broadcastPermissionConfigChanged(deps);
-      }
-      try {
-        await auditLogger.appendPermissionAuditEntry({
-          decision: "deferred_resolve",
-          auditId: randomUUID(),
-          ts: new Date().toISOString(),
-          trustOrigin: "user-keyboard",
-          tool: current.toolName,
-          source: current.source,
-          category: current.category,
-          reviewerVerdict: current.verdict,
-          queueId: current.id,
-          resolution: request.decision,
-          approvalSource: request.approvalSource,
-          ...(request.decision === "approved" ? { grantScope: request.scope } : {}),
-          ...(request.reason ? { reason: request.reason } : {}),
-        });
-      } catch (err) {
-        return {
-          ok: false as const,
-          error: "permission-audit-write-failed",
-          message: (err as Error).message,
-        };
-      }
-      const resolved = await queue.resolve(
-        request.id,
-        request.decision,
-        request.reason,
-        request.decision === "approved" ? request.scope : undefined,
-      );
-      if (!resolved) return { ok: false as const, error: "not-found" };
-      if (resolved.status !== request.decision) {
-        return { ok: false as const, error: "already-resolved", entry: resolved };
-      }
-      return { ok: true as const, entry: resolved };
-    } finally {
-      deferredResolveInFlight.delete(request.id);
-    }
-  };
-
-  /** Ask in the originating conversation; entries without one remain in the queue dialog.
-   * Offer approval only with a recorded grant; unanswered questions remain pending. */
-  const askDeferredApproval = async (entry: DeferredEntry): Promise<void> => {
-    const gate = deps.askUserQuestionGate;
-    if (!gate || !entry.sessionId) return;
-    const approveChoice = t("be_deferredApproval.choiceApprove");
-    const rejectChoice = t("be_deferredApproval.choiceReject");
-    const deferChoice = t("be_deferredApproval.choiceKeepDeferred");
-    const choices = entry.grant
-      ? [approveChoice, rejectChoice, deferChoice]
-      : [rejectChoice, deferChoice];
-    const response = await gate.ask({
-      sessionId: entry.sessionId,
-      questions: [
-        {
-          question: entry.grant
-            ? t("be_deferredApproval.questionWithGrant", {
-                toolName: entry.toolName,
-                path: entry.grant.path,
-              })
-            : t("be_deferredApproval.question", { toolName: entry.toolName }),
-          choices,
-          summaryHint: t("be_deferredApproval.summaryHint"),
-        },
-      ],
-    });
-    const answer = response.answers?.[0]?.choice;
-    if (answer !== approveChoice && answer !== rejectChoice) return;
-    const result = await resolveDeferredEntry({
-      id: entry.id,
-      decision: answer === approveChoice ? "approved" : "rejected",
-      approvalSource: "question-card",
-      // The narrowest breadth the lane offers. Widening writes settings.json, which is a choice the
-      // queue dialog states in full; a three-word card choice cannot state it, so it never makes it.
-      scope: NARROWEST_DEFERRED_SCOPE,
-      // The adjacency gate is a warning list plus a checkbox, which this card has no room to show. An unacknowledged approval fails here and
-      // the entry stays pending for the queue dialog, which does show them; acknowledging on the user's behalf is the one thing it must not do.
-      acknowledgeWarnings: false,
-    });
-    if (!result.ok) {
-      log.warn("deferred approval answer not applied: %s", result.error);
-    }
-  };
-  // Nothing awaits the question: the deferred call's turn is over, so the ask runs on its own and the catch is what keeps a rejected promise from escaping into the process.
-  conversationLoop.permissionManager?.setDeferredEntryAsk((entry) => {
-    askDeferredApproval(entry).catch((err: unknown) => {
-      log.warn("deferred approval could not be asked: %s", (err as Error).message);
-    });
-  });
-
-  // Resolve a pending entry; gated. The renderer's button click dispatches with `decision` ∈ {"approved","rejected"}.
-  ipcMain.handle(
-    PERMISSIONS.deferredResolve,
-    async (
-      e,
-      params: {
-        id: string;
-        decision: "approved" | "rejected";
-        reason?: string;
-        intent?: unknown;
-        /** Provenance of the approval gesture. Required: callers declare which surface the user gestured on so the audit chain records it. */
-        approvalSource: DeferredApprovalSource;
-        scope?: DeferredGrantScope;
-        acknowledgeWarnings?: boolean;
-      },
-    ) => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, PERMISSIONS.deferredResolve, e);
-        return UNAUTHORIZED_FRAME;
-      }
-      const intent = requireUserKeyboardIntent(params?.intent);
-      if (!intent.ok) return intent;
-      if (
-        !params ||
-        typeof params.id !== "string" ||
-        (params.decision !== "approved" && params.decision !== "rejected") ||
-        (
-          params.reason !== undefined &&
-          (typeof params.reason !== "string" || params.reason.length > 1_000)
-        ) ||
-        (params.approvalSource !== "button" && params.approvalSource !== "question-card") ||
-        (
-          params.scope !== undefined &&
-          params.scope !== "session" &&
-          params.scope !== "always"
-        ) ||
-        (params.acknowledgeWarnings !== undefined &&
-          typeof params.acknowledgeWarnings !== "boolean")
-      ) {
-        return { ok: false, error: "invalid-params" };
-      }
-      return resolveDeferredEntry({
-        id: params.id,
-        decision: params.decision,
-        ...(params.reason === undefined ? {} : { reason: params.reason }),
-        approvalSource: params.approvalSource,
-        // Absent scope resolves narrow. An "always" grant only happens when the caller said so.
-        scope: params.scope ?? NARROWEST_DEFERRED_SCOPE,
-        acknowledgeWarnings: params.acknowledgeWarnings === true,
-      });
-    },
-  );
 
   // Audit entries can contain DLP-redacted tool inputs and decision metadata; gated so foreign frames cannot harvest them.
   ipcMain.handle(
@@ -1201,7 +1002,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   ipcMain.handle(PERMISSIONS.userApprovalRecord, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRecord, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
-    // parity with peer mutating handlers (addRule, removeRule, setMode, dirDispatch, reviewerDispatch, deferredResolve, policySet).
+    // parity with peer mutating handlers (addRule, removeRule, setMode, dirDispatch, reviewerDispatch, recentlyDeniedRerun, policySet).
     // Gates on user-keyboard freshness so a synthetic record submission from a compromised renderer cannot record without an active gesture.
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -1230,7 +1031,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // Server-side SOT lookup. If the approval already resolved/timed out or never existed, reject; we
     // never silently create an orphan entry that the renderer can later use to fish for memory hits.
     const snapshot = approvalGate?.getRequestSnapshot(requestId) ?? null;
-    if (!snapshot) {
+    if (!approvalGate || !snapshot) {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
     if (!approvalGate!.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
@@ -1239,7 +1040,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       if (!approvalGate?.mayRecordFrom(requestId, e.sender)) {
         return { ok: false, error: "not-request-owner", message: "This request is answered from the window that owns its terminal tab" };
       }
-      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, conversationLoop.permissionManager);
+      const manager = conversationLoop.permissionManager;
+      const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
+      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager);
+      if (manager !== undefined) {
+        approvalGate.completeApprovalRuleSave(saveToken, manager.getPolicyEpoch(), saved.ok && saved.action === "allow" ? saved.scope : undefined);
+      }
       if (!saved.ok) return saved;
       auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -1296,6 +1102,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       // Authority fields come from the main-process snapshot, never the renderer body. The renderer
       // contribution is reduced to decision metadata; the exact tool/input identity remains host-owned.
+      const exactSaveToken = decision === "allow" ? approvalGate.beginExactApprovalSave(requestId, getUserApprovalGeneration()) : undefined;
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
@@ -1305,12 +1112,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
         // Throws (→ "managed") when the host request carried a key without its identity mode: never guess which identity to persist under.
-        approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemory),
+        approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey,
+          decision === "deny" && snapshot.approvalMemory?.kind === "key" && snapshot.approvalMemory.scope.kind === "mcp-tool"
+            ? { kind: "args" } : snapshot.approvalMemory),
         ...(decision === "allow" ? {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
         } : {}),
       });
+      if (decision === "allow") approvalGate.completeExactApprovalSave(exactSaveToken, getUserApprovalGeneration(), scope);
       auditLogger.log({
         timestamp: new Date().toISOString(),
         sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,

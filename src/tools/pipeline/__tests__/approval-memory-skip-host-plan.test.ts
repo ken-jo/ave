@@ -88,7 +88,6 @@ describe("foreground approval memory — sealed host shell plan", () => {
 
     expect(result).toMatchObject({
       decision: "allow",
-      layer: 5,
     });
     // No live capability was published in this test. An accidental recompute would report `none`; the audit proves the same invocation plan was used.
     expect(emitSandboxAuditMock).toHaveBeenCalledWith(expect.objectContaining({

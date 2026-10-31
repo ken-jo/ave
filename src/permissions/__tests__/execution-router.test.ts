@@ -966,7 +966,7 @@ describe("execution router", () => {
       expect(() => assertDecidedPathPolicyRelaxations(rebuilt, decided)).not.toThrow();
     });
 
-    it("lets the disposable container run what the host block refuses, in both layers", () => {
+    it("keeps host approval separate from the disposable traversal relaxation", () => {
       const root = mkdtempSync(join(tmpdir(), "execution-router-decision-"));
       try {
         const operatorCapability = issuedDisposableCapability();
@@ -983,7 +983,8 @@ describe("execution router", () => {
             shellExecution: { runsSandboxed: legacyPlan.sandboxed, pathPolicyRelaxations: relaxations },
           });
         expect(decide(pathPolicyRelaxations).reason).not.toBe(POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL);
-        expect(decide([])).toMatchObject({ decision: "deny", reason: POWERSHELL_RECURSIVE_TRAVERSAL_REFUSAL, layer: 0 });
+        expect(decide([])).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+        expect(decide([]).forceModal).toBeUndefined();
 
         const grant = issueExecutionGrant(plan, { toolUseId: "tool-use-test", toolName: "powershell", decidedPathPolicyRelaxations: pathPolicyRelaxations });
         const consumed = consumeExecutionGrantForShellInvocation({

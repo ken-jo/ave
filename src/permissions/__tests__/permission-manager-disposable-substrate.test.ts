@@ -3,7 +3,7 @@ import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // The dispatch input's `disposableSubstrate` must reach the reviewer as the `disposable-container` capability. The executor tests stub `dispatchReviewer`, so this is the one place the argument threading through `resolveReviewerSandboxCacheState` is pinned: drop it and guest calls silently regress to host grading.
 import { afterEach, describe, expect, it } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
-import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import type { RiskClassifier, RiskVerdict, ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { PermissionTestResources } from "./test-resources.js";
 
@@ -23,10 +23,11 @@ function makeManager(): { pm: PermissionManager; seen: ToolInvocationContext[] }
     },
   };
   const pm = new PermissionManager(tmpFile("permissions.json"));
+  pm.setMode("auto");
   setReviewerForTest(pm, {
     classifier,
     cache: resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl")),
-    deferredQueue: new DeferredQueue(tmpFile("deferred-queue.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(tmpFile("recently-denied.jsonl")),
   });
   return { pm, seen };
 }
@@ -50,7 +51,7 @@ describe("PermissionManager.dispatchReviewer — disposable substrate reaches th
       invocationId: randomUUID(),
       ...baseInput,
       disposableSubstrate: { authority: "workload-broker", id: "1".repeat(64) },
-    }, undefined, { defer: "none" });
+    }, undefined, { lane: "foreground-auto" });
     expect(seen).toHaveLength(1);
     expect(seen[0].sandboxCapability).toMatchObject({
       kind: "disposable-container",
@@ -61,7 +62,7 @@ describe("PermissionManager.dispatchReviewer — disposable substrate reaches th
 
   it("grades the same call without a substrate against the host capability", async () => {
     const { pm, seen } = makeManager();
-    await pm.dispatchReviewer("bash", { ...baseInput, invocationId: randomUUID() }, undefined, { defer: "none" });
+    await pm.dispatchReviewer("bash", { ...baseInput, invocationId: randomUUID() }, undefined, { lane: "foreground-auto" });
     expect(seen).toHaveLength(1);
     expect(seen[0].sandboxCapability.kind).not.toBe("disposable-container");
   });

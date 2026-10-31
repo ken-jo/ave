@@ -33,6 +33,25 @@ afterEach(async () => {
 });
 
 describe("grep_files ripgrep engine", () => {
+  it("reads an explicitly admitted secret target while keeping broad searches filtered", async () => {
+    writeFileSync(join(workDir, ".env"), "needle secret-value\n");
+    const explicit = await grep({ path: ".env", pattern: "needle" });
+    expect(explicit.isError, explicit.output).toBe(false);
+    expect(explicit.output).toContain("secret-value");
+    const broad = await grep({ pattern: "needle" });
+    expect(broad.output).not.toContain("secret-value");
+  });
+
+  it("searches an explicitly admitted secret directory while retaining host credential exclusions", async () => {
+    mkdirSync(join(workDir, ".ssh"));
+    writeFileSync(join(workDir, ".ssh", "id_rsa"), "needle synthetic-key\n");
+    writeFileSync(join(workDir, ".ssh", "ave-secrets.json"), "needle host-token\n");
+    const result = await grep({ path: ".ssh", pattern: "needle" });
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("synthetic-key");
+    expect(result.output).not.toContain("host-token");
+  });
+
   it("resolves the ripgrep build of the pinned per-platform package", () => {
     const executable = resolveBundledRipgrep();
     expect(existsSync(executable)).toBe(true);

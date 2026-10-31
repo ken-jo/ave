@@ -1,3 +1,4 @@
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { t } from "../../i18n/index.js";
 import {
   isHostApprovalTimeoutDecision,
@@ -15,19 +16,20 @@ export function approvalFailureOutcome(
 ): { content: string; permission: PermissionCheckResult } | null {
   const expired = isHostApprovalTimeoutDecision(decision);
   if (!expired && !isHostApprovalRejectedDecision(decision)) return null;
-  const reason = expired ? "approval request expired" : "approval rejected by host";
+  const autoSkipped = expired && decision.rememberPattern === NO_APPROVER_MESSAGE;
+  const reason = autoSkipped ? NO_APPROVER_MESSAGE : expired ? "approval request expired" : "approval rejected by host";
   const detail = decision.rememberPattern
     ? maskSensitiveData(decision.rememberPattern).masked
     : t("be_executor.approvalHostRejectedReason");
   return {
-    content: expired ? t("be_executor.approvalExpired", { name: toolName })
+    content: autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
       : t("be_executor.approvalRejectedByHost", { name: toolName, reason: detail }),
     permission: {
       ...permission,
       decision: "deny",
       reason,
       // Denial audit must record why approval ended, not merely why it was requested.
-      denyReasons: [{ layer: permission.layer, source: "approval-gate", reason }],
+      denyReasons: [{ source: "approval-gate", reason }],
     },
   };
 }

@@ -1,5 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runWithAbortableDeadline, sleep } from "../abortable-deadline.js";
+import { raceWithAbort, runWithAbortableDeadline, sleep } from "../abortable-deadline.js";
+
+describe("raceWithAbort", () => {
+  it("stops waiting without a timer and observes a later operation rejection", async () => {
+    const caller = new AbortController();
+    let rejectOperation!: (error: Error) => void;
+    const operation = new Promise<never>((_, reject) => { rejectOperation = reject; });
+    const add = vi.spyOn(caller.signal, "addEventListener");
+    const remove = vi.spyOn(caller.signal, "removeEventListener");
+    const pending = raceWithAbort(operation, caller.signal);
+    const reason = new Error("caller stopped");
+    caller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    expect(remove).toHaveBeenCalledWith("abort", add.mock.calls[0]![1]);
+    rejectOperation(new Error("late operation failure"));
+    await Promise.resolve();
+    add.mockRestore();
+    remove.mockRestore();
+  });
+
+  it("preserves normal completion and removes its cancellation listener", async () => {
+    const caller = new AbortController();
+    const remove = vi.spyOn(caller.signal, "removeEventListener");
+    expect(await raceWithAbort(Promise.resolve("complete"), caller.signal)).toBe("complete");
+    expect(remove).toHaveBeenCalledOnce();
+    remove.mockRestore();
+  });
+});
 
 describe("runWithAbortableDeadline", () => {
   beforeEach(() => {

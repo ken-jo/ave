@@ -45,7 +45,7 @@ describe("explicit host shell authorization", () => {
       expect(webContents.send.mock.calls.some(([channel]) => channel === IPC_APPROVAL_REQUEST)).toBe(false);
       expect(gate.pendingCount).toBe(0);
       expect(mintHostShellExecutionPermit({ plan, binding, approvalDecision: decision })).toBeUndefined();
-      const outcome = approvalFailureOutcome(decision, "bash", { decision: "ask", layer: 2, reason: "host consent" });
+      const outcome = approvalFailureOutcome(decision, "bash", { decision: "ask", reason: "host consent" });
       expect(outcome?.content).toContain("sensitive-data masking");
       expect(outcome?.content).not.toContain("live-abcdefgh");
       expect(outcome?.permission.reason).toBe("approval rejected by host");
@@ -74,7 +74,7 @@ describe("explicit host shell authorization", () => {
     const { cwd, plan, binding, gate, request, webContents } = prepare();
     const onPending = vi.fn();
     gate.observePendingApprovals({ onPending, onSettled: vi.fn() });
-    const pending = gate.requestAndWait({ ...request, isReadOnly: true, executionCwd: "untrusted-display-path" });
+    const pending = gate.requestAndWait({ ...request, executionCwd: "untrusted-display-path" });
     const displayed = webContents.send.mock.calls[0][1] as ApprovalRequest;
     expect(onPending).not.toHaveBeenCalled();
     expect(displayed.args).toEqual(HOST_INPUT);

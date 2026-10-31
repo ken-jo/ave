@@ -1,20 +1,23 @@
 /** AsyncLocalStorage preserves the originating controller boundary across executor, compaction, and lifecycle callbacks. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { RemoteControllerAuthority } from "./chat-origin.js";
+import type { ApprovalSurface } from "./authorization-required.js";
+import type { PermissionCheckContext } from "../permissions/permission-manager.js";
 
 export interface TurnExtensionPolicy {
   readonly allowExternalHooks: boolean;
   /** Host-owned unattended turn state, preserved across lifecycle callbacks. */
   readonly headless?: boolean;
+  readonly ownerUnattended?: boolean;
+  readonly approvalSurface?: ApprovalSurface;
+  readonly remoteControllerAuthority?: RemoteControllerAuthority;
+  readonly floor?: PermissionCheckContext["floor"];
+  readonly overlayTriggerOrigin?: string | null;
+  readonly abortSignal?: AbortSignal;
 }
 
 const DEFAULT_TURN_EXTENSION_POLICY: TurnExtensionPolicy = Object.freeze({
   allowExternalHooks: true,
-});
-
-const REMOTE_CONTROLLER_EXTENSION_POLICY: TurnExtensionPolicy = Object.freeze({
-  // Remote turns cannot implicitly execute owner scripts or extension hooks; exact local tool approval remains separate.
-  allowExternalHooks: false,
 });
 
 export const turnExtensionPolicyContext = new AsyncLocalStorage<TurnExtensionPolicy>();
@@ -23,10 +26,16 @@ export const turnExtensionPolicyContext = new AsyncLocalStorage<TurnExtensionPol
 export function resolveTurnExtensionPolicy(
   authority: RemoteControllerAuthority | undefined,
   headless = false,
+  context: Omit<TurnExtensionPolicy, "allowExternalHooks" | "headless" | "remoteControllerAuthority"> = {},
 ): TurnExtensionPolicy {
-  return authority !== undefined
-    ? REMOTE_CONTROLLER_EXTENSION_POLICY
-    : headless ? { ...DEFAULT_TURN_EXTENSION_POLICY, headless: true } : DEFAULT_TURN_EXTENSION_POLICY;
+  return Object.freeze({
+    ...DEFAULT_TURN_EXTENSION_POLICY,
+    ...context,
+    headless,
+    remoteControllerAuthority: authority,
+    // Remote turns cannot implicitly execute owner scripts or extension hooks.
+    allowExternalHooks: authority === undefined,
+  });
 }
 
 /** Outside controlled remote turns, hooks remain allowed. */

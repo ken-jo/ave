@@ -71,7 +71,7 @@ describe("rate limiting observable through ToolExecutor.executeAll", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
     const permMgr = new PermissionManager("/tmp/nonexistent-rate-limit.json");
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "test allow", layer: 3 });
+    permMgr.checkDetailed = () => ({ decision: "allow", reason: "test allow", });
     const executor = new ToolExecutor(
       registry,
       undefined,

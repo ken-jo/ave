@@ -12,7 +12,7 @@ import type { BootContext } from "../context.js";
 const log = createLogger("ave");
 
 export async function setupMcp(ctx: BootContext): Promise<void> {
-  const { approvalGate, toolRegistry, permissionManager, bootAuditLogger } = ctx;
+  const { approvalGate, toolRegistry, bootAuditLogger } = ctx;
 
   const mcpGovernance = new McpGovernance();
   // Route server elicitation through the host approval gate.
@@ -22,7 +22,6 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     toolRegistry,
     ctx.singleHopNetworkFetch,
     undefined,
-    permissionManager,
     bootAuditLogger,
     mcpInputResolverFactory,
     // Resolve the window manager at emit time; it is installed after boot context creation.

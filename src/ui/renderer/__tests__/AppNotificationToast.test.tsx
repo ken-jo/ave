@@ -172,12 +172,13 @@ describe("App notification toasts", () => {
     expect(await screen.findByTestId("approval-conversation")).toHaveTextContent("Set up diagram views");
   });
 
-  it("opens the deferred queue when its notification belongs to a claimed conversation", async () => {
+  it("opens recently denied when its notification belongs to a claimed conversation", async () => {
     const { api, emitNotificationClicked } = await renderApp();
     await waitFor(() => expect(api.chatGetHistory).toHaveBeenCalled());
     await act(async () => emitNotificationClicked({ kind: "approval",
-      contextRef: { approvalId: "deferred-request", sessionId: MOCK_DEFAULT_SESSION_ID } }));
+      contextRef: { approvalId: "denied-request", sessionId: MOCK_DEFAULT_SESSION_ID } }));
     expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(screen.getByTestId("recently-denied-panel")).toBeVisible();
     expect(api.chatSessionResume).not.toHaveBeenCalledWith(MOCK_DEFAULT_SESSION_ID);
   });
 });

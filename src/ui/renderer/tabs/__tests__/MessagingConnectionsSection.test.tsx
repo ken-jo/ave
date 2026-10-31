@@ -55,7 +55,7 @@ function Harness({ api }: { api: AveApi }) {
   return (
     <MessagingConnectionsSection
       api={api}
-      chatGroupId="main"
+
       expandedRowIds={expandedRowIds}
       onToggleRow={(rowId) => setExpandedRowIds((open) => (
         open.includes(rowId) ? open.filter((id) => id !== rowId) : [...open, rowId]

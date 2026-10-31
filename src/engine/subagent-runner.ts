@@ -1795,22 +1795,7 @@ export class SubAgentRunner {
     // The child shares the parent's SkillOverlay keyed by its own session id, and no `newConversation` ever fires for a child loop. Drop its entries here so a finished
     // run does not leave its skill_read authorization (and the map slot) behind for the rest of the app's life. A later resume re-establishes it with a fresh `skill_load`.
     this.deps.parentDeps.skillOverlay?.clear(childSessionId);
-    // The run that held this lease is over, spawn and resume alike, so the per-run parent-adjudication state it built up (budget, denial streaks)
-    // goes with it. Only the lease holder releases it: a mismatched lease means a newer run owns the session and is still spending that budget.
-    const gate = this.deps.parentDeps.approvalGate;
-    if (!gate) return;
-    try {
-      gate.forgetChildRun(childSessionId);
-    } catch (err) {
-      // Releasing bookkeeping must not turn a finished run into a failed one; the maps stay bounded by their own eviction if this ever throws.
-      log.warn(
-        {
-          childSessionId,
-          errorName: err instanceof Error ? err.name : "UnknownError",
-        },
-        "sub-agent parent-adjudication release failed",
-      );
-    }
+
   }
 
   listRunStatuses(

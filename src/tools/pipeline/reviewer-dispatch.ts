@@ -1,357 +1,80 @@
-import type { ReviewerDispatchInput } from "../../permissions/permission-manager.js";
-/** Classify raw finalized input consistently across reviewer and modal lanes; DLP-masked URLs can change risk classification.
- * Mask only at the reviewer prompt boundary before data reaches the model. */
+import type { PermissionManager, PermissionCheckResult, ReviewerDispatchInput } from "../../permissions/permission-manager.js";
 import type { ToolSource, ToolCategory } from "../types.js";
-import type {
-  PermissionManager,
-  PermissionCheckResult,
-  ReviewerDispatchResult,
-  ReviewerLane,
-} from "../../permissions/permission-manager.js";
 import type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
-import { isReviewerAutoDecisionOutcome } from "../../permissions/permission-manager.js";
-import type { RiskVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import type { ApprovalPurposeSuggestion } from "../../shared/permission-review-status.js";
-import { t } from "../../i18n/index.js";
-import type {
-  ToolPermissionContext,
-  ToolCallMeta,
-  ToolExecutorCallbacks,
-} from "../executor.js";
-import { emitPermissionReview, summarizeInputForDeferred } from "./display-mask.js";
+import type { ToolPermissionContext, ToolCallMeta, ToolExecutorCallbacks } from "../executor.js";
+import { emitPermissionReview } from "./display-mask.js";
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
-import { errorMessage } from "../../shared/error-message.js";
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 
 export function reviewerInvocationId(meta: Pick<ToolCallMeta, "groupId" | "toolUseId">): string {
-  if (typeof meta.groupId !== "string" || meta.groupId.trim().length === 0 ||
-      typeof meta.toolUseId !== "string" || meta.toolUseId.trim().length === 0) {
-    throw new JudgeContractError("Automated review requires a tool invocation identity");
-  }
+  if (!meta.groupId?.trim() || !meta.toolUseId?.trim()) throw new JudgeContractError("Automated review requires a tool invocation identity");
   return JSON.stringify([meta.groupId, meta.toolUseId]);
 }
 
-function resolveDispatchedJudge(
-  reviewer: ReviewerDispatchResult,
-  lane: ReviewerLane,
-  userAvailable = true,
-): PermissionCheckResult {
-  const outcome = reviewer.judge;
-  if (!outcome) throw new JudgeContractError("Automated review returned no judge outcome");
-  if (!outcome.judged) {
-    return {
-      decision: lane === "headless" ? "deny" : "ask",
-      reason: `Judge automation paused: ${outcome.skip}`,
-      layer: 5,
-      forceModal: true,
-    };
-  }
-  if (outcome.pause) {
-    const available = lane !== "headless" && userAvailable;
-    const key = outcome.pause === "consecutive"
-      ? available ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedNoUserConsecutive"
-      : available ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal";
-    return { decision: available ? "ask" : "deny", reason: t(key), layer: 5, forceModal: true };
-  }
-  return {
-    decision: outcome.applied ? outcome.decision : lane === "headless" ? "deny" : "ask",
-    reason: outcome.applied ? outcome.rationale : "Judge shadow review requires user approval",
-    layer: 5,
-    ...(outcome.fallback ? { forceModal: true } : {}),
-  };
-}
-
-export async function dispatchReviewerForHeadless(
-  permissionManager: PermissionManager | undefined,
-  toolName: string,
-  source: ToolSource,
-  category: ToolCategory,
-  pathFields: readonly string[],
-  finalInput: Record<string, unknown>,
-  allowedDirectories: string[],
-  sensitivePathsAdjacent: string[],
-  context: ToolPermissionContext,
-  evaluationContext: PermissionEvaluationContext,
-  sandboxAttestation: { ownerPluginSandboxRoot?: string },
-  callbacks: ToolExecutorCallbacks | undefined,
-  meta: ToolCallMeta,
-  approvalPurpose: ApprovalPurposeSuggestion | undefined,
-  hostShellExecutionPlan?: HostShellExecutionPlan,
-  abortSignal?: AbortSignal,
-  auditInput?: Record<string, unknown>,
-  /** Conversation whose turn this call belongs to; recorded on a deferred entry. */
-  sessionId?: string,
-): Promise<
-  | { allowed: true; permissionResult: PermissionCheckResult }
-  | { allowed: false; message: string; permissionResult: PermissionCheckResult }
-> {
-  if (permissionManager?.getMode() === "strict") {
-    const reason = "strict mode requires explicit user approval";
-    const verdict: RiskVerdict = { level: "high", reason };
-    const deferredId = await permissionManager.getDeferredQueue()?.append({
-      ...(sessionId ? { sessionId } : {}),
-      toolName,
-      source,
-      category,
-      inputSummary: summarizeInputForDeferred(auditInput ?? finalInput),
-      evaluationContext,
-      verdict,
-    });
-    return {
-      allowed: false,
-      message:
-        t("be_executor.permHoldStrictHeadless", { toolName, source }) +
-        " (no approval surface)" +
-        (deferredId ? ` (deferredId=${deferredId})` : ""),
-      permissionResult: {
-        decision: "deny",
-        reason: "strict headless requires explicit approval: no approval surface",
-        layer: 5,
-        reviewer: { route: "headless", verdict },
-        ...(deferredId ? { deferred: { queueId: deferredId, reviewerVerdict: verdict } } : {}),
-      },
-    };
-  }
-
-  if (!permissionManager?.hasReviewer()) {
-    return {
-      allowed: false,
-      message: t("be_executor.permBlockHeadlessNoReviewer", { toolName, source }) + " (no approval surface)",
-      permissionResult: {
-        decision: "deny",
-        reason: "headless reviewer not wired: no approval surface",
-        layer: 5,
-      },
-    };
-  }
-  emitPermissionReview(callbacks, {
-    status: "reviewing",
-    toolName,
-    toolCategory: category,
-    source,
-    ...meta,
-    ...(approvalPurpose ? { approvalPurpose } : {}),
-  });
-  const reviewer = await permissionManager.dispatchReviewer(
-    toolName,
-    {
-      invocationId: reviewerInvocationId(meta),
-      ...(sessionId ? { sessionId } : {}),
-      source,
-      category,
-      pathFields,
-      finalInput,
-      // Reviewer resolves path args against the SAME cwd Layer 1 enforces with.
-      executionCwd: evaluationContext.executionCwd,
-      auditInput,
-      allowedDirectories,
-      sensitivePathsAdjacent,
-      trustOrigin: context.trustOrigin,
-      evaluationContext,
-      ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent } } : {}),
-      ...(context.approvalCacheKey ? { approvalCacheKey: context.approvalCacheKey } : {}),
-      ...(context.approvalMemory ? { approvalMemory: context.approvalMemory } : {}),
-      ...(sandboxAttestation.ownerPluginSandboxRoot !== undefined
-        ? { ownerPluginSandboxRoot: sandboxAttestation.ownerPluginSandboxRoot }
-        : {}),
-      // Thread worker identity so the reviewer reports the genuine asrt capability for wrapped external workers and scopes the verdict cache by the correct substrate.
-      ...(meta.mcpServerId !== undefined ? { mcpServerId: meta.mcpServerId } : {}),
-      ...(meta.pluginId !== undefined ? { pluginId: meta.pluginId } : {}),
-      ...(meta.workerId !== undefined ? { workerId: meta.workerId } : {}),
-      ...(hostShellExecutionPlan === undefined
-        ? {}
-        : { hostShellExecutionPlan }),
-      ...(context.disposableSubstrate === undefined
-        ? {}
-        : { disposableSubstrate: context.disposableSubstrate }),
-    },
-    {
-      allowedPluginIds: context.allowedPluginIds
-        ? [...context.allowedPluginIds]
-        : undefined,
-      additionalDirectories: context.additionalDirectories ?? [],
-    },
-    { defer: "medium-high", abortSignal },
-  );
-  // V3 SOT; PermissionManager owns the verdict→decision mapping; the pipeline only wires the human-facing message + deferred-queue metadata around
-  // it. The review-status telemetry is derived from the resolved decision so the auto-approve disclosure and the audit decision share one source.
-  const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
-  const judged = resolveDispatchedJudge(reviewer, "headless");
-  const resolved = judged;
-  const decision: PermissionCheckResult = {
-    ...resolved,
-    reviewer: { route: "headless", verdict: reviewer.judge?.judged && reviewer.judge.pause
-      ? { ...reviewer.verdict, reason: resolved.reason } : reviewer.verdict, outcome: reviewer.outcome },
-  };
-  emitPermissionReview(callbacks, {
-    status: !autoDecisionOutcome
-      ? "failed"
-      : decision.decision === "allow" ? "auto_approved" : "needs_approval",
-    toolName,
-    toolCategory: category,
-    source,
-    ...meta,
-    verdictLevel: reviewer.verdict.level,
-    reason: decision.reason,
-    ...(approvalPurpose ? { approvalPurpose } : {}),
-  });
-  if (decision.decision !== "allow") {
-    return {
-      allowed: false,
-      message:
-        t("be_executor.permHoldReviewer", { toolName, source, reason: judged ? decision.reason : reviewer.verdict.reason }) +
-        (reviewer.deferredId ? ` (deferredId=${reviewer.deferredId})` : ""),
-      permissionResult: {
-        ...decision,
-        ...(reviewer.deferredId
-          ? { deferred: { queueId: reviewer.deferredId, reviewerVerdict: reviewer.verdict } }
-          : {}),
-      },
-    };
-  }
-  return {
-    allowed: true,
-    permissionResult: decision,
-  };
-}
-
-export async function dispatchReviewerForInteractiveAuto(
-  permissionManager: PermissionManager | undefined,
-  toolName: string,
-  source: ToolSource,
-  category: ToolCategory,
-  pathFields: readonly string[],
-  finalInput: Record<string, unknown>,
-  allowedDirectories: string[],
-  sensitivePathsAdjacent: string[],
-  context: ToolPermissionContext,
-  evaluationContext: PermissionEvaluationContext,
-  sandboxAttestation: { ownerPluginSandboxRoot?: string },
-  callbacks: ToolExecutorCallbacks | undefined,
-  meta: ToolCallMeta,
-  approvalPurpose: ApprovalPurposeSuggestion | undefined,
-  hostShellExecutionPlan?: HostShellExecutionPlan,
-  abortSignal?: AbortSignal,
-  auditInput?: Record<string, unknown>,
-  sessionId?: string,
+type ReviewArguments = [
+  permissionManager: PermissionManager | undefined, toolName: string, source: ToolSource, category: ToolCategory,
+  pathFields: readonly string[], finalInput: Record<string, unknown>, allowedDirectories: string[],
+  sensitivePathsAdjacent: string[], context: ToolPermissionContext, evaluationContext: PermissionEvaluationContext,
+  sandboxAttestation: { ownerPluginSandboxRoot?: string }, callbacks: ToolExecutorCallbacks | undefined,
+  meta: ToolCallMeta, approvalPurpose: ApprovalPurposeSuggestion | undefined,
+  hostShellExecutionPlan?: HostShellExecutionPlan, abortSignal?: AbortSignal,
+  auditInput?: Record<string, unknown>, sessionId?: string,
   permissionDecision?: ReviewerDispatchInput["permissionDecision"],
-): Promise<PermissionCheckResult | null> {
-  if (context.headless === true) return null;
-  // PermissionManager's resolved route marker is the sole eligibility SOT. Reaching this dispatcher means foreground review was explicitly selected.
-  const mgr = permissionManager;
-  if (!mgr) return null;
-  emitPermissionReview(callbacks, {
-    status: "reviewing",
-    toolName,
-    toolCategory: category,
-    source,
-    ...meta,
-    ...(approvalPurpose ? { approvalPurpose } : {}),
-  });
+];
 
-  let reviewer: Awaited<ReturnType<PermissionManager["dispatchReviewer"]>>;
-  try {
-    reviewer = await mgr.dispatchReviewer(
-      toolName,
-      {
-        invocationId: reviewerInvocationId(meta),
-        ...(category === "shell" && permissionDecision?.layer === 2
-          && permissionDecision.reviewer?.route === "foreground-auto" ? { permissionDecision } : {}),
-        ...(sessionId === undefined ? {} : { sessionId }),
-        source,
-        category,
-        pathFields,
-        finalInput,
-        // Reviewer resolves path args against the SAME cwd Layer 1 enforces with.
-        executionCwd: evaluationContext.executionCwd,
-        auditInput,
-        allowedDirectories,
-        sensitivePathsAdjacent,
-        trustOrigin: context.trustOrigin,
-        evaluationContext,
-        ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent } } : {}),
-        ...(context.approvalCacheKey ? { approvalCacheKey: context.approvalCacheKey } : {}),
-        ...(context.approvalMemory ? { approvalMemory: context.approvalMemory } : {}),
-        ...(sandboxAttestation.ownerPluginSandboxRoot !== undefined
-          ? { ownerPluginSandboxRoot: sandboxAttestation.ownerPluginSandboxRoot }
-          : {}),
-        // Thread MCP/plugin worker identity (see headless dispatch).
-        ...(meta.mcpServerId !== undefined ? { mcpServerId: meta.mcpServerId } : {}),
-        ...(meta.pluginId !== undefined ? { pluginId: meta.pluginId } : {}),
-        ...(meta.workerId !== undefined ? { workerId: meta.workerId } : {}),
-        ...(hostShellExecutionPlan === undefined
-          ? {}
-          : { hostShellExecutionPlan }),
-        ...(context.disposableSubstrate === undefined
-          ? {}
-          : { disposableSubstrate: context.disposableSubstrate }),
-      },
-      {
-        allowedPluginIds: context.allowedPluginIds
-          ? [...context.allowedPluginIds]
-          : undefined,
-        additionalDirectories: context.additionalDirectories ?? [],
-      },
-      { defer: "none", abortSignal },
-    );
-  } catch (err) {
-    emitPermissionReview(callbacks, {
-      status: "failed",
-      toolName,
-      toolCategory: category,
-      source,
-      ...meta,
-      reason: errorMessage(err),
-      ...(approvalPurpose ? { approvalPurpose } : {}),
-    });
-    throw err;
-  }
+async function dispatchReview(args: ReviewArguments, headless: boolean): Promise<PermissionCheckResult> {
+  const [manager, toolName, source, category, pathFields, finalInput, allowedDirectories, sensitivePathsAdjacent,
+    context, evaluationContext, sandboxAttestation, callbacks, meta, approvalPurpose, hostShellExecutionPlan,
+    abortSignal, auditInput, sessionId, permissionDecision] = args;
+  if (!manager) throw new JudgeContractError("Permission review requires the permission manager");
+  const initial = permissionDecision as PermissionCheckResult | undefined ?? manager.checkDetailed(toolName, source, category, undefined, {
+    ...context, sessionId, projectRulesCwd: evaluationContext.executionCwd,
+  });
+  if (!initial.reviewer) return initial;
+  emitPermissionReview(callbacks, { status: "reviewing", toolName, toolCategory: category, source, ...meta,
+    ...(approvalPurpose ? { approvalPurpose } : {}) });
+  const review = await manager.dispatchReviewer(toolName, {
+    invocationId: reviewerInvocationId(meta), sessionId, source, category, pathFields, finalInput,
+    rationaleAvailable: context.rationaleAvailable === true,
+    executionCwd: evaluationContext.executionCwd, auditInput, allowedDirectories, sensitivePathsAdjacent,
+    trustOrigin: context.trustOrigin, evaluationContext, permissionDecision: initial,
+    ...(context.userIntent ? { conversationContext: { recentUserMessage: context.userIntent, ...(context.currentTaskStep ? { currentTaskStep: context.currentTaskStep } : {}) } } : {}),
+    ...(context.approvalCacheKey ? { approvalCacheKey: context.approvalCacheKey } : {}),
+    ...(context.approvalMemory ? { approvalMemory: context.approvalMemory } : {}),
+    ...sandboxAttestation,
+    ...(meta.mcpServerId ? { mcpServerId: meta.mcpServerId } : {}),
+    ...(meta.pluginId ? { pluginId: meta.pluginId } : {}),
+    ...(meta.workerId ? { workerId: meta.workerId } : {}),
+    ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
+    ...(context.disposableSubstrate ? { disposableSubstrate: context.disposableSubstrate } : {}),
+  }, { allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
+    additionalDirectories: context.additionalDirectories ?? [] }, { lane: headless ? "headless" : "foreground-auto", abortSignal });
   if (abortSignal?.aborted) {
-    emitPermissionReview(callbacks, {
-      status: "failed",
-      toolName,
-      toolCategory: category,
-      source,
-      ...meta,
-      reason: "foreground reviewer cancelled by caller",
-      ...(approvalPurpose ? { approvalPurpose } : {}),
-    });
-    // Cancellation is terminal. Deliberately omit reviewer metadata so this result can never be recorded as a fresh/cache text-authorization grant.
-    return {
-      decision: "deny",
-      reason: "foreground reviewer cancelled by caller",
-      layer: 5,
-    };
+    emitPermissionReview(callbacks, { status: "failed", toolName, toolCategory: category, source, ...meta,
+      reason: "Permission review cancelled.", ...(approvalPurpose ? { approvalPurpose } : {}) });
+    abortSignal.throwIfAborted();
   }
-
-
-  // V3 SOT; PermissionManager owns the verdict→decision mapping. Verdicts through the configured inclusive
-  // threshold allow; higher verdicts ask the user. HIGH still requires explicit approval with justification.
-  const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
-  const judged = resolveDispatchedJudge(reviewer, "foreground-auto", context.approvalSurface !== "unavailable");
-  const resolved = judged;
-  const decision: PermissionCheckResult = {
-    ...resolved,
-    reviewer: { route: "foreground-auto", verdict: reviewer.judge?.judged && reviewer.judge.pause
-      ? { ...reviewer.verdict, reason: resolved.reason } : reviewer.verdict, outcome: reviewer.outcome, approvalBasis: reviewer.approvalBasis },
-  };
-  const failedWithoutApprovalSurface =
-    !autoDecisionOutcome && context.approvalSurface === "unavailable";
-  // Review-status telemetry derived from the resolved decision so the auto-approve disclosure and the audit decision share one source.
-  emitPermissionReview(callbacks, {
-    status: failedWithoutApprovalSurface
-      ? "failed"
-      : decision.decision === "allow" ? "auto_approved" : "needs_approval",
-    toolName,
-    toolCategory: category,
-    source,
-    ...meta,
-    verdictLevel: reviewer.verdict.level,
-    reason: judged || failedWithoutApprovalSurface
-      ? decision.reason
-      : reviewer.verdict.reason,
-    ...(approvalPurpose ? { approvalPurpose } : {}),
-  });
-
+  const decision = manager.resolveReviewedPermission(initial, review);
+  emitPermissionReview(callbacks, { status: decision.decision === "allow" ? "auto_approved" : "needs_approval",
+    toolName, toolCategory: category, source, ...meta, verdictLevel: review.verdict.level, reason: decision.reason,
+    ...(approvalPurpose ? { approvalPurpose } : {}) });
   return decision;
+}
+
+export async function dispatchReviewerForRationale(...args: ReviewArguments): Promise<PermissionCheckResult> {
+  return dispatchReview(args, args[8].headless === true);
+}
+
+export async function dispatchReviewerForHeadless(...args: ReviewArguments): Promise<
+  { allowed: true; permissionResult: PermissionCheckResult } | { allowed: false; message: string; permissionResult: PermissionCheckResult }
+> {
+  const permissionResult = await dispatchReview(args, true);
+  return permissionResult.decision === "allow" ? { allowed: true, permissionResult }
+    : { allowed: false, message: permissionResult.reason || NO_APPROVER_MESSAGE, permissionResult };
+}
+
+export async function dispatchReviewerForInteractiveAuto(...args: ReviewArguments): Promise<PermissionCheckResult | null> {
+  return dispatchReview(args, false);
 }

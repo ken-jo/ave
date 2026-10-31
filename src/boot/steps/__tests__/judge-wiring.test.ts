@@ -38,7 +38,6 @@ function reviewer(permissionManager: PermissionManager) {
     readActiveLlm: () => ({ provider: "openai", model: "current-reviewer" }),
     streamProviderFor: () => provider,
     verdictCachePath: join(directory, "verdicts.jsonl"),
-    deferredQueuePath: join(directory, "deferred.jsonl"),
   });
 }
 

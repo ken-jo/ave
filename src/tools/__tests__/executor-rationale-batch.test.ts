@@ -1,3 +1,5 @@
+import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,118 +8,23 @@ import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import { HookRunner } from "../../hooks/hook-runner.js";
+import type { ApprovalGate } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { createDynamicTool } from "../base.js";
-import {
-  RATIONALE_UNKNOWN_SCOPE_SENTINEL,
-  InMemoryHostAnchorRoundCasStore,
-  createActionIdentity,
-  createRationaleRequiredControl,
-} from "../pipeline/rationale-control.js";
-import { createTestRequestAnchor } from "../pipeline/__tests__/rationale-fixtures.js";
-import {
-  createRationaleExecutorControlOutcome,
-} from "../pipeline/rationale-pr1-contract.js";
-import {
-  createRationaleReviewRequiredRecord,
-} from "../pipeline/rationale-ticket-lifecycle.js";
-import type {
-  RationaleControlCandidate,
-  RationaleHostRuntime,
-  RationaleRuntimeMaterialization,
-} from "../pipeline/rationale-orchestrator.js";
+import type { RationaleControlCandidate, RationaleHostRuntime } from "../pipeline/rationale-orchestrator.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import type { ToolCategory } from "../types.js";
 
-function hostRuntime(anchor = createTestRequestAnchor()): {
-  runtime: RationaleHostRuntime;
-  materialize: ReturnType<typeof vi.fn>;
-} {
-  const cas = new InMemoryHostAnchorRoundCasStore();
-  const materialize = vi.fn(
-    (candidate: RationaleControlCandidate): RationaleRuntimeMaterialization => {
-      const canonicalTargets = candidate.canonicalTargets.length > 0
-        ? [...candidate.canonicalTargets]
-        : [RATIONALE_UNKNOWN_SCOPE_SENTINEL];
-      const action = createActionIdentity({
-        anchorId: candidate.requestAnchor.anchorId,
-        invocationTrustOrigin: candidate.invocationTrustOrigin,
-        rationaleProvenance: candidate.rationaleProvenance,
-        toolName: candidate.toolName,
-        toolVersion: candidate.toolVersion,
-        source: candidate.source,
-        category: candidate.category,
-        ...(candidate.pluginId === undefined ? {} : { pluginId: candidate.pluginId }),
-        ...(candidate.mcpServerId === undefined ? {} : { mcpServerId: candidate.mcpServerId }),
-        ...(candidate.workerId === undefined ? {} : { workerId: candidate.workerId }),
-        finalInput: { ...candidate.finalInput },
-        ...(candidate.approvalCacheKey === undefined
-          ? {}
-          : { approvalCacheKey: candidate.approvalCacheKey }),
-        canonicalTargets,
-        requestedEffects: [candidate.category],
-        affectedResources: canonicalTargets[0] === RATIONALE_UNKNOWN_SCOPE_SENTINEL
-          ? [RATIONALE_UNKNOWN_SCOPE_SENTINEL]
-          : ["declared-targets"],
-        requiredAuthority: "mid",
-        policyEpoch: "test-policy-epoch",
-        registryGeneration: "test-registry-generation",
-        sandboxGeneration: "test-sandbox-generation",
-        sandboxExecutionPlan: structuredClone(
-          candidate.sandboxExecutionPlan,
-        ) as Record<string, unknown>,
-      });
-      const reservation = cas.tryReserve({
-        anchor: candidate.requestAnchor,
-        action,
-        triggeringBatchDisposition: candidate.triggeringBatchDisposition,
-        round: 1,
-        now: candidate.now,
-      });
-      if (!reservation) throw new Error("test anchor round was already reserved");
-      const control = createRationaleRequiredControl({
-        anchor: candidate.requestAnchor,
-        action,
-        triggeringBatchDisposition: candidate.triggeringBatchDisposition,
-        anchorRoundReservation: reservation,
-        hostAnchorRoundCas: cas,
-        sealedAction: {
-          toolUseId: candidate.toolUseId,
-          toolName: candidate.toolName,
-          originalInput: { ...candidate.originalInput },
-          finalInput: { ...candidate.finalInput },
-        },
-        eligibilityContext: candidate.eligibilityContext,
-        permission: candidate.permission,
-        now: candidate.now,
-      });
-      return {
-        action,
-        control,
-        ticket: createRationaleReviewRequiredRecord(control, candidate.now),
-        executorControl: createRationaleExecutorControlOutcome(control, candidate.now),
-      };
-    },
-  );
-  return {
-    runtime: {
-      requestAnchor: anchor,
-      rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
-      materializeRationaleControl: materialize,
-    },
-    materialize,
-  };
-}
 
 function registerProbe(
   registry: ToolRegistry,
   input: {
     name: string;
     category: ToolCategory;
-    execute: ReturnType<typeof vi.fn>;
+    execute: (input: unknown) => Promise<string>;
     parallelSafe?: boolean;
   },
 ): void {
@@ -141,18 +48,26 @@ function registerProbe(
 }
 
 function reviewerPermissionManager(directory: string, classify = vi.fn(() => ({
-  level: "medium" as const,
+  level: "high" as const,
   reason: "requires rationale",
 }))): PermissionManager {
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setMode("auto");
-  manager.setInteractiveAutoApprove("low");
+
   setReviewerForTest(manager, {
     classifier: { classify },
     cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
-    deferredQueue: new DeferredQueue(join(directory, "deferred-queue.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(directory, "recently-denied.jsonl")),
   });
   return manager;
+}
+
+function rationaleApprovalGate(): ApprovalGate {
+  return {
+    requestAndWait: vi.fn(async () => {
+      throw new Error("The rationale control must suspend before the approval card");
+    }),
+  } as unknown as ApprovalGate;
 }
 
 const permissionContext = {
@@ -171,6 +86,8 @@ function rationaleOptions(runtime: RationaleHostRuntime) {
 
 describe("ToolExecutor rationale conversation batches", () => {
   it("keeps the existing completed-result path when no anchored runtime is present", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-rationale-read-batch-"));
+    try {
     const registry = new ToolRegistry();
     const first = vi.fn(async () => "first");
     const second = vi.fn(async () => "second");
@@ -186,7 +103,7 @@ describe("ToolExecutor rationale conversation batches", () => {
       execute: second,
       parallelSafe: true,
     });
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, undefined, new PermissionManager(join(directory, "permissions.json")));
 
     const outcome = await executor.executeConversationBatch(
       [
@@ -207,6 +124,9 @@ describe("ToolExecutor rationale conversation batches", () => {
     ]);
     expect(first).toHaveBeenCalledOnce();
     expect(second).toHaveBeenCalledOnce();
+    } finally {
+      await cleanupTmpDir(directory);
+    }
   });
 
   it("returns a separate control, preserves the completed prefix, and cancels later siblings", async () => {
@@ -226,8 +146,8 @@ describe("ToolExecutor rationale conversation batches", () => {
           : { action: "allow" },
       );
       const manager = reviewerPermissionManager(directory);
-      const executor = new ToolExecutor(registry, hooks, manager);
-      const { runtime, materialize } = hostRuntime();
+      const executor = new ToolExecutor(registry, hooks, manager, undefined, rationaleApprovalGate());
+      const { runtime, materialize } = createRationaleHostRuntime();
       const onToolStart = vi.fn();
       const onToolEnd = vi.fn();
 
@@ -269,10 +189,9 @@ describe("ToolExecutor rationale conversation batches", () => {
       expect(candidate.finalInput).toEqual({ payload: "post-hook-raw" });
       expect(candidate.permission).toMatchObject({
         decision: "ask",
-        layer: 5,
+        reasonCode: "reviewer-human-required",
         reviewer: { route: "foreground-auto", outcome: "fresh" },
       });
-      expect(candidate.allowedDirectories.length).toBeGreaterThan(0);
       expect(candidate.sandboxExecutionPlan).toMatchObject({
         version: "rationale-sandbox-execution-plan/v1",
         executionCwd: process.cwd(),
@@ -289,20 +208,22 @@ describe("ToolExecutor rationale conversation batches", () => {
       const execute = vi.fn(async () => "must-not-run");
       registerProbe(registry, { name: "cache_write", category: "write", execute });
       const classify = vi.fn(() => ({
-        level: "medium" as const,
+        level: "high" as const,
         reason: "requires rationale",
       }));
       const executor = new ToolExecutor(
         registry,
         undefined,
         reviewerPermissionManager(directory, classify),
+        undefined,
+        rationaleApprovalGate(),
       );
-      const firstRuntime = hostRuntime();
+      const firstRuntime = createRationaleHostRuntime();
       const first = await executor.executeConversationBatch(
         [{ id: "fresh-trigger", name: "cache_write", input: { payload: "same" } }],
         rationaleOptions(firstRuntime.runtime),
       );
-      const secondRuntime = hostRuntime();
+      const secondRuntime = createRationaleHostRuntime();
       const second = await executor.executeConversationBatch(
         [{ id: "cache-trigger", name: "cache_write", input: { payload: "same" } }],
         rationaleOptions(secondRuntime.runtime),
@@ -341,8 +262,10 @@ describe("ToolExecutor rationale conversation batches", () => {
           registry,
           undefined,
           reviewerPermissionManager(directory),
+          undefined,
+          rationaleApprovalGate(),
         );
-        const { runtime } = hostRuntime();
+        const { runtime } = createRationaleHostRuntime();
         const onToolStart = vi.fn();
         const onToolEnd = vi.fn();
 
@@ -375,4 +298,55 @@ describe("ToolExecutor rationale conversation batches", () => {
       }
     },
   );
+  it("finalizes a reviewer denial once when the prepared runtime cannot offer model choice", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-rationale-ineligible-"));
+    try {
+      const registry = new ToolRegistry();
+      const execute = vi.fn(async () => "must not execute");
+      registerProbe(registry, { name: "network_probe", category: "network", execute });
+      const manager = reviewerPermissionManager(directory);
+      const finalized = vi.spyOn(manager, "resolveReviewerChoice");
+      const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+      const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as unknown as ApprovalGate);
+      const { runtime, materialize } = createRationaleHostRuntime();
+      const outcome = await executor.executeConversationBatch([
+        { id: "ineligible-choice", name: "network_probe", input: {} },
+      ], { ...rationaleOptions({ ...runtime, rationaleProvenance: { startedFromUserKeyboard: false, taint: "none" } }) });
+      expect(outcome.outcome).toBe("completed");
+      expect(materialize).not.toHaveBeenCalled();
+      expect(requestAndWait).toHaveBeenCalledOnce();
+      expect(finalized).toHaveBeenCalledExactlyOnceWith("session-rationale", expect.any(String), "deny");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(directory);
+    }
+  });
+
+  it("runs the existing permission hook before a model-choice fallback card", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-rationale-card-hook-"));
+    try {
+      const registry = new ToolRegistry();
+      const execute = vi.fn(async () => "must not execute");
+      registerProbe(registry, { name: "hooked_network_probe", category: "network", execute });
+      const manager = reviewerPermissionManager(directory);
+      const requestAndWait = vi.fn();
+      const hooks = new ScriptHookManager();
+      const permissionHook = vi.spyOn(hooks, "runPermissionRequest").mockResolvedValue({ decision: "deny", reason: "The permission hook blocks this request", results: [] });
+      const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as unknown as ApprovalGate, hooks);
+      const { runtime, materialize } = createRationaleHostRuntime();
+      const outcome = await executor.executeConversationBatch([
+        { id: "hooked-choice", name: "hooked_network_probe", input: {} },
+      ], rationaleOptions(runtime));
+      expect(outcome.outcome).toBe("rationale-required");
+      const callback = materialize.mock.calls[0]?.[0].requestHumanApproval;
+      if (!callback) throw new Error("Expected the original approval callback");
+      await expect(callback({ requestId: "hooked-card" })).rejects.toMatchObject({ reason: expect.stringContaining("The permission hook blocks this request") });
+      expect(permissionHook).toHaveBeenCalledOnce();
+      expect(requestAndWait).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(directory);
+    }
+  });
+
 });

@@ -59,14 +59,14 @@ export function toolErrorResult(error: string): { output: string; isError: true 
  */
 /**
  * What a builtin's per-input policy hooks (`categoryForInput`,
- * `approvalMemoryScope`, `requiresPerActionApproval`) may know besides the
+ * `approvalMemoryScope`) may know besides the
  * input: the working directory, and the conversation the call belongs to
  * (absent for an unattributed call). Host-supplied, never from tool input.
  */
 export interface ToolPolicyContext {
   readonly cwd?: string;
   readonly sessionId?: string;
-  /** Sealed invocation target, available to the later per-action policy check. */
+  /** Sealed invocation target available to host policy hooks. */
   readonly approvalMemoryScope?: ApprovalMemoryScope;
 }
 
@@ -101,6 +101,7 @@ export interface Tool {
   readonly workerId?: string;
   readonly mcpServerId?: string;
   /** Original server tool identity and conservative annotation summary, set by the host adapter. */
+  readonly mcpReadOnlyHint?: boolean;
   readonly mcpRuleIdentity?: { tool: string; nonDestructive: boolean };
   /** Host-only policy sidecar. It is never serialized onto MCP or passed to plugin input. */
   readonly operationPolicy?: PluginToolOperationPolicy;
@@ -124,11 +125,8 @@ export interface Tool {
    * their arguments carry permission scope. This key scopes policy (deny rules, reviewer cache). It never widens a remembered user decision: those stay on exact-argument identity unless the tool ALSO opts in through {@link approvalMemoryScope}. */
   approvalCacheKey?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string | undefined;
   /** Opt-in to target-wide remembered decisions. Return the target a remembered allow/deny should cover for this input, or `undefined` to keep exact-argument identity. Return a scope only when nothing outside it
-   * changes what the user consented to; arguments that differ inside the scope are still re-reviewed before a remembered allow is reused. May await target observation before sealing the invocation's identity. */
+   * changes what the user consented to; arguments that differ inside the scope are still re-reviewed unless an explicit external-tool scope covers every argument. May await target observation before sealing the invocation's identity. */
   approvalMemoryScope?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd"> & ToolPolicyContext): ApprovalMemoryScope | undefined | Promise<ApprovalMemoryScope | undefined>;
-  /** BUILTIN-only: this input must be decided by a person, once, every time it is asked. When it returns true and the policy outcome is an ask, the executor drops the foreground reviewer and the remembered-approval lanes, and the prompt is an explicit allow-once /
-   * deny-once that records nothing. A deny or a standing allow (allow mode, an allow rule) is left as the policy decided it: this only tightens an ask. Used where the target belongs to the user rather than to the agent's own work; a browser tab the user opened. */
-  requiresPerActionApproval?(input: unknown, ctx?: ToolPolicyContext): boolean;
 
   /** JSON Schema describing the input shape; sent to LLM providers. */
   toJsonSchema(): unknown;
@@ -214,6 +212,7 @@ export interface DynamicToolSpec {
   pluginGeneration?: PluginToolGenerationOwner;
   workerId?: string;
   mcpServerId?: string;
+  mcpReadOnlyHint?: boolean;
   mcpRuleIdentity?: Tool["mcpRuleIdentity"];
   operationPolicy?: PluginToolOperationPolicy;
   /** MCP Apps app→server `tools/call` gate; see {@link Tool.appInvokable}. */
@@ -233,8 +232,6 @@ export interface DynamicToolSpec {
   approvalCacheKey?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => string | undefined;
   /** See {@link Tool.approvalMemoryScope}. */
   approvalMemoryScope?: Tool["approvalMemoryScope"];
-  /** See {@link Tool.requiresPerActionApproval}. */
-  requiresPerActionApproval?: (input: unknown, ctx?: ToolPolicyContext) => boolean;
   /** Raw JSON Schema; used when no Zod schema is available (plugin/MCP). */
   jsonSchema: object;
   execute: (
@@ -259,6 +256,7 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     pluginGeneration: spec.pluginGeneration,
     workerId: spec.workerId,
     mcpServerId: spec.mcpServerId,
+    mcpReadOnlyHint: spec.mcpReadOnlyHint,
     mcpRuleIdentity: spec.mcpRuleIdentity,
     operationPolicy: spec.operationPolicy,
     appInvokable: spec.appInvokable,
@@ -274,9 +272,6 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     ...(spec.approvalMemoryScope === undefined
       ? {}
       : { approvalMemoryScope: spec.approvalMemoryScope }),
-    ...(spec.requiresPerActionApproval === undefined
-      ? {}
-      : { requiresPerActionApproval: spec.requiresPerActionApproval }),
     toJsonSchema: () => spec.jsonSchema,
     isReadOnly: spec.isReadOnly ?? ((): boolean => false),
     execute: spec.execute,

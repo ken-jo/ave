@@ -15,6 +15,7 @@ export interface PowerShellCommandPolicy {
   parameters: readonly string[];
   // Destination bindings whose filesystem paths can send data to a share.
   destination?: PowerShellPathBinding & { kind?: "printer" | "mail" };
+  sourceEffect?: "read" | "write";
   // Native payload grammar; all other catalogue forms remain opaque.
   native?: "opaque" | "cmd" | "wmic" | "dotnet";
   // Credential-store access and explicit native transfer forms remain floors.
@@ -265,8 +266,8 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "new-item": { aliases: ["ni"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: ITEM_PARAMETERS },
   "clear-item": { aliases: ["cli"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
   "remove-item": { aliases: ["ri", "rm", "rmdir", "rd", "del", "erase"], effects: ["provider-write"], parameters: ITEM_PARAMETERS },
-  "copy-item": { aliases: ["cpi", "cp", "copy"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, parameters: [...ITEM_PARAMETERS, "tosession", "fromsession", "container?"] },
-  "move-item": { aliases: ["mi", "mv", "move"], effects: ["provider-write", "file-write"], destination: COPY_DESTINATION, parameters: ITEM_PARAMETERS },
+  "copy-item": { aliases: ["cpi", "cp", "copy"], effects: ["provider-write", "file-write"], sourceEffect: "read", destination: COPY_DESTINATION, parameters: [...ITEM_PARAMETERS, "tosession", "fromsession", "container?"] },
+  "move-item": { aliases: ["mi", "mv", "move"], effects: ["provider-write", "file-write"], sourceEffect: "write", destination: COPY_DESTINATION, parameters: ITEM_PARAMETERS },
   "rename-item": { aliases: ["rni", "ren"], effects: ["provider-write", "dispatch"], destination: { parameters: ["newname"], position: 1 }, parameters: [...ITEM_PARAMETERS, "newname"] },
   "set-content": { aliases: ["sc"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
   "add-content": { aliases: ["ac"], effects: ["provider-write", "file-write"], destination: CONTENT_DESTINATION, parameters: [...ITEM_PARAMETERS, "encoding", "nonewline?"] },
@@ -326,20 +327,23 @@ export const POWERSHELL_COMMAND_POLICIES: Readonly<Record<string, PowerShellComm
   "out-string": { aliases: [], effects: ["local"], parameters: ["inputobject", "width", "stream?"] },
   "get-date": { aliases: [], effects: ["local"], parameters: ["date", "format", "uformat"] },
   "join-path": { aliases: [], effects: ["local"], parameters: ["path", "childpath", "additionalchildpath*", "resolve?"] },
-  "expand-archive": { aliases: [], effects: ["local"], destination: { parameters: ["destinationpath"], position: 1 }, parameters: ["path", "literalpath", "destinationpath", "force?", "passthru?"] },
+  "expand-archive": { aliases: [], effects: ["local"], sourceEffect: "read", destination: { parameters: ["destinationpath"], position: 1 }, parameters: ["path", "literalpath", "destinationpath", "force?", "passthru?"] },
   "tee-object": { aliases: ["tee"], effects: ["file-write"], destination: { parameters: ["filepath", "literalpath"], position: 0, variableParameters: ["variable"] }, parameters: ["filepath", "literalpath", "inputobject", "variable", "append?"] },
-  "copy.exe": { aliases: [], effects: ["file-write"], destination: { parameters: [], position: 1 }, parameters: [] },
-  "xcopy": { aliases: ["xcopy.exe"], effects: ["file-write"], destination: { parameters: [], position: 1 }, parameters: [] },
-  "robocopy": { aliases: ["robocopy.exe"], effects: ["file-write"], destination: { parameters: [], position: 1 }, parameters: [] },
+  "copy.exe": { aliases: [], effects: ["file-write"], native: "opaque", sourceEffect: "read", destination: { parameters: [], position: 1 }, parameters: [] },
+  "xcopy": { aliases: ["xcopy.exe"], effects: ["file-write"], native: "opaque", sourceEffect: "read", destination: { parameters: [], position: 1 }, parameters: [] },
+  "robocopy": { aliases: ["robocopy.exe"], effects: ["file-write"], native: "opaque", sourceEffect: "read", destination: { parameters: [], position: 1 }, parameters: [] },
   "tar": { aliases: ["tar.exe"], effects: ["file-write"], parameters: [] },
   "unzip": { aliases: ["unzip.exe"], effects: ["file-write"], parameters: [] },
   "7z": { aliases: ["7z.exe", "7za", "7za.exe", "7zr", "7zr.exe"], effects: ["file-write"], parameters: [] },
   "new-object": { aliases: [], effects: ["launcher"], parameters: ["typename", "argumentlist*", "comobject", "property"] },
 } satisfies Record<string, PowerShellCommandPolicy>));
 
+const declaredCommandSpellings = new Set(Object.entries(POWERSHELL_COMMAND_POLICIES).flatMap(([name, policy]) => [name, ...policy.aliases]));
+
 function powerShellCommandSpellings(name: string): string[] {
   const policy = POWERSHELL_COMMAND_POLICIES[name];
-  return [name, ...(policy?.native && name.endsWith(".exe") ? [name.slice(0, -4)] : []), ...(policy?.aliases ?? [])];
+  const bareName = policy?.native && name.endsWith(".exe") ? name.slice(0, -4) : undefined;
+  return [name, ...(bareName !== undefined && !declaredCommandSpellings.has(bareName) ? [bareName] : []), ...(policy?.aliases ?? [])];
 }
 
 const commandAliases = new Map(Object.keys(POWERSHELL_COMMAND_POLICIES).flatMap((name) =>

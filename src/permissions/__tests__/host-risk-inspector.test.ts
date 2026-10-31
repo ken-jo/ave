@@ -645,3 +645,10 @@ describe("inspectHostRisk — default-strict baseline", () => {
     expect(signals({ finalInput: { note: "hello" } })).toBe("write");
   });
 });
+
+describe("read-only command language scope", () => {
+  it.each(["Get-ChildItem", "gci", "dir", "Get-ChildItem -Path src -Recurse -Depth 2", "gci -LiteralPath src -File", "dir -Filter *.ts -Force"])("keeps cmdlet proof specific to its command language: %s", command => {
+    expect(isReadOnlyCommand(command, undefined, "powershell")).toBe(true);
+    expect(isReadOnlyCommand(command, undefined, "bash")).toBe(false);
+  });
+});

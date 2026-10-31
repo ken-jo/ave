@@ -80,8 +80,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_read",
       source: "builtin" as const,
       category: "read" as const,
-      layer: 1,
-    });
+      });
     const accepted = [
       logger.appendPermissionAuditEntry(input("before-close-a")),
       logger.appendPermissionAuditEntry(input("before-close-b")),
@@ -152,8 +151,7 @@ describe("AuditLogger permission audit chain", () => {
         category: "read",
         directory: "/tmp",
         directoryAllowed: true,
-        layer: 1,
-      }),
+        }),
     ).rejects.toThrow(/not initialized/);
   });
 
@@ -170,8 +168,7 @@ describe("AuditLogger permission audit chain", () => {
       category: "read",
       directory: "/tmp/x",
       directoryAllowed: true,
-      layer: 1,
-    });
+      });
     expect(entry.prevHash).toBe(computeLineHmac(SECRET, GENESIS_MARKER));
 
     const lines = readPermissionAuditLines(logger.getPermissionAuditLogFile());
@@ -192,8 +189,7 @@ describe("AuditLogger permission audit chain", () => {
       category: "read",
       directory: "/tmp",
       directoryAllowed: true,
-      layer: 1,
-    });
+      });
     await logger.appendPermissionAuditEntry({
       decision: "deny",
       auditId: "id-2",
@@ -202,7 +198,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_write",
       source: "builtin",
       category: "write",
-      denyReasons: [{ layer: 0, reason: "sensitive-path", source: "sensitive-paths" }],
+      denyReasons: [{ reason: "sensitive-path", source: "sensitive-paths" }],
     });
     const lines = readPermissionAuditLines(logger.getPermissionAuditLogFile());
     expect(lines.length).toBe(2);
@@ -238,8 +234,7 @@ describe("AuditLogger permission audit chain", () => {
       category: "read",
       directory: "/app",
       directoryAllowed: true,
-      layer: 6,
-    });
+      });
 
     const lines = readPermissionAuditLines(logger.getPermissionAuditLogFile());
     expect(lines).toHaveLength(1);
@@ -280,7 +275,6 @@ describe("AuditLogger permission audit chain", () => {
       tool: "bash",
       source: "builtin",
       category: "shell",
-      layer: 6,
       reason: "requires explicit Plan-B approval",
     });
     await logger.appendPermissionAuditEntry({
@@ -293,7 +287,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "bash",
       source: "builtin",
       category: "shell",
-      denyReasons: [{ layer: 6, reason: "user denied", source: "tool-executor" }],
+      denyReasons: [{ reason: "user denied", source: "tool-executor" }],
     });
 
     const lines = readPermissionAuditLines(logger.getPermissionAuditLogFile());
@@ -317,34 +311,6 @@ describe("AuditLogger permission audit chain", () => {
     tampered[0] = JSON.stringify(first);
     expect(verifyChain(SECRET, tampered)).toMatchObject({ ok: false });
   });
-  it("appends deferred_resolve entries to the permission audit chain", async () => {
-    const logger = createAuditLogger();
-    await logger.setupPermissionAuditChain(SECRET);
-    await logger.appendPermissionAuditEntry({
-      decision: "deferred_resolve",
-      auditId: "resolve-1",
-      ts: "2026-05-09T00:00:02.000Z",
-      trustOrigin: "user-keyboard",
-      tool: "fs_write",
-      source: "builtin",
-      category: "write",
-      reviewerVerdict: { level: "high", reason: "outside allowed dirs" },
-      queueId: "queue-1",
-      resolution: "approved",
-      approvalSource: "button",
-      reason: "manual review",
-    });
-
-    const lines = readPermissionAuditLines(logger.getPermissionAuditLogFile());
-    expect(lines.length).toBe(1);
-    expect(JSON.parse(lines[0])).toMatchObject({
-      decision: "deferred_resolve",
-      queueId: "queue-1",
-      resolution: "approved",
-      approvalSource: "button",
-    });
-    expect(verifyChain(SECRET, lines)).toEqual({ ok: true });
-  });
 
   it("setupPermissionAuditChain re-bootstraps prevHash from an existing file's tail", async () => {
     const existing = buildChainedEntries(SECRET, [
@@ -365,7 +331,6 @@ describe("AuditLogger permission audit chain", () => {
       source: "builtin",
       category: "shell",
       directory: "/tmp",
-      layer: 6,
       reason: "user confirm",
     });
     const expectedPrev = computeLineHmac(SECRET, JSON.stringify(existing[1]));
@@ -390,8 +355,7 @@ describe("AuditLogger permission audit chain", () => {
         category: "read",
         directory: "/tmp",
         directoryAllowed: true,
-        layer: 1,
-      } as Parameters<AuditLogger["appendPermissionAuditEntry"]>[0]);
+        } as Parameters<AuditLogger["appendPermissionAuditEntry"]>[0]);
     }
     const file = logger.getPermissionAuditLogFile();
     const lines = readPermissionAuditLines(file);
@@ -419,8 +383,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_read",
       source: "builtin",
       category: "read",
-      layer: 1,
-    });
+      });
     const file = logger.getPermissionAuditLogFile();
     const lines = readPermissionAuditLines(file);
     const tail = JSON.parse(lines.at(-1)!) as { auditId: string };
@@ -466,8 +429,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_read",
       source: "builtin",
       category: "read",
-      layer: 1,
-    });
+      });
     expect(appended.prevHash).toBe(computeLineHmac(SECRET, GENESIS_MARKER));
   });
 
@@ -514,8 +476,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_read",
       source: "builtin",
       category: "read",
-      layer: 1,
-    })).rejects.toThrow("simulated seal commit interruption");
+      })).rejects.toThrow("simulated seal commit interruption");
 
     const rebooted = createAuditLogger();
     await expect(rebooted.setupPermissionAuditChain(SECRET, seals)).resolves.toBeUndefined();
@@ -531,8 +492,7 @@ describe("AuditLogger permission audit chain", () => {
     await logger.appendPermissionAuditEntry({
       decision: "allow", auditId: "day-a", ts: now.toISOString(),
       trustOrigin: "user-keyboard", tool: "fs_read", source: "builtin",
-      category: "read", layer: 1,
-    });
+      category: "read", });
     const dayAPath = logger.getPermissionAuditLogFile();
 
     now = new Date("2026-07-24T00:00:01.000Z");
@@ -540,8 +500,7 @@ describe("AuditLogger permission audit chain", () => {
     await logger.appendPermissionAuditEntry({
       decision: "allow", auditId: "day-b", ts: now.toISOString(),
       trustOrigin: "user-keyboard", tool: "fs_read", source: "builtin",
-      category: "read", layer: 1,
-    });
+      category: "read", });
     const dayBPath = logger.getPermissionAuditLogFile();
     expect(dayBPath).not.toBe(dayAPath);
 
@@ -552,8 +511,7 @@ describe("AuditLogger permission audit chain", () => {
     await expect(logger.appendPermissionAuditEntry({
       decision: "allow", auditId: "day-a-return", ts: now.toISOString(),
       trustOrigin: "user-keyboard", tool: "fs_read", source: "builtin",
-      category: "read", layer: 1,
-    })).rejects.toThrow(/entry-hmac-mismatch/);
+      category: "read", })).rejects.toThrow(/entry-hmac-mismatch/);
   });
 
   it("serializes concurrent appends across a UTC epoch transition", async () => {
@@ -567,13 +525,11 @@ describe("AuditLogger permission audit chain", () => {
       logger.appendPermissionAuditEntry({
         decision: "allow", auditId: "rollover-a", ts: now.toISOString(),
         trustOrigin: "user-keyboard", tool: "fs_read", source: "builtin",
-        category: "read", layer: 1,
-      }),
+        category: "read", }),
       logger.appendPermissionAuditEntry({
         decision: "allow", auditId: "rollover-b", ts: now.toISOString(),
         trustOrigin: "user-keyboard", tool: "fs_read", source: "builtin",
-        category: "read", layer: 1,
-      }),
+        category: "read", }),
     ]);
 
     expect(entries.map((entry) => entry.auditId).sort())
@@ -614,8 +570,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_read",
       source: "builtin",
       category: "read",
-      layer: 1,
-    });
+      });
     const activePath = logger.getPermissionAuditLogFile();
     writeFileSync(activePath, `${readFileSync(activePath, "utf-8")}{\"partial\":`, "utf-8");
 
@@ -637,8 +592,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_write",
       source: "builtin",
       category: "write",
-      layer: 2,
-    })).resolves.toMatchObject({ auditId: "after-torn-recovery" });
+      })).resolves.toMatchObject({ auditId: "after-torn-recovery" });
     expect(readPermissionAuditLines(activePath)).toHaveLength(2);
   });
 
@@ -655,8 +609,7 @@ describe("AuditLogger permission audit chain", () => {
       tool: "fs_read",
       source: "builtin",
       category: "read",
-      layer: 1,
-    });
+      });
     const activePath = logger.getPermissionAuditLogFile();
     writeFileSync(activePath, `${readFileSync(activePath, "utf-8")}{"partial":`, "utf-8");
     const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;

@@ -1462,7 +1462,7 @@ above). Scope is intentionally narrow:
   exactly one entry: `PERMISSIONS.setMode` (`permission:set-mode` on the CLI,
   `AveClient.setPermissionMode` on the SDK). Every other gesture-gated
   mutating channel (add/remove rule, policy set, dir/reviewer dispatch,
-  deferred resolve, user-approval record/revoke, sandbox install) stays
+  recent-denial rerun, user-approval record/revoke, sandbox install) stays
   renderer-only under any consent.
 - **Consent wiring** — `src/main/local-api-server.ts`'s
   `buildExternalMutationApprover` surfaces the request to `ApprovalGate` as an
@@ -1707,314 +1707,36 @@ flowchart TB
 6. the LLM backend Fallback           → 위 모두 해당 없으면 LLM 직접 대화
 ```
 
-### 6.3 Tool Permission Model — 10-Layer Pipeline
+### 6.3 Tool Permission Model
 
-> **Reference**: `docs/architecture/permission-policy-design.md` v2.2
-> (full spec — 10-layer evaluation, multi-agent reviewed). This section
-> is the architecture-level summary; defer to the spec for the
-> exhaustive layer detail, decision matrix, and binding decisions.
->
-> §8 Agent Approval System은 **에이전트 행위 승인** (자율 게시 / 외부
-> 송신 / 업무 일지 공개 범위) 을 다룬다. 본 §6.3 은 **개별 도구 호출
-> 권한** 을 다룬다. permission policy Layer 3 의 `network = ask + endpoint` 결정은
-> §8 ApprovalGate 의 입력으로 흐른다 — 두 섹션을 _중복 승인 단계_ 로
-> 오해하지 말 것 (single-decision, single-prompt).
+사용자 소유 브라우저 탭과 호스트 터미널은 공통 세 가지 선택을 대화 세션·표면별로 따로 사용합니다. 전역 모드나 일반 기억 승인이 이를 대신하지 않으며, 오토는 작업과 대상의 논리적 일치만 확인합니다. 실제 주체/오염·유출·입장 차단과 자격증명·결제 보호는 유지합니다.
 
-#### 6.3.0 — Current implementation posture
+전체 [표면 선택 계약](../../architecture/permission-policy-design.md#user-owned-surface-choices)을 따릅니다.
 
-Permission Policy 현재 구현은 **strict single path** 이다. 레거시 호환 fallback 이나
-plugin-specific app branch 를 두지 않는다.
+권한 판정 순서와 모드별 동작은 [오너 승인 결정 트리](../../architecture/permission-decision-tree.md)만을 기준으로 합니다. 이 문서는 근거·실행 경계·승인 화면을 설명하며 별도의 판정 순서를 정의하지 않습니다.
 
-| Surface | Current posture | Future direction |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------- |
-| Plugin tool metadata | SDK manifest schema 의 per-tool `pathFields` 가 filesystem path 판정 metadata 의 SOT 이다. `category` 는 선택적 provider metadata 이며 effective category 는 host-side `inspectHostRisk`/executor policy 가 invocation 별로 산출한다. `meta` 및 향후 host-only category 는 plugin contract 로 자동 확장되지 않는다. | 추가 plugin 도입 시 SDK schema `pathFields` / `workerId` 선언과 plugin sanity test 를 PR merge gate 로 유지 |
-| Runtime modes | 사용자-facing 정책은 `default`(read 허용), `strict`(read 포함 전체 ask), `auto`(권한 리뷰어 기반 자동 검증 — 자동/헤드리스 + 대화형 채팅 양 lane), `allow`(하드 차단 밖 전체 허용) 4개다. | allow mode 는 Layer 0/1/deny/overlay-trigger guard 를 우회하지 않는 opt-in 으로 유지 |
-| Permission IPC | `PERMISSIONS` 가 main / preload / sender-guard test 의 단일 channel SOT. | 새 permission channel 은 반드시 `src/shared/ipc-channels.ts` 에 먼저 추가 |
-| Reviewer | `disabled/rule/llm/strict` 4-mode (issue #664 normalization). `disabled` 는 reviewer 레인 pass-through (LOW), `strict` 는 fail-closed (defer-all) — 둘 다 카테고리 매트릭스/허용 디렉토리는 그대로 적용. `llm` wiring 실패는 silent downgrade 없이 fail-fast. | cost/quality telemetry 로 model default 조정 가능, fallback 은 `deny|rule` 만 |
-| Deferred queue | Headless MED/HIGH verdict 는 사용자가 큐 버튼을 열 때 approve/reject, resolution 은 permission audit chain 에 기록. | §8 approval timeline 과 통합 표시 |
-| Hooks | `hooks.json` command/http executor 제거. `~/.config/ave/hooks/{pre,post,perm}-*.sh` + strict-deny quarantine + typed trust registration 만 허용. | signed hooks follow-up 전까지 `modify` action 금지 |
-| Audit | HMAC chain + daily seal. Recent view 는 tail-scan. | key rotation / archive policy 는 follow-up |
+| 저장 ID | 표시 이름 | 동작 |
+| --- | --- | --- |
+| `strict` | 기본 / Default | 새 설치 기본값. 일반 읽기와 샌드박스 안에서 증명된 읽기 전용 셸은 허용하고 쓰기와 나머지 셸은 확인합니다. |
+| `default` | 쓰기 허용 / Allow writes | 체크포인트로 복구 가능한 프로젝트 파일 변경과 안전한 격리 셸을 허용합니다. 나머지 요청은 승인을 받습니다. |
+| `auto` | auto | 쓰기 허용에 자동 검증을 더합니다. 일반 확인 요청은 리뷰어가 먼저 판단합니다. |
+| `allow` | 허용 / Allow | 일반 요청을 허용하되 입장 차단·deny 규칙·강제 일회 확인은 유지합니다. |
 
-#### 6.3.1 — 10-layer evaluation pipeline (overview)
+기존에 저장한 `default`는 업그레이드 후에도 쓰기 허용으로 동작합니다. 저장 ID를 바꾸거나 기존 사용자의 모드를 새 설치 기본값으로 덮어쓰지 않습니다.
 
-호출 흐름은 input origin classification → numeric-order short-circuit
-→ collected `denyReasons[]`. 각 layer 는 단일 책임을 가지며,
-선행 layer 가 deny 를 반환하면 후속 layer 는 평가하지 않는다 (단
-forensics 용 `denyReasons` 는 plural shape 으로 정의되어 향후 dual-deny
-모드 호환).
+일반 비밀 파일 읽기는 규칙과 모드를 따르고, 비밀 파일 쓰기는 일반 파일 쓰기 규칙을 따릅니다. 호스트 암호화 키·자격증명 DB·쿠키와 토큰 저장소는 호스트 인증 사용 절차를 우회하므로 입장에서 차단합니다. 보호 설정 경로·위험 삭제·프로젝트 탈출·유출·다른 주체의 요청은 이번 한 번만 사람이 승인합니다. 리뷰어·허용 모드·기억된 승인이 이를 대신하지 않습니다.
 
-```mermaid
-flowchart TB
-    INPUT["Origin classify (§9):<br/>user-keyboard / plugin-emitted / llm-tool-arg / file-content"]
+자동 검증은 LOW/MEDIUM을 허용하고 HIGH·오류·중단은 일반 카드로 보냅니다. 연속 3회 또는 한 턴 20회 거부하면 남은 턴은 사람에게 묻습니다. 사람이 승인해도 같은 턴의 자동 검증을 다시 열지 않습니다. 진짜 헤드리스에서는 리뷰어가 먼저 판단하고, 사람에게 물어야 할 때 거부합니다. 모델에는 `Nobody can approve this request; do not retry.`를 전달합니다.
 
-    INPUT --> L0["Layer 0 — Sensitive paths<br/>(deny-list, frozen-canonical realpath)"]
-    L0 --> L1["Layer 1 — Path policy<br/>(additionalDirectories allow-list, writes/exec only)"]
-    L1 --> L2["Layer 2 — Action<br/>(allow / ask / deny + denyReasons[])"]
-    L2 --> L3["Layer 3 — Category × Source × Mode<br/>(read/write/shell/network/meta)"]
-    L3 --> L4["Layer 4 — Subscription scope<br/>(routine.scope discriminated union)"]
-    L4 --> L5["Layer 5 — Reviewer agent<br/>(headless: rule / llm / disabled / strict)"]
-    L5 --> L6["Layer 6 — Hook chain v1<br/>(deny-only, ~/.config/ave/hooks/)"]
-    L6 --> L7["Layer 7 — Audit emit<br/>(discriminated union + HMAC chain)"]
-    L7 --> L8["Layer 8 — Runtime mode<br/>(/permission slash, user-keyboard gated)"]
-    L8 --> L9["Layer 9 — Sandbox (preload, unchanged)"]
+앱이 열려 있으나 오너가 자리를 비운 턴은 헤드리스가 아닙니다. 카드는 기본적으로 무제한 기다립니다. `permissions.ownerAwayAutoSkipMinutes`의 0은 무제한, 양의 정수는 지정한 분 뒤 거부를 뜻합니다. 자동 스킵은 승인이 아닙니다.
 
-    L0 -.->|"deny: sensitive path"| AUDIT_DENY["Audit: AuditDeny"]
-    L1 -.->|"deny: out-of-allowed-dir"| AUDIT_DENY
-    L5 -.->|"headless MED/HIGH"| DEFERRED["Deferred Queue"]
-    L6 -.->|"deny"| AUDIT_DENY
-```
+최근 거부는 크기가 제한된 DLP 마스킹 요약과 실행 권한이 없는 참조만 저장합니다. 실행 인자를 별도로 복사하거나 허가를 저장하지 않습니다. 현재 프로세스의 일회 콜백이나 기존 저장 대화의 원래 도구 호출 참조로 요청을 복원할 수 있으면 재시작 후에도 다시 실행할 수 있습니다. [재실행 해석기](../../../src/permissions/reviewer/recently-denied-replay.ts)는 도구 호출의 유일성, 입력·프로젝트 루트 식별자의 해시, 현재 도구·출처·제공자와 스키마를 다시 검사합니다. 참조가 없거나 달라졌으면 다시 실행할 수 없습니다. 재실행은 사용자 승인자로 입장 검사부터 시작하며 기억된 승인이나 리뷰어로 새 카드를 건너뛰지 않습니다. 이전 `deferred-queue.jsonl`은 권한을 만들지 않습니다.
 
-#### 6.3.2 — Layer reference
+인자 변경 훅의 최종 입력을 승인 대상으로 삼고, 사용자 스크립트 PreToolUse는 대상 승인 전에 실행합니다. 스크립트는 차단만 가능하며 allow 응답은 이의 없음을 뜻합니다. 직접 입력한 터미널 명령은 사용자 행위로 이 판정 트리 밖에 있습니다. 플러그인의 실제 효과는 각각 같은 판정 경로를 통과하며, 도구 전체의 승인이 모든 효과를 허용하지 않습니다.
 
-| Layer | 책임 | Spec § | 주요 산출물 |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------ |
-| 0 | OS / 사용자 자격증명 / Ave 자체 보호 경로 deny-list. realpath 기반 frozen-canonical (TOCTOU 차단). | §3 Layer 0 | `src/permissions/sensitive-paths.ts` |
-| 1 | `additionalDirectories` allow-list — 쓰기/실행만 confine, 읽기는 Layer 0 deny-list 만으로 경계 (`blockReadsOutsideWorkingDirectories` 로 되돌림) + auto-suggest (leaf parent only, re-typed confirm, adjacency warning). | §3 Layer 1 | `src/permissions/allowed-directories.ts` |
-| 2 | Action 결정 (`allow / ask / deny`) + `denyReasons[]` 수집. `confirm` 은 `ask` 의 sub-variant — auto mode 도 silent skip 금지. | §3 Layer 2 | `PermissionCheckResult.denyReasons` |
-| 3 | 5-axis category × source × mode 매트릭스. Open-Closed `ToolCategoryRegistry`. | §3 Layer 3 | `src/permissions/category-registry.ts` |
-| 4 | Routine 의 `scope.pluginIds` discriminated union (`deny-all` / `allow` / `inherit`). Boot 시 `inherit` 은 active set 으로 normalize. | §3 Layer 4 | `routine.scope.*` |
-| 5 | Reviewer agent (multi-vendor) — foreground auto-review LOW allow / MED-HIGH main-owned approval dock, headless MED-HIGH defer. `final = max(rule, llm)`. | §3 Layer 5 | `src/permissions/reviewer/*` |
-| 6 | Hook chain v1 (deny-only). `~/.config/ave/hooks/{pre,post,perm}-*.sh`. Strict-deny quarantine lockfile + DLP-redacted stdin. | §3 Layer 6 | `src/hooks/script-hook-*` |
-| 7 | Discriminated-union audit (`AuditAllow`/`AuditAsk`/`AuditDeny`/`AuditDeferred`/`AuditModeChange`/`AuditManifestViolation`) + HMAC chain + daily seal. | §3 Layer 7 | `src/audit/audit-schema.ts`, `src/audit/hmac-chain.ts` |
-| 8 | `/permission` 슬래시 + user-keyboard origin gate + `--durable` explicit confirm. Modes: `default`, `strict`, `auto`, `allow`. Mode change emits `AuditModeChange`. | §3 Layer 8 | `src/permissions/permission-slash.ts` |
-| 9 | Electron preload / contextBridge 기존 sandbox — permission policy 변경 없음. | §3 Layer 9 | `src/preload.ts` |
+정규·어휘 경로, 모든 변경 대상, 체크포인트, 매니페스트, DLP, SSRF, sender/frame/origin 검사와 실행 직전 효과 식별은 계속 필요합니다. 상세 계약은 [영문 권한 설계](../../architecture/permission-policy-design.md), 훅 설정은 [사용자 훅 가이드](../../guides/user-hooks.md)를 참고하세요.
 
-#### 6.3.3 — Trust origin classification
-
-모든 input 에 4-tier origin 부여. 전파 경로: ToolUseEnvelope → Layer 6
-hook stdin → Layer 7 audit → Layer 8 slash dispatcher.
-
-| Origin | 출처 | Slash dispatch | 비고 |
-| ---------------- | ------------------------------------------------- | -------------- | --------------------------------------- |
-| `user-keyboard` | 사용자가 chat 입력에 직접 타이핑 | ✅ accepted | Layer 8 의 유일한 신뢰 origin |
-| `plugin-emitted` | `triggerConversation.pendingPrompt`, plugin event | ❌ rejected | leading `/` stripped 후 plain text 처리 |
-| `llm-tool-arg` | LLM 가 채운 tool input | ❌ rejected | 동상 |
-| `file-content` | `read_file` 결과를 LLM 이 다시 사용 | ❌ rejected | 동상 |
-
-전체 spec: `docs/architecture/permission-policy-design.md` §9.
-
-#### 6.3.4 — Reviewer agent (multi-vendor)
-
-Foreground auto-review 및 headless write/shell/network/read-out-of-dir 호출에 대한 risk
-classifier. 4-mode (`disabled` / `rule` / `llm` / `strict`) + multi-vendor adapter
-(default OpenAI gpt-4o-mini, Anthropic / Google 도 swap 가능). 항상
-rule classifier 가 baseline 으로 함께 실행되며 `final = max(rule, llm)`
-(LLM downgrade 불가). 현재 foreground auto-review 는 LOW 만 allow + audit 하고
-MED/HIGH 는 main-owned bottom-floating approval dock 에서 사용자 결정을 받는다. 승인은 해당
-요청의 봉인된 tool/input 에만 1회 적용되며 chat 문장 감지나 executor 재시도
-메모리를 권한 근거로 사용하지 않는다. Headless reviewer 는 LOW 만 실행하고
-MED/HIGH 는 deferred queue 에 append 되어 사용자가 큐 버튼을 열 때 surface 된다.
-
-후속 rationale 경로는 boot 이 concrete host coordinator runtime 을 준비하고
-versioned release prerequisite 가 모두 attest 된 경우에만 production 에서
-guarded-on 된다. ConversationLoop 는 ordering 과 coordinator injection 에 같은
-activation predicate 를 사용하며, runtime 준비가 없거나 실패하면 기존 batch 및
-ordinary approval dock 흐름을 유지한다. 활성 경로는 1회 rationale-only round,
-생성 결과와 reviewer 재평가 결과의 독립 기록, 실패 시 동일 approval dock
-fallback, host CAS allow-once 및 현재 권한 재검증을 모두 충족한다.
-
-**Mode semantics (post issue #664 normalization):**
-
-- `disabled` — reviewer 레인 pass-through. 모든 dispatch 는 LOW 로 평가됨.
-  Layer 1-4 의 카테고리 × source × trust 매트릭스 + 디렉토리/sensitive-path
-  체크는 그대로 적용. 사용자가 LLM/rule-based risk 분류 자체를 끄고 싶을
-  때 선택. **Migration warning:** pre-#664 에서 `disabled` 는 "defer-all-HIGH"
-  semantic 이었고 이 의미는 `strict` 로 이전됨. settings.json 에 `mode:"disabled"`
-  를 가진 사용자는 boot-time 에 자동 `strict` 로 마이그레이션되며 warn 로그가
-  발행됨.
-- `rule` — deterministic 36-rule heuristic. LLM 호출 없음.
-- `llm` — multi-vendor LLM classifier + rule composition (`final = max(rule, llm)`).
-- `strict` — fail-closed. 모든 dispatch 는 HIGH 로 평가되어 deferred queue 로
-  routing 됨. Pre-#664 의 `disabled` semantic 과 동일하지만 honest name. 사용자가
-  모든 headless plugin/MCP 변경을 직접 승인하고 싶은 hardened deployments 용.
-
-**Sandbox-write containment (issue #664 P1):** plugin 의 write 가 자기 sandbox
-안에만 있는지 판정하는 로직. **manifest self-attestation 필드
-`toolSchemas[*].writesToOwnSandbox?` 는 #885 Phase R 에서 제거**되었고, 이제
-host 가 worker effect-boundary(sandbox filesystem containment)로 판정한다.
-path field 값이 실제로 `~/.ave/plugins/<pluginId>/` 안에 있으면 LOW 로
-auto-resolve. 검증 실패 시 일반 write 규칙으로 폴백 (sound-by-construction).
-
-**선택 surface:** `/permission reviewer mode disabled|rule|llm|strict`,
-`/permission reviewer fallback deny|rule`,
-`/permission reviewer interactive off|low`. Reviewer 모델은 별도 slash surface 가
-아니며 권한 설정의 `permissions.judge.model` 을 따르고, 비워 두면 지능 설정의 active
-LLM provider/model 을 따른다. 이전 `permissions.reviewer.provider/model` 키는 로드 시
-버려진다. 변경은 settings.json 에 persist + selective
-verdict-cache invalidation.
-
-**Cost optimization:** `~/.ave/permissions/reviewer-cache.jsonl` —
-`sha256(toolName+source+category+trustOrigin+approvalCacheKey+canonicalInputIdentity)`
-기반. `shell` / `network` / `read` / `write` 는 command literal, host,
-path 값이 deterministic risk 를 바꾸므로 sorted literal JSON 을 identity 로
-사용하고, 값에 의존하지 않는 category 만 canonical shape 를 사용한다. HIGH 도
-cache (반복 deny 비용 절감). cache 는 동작 정책을 대체하지 않으며, quota 소진
-시 `fallbackOnError ∈ {deny, rule}` 정책만 적용한다.
-
-전체 spec: §3 Layer 5 + §11 v2.1 binding decisions.
-
-**Files:** `src/permissions/reviewer/risk-classifier.ts`,
-`verdict-cache.ts`, `deferred-queue.ts`,
-`src/ui/renderer/components/permissions/DeferredQueuePanel.tsx`.
-
-#### 6.3.5 — Hook chain (v1 deny-only)
-
-`~/.config/ave/hooks/` (deliberately outside `~/.ave/` — plugin 의
-default allowed dir 안에 hook 디렉토리 두지 않기 위해).
-세 prefix 가 각각 PreToolUse / PostToolUse / PermissionRequest 를
-gate.
-
-| Prefix | Fires when | Output |
-| ----------- | ---------------------------------- | ------------------------------------- |
-| `pre-*.sh` | 도구 실행 전 | `{action: "allow" \| "deny", reason}` |
-| `post-*.sh` | 도구 실행 후 (v1 observe-only) | same |
-| `perm-*.sh` | 승인 게이트가 사용자에게 묻기 직전 | same |
-
-**Wire contract:** stdin/stdout JSON. `trustOrigin` 포함 (origin 별
-hook 정책 가능). DLP-redacted input — secrets / credentials / PII 가
-remote SIEM 으로 새지 않도록 `redactForLLM` 적용.
-
-**Deny-only v1:** `modify` action 은 hook-signing follow-up
-이후로 deferred. v1 의 `allow` 는 _additional approval signal_ — Layer
-0/1/2/3 deny 를 upgrade 하지 못함.
-
-**Fail-safe:** exit !=0 / malformed stdout JSON / >5s timeout → deny.
-Hook trust lockfile (`.lockfile.json`) — boot 시 hash 비교 + 변경/new hook 은
-strict-deny 로 `.disabled/` 이동. Renderer 승인 prompt/modal 은 없다. 사용자가
-`/permission hooks list` 로 확인하고 `/permission hooks accept <name>` 을
-직접 입력한 경우에만 lockfile 에 등록되어 다음 실행부터 trusted hook 으로
-동작한다. 이 typed command 가 명시적 신뢰 등록 표면이다. Boot-time quarantine
-은 HMAC-chained `AuditDeny` 로 남으며, general telemetry `AuditLogger.log`
-에도 전환기 관측용 `input.kind = "hook.quarantined"` 를 double-write 한다.
-Permissions tab 은 `PERMISSIONS.hookTrustList` 를 통해 비차단 알림을 표시한다.
-
-**v1 binding decision (§11 v2.1):** 빈 디렉토리만 ship. Sample hook
-없음 — attack surface 0 부터 시작.
-
-**Files:** `src/hooks/script-hook-types.ts`, `script-hook-runner.ts`,
-`script-hook-manager.ts`, `hook-discovery.ts`,
-`src/boot/steps/hook-system-wiring.ts`.
-
-#### 6.3.6 — Manifest integrity proxy
-
-Manifest 는 각 tool 의 `_meta["ave/pathFields"]` 로 filesystem path 판정
-metadata 를 선언한다 (per-tool category / workerId 는 manifest 필드가 아님 —
-#885 Phase R 에서 제거; host 가 파생/분류). Host 는 이 pathFields 를 filesystem
-path 판정 SOT 로 사용하고, effective category 는 host-side
-`inspectHostRisk`/executor policy 에서 invocation 별로 산출한다.
-Host→plugin fs boundary 에서 `ManifestIntegrityError` 이 발생하면
-fail-closed 로 처리한다:
-
-1. plugin id → process-wide `manifestIntegrityState.disabledPluginIds`.
-2. `AuditManifestViolation` audit entry 발행 (`pluginId`, `toolName`,
-   `attemptedOperation`).
-3. `PERMISSIONS.manifestViolation` IPC → 사용자에게 reinstall
-   prompt.
-4. Disabled plugin 의 후속 tool 호출 fail-deny.
-
-SDK schema/types 와 active plugin manifests 는 `pathFields` 를 선언한다.
-`category` 가 있으면 provider metadata 로만 취급하고, read/write 판정은
-host-observed risk/effect SOT 에서 계산한다. 향후 sandboxed runtime 에서
-fs proxy 를 더 강하게 적용한다. 호환 shim 이나 boot-warn grace 를 두지
-않는다.
-
-**Trade-off:** plugin 이 standard `node:fs` 직접 import 시 우회 가능
-— sandboxed plugin runtime (V8 isolated context) 도입 전까지는 partial
-guard. 사용자 docs 에 명시.
-
-**Files:** `src/permissions/manifest-integrity.ts`,
-`src/plugins/plugin-tool-adapter.ts`. Spec: §3.5.
-
-#### 6.3.7 — Audit schema (discriminated union + HMAC chain)
-
-Discriminated union per `decision` field:
-
-```typescript
-type PermissionAuditEntry =
-  | AuditAllow         // 허용 (layer + 사유)
-  | AuditAsk           // 사용자 컨펌 요청
-  | AuditDeny          // 거부 (denyReasons[])
-  | AuditDeferred      // Layer 5 MED/HIGH → deferred queue
-  | AuditDeferredResolve // user-opened queue resolution
-  | AuditModeChange    // /permission mode 변경
-  | AuditManifestViolation; // §3.5 위반
-```
-
-모든 entry 는 `AuditCommon` (`ts`, `auditId`, `trustOrigin`,
-`prevHash`) 를 공유한다. `prevHash = HMAC(secret, prevSerializedLine)`
-chain — line N 변조 시 line N+1 의 prevHash 가 mismatch (forensics
-로 첫 broken index 식별 가능). 첫 entry 는 `genesis` marker 에 binding.
-
-**Daily seal:** `audit-seal-YYYY-MM-DD` 키로 system keychain 에
-저장. forensics 가 일자별 로 chain + seal 비교 → 변조 시점 좁힘.
-
-**Path protection:** `~/.ave/audit*` 자체가 Layer 0 sensitive
-(write 차단). compromised tool 이 _새 entry_ 추가는 막지만 기존 log
-rewrite 불가능.
-
-**Tool-call channel:** executor hot path 는 tool allow/deny 결정을
-HMAC-chained channel 에 기록한다. General telemetry `AuditLogger.log`
-tool_call 은 renderer/ops parity 검증이 끝날 때까지 유지한다.
-
-**Atomic cutover (No-Fallback):** keychain 미사용 환경 (Electron
-`safeStorage` 미가용) 에서는 0o600 file secret store 만 허용. boot 시
-secret 영구 저장 실패 → 감사 chain 미시작 + 사용자 actionable 에러
-(silent downgrade 금지).
-
-**Files:** `src/audit/audit-schema.ts`, `src/audit/hmac-chain.ts`,
-`src/audit/audit-logger.ts` (`appendPermissionAuditEntry` + `setupPermissionAuditChain`),
-`src/permissions/permission-audit-runner.ts` (show + verify 백엔드).
-
-#### 6.3.8 — `/permission` 슬래시 인터페이스
-
-Spec §3 Layer 8 grammar (final, Phase 5):
-
-```
-/permission                                # show current
-/permission mode strict|default|auto|allow [--durable]
-/permission dir allow <path> [--session]
-/permission dir deny <path>
-/permission dir list
-/permission rules list
-/permission audit show [--last=N]
-/permission audit verify
-/permission reviewer mode disabled|rule|llm
-/permission reviewer fallback deny|rule
-/permission reviewer interactive off|low
-/permission hooks list
-/permission hooks accept <name>
-/permission hooks disable <name>
-/permission hooks reject <name>
-```
-
-**Trust origin gate (security C2):** `dispatchPermissionSlash` 가
-`trustOrigin === "user-keyboard"` 가 아닌 입력은 reject — 호출자는
-leading `/` 를 strip 후 plain text 로 처리 (chat 에 slash hint 로
-오인되지 않도록).
-
-**Hook trust mutations:** `hooks accept|disable|reject` 는 typed
-user-keyboard command 자체가 approval surface 이다. Renderer fallback
-prompt/modal 은 만들지 않는다.
-
-**Directory UI parity:** Permissions tab exposes CRUD for
-`permissions.additionalDirectories` through the same `/permission dir`
-dispatcher IPC path, so slash and settings UI share one mutation path.
-
-**Audit panel UX:** `/permission audit show` 가 side-panel
-(`AuditPanel.tsx`) 을 연다. 마지막 N entries (default 50, max 1000),
-decision-type / tool-name 필터, 행 클릭 시 full discriminated-union
-shape expand. 상단 tamper-evidence 배너 — green check (chain ok +
-seal 일치) / yellow warn (seal 미생성) / red warn (chain broken — 첫
-broken file + line 표시). `/permission audit verify` 는 keychain 의
-`audit-seal-YYYY-MM-DD` 와 chain 을 함께 검증한다.
-
-**Files:** `src/permissions/permission-slash.ts`
-(`dispatchPermissionSlash`, `parsePermission*Command`),
-`src/permissions/permission-audit-runner.ts` (read-only 백엔드),
-`src/ipc/domains/permissions.ts` (IPC handlers),
-`src/ui/renderer/components/permissions/AuditPanel.tsx`,
-`src/ui/renderer/components/permissions/PermissionModeBadge.tsx`.
-
+개별 도구의 판정과 외부 게시 등 업무 행위 승인은 같은 요청을 두 번 묻는 단계가 아닙니다. 실제 효과별 승인과 사용자의 업무 범위 선택을 유지합니다.
 
 #### 6.3.9 — OS 실행 샌드박스 (ASRT)
 
@@ -2182,124 +1904,8 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   없는지 확인해 수정한 배포 파일의 재현성을 검증한다.
   Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린 뒤 자기
   소켓만 다시 바인드한다.
-- **샌드박스 밖 셸과 승인 카드 (오너 결정 2026-10-25)**: 실행 계획이
-  샌드박스가 아닌 셸(샌드박스 꺼짐·불가·미적용, 명시적 호스트 요청, Windows
-  Plan B)은 그 명령에 맞는 정확한 허용 규칙(사용자·프로젝트·이번 세션)이 있을
-  때만 묻지 않고 실행한다. bash 는 `Bash(<command>)`, PowerShell 은
-  `PowerShell(<command>)` 이며 두 방언 규칙은 서로 섞이지 않는다. prefix·도구
-  전체·와일드카드 규칙, 기억된 dock grant, allow 모드, 리뷰어, judge 는 이 규칙을
-  대신하지 못한다. 물을 사람이 없는 headless·routine 턴도 같은 정확한 규칙으로만
-  실행하고, 없으면 거부하고 감사 기록(layer 3 + 규칙 패턴)을 남긴다(I5). 비샌드박스
-  headless 실행에서 floor 나 읽을 수 없는 제한 때문에 확인이 필요한 경우도
-  사유·layer 를 유지한 채 거부한다. 예전에
-  기억한 셸 승인은 이전·표시 없이 비활성이며 설정에서 목록·취소만 된다.
-  - 정확한 명령 규칙은 프로그램 토큰의 모듈명·대소문자와 모든 인자의 인용 형식·
-    내용을 원문 그대로 보존한다. 단어 사이 공백만 정규화하고 머리나 인자에 별도의
-    정규화를 적용하지 않는다. `Alpha\Invoke-Probe` 와 `Beta\Invoke-Probe`,
-    대소문자 변형, `Write-Output '0x10'` 과 `Write-Output 0x10` 은 서로 다른
-    키다. 모듈·basename·대소문자 처리는 탐지·효과 분류·거부/확인 규칙에만 쓴다.
-  - 새 셸 허용 규칙은 세션을 포함해 규칙별 `shellRuleVersion: 1` 을 기록한다.
-    버전이 없거나 다르면 모든 범위에서 조용히 비활성이며, 거부·확인 규칙은
-    버전에 관계없이 제한을 유지한다. 읽기나 무관한 쓰기가 예전 행을 새 버전으로
-    바꾸지 않고, 마이그레이션·새 오류·UI 표시는 없다.
+- **호스트 셸과 승인 카드**: 샌드박스가 없거나 승격한 셸은 [결정 트리](../../architecture/permission-decision-tree.md)의 모드·사람 경로를 따릅니다. 읽기 전용 근거가 있어도 호스트 실행 상태가 우선합니다. 일반 카드에는 접두사 규칙을 저장할 수 있습니다. 호스트 실행 자체는 강제 일회 확인 대상이 아니며, 보호 경로·위험 삭제·탈출·유출·다른 주체 조건은 계속 강제 확인합니다. 실행 계획의 실제 격리 상태와 경로·프로세스·네트워크 경계 검사는 유지합니다.
 
-  - 정확한 허용 규칙은 [리터럴 명령 증명](../../architecture/permission-policy-design.md#literal-command-proof)도
-    통과해야 한다. 비샌드박스 입력이 2,000자를 넘으면 프로젝트 로딩·파싱·명령 규칙·
-    floor 검사 전에 즉시 확인하고 headless 에서는 거부한다. 한도 안에서는
-    파싱·렉서/분석 예산 실패, 활성 확장과 raw 신원의 모호함을 미증명으로
-    처리한다. 확장 없는 인용 인자와 인용된 매개변수 데이터의 신원을 보존하므로
-    `git commit -m 'msg'` 도 기억할 수 있다.
-  - 화면에 보이는 리터럴 코드는 정확한 규칙의 대상이 된다. `python -c`,
-    `sh -c`, `Invoke-Expression` 과 리터럴 위임 명령을 코드 전달자라는 이유로
-    거절하지 않는다. 호스트 셸의 인자만 증명하고 인용된 코드를 다른 방언으로
-    재귀 증명하지 않는다. 파일·stdin·네트워크 간접 실행은 별도로 탐지해 막지
-    않는 한계다. `make`, `python script.py`, `xargs`, 내려받은 코드를 셸에
-    파이프로 넘기는 명령은 저장한 인자가 같아도 나중에 다른 코드를 실행할 수
-    있다. 정확한 규칙은 그 코드의 내용이나 효과를 보증하지 않는다.
-  - 명령 전체의 어느 위치에든 PowerShell 런처 단어가 있으면 그 뒤의
-    모든 토큰을 검사한다. 리터럴 인용 문자열 내부도 제한된 선형 어휘 검사로
-    읽는다. 셸 인용을 제거한 토큰의 모든 코드 포인트는 Unicode 문자·숫자·구두점·
-    기호 또는 U+0020 ASCII 공백이어야 한다. 다른 구분자·제어 문자·결합 문자·
-    미할당 코드 포인트가 있으면 미증명이다. 한글 문자는 리터럴로 남는다.
-    이 검사를 통과한 토큰에서만 앞의 `-`·`/`·U+2013·U+2014·U+2015 를
-    제거하고 소문자로 바꿔 `e` 접두사를 검사한다. `ExecutionPolicy` 도
-    미증명으로 처리하며 인자 바인더의 공백 동작을 흉내 내지 않는다.
-    `-File`·`--`·pipeline/sequence·인용 내부 구분자에서 멈추지 않고 피연산자도
-    필요 없다. wrapper 목록이나 재귀 방언 파서를 추가하지 않는다. 런처는
-    `pwsh`·`pwsh-preview`·`powershell`·`powershell_ise` 와 `.exe` 형식이며
-    모듈·basename·대소문자 처리는 이 탐지에만 쓴다. raw 키는 바꾸지 않는다.
-  - Lane A 의 일반 분석 입력 한도는 8,000자다. 원문 명령 전체의 heredoc
-    delimiter 가 모두 인용되고 기존 floor 분류가 알려진 코드 소비자를 찾지
-    않을 때만 Bash heredoc 본문에 합계 65,536바이트(64 KiB)의 별도 데이터
-    한도를 적용한다. 기존 wrapper·subshell·pipeline 관점도 포함한다. 알려진
-    소비자는 본문 전체를 정상 분석하고 8,000자 한도를 적용한다. 인용 delimiter
-    만으로 수신자가 stdin 을 데이터로 취급한다고 증명하지 않는다.
-    실행 envelope 는 여전히 8,000자 이하다. 본문 범위는 원문 분석으로 정하며,
-    본문을 삭제한 나머지를 재파싱해 증명하거나 별도의 줄 연결 리더를 만들지
-    않는다. 대상 본문은 원문 슬라이스로 보존하고 렉서는 종료 delimiter 줄만 찾는다.
-    일반 단어·런처 검사·증명·코드/floor 검사 입력으로 보내지 않는다. 인용되지 않은 delimiter 가 하나라도 있으면 모든 본문의
-    데이터 예외를 취소한다. 첫 heredoc 연산자가 있는 줄 뒤의 전체 텍스트를
-    정상 리터럴 검사와 일반 한도로 처리한다. 확장 없는 단순 unquoted 본문은
-    그 검사 안에서 허용될 수 있다. 모호한 문법은 닫힌 결과로 처리한다.
-    `cat`·`tee -a` 데이터 쓰기는 대상이 될 수 있고, 알 수 없는 프로그램의
-    stdin 은 기존 간접 실행 한계로 남는다. 새 이름 목록이나 Lane B 코드 전달자
-    게이트는 추가하지 않는다. Lane B 는 원문 전체 2,000자 한도다.
-  - 요청마다 원래 문법의 어휘 표현을 한 번 얻고 리터럴 증명도 한 번 수행한다.
-    구조 뷰·명령 사실·저장 규칙 파싱·정규 경로/조상/카탈로그 결과는 그 요청
-    안에서만 재사용한다. 성공한 명령 분석을 요청 간에 캐시하지 않는다.
-  - 원래 문법 파서가 명령 전체의 실행 word/value 레코드 합계를
-    `MAX_SHELL_ANALYSIS_TOKENS` 400개로 제한한다. 중첩 명령·할당 값·빈 할당·
-    선언 머리도 포함하고 simple command 경계에서 초기화하지 않는다. 예외 대상
-    인용 본문 데이터는 실행 레코드에 포함하지 않는다. 연산자·구분자는 문자 수
-    한도로 제한하며, 레코드 초과는 비싼 결과 직렬화 전에 거부한다. 일반 구조
-    파싱의 기존 안전 한도는 유지한다.
-  - 문자·데이터·전체 레코드 한도를 넘으면 Lane B 는 확인/L6 또는 headless 거부,
-    Lane A 는 모달/L2 로 끝난다. 정확한 규칙·grant·모드·리뷰어가 자동 허용할 수
-    없다. 운영 판정에는 공유 작업 카운터·경과 시간 차단·worker timeout 이 없다.
-    시간 측정은 회귀 테스트 근거일 뿐 판정 권한이 아니다. 표시용 encoded 디코드는
-    권한 결정에 쓰지 않는다.
-
-  - 모든 승인 카드(셸, 네트워크, 정확한 도구 승인, 폴더 접근, 1회성 요청)는
-    하나의 결정 행을 그린다: **거부 ▾ | 이번 세션 동안 허용 ▾ | 한 번만 허용**.
-    거부 드롭다운에 항상 거부, 허용 드롭다운에 이번 세션 동안 허용·이 프로젝트에서
-    항상 허용·모든 곳에서 항상 허용이 있다. 항목을 고르면 옆 버튼이 그 선택을
-    이름으로 보여 주고 누르면 확정하며, 규칙을 고칠 수 있는 선택이면 행 위에
-    **규칙 편집** 버튼이 나온다. 유형별 매핑:
-
-    | 카드 | 항상 거부 | 이번 세션 / 이 프로젝트 / 모든 곳 |
-    |---|---|---|
-    | 셸 | 사용자 전역 거부 규칙 (`Bash(...)` / `PowerShell(...)`) | 세션·프로젝트·사용자 전역 허용 규칙, 편집하지 않으면 호스트가 만든 정확한 규칙 |
-    | 네트워크 | 사용자 전역 `Network(<host>[:<port>])` 거부 규칙 | 같은 수명의 grant, 편집한 규칙은 `Network(...)` 호스트 규칙으로 저장 |
-    | 정확한 도구 승인 | 이 도구·입력의 정확한 거부 (설정에서 편집) | 대화(`allow-session` 으로 응답), 프로젝트 폴더, 모든 곳(사용자 전역) 의 정확한 승인 |
-    | 폴더 접근 | 이 요청의 정확한 거부 (설정에서 편집) | **이 폴더를 항상 허용** = 상위 폴더 grant, 세션·프로젝트는 없음 |
-    | 1회성 요청 | 없음 | 없음 |
-
-    제공하지 않는 선택은 사유와 함께 비활성으로 보인다. 카드는 게이트의 도구 전체
-    `deny-always` 를 보내지 않는다. 렌더러는 `{ action, scope }` 와 편집했을 때만
-    `pattern` 을 보내고, 호스트가 카드의 규칙 문법으로 검사해 이 요청을 결정하는지
-    확인한다. 실패하면 이름 붙은 오류(`invalid-rule`, `rule-does-not-match`,
-    `rule-required`, `scope-not-offered`, `not-request-owner`,
-    `one-shot-not-recordable`, `rule-save-failed`)로 요청은 대기 상태로 남는다.
-    거부 규칙은 와일드카드여도 된다. 와일드카드로 편집한 허용(셸의 ` *`,
-    `Network(*.…)`)은 샌드박스 안 실행에만 적용되며, 편집 중 카드가 경고하고
-    호스트도 `wildcard-allow-sandboxed-only` 로 알린다.
-  - 정확한 도구 승인의 범위는 `session`(루트 대화), `persistent`(프로젝트 폴더의
-    작업 디렉터리 신원에 묶임), `global`(폴더 없음, 모든 프로젝트) 셋이다. 범위와
-    상관없이 거부가 허용보다 우선하고, 허용끼리는 대화 → 프로젝트 → 전역 순으로
-    본다(모두 허용이므로 프로젝트 항목이 전역 항목을 좁히거나 넓히지 않는다).
-    설정 → 권한은 전역 항목을 "모든 곳"으로 보여 주고 취소한다. 호스트가 정확한
-    결정을 기록하지 않는 요청(layer 1/2 ask, 강제 모달, 읽기가 아닌 사유 접두사,
-    원격 폴더 밖 1회성)은 요청에 `exactRecordAllowed: false` 를 실어, 카드가 항상
-    거부를 1회성 사유와 함께 비활성으로 보인다.
-  - `Network(...)` 호스트 규칙(앞의 `*.` 는 하위 도메인)은 grant 보다 먼저 본다:
-    거부 규칙은 연결을 거부하고, 허용 규칙은 public 목적지를 허용하며, 확인 규칙은
-    grant 를 건너뛰고 묻는다. 허용 규칙은 그 요청이 제시한 수명일 때만 결정한다
-    (사용자 규칙은 "항상", 프로젝트 규칙은 "이 프로젝트", 세션 규칙은 "이번 세션"
-    이 제시될 때). 그래서 공유·세션 강도의 연결 신원은 영구 규칙으로 허용되지
-    않는다. 거부·확인 규칙은 어디서나 적용된다. 호스트 규칙은 셸 출처 전용이라
-    터미널 탭의 연결은 조회하지 않고 배너도 저장하지 않는다. 주소 리터럴에는
-    호스트 규칙이 없고, 주소를 이름으로 쓴 `Network(...)` 규칙은 파싱 단계에서
-    거부한다.
 - **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스
   (`osToolSandbox`, Settings → 권한, 또는 `AVE_SANDBOX_ENABLED=1`)는 호스트 셸
   (bash·PowerShell 도구, 작업 공간 터미널)을, 익스텐션 격리
@@ -2540,7 +2146,7 @@ graph TB
 
 | 카테고리 | 빌트인 도구 | 설명 | Permission 기본값 |
 | -------------------- | ---------------------------------------------- | ------------------------- | ------------------------------------------ |
-| **File Operations** | FileRead, FileWrite, FileSearch, FileGrep | 로컬 파일 CRUD + 검색 | FileRead: allow / FileWrite: 복구 가능한 프로젝트 변경 allow, 그 외 ask |
+| **File Operations** | FileRead, FileWrite, FileSearch, FileGrep | 로컬 파일 CRUD + 검색 | 모드·규칙·강제 조건은 결정 트리 참조 |
 | **Search & Index** | TreeSearch, KeywordSearch, HybridSearch | PageIndex + FTS5 검색 | allow (읽기 전용) |
 | **Agent & Comm** | AgentMessage, AgentQuery, HubPost | Agent Hub 통신 | AgentQuery: allow / HubPost: ask (§8 승인) |
 | **Execution** | Bash, PythonExec, APICall | 명령·스크립트·API 실행 | Bash: ask / APICall: ask |
@@ -2550,17 +2156,7 @@ graph TB
 
 **§6.4.X Tool Category — 5-axis taxonomy:**
 
-도구의 **policy axis** 는 5축으로 분리되며 `ToolCategoryRegistry` (Open-Closed pattern) 가 카테고리별 decision lane 을 제공한다. 자세한 의사결정 매트릭스는 `docs/architecture/permission-policy-design.md` §3 Layer 3 참조.
-
-| Category | 의미 | 의사결정 (default mode) | 헤들리스 (routine) | 비고 |
-| --------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------- | ------------------------------------------ |
-| `read` | 조회/검색 (자료를 변경하지 않음) | builtin: allow / plugin: scope-checked | allow | strict mode → ask |
-| `write` | 사용자 데이터 변경 | 복구 가능한 프로젝트 파일 변경 allow, 그 외 ask (auto → 나머지 검증 대상에 reviewer 임계값 적용, allow → allow + audit) | 기존 reviewer 경로 유지 | 보호 경로·탈출·ask/deny·출처·규칙 오류 우선, 체크포인트 불가 시 ask |
-| `shell` | 셸 명령 실행 (Bash 등) | ask + Bash AST 검증 (auto → reviewer LOW allow + AST + audit / MED-HIGH approval dock, allow → allow + AST) | reviewer unless allow mode | AST 검증은 executor-owned gate |
-| `network` | 외부 네트워크 호출 | ask + endpoint surface (auto → reviewer LOW allow + audit / MED-HIGH approval dock, allow → allow + audit) | reviewer unless allow mode | endpoint 추출은 executor-owned surface |
-| `meta` | 제어 흐름 / UI 프리미티브 | `decisionOverride` 따름 | 동일 | host builtin 전용; plugin 사용 금지 |
-
-`strict` 는 mode-first 정책이다. Headless 여부와 무관하게 `read` 포함 모든 도구가 ask 로 승격되며, reviewer routing 은 default/auto 의 mutation category 에만 적용된다.
+도구 카테고리는 읽기·쓰기·셸·네트워크·메타 효과의 근거를 제공합니다. 모드별 결과나 헤드리스 처리의 별도 매트릭스를 두지 않고 [승인된 결정 트리](../../architecture/permission-decision-tree.md)를 따릅니다. `strict`에서도 일반 읽기는 허용하며, 호스트 셸은 읽기 전용 근거보다 호스트 실행 상태가 우선합니다.
 
 **`decisionOverride` (meta 전용):** `always-allow-with-audit` (예: `ask_user_question` — 사용자에게 질문하는 도구 자체를 한번 더 승인 도크에 거는 중복 UX 차단) / `ask` (예: `agent_spawn` — `meta` 이지만 사용자 컨펌 필요).
 

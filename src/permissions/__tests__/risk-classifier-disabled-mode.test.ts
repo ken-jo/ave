@@ -1,57 +1,16 @@
-// Disabled mode always returns LOW without rule/model review; category/source/trust policy still applies.
 import { describe, it, expect } from "vitest";
-import {
-  DisabledRiskClassifier,
-} from "../reviewer/risk-classifier.js";
+import { createRiskClassifier, ReviewerDispatchError } from "../reviewer/risk-classifier.js";
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
 
-describe("DisabledRiskClassifier — issue #664 pass-through", () => {
-  const c = new DisabledRiskClassifier();
-
-  it("write category → LOW pass-through", () => {
-    const v = c.classify(
-      ctx({
-        category: "write",
-        finalInput: { path: "/tmp/output.json" },
-      }),
-    );
-    expect(v.level).toBe("low");
-    expect(v.reason).toMatch(/disabled/);
-    expect(v.reason).toMatch(/pass-through/);
+describe("disabled automatic review", () => {
+  it.each(["read", "write", "shell", "network", "meta"] as const)("produces no automatic verdict for %s", category => {
+    const classifier = createRiskClassifier({ mode: "disabled" });
+    expect(() => classifier.classify(ctx({ category }))).toThrow(ReviewerDispatchError);
+    expect(() => classifier.classify(ctx({ category }))).toThrow("automatic review is unavailable");
   });
 
-  it("shell category with destructive verb → still LOW (reviewer lane bypassed)", () => {
-    // `disabled` short-circuits before any rule fires. The per-tool category × source × trust matrix in PermissionManager (which still applies) is what guards destructive shell commands when this mode is on.
-    const v = c.classify(
-      ctx({
-        category: "shell",
-        finalInput: { command: "rm -rf /" },
-      }),
-    );
-    expect(v.level).toBe("low");
-    expect(v.reason).toMatch(/disabled/);
-  });
-
-  it("network category to untrusted host → still LOW", () => {
-    const v = c.classify(
-      ctx({
-        category: "network",
-        finalInput: { url: "https://evil.example.com/exfil" },
-      }),
-    );
-    expect(v.level).toBe("low");
-    expect(v.reason).toMatch(/disabled/);
-  });
-
-  it("trustOrigin variations do not change the verdict", () => {
-    for (const trustOrigin of [
-      "user-keyboard",
-      "plugin-emitted",
-      "llm-tool-arg",
-      "file-content",
-    ] as const) {
-      const v = c.classify(ctx({ trustOrigin }));
-      expect(v.level).toBe("low");
-    }
+  it.each(["user-keyboard", "plugin-emitted", "llm-tool-arg", "file-content"] as const)("does not grant authority to %s", trustOrigin => {
+    const classifier = createRiskClassifier({ mode: "disabled" });
+    expect(() => classifier.classify(ctx({ trustOrigin }))).toThrow("Permission reviewer is disabled");
   });
 });

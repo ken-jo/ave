@@ -17,6 +17,7 @@ import { isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } fro
 import { liveEgressInvocationCount } from "../egress-invocations.js";
 import { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant, setWorkerEgressAllowlists } from "../egress-runtime.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
+import { scrubShortError } from "../../shared/dlp.js";
 
 const TAB_ID = "terminal:0a1b2c3d-3";
 const OWNER_WINDOW_ID = 1;
@@ -64,6 +65,39 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
     setWorkerEgressAllowlists({ byExtension: new Map([["fixture-plugin", ["127.0.0.1"]]]), modelEndpointHosts: ["127.0.0.1"] });
     useAppOwnedSandboxTempRoot();
     callback = vi.fn(createEgressAskRuntimeCallback({ approvalGate: gate, shellAskEnabled: () => true }));
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const reportProbeFailure = (phase: string, error: unknown) => {
+      let message = error instanceof Error ? error.message.split(/[\r\n]/, 1)[0]! : "non-error failure";
+      message = message.replace(/[\[({].*/, "[DETAILS REDACTED]");
+      for (const value of Object.values(process.env)) if (value && value.length >= 4) message = message.split(value).join("[ENV]");
+      message = scrubShortError(message).replace(/\b(command|profile|config)\s*[:=].*/gi, "$1=[REDACTED]");
+      const rawCode = error !== null && typeof error === "object" && "code" in error ? error.code : undefined;
+      const code = typeof rawCode === "string" && /^[a-z0-9_-]{1,40}$/i.test(rawCode) ? rawCode : "unclassified";
+      console.error("native-runtime-probe-diagnostic", JSON.stringify({ phase, code, message }));
+    };
+    const openListener = SandboxManager.openInvocationListener.bind(SandboxManager);
+    // Observe rejection separately; the caller keeps the original promise and error.
+    vi.spyOn(SandboxManager, "openInvocationListener").mockImplementation((...args) => {
+      try {
+        const pending = openListener(...args);
+        void pending.catch(error => { reportProbeFailure("open-listener", error); });
+        return pending;
+      } catch (error) {
+        reportProbeFailure("open-listener", error);
+        throw error;
+      }
+    });
+    const wrap = SandboxManager.wrapWithSandboxArgv.bind(SandboxManager);
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation((...args) => {
+      try {
+        const pending = wrap(...args);
+        void pending.catch(error => { reportProbeFailure("prepare-wrapper", error); });
+        return pending;
+      } catch (error) {
+        reportProbeFailure("prepare-wrapper", error);
+        throw error;
+      }
+    });
     await initializeRequiredSandbox({ allowedDomains: [] }, callback);
     // The terminal reads the shell scope, which the boot gate seals.
     setShellSandboxRequestedAtBoot(true);

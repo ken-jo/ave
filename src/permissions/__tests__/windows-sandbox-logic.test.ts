@@ -30,11 +30,34 @@ import { buildSandboxedChildEnv } from "../../tools/safe-env.js";
 // Real ASRT surfaces — pin our mirrored constants + the binShell adapter against the package so upstream drift fails CI (not silently desyncs).
 import {
   DEFAULT_WINDOWS_PROXY_PORT_RANGE as ASRT_PROXY_PORT_RANGE,
+  type FilesystemPathEntry,
 } from "@anthropic-ai/sandbox-runtime";
 import { parseWindowsBinShell, rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { setProcessPlatform as forcePlatform } from "../../__tests__/test-helpers.js";
 
 const ORIGINAL_PLATFORM = process.platform;
+
+function expectWriteDenyCoverage(actual: unknown, required: readonly FilesystemPathEntry[]): void {
+  expect(Array.isArray(actual)).toBe(true);
+  const denies = actual as FilesystemPathEntry[];
+  const windowsPaths = process.platform === "win32" || ORIGINAL_PLATFORM === "win32";
+  const keyFor = (path: string) => windowsPaths
+    ? path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+    : path.replace(/\/+$/, "");
+  for (const target of required) {
+    if (typeof target === "string" && /[*?\[\]]/.test(target)) {
+      expect(denies.filter((entry): entry is string => typeof entry === "string").map(keyFor)).toContain(keyFor(target));
+      continue;
+    }
+    const path = keyFor(typeof target === "string" ? target : target.path);
+    expect(denies.some(entry => {
+      if (typeof entry === "string" && /[*?\[\]]/.test(entry)) return false;
+      const parent = keyFor(typeof entry === "string" ? entry : entry.path);
+      return path === parent || path.startsWith(parent + "/");
+    }), path).toBe(true);
+  }
+}
+
 afterEach(() => {
   Object.defineProperty(process, "platform", {
     value: ORIGINAL_PLATFORM,
@@ -269,11 +292,11 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
     const fs = config?.filesystem as Record<string, unknown>;
 
     expect(fs.denyRead).toEqual(["/home/u/.ssh"]);
-    expect(fs.denyWrite).toEqual(expect.arrayContaining([
+    expectWriteDenyCoverage(fs.denyWrite, [
       "/home/u/.config",
       ...getDefaultSensitiveWriteDenyPaths(),
       ...buildMandatorySandboxWritePolicy([]).denyWrite,
-    ]));
+    ]);
     expect(Object.prototype.hasOwnProperty.call(fs, "allowRead")).toBe(false);
     expect(fs.allowWrite).toEqual([]);
   });
@@ -291,10 +314,10 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
     expect(fs.allowRead).toEqual([]);
     expect(fs.allowWrite).toEqual([]);
     expect(fs.denyRead).toEqual(["/home/u/.ssh"]);
-    expect(fs.denyWrite).toEqual(expect.arrayContaining([
+    expectWriteDenyCoverage(fs.denyWrite, [
       ...getDefaultSensitiveWriteDenyPaths(),
       ...buildMandatorySandboxWritePolicy([]).denyWrite,
-    ]));
+    ]);
   });
 });
 

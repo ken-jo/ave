@@ -291,25 +291,44 @@ describe("structured transfer registration and permission routing", () => {
   describe.each([
     ["copy_path", CopyPathTool, "sourcePath"],
     ["extract_archive", ExtractArchiveTool, "archivePath"],
-  ] as const)("%s retains hard path boundaries in allow mode", (_name, ToolClass, sourceField) => {
-    it.each(["source", "destination"] as const)("does not run with an unadmitted %s", async endpoint => {
+  ] as const)("%s uses mode rules and retains credential admission in allow mode", (_name, ToolClass, sourceField) => {
+    it.each(["source", "destination"] as const)("allows the ordinary outside %s in allow mode", async endpoint => {
       const tool = new ToolClass();
       const execute = vi.spyOn(tool, "execute");
-      const input = {
-        [sourceField]: endpoint === "source" ? join(outside, "source.bin") : "source.bin",
-        destinationPath: endpoint === "destination" ? join(outside, "copy") : "copy",
-      };
-      const result = await invoke(tool, input);
-      expect(result.is_error).toBe(true);
-      expect(execute).not.toHaveBeenCalled();
-      expect(existsSync(join(workspace, "copy"))).toBe(false);
-      expect(existsSync(join(outside, "copy"))).toBe(false);
+      const source = sourceField === "archivePath" ? await fixtureArchive() : join(workspace, "source.bin");
+      const outsideSource = join(outside, "source.data");
+      if (endpoint === "source") writeFileSync(outsideSource, readFileSync(source));
+      const destination = endpoint === "destination" ? join(outside, "copy") : join(workspace, "copy");
+      const result = await invoke(tool, {
+        [sourceField]: endpoint === "source" ? outsideSource : source,
+        destinationPath: destination,
+      });
+      expect(result.is_error, result.content).toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(readFileSync(sourceField === "archivePath" ? join(destination, "nested", "payload.bin") : destination)).toEqual(PAYLOAD);
     });
 
-    it.each(["source", "destination"] as const)("does not run with a sensitive %s", async endpoint => {
+    it.each(["source", "destination"] as const)("uses ordinary file rules for the secret-file %s in allow mode", async endpoint => {
       const tool = new ToolClass();
       const execute = vi.spyOn(tool, "execute");
+      const source = sourceField === "archivePath" ? await fixtureArchive() : join(workspace, "source.bin");
+      mkdirSync(join(workspace, ".ssh"));
       const sensitive = join(workspace, ".ssh", "id_rsa");
+      if (endpoint === "source") writeFileSync(sensitive, readFileSync(source));
+      const destination = endpoint === "destination" ? sensitive : join(workspace, "copy");
+      const result = await invoke(tool, {
+        [sourceField]: endpoint === "source" ? sensitive : source,
+        destinationPath: destination,
+      });
+      expect(result.is_error, result.content).toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(readFileSync(sourceField === "archivePath" ? join(destination, "nested", "payload.bin") : destination)).toEqual(PAYLOAD);
+    });
+
+    it.each(["source", "destination"] as const)("denies a host credential-store %s before I/O", async endpoint => {
+      const tool = new ToolClass();
+      const execute = vi.spyOn(tool, "execute");
+      const sensitive = join(workspace, ".ave", "secrets", "store");
       const result = await invoke(tool, {
         [sourceField]: endpoint === "source" ? sensitive : "source.bin",
         destinationPath: endpoint === "destination" ? sensitive : "copy",

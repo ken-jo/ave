@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveEffectiveCeilingMs, runWithCeiling } from "../executor-ceiling.js";
+import { captureToolApprovalWait, resolveEffectiveCeilingMs, runWithCeiling, withToolApprovalWait, type ToolApprovalWait } from "../executor-ceiling.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import {
   MAX_TIMER_DELAY_MS,
   TOOL_TIMEOUT_POLICY,
@@ -266,3 +267,126 @@ function listenerCount(target: AbortSignal): number {
   void target;
   return 0;
 }
+
+describe("execution time during human approval", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] }));
+  afterEach(() => vi.useRealTimers());
+
+  it("resumes only the unspent execution budget after a long approval wait", async () => {
+    const answer = deferred<void>();
+    let waiting = false;
+    let completed = false;
+    const running = runWithCeiling(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await withToolApprovalWait(() => { waiting = true; return answer.promise; });
+      return new Promise<never>(() => {});
+    }, 1_000, undefined, "approval-bound-tool");
+    void running.then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(waiting).toBe(true);
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs * 2);
+    expect(completed).toBe(false);
+    answer.resolve();
+    await vi.advanceTimersByTimeAsync(799);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await running).toMatchObject({ ok: false, reason: "ceiling" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("captures the invocation budget for a callback outside its asynchronous context", async () => {
+    const answer = deferred<void>();
+    const work = deferred<string>();
+    let captured: ToolApprovalWait | undefined;
+    const running = runWithCeiling(async () => {
+      captured = captureToolApprovalWait();
+      return work.promise;
+    }, 1_000, undefined, "transport-bound-tool");
+    await vi.advanceTimersByTimeAsync(250);
+    if (!captured) throw new Error("Missing captured execution budget");
+    const approval = captured(() => answer.promise);
+    await vi.advanceTimersByTimeAsync(10_000);
+    answer.resolve();
+    await approval;
+    work.resolve("completed once");
+    expect(await running).toEqual({ ok: true, value: "completed once" });
+    await captured(() => Promise.resolve());
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("waits for every overlapping human card before resuming execution time", async () => {
+    const first = deferred<void>();
+    const second = deferred<void>();
+    let completed = false;
+    const running = runWithCeiling(async () => {
+      await Promise.all([
+        withToolApprovalWait(() => first.promise),
+        withToolApprovalWait(() => second.promise),
+      ]);
+      return new Promise<never>(() => {});
+    }, 100, undefined, "parallel-cards");
+    void running.then(() => { completed = true; });
+    await vi.advanceTimersByTimeAsync(10_000);
+    first.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(completed).toBe(false);
+    second.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await running).toMatchObject({ ok: false, reason: "ceiling" });
+  });
+
+  it("keeps an unrelated invocation's execution ceiling running", async () => {
+    const answer = deferred<void>();
+    const approved = runWithCeiling(() => withToolApprovalWait(() => answer.promise), 100, undefined, "waiting-tool");
+    const unrelated = runWithCeiling(() => new Promise<never>(() => {}), 100, undefined, "running-tool");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await unrelated).toMatchObject({ ok: false, reason: "ceiling" });
+    answer.resolve();
+    expect(await approved).toMatchObject({ ok: true });
+  });
+
+  it("pauses enclosing execution budgets for a nested tool's human card", async () => {
+    const answer = deferred<void>();
+    const running = runWithCeiling((parentSignal) => runWithCeiling(
+      () => withToolApprovalWait(() => answer.promise),
+      50, parentSignal, "nested-tool",
+    ), 100, undefined, "enclosing-tool");
+    await vi.advanceTimersByTimeAsync(10_000);
+    answer.resolve();
+    expect(await running).toEqual({ ok: true, value: { ok: true, value: undefined } });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("restores execution time after a rejected wait that the handler catches", async () => {
+    const answer = deferred<void>();
+    const running = runWithCeiling(async () => {
+      try {
+        await withToolApprovalWait(() => answer.promise.then(() => { throw new Error("Approval unavailable"); }));
+      } catch {
+        // The tool handles the approval failure; its execution budget still applies.
+      }
+      return new Promise<never>(() => {});
+    }, 100, undefined, "rejected-card");
+    await vi.advanceTimersByTimeAsync(1_000);
+    answer.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await running).toMatchObject({ ok: false, reason: "ceiling" });
+  });
+
+  it("propagates parent cancellation during a human wait without rearming a settled budget", async () => {
+    const parent = new AbortController();
+    const answer = deferred<void>();
+    let childSignal: AbortSignal | undefined;
+    const running = runWithCeiling((signal) => {
+      childSignal = signal;
+      return withToolApprovalWait(() => answer.promise);
+    }, 100, parent.signal, "cancelled-card");
+    await vi.advanceTimersByTimeAsync(10_000);
+    parent.abort(new Error("owner stopped"));
+    expect(await running).toMatchObject({ ok: false, reason: "user-abort" });
+    expect(childSignal?.aborted).toBe(true);
+    answer.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

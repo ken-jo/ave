@@ -67,7 +67,6 @@ async function makeManager(bundledSecrets?: { getSecret(key: string): string | n
     new (ToolRegistry as new () => InstanceType<typeof ToolRegistry>)(),
     unusedNetworkFetch,
     testConfigPath,
-    undefined,
     { log: mockAuditLog } as never,
     undefined,
     undefined,

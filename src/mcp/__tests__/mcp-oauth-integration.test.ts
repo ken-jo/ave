@@ -230,7 +230,7 @@ async function createManager(fixture: WireFixture) {
     version: "1.0", defaultPolicy: "deny",
     servers: [{ id: config.id, name: "Remote tools", status: "approved", transport: "http",
       allowedUrls: [new URL(fixture.origin).hostname], requiredAuth: "oauth", tlsRequired: publicNetwork, allowedCapabilities: ["tools"],
-      maxTools: 2, toolNamePrefix: "remote", toolPermissionMode: "default", connectionTimeoutMs: 5000,
+      maxTools: 2, toolNamePrefix: "remote", connectionTimeoutMs: 5000,
       maxConcurrentRequests: 2, allowPrivateNetworks: !publicNetwork }],
     globalRules: { maxServersTotal: 2, blockedUrlPatterns: [], allowedUrlPatterns: [], policyRefreshIntervalMs: 60000 },
   };
@@ -252,7 +252,7 @@ async function createManager(fixture: WireFixture) {
   }) as typeof fetch;
   let browserOpens = 0;
   const manager = new McpManager(new McpGovernance(policyPath), registry, networkFetch, configPath,
-    undefined, undefined, undefined, undefined, secrets, {
+    undefined, undefined, undefined, secrets, {
       secrets,
       redirectCatchers: new AuthRedirectCatchers(),
       openAuthorizationUrl: async (url) => {

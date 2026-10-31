@@ -1,5 +1,4 @@
 // Keep unavailable stages as null so the chain escalates and ultimately asks/denies; never silently substitute another model or provider.
-import type { ReviewerInteractiveAutoApprove } from "../permission-settings-store.js";
 import { BuiltinLlmJudge, type TracingRiskClassifier } from "./builtin-llm-judge.js";
 import type { JudgeChainStage } from "./judge-engine.js";
 import { ExternalJudge, type JudgeFetch } from "./external-judge.js";
@@ -14,7 +13,6 @@ export interface CreateJudgeDeps {
   classifierForModel: (model: JudgeModelRef) => TracingRiskClassifier | null;
   // Non-secret transport identity for a selected model's verdict cache.
   cacheScopeForModel?: (model: JudgeModelRef) => Record<string, unknown>;
-  autoApprove: () => ReviewerInteractiveAutoApprove;
   fetch: JudgeFetch;
 }
 
@@ -27,7 +25,6 @@ function createStage(stage: JudgeStageSettings, deps: CreateJudgeDeps): JudgeCha
         settings: stage,
         judge: classifier ? new BuiltinLlmJudge(
           classifier,
-          deps.autoApprove,
           typeof model === "string" ? model : model ? formatJudgeModel(model) : undefined,
           stage.model ? deps.cacheScopeForModel?.(stage.model) : undefined,
         ) : null,

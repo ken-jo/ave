@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const runPreHooks = vi.fn(async () => ({ action: "allow" as const, feedback: "" }));
 const runPostHooks = vi.fn(async () => "");
@@ -29,6 +29,11 @@ vi.mock("../audit/dlp-filter.js", () => ({
   isPiiRedactionEnabled: vi.fn(() => false),
 }));
 
+import { PermissionManager } from "../permissions/permission-manager.js";
+import { PermissionTestResources } from "../permissions/__tests__/test-resources.js";
+const permissionResources = new PermissionTestResources();
+afterEach(() => permissionResources.cleanup());
+
 import { ToolExecutor } from "../tools/executor.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createDynamicTool } from "../tools/base.js";
@@ -50,7 +55,7 @@ describe("ToolExecutor metadata", () => {
       execute: async () => ({ output: "ok", isError: false }),
     }));
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, undefined, new PermissionManager(permissionResources.tmpFileFactory("tool-metadata-")("permissions.json")));
     const startMetas = [] as Array<import("../tools/executor.js").ToolCallMeta>;
     const endMetas = [] as Array<import("../tools/executor.js").ToolCallMeta>;
 
@@ -100,7 +105,7 @@ describe("ToolExecutor metadata", () => {
       },
     }));
 
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, undefined, new PermissionManager(permissionResources.tmpFileFactory("tool-metadata-")("permissions.json")));
     const callbackDurations: number[] = [];
 
     const results = await executor.executeAll(
@@ -124,7 +129,7 @@ describe("ToolExecutor metadata", () => {
 
   it("attaches durationMs to ToolResult on missing-tool error path", async () => {
     const registry = new ToolRegistry();
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, undefined, new PermissionManager(permissionResources.tmpFileFactory("tool-metadata-")("permissions.json")));
     const callbackDurations: number[] = [];
 
     const results = await executor.executeAll(

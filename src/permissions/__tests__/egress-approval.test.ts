@@ -1,11 +1,26 @@
 // The egress ask on the approval dock: the `egress-host` request shape the gate accepts, the answers it honours (desktop window, allow-once, a scope the card offered) and how the requester maps them back (egress-approval.ts).
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
+
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
-import { createApprovalGateEgressRequester, EGRESS_APPROVAL_DENY_REASONS } from "../egress-approval.js";
+import { createApprovalGateEgressRequester as createRequester, EGRESS_APPROVAL_DENY_REASONS } from "../egress-approval.js";
 import type { EgressShellApprovalRequest, EgressTerminalApprovalRequest } from "../egress-ask.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 
+let permissionManager: PermissionManager;
+beforeEach(() => {
+  permissionManager = new PermissionManager(join(tmpdir(), `egress-policy-${randomUUID()}.json`));
+  permissionManager.setMode("strict");
+});
+function createApprovalGateEgressRequester(gate: Pick<ApprovalGate, "requestAndWait">) {
+  return createRequester(gate, permissionManager);
+}
+
 function makeWebContents() {
+
   return { send: vi.fn(), isDestroyed: vi.fn(() => false) };
 }
 
@@ -179,7 +194,6 @@ describe("egress-host approval requests", () => {
       allowedChoices: ["allow-once", "deny-once"],
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
-      isReadOnly: false,
       egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", scopes: ["once"], network: "public" },
     };
     await expect(gate.requestAndWait({ ...base, egressHost: undefined })).rejects.toThrow(/needs egressHost/u);
@@ -304,5 +318,80 @@ describe("a workspace terminal tab's egress ask", () => {
     await cardSent(owner);
     controller.abort(new Error("terminal tab closed"));
     await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+  });
+});
+
+describe("shell egress uses the common decision pipeline", () => {
+  function reviewerEvidence(level: "low" | "medium" | "high", outcome: "fresh" | "error" = "fresh"): ReviewerDispatchResult {
+    return { verdict: { level, reason: "Destination review." }, outcome, cacheReason: "miss-not-found", judge: { judged: false, skip: "judge-off" } };
+  }
+
+  it("uses a normal destination card after an unanchored HIGH review", async () => {
+    permissionManager.setMode("auto");
+    const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("high"));
+    const resolve = vi.spyOn(permissionManager, "resolveReviewedPermission");
+    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const })) };
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toMatchObject({ allow: false });
+    expect(review).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve.mock.results[0]?.value).toMatchObject({ decision: "ask", reasonCode: "reviewer-human-required" });
+    expect(resolve.mock.results[0]?.value.pipelineRequest.rationaleAvailable).not.toBe(true);
+    expect(resolve.mock.results[0]?.value.forceModal).not.toBe(true);
+    expect(gate.requestAndWait).toHaveBeenCalledOnce();
+    expect(gate.requestAndWait.mock.calls[0][0]).toMatchObject({ kind: "egress-host", reviewerVerdict: { level: "high" } });
+  });
+
+  it("reviews a headless destination before permitting one connection", async () => {
+    permissionManager.setMode("auto");
+    const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("medium"));
+    const { gate, wc } = makeGate();
+    await expect(createRequester(gate, permissionManager)(egressRequest({ headless: true, approvalSurface: "unavailable" }))).resolves.toEqual({ allow: true, scope: "once", oneConnection: true });
+    expect(review).toHaveBeenCalledOnce();
+    expect(review.mock.calls[0][1].finalInput).toEqual({ url: "https://github.com:443/", network: "public" });
+    expect(review.mock.calls[0][3]?.lane).toBe("headless");
+    expect(sentApprovalCards(wc)).toEqual([]);
+  });
+
+  for (const result of ["high", "error"] as const) {
+    it(`denies headless ${result} fallback with no-retry text`, async () => {
+      permissionManager.setMode("auto");
+      const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("high", result === "error" ? "error" : "fresh"));
+      const { gate, wc } = makeGate();
+      await expect(createRequester(gate, permissionManager)(egressRequest({ headless: true }))).resolves.toEqual({ allow: false, reason: "Nobody can approve this request; do not retry." });
+      expect(review).toHaveBeenCalledOnce();
+      expect(sentApprovalCards(wc)).toEqual([]);
+    });
+  }
+
+  it("allow mode does not bypass an explicit shell-network deny", async () => {
+    permissionManager.setMode("allow");
+    permissionManager.setRules([{ pattern: "sandbox_network", action: "deny", source: "builtin" }]);
+    const { gate, wc } = makeGate();
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: "sandbox_network" });
+    expect(sentApprovalCards(wc)).toEqual([]);
+  });
+
+  it("a physical terminal connection never enters agent policy or automatic review", async () => {
+    permissionManager.setMode("allow");
+    const check = vi.spyOn(permissionManager, "checkDetailed");
+    const review = vi.spyOn(permissionManager, "dispatchReviewer");
+    const gate = { requestAndWait: vi.fn(async () => ({ requestId: "terminal", choice: "deny-once" as const })) };
+    await expect(createRequester(gate, permissionManager)(terminalRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
+    expect(check).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(gate.requestAndWait).toHaveBeenCalledOnce();
+  });
+
+  it("a shell request without a policy manager fails clearly", async () => {
+    const { gate } = makeGate();
+    await expect(createRequester(gate)(egressRequest())).rejects.toThrow("Shell egress requires a permission manager");
+  });
+});
+
+describe("shell egress human fallback termination", () => {
+  it("returns no-retry text when an owner-away wait ends without an approver", async () => {
+    const gate = { requestAndWait: vi.fn(async () => ({ requestId: "away", choice: "deny-once" as const, rememberPattern: "Nobody can approve this request; do not retry." })) };
+    await expect(createRequester(gate, permissionManager)(egressRequest({ ownerUnattended: true }))).resolves.toEqual({ allow: false, reason: "Nobody can approve this request; do not retry." });
+    expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ ownerUnattended: true }));
   });
 });

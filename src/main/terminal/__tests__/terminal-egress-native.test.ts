@@ -13,11 +13,11 @@ import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../../audit/sandbox-audit.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, subscribeAsrtViolations } from "../../../permissions/asrt-sandbox.js";
 import {
-  createEgressAskCallback,
   EGRESS_DENY_REASONS,
   type EgressApprovalAnswer,
   type EgressApprovalRequest,
 } from "../../../permissions/egress-ask.js";
+import { createEgressAskCallback } from "../../../__tests__/support/egress-permission.js";
 import { startEgressDenyMonitor } from "../../../permissions/egress-deny-monitor.js";
 import { EgressGrantStore } from "../../../permissions/egress-grants.js";
 import { egressIdentityStrength } from "../../../permissions/egress-identity.js";

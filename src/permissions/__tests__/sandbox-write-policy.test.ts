@@ -17,6 +17,7 @@ import { permissionsFilePath } from "../permissions-store.js";
 import { getAdminPolicyPath, userPolicyPath } from "../policy-store.js";
 import { projectRulesDirectory } from "../rules/project-rule-files.js";
 import { settingsFilePath } from "../../data/settings-store.js";
+import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -31,6 +32,24 @@ function withPlatform<T>(platform: "darwin" | "linux" | "win32", action: () => T
   } finally {
     Object.defineProperty(process, "platform", descriptor);
   }
+}
+
+function expectLiteralDenyCovers(entries: readonly FilesystemPathEntry[] | undefined, path: string): void {
+  const target = process.platform === "win32" ? path.toLowerCase() : path;
+  expect(entries?.some(entry => {
+    if (typeof entry === "string" && /[*?\[\]]/.test(entry)) return false;
+    const value = typeof entry === "string" ? entry : entry.path;
+    const base = process.platform === "win32" ? value.toLowerCase() : value;
+    return target === base || target.startsWith(base + sep);
+  }), path).toBe(true);
+}
+
+async function reportMissingChildrenUnder(file: string): Promise<void> {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  vi.spyOn(filesystem, "lstatSync").mockImplementation(((path, options) => {
+    if (String(path).startsWith(file + sep) && typeof options === "object" && options?.throwIfNoEntry === false) return undefined;
+    return actual.lstatSync(path, options);
+  }) as typeof filesystem.lstatSync);
 }
 
 describe("mandatory sandbox control-file writes", () => {
@@ -51,7 +70,154 @@ describe("mandatory sandbox control-file writes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const loaderEntries = [".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
+  const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
+
+  it.each([".claude", ".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
+  ("retains $entry protection after a regular placeholder with native missing-child reporting=$reportsMissingChild", async ({ entry, reportsMissingChild }) => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const initial = withPlatform("linux", () => buildMandatorySandboxWritePolicy([project]));
+    const placeholder = join(project, entry);
+    writeFileSync(placeholder, "");
+    if (reportsMissingChild) await reportMissingChildrenUnder(placeholder);
+    withPlatform("linux", () => {
+      const child = join(placeholder, entry === ".claude" ? "settings.json" : "workspace.xml");
+      const repeated = buildMandatorySandboxWritePolicy([project], undefined, [child]);
+      expect(repeated.allowWrite).toEqual(initial.allowWrite);
+      expect(repeated.denyWrite).toContain(placeholder);
+      expect(repeated.denyWrite).toEqual(initial.denyWrite);
+      expectLiteralDenyCovers(repeated.denyWrite, child);
+    });
+  });
+
+  it.each([".claude", ".idea"])("pins a linked regular %s ancestor before omitting impossible children", entry => {
+    const project = join(root, "project");
+    const work = join(project, "work");
+    const target = join(root, "external-placeholder");
+    mkdirSync(work, { recursive: true });
+    writeFileSync(target, "protected fixture");
+    const link = join(project, entry);
+    symlinkSync(target, link, "file");
+    const policy = withPlatform("linux", () => buildMandatorySandboxWritePolicy([project, work]));
+    expect(policy.allowWrite).toEqual([work]);
+    expect(policy.narrowedWriteRoots).toEqual([{ root: project, reason: "routing-link" }]);
+    expect(policy.denyWrite).toEqual(expect.arrayContaining([link, target]));
+  });
+
+  it.each([false, true])("refuses an unprotected regular ancestor when native missing-child reporting is %s", async reportsMissingChild => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const blocker = join(project, ".config");
+    writeFileSync(blocker, "not protected as a whole project directory");
+    if (reportsMissingChild) await reportMissingChildrenUnder(blocker);
+    expect(() => withPlatform("linux", () => buildMandatorySandboxWritePolicy([project])))
+      .toThrow(/ENOTDIR/);
+  });
+
+  it.each(["darwin", "linux", "win32"] as const)("retains an inherited regular configuration directory deny on %s", async platform => {
+    const project = join(root, "project");
+    const configDirectory = join(root, ".config", "git");
+    mkdirSync(project);
+    mkdirSync(dirname(configDirectory));
+    writeFileSync(configDirectory, "protected placeholder");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", join(root, ".config"));
+    for (const reportsMissingChild of [false, true]) {
+      if (reportsMissingChild) await reportMissingChildrenUnder(configDirectory);
+      const policy = withPlatform(platform, () => buildMandatorySandboxWritePolicy([project]));
+      expect(policy.allowWrite).toEqual([project]);
+      expectLiteralDenyCovers(policy.denyWrite, configDirectory);
+      expectLiteralDenyCovers(policy.denyWrite, join(configDirectory, "config"));
+      expect(filesystem.readFileSync(configDirectory, "utf8")).toBe("protected placeholder");
+    }
+  });
+
+  it("fails closed when an inherited configuration directory cannot be inspected", async () => {
+    const project = join(root, "project");
+    const configDirectory = join(root, ".config", "git");
+    mkdirSync(project);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", join(root, ".config"));
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((path, options) => {
+      if (String(path) === configDirectory) throw Object.assign(new Error("Configuration inspection denied"), { code: "EACCES" });
+      return actual.lstatSync(path, options);
+    }) as typeof filesystem.lstatSync);
+    expect(() => buildMandatorySandboxWritePolicy([project])).toThrow("Configuration inspection denied");
+  });
+
+  it.each(["darwin", "linux", "win32"] as const)("omits only impossible inherited probes below an ordinary regular ancestor on %s", platform => {
+    const project = join(root, "project");
+    const blocker = join(root, ".config");
+    mkdirSync(project);
+    writeFileSync(blocker, "ordinary file");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", blocker);
+    const policy = withPlatform(platform, () => buildMandatorySandboxWritePolicy([project]));
+    expect(policy.allowWrite).toEqual([project]);
+    expect(policy.denyWrite).not.toContain(blocker);
+    expect(policy.denyWrite).not.toContain(join(blocker, "git", "config"));
+    expectLiteralDenyCovers(policy.denyWrite, join(project, ".config", "git"));
+    expect(filesystem.readFileSync(blocker, "utf8")).toBe("ordinary file");
+  });
+
+  it.each(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"] as const)("refuses an obstructed explicit %s target in a writable project", variable => {
+    const project = join(root, "project");
+    const blocker = join(project, "ordinary-blocker");
+    mkdirSync(project);
+    writeFileSync(blocker, "replaceable file");
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "0");
+    vi.stubEnv(variable, join(blocker, "config"));
+    expect(() => buildMandatorySandboxWritePolicy([project])).toThrow(/ENOTDIR/);
+    expect(filesystem.readFileSync(blocker, "utf8")).toBe("replaceable file");
+  });
+
+  it("refuses an optional inherited probe when its unprotected blocker is writable", () => {
+    const project = join(root, "project");
+    const home = join(project, "home");
+    const blocker = join(home, ".config");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(blocker, "replaceable file");
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "");
+    vi.stubEnv("XDG_CONFIG_HOME", blocker);
+    expect(() => buildMandatorySandboxWritePolicy([project])).toThrow(/ENOTDIR/);
+    expect(filesystem.readFileSync(blocker, "utf8")).toBe("replaceable file");
+  });
+
+  it("retains literal control denies for an absent grant root", () => {
+    const missing = join(root, "absent", "project");
+    const policy = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([missing]));
+    expect(policy.allowWrite).toEqual([missing]);
+    expect(policy.narrowedWriteRoots).toEqual([]);
+    expect(policy.denyWrite).toContain(join(missing, ".bash_profile"));
+    expectLiteralDenyCovers(policy.denyWrite, join(missing, ".claude", "settings.json"));
+    expect(filesystem.existsSync(missing)).toBe(false);
+  });
+
+  it("does not treat a denied ancestor inspection as an absent path", async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((path, options) => {
+      if (String(path) === root && typeof options === "object" && options?.throwIfNoEntry === false) {
+        throw Object.assign(new Error("Access denied"), { code: "EACCES" });
+      }
+      return actual.lstatSync(path, options);
+    }) as typeof filesystem.lstatSync);
+    expect(() => withPlatform("darwin", () => buildMandatorySandboxWritePolicy([join(root, "missing")]))).toThrow("Access denied");
+  });
+
+  it.each(["darwin", "linux", "win32"] as const)("protects the complete application configuration directory on %s", platform => {
+    const project = join(root, "project");
+    const configuration = join(root, "ave", "config");
+    mkdirSync(project);
+    withPlatform(platform, () => {
+      const policy = buildMandatorySandboxWritePolicy([root, project]);
+      expectLiteralDenyCovers(policy.denyWrite, configuration);
+      expectLiteralDenyCovers(policy.denyWrite, join(configuration, "future-control", "policy.json"));
+      expect(policy.denyWrite).not.toContain(join(root, "ave"));
+    });
+  });
 
   it.each(["darwin", "linux", "win32"] as const)("protects existing and absent loader paths in the shared policy on %s", platform => {
     withPlatform(platform, () => {
@@ -59,11 +225,14 @@ describe("mandatory sandbox control-file writes", () => {
         const project = join(root, existing ? "existing" : "absent");
         mkdirSync(project);
         if (existing) for (const entry of loaderEntries) {
-          if (entry === ".husky") mkdirSync(join(project, entry));
-          else writeFileSync(join(project, entry), "loader fixture");
+          if ([".husky", ".githooks", ".claude/hooks", ".claude/commands"].includes(entry)) mkdirSync(join(project, entry), { recursive: true });
+          else {
+            mkdirSync(dirname(join(project, entry)), { recursive: true });
+            writeFileSync(join(project, entry), "loader fixture");
+          }
         }
         const policy = buildMandatorySandboxWritePolicy([project]);
-        for (const entry of loaderEntries) expect(policy.denyWrite).toContain(join(project, entry));
+        for (const entry of loaderEntries) expectLiteralDenyCovers(policy.denyWrite, join(project, entry));
       }
     });
   });
@@ -103,6 +272,60 @@ describe("mandatory sandbox control-file writes", () => {
       expect(policy.denyWrite).toContain(loader);
       if (platform === "linux") expect(policy.allowWrite).not.toContain(project);
     });
+  });
+
+  it.each(["darwin", "linux"] as const)("pins linked child loaders inside separately writable targets on %s", platform => {
+    withPlatform(platform, () => {
+      const project = join(root, "project");
+      const storage = join(root, "storage");
+      const work = join(project, "work");
+      for (const directory of [join(project, ".claude"), join(project, ".idea"), work, storage]) {
+        mkdirSync(directory, { recursive: true });
+      }
+      const hooks = join(storage, "hooks");
+      const workspace = join(storage, "workspace.xml");
+      mkdirSync(hooks);
+      writeFileSync(workspace, "workspace fixture");
+      const hookLink = join(project, ".claude", "hooks");
+      const workspaceLink = join(project, ".idea", "workspace.xml");
+      symlinkSync(hooks, hookLink, "dir");
+      symlinkSync(workspace, workspaceLink, "file");
+      const policy = buildMandatorySandboxWritePolicy([project, storage, work]);
+      expectLiteralDenyCovers(policy.denyWrite, hookLink);
+      expectLiteralDenyCovers(policy.denyWrite, workspaceLink);
+      expect(policy.denyWrite).toEqual(expect.arrayContaining([hooks, workspace]));
+      if (platform === "linux") expect(policy.allowWrite).toEqual([storage, work]);
+      else expect(policy.allowWrite).toEqual([project, storage, work]);
+    });
+  });
+
+  it.each(["darwin", "linux", "win32"] as const)("preserves the final deny union while compacting inherited literal denies on %s", platform => {
+    const project = join(root, "covered", "work");
+    const inherited = join(root, "covered");
+    const external = join(root, "external-loader");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(external, "loader fixture");
+    symlinkSync(external, join(project, ".bash_profile"), "file");
+    withPlatform(platform, () => {
+      const original = buildMandatorySandboxWritePolicy([project]);
+      const compact = buildMandatorySandboxWritePolicy([project], undefined, [], [inherited]);
+      expect(compact.allowWrite).toEqual(original.allowWrite);
+      expect(compact.narrowedWriteRoots).toEqual(original.narrowedWriteRoots);
+      const final = [inherited, ...(compact.denyWrite ?? [])];
+      for (const entry of original.denyWrite ?? []) {
+        if (typeof entry === "string" && /[*?\[\]]/.test(entry)) expect(final).toContain(entry);
+        else expectLiteralDenyCovers(final, typeof entry === "string" ? entry : entry.path);
+      }
+      expect(compact.denyWrite).toContain(external);
+      if (platform === "win32") expect(compact.denyWrite).toEqual(original.denyWrite);
+      else expect(Buffer.byteLength(JSON.stringify(compact.denyWrite))).toBeLessThan(Buffer.byteLength(JSON.stringify(original.denyWrite)));
+      expect(Buffer.byteLength(JSON.stringify(compact.denyWrite))).toBeLessThan(32_768);
+    });
+  });
+
+  it.each(["relative/path", join(tmpdir(), "pattern-*")])("refuses nonliteral inherited deny authority: %s", path => {
+    expect(() => buildMandatorySandboxWritePolicy([root], undefined, [], [path]))
+      .toThrow("Invalid inherited sandbox write deny");
   });
 
   it("includes inherited, conditional, common and worktree hook targets without executing configuration", () => {
@@ -197,7 +420,13 @@ describe("mandatory sandbox control-file writes", () => {
 
   it("hands only the .git marker and its children to the Git control policy", () => {
     expect(PROTECTED_ROOT_ENTRIES.filter(isSandboxGitMetadataEntry))
-      .toEqual([".git", ".git/hooks", ".git/config", ".git/modules"]);
+      .toEqual([".git"]);
+    for (const entry of [".git", ".git/hooks", ".git/config", ".git/modules"]) {
+      expect(isSandboxGitMetadataEntry(entry)).toBe(true);
+    }
+    for (const entry of [".gitconfig", ".githooks", ".github", ".gitignore"]) {
+      expect(isSandboxGitMetadataEntry(entry)).toBe(false);
+    }
     const project = join(root, "project");
     const marker = join(project, ".git");
     mkdirSync(join(marker, "modules", "inner", "hooks"), { recursive: true });
@@ -207,7 +436,7 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(marker, "modules", "inner", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(marker, "modules", "inner", "config"), "existing control");
     const denies = buildMandatorySandboxWritePolicy([project]).denyWrite;
-    for (const entry of [".gitconfig", ".githooks", ".husky", ".claude/hooks"]) expect(denies).toContain(join(project, entry));
+    for (const entry of [".gitconfig", ".githooks", ".husky", ".claude", ".claude/hooks"]) expectLiteralDenyCovers(denies, join(project, entry));
     for (const path of [marker, join(marker, "modules"), join(marker, "modules", "inner")]) expect(denies).not.toContain(path);
     for (const path of [join(marker, "hooks"), join(marker, "config"), join(marker, "modules", "inner", "hooks"), join(marker, "modules", "inner", "config")]) {
       expect(denies).toContain(path);
@@ -221,10 +450,11 @@ describe("mandatory sandbox control-file writes", () => {
 
   it("takes settings, rules, approvals and policy locations from their stores", () => {
     const userData = join(root, "desktop-data");
-    expect(buildMandatorySandboxWritePolicy([root], userData).denyWrite).toEqual(expect.arrayContaining([
+    const denies = buildMandatorySandboxWritePolicy([root], userData).denyWrite;
+    for (const path of [
       settingsFilePath(userData), permissionSettingsPath(), permissionsFilePath(),
       userPolicyPath(), getAdminPolicyPath(), egressGrantFilePath(), userApprovalFilePath(), dirname(projectRulesDirectory(join(root, "ave"))),
-    ]));
+    ]) expectLiteralDenyCovers(denies, path);
   });
 
   it("keeps the entry and canonical target of a linked project", () => {
@@ -399,7 +629,7 @@ describe("mandatory sandbox control-file writes", () => {
       const sibling = join(ancestor, "sibling");
       const targets = join(root, "targets");
       for (const directory of [child, sibling, targets]) mkdirSync(directory, { recursive: true });
-      const controls = [".bashrc", ".gitconfig"].map((entry) => {
+      const controls = [".bashrc", ".bash_profile", ".gitconfig"].map((entry) => {
         const link = join(protectedRoot, entry);
         const target = join(targets, entry.slice(1));
         writeFileSync(target, "protected");
@@ -814,7 +1044,12 @@ describe("mandatory sandbox control-file writes", () => {
       mkdirSync(marker);
       writeFileSync(join(marker, "commondir"), `${target}\n`);
     }
-    expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite).toEqual(expect.arrayContaining([firstMissing, target]));
+    const denies = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite;
+    expect(denies).toContain(firstMissing);
+    expectLiteralDenyCovers(denies, target);
+    expect(denies).not.toContain(storage);
+    const snapshot = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).gitControlSnapshot;
+    expect(snapshot?.storeMissingAncestors.get(target)).toBe(firstMissing);
   });
 
   // Win32 and Git for Windows resolve ".." lexically, so a missing component cannot later redirect it; the ambiguity is POSIX-only.

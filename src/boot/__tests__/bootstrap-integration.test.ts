@@ -85,6 +85,7 @@ vi.mock("../services.js", () => ({
               return {};
           }
         }),
+        onChanged: vi.fn(() => () => {}),
         getSecret: vi.fn(() => undefined),
         getAll: vi.fn(() => ({})),
         deletePluginConfig: vi.fn(async () => undefined),
@@ -110,6 +111,8 @@ vi.mock("../conversation.js", () => ({
       setBroadcastConfigChanged: vi.fn(),
       // Every reviewer rewire must apply the settings read fence.
       setBlockReadsOutsideWorkingDirectories: vi.fn(),
+      beginReviewerReconfiguration: vi.fn(() => Object.freeze({})),
+      completeReviewerReconfiguration: vi.fn(),
       getJudgeBreaker: vi.fn(() => ({})),
       setJudge: vi.fn(),
     };
@@ -117,7 +120,7 @@ vi.mock("../conversation.js", () => ({
   createPostTurnHookChain: vi.fn(() => ({ postTurnHookChain: {} })),
   createApprovalGate: vi.fn(async () => {
     h.rec("approvalGate");
-    return { setConversationTitleResolver: vi.fn() };
+    return { setConversationTitleResolver: vi.fn(), setOwnerAwayAutoSkipMinutes: vi.fn() };
   }),
   createHookRunner: vi.fn(() => ({})),
   createConversationLoop: vi.fn((deps) => {
@@ -261,6 +264,8 @@ vi.mock("../steps/model-catalog-refresh.js", () => ({
 
 vi.mock("../steps/reviewer-wiring.js", () => ({
   wireReviewerAgent: vi.fn(() => ({
+    classifier: { classify: vi.fn(async () => ({ level: "low", reason: "fixture classification" })) },
+    recentlyDenied: { setReplayResolver: vi.fn() },
     rationaleScopeReviewer: { reevaluate: vi.fn() },
   })),
 }));
@@ -559,7 +564,6 @@ vi.mock("../../permissions/permission-settings-store.js", async () => {
   };
 });
 vi.mock("../../permissions/user-approval-store.js", () => ({
-  migrateCanonicalization: vi.fn(async () => {}),
   setApprovalConversationRootResolver: vi.fn(),
 }));
 vi.mock("../../permissions/manifest-integrity.js", () => ({

@@ -4,6 +4,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ToolExecutor } from "../executor.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { ToolRegistry } from "../registry.js";
@@ -72,7 +73,9 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
   });
 
   function newExecutor(registry: ToolRegistry): ToolExecutor {
-    return new ToolExecutor(registry, undefined, undefined, undefined, undefined, undefined, auditLogger);
+    const manager = new PermissionManager(join(auditDir, "permissions.json"));
+    manager.setMode("allow");
+    return new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, auditLogger);
   }
 
   it("a read-only plugin invocation → hasMutatingEffect:false", async () => {

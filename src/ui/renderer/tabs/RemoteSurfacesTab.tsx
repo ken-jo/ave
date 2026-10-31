@@ -13,9 +13,6 @@ import type { TailnetObserverSnapshot } from "../../../shared/tailnet-observer-c
 
 export interface RemoteSurfacesTabProps {
   api: AveApi;
-  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
-   * has no conversation of its own, and main refuses a grant that names no tile. */
-  chatGroupId: string;
   /**
    * The `data-settings-section` a deep link named, while it is still unapplied.
    *
@@ -85,7 +82,7 @@ function tailnetRowState(snapshot: TailnetObserverSnapshot): ConnectionRowState 
 }
 
 /** Connection rows open independently, collapse after success, and stay open with errors after failure. */
-export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: RemoteSurfacesTabProps) {
+export function RemoteSurfacesTab({ api, sectionTarget = null }: RemoteSurfacesTabProps) {
   const { t } = useTranslation();
   const [expandedRowIds, setExpandedRowIds] = useState<readonly string[]>([]);
   const [readings, setReadings] = useState<HostSurfaceReadings>(UNREAD);
@@ -193,7 +190,7 @@ export function RemoteSurfacesTab({ api, chatGroupId, sectionTarget = null }: Re
 
         <MessagingConnectionsSection
           api={api}
-          chatGroupId={chatGroupId}
+
           expandedRowIds={expandedRowIds}
           onToggleRow={toggleRow}
           onRowCompleted={closeRow}

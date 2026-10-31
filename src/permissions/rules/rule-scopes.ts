@@ -6,13 +6,14 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type HostTerminalShell, type RuleSpecifier } from "./rule-specifier.js";
+import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
-import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, type PowerShellCommandInput } from "./powershell-exfiltration.js";
-import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
+import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, proveLiteralPowerShell, type PowerShellCommandInput } from "./powershell-exfiltration.js";
+import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
-import { asParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { type ShellCommandInput } from "./shell-prefix-policy.js";
+import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 
 export type ProjectRuleState =
   | { ok: true; projectRoot: string; rules: readonly PermissionRule[] }
@@ -35,6 +36,7 @@ export class ProjectRuleScopes {
   private readonly states = new Map<string, ProjectRuleState>();
   private readonly stamps = new Map<string, FileStamp>();
   private readonly policyVersions = new Map<string, PersistedPolicyVersion | undefined>();
+  private readonly pendingLoads = new Map<string, Promise<ProjectRuleState>>();
   private revision = 0;
 
   constructor(private readonly baseDir: string) {}
@@ -54,9 +56,20 @@ export class ProjectRuleScopes {
   // Load the rule file of the project `projectCwd` belongs to, re-reading it whenever its mtime changed (a hand edit or another window's write). A corrupt file is recorded, not thrown: non-read decisions for that project then fail closed with the file's error as the visible reason.
   async ensureLoaded(projectCwd: string): Promise<ProjectRuleState> {
     const location = projectRulesLocation(this.baseDir, projectCwd);
-    const cached = this.states.get(location.identity);
-    if (cached && this.stamps.get(location.identity) === await fileStamp(location.filePath)) return cached;
-    return this.reload(projectCwd);
+    const pending = this.pendingLoads.get(location.identity);
+    if (pending) return pending;
+    const load = (async () => {
+      const stamp = await fileStamp(location.filePath);
+      const cached = this.states.get(location.identity);
+      if (cached && this.stamps.get(location.identity) === stamp) return cached;
+      return this.reload(projectCwd);
+    })();
+    this.pendingLoads.set(location.identity, load);
+    try {
+      return await load;
+    } finally {
+      this.pendingLoads.delete(location.identity);
+    }
   }
 
   async reload(projectCwd: string): Promise<ProjectRuleState> {
@@ -129,12 +142,13 @@ function forEachCommandRule(scopes: ReadonlyArray<readonly PermissionRule[]>, vi
   const specifiers = new Map<string, RuleSpecifier>();
   for (const rules of scopes) {
     for (const rule of rules) {
-      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule)) continue;
+      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule) || isRetiredHostTerminalRule(rule.pattern)) continue;
       let spec = specifiers.get(rule.pattern);
       if (spec === undefined) {
         spec = parseRuleSpecifier(rule.pattern);
         specifiers.set(rule.pattern, spec);
       }
+      if (storedRuleInvalidReason(rule, spec) !== null) continue;
       visit(rule, spec);
     }
   }
@@ -152,26 +166,9 @@ function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>
   return { deny, ask, allow };
 }
 
-// The allow set of a command typed into the user's host terminal: only `HostTerminal(...)` rules of that shell kind, that canonical physical
-// directory and that complete literal command. A `Bash(...)` allow never qualifies, and no host rule ever reaches the ordinary set above.
-function hostTerminalAllows(
-  target: HostTerminalRuleTarget,
-  command: string,
-  scopes: ReadonlyArray<readonly PermissionRule[]>,
-): ShellRuleInput[] {
-  const allow: ShellRuleInput[] = [];
-  forEachCommandRule(scopes, (rule, spec) => {
-    if (rule.action !== "allow" || spec.kind !== "host-terminal" || spec.shell !== target.shell || spec.cwd !== target.cwd) return;
-    // The complete command, word for word: one simple command and nothing composed from several rules.
-    if (spec.tokens.join(" ") !== command) return;
-    allow.push({ pattern: rule.pattern, spec: { kind: "bash", tokens: spec.tokens, wildcard: false } });
-  });
-  return allow;
-}
-
-/** The host terminal a typed command runs in, as a host rule names it. */
+/** The host terminal bound to the current action. */
 export interface HostTerminalRuleTarget {
-  readonly shell: HostTerminalShell;
+  readonly shell: "zsh" | "bash";
   /** Canonical physical directory of the shell (realpath, case as stored). */
   readonly cwd: string;
 }
@@ -183,7 +180,7 @@ export function evaluateShellSubject(
   const rules = collectShellRuleSet(...scopes);
   if (subject.exactAllowOnly) rules.allow = rules.allow.filter((rule) => !rule.spec.wildcard);
   // Deny and ask `Bash(...)` rules still restrict a host terminal command; floors still run in evaluateShellRules.
-  if (subject.hostTerminal) rules.allow = hostTerminalAllows(subject.hostTerminal, asParsedShellCommand(subject.command).command, scopes);
+  if (subject.hostTerminal) rules.allow = [];
   return evaluateShellRules(subject.command, rules, subject.cwd);
 }
 
@@ -228,9 +225,9 @@ function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
   })];
 }
 
-// `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no floor signal is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
+// `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no sensitive-path or proof blocker is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
 export function evaluatePowerShellSubject(
-  subject: { command: PowerShellCommandInput; cwd?: string; exactAllowOnly: boolean; floorSignal: string | null },
+  subject: { command: PowerShellCommandInput; cwd?: string; exactAllowOnly: boolean },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ShellRuleEvaluation {
   const rules = collectPowerShellRules(...scopes);
@@ -239,7 +236,11 @@ export function evaluatePowerShellSubject(
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no powershell rules" };
   const parsed = typeof subject.command === "string" ? parsePowerShellCommand(subject.command)
     : "syntax" in subject.command ? subject.command : parsePowerShellCommand(subject.command.command);
-  const shape = powerShellRuleShape(parsed);
+  const proofLimited = parsed.command.length > MAX_LITERAL_COMMAND_LENGTH;
+  if (proofLimited && !hasRestrictions) return { decision: null, reason: "literal command length limit exceeded" };
+  const shape = proofLimited && hasRestrictions
+    ? powerShellRuleShape(parsed, { restrictionsOnly: true })
+    : powerShellRuleShape(parsed);
   if (hasRestrictions) {
     // A restriction also meets the command under every spelling of its name (`restrictionTokens`): over-matching a deny or ask only narrows, so the
     // normalization that rule identity refuses (an allow compares the literal name) is safe here.
@@ -255,17 +256,19 @@ export function evaluatePowerShellSubject(
     const ask = matching(rules.ask);
     if (ask) return { decision: "ask", pattern: ask.pattern, reason: `ask rule ${ask.pattern}` };
   }
+  if (proofLimited) return { decision: null, reason: "literal command length limit exceeded" };
   if (rules.allow.length === 0) return { decision: null, reason: "no allow rule" };
   if (!shape.ok) return { decision: null, reason: `unreadable: ${shape.reason}` };
   if (shape.opaque !== null) return { decision: null, reason: shape.opaque };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   const inspection = inspectPowerShellCommand(parsed, subject.cwd);
-  if (inspection.outcome === "visible-floor" || inspection.analysisLimited
+  if (inspection.sensitive !== null || inspection.analysisLimited
     || (inspection.outcome === "unproven" && inspection.exactLiteralEvaluation !== true)) {
     return { decision: null, reason: inspection.exfiltration ?? inspection.sensitive ?? inspection.ordinaryAsk ?? "Shell command requires runtime evaluation" };
   }
   if (inspection.exactLiteralEvaluation === true) rules.allow = rules.allow.filter((rule) => !rule.spec.wildcard);
-  if (subject.floorSignal !== null) return { decision: null, reason: subject.floorSignal };
+  const proof = proveLiteralPowerShell(parsed);
+  if (!proof.proven) return { decision: null, reason: proof.reason };
   const patterns: string[] = [];
   for (const argv of shape.commands) {
     const rule = rules.allow.find((candidate) => matchesPowerShellRule(candidate.spec, argv));

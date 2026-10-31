@@ -24,6 +24,8 @@ const DEFAULT_MAX_MESSAGES = Number.POSITIVE_INFINITY;
  * another principal, so a producer that forgets it fails closed. */
 export interface HistoryAppendProvenance {
   principal: "user-keyboard";
+  /** Original text supplied by the human input producer, before prompt or attachment augmentation. */
+  userText?: { readonly sessionId: string; readonly text: string };
 }
 
 /** A host transform that rewrites rows the history already holds, declared by the transform itself, never inferred from the rows.
@@ -48,6 +50,8 @@ export class ConversationHistory {
    * same rows is not new content; an id is proof of nothing by itself, so a row under a held id is compared with what was committed. */
   private readonly committed = new Map<string, CommittedRow>();
   private readonly maxMessages: number;
+  private userQuoteSessionId: string | undefined;
+  private userQuoteEvidence = new WeakMap<GenericMessage, { text: string; bare: string; messageId: string; revoked: boolean }>();
 
   constructor(options?: ConversationHistoryOptions) {
     // Default history is unbounded; token compaction owns context reduction.
@@ -79,10 +83,23 @@ export class ConversationHistory {
   }
 
   private appendAt(message: GenericMessage, index: number, provenance: HistoryAppendProvenance | undefined): StoredMessage {
+    const userText = provenance?.userText;
+    if (userText !== undefined && (message.role !== "user" || provenance?.principal !== "user-keyboard" ||
+        typeof userText.sessionId !== "string" || !userText.sessionId.trim() || typeof userText.text !== "string")) {
+      throw new Error("User quotation evidence requires a native user row, session and original text");
+    }
     const stored = stampMessageId(stampCreatedAt(applyToolResultCap(message)));
     const next = [...this.messages];
     next.splice(index, 0, stored);
     this.commit(next, { via: "append", row: stored, provenance });
+    if (userText !== undefined) {
+      const { sessionId, text } = userText;
+      if (this.userQuoteSessionId !== sessionId) {
+        this.clearUserQuoteEvidence();
+        this.userQuoteSessionId = sessionId;
+      }
+      if (text.length > 0) this.userQuoteEvidence.set(stored, { text, bare: rowDigests(stored).bare, messageId: stored.meta.messageId, revoked: false });
+    }
     this.trim();
     this.appendObserver?.(stored);
     return stored;
@@ -145,6 +162,21 @@ export class ConversationHistory {
     this.committed.set(id!, current);
   }
 
+  /** Only a live, unchanged native user row supplies citation evidence. */
+  getUserQuoteTexts(sessionId: string): readonly string[] {
+    if (this.userQuoteSessionId !== sessionId) return [];
+    return this.messages.flatMap(row => {
+      const evidence = this.userQuoteEvidence.get(row);
+      return evidence && !evidence.revoked && row.meta?.messageId === evidence.messageId && rowDigests(row).bare === evidence.bare
+        ? [evidence.text] : [];
+    });
+  }
+
+  clearUserQuoteEvidence(): void {
+    this.userQuoteSessionId = undefined;
+    this.userQuoteEvidence = new WeakMap();
+  }
+
   /** Return a shallow array copy; later row metadata mutations remain visible to snapshots. */
   getMessages(): GenericMessage[] {
     return [...this.messages];
@@ -152,6 +184,7 @@ export class ConversationHistory {
 
   /** Roll back an injected row by identity without truncating later unrelated history. */
   removeExact(message: GenericMessage): boolean {
+    this.revokeUserQuoteRows([message]);
     const index = this.messages.indexOf(message);
     if (index < 0) return false;
     this.commit(this.messages.filter((_, i) => i !== index), { via: "transform" });
@@ -161,6 +194,7 @@ export class ConversationHistory {
   // Compaction replaces row identities; remove every clone when rolling back an injection.
   removeByHostInjectionId(hostInjectionId: string): number {
     const before = this.messages.length;
+    this.revokeUserQuoteRows(this.messages.filter(message => message.meta?.hostInjectionId === hostInjectionId));
     this.commit(
       this.messages.filter((message) => message.meta?.hostInjectionId !== hostInjectionId),
       { via: "transform" },
@@ -192,7 +226,15 @@ export class ConversationHistory {
         applyToolResultCap(message, { recompute: true }),
       );
       // Mint missing legacy IDs while retaining existing IDs across reload.
-      if (normalized) capped.push(stampMessageId(normalized, seenIds));
+      if (normalized) {
+        const stored = stampMessageId(normalized, seenIds);
+        const evidence = this.userQuoteEvidence.get(message);
+        // A host-held source snapshot can survive a restore; an unsigned clone cannot recreate its provenance.
+        if (evidence && !evidence.revoked && stored.meta.messageId === evidence.messageId && rowDigests(stored).bare === evidence.bare) {
+          this.userQuoteEvidence.set(stored, evidence);
+        }
+        capped.push(stored);
+      }
     }
     this.commit(normalizeToolPairInvariant(capped).messages, { via: "transform", ...(declared ? { declared } : {}) });
     this.trim();
@@ -201,7 +243,15 @@ export class ConversationHistory {
   truncate(count: number): void {
     if (count < 0) return;
     if (count >= this.messages.length) return;
+    this.revokeUserQuoteRows(this.messages.slice(count));
     this.commit(this.messages.slice(0, count), { via: "transform" });
+  }
+
+  private revokeUserQuoteRows(rows: readonly GenericMessage[]): void {
+    for (const row of rows) {
+      const evidence = this.userQuoteEvidence.get(row);
+      if (evidence) evidence.revoked = true;
+    }
   }
 
   get length(): number {

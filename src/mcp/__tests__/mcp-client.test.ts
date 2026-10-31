@@ -43,7 +43,6 @@ import {
   MCP_RESOURCE_MAX_CHARS,
   MCP_RESOURCE_MAX_PER_SERVER,
 } from "../../shared/mcp-resource-bounds.js";
-import { PermissionManager } from "../../permissions/permission-manager.js";
 import type {
   McpGovernancePolicy,
   McpHttpServerConfig,
@@ -73,7 +72,6 @@ function httpApproval(
     allowedCapabilities: ["tools"],
     maxTools: 16,
     toolNamePrefix: id,
-    toolPermissionMode: "default",
     connectionTimeoutMs: 5_000,
     maxConcurrentRequests: 4,
     ...overrides,
@@ -561,7 +559,7 @@ describe("HttpTransport — NetworkGuard", () => {
     expect(client.getState().status).toBe("error");
   });
 
-  it("rolls back partially registered tools and overrides when registration throws", async () => {
+  it("rolls back partially registered tools when registration throws", async () => {
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
 
     const fetchMock = vi.fn(
@@ -604,12 +602,10 @@ describe("HttpTransport — NetworkGuard", () => {
     const gov = governanceWithPolicy(
       buildPolicy([
         httpApproval("rollback", "https://rollback.example.com/mcp", {
-          toolPermissionMode: "strict",
         }),
       ]),
     );
     const registry = new ToolRegistry();
-    const permissionManager = new PermissionManager("/nonexistent/permissions.json");
     const actualRegister = registry.register.bind(registry);
     let registerCalls = 0;
     vi.spyOn(registry, "register").mockImplementation((tool) => {
@@ -629,19 +625,11 @@ describe("HttpTransport — NetworkGuard", () => {
       gov,
       registry,
       stubbedGlobalNetworkFetch,
-      permissionManager,
     );
 
     await expect(client.connect()).rejects.toThrow("simulated registration race");
     expect(client.getState().registeredTools).toEqual([]);
     expect(registry.listAll()).toEqual([]);
-    expect(
-      (
-        permissionManager as unknown as {
-          toolModeOverrides: Map<string, "default" | "strict" | "auto">;
-        }
-      ).toolModeOverrides.size,
-    ).toBe(0);
   });
 });
 
@@ -1288,7 +1276,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       governanceWithPolicy(buildPolicy([httpApproval(id, url)])),
       new ToolRegistry(),
       stubbedGlobalNetworkFetch,
-      undefined,
       undefined,
       inputResolver,
       capabilityProvider,

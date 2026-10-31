@@ -8,7 +8,7 @@ import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, 
 import { evaluatePowerShellSubject } from "./rule-scopes.js";
 import { parseShellCommand, type ParsedShellCommand } from "./shell-prefix-policy.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
-import { inspectShellCommand } from "./shell-exfiltration.js";
+import { inspectShellCommand } from "./literal-shell-inspection.js";
 import { validatePermissionRule } from "./rule-files.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
@@ -23,7 +23,7 @@ function commandSyntax(dialect: ShellRuleDialect, command: string, cwd?: string,
   return dialect === "bash" ? { bash: parseShellCommand(command) } : { powershell: parsePowerShellCommand(command) };
 }
 
-// Derive the one exact rule a shell card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25). `Bash(...)` for bash and `PowerShell(...)` for PowerShell, each in the canonical form its matcher compares.
+// Seed the card with the complete original argv of one simple command. An edited prefix must independently pass rule validation and coverage checks.
 export function buildShellRuleApproval(
   dialect: ShellRuleDialect,
   command: string,
@@ -71,34 +71,6 @@ export interface HostTerminalApprovalBinding {
   readonly afterExternalContent?: true;
 }
 
-/** The host terminal card's saves: the exact `HostTerminal(<shell> <cwd> <command>)` allow when the command has an exact Bash rule (the
- * same floors, destructive and secret-bearing refusals), only as "Always allow"; the Bash literal deny otherwise, since Bash denies also bind
- * host terminals. */
-export function buildHostTerminalRuleApproval(binding: HostTerminalApprovalBinding, saves: { allow: boolean; deny: boolean }): ShellRuleApproval {
-  const base = buildShellRuleApproval("bash", binding.command, binding.physicalCwd, saves);
-  let exactRule: string | null = null;
-  if (base.exactRule !== null && binding.command === binding.command.trim()) {
-    const bash = parseRuleSpecifier(base.exactRule);
-    if (bash.kind !== "bash" || bash.wildcard || bash.tokens.join(" ") !== binding.command) {
-      exactRule = null;
-    } else {
-      const candidate = formatRuleSpecifier({ kind: "host-terminal", shell: binding.shell, cwd: binding.physicalCwd, tokens: bash.tokens });
-      try {
-        validatePermissionRule(withCurrentShellRuleVersion({ pattern: candidate, action: "allow" }));
-        exactRule = candidate;
-      } catch { exactRule = null; }
-    }
-  }
-  const afterExternal = binding.afterExternalContent === true;
-  return {
-    ...base,
-    exactRule: afterExternal ? null : exactRule,
-    sessionAllowed: false,
-    persistentAllowed: !afterExternal && exactRule !== null,
-    hostTerminal: { shell: binding.shell, cwd: binding.physicalCwd, ...(afterExternal ? { afterExternalContent: true as const } : {}) },
-  };
-}
-
 function exactBashRule(parsed: ParsedShellCommand, projectCwd: string): string | null {
   const command = parsed.command;
   const shape = analyzeShellForRules(parsed, projectCwd);
@@ -108,7 +80,7 @@ function exactBashRule(parsed: ParsedShellCommand, projectCwd: string): string |
     || parsed.analysis.program.statements[0]?.kind !== "command") return null;
   const floor = (signals.exactLiteralEvaluation !== true && isDestructiveShellText(command))
     || (shape.ok && shape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv) !== null))
-    || signals.exfiltration !== null || signals.sensitive !== null || signals.analysisLimited
+    || signals.sensitive !== null || signals.analysisLimited
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true);
   if (floor || !proof.proven || proof.commands.length !== 1 || !proof.commands[0]) return null;
   const tokens = literalTokens(proof.commands[0].rawWords);
@@ -120,7 +92,7 @@ function exactBashRule(parsed: ParsedShellCommand, projectCwd: string): string |
 function exactPowerShellRule(parsed: ParsedPowerShellCommand, projectCwd: string): string | null {
   const command = parsed.command;
   const signals = inspectPowerShellCommand(parsed, projectCwd);
-  if (signals.exfiltration !== null || signals.sensitive !== null || signals.analysisLimited
+  if (signals.sensitive !== null || signals.analysisLimited
     || (signals.exactLiteralEvaluation !== true && isDestructiveShellText(command))
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return null;
   const proof = proveLiteralPowerShell(parsed);
@@ -189,17 +161,15 @@ function shellRuleCoversParsedCommand(dialect: ShellRuleDialect, pattern: string
   }
   if (spec.kind !== "powershell") return false;
   const parsed = syntax.powershell ?? parsePowerShellCommand(command);
-  const signals = inspectPowerShellCommand(parsed, cwd);
   const result = evaluatePowerShellSubject({
     command: parsed,
     cwd,
     exactAllowOnly: false,
-    floorSignal: signals.exfiltration ?? signals.sensitive ?? (signals.analysisLimited ? "PowerShell analysis budget exceeded" : null),
   }, [rule]);
   return result.decision === action;
 }
 
-// The wildcard allow warning a card shows for an edited rule (owner 2026-10-25): a wildcard allow applies only to sandboxed runs, because a shell without a sandbox runs unasked only on an exact rule.
+// Identify an edited prefix rule so the card can disclose its broader scope. Execution still checks rules, admission and forced floors.
 export function isWildcardShellRule(pattern: string): boolean {
   const spec = parseRuleSpecifier(pattern);
   return (spec.kind === "bash" || spec.kind === "powershell") && spec.wildcard;

@@ -1,16 +1,7 @@
 // @vitest-environment jsdom
-/**
- * Sub-agent parent-adjudication controls in the Permissions tab.
- *
- * The master switch is a feature flag written through `updateSettings`; the
- * six ceilings under it are permission settings written through the reviewer
- * slash dispatcher. The two paths are asserted separately, and the numeric
- * fields are asserted to carry the STORE's bounds — a form that offered a
- * range the store would refuse is the failure this file exists to catch.
- */
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { cleanup, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,21 +12,13 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 }));
 
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
+import { reviewerSettings } from "../../../../__tests__/support/reviewer-settings.js";
 
-function reviewerSettings(
-  parentAdjudication: Record<string, unknown> = { ...MOCK_REVIEWER_PARENT_ADJUDICATION },
-) {
-  return {
-    mode: "llm" as const,
-    fallbackOnError: "deny" as const,
-    interactive: { autoApprove: "low" as const },
-    parentAdjudication,
-  };
-}
-
-function installApi(opts: { featureEnabled?: boolean } = {}) {
+function installApi() {
   const ave = {
     permission: {
+      recentlyDeniedList: vi.fn(async () => ({ ok: true as const, entries: [], total: 0 })),
+      onRecentlyDeniedChanged: vi.fn(() => () => undefined),
       egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
       egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "auto" })),
@@ -62,7 +45,7 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
         if (rawArgs === "show") {
           return { ok: true as const, verb: "show" as const, settings: reviewerSettings() };
         }
-        return { ok: true as const, verb: "adjudication" as const, settings: reviewerSettings() };
+        throw new Error(`Unexpected reviewer command: ${rawArgs}`);
       }),
       sandboxCapability: vi.fn(async () => ({
         platform: "darwin" as NodeJS.Platform,
@@ -109,168 +92,23 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
     settings: {
       features: {
         osToolSandbox: false,
-        subAgentParentAdjudication: opts.featureEnabled ?? true,
       },
     },
   });
   return { ave, aveApi };
 }
 
-describe("PermissionsTab — parent adjudication controls", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    delete (window as unknown as { ave?: unknown }).ave;
-  });
-  afterEach(() => {
-    cleanup();
-    delete (window as unknown as { ave?: unknown }).ave;
-  });
+describe("PermissionsTab delegated action policy", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { cleanup(); delete (window as unknown as { ave?: unknown }).ave; });
 
-  it("renders the persisted block, the three-tier chain note, and the privacy note", async () => {
-    installApi();
+  it("keeps legacy parent policy out of the active approval controls", async () => {
+    const { aveApi, ave } = installApi();
     await renderPermissionsTab();
-
-    expect(screen.getByTestId("parent-adjudication-toggle")).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByTestId("parent-adjudication-chain-note").textContent).toContain("자동 레인");
-    // The one field that widens what leaves the machine says so in the UI.
-    expect(
-      screen.getByTestId("parent-adjudication-context-turns-privacy-note").textContent,
-    ).toContain("DLP");
-    // Milliseconds are stored, seconds are typed.
-    expect(screen.getByTestId("parent-adjudication-timeout-input")).toHaveValue(30);
-    expect(screen.getByTestId("parent-adjudication-max-per-child-run-input")).toHaveValue(200);
-    expect(screen.getByTestId("parent-adjudication-context-turns-input")).toHaveValue(0);
-    expect(screen.getByTestId("parent-adjudication-max-verdict-select")).toBeTruthy();
-    expect(screen.getByTestId("parent-adjudication-model-select")).toBeTruthy();
-    expect(screen.getByTestId("parent-adjudication-background-escalation-select")).toBeTruthy();
-  });
-
-  it("types the numeric fields against the store's bounds", async () => {
-    installApi();
-    await renderPermissionsTab();
-
-    const timeout = screen.getByTestId("parent-adjudication-timeout-input");
-    expect(timeout).toHaveAttribute("min", "1");
-    expect(timeout).toHaveAttribute("max", "120");
-    const perRun = screen.getByTestId("parent-adjudication-max-per-child-run-input");
-    expect(perRun).toHaveAttribute("min", "1");
-    expect(perRun).toHaveAttribute("max", "1000");
-    const turns = screen.getByTestId("parent-adjudication-context-turns-input");
-    expect(turns).toHaveAttribute("min", "0");
-    expect(turns).toHaveAttribute("max", "5");
-  });
-
-  it("writes the master switch through the settings feature flag", async () => {
-    const { aveApi } = installApi();
-    await renderPermissionsTab();
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("parent-adjudication-toggle"));
-    });
-
-    expect(aveApi.updateSettings).toHaveBeenCalledWith({
-      features: { subAgentParentAdjudication: false },
-    });
-    expect(screen.getByTestId("parent-adjudication-toggle")).toHaveAttribute("aria-checked", "false");
-  });
-
-  it("keeps the switch off and banners the failure when the settings write fails", async () => {
-    const { aveApi } = installApi();
-    aveApi.updateSettings.mockResolvedValueOnce({
-      ok: false as const,
-      error: "persist-failed",
-      message: "저장 실패",
-    } as never);
-    await renderPermissionsTab();
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("parent-adjudication-toggle"));
-    });
-
-    expect(screen.getByTestId("parent-adjudication-toggle")).toHaveAttribute("aria-checked", "true");
-    // A known code shows its localized copy; main's free-text message is logged, not shown.
-    expect(screen.getByText("설정을 저장하지 못했습니다.")).toBeTruthy();
-    expect(screen.queryByText("저장 실패")).toBeNull();
-  });
-
-  it("converts the timeout from seconds to the stored milliseconds on commit", async () => {
-    const { ave } = installApi();
-    await renderPermissionsTab();
-
-    const timeout = screen.getByTestId("parent-adjudication-timeout-input");
-    await act(async () => {
-      fireEvent.blur(timeout, { target: { value: "45" } });
-    });
-
-    expect(ave.permission.reviewerDispatch).toHaveBeenCalledWith("adjudication timeoutMs 45000");
-  });
-
-  it("dispatches the remaining numeric ceilings verbatim", async () => {
-    const { ave } = installApi();
-    await renderPermissionsTab();
-
-    await act(async () => {
-      fireEvent.blur(screen.getByTestId("parent-adjudication-max-per-child-run-input"), {
-        target: { value: "50" },
-      });
-    });
-    await act(async () => {
-      fireEvent.blur(screen.getByTestId("parent-adjudication-context-turns-input"), {
-        target: { value: "2" },
-      });
-    });
-
-    expect(ave.permission.reviewerDispatch).toHaveBeenCalledWith(
-      "adjudication maxPerChildRun 50",
-    );
-    expect(ave.permission.reviewerDispatch).toHaveBeenCalledWith(
-      "adjudication includeParentContextTurns 2",
-    );
-  });
-
-  it("does not dispatch when the committed value is the persisted one", async () => {
-    const { ave } = installApi();
-    await renderPermissionsTab();
-
-    await act(async () => {
-      fireEvent.blur(screen.getByTestId("parent-adjudication-timeout-input"), {
-        target: { value: "30" },
-      });
-    });
-
-    expect(ave.permission.reviewerDispatch).toHaveBeenCalledTimes(1); // the initial "show"
-  });
-
-  it("disables the ceilings while the master switch is off", async () => {
-    installApi({ featureEnabled: false });
-    await renderPermissionsTab();
-
-    expect(screen.getByTestId("parent-adjudication-toggle")).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByTestId("parent-adjudication-timeout-input")).toBeDisabled();
-    expect(screen.getByTestId("parent-adjudication-max-per-child-run-input")).toBeDisabled();
-    expect(screen.getByTestId("parent-adjudication-context-turns-input")).toBeDisabled();
-    expect(screen.getByTestId("parent-adjudication-max-verdict-select")).toBeDisabled();
-    expect(screen.getByTestId("parent-adjudication-model-select")).toBeDisabled();
-    expect(screen.getByTestId("parent-adjudication-background-escalation-select")).toBeDisabled();
-  });
-
-  it("surfaces a dispatcher rejection instead of showing the refused value", async () => {
-    const { ave } = installApi();
-    ave.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return { ok: true as const, verb: "show" as const, settings: reviewerSettings() };
-      }
-      return { ok: false as const, error: "invalid timeoutMs '900' — expected 1..120" } as never;
-    });
-    await renderPermissionsTab();
-
-    await act(async () => {
-      fireEvent.blur(screen.getByTestId("parent-adjudication-timeout-input"), {
-        target: { value: "900" },
-      });
-    });
-
-    // The field keeps rendering the persisted value, not the refused one.
-    expect(screen.getByTestId("parent-adjudication-timeout-input")).toHaveValue(30);
+    expect(screen.queryByTestId("parent-adjudication-toggle")).toBeNull();
+    expect(screen.queryByTestId("parent-adjudication-background-escalation-select")).toBeNull();
+    expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(0);
+    expect(aveApi.updateSettings).not.toHaveBeenCalled();
+    expect(ave.permission.reviewerDispatch).toHaveBeenCalledWith("show");
   });
 });

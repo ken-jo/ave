@@ -26,6 +26,7 @@ import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
 import { fireContinuableStop } from "./lifecycle-hooks.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
 import { isUntaintedToolTrustOrigin, isUserKeyboardOrigin, spendUserKeyboardIntent } from "../../shared/chat-origin.js";
@@ -173,9 +174,12 @@ async function runTurnInSpan(
     const toolTrustOrigin = attachmentParts.length > 0
       ? "file-content"
       : initialToolTrustOrigin(inputOrigin, turnInput);
+    let lifecycleProvenance: { toolTrustOrigin: ChatInputOrigin; overlayTriggerOrigin: string | null; approvalReasonPrefix?: string } = {
+      toolTrustOrigin, overlayTriggerOrigin: options.originSource ?? null, approvalReasonPrefix: options.approvalReasonPrefix,
+    };
     const permissionUserIntent = summarizePermissionUserIntent(inputOrigin, turnInput,
   );
-    const requestAnchor = options.requestAnchorRawIntent !== undefined && self.deps.headless !== true
+    const requestAnchor = options.requestAnchorRawIntent !== undefined
       ? createRequestAnchor({
           sessionId: effectiveSessionId,
           turnId: randomUUID(),
@@ -215,6 +219,19 @@ async function runTurnInSpan(
       );
     }
     const turnSignal = ac.signal;
+    const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
+      const inherited = turnExtensionPolicyContext.getStore();
+      const otherPrincipal = lifecycleProvenance.toolTrustOrigin === "file-content" || lifecycleProvenance.toolTrustOrigin === "agent-message" ||
+        lifecycleProvenance.approvalReasonPrefix !== undefined || memoryCaptureTaint.has("staged-guidance");
+      return turnExtensionPolicyContext.run(Object.freeze({
+        ...inherited,
+        allowExternalHooks: inherited?.allowExternalHooks !== false && !isRemoteControllerTurn,
+        headless: self.deps.headless, ownerUnattended: options.unattendedAuthority !== undefined,
+        approvalSurface: self.deps.approvalSurface, remoteControllerAuthority: options.remoteControllerAuthority,
+        floor: inherited?.floor ?? (otherPrincipal ? { code: "other-principal" as const, reason: lifecycleProvenance.approvalReasonPrefix ?? "This principal requires local approval for the action." } : undefined),
+        overlayTriggerOrigin: lifecycleProvenance.overlayTriggerOrigin, abortSignal: turnSignal,
+      }), operation);
+    };
     let initialGuidanceId: string | null = null;
     let agentMessageInputId: string | null = null;
     let retainHostInjectedMessages = false;
@@ -267,17 +284,17 @@ async function runTurnInSpan(
     // Fire observe-only SessionStart once per session after command short-circuiting.
     if (!isRemoteControllerTurn && self.sessionStartFiredFor !== effectiveSessionId) {
       self.sessionStartFiredFor = effectiveSessionId;
-      await self.fireLifecycleEvent(
+      await runLifecycle(() => self.fireLifecycleEvent(
         "SessionStart",
         { sessionMeta: self.sessionMetaForLifecycle(), sessionSource: self.sessionSource },
         effectiveSessionId,
-      );
+      ));
     }
 
     // Blocking prompt hooks run before queryLoop and fail closed; unmatched trusted hooks allow.
     const promptGate = isRemoteControllerTurn
       ? { decision: "allow" as const, reason: "Remote-controller pre-approval prompt hook disabled" }
-      : await self.fireUserPromptSubmit(
+      : await runLifecycle(() => self.fireUserPromptSubmit(
           {
             inputText: options?.initialGuidance
               ? `${turnInput}\n\n${options.initialGuidance}`
@@ -287,7 +304,7 @@ async function runTurnInSpan(
             classification: classification.type,
           },
           effectiveSessionId,
-        );
+        ));
     if (promptGate.decision === "deny") {
       // Refused input is displayed but never accepted into history or query execution.
       self.currentAbortController = null;
@@ -494,7 +511,9 @@ async function runTurnInSpan(
       role: "user",
       content: userContent,
       ...(Object.keys(userMeta).length > 0 ? { meta: userMeta } : {}),
-    });
+    }, isUserKeyboardOrigin(inputOrigin) && options?.resumesInterruptedTurn !== true
+      ? { principal: "user-keyboard", userText: { sessionId: effectiveSessionId, text: input } }
+      : undefined);
     if (options?.initialGuidance) {
       initialGuidanceId = randomUUID();
       self.history.append({
@@ -563,7 +582,7 @@ async function runTurnInSpan(
     let stopHookDispatched = false;
     const subagentStop = options?.subagentStop;
     const onStopHook = subagentStop || !options?.spawnDepth
-      ? async ({ toolCount, stopHookActive }: { toolCount: number; stopHookActive: boolean }) => {
+      ? async ({ toolCount, stopHookActive }: { toolCount: number; stopHookActive: boolean }) => runLifecycle(async () => {
           stopHookDispatched = true;
           if (subagentStop) {
             subagentStop.onDispatched();
@@ -580,7 +599,7 @@ async function runTurnInSpan(
             durationMs: Math.max(0, Date.now() - turnStartedAt),
             stopHookActive,
           }, effectiveSessionId);
-        }
+        })
       : undefined;
     // Bind async context to the effective session ID so delegates read isolated session activations.
     // Only a turn the user typed here, with nothing else speaking through it, may type into the user's own host terminal.
@@ -609,6 +628,7 @@ async function runTurnInSpan(
           permissionUserIntent,
           rolePrompt: options?.rolePrompt,
           onMemoryCaptureTaint: (reason) => memoryCaptureTaint.add(reason),
+          onPermissionProvenanceChanged: (provenance) => { lifecycleProvenance = provenance; },
           memoryQuery: input,
           ...(onStopHook ? { onStopHook } : {}),
         },
@@ -649,7 +669,7 @@ async function runTurnInSpan(
     );
 
     // Observe terminal Stop before persistence; a lifecycle hook cannot block the internal save chain.
-    if (!(stopHookDispatched && result.stopReason === "end_turn" && !subagentStop)) await self.fireLifecycleEvent(
+    if (!(stopHookDispatched && result.stopReason === "end_turn" && !subagentStop)) await runLifecycle(() => self.fireLifecycleEvent(
       "Stop",
       {
         ...(result.stopReason !== undefined
@@ -659,7 +679,7 @@ async function runTurnInSpan(
         durationMs: Math.max(0, Date.now() - turnStartedAt),
       },
       effectiveSessionId,
-    );
+    ));
 
     self.tracer.step("POST_TURN", {
       toolCallCount: result.toolCalls.length,
@@ -942,7 +962,7 @@ async function runTurnInSpan(
           contextRef: { sessionId: self.sessionId },
         });
         // Notification hooks observe the same turn-end message shown to the user.
-        await self.fireLifecycleEvent("Notification", { message: result.text, notificationType: "agent_completed" });
+        await runLifecycle(() => self.fireLifecycleEvent("Notification", { message: result.text, notificationType: "agent_completed" }));
       } catch {
       }
     }

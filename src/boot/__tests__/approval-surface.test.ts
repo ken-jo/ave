@@ -45,7 +45,7 @@ describe("registered approval surface resolution", () => {
     registry.registerUnattributed(surfaceFixture().contents);
     const gate = gateFixture(registry);
     const decision = await gate.requestAndWait(request("no-owner"));
-    expect(decision).toMatchObject({ choice: "deny-once", rememberPattern: "no approval surface" });
+    expect(decision).toMatchObject({ choice: "deny-once", rememberPattern: "Nobody can approve this request; do not retry." });
     expect(isHostApprovalRejectedDecision(decision)).toBe(true);
     expect(gate.pendingCount).toBe(0);
   });
@@ -77,7 +77,7 @@ describe("registered approval surface resolution", () => {
       fire: () => registry.releaseOwner(owner.contents),
     } as never);
     const decision = await gate.requestAndWait(request("owner-lost-before-send"));
-    expect(decision).toMatchObject({ choice: "deny-once", rememberPattern: "no approval surface" });
+    expect(decision).toMatchObject({ choice: "deny-once", rememberPattern: "Nobody can approve this request; do not retry." });
     expect(isHostApprovalRejectedDecision(decision)).toBe(true);
     expect(gate.pendingCount).toBe(0);
     expect(owner.contents.send).not.toHaveBeenCalled();

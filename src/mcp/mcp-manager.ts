@@ -25,7 +25,6 @@ import { McpClient, scrubSecrets } from "./mcp-client.js";
 import { McpOAuthError, McpOAuthSession, tryMcpOAuthCredentialKey, type McpOAuthDependencies, type McpOAuthSecrets } from "./mcp-oauth.js";
 import { ToolRegistry, type PreparedMcpRegistryReplacement } from "../tools/registry.js";
 import type { Tool } from "../tools/base.js";
-import type { PermissionManager } from "../permissions/permission-manager.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { McpInputRequestResolver } from "./mcp-client.js";
 import { withFileLock } from "../lib/with-file-lock.js";
@@ -131,7 +130,6 @@ export interface PreparedBundledMcpGeneration {
   readonly degraded: readonly BundledMcpDegradedState[];
   readonly registryReplacement: PreparedMcpRegistryReplacement;
   readonly governancePublication: { assertAdmitted(): void; publish(): void };
-  readonly permissionPublication?: { publish(): void };
   published: boolean;
 }
 
@@ -191,7 +189,6 @@ export class McpManager {
     private readonly toolRegistry: ToolRegistry,
     private readonly networkFetch: typeof fetch,
     configPath?: string,
-    private readonly permissionManager?: PermissionManager,
     private readonly auditLogger?: AuditLogger,
     /** Bind elicitation approval per server; without a resolver, input_required fails closed. */
     private readonly inputResolverFactory?: (serverId: string) => McpInputRequestResolver,
@@ -466,7 +463,6 @@ export class McpManager {
       this.governance,
       this.toolRegistry,
       clientFetch,
-      this.permissionManager,
       undefined,
       this.inputResolverFactory?.(config.id),
     );
@@ -910,7 +906,6 @@ export class McpManager {
           stagingRegistry,
           oauthSession ? oauthSession.fetch : this.networkFetch,
           undefined,
-          undefined,
           this.inputResolverFactory?.(projection.serverId),
         );
         try {
@@ -949,14 +944,6 @@ export class McpManager {
         predecessorServerIds,
         records.map((record) => record.projection.approval),
       );
-      const replacementNames = new Set(replacementTools.map((tool) => tool.name));
-      const permissionPublication = this.permissionManager?.prepareToolModeOverrides(
-        predecessorToolNames.filter((toolName) => !replacementNames.has(toolName)),
-        records.flatMap((record) => record.tools.map((tool) => ({
-          toolName: tool.name,
-          mode: record.projection.approval.toolPermissionMode ?? "strict",
-        }))),
-      );
       // Reserve the shared registry last so later preparation failure cannot strand reservations.
       const registryReplacement = this.toolRegistry.reserveMcpReplacement(
         predecessorServerIds,
@@ -971,7 +958,6 @@ export class McpManager {
         degraded: Object.freeze(degraded),
         registryReplacement,
         governancePublication,
-        ...(permissionPublication ? { permissionPublication } : {}),
         published: false,
       };
     } catch (error) {
@@ -1004,7 +990,6 @@ export class McpManager {
     prepared.governancePublication.assertAdmitted();
     prepared.registryReplacement.publish();
     prepared.governancePublication.publish();
-    prepared.permissionPublication?.publish();
     for (const serverId of prepared.predecessorServerIds) this.activeBundledServerIds.delete(serverId);
     for (const record of prepared.records) {
       const serverId = record.projection.serverId;
@@ -1131,11 +1116,7 @@ export class McpManager {
     this.bundledStableIds.delete(serverId);
     this.bundledToolSnapshots.delete(serverId);
     if (wasActive) {
-      const toolNames = this.toolRegistry.listAll()
-        .filter((tool) => tool.mcpServerId === serverId)
-        .map((tool) => tool.name);
       this.toolRegistry.unregisterByMcp(serverId);
-      for (const toolName of toolNames) this.permissionManager?.clearToolModeOverride(toolName);
       this.governance.unregisterRuntimeApproval(serverId);
     }
     try {

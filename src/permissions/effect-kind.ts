@@ -216,11 +216,11 @@ function spawnWorkerTargetFromArgs(args: readonly unknown[],
 export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   // storage.* (PluginStorage) resolve is a pure lexical path resolve (no IO) — recorded as a read for total coverage; reads never flip `hasMutatingEffect`.
   "storage.resolve": { kind: "storageRead", targetFromArgs: firstStringArg },
-  "storage.read": { kind: "storageRead", targetFromArgs: firstStringArg },
-  "storage.readText": { kind: "storageRead", targetFromArgs: firstStringArg },
-  "storage.readJson": { kind: "storageRead", targetFromArgs: firstStringArg },
-  "storage.list": { kind: "storageRead", targetFromArgs: firstStringArg },
-  "storage.exists": { kind: "storageRead", targetFromArgs: firstStringArg },
+  "storage.read": { kind: "storageRead", async: true, targetFromArgs: firstStringArg },
+  "storage.readText": { kind: "storageRead", async: true, targetFromArgs: firstStringArg },
+  "storage.readJson": { kind: "storageRead", async: true, targetFromArgs: firstStringArg },
+  "storage.list": { kind: "storageRead", async: true, targetFromArgs: firstStringArg },
+  "storage.exists": { kind: "storageRead", async: true, targetFromArgs: firstStringArg },
   "storage.write": { kind: "storageWrite", async: true, targetFromArgs: firstStringArg,
   },
   "storage.writeJson": { kind: "storageWrite", async: true, targetFromArgs: firstStringArg,
@@ -232,7 +232,7 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   // Encrypted-at-rest variants — same read/write classes as the plaintext methods. writeEncrypted is an async write so it auto-joins GATED_EFFECT_PATHS (effect-boundary approval, identical to storage.write); readEncrypted is a read.
   "storage.writeEncrypted": { kind: "storageWrite", async: true, targetFromArgs: firstStringArg,
   },
-  "storage.readEncrypted": { kind: "storageRead", targetFromArgs: firstStringArg,
+  "storage.readEncrypted": { kind: "storageRead", async: true, targetFromArgs: firstStringArg,
   },
   // config.*
   "config.get": { kind: "config.get", targetFromArgs: firstStringArg },

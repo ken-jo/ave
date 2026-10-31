@@ -22,6 +22,7 @@ import { setWorkerEgressAllowlists, workerEgressAllowedDomains } from "../egress
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
+import { PermissionManager } from "../permission-manager.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 
 const ALL = ["once", "session", "project", "always"] as const;
@@ -511,7 +512,9 @@ describe("shell domain grants in the running process", () => {
     const second = openEgressInvocation(owner);
     const terminal = openEgressInvocation({ kind: "terminal", tabId: "terminal:0a1b2c3d-7" });
     const requests: unknown[] = [];
-    const callback = createEgressAskRuntimeCallback({ approvalGate: { requestAndWait: async (request) => {
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    permissionManager.setMode("strict");
+    const callback = createEgressAskRuntimeCallback({ permissionManager, approvalGate: { requestAndWait: async (request) => {
       requests.push(request);
       if (request.egressHost?.terminalTabId) return { requestId: request.id, choice: "deny-once" };
       return { requestId: request.id, choice: "allow-once", egressScope: "always" };

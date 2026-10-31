@@ -162,7 +162,6 @@ function buildProjection(
     allowedCapabilities: ["tools"],
     maxTools: 64,
     toolNamePrefix: safePrefix(owner),
-    toolPermissionMode: "strict",
     connectionTimeoutMs: 30_000,
     maxConcurrentRequests: 4,
   };

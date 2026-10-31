@@ -17,6 +17,12 @@ function check(summary: PowerShellAstSummary) {
 }
 
 describe("native PowerShell AST facts", () => {
+  it("keeps detached process invocation structurally denied even with a literal read body", () => {
+    expect(validatePowerShellAst(command("Start-Process", [literal("pwsh"),
+      { kind: "parameter", name: "ArgumentList", text: "-ArgumentList", argument: literal("-c Get-Content /outside/notes.txt") },
+    ]))).toContain("process detachment is not allowed");
+  });
+
   it.skipIf(process.platform !== "win32")("refuses a content argument with ambiguous junction parents", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-ps-facts-")); roots.push(root);
     const target = join(root, "a", "b");

@@ -1,7 +1,8 @@
 /** Reviewer wiring follows the selected model or active chat identity; errors default to denial (docs/architecture/permission-policy-design.md).
- * Only missing provider configuration may degrade to rules; reconfiguration restores model review. */
+ * Missing provider configuration retains host rule facts but leaves automatic review unavailable; reconfiguration restores model review. */
 import {
   createRiskClassifier,
+  RuleBasedRiskClassifier,
   type LlmCompletionResult,
   type LlmReviewerProvider,
   type RiskClassifier,
@@ -13,11 +14,12 @@ import {
   type ApprovalSentenceSelector,
 } from "../../permissions/reviewer/approval-sentence-selector.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { RecentlyDeniedStore } from "../../permissions/reviewer/recently-denied.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   readPermissionSettings,
   type ReviewerSettingsBlock,
+  type PermissionSettingsFile,
 } from "../../permissions/permission-settings-store.js";
 import type { LLMProvider, LLMVendor } from "../../engine/llm/types.js";
 import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
@@ -27,12 +29,6 @@ import {
   UnavailableRationaleScopeReviewer,
   type RationaleScopeReviewer,
 } from "../../permissions/reviewer/rationale-scope-reviewer.js";
-import {
-  LlmParentAdjudicator,
-  UnavailableParentAdjudicator,
-  type ParentAdjudicationTargetResolver,
-  type ParentAdjudicator,
-} from "../../permissions/parent-adjudicator.js";
 
 const log = createLogger("reviewer-wiring");
 
@@ -87,7 +83,7 @@ export interface WireReviewerDeps {
   /** The host's outbound transport; both reviewer adapters run on it. */
   networkFetch: typeof fetch;
   /** Defaults to readPermissionSettings; tests may override the reader. */
-  readSettings?: () => ReviewerSettingsBlock;
+  readSettings?: () => ReviewerSettingsBlock | PermissionSettingsFile;
   /** Use the selected reviewer identity, or the active chat model. */
   readActiveLlm: () => ActiveReviewerLlmIdentity;
   /** An unset selection follows chat; an unavailable explicit selection must fail without substituting rules or another model. */
@@ -96,34 +92,26 @@ export interface WireReviewerDeps {
   streamProviderFor?: (vendor: string) => LLMProvider | null;
   /** Test-only cache path override. */
   verdictCachePath?: string;
-  /** Test-only queue path override. */
-  deferredQueuePath?: string;
-  /** Notify the foreground renderer whenever pending deferred entries change. */
-  onDeferredPendingChange?: (summary: { pending: number }) => void;
-  /** Resolve the parent session target per ask so newly configured providers work; absent targets escalate to the user. */
-  resolveParentSessionAdjudicationTarget?: ParentAdjudicationTargetResolver;
+  /** Optional display-history store; retained across reviewer rewiring. */
+  recentlyDenied?: RecentlyDeniedStore;
+  onRecentlyDeniedChanged?: (summary: { total: number }) => void;
 }
 
 /** Runtime mode may degrade from model review to rules; diagnostics consume it, but settings never persist it. */
 export type RuntimeReviewerMode =
   | "disabled"
-  | "rule"
   | "llm"
-  | "strict"
   | "llm-degraded-to-rule"
-  | "llm-model-unavailable";
+  | "llm-model-unavailable"
+  | "llm-settings-invalid";
 
 export interface WireReviewerResult {
   classifier: RiskClassifier;
   rationaleScopeReviewer: RationaleScopeReviewer;
   /** Resolve approval sentences only onto pending scopes, using the reviewer identity; modes without a provider propose nothing. */
   approvalSentenceSelector: ApprovalSentenceSelector;
-  /** Provider-backed parent adjudication shares reviewer identity; without a provider it escalates to the user. */
-  parentAdjudicator: ParentAdjudicator;
-  /** Parent-session adjudication follows chat independently of reviewer mode; missing targets escalate per ask. */
-  parentSessionAdjudicator: ParentAdjudicator;
   cache: VerdictCache;
-  deferredQueue: DeferredQueue;
+  recentlyDenied: RecentlyDeniedStore;
   /** Settings after normalization. */
   appliedSettings: ReviewerSettingsBlock;
   /** Runtime provider and model after following the active identity. */
@@ -151,39 +139,36 @@ type EffectiveReviewerSettings = ReviewerSettingsBlock & {
   vertexLocation?: string;
 };
 
-/** Rewiring replaces the classifier while reusing lock-protected backing files and renderer notifications; no persistent handles or queue state are lost. */
+/** Rewiring replaces the classifier while reusing lock-protected backing files and renderer notifications; live rerun closures remain attached to their history store. */
 export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
-  const settings = (deps.readSettings ?? defaultReadSettings)();
+  const loadedSettings = (deps.readSettings ?? defaultReadSettings)();
+  const settings = "permissions" in loadedSettings ? loadedSettings.permissions.reviewer : loadedSettings;
+  const settingsFault = "permissions" in loadedSettings ? loadedSettings.fault : null;
+  const reviewerSettingsInvalid = settingsFault?.kind === "reviewer-mode-invalid" || settingsFault?.kind === "file-unreadable";
   const effectiveSettings = resolveEffectiveSettings(settings, deps);
   const cache = new VerdictCache(deps.verdictCachePath);
-  const deferredQueue = new DeferredQueue(
-    deps.deferredQueuePath,
-    deps.onDeferredPendingChange,
-    // Route through the surviving manager because rewiring replaces the deferred queue.
-    (entry) => deps.permissionManager.onDeferredEntryPending(entry),
-  );
+  const recentlyDenied = deps.recentlyDenied ?? deps.permissionManager.getRecentlyDenied()
+    ?? new RecentlyDeniedStore(undefined, deps.onRecentlyDeniedChanged);
 
   let classifier: RiskClassifier;
   let rationaleScopeReviewer: RationaleScopeReviewer =
     new UnavailableRationaleScopeReviewer();
   let approvalSentenceSelector: ApprovalSentenceSelector =
     new UnavailableApprovalSentenceSelector();
-  let parentAdjudicator: ParentAdjudicator = new UnavailableParentAdjudicator();
-  // Disabled review supplies unassessed LOW verdicts, so it cannot authorize parent-session adjudication below a risk ceiling.
-  const parentSessionAdjudicator: ParentAdjudicator =
-    deps.resolveParentSessionAdjudicationTarget === undefined ||
-    settings.mode === "disabled"
-      ? new UnavailableParentAdjudicator()
-      : new LlmParentAdjudicator(deps.resolveParentSessionAdjudicationTarget);
   // Only model-to-rule degradation differs from persisted mode.
   let runtimeMode: RuntimeReviewerMode = settings.mode;
   let degradedToRule = false;
   let unavailableReason: string | undefined;
-  if (settings.mode === "disabled" || settings.mode === "strict" || settings.mode === "rule") {
+  if (reviewerSettingsInvalid) {
+    runtimeMode = "llm-settings-invalid";
+    unavailableReason = "Permission reviewer settings are invalid; choose llm or disabled in Permissions settings.";
+    classifier = new RuleBasedRiskClassifier();
+    log.warn("boot: permission reviewer settings are invalid; automatic review is unavailable");
+  } else if (settings.mode === "disabled") {
     classifier = createRiskClassifier({ mode: settings.mode });
     log.info("boot: reviewer wired (mode=%s)", settings.mode);
   } else {
-    // Catch only missing external provider configuration; rules remain stricter than disabled review and reconfiguration restores model review.
+    // Catch only missing external provider configuration; reconfiguration restores model review.
     // Keep classifier construction and telemetry outside the catch so internal contract violations abort boot.
     let adapter: LlmReviewerProvider | undefined;
     const selectedModelUnavailable = (): void => {
@@ -207,10 +192,11 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       } else {
         degradedToRule = true;
         runtimeMode = "llm-degraded-to-rule";
+        unavailableReason = "Permission reviewer provider is not configured; automatic review is unavailable.";
         log.warn(
           { provider: effectiveSettings.provider, error: (err as Error).message },
-          "boot: reviewer mode=llm requested but provider could not be wired — " +
-            "degrading to rule classifier. Reviewer auto-heals to llm once an LLM " +
+          "boot: reviewer mode=llm requested but provider could not be wired; automatic review is unavailable. " +
+            "Rule classification supplies host facts only. Reviewer auto-heals to llm once an LLM " +
             "provider/API key is configured (login or Intelligence settings re-fires wiring).",
         );
       }
@@ -231,10 +217,6 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
         adapter,
         effectiveSettings.model,
       );
-      parentAdjudicator = new LlmParentAdjudicator(
-        adapter,
-        effectiveSettings.model,
-      );
       log.info(
         "boot: reviewer wired (mode=llm provider=%s model=%s fallback=%s)",
         effectiveSettings.provider,
@@ -242,14 +224,14 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
         settings.fallbackOnError,
       );
     } else {
-      classifier = createRiskClassifier({ mode: "rule" });
+      classifier = new RuleBasedRiskClassifier();
     }
   }
 
   deps.permissionManager.setReviewer({
     classifier,
     cache,
-    deferredQueue,
+    recentlyDenied,
     degradedToRule,
     ...(runtimeMode === "llm" ? { model: `${effectiveSettings.provider}/${effectiveSettings.model}` } : {}),
     ...(unavailableReason !== undefined ? { unavailableReason } : {}),
@@ -259,8 +241,6 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       provider: effectiveSettings.provider,
       model: effectiveSettings.model,
       fallbackOnError: settings.fallbackOnError,
-      // Auto-approval changes must invalidate verdicts produced under different policy.
-      interactiveAutoApprove: settings.interactive.autoApprove,
       // Endpoint or project changes must invalidate verdicts from another upstream deployment.
       providerBaseUrl: effectiveSettings.baseUrl ?? null,
       marketplaceProviderPresetId: effectiveSettings.marketplaceProviderPresetId ?? null,
@@ -268,34 +248,20 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
       vertexLocation: effectiveSettings.vertexLocation ?? null,
     },
   });
-  // Apply foreground auto-approval policy to the manager during rewiring.
-  deps.permissionManager.setInteractiveAutoApprove(settings.interactive.autoApprove);
-
-  // Strict mode returns before reviewer routing; allow mode bypasses review and makes interactive.autoApprove ineffective.
-  // Warn when allow mode makes the configured threshold misleading.
-  if (deps.permissionManager.getMode() === "allow") {
-    log.warn(
-      "exec mode=allow — reviewer (and reviewer.interactive.autoApprove) is " +
-      "bypassed for all non-hard-blocked tools. `interactive.autoApprove` " +
-      "setting has no effect under allow mode.",
-    );
-  }
   return {
     classifier,
     rationaleScopeReviewer,
     approvalSentenceSelector,
-    parentAdjudicator,
-    parentSessionAdjudicator,
     cache,
-    deferredQueue,
+    recentlyDenied,
     appliedSettings: settings,
     effectiveSettings,
     runtimeMode,
   };
 }
 
-function defaultReadSettings(): ReviewerSettingsBlock {
-  return readPermissionSettings().permissions.reviewer;
+function defaultReadSettings(): PermissionSettingsFile {
+  return readPermissionSettings();
 }
 
 /** Resolve identity in every mode because judge wiring and cache scopes also consume it. */

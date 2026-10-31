@@ -39,7 +39,7 @@ describe("workload broker permission audit correlation", () => {
       source: "builtin",
       category: "read",
       input: { path: "notes.txt" },
-      permission: { decision: "allow", reason: "allowed", layer: 6 },
+      permission: { decision: "allow", reason: "allowed" },
       rateLimitRemaining: 9,
       trustOrigin: "llm-tool-arg",
       cwd: "/workspace",

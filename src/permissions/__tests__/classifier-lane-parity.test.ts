@@ -13,7 +13,7 @@ import {
 } from "../reviewer/risk-classifier.js";
 import { PermissionManager } from "../permission-manager.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
-import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { maskToolInputForDisplay } from "../../tools/pipeline/display-mask.js";
 import { makeRiskClassifierContext } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -64,6 +64,7 @@ describe("both lanes classify the same object", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-lane-parity-"));
     dirs.push(dir);
     const pm = new PermissionManager(join(dir, "permissions.json"));
+    pm.setMode("auto");
     const seen: Array<Record<string, unknown>> = [];
     setReviewerForTest(pm, {
       classifier: {
@@ -73,7 +74,7 @@ describe("both lanes classify the same object", () => {
         },
       },
       cache: new VerdictCache(join(dir, "cache.jsonl")),
-      deferredQueue: new DeferredQueue(join(dir, "queue.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(dir, "queue.jsonl")),
     });
     // `dir` is handed back so a dispatch can name a REAL directory as the tool's execution cwd — `ReviewerDispatchInput.executionCwd` is required precisely so no producer can fall back to `process.cwd`.
     return { pm, seen, dir };
@@ -141,7 +142,8 @@ describe("DLP is preserved at the sinks", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-lane-parity-reason-"));
     try {
       const pm = new PermissionManager(join(dir, "permissions.json"));
-      const queue = new DeferredQueue(join(dir, "queue.jsonl"));
+      pm.setMode("auto");
+      const queue = makeRecentlyDeniedStore(join(dir, "queue.jsonl"));
       setReviewerForTest(pm, {
         // A classifier that echoes its input into `reason` — the host must not trust classifier prose to be redacted.
         classifier: {
@@ -151,7 +153,7 @@ describe("DLP is preserved at the sinks", () => {
           }),
         },
         cache: new VerdictCache(join(dir, "cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
       const result = await pm.dispatchReviewer("net_probe", {
         invocationId: randomUUID(),
@@ -164,13 +166,11 @@ describe("DLP is preserved at the sinks", () => {
         allowedDirectories: [],
         sensitivePathsAdjacent: [],
         trustOrigin: "llm-tool-arg",
-      }, undefined, { defer: "medium-high" });
+      }, undefined, { lane: "headless" });
       expect(result.verdict.reason).not.toContain("alice@example.com");
       expect(result.verdict.reason).toContain("***@example.com");
-      // …and the deferred-queue row, a file on disk, is masked too.
-      const [pending] = queue.listPending();
-      expect(pending?.inputSummary).not.toContain("alice@example.com");
-      expect(pending?.inputSummary).toContain("***@example.com");
+      // Reviewer assessment alone does not create executable authority or denial history.
+      expect(await queue.list()).toEqual([]);
     } finally {
       await cleanupTmpDir(dir);
     }

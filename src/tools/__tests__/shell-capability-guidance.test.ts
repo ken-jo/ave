@@ -142,10 +142,13 @@ describe("advertised shell operations retain their policy boundary", () => {
 
   it.each([
     "cp -- ./source.bin ../outside.bin",
-    "cp -- ./source.bin ./.ssh/secret",
     "tar -tf ./archive.tar --checkpoint-action=exec=sh",
   ])("keeps the existing refusal for %s", (command) => {
     expect(inspect(command)).not.toBeNull();
+  });
+
+  it("leaves an ordinary secret-file write to the permission pipeline", () => {
+    expect(inspect("cp -- ./source.bin ./.ssh/secret")).toBeNull();
   });
 
   it("advertises structured transfers without relaxing shell capabilities", () => {

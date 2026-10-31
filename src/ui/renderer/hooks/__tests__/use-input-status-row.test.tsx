@@ -48,7 +48,11 @@ describe("useInputStatusRow", () => {
     const broadcasts: Array<() => void> = [];
     const unsubscribe = vi.fn();
     const api = apiWith(settings);
-    api.permission = { sandboxCapability: vi.fn().mockResolvedValueOnce(inactive).mockResolvedValueOnce(active) } as unknown as AveApi["permission"];
+    api.permission = {
+      getMode: vi.fn(async () => ({ mode: "strict" })),
+      recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [] })),
+      onRecentlyDeniedChanged: vi.fn(() => () => {}),
+      sandboxCapability: vi.fn().mockResolvedValueOnce(inactive).mockResolvedValueOnce(active) } as unknown as AveApi["permission"];
     api.onSettingsUpdated = vi.fn((callback) => { broadcasts.push(() => callback(settings)); return unsubscribe; });
     const { result, unmount } = renderHook(() => useInputStatusRow(api));
     await waitFor(() => expect(result.current.sandboxCapability).toEqual(inactive));

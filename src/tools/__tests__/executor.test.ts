@@ -1,9 +1,13 @@
-import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-// Sensitive targets must reach the approval hard block and deny before dialog dispatch or tool execution.
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
+// Admission denials and forced approvals must precede tool execution.
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import childProcess, { ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
+import { syncBuiltinESMExports } from "node:module";
+import * as powerShellExecutable from "../../shared/powershell-executable.js";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 
@@ -31,7 +35,7 @@ import {
   recordApproval,
 } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
-import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import {
   RuleBasedRiskClassifier,
@@ -41,6 +45,7 @@ import { createAgentStatusTool } from "../agent-spawn.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import * as sandboxAuditSink from "../../audit/sandbox-audit-sink.js";
 import { buildPluginToolsForTest } from "../../plugins/__tests__/plugin-tool-test-fixture.js";
 import type { PluginManifest } from "../../plugins/types.js";
 import type { PluginRuntime } from "../../plugins/runtime.js";
@@ -121,6 +126,27 @@ function makeFileTool(category: "read" | "write", executeSpy: (input: unknown) =
   });
 }
 
+const managerRoots: string[] = [];
+afterEach(async () => { for (const directory of managerRoots.splice(0)) await cleanupTmpDir(directory); });
+function fixtureManager(mode: "strict" | "default" | "auto" | "allow" = "default") {
+  const directory = mkdtempSync(join(tmpdir(), "ave-executor-policy-"));
+  managerRoots.push(directory);
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  manager.setMode(mode);
+  return manager;
+}
+function denyingApprovalGate() {
+  const wc = makeMockWebContents();
+  const gate = new ApprovalGate(wc as never);
+  wc.send.mockImplementation((channel: string, request: import("../../permissions/approval-gate.js").ApprovalRequest) => {
+    if (channel !== IPC_APPROVAL_REQUEST) return;
+    queueMicrotask(() => gate.resolveFromDesktopRenderer(request.id, {
+      requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
+    }, wc as never));
+  });
+  return { wc, gate };
+}
+
 describe("ToolExecutor — A2A parent delivery capability provenance", () => {
   it.each([
     { hostCapability: true, rawCapability: false },
@@ -153,7 +179,7 @@ describe("ToolExecutor — A2A parent delivery capability provenance", () => {
           return { output: "captured", isError: false };
         },
       }));
-      const executor = new ToolExecutor(registry);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager("allow"));
 
       const results = await executor.executeAll(
         [{
@@ -182,24 +208,15 @@ describe("ToolExecutor — A2A parent delivery capability provenance", () => {
  * https://github.com/HKUDS/OpenHarness/blob/main/src/openharness/permissions/checker.py
  * Copyright (c) 2025 OpenHarness Contributors
  */
-describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
-  it("tool_use read_file on ~/.ssh/id_rsa: approval-gate §S1 hard-blocks BEFORE dialog", async () => {
+describe("ToolExecutor — sensitive-path and provenance authorization", () => {
+  it("asks before reading an ordinary private key and honors the native denial", async () => {
     const executeSpy = vi.fn(async () => "file contents");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.setRules([{ pattern: "read_file", action: "allow" }]);
-    const originalCheck = permMgr.checkDetailed.bind(permMgr);
-    permMgr.checkDetailed = (name: string, src, cat) => {
-      if (name === "read_file") {
-        return { decision: "ask", reason: "testing ask path", layer: 5 };
-      }
-      return originalCheck(name, src, cat);
-    };
-
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
+    const permMgr = fixtureManager();
+    permMgr.setMode("default");
+    const { wc, gate } = denyingApprovalGate();
 
     const executor = new ToolExecutor(
       registry,
@@ -220,33 +237,53 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       { sessionId: "sess-c1", permissionContext: userPermissionContext() },
     );
 
-    // A sensitive-path hard block must prevent execution.
+    // A denied secret read never enters the handler.
     expect(executeSpy).not.toHaveBeenCalled();
 
-    // Hard-block denial must happen before any user dialog.
-    expect(wc.send).not.toHaveBeenCalled();
+    expect(sentApprovalCards(wc)).toHaveLength(1);
 
     expect(gate.pendingCount).toBe(0);
 
     expect(results).toHaveLength(1);
     expect(results[0].is_error).toBe(true);
-    expect(results[0].content).toContain("민감 경로 차단");
+    expect(results[0].content).toContain("승인 거부");
   });
 
-  it("expands ~/ before sensitive-path hard-block evaluation", async () => {
+  it("denies host credential storage before a card even in allow mode", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ave-executor-private-store-"));
+    const priorHome = process.env.AVE_HOME;
+    process.env.AVE_HOME = home;
+    try {
+      const target = join(home, "secrets", "credentials.json");
+      mkdirSync(join(home, "secrets"));
+      writeFileSync(target, "host-private-data");
+      const execute = vi.fn(async () => "must-not-read");
+      const registry = new ToolRegistry();
+      registry.register(makeReadFileTool(execute));
+      const { wc, gate } = denyingApprovalGate();
+      const executor = new ToolExecutor(registry, undefined, fixtureManager("allow"), undefined, gate);
+      const [result] = await executor.executeAll(
+        [{ id: "host-store-read", name: "read_file", input: { path: target } }],
+        { sessionId: "host-store-read", permissionContext: userPermissionContext() },
+      );
+      expect(result.is_error).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+      expect(sentApprovalCards(wc)).toHaveLength(0);
+    } finally {
+      if (priorHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = priorHome;
+      await cleanupTmpDir(home);
+    }
+  });
+
+  it("expands ~/ before secret-read approval", async () => {
     const executeSpy = vi.fn(async () => "file contents");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({
-      decision: "ask",
-      reason: "testing tilde sensitive path",
-      layer: 5,
-    });
-
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
+    const permMgr = fixtureManager();
+    permMgr.setMode("default");
+    const { wc, gate } = denyingApprovalGate();
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
     const results = await executor.executeAll(
@@ -255,24 +292,18 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     );
 
     expect(executeSpy).not.toHaveBeenCalled();
-    expect(wc.send).not.toHaveBeenCalled();
+    expect(sentApprovalCards(wc)).toHaveLength(1);
     expect(results[0].is_error).toBe(true);
-    expect(results[0].content).toContain("민감 경로 차단");
+    expect(results[0].content).toContain("승인 거부");
   });
 
-  it("tool_use read_file on a non-sensitive path within allowed dir: reaches the dialog (read-only auto-approve)", async () => {
+  it("allows an ordinary read within allowed roots without a dialog", async () => {
     // Use an allowed directory so directory confirmation cannot intercept the approval path under test.
     const executeSpy = vi.fn(async () => "hello world");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({
-      decision: "ask",
-      reason: "testing non-sensitive ask path",
-      layer: 5,
-    });
-
+    const permMgr = fixtureManager();
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const executor = new ToolExecutor(
@@ -308,12 +339,12 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(results[0].content).toBe("hello world");
   });
 
-  it("strict execution mode asks before running read-only tools", async () => {
+  it("strict execution mode preserves ordinary reads without a card", async () => {
     const executeSpy = vi.fn(async () => "hello strict");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.setMode("strict");
 
     const wc = makeMockWebContents();
@@ -334,20 +365,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       },
     );
 
-    const deadline = Date.now() + 4000;
-    while (gate.pendingCount < 1 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    expect(gate.pendingCount).toBe(1);
-    expect(executeSpy).not.toHaveBeenCalled();
-    expect(sent[0].mode).toBe("ask_all");
+    expect(gate.pendingCount).toBe(0);
+    expect(sent).toHaveLength(0);
 
-    gate.resolve(sent[0].id, {
-      requestId: sent[0].id,
-      choice: "allow-once",
-      nonce: sent[0].nonce,
-      hmac: sent[0].hmac,
-    });
     const results = await promise;
 
     expect(executeSpy).toHaveBeenCalledTimes(1);
@@ -355,7 +375,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(results[0].content).toBe("hello strict");
   });
 
-  it("uses Tool.isReadOnly(finalInput), not a static tool-name allowlist", async () => {
+  it("uses the declared read category rather than a static tool-name allowlist", async () => {
     const executeSpy = vi.fn(async () => "dynamic read");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -374,13 +394,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({
-      decision: "ask",
-      reason: "input-aware ask path",
-      layer: 5,
-    });
-
+    const permMgr = fixtureManager();
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
@@ -440,10 +454,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
-  it.skipIf(process.platform === "win32")("runs an unsandboxed shell only on its exact Bash(<command>) rule, so one command does not authorize another", async () => {
-    // Unsandboxed shell exact-rule requirement (owner 2026-10-25): with the sandbox off, a remembered dock grant
-    // for the sealed approval key no longer runs the command; only an exact Bash(<command>) allow rule does, and it
-    // covers that command alone.
+  it.skipIf(process.platform === "win32")("binds a remembered host command grant and an explicit rule to their exact commands", async () => {
     const registry = new ToolRegistry();
     const bash = new BashTool();
     registry.register(bash);
@@ -479,18 +490,18 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       );
 
       const grantOnly = await run("tu-shell-0", firstInput);
-      expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
-      expect(grantOnly[0].is_error).toBe(true);
-      expect(grantOnly[0].content).toContain("승인 거부");
+      expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
+      expect(grantOnly[0].is_error).toBeUndefined();
+      expect(grantOnly[0].content).toContain("safe");
 
       await permMgr.addRulePersist({ pattern: "Bash(echo safe)", action: "allow" }, { kind: "user" });
       const first = await run("tu-shell-1", firstInput);
       expect(first[0].is_error).toBeUndefined();
       expect(first[0].content).toContain("safe");
-      expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
+      expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(0);
 
       const second = await run("tu-shell-2", secondInput);
-      expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(2);
+      expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
       expect(second[0].is_error).toBe(true);
       expect(second[0].content).toContain("승인 거부");
     } finally {
@@ -498,21 +509,17 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     }
   });
 
-  it("hard-blocks sensitive shell paths before approval prompts or allow-always persistence", async () => {
+  it("honors secret shell-read denial before execution or durable grant", async () => {
     const registry = new ToolRegistry();
     registry.register(new BashTool());
     const dir = mkdtempSync(join(tmpdir(), "ave-shell-path-policy-"));
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.checkDetailed = () => ({
-        decision: "ask",
-        reason: "would otherwise ask",
-        layer: 6,
-      });
+      permMgr.setMode("default");
       const approvalGate = {
         requestAndWait: vi.fn(async (req: { id: string }) => ({
           requestId: req.id,
-          choice: "allow-always" as const,
+          choice: "deny-once" as const,
         })),
       };
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
@@ -523,15 +530,15 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       );
 
       expect(result[0].is_error).toBe(true);
-      expect(result[0].content).toContain("Shell 경로 정책 차단");
-      expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
+      expect(result[0].content).toContain("승인 거부");
+      expect(approvalGate.requestAndWait).toHaveBeenCalledOnce();
       await expect(permMgr.listPersistedRules()).resolves.toEqual([]);
     } finally {
       await cleanupTmpDir(dir);
     }
   });
 
-  it("queues headless shell out-of-allowed-dir access instead of executing after a LOW reviewer verdict", async () => {
+  it("denies a headless shell parent escape before reviewer execution", async () => {
     const registry = new ToolRegistry();
     const bash = new BashTool();
     const executeSpy = vi.spyOn(bash, "execute");
@@ -544,13 +551,13 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      const deferredQueue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const recentlyDenied = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       setReviewerForTest(permMgr, {
         classifier: {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer would otherwise allow" })),
         },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue,
+        recentlyDenied,
       });
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
@@ -574,24 +581,20 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
 
       const result = await executor.executeAll(
         // Use a write verb so directory confinement applies; reads would not exercise the queue.
-        [{ id: "tu-headless-outdir", name: "bash", input: { command: `chmod u+w ${shellQuote(process.platform === "win32" ? outsideFile.replaceAll("\\", "/") : outsideFile)}`, timeoutSeconds: 1 } }],
+        [{ id: "tu-headless-outdir", name: "bash", input: { command: `chmod u+w ../${outsideDir.split(/[\\/]/).at(-1)}/probe.txt`, cwd: dir, timeoutSeconds: 1 } }],
         { sessionId: "sess-headless-outdir", permissionContext: userPermissionContext({ headless: true, trustOrigin: "llm-tool-arg" }) },
       );
 
       expect(result[0].is_error).toBe(true);
-      expect(result[0].content).toContain("권한 보류");
-      expect(result[0].content).toContain("허용 디렉토리 외부 경로 접근");
+      expect(result[0].content).toContain("do not retry");
       expect(executeSpy).not.toHaveBeenCalled();
-      const pending = deferredQueue.listPending();
+      const pending = (await recentlyDenied.list());
       expect(pending).toHaveLength(1);
       expect(pending[0]).toMatchObject({
         toolName: "bash",
         source: "builtin",
         category: "shell",
-        verdict: expect.objectContaining({
-          level: "high",
-          reason: "headless out-of-allowed-dir requires manual directory approval",
-        }),
+        reason: expect.any(String),
       });
     } finally {
       await cleanupTmpDir(dir);
@@ -615,26 +618,43 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   it.each([
     ["sensitive env-home operand", "Get-Content $HOME/.ssh/id_rsa"],
     ["sensitive quoted operand", "Get-Content '~/.ssh/id_rsa'"],
-    ["sensitive redirection target", "Get-Content package.json > ~/.ssh/leak"],
-    ["dynamic path composition", "Set-Content (Join-Path $HOME \"Desktop/out.txt\") hi"],
-  ])("runs PowerShell path policy before approval prompts or allow-always persistence: %s", async (_label, command) => {
+  ])("checks parsed shell paths before execution or durable approval: %s", async (_label, command) => {
     const registry = new ToolRegistry();
     registry.register(new PowerShellTool());
     const dir = mkdtempSync(join(tmpdir(), "ave-powershell-path-policy-"));
     const startup = vi.spyOn(powerShellStartupPolicy, "isPowerShellStartupPinned").mockReturnValue(true);
-    const preflight = vi.spyOn(shellTools, "findPowerShellCommandPathViolation").mockImplementation(async (_source, cwd, root, allowed, blockReads) =>
-      shellTools.findPowerShellAstPathViolation(pathPolicyAst(command), cwd, root, allowed, blockReads));
+    const installation = vi.spyOn(powerShellExecutable, "resolveTrustedPowerShellExecutable").mockReturnValue({ executable: "/protected-fixture/pwsh", kind: "pwsh" });
+    const preflight = vi.spyOn(shellTools, "findPowerShellCommandPathViolation");
+    const parserInputs: string[] = [];
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((_executable, argv) => {
+      const args = Array.isArray(argv) ? argv : [];
+      const encodedIndex = args.indexOf("-EncodedCommand");
+      const script = encodedIndex >= 0 ? Buffer.from(args[encodedIndex + 1]!, "base64").toString("utf16le") : args.join(" ");
+      expect(script).toContain("[System.Management.Automation.Language.Parser]::ParseInput");
+      const child = new ChildProcess();
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const chunks: Buffer[] = [];
+      stdin.on("data", chunk => chunks.push(Buffer.from(chunk)));
+      stdin.on("finish", () => queueMicrotask(() => {
+        const source = Buffer.concat(chunks).toString("utf8");
+        parserInputs.push(source);
+        stdout.emit("data", Buffer.from(JSON.stringify(pathPolicyAst(source))));
+        Object.defineProperty(child, "exitCode", { value: 0, configurable: true });
+        child.emit("close", 0);
+      }));
+      Object.assign(child, { stdin, stdout, stderr });
+      return child;
+    });
+    syncBuiltinESMExports();
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.checkDetailed = () => ({
-        decision: "ask",
-        reason: "would otherwise ask",
-        layer: 6,
-      });
+      permMgr.setMode("allow");
       const approvalGate = {
         requestAndWait: vi.fn(async (req: { id: string }) => ({
           requestId: req.id,
-          choice: "allow-always" as const,
+          choice: "deny-once" as const,
         })),
       };
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
@@ -645,13 +665,61 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       );
 
       expect(result[0].is_error).toBe(true);
-      expect(result[0].content).toContain("Shell 경로 정책 차단");
+      expect(result[0].content).toMatch(/PowerShell.*(?:path|provider|ordinary)/);
       expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
       await expect(permMgr.listPersistedRules()).resolves.toEqual([]);
-      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(preflight).toHaveBeenCalledOnce();
+      expect(parserInputs.length).toBeGreaterThanOrEqual(1);
+      expect(parserInputs.every(source => source === command)).toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(parserInputs.length);
     } finally {
       startup.mockRestore();
+      installation.mockRestore();
+      spawn.mockRestore();
+      syncBuiltinESMExports();
       preflight.mockRestore();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each([
+    ["unbound home write target", "Get-Content package.json > ~/.ssh/leak", "forced"],
+    ["ordinary absolute secret-file write", `Get-Content package.json > ${shellQuote(join(tmpdir(), ".ssh", "leak"))}`, "allow"],
+    ["runtime-composed write target", 'Set-Content (Join-Path $HOME "Desktop/out.txt") hi', "forced"],
+    ["unresolved write target", "Set-Content $UNRESOLVED_WRITE_TARGET hi", "forced"],
+    ["protected control-file write", "Set-Content .git/config hi", "forced"],
+  ] as const)("routes %s through the central write decision", async (_label, command, expected) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-powershell-write-route-"));
+    const tool = new PowerShellTool();
+    const execute = vi.spyOn(tool, "execute").mockResolvedValue({ output: "admitted write probe", isError: false });
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("allow");
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never);
+    try {
+      const [result] = await executor.executeAll(
+        [{ id: "powershell-write-route", name: "powershell", input: { command } }],
+        { executionCwd: dir, sessionId: "powershell-write-route", permissionContext: userPermissionContext() },
+      );
+      if (expected === "allow") {
+        expect(result!.is_error).toBeUndefined();
+        expect(result!.content).toBe("admitted write probe");
+        expect(requestAndWait).not.toHaveBeenCalled();
+        expect(execute).toHaveBeenCalledExactlyOnceWith({ command }, expect.anything());
+      } else {
+        expect(result!.is_error).toBe(true);
+        expect(execute).not.toHaveBeenCalled();
+        expect(requestAndWait).toHaveBeenCalledOnce();
+        expect(requestAndWait.mock.calls[0]![0]).toMatchObject({
+          toolName: "powershell", forceExplicit: true, allowedChoices: ["allow-once", "deny-once"],
+          args: { command },
+        });
+      }
+      await expect(manager.listPersistedRules()).resolves.toEqual([]);
+    } finally {
+      execute.mockRestore();
       await cleanupTmpDir(dir);
     }
   });
@@ -674,12 +742,11 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
       decision: "ask",
       reason: "trust-origin boundary test",
-      layer: 5,
-    });
+      });
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -754,7 +821,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         isError: false,
       }),
     }));
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.setMode("allow");
     const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
       ...entry,
@@ -810,7 +877,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         isError: false,
       }),
     }));
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.setMode("allow");
     const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
       ...entry,
@@ -849,13 +916,13 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(allowEntry).not.toHaveProperty("directoryAllowed");
   });
 
-  it("interactive auto-approve LOW in auto mode silently allows mutating tool calls", async () => {
+  it("auto mode allows LOW reviewed mutating calls", async () => {
     // Foreground reviewer auto-approval requires explicit auto mode plus the configured threshold.
     const executeSpy = vi.fn(async () => "reviewed write");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
       name: "reviewed_write_probe_p3",
-      description: "P3 interactive auto-approve probe",
+      description: "Automatic approval probe",
       source: "plugin",
       pluginId: "test-plugin",
       category: "write",
@@ -872,13 +939,13 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      permMgr.setInteractiveAutoApprove("low");
+
       setReviewerForTest(permMgr, {
         classifier: {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
         },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
@@ -944,8 +1011,8 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     }
   });
 
-  it("interactive threshold in default mode falls back to the user-approval modal without reviewer classification", async () => {
-    // The interactive threshold alone cannot activate the reviewer outside auto mode.
+  it("default mode asks for human approval without invoking the configured reviewer", async () => {
+    // A configured reviewer does not change the selected default mode.
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -967,12 +1034,12 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("default");
-      permMgr.setInteractiveAutoApprove("low");
+
       const classifySpy = vi.fn(() => ({ level: "low" as const, reason: "reviewer says safe" }));
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const auditLogger = {
         log: vi.fn(),
@@ -1005,15 +1072,14 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       expect(classifySpy).not.toHaveBeenCalled();
       expect(gate.requestAndWait).toHaveBeenCalledOnce();
       expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-        mode: "default",
-        reviewerVerdict: undefined,
+          reviewerVerdict: undefined,
       }));
     } finally {
       await cleanupTmpDir(dir);
     }
   });
 
-  it("interactive auto-review MEDIUM opens the approval gate with the reviewer verdict (deny-once blocks execution)", async () => {
+  it("auto-review HIGH opens the approval gate with the reviewer verdict (deny-once blocks execution)", async () => {
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1035,15 +1101,15 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      permMgr.setInteractiveAutoApprove("low");
+
       const classifySpy = vi.fn((ctx: import("../../permissions/reviewer/risk-classifier.js").ToolInvocationContext) => ({
-        level: "medium" as const,
+        level: "high" as const,
         reason: `reviewed ${String(ctx.finalInput.payload)}`,
       }));
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1075,7 +1141,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         },
       );
 
-      // Non-LOW foreground verdicts require user approval; user denial must prevent execution.
+      // HIGH foreground verdicts require user approval; user denial must prevent execution.
       expect(result[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(permissionReviewEvents.map((event) => event.status)).toEqual([
@@ -1083,17 +1149,16 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         "needs_approval",
       ]);
       expect(permissionReviewEvents[1]).toMatchObject({
-        verdictLevel: "medium",
+        verdictLevel: "high",
       });
       const reviewReason = String(permissionReviewEvents[1]?.reason ?? "");
-      expect(reviewReason).toContain("***@example.com");
+      expect(reviewReason).toBe("Automatic review requires human approval.");
       expect(reviewReason).not.toContain("alice@example.com");
       expect(reviewReason).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
       // Carry risk and reason into approval; HIGH risk restricts scope and requires natural-language confirmation.
       expect(requestAndWait).toHaveBeenCalledTimes(1);
       expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-        reviewerVerdict: expect.objectContaining({ level: "medium" }),
-        reason: expect.stringContaining("reviewer medium"),
+        reviewerVerdict: expect.objectContaining({ level: "high", reason: expect.stringContaining("***@example.com") }),
       }));
       // Classify raw arguments consistently across lanes; redact only display and audit sinks.
       const reviewerCtx = classifySpy.mock.calls[0]?.[0];
@@ -1130,8 +1195,8 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     const auditLogger = new AuditLogger(join(dir, "audit"));
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("auto");
-      permMgr.setInteractiveAutoApprove("low");
+      permMgr.setMode("default");
+
       const classifySpy = vi.fn(() => ({
         level: "medium" as const,
         reason: "needs user confirmation",
@@ -1139,11 +1204,11 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       // Persist the exact tuple with the host-captured frozen directory before resolving allow-always.
       const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
-        const workingDirectory = req.reviewerApprovalBasis?.workingDirectory;
+        const workingDirectory = req.approvalRuleBasis?.workingDirectory;
         expect(workingDirectory).toBeDefined();
         await recordApproval(
           req.toolName,
@@ -1192,7 +1257,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       expect(first[0].content).toBe("sent");
       expect(requestAndWait).toHaveBeenCalledTimes(1);
       expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-        reviewerVerdict: expect.objectContaining({ level: "medium" }),
+        reviewerVerdict: undefined,
       }));
 
       const second = await executor.executeAll(
@@ -1210,7 +1275,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       expect(second[0].content).toBe("sent");
       expect(executeSpy).toHaveBeenCalledTimes(2);
       expect(requestAndWait).toHaveBeenCalledTimes(1);
-      expect(classifySpy).toHaveBeenCalledOnce();
+      expect(classifySpy).not.toHaveBeenCalled();
     } finally {
       await auditLogger.close();
       if (previousAveHome === undefined) delete process.env.AVE_HOME;
@@ -1220,7 +1285,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     }
   });
 
-  it("Phase 0 foreground deny→ask change does not affect the headless lane (still defers to the queue, no modal)", async () => {
+  it("headless HIGH review records a recent denial without execution or a human card", async () => {
     const executeSpy = vi.fn(async () => "sent");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1242,16 +1307,16 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      permMgr.setInteractiveAutoApprove("low");
+
       const classifySpy = vi.fn(() => ({
-        level: "medium" as const,
+        level: "high" as const,
         reason: "headless data egress",
       }));
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1280,8 +1345,8 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       expect(result[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(requestAndWait).not.toHaveBeenCalled();
-      expect(queue.listPending()).toHaveLength(1);
-      expect(queue.listPending()[0].verdict.level).toBe("medium");
+      expect((await queue.list())).toHaveLength(1);
+      expect((await queue.list())[0].reason).toBeTruthy();
     } finally {
       await cleanupTmpDir(dir);
     }
@@ -1309,15 +1374,15 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      permMgr.setInteractiveAutoApprove("low");
+
       const classifySpy = vi.fn(() => ({
-        level: "medium" as const,
+        level: "high" as const,
         reason: "needs user confirmation",
       }));
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -1380,14 +1445,13 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      // Foreground auto-review also requires the interactive setting.
-      permMgr.setInteractiveAutoApprove("low");
+
       setReviewerForTest(permMgr, {
         classifier: {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
         },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
         ...entry,
@@ -1429,7 +1493,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     }
   });
 
-  it("hard-blocks sensitive paths after pre-hook input modification and before read-only auto approval", async () => {
+  it("asks on the hook-modified secret path before read execution", async () => {
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
@@ -1440,15 +1504,10 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       updatedInput: { path: "/Users/test/.ssh/id_rsa" },
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({
-      decision: "allow",
-      reason: "would otherwise allow",
-      layer: 3,
-    });
+    const permMgr = fixtureManager();
+    permMgr.setMode("default");
 
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
+    const {wc,gate} = denyingApprovalGate();
     const executor = new ToolExecutor(registry, hooks, permMgr, undefined, gate);
 
     const results = await executor.executeAll(
@@ -1457,9 +1516,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     );
 
     expect(executeSpy).not.toHaveBeenCalled();
-    expect(wc.send).not.toHaveBeenCalled();
+    expect(sentApprovalCards(wc)).toHaveLength(1);
     expect(results[0].is_error).toBe(true);
-    expect(results[0].content).toContain("민감 경로 차단");
+    expect(results[0].content).toContain("승인 거부");
   });
 
   it("denies plugin tool calls outside the active plugin scope before approval", async () => {
@@ -1476,7 +1535,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
@@ -1495,20 +1554,15 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(results[0].content).toContain("현재 실행 scope 밖");
   });
 
-  it("hard-blocks relative-path traversal (../../../.ssh/id_rsa) before approval", async () => {
+  it("forces an explicit traversal card before the read handler", async () => {
     // Canonicalization must reject traversal that resolves to a sensitive path.
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({
-      decision: "allow",
-      reason: "would otherwise allow",
-      layer: 3,
-    });
-    const wc = makeMockWebContents();
-    const gate = new ApprovalGate(wc as never);
+    const permMgr = fixtureManager();
+    permMgr.setMode("default");
+    const {wc,gate} = denyingApprovalGate();
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
     // Embedded traversal keeps the sensitive target independent of cwd.
@@ -1520,9 +1574,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     );
 
     expect(executeSpy).not.toHaveBeenCalled();
-    expect(wc.send).not.toHaveBeenCalled();
+    expect(sentApprovalCards(wc)).toHaveLength(1);
     expect(results[0].is_error).toBe(true);
-    expect(results[0].content).toContain("민감 경로 차단");
+    expect(results[0].content).toContain("승인 거부");
   });
 
   it("denies all plugin tools when allowedPluginIds is empty Set (routine deny-all)", async () => {
@@ -1540,7 +1594,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
@@ -1574,12 +1628,12 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     const seenCategories: (string | undefined)[] = [];
     permMgr.checkDetailed = (_toolName, _source, category) => {
       seenCategories.push(category);
       // Deny to isolate the category supplied to policy evaluation.
-      return { decision: "deny", reason: "test", layer: 1 };
+      return { decision: "deny", reason: "test", };
     };
 
     const wc = makeMockWebContents();
@@ -1618,8 +1672,8 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       updatedInput: { command: "sudo echo blocked" },
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "would otherwise allow", layer: 3 });
+    const permMgr = fixtureManager();
+    permMgr.checkDetailed = () => ({ decision: "allow", reason: "would otherwise allow", });
     const executor = new ToolExecutor(
       registry,
       hooks,
@@ -1650,12 +1704,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({
-      decision: "allow",
-      reason: "would otherwise allow",
-      layer: 3,
-    });
+    const permMgr = fixtureManager();
+    permMgr.setMode("allow");
+    const checkDetailed = vi.spyOn(permMgr,"checkDetailed");
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1691,7 +1742,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(executeSpy).toHaveBeenCalledOnce();
     expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
       expect.objectContaining({
-        reason: "[Sub-Agent: researcher] would otherwise allow",
+        reason: expect.stringContaining("[Sub-Agent: researcher]"),
         trustOrigin: "agent-message",
       }),
     );
@@ -1700,8 +1751,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     );
   });
 
-  it("routes builtin reads in an A2A-prefixed turn through the reviewer lane, not the forced modal", async () => {
-    // Parent paging of child reports may auto-review builtin reads; writes, shells, network, meta, and remote turns stay explicit.
+  it("forces A2A-prefixed builtin reads through one human card without reviewer", async () => {
     const executeSpy = vi.fn(async () => "read ok");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1714,19 +1764,10 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.setInteractiveAutoApprove("medium");
-    permMgr.checkDetailed = vi.fn(() => ({
-      decision: "allow" as const,
-      reason: "auto mode (category: read, trust: high)",
-      layer: 6,
-    }));
-    permMgr.hasReviewer = vi.fn(() => true) as never;
-    permMgr.dispatchReviewer = vi.fn(async () => ({
-      verdict: { level: "low" as const, reason: "read-only paging of child output" },
-      outcome: "fresh" as const,
-      judge: reviewerJudgeOutcomeForTest("allow", "read-only paging of child output"),
-    })) as never;
+    const permMgr = fixtureManager();
+
+    permMgr.setMode("auto");
+    const dispatchReviewer = vi.spyOn(permMgr,"dispatchReviewer");
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1752,8 +1793,8 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
 
     expect(results[0].is_error).toBeUndefined();
     expect(executeSpy).toHaveBeenCalledOnce();
-    expect(permMgr.dispatchReviewer).toHaveBeenCalledOnce();
-    expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
+    expect(dispatchReviewer).not.toHaveBeenCalled();
+    expect(approvalGate.requestAndWait).toHaveBeenCalledOnce();
   });
 
   it("re-elevates always-allow meta tools for sub-agent message provenance", async () => {
@@ -1770,12 +1811,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = vi.fn(() => ({
-      decision: "allow",
-      reason: "receiver meta auto-allow",
-      layer: 6,
-    }));
+    const permMgr = fixtureManager();
+    permMgr.setMode("allow");
+    const checkDetailed = vi.spyOn(permMgr,"checkDetailed");
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -1801,18 +1839,17 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
 
     expect(results[0].is_error).toBeUndefined();
     expect(executeSpy).toHaveBeenCalledOnce();
-    expect(permMgr.checkDetailed).toHaveBeenCalledOnce();
+    expect(checkDetailed).toHaveBeenCalledOnce();
     expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
       expect.objectContaining({
         toolName: "a2a_always_allow_meta_probe",
         toolCategory: "meta",
-        isReadOnly: false,
-        reason: "[Sub-Agent: researcher] receiver meta auto-allow",
+        reason: expect.stringContaining("[Sub-Agent: researcher]"),
       }),
     );
   });
 
-  it("never blocks an A2A-prefixed turn on a human for the real agent_status poll", async () => {
+  it("requires one receiver approval for the real A2A-prefixed agent_status poll", async () => {
     // Drive the real agent_status declaration so an incorrect category cannot hide in a fixture.
     const dir = mkdtempSync(join(tmpdir(), "ave-agent-status-a2a-"));
     const listRunStatuses = vi.fn(() => [
@@ -1832,11 +1869,11 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
 
     const permMgr = new PermissionManager(join(dir, "permissions.json"));
     permMgr.setMode("auto");
-    permMgr.setInteractiveAutoApprove("medium");
+
     setReviewerForTest(permMgr, {
       classifier: new RuleBasedRiskClassifier(),
       cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-      deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
     });
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
@@ -1862,7 +1899,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         },
       );
 
-      expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
+      expect(approvalGate.requestAndWait).toHaveBeenCalledOnce();
       expect(results[0].is_error).toBeUndefined();
       // Bind reads to the host-issued session identity and consume the full child report exactly once.
       expect(listRunStatuses).toHaveBeenCalledWith(
@@ -1887,12 +1924,11 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
       decision: "deny",
       reason: "receiver deny",
-      layer: 1,
-    });
+      });
     const approvalGate = { requestAndWait: vi.fn() };
     const executor = new ToolExecutor(
       registry,
@@ -1916,7 +1952,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
   });
 
-  it("forces receiver ApprovalGate when A2A provenance exists without PermissionManager", async () => {
+  it("fails closed without PermissionManager even when the A2A receiver has a human gate", async () => {
     const executeSpy = vi.fn(async () => "approved");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1951,15 +1987,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       },
     );
 
-    expect(results[0].is_error).toBeUndefined();
-    expect(executeSpy).toHaveBeenCalledOnce();
-    expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolName: "a2a_no_manager_probe",
-        isReadOnly: false,
-        reason: "[Sub-Agent: researcher] cross-agent message requires receiver approval",
-      }),
-    );
+    expect(results[0].is_error).toBe(true);
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
   });
 
   it("fails closed when A2A provenance has neither PermissionManager nor ApprovalGate", async () => {
@@ -2044,8 +2074,8 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_a", spy1));
     registry.register(makeGenericTool("tool_b", spy2));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered test", layer: 5 });
+    const permMgr = fixtureManager();
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2093,8 +2123,8 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_c", spy1));
     registry.register(makeGenericTool("tool_d", spy2));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered deny test", layer: 5 });
+    const permMgr = fixtureManager();
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered deny test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2179,8 +2209,8 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_e", spyAllow));
     registry.register(makeGenericTool("tool_f", spyDeny));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "selective test", layer: 5 });
+    const permMgr = fixtureManager();
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "selective test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2244,7 +2274,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     const registry = new ToolRegistry();
     registry.register(makeParallelTool("parallel_a"));
     registry.register(makeParallelTool("parallel_b"));
-    const executor = new ToolExecutor(registry);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager());
 
     const execPromise = executor.executeAll(
       [
@@ -2274,12 +2304,11 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     const registry = new ToolRegistry();
     registry.register(makeGenericTool("tool_stop_probe", executeSpy));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
       decision: "ask",
       reason: "stop-while-parked probe",
-      layer: 5,
-    });
+      });
 
     const turn = new AbortController();
     let signalGivenToGate: AbortSignal | undefined;
@@ -2335,14 +2364,8 @@ describe("ToolExecutor — C1 ask_user_question short-circuit", () => {
     const registry = new ToolRegistry();
     registry.register(askTool);
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    // Force ask if consulted so a missing builtin short-circuit is observable.
-    const checkSpy = vi.fn(() => ({
-      decision: "ask" as const,
-      reason: "should-not-be-called",
-      layer: 5,
-    }));
-    permMgr.checkDetailed = checkSpy;
+    const permMgr = fixtureManager();
+    const checkSpy = vi.spyOn(permMgr, "checkDetailed");
 
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
@@ -2369,7 +2392,7 @@ describe("ToolExecutor — C1 ask_user_question short-circuit", () => {
 
     expect(requestSpy).not.toHaveBeenCalled();
     expect(wc.send).not.toHaveBeenCalled();
-    expect(checkSpy).not.toHaveBeenCalled();
+    expect(checkSpy).toHaveBeenCalledOnce();
     expect(innerExecuteSpy).toHaveBeenCalledTimes(1);
     expect(results).toHaveLength(1);
     expect(results[0].is_error).toBeUndefined();
@@ -2400,7 +2423,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     registry.register(spawnTool);
 
     // Allow-all suppresses decisionOverride ask re-elevation.
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.setMode("allow");
 
     const wc = makeMockWebContents();
@@ -2433,8 +2456,13 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       const registry = new ToolRegistry();
       registry.register(spawnTool);
 
-      const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+      const permMgr = fixtureManager();
       permMgr.setMode(mode);
+      if (mode === "auto") setReviewerForTest(permMgr, {
+        classifier: { classify: () => ({ level: "high", reason: "Sub-agent execution needs consent" }) },
+        cache: new VerdictCache(join(managerRoots.at(-1)!, "spawn-verdicts.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(managerRoots.at(-1)!, "spawn-denials.jsonl")),
+      });
 
       const wc = makeMockWebContents();
       const gate = new ApprovalGate(wc as never);
@@ -2467,7 +2495,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const registry = new ToolRegistry();
     registry.register(spawnTool);
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.setMode("default");
     await permMgr.addAlwaysAllowedPersist("agent_spawn");
 
@@ -2499,7 +2527,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const registry = new ToolRegistry();
     registry.register(spawnTool);
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.setMode("allow");
     await permMgr.addAlwaysAllowedPersist("agent_spawn");
 
@@ -2546,7 +2574,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
       .mockImplementation(() => undefined);
 
     try {
-      const executor = new ToolExecutor(registry);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager("allow"));
       const results = await executor.executeAll(
         [{ id: "tu-r2cr4", name: "ask_user_question", input: {} }],
         { sessionId: "sess-r2cr4-plugin", permissionContext: userPermissionContext() },
@@ -2596,7 +2624,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
       .mockImplementation(() => undefined);
 
     try {
-      const executor = new ToolExecutor(registry);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager("allow"));
       await executor.executeAll(
         [{ id: "tu-r2cr4-b", name: "ask_user_question", input: {} }],
         { sessionId: "sess-r2cr4-builtin", permissionContext: userPermissionContext() },
@@ -2645,7 +2673,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
     const onToolEnd = vi.fn();
 
     try {
-      const executor = new ToolExecutor(registry);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager("allow"));
       const results = await executor.executeAll(
         [{
           id: "tu-dlp-email",
@@ -2694,7 +2722,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
 
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
     const cwdInside = `${process.cwd()}/sample.txt`;
     const results = await executor.executeAll(
       [{ id: "tu-l1-1", name: "read_file", input: { path: cwdInside } }],
@@ -2714,7 +2742,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
 
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
     const callPromise = executor.executeAll(
       [{
         id: "tu-l1-2",
@@ -2761,7 +2789,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const wc = makeMockWebContents();
     // A short deadline distinguishes immediate Stop handling from gate timeout.
     const gate = new ApprovalGate(wc as never, undefined, 1_000);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
     const turn = new AbortController();
 
     const callPromise = executor.executeAll(
@@ -2798,7 +2826,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const callPromise = executor.executeAll(
       [{
@@ -2835,7 +2863,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      undefined,
+      fixtureManager(),
       undefined,
       gate,
       undefined,
@@ -2899,7 +2927,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const executor = new ToolExecutor(
         registry,
         undefined,
-        undefined,
+        fixtureManager(),
         undefined,
         gate,
         undefined,
@@ -2951,7 +2979,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const onTurnDirectoryGrant = vi.fn();
     const onSessionDirectoryGrant = vi.fn();
@@ -2990,7 +3018,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const onTurnDirectoryGrant = vi.fn();
     const onSessionDirectoryGrant = vi.fn();
@@ -3023,7 +3051,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(onSessionDirectoryGrant.mock.calls[0][0]).not.toContain("notes.md");
   });
 
-  it("captures post-directory-grant evaluation context for the Step 3 approval", async () => {
+  it("captures the full outside-write context once and executes without a second card", async () => {
     const outside = mkdtempSync(join(tmpdir(), "ave-executor-context-scope-"));
     try {
       const target = join(outside, "notes.md");
@@ -3047,11 +3075,8 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const permMgr = new PermissionManager(join(outside, "permissions.json"));
-      permMgr.checkDetailed = () => ({
-        decision: "ask",
-        reason: "post-directory-grant approval",
-        layer: 3,
-      });
+      permMgr.setMode("strict");
+      const checkDetailed = vi.spyOn(permMgr, "checkDetailed");
 
       const wc = makeMockWebContents();
       const gate = new ApprovalGate(wc as never);
@@ -3080,31 +3105,11 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         hmac: directoryRequest.hmac,
       });
 
-      const step3Request = await waitForApprovalPayload<{
-        id: string;
-        nonce: string;
-        hmac: string;
-        kind?: string;
-        evaluationContext?: {
-          allowedDirectories: readonly string[];
-          targetFilePaths: readonly string[];
-        };
-      }>(wc, 1);
-      expect(step3Request.kind).toBeUndefined();
-      expect(step3Request.evaluationContext).toBeTruthy();
-      expect(step3Request.evaluationContext!.allowedDirectories.map(comparablePath))
-        .toContain(comparablePath(target));
-      expect(step3Request.evaluationContext!.targetFilePaths.map(comparablePath))
-        .toContain(comparablePath(target));
-      gate.resolve(step3Request.id, {
-        requestId: step3Request.id,
-        choice: "allow-once",
-        nonce: step3Request.nonce,
-        hmac: step3Request.hmac,
-      });
-
       const results = await callPromise;
-      expect(executeSpy).toHaveBeenCalled();
+      expect(executeSpy).toHaveBeenCalledOnce();
+      expect(sentApprovalCards(wc)).toHaveLength(1);
+      expect(checkDetailed).toHaveBeenCalledOnce();
+      expect(checkDetailed.mock.calls[0]?.[4]?.paths).toEqual(expect.arrayContaining([expect.objectContaining({ canonical: caseFoldForMatch(canonicalizePathForMatch(target)), lexical: target, effect: "write" })]));
       expect(results[0].is_error).toBeUndefined();
     } finally {
       await cleanupTmpDir(outside);
@@ -3140,13 +3145,15 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }
   });
 
-  it("native read_file outside the workspace asks again once reads are re-fenced", async () => {
+  it("denies an uncovered native read at admission when reads are fenced, even in allow mode", async () => {
     const outside = mkdtempSync(join(tmpdir(), "ave-executor-native-read-fenced-"));
     try {
       const target = join(outside, "notes.md");
       writeFileSync(target, "outside readable\n", "utf8");
       const registry = new ToolRegistry();
-      registry.register(new ReadFileTool());
+      const read = new ReadFileTool();
+      const execute = vi.spyOn(read,"execute");
+      registry.register(read);
       const permissions = new PermissionManager(
         join(outside, "nonexistent-permissions.json"),
       );
@@ -3162,20 +3169,10 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         { sessionId: "sess-l1-native-read-fenced", permissionContext: userPermissionContext() },
       );
 
-      const sent = await waitForApprovalPayload<{
-        id: string; nonce: string; hmac: string; kind?: string;
-      }>(wc);
-      expect(sent.kind).toBe("out-of-allowed-dir");
-      gate.resolve(sent.id, {
-        requestId: sent.id,
-        choice: "allow-once",
-        nonce: sent.nonce,
-        hmac: sent.hmac,
-      });
-
       const results = await callPromise;
-      expect(results[0].is_error).toBeUndefined();
-      expect(results[0].content).toContain("outside readable");
+      expect(results[0].is_error).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+      expect(sentApprovalCards(wc)).toHaveLength(0);
     } finally {
       await cleanupTmpDir(outside);
     }
@@ -3190,7 +3187,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
       const wc = makeMockWebContents();
       const gate = new ApprovalGate(wc as never);
-      const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
       const denied = executor.executeAll(
         [{ id: "tu-l1-native-write-deny", name: "write_file", input: { path: target, content: "nope" } }],
@@ -3225,7 +3222,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
       const wc = makeMockWebContents();
       const gate = new ApprovalGate(wc as never);
-      const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
       const callPromise = executor.executeAll(
         // Use chmod so write confinement applies; cat would bypass directory approval.
@@ -3272,7 +3269,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
       const wc = makeMockWebContents();
       const gate = new ApprovalGate(wc as never);
-      const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
       const callPromise = executor.executeAll(
         [{ id: "tu-l1-shell-allow", name: "bash", input: { command: `chmod u+w ${target} && cat ${target}`, timeoutSeconds: 5 } }],
@@ -3317,7 +3314,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
       const wc = makeMockWebContents();
       const gate = new ApprovalGate(wc as never);
-      const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
       const callPromise = executor.executeAll(
         [{ id: "tu-l1-shell-null-device", name: "bash", input: { command: `test -e ${target} >/dev/null && chmod u+w ${target} && cat ${target}`, timeoutSeconds: 1 } }],
@@ -3353,13 +3350,49 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }
   });
 
+  it("writes two outside shell operands after one approval for the full command", async () => {
+    const firstDirectory = mkdtempSync(join(tmpdir(), "ave-shell-first-target-"));
+    const secondDirectory = mkdtempSync(join(tmpdir(), "ave-shell-second-target-"));
+    try {
+      const first = join(firstDirectory, "first.txt");
+      const second = join(secondDirectory, "second.txt");
+      const shellPath = (path: string) => shellQuote(process.platform === "win32" ? path.replaceAll("\\", "/") : path);
+      const command = `printf first > ${shellPath(first)} && printf second > ${shellPath(second)}`;
+      const registry = new ToolRegistry();
+      registry.register(new BashTool());
+      const wc = makeMockWebContents();
+      const gate = new ApprovalGate(wc as never);
+      const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
+      const pending = executor.executeAll(
+        [{ id: "shell-two-outside-targets", name: "bash", input: { command, timeoutSeconds: 5 } }],
+        { sessionId: "shell-two-outside-targets", permissionContext: userPermissionContext() },
+      );
+      const request = await waitForApprovalPayload<import("../../permissions/approval-gate.js").ApprovalRequest>(wc);
+      expect(request.kind).toBe("out-of-allowed-dir");
+      expect(request.args).toMatchObject({ command });
+      expect(existsSync(first)).toBe(false);
+      expect(existsSync(second)).toBe(false);
+      gate.resolveFromDesktopRenderer(request.id, {
+        requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac,
+      }, wc as never);
+      const [result] = await pending;
+      expect(result.is_error, result.content).toBeUndefined();
+      expect(sentApprovalCards(wc)).toHaveLength(1);
+      expect(readFileSync(first, "utf8")).toBe("first");
+      expect(readFileSync(second, "utf8")).toBe("second");
+    } finally {
+      await cleanupTmpDir(firstDirectory);
+      await cleanupTmpDir(secondDirectory);
+    }
+  });
+
   it("shell filesystem root operand is denied before out-of-allowed-dir approval", async () => {
     const registry = new ToolRegistry();
     registry.register(new BashTool());
 
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const results = await executor.executeAll(
       // Use a root write; root reads are not confined.
@@ -3387,7 +3420,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const executor = new ToolExecutor(
         registry,
         undefined,
-        undefined,
+        fixtureManager(),
         new BashAstValidator({ mode: "deny" }),
         gate,
       );
@@ -3430,7 +3463,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(makeWriteFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const results = await executor.executeAll(
       [{
@@ -3446,12 +3479,12 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
 
     expect(executeSpy).not.toHaveBeenCalled();
     expect(results[0].is_error).toBe(true);
-    expect(results[0].content).toContain("headless");
+    expect(results[0].content).toBe("Nobody can approve this request; do not retry.");
     // Headless directory requests must never dispatch a renderer dialog.
     expect(wc.send).not.toHaveBeenCalled();
   });
 
-  it("strict headless read defers even when reviewer would allow", async () => {
+  it("strict headless ordinary reads allow without reviewer or human", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-strict-headless-"));
     try {
       const executeSpy = vi.fn(async () => "ok");
@@ -3461,13 +3494,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const classifier: RiskClassifier = {
         classify: vi.fn(() => ({ level: "low", reason: "reviewer would allow" })),
       };
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("strict");
       setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
 
       const wc = makeMockWebContents();
@@ -3486,20 +3519,19 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         },
       );
 
-      expect(executeSpy).not.toHaveBeenCalled();
+      expect(executeSpy).toHaveBeenCalledOnce();
       expect(classifier.classify).not.toHaveBeenCalled();
       expect(wc.send).not.toHaveBeenCalled();
-      expect(results[0].is_error).toBe(true);
-      expect(results[0].content).toContain("headless");
-      expect(results[0].content).toContain("strict 모드");
-      expect(queue.listPending()).toHaveLength(1);
+      expect(results[0].is_error).toBeUndefined();
+      expect((await queue.list())).toHaveLength(0);
     } finally {
       await cleanupTmpDir(dir);
     }
   });
 
-  it("audits headless reviewer queue decisions as deferred with queue id", async () => {
+  it("audits headless reviewer fallback as terminal denial", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-headless-audit-"));
+    const reviewerAudit = vi.spyOn(sandboxAuditSink,"emitSandboxAudit");
     try {
       const executeSpy = vi.fn(async () => ({ output: "sent", isError: false }));
       const registry = new ToolRegistry();
@@ -3521,15 +3553,15 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const classifier: RiskClassifier = {
-        classify: vi.fn(() => ({ level: "medium", reason: "headless graph data operation" })),
+        classify: vi.fn(() => ({ level: "high", reason: "headless graph data operation" })),
       };
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
       setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
 
       const appendPermissionAuditEntry = vi.fn(async (entry: Record<string, unknown>) => ({
@@ -3571,25 +3603,26 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         },
       );
 
-      const pending = queue.listPending();
+      const pending = (await queue.list());
       expect(results[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(pending).toHaveLength(1);
       expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-        toolCalls: [expect.objectContaining({ permissionDecision: "deferred" })],
+        toolCalls: [expect.objectContaining({ permissionDecision: "deny" })],
       }));
       expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
-        decision: "deferred",
+        decision: "deny",
         tool: "teams_send",
         source: "plugin",
         category: "network",
-        queueId: pending[0].id,
-        reviewerVerdict: expect.objectContaining({
-          level: "medium",
-          reason: "headless graph data operation",
-        }),
+        denyReasons: [expect.objectContaining({ reason: "Nobody can approve this request; do not retry." })],
+      }));
+      expect(classifier.classify).toHaveBeenCalledOnce();
+      expect(reviewerAudit).toHaveBeenCalledWith(expect.objectContaining({
+        reviewer: expect.objectContaining({ finalVerdict: "high" }),
       }));
     } finally {
+      reviewerAudit.mockRestore();
       await cleanupTmpDir(dir);
     }
   });
@@ -3628,13 +3661,13 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
           return { level: "low", reason: "wrapped plugin worker allowed" };
         }),
       };
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
       setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
       const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -3664,7 +3697,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }
   });
 
-  it("does not let reviewer LOW downgrade hard overlay or low-trust MCP asks", async () => {
+  it("keeps overlay provenance forced in auto and explicit MCP ask denied headless in strict", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-hard-ask-"));
     try {
       const executeSpy = vi.fn(async () => ({ output: "ran", isError: false }));
@@ -3695,14 +3728,17 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const classify = vi.fn(() => ({ level: "low" as const, reason: "reviewer would allow" }));
-      const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
+      const queue = makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
+      await permMgr.addRulePersist({ pattern: "Mcp(generic-mcp:mcp_network)", action: "ask" }, { kind: "user" });
+      permMgr.setRules([...(await permMgr.listPersistedRules()), { pattern: "overlay_write", action: "ask" }]);
       setReviewerForTest(permMgr, {
         classifier: { classify },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: queue,
+        recentlyDenied: queue,
       });
+      const checked = vi.spyOn(permMgr, "checkDetailed");
       const approvalGate = {
         requestAndWait: vi.fn(async (req: { id: string }) => ({
           requestId: req.id,
@@ -3726,6 +3762,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         },
       );
 
+      permMgr.setMode("strict");
       const mcpHeadlessResult = await executor.executeAll(
         [{
           id: "tu-mcp-headless-hard-ask",
@@ -3742,14 +3779,20 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       );
 
       expect(overlayResult[0].is_error).toBe(true);
+      expect(checked.mock.calls[1]?.[4]?.ruleSubject).toEqual({ kind: "mcp", server: "generic-mcp", tool: "mcp_network", nonDestructive: false });
+      expect(checked.mock.results[1]?.value).toMatchObject({ decision: "deny", reasonCode: "no-approver", pipelineRequest: { rules: { ask: "Mcp(generic-mcp:mcp_network)" } } });
       expect(mcpHeadlessResult[0].is_error).toBe(true);
-      expect(mcpHeadlessResult[0].content).toContain("headless explicit approval unavailable");
+      expect(mcpHeadlessResult[0].content).toContain("do not retry");
       expect(executeSpy).not.toHaveBeenCalled();
       expect(classify).not.toHaveBeenCalled();
-      expect(queue.listPending()).toHaveLength(0);
+      const denied = await queue.list();
+      expect(denied).toHaveLength(2);
+      expect(denied.map(entry => entry.toolName).sort()).toEqual(["mcp_network", "overlay_write"]);
+      expect(denied.find(entry => entry.toolName === "mcp_network")?.reason).toContain("Nobody can approve");
       expect(approvalGate.requestAndWait).toHaveBeenCalledOnce();
       expect(approvalGate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-        reason: expect.stringContaining("overlay trigger 출처"),
+        forceExplicit: true,
+        allowedChoices: ["allow-once", "deny-once"],
       }));
     } finally {
       await cleanupTmpDir(dir);
@@ -3762,7 +3805,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(makeReadFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const results = await executor.executeAll(
       [{
@@ -3789,7 +3832,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(makeWriteFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const callPromise = executor.executeAll(
       [{
@@ -3869,13 +3912,12 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registerWriteTool("plugin_write_surface", "plugin", { pluginId: "generic-plugin" });
     registerWriteTool("mcp_write_surface", "mcp", { mcpServerId: "generic-mcp" });
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     const checkSpy = vi.spyOn(permMgr, "checkDetailed").mockImplementation(
       (_toolName, source, category) => ({
         decision: "deny",
         reason: `blocked by unified policy: ${source}/${category}`,
-        layer: 3,
-      }),
+        }),
     );
     const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -3939,13 +3981,12 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       mcpCall,
     ));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     const checkSpy = vi.spyOn(permMgr, "checkDetailed").mockImplementation(
       (_toolName, source, category) => ({
         decision: "deny",
         reason: `blocked by unified policy: ${source}/${category}`,
-        layer: 3,
-      }),
+        }),
     );
     const executor = new ToolExecutor(registry, undefined, permMgr);
 
@@ -3989,7 +4030,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const callPromise = executor.executeAll(
       [{
@@ -4050,7 +4091,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const callPromise = executor.executeAll(
       [{
@@ -4088,7 +4129,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(makeReadFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
 
     const homedir = (await import("node:os")).homedir;
     const sensitive = `${homedir()}/.ave/secrets/openai.key`;
@@ -4116,7 +4157,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     setShellSandboxRequestedAtBoot(false);
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-r2r4.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "r2-r4 regression", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "r2-r4 regression", });
 
     const requestSpy = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,
@@ -4184,7 +4225,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const permMgr = new PermissionManager("/tmp/nonexistent-permissions-worker-cap.json");
-      permMgr.checkDetailed = () => ({ decision: "ask", reason: "worker capability regression", layer: 5 });
+      permMgr.checkDetailed = () => ({ decision: "ask", reason: "worker capability regression", });
 
       const requestSpy = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -4225,7 +4266,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(new BashTool());
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose prefill regression", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose prefill regression", });
 
     const requestSpy = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,
@@ -4278,7 +4319,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }));
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-tool-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose spoof regression", layer: 5 });
+    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose spoof regression", });
 
     const requestSpy = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,
@@ -4675,13 +4716,13 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
     const dir = mkdtempSync(join(tmpdir(), `ave-executor-hcr-${source}-`));
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
-      permMgr.setMode("default");
-      permMgr.setInteractiveAutoApprove("low");
+      permMgr.setMode("auto");
+
       const classifySpy = vi.fn(() => ({ level: "medium" as const, reason: "review" }));
       setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
-        deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
+        recentlyDenied: makeRecentlyDeniedStore(join(dir, "deferred-queue.jsonl")),
       });
       const requestAndWait = vi.fn(async (req: { id: string }) => ({
         requestId: req.id,
@@ -4781,7 +4822,6 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     }),
   });
 
-
   const pairedShare = Object.freeze({
     pairingId: "11111111-1111-4111-8111-111111111111",
     pairingEpoch: 1,
@@ -4810,15 +4850,14 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       allowedChoices: ["allow-once", "deny-once"],
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
-      isReadOnly: false,
       trustOrigin: "tailnet-surface",
     }));
     expect(executed).not.toHaveBeenCalled();
     expect(result[0]).toMatchObject({ is_error: true });
   });
 
-  // Remote authority must pin directory approval non-read-only, consistently with tool approval.
-  it("pins the directory-confirm ask non-read-only for a remote turn, like the Layer 3 ask", async () => {
+  // A remote principal cannot convert a fenced read denial into a grant request.
+  it("denies a remote uncovered read at admission before the forced human card", async () => {
     const executeSpy = vi.fn(async () => "ok");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
@@ -4826,7 +4865,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       "/tmp/nonexistent-tailnet-directory-permissions.json",
     );
     permissions.setMode("allow");
-    // Re-fence reads to exercise the directory ask's read-only marker on a genuinely read-only tool.
+    // The configured read boundary must deny before either local or remote approval.
     permissions.setBlockReadsOutsideWorkingDirectories(true);
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
       requestId: request.id,
@@ -4840,7 +4879,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       { requestAndWait } as never,
     );
 
-    await executor.executeAll(
+    const result = await executor.executeAll(
       [{
         id: "tailnet-dir-readonly",
         name: "read_file",
@@ -4852,18 +4891,14 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       },
     );
 
-    const directoryAsk = requestAndWait.mock.calls
-      .map((call) => call[0] as unknown as { kind?: string; isReadOnly?: boolean })
-      .find((request) => request.kind === "out-of-allowed-dir");
-    expect(
-      directoryAsk,
-      "Layer 1 must raise the directory-confirm ask for a path outside scope",
-    ).toBeDefined();
-    expect(directoryAsk?.isReadOnly).toBe(false);
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(result[0].is_error).toBe(true);
+    expect(result[0].content).toBe("This read is outside the configured allowed directories.");
   });
 
-  // Local read approval retains its short-circuit; only remote authority may pin it.
-  it("leaves the directory-confirm ask read-only for a local turn", async () => {
+  // A local turn obeys the same explicit read boundary.
+  it("denies a local uncovered read at admission without a grant card", async () => {
     const executeSpy = vi.fn(async () => "ok");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
@@ -4871,7 +4906,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       "/tmp/nonexistent-local-directory-permissions.json",
     );
     permissions.setMode("allow");
-    // Re-fence reads to exercise the directory ask's read-only marker on a genuinely read-only tool.
+    // The configured read boundary must deny before either local or remote approval.
     permissions.setBlockReadsOutsideWorkingDirectories(true);
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
       requestId: request.id,
@@ -4885,7 +4920,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       { requestAndWait } as never,
     );
 
-    await executor.executeAll(
+    const result = await executor.executeAll(
       [{
         id: "local-dir-readonly",
         name: "read_file",
@@ -4894,11 +4929,10 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       { sessionId: "local-dir-readonly", permissionContext: userPermissionContext() },
     );
 
-    const directoryAsk = requestAndWait.mock.calls
-      .map((call) => call[0] as unknown as { kind?: string; isReadOnly?: boolean })
-      .find((request) => request.kind === "out-of-allowed-dir");
-    expect(directoryAsk).toBeDefined();
-    expect(directoryAsk?.isReadOnly).toBe(true);
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(result[0].is_error).toBe(true);
+    expect(result[0].content).toBe("This read is outside the configured allowed directories.");
   });
 
   // Derive controller attribution only from host-held authority, never the display reason.
@@ -4926,13 +4960,10 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     const [request] = requestAndWait.mock.calls[0] as unknown as [{
       remoteControllerOrigin?: string;
       remoteControllerAuthority?: { kind: string };
-      scopeTargetFilePaths?: readonly string[];
     }];
     // Pair the controller marker with current authority so stale or mismatched controllers cannot answer.
     expect(request.remoteControllerOrigin).toBe("platform-bridge");
     expect(request.remoteControllerAuthority?.kind).toBe("platform-bridge");
-    // Carry scope targets from the same host context to bound remote approval to armed directories.
-    expect(request.scopeTargetFilePaths).toEqual([]);
   });
 
   it("marks a bridged turn as the bridge rather than as remote-in-general", async () => {
@@ -4967,7 +4998,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      undefined,
+      fixtureManager(),
       undefined,
       gate,
     );
@@ -5057,7 +5088,6 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     expect(executed).toHaveBeenCalledTimes(2);
     expect(requestAndWait).toHaveBeenCalledTimes(2);
   });
-
 
   it("fails closed before a local approval when a paired share is already revoked", async () => {
     const { executor, executed, requestAndWait } = buildReadExecutor("allow-once");
@@ -5225,12 +5255,11 @@ describe("privacy toggle governs tool-output masking", () => {
       execute: async () => ({ output, isError: false }),
     }));
 
-    const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
+    const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
       decision: "allow",
       reason: "privacy toggle probe",
-      layer: 3,
-    });
+      });
     const auditLogger = {
       log: vi.fn(),
       isPermissionAuditChainReady: vi.fn(() => true),

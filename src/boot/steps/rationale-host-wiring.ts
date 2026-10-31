@@ -88,6 +88,8 @@ export async function wireRationaleHost(
 
     const serviceOptions: RationaleHostServiceOptions = {
       approvalGate: ctx.approvalGate,
+      onReviewerChoiceResolved: (sessionId, requestId, decision) =>
+        ctx.permissionManager.resolveReviewerChoice(sessionId, requestId, decision),
       getRationaleScopeReviewer: () => ctx.rationaleScopeReviewer,
       getRegistryGeneration: () => ctx.toolRegistry.getGeneration(),
       getSandboxGeneration,

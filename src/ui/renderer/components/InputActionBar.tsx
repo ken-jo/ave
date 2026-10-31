@@ -27,7 +27,7 @@ import type { CustomCommandEntry } from "../../../shared/custom-command.js";
 import type { InputStatusRow } from "../hooks/use-input-status-row.js";
 import type { ExecutionMode, ExecutionModeDisplay } from "../../../shared/permission-mode.js";
 import { EXEC_MODE_OPTIONS } from "../constants.js";
-import { interactiveAutoApproveForExecMode, reviewerModeForExecMode } from "../tabs/PermissionsTab.js";
+import { reviewerModeForExecMode } from "../tabs/PermissionsTab.js";
 import type {
   ShellSandboxStatusInfo,
   ShellSandboxUnavailableCause,
@@ -445,11 +445,6 @@ function PermissionQuickPicker({
       const reviewer = await perm.reviewerDispatch(`mode ${reviewerModeForExecMode(mode)}`);
       if (!reviewer.ok) {
         console.warn("[ave] reviewer mode did not follow the permission mode: %s", reviewer.error);
-        return;
-      }
-      const interactive = await perm.reviewerDispatch(`interactive ${interactiveAutoApproveForExecMode(mode)}`);
-      if (!interactive.ok) {
-        console.warn("[ave] reviewer auto-approve did not follow the permission mode: %s", interactive.error);
         return;
       }
       setOpen(false);

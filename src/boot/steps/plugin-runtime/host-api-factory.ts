@@ -22,7 +22,7 @@ import {
 import type { AuditLogger } from "../../../audit/audit-logger.js";
 import type { PluginRuntime } from "../../../plugins/runtime.js";
 import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-recorder.js";
-import { enforceMutatingEffects, gateMutatingEffect } from "../../../permissions/effect-enforcement.js";
+import { enforceMutatingEffects, gateMutatingEffect, snapshotEffectArguments, assertSnapshotableRequestBody } from "../../../permissions/effect-enforcement.js";
 import { recordEffect } from "../../../permissions/effect-ledger.js";
 import { methodEffect } from "../../../permissions/effect-kind.js";
 import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
@@ -216,7 +216,6 @@ export interface CreateHostApiFactoryDeps {
   ) => PluginRegistryTrust | undefined;
   /** Re-read the registry into `getRegistryEntry` when the file changed since the last read. */
   refreshRegistryEntryCacheIfChanged: () => Promise<void>;
-  hostClassifiesRiskEnabled: () => boolean;
   pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void> }>;
   readAppPreference: (pluginId: string, key: string) => unknown;
   settingsService: SettingsService;
@@ -278,7 +277,6 @@ export function createHostApiFactory(
     lateBinding,
     getRegistryEntry,
     refreshRegistryEntryCacheIfChanged,
-    hostClassifiesRiskEnabled,
     pluginShutdownHandlers,
     readAppPreference,
     settingsService,
@@ -481,18 +479,19 @@ export function createHostApiFactory(
         },
       };
     };
+      const pluginStorage = createPluginStorage(
+        pluginId,
+        resolvePluginHostStorageDir(pluginDataDir),
+        deps.host.encryption,
+        createPluginStorageAuditSink(pluginId, pluginRuntimeAuditLog),
+      );
       // Compare the parsed manifest document digest to the install pin; projections and unparsed manifests cannot match.
       const manifestSha256 = manifestDocumentSha256(manifest);
       // Record every HostApi effect from the shared path classification; storage instrumentation is idempotent.
       // Enforce outside the recorder so denied mutations are not recorded as observed; hostFetch gates its own verb.
       return enforceActiveHostApi(pluginId, hostIncarnation, enforceMutatingEffects<PluginHostApi>(
         instrumentEffectsByPath<PluginHostApi>({
-      storage: createPluginStorage(
-        pluginId,
-        resolvePluginHostStorageDir(pluginDataDir),
-        deps.host.encryption,
-        createPluginStorageAuditSink(pluginId, pluginRuntimeAuditLog),
-      ),
+      storage: pluginStorage,
       // Read merged config live so changes from other surfaces are immediately visible.
       // Secret-format keys must use encrypted secret storage, never cleartext pluginConfigs.
       // Config listeners are scoped to the bound plugin id; cross-plugin observation is rejected.
@@ -857,7 +856,8 @@ export function createHostApiFactory(
         const auth = hasAuth ? validateWireAuth(restInit.auth) : undefined;
         const { auth: _auth, ...liveInit } = restInit;
         const callerHeaders = new Headers(liveInit.headers ?? {});
-        const transportInit = { ...liveInit, headers: callerHeaders };
+        assertSnapshotableRequestBody(liveInit.body);
+        const transportInit = snapshotEffectArguments([{ ...liveInit, headers: callerHeaders }]).args[0] as RequestInit;
         if (auth) {
           for (const header of CREDENTIAL_HEADERS) {
             if (callerHeaders.has(header)) throw new CredentialLeaseError("credential-conflict", { header });
@@ -899,18 +899,7 @@ export function createHostApiFactory(
           throw new Error(decision.message);
         }
         const url = decision.url;
-        // Gate mutations from the same verb snapshot, after capability and SSRF checks but before egress.
-        // Recheck incarnation synchronously even when enforcement is off; earlier validation may have awaited.
-        if (hostClassifiesRiskEnabled()) {
-          await gateMutatingEffect({
-            pluginId,
-            methodPath: "hostFetch",
-            effect: methodEffect(methodSnapshot),
-            target: effectTarget,
-            approvalGate,
-            flagEnabled: hostClassifiesRiskEnabled,
-          });
-        }
+        // Each exact hop authorizes immediately before transport; manifest and destination checks remain independent.
         assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
         const credentialUse = auth ? credentialRegistry.beginUse(auth.lease, pluginId, hostIncarnation) : undefined;
         credentialUse?.assertLive("after-await");
@@ -950,6 +939,21 @@ export function createHostApiFactory(
         return await runHostFetchHops({
           pluginId,
           first: decision,
+          authorizeHop: async (hop) => {
+            const reviewHeaders = new Headers(hop.headers);
+            let capabilityBound = Boolean(auth || injectSessionCookie);
+            for (const name of CREDENTIAL_HEADERS) {
+              if (reviewHeaders.has(name)) capabilityBound = true;
+              reviewHeaders.delete(name);
+            }
+            await gateMutatingEffect({
+              pluginId, methodPath: "hostFetch", effect: methodEffect(hop.method), target: hop.url.origin,
+              input: [hop.url.toString(), { method: hop.method, body: hop.body, headers: Array.from(reviewHeaders.entries()), credentialAttached: capabilityBound }],
+              capabilityBound, approvalGate, permissionManager,
+            });
+            assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
+          },
+
           init: transportInit,
           transport: networkFetch,
           ...(credentialUse ? { credentialUse } : {}),
@@ -1511,7 +1515,8 @@ export function createHostApiFactory(
         {
           pluginId,
           approvalGate,
-          flagEnabled: hostClassifiesRiskEnabled,
+          permissionManager,
+          resolveStoragePath: (relativePath) => pluginStorage.resolve(relativePath),
           assertActive: () =>
             assertActiveHostApi(pluginId, hostIncarnation, "hostApi.approvedEffect"),
         },

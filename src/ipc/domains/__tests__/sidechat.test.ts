@@ -1245,7 +1245,7 @@ describe("pane chats are their own conversations", () => {
 });
 
 // The real path a pane chat send takes: the side-chat IPC handler, the pane's ConversationLoop, and terminal_run into the bound host
-// terminal, with the exact HostTerminal rule saved. Only a send main verified as a keyboard gesture may type; a queued auto-send or an
+// terminal, with session Allow selected and an ordinary exact shell rule saved. Only a send main verified as a keyboard gesture may type; a queued auto-send or an
 // unverified keyboard claim never reaches the PTY and asks no one.
 describe("pane chat send origin through the real loop to the host terminal", () => {
   const WINDOW = 7;
@@ -1302,7 +1302,7 @@ describe("pane chat send origin through the real loop to the host terminal", () 
     expect(sent.typed).toEqual([]);
   });
 
-  it("types a verified keyboard send's command once under its exact rule, with no card (control)", async () => {
+  it("types a verified keyboard send's command once with session Allow, with no card (control)", async () => {
     const sent = await paneSend({ inputOrigin: "user-keyboard", userActivation: true });
     expect(sent.result).toMatchObject({ ok: true });
     expect(sent.asked).toEqual([]);

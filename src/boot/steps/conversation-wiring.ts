@@ -48,7 +48,7 @@ import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { BootContext } from "../context.js";
 import type { ConversationLoop } from "../../engine/conversation-loop.js";
-import { captureRationalePolicyEpoch } from "../../tools/pipeline/rationale-policy-epoch.js";
+import { captureRationalePolicyEpoch, captureRationalePolicySnapshot } from "../../tools/pipeline/rationale-policy-epoch.js";
 import { localDateKey } from "../../shared/local-date.js";
 import type { RationaleCoordinatorFactory } from "../../engine/turn/rationale-conversation-orchestration.js";
 import type { ApprovalSurface } from "../../shared/authorization-required.js";
@@ -140,15 +140,15 @@ export function createLoopRationaleBindings(input: {
   const service = input.service;
   if (!service) return {};
 
+  const getRationalePolicySources = () => ({
+    permissionManager: input.permissionManager,
+    hookRunner: input.hookRunner,
+    scriptHookManager: input.scriptHookManager,
+    additionalDirectories: input.getLoop().getTurnAdditionalDirectories(),
+  });
   const rationaleCoordinatorFactory = service.createCoordinatorFactory({
-    getRationalePolicyEpoch: () =>
-      captureRationalePolicyEpoch({
-        permissionManager: input.permissionManager,
-        hookRunner: input.hookRunner,
-        scriptHookManager: input.scriptHookManager,
-        additionalDirectories:
-          input.getLoop().getTurnAdditionalDirectories(),
-      }),
+    getRationalePolicyEpoch: () => captureRationalePolicyEpoch(getRationalePolicySources()),
+    getRationalePolicySnapshot: () => captureRationalePolicySnapshot(getRationalePolicySources()),
     isSessionCurrent: (sessionId) =>
       input.getLoop().getSessionId() === sessionId,
   });

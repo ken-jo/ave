@@ -53,15 +53,15 @@ Checked against the code; source files and tests win if this page drifts.
   enabled in every mode. The [workspace guide](../guides/browser-terminal-workspace.md)
   covers page actions, file-picker uploads, browser controls, and visible-card
   previews. Native interaction and provider-authentication signoff remain pending.
-- **Terminal.** Each terminal tab is one private host shell, **My terminal
-  (host) · No agent access**, using the user's shell/profile. Each conversation
-  owns its own confined **Agent (isolated)** shell with a disposable HOME; its
-  commands appear inline in the conversation. `terminal_run` and `terminal_read`
-  reach only that conversation's isolated shell. An unavailable isolated backend
-  leaves host terminals usable without falling back to host execution. The
-  current Windows interactive isolated backend is unavailable. Agent typing into
-  a host shell, with per-command approval and take-over, is pending; searchable
-  terminal history remains a goal. See the
+- **Terminal.** Each visible terminal tab is one private host shell using the
+  user's shell/profile. An eligible workspace pane chat can drive its own host
+  terminal under the per-session user-owned surface choice and native turn,
+  recipient, physical-directory and takeover checks. Side-work-panel host
+  terminals retain no agent access. Ordinary conversations own confined
+  **Agent (isolated)** shells with disposable HOME and inline command output.
+  An unavailable isolated backend does not silently switch to a host terminal;
+  the current Windows interactive isolated backend remains unavailable.
+  Searchable terminal history remains a goal. See the
   [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes).
 - **Extensions.** Manifest-driven plugins, a managed marketplace, git
   marketplaces, MCP servers and MCP app cards, and skills

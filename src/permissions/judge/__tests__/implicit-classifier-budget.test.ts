@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { PermissionManager } from "../../permission-manager.js";
-import { DeferredQueue } from "../../reviewer/deferred-queue.js";
+import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { LlmRiskClassifier, type LlmReviewerProvider } from "../../reviewer/risk-classifier.js";
 import { PermissionTestResources } from "../../__tests__/test-resources.js";
 import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
@@ -24,10 +24,9 @@ function subject(provider: LlmReviewerProvider) {
   const audit = setReviewerForTest(manager, {
     classifier,
     cache: resources.makeVerdictCache(join(root, "cache.jsonl")),
-    deferredQueue: new DeferredQueue(join(root, "deferred.jsonl")),
+    recentlyDenied: makeRecentlyDeniedStore(join(root, "denied.json")),
   });
   manager.setMode("auto");
-  manager.setInteractiveAutoApprove("medium");
   return { root, manager, classifier, audit };
 }
 
@@ -63,7 +62,7 @@ describe("implicit reviewer execution budget", () => {
       invocationId: `sixteen-second-${lane}`, sessionId: "budget-session",
       source: "builtin", category: "shell", pathFields: [], finalInput: invocation.finalInput,
       executionCwd: current.root, allowedDirectories: [current.root], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
-    }, undefined, { defer: lane === "headless" ? "medium-high" : "none" });
+    }, undefined, { lane: lane === "headless" ? "headless" : "foreground-auto" });
     await providersStarted;
     let resolved = false;
     void throughChain.then(() => { resolved = true; });
@@ -99,10 +98,10 @@ describe("implicit reviewer execution budget", () => {
     const pending = current.manager.dispatchReviewer("bash", {
       invocationId: "cancel-classifier-budget", sessionId: "budget-session", source: "builtin", category: "shell", pathFields: [],
       finalInput: { command: "echo reviewed" }, executionCwd: current.root, allowedDirectories: [current.root], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
-    }, undefined, { defer: "none", abortSignal: controller.signal });
+    }, undefined, { lane: "foreground-auto", abortSignal: controller.signal });
     await started;
     controller.abort(new Error("caller stopped"));
-    expect(await pending).toMatchObject({ outcome: "error", judge: { judged: true, decision: "deny", defer: false } });
+    expect(await pending).toMatchObject({ outcome: "error", judge: { judged: true, decision: "deny" } });
     expect(classifierSignal?.aborted).toBe(true);
     expect(current.manager.getJudgeBreaker().snapshot("budget-session")).toEqual({ consecutive: 0, total: 0, open: false });
   });

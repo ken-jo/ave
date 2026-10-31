@@ -17,11 +17,11 @@ import {
 
 const permission = {
   decision: "ask",
-  reason: "reviewer medium",
-  layer: 5,
+  reason: "Automatic review requires human approval.",
+  reasonCode: "reviewer-human-required",
   reviewer: {
     route: "foreground-auto",
-    verdict: { level: "medium", reason: "bounded shell action" },
+    verdict: { level: "high", reason: "bounded shell action" },
     outcome: "fresh",
   },
 } as const satisfies PermissionCheckResult;
@@ -230,7 +230,7 @@ describe("foreground rationale hostile input rejection", () => {
       reviewer: {
         ...permission.reviewer,
         verdict: {
-          level: "medium" as const,
+          level: "high" as const,
           reason: "Confirm with alice@example.com using sk-secret-token-value",
         },
       },
@@ -320,7 +320,6 @@ it("requires and revalidates the host eligibility snapshot for every control", (
   const anchor = anchorAt();
   const action = actionFor(anchor.anchorId);
   for (const blockedContext of [
-    { ...eligibilityContext, headless: true },
     { ...eligibilityContext, forceModal: true },
     { ...eligibilityContext, approvalReasonPrefix: "explicit retry" },
   ]) {
@@ -363,7 +362,7 @@ it("binds reviewer outcome and a normalized exact verdict outside actionDigest",
       reviewer: {
         ...permission.reviewer,
         outcome: "cache",
-        verdict: { level: "low", reason: "cached bounded action" },
+        verdict: { level: "high", reason: "cached bounded action requires human review" },
       },
     },
   });
@@ -401,7 +400,7 @@ it("binds reviewer outcome and a normalized exact verdict outside actionDigest",
       reviewer: {
         ...permission.reviewer,
         verdict: {
-          level: "medium",
+          level: "high",
           reason: "valid",
           allow: true,
         } as never,
@@ -421,7 +420,7 @@ it("binds reviewer outcome and a normalized exact verdict outside actionDigest",
         verdict: { level: "critical", reason: "invalid" } as never,
       },
     },
-  })).toThrow(/invalid RiskVerdict/);
+  })).toThrow(/eligible sealed action/);
 });
 
 it("rejects extra authority, coercion, hostile arrays, and stale controls", () => {
@@ -435,7 +434,7 @@ it("rejects extra authority, coercion, hostile arrays, and stale controls", () =
     ticketId: control.ticketId,
     actionDigest: control.action.actionDigest,
     round: 1,
-    suggestion: "빌드 폴더만 삭제합니다.",
+    choice: "resubmit", rationale: "빌드 폴더만 삭제합니다.", userQuote: control.anchor.sanitizedIntent,
   };
 
   expect(parseRationaleResponse({

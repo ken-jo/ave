@@ -5,7 +5,8 @@ import { connect, createServer, Server, Socket, type AddressInfo } from "node:ne
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createEgressAskCallback, type EgressApprovalAnswer, type EgressApprovalRequest } from "../egress-ask.js";
+import { type EgressApprovalAnswer, type EgressApprovalRequest } from "../egress-ask.js";
+import { createEgressAskCallback } from "../../__tests__/support/egress-permission.js";
 import { EgressGrantStore, type EgressGrantSubject } from "../egress-grants.js";
 import { openEgressInvocation, type EgressInvocationOwner } from "../egress-invocations.js";
 import { egressIdentityStrength } from "../egress-identity.js";

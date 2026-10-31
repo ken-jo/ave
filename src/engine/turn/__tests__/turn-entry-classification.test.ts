@@ -223,16 +223,16 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "marks a drained guidance batch as the user's only when every entry came through queueUserGuidance",
   },
   "engine/turn/run-turn.ts": {
-    sites: { runTurn: 1 },
-    classification: "runTurn itself: spends the verified intent and refuses a keyboard origin without one",
+    sites: { runTurn: 1, userKeyboardLiteral: 1 },
+    classification: "runTurn spends the verified intent, refuses an unsigned keyboard origin, and records original user text only after that verification",
   },
   "ipc/domains/chat.ts": {
     sites: { mintUserKeyboardIntent: 5, runStreamedTurn: 4, userKeyboardLiteral: 3, runTurn: 1, queueUserGuidance: 1, queueGuidance: 1 },
     classification: "chat.guide: user guidance only with a consumed gesture, otherwise other-principal guidance. Edit-resend, continue (incl. resume-interrupted) and retry-effort: refused without a consumed gesture, else a user turn carrying the minted intent (a staged envelope replays under its staged origin). Branch-from-checkpoint: mints from its click and holds the intent as a single-use grant for that branch's auto-continue. Session-goal revival and the parent mailbox turn: agent-message",
   },
   "ipc/domains/permissions.ts": {
-    sites: { userKeyboardLiteral: 3 },
-    classification: "settings-UI permission changes gated by their own consumed gesture, the permission slash dispatched from the settings surface, and the audit row of a person's deferred decision; permission trust origins, not turn origins",
+    sites: { userKeyboardLiteral: 2 },
+    classification: "settings-UI permission changes gated by their own consumed gesture and the permission slash dispatched from the settings surface; permission trust origins, not turn origins",
   },
   "ipc/domains/plugins.ts": {
     sites: { queueGuidance: 1 },
@@ -273,10 +273,6 @@ const CLASSIFIED: Record<string, Classified> = {
   "permissions/manifest-integrity.ts": {
     sites: { computedCall: 2 },
     classification: "computed: the frozen-manifest proxy's Reflect.get; no turn entry",
-  },
-  "permissions/parent-adjudicator.ts": {
-    sites: { runTurn: 2 },
-    classification: "the adjudicator's own side-turn method (not a ConversationLoop turn); it decides cards, it never types",
   },
   "permissions/permission-mode-apply.ts": {
     sites: { userKeyboardLiteral: 3 },

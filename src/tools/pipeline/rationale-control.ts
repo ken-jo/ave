@@ -1,3 +1,4 @@
+import { isRationaleUserQuote, RATIONALE_USER_QUOTE_MIN_LENGTH, RATIONALE_USER_QUOTE_MAX_LENGTH, RATIONALE_USER_QUOTE_PATTERN } from "../../shared/rationale-user-quote.js";
 // Versioned rationale handoff carries sealed control in memory but grants no execution authority or durable tickets.
 import { randomUUID } from "node:crypto";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
@@ -18,6 +19,14 @@ import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 export const RATIONALE_CONTROL_CONTRACT_VERSION = 1 as const;
 export const RATIONALE_RESPONSE_TOOL = "permission_rationale";
+export const MAX_RATIONALE_USER_CONTEXT_BYTES = 16 * 1024;
+
+export class RationaleHumanApprovalDeniedError extends Error {
+  constructor(readonly reason: string) {
+    super("Human approval was denied by current policy.");
+    this.name = "RationaleHumanApprovalDeniedError";
+  }
+}
 
 export const RATIONALE_ACTIVATION_PREREQUISITES = [
   "persistent-ticket-store",
@@ -288,6 +297,7 @@ function validateHostAnchorRoundReservationReceipt(
   action: ActionIdentity,
   batch: TriggeringBatchDisposition,
   now = Date.now(),
+  humanWait = false,
 ): boolean {
   try {
     assertCanonicalJson(receipt, "HostAnchorRoundReservationReceipt");
@@ -295,7 +305,7 @@ function validateHostAnchorRoundReservationReceipt(
       "anchorId", "anchorDigest", "actionDigest", "batchDigest", "round",
       "expectedAnchorVersion", "committedAnchorVersion", "ticketId", "nonce",
       "reservedAt"], "HostAnchorRoundReservationReceipt");
-    if (!isValidRequestAnchor(anchor, now) || !verifyActionIdentity(action) ||
+    if (!isValidRequestAnchor(anchor, now, humanWait) || !verifyActionIdentity(action) ||
         !validateTriggeringBatchDisposition(batch) || action.anchorId !== anchor.anchorId) {
       return false;
     }
@@ -316,6 +326,7 @@ function validateHostAnchorRoundReservationReceipt(
 
 export class InMemoryHostAnchorRoundCasStore implements HostAnchorRoundCas {
   readonly #reservations = new Map<string, HostAnchorRoundReservationReceipt>();
+  readonly #receiptsById = new Map<string, HostAnchorRoundReservationReceipt>();
   readonly #reservationSessions = new Map<string, string>();
   readonly #reservationExpiries = new Map<string, number>();
 
@@ -335,7 +346,8 @@ export class InMemoryHostAnchorRoundCasStore implements HostAnchorRoundCas {
       throw new TypeError("invalid anchor-round CAS reservation input");
     }
     this.#pruneExpired(now);
-    const current = this.#reservations.get(input.anchor.anchorId);
+    const requestKey = digest([input.anchor.anchorId, input.triggeringBatchDisposition.triggeringToolUseId]);
+    const current = this.#reservations.get(requestKey);
     if (current) {
       return current.anchorDigest === digest(input.anchor) &&
         current.actionDigest === input.action.actionDigest &&
@@ -351,9 +363,10 @@ export class InMemoryHostAnchorRoundCasStore implements HostAnchorRoundCas {
       expectedAnchorVersion: 0 as const, committedAnchorVersion: 1 as const,
       ticketId: randomUUID(), nonce: randomUUID(), reservedAt: now,
     });
-    this.#reservations.set(input.anchor.anchorId, receipt);
-    this.#reservationSessions.set(input.anchor.anchorId, input.anchor.sessionId);
-    this.#reservationExpiries.set(input.anchor.anchorId, input.anchor.expiresAt);
+    this.#reservations.set(requestKey, receipt);
+    this.#receiptsById.set(receipt.reservationId, receipt);
+    this.#reservationSessions.set(requestKey, input.anchor.sessionId);
+    this.#reservationExpiries.set(requestKey, input.anchor.expiresAt);
     return receipt;
   }
 
@@ -364,7 +377,7 @@ export class InMemoryHostAnchorRoundCasStore implements HostAnchorRoundCas {
         "anchorId", "anchorDigest", "actionDigest", "batchDigest", "round",
         "expectedAnchorVersion", "committedAnchorVersion", "ticketId", "nonce",
         "reservedAt"], "HostAnchorRoundReservationReceipt");
-      const current = this.#reservations.get(receipt.anchorId);
+      const current = this.#receiptsById.get(receipt.reservationId);
       return current !== undefined &&
         canonicalStringify(current) === canonicalStringify(receipt);
     } catch {
@@ -387,6 +400,7 @@ export class InMemoryHostAnchorRoundCasStore implements HostAnchorRoundCas {
 
   clear(): void {
     this.#reservations.clear();
+    this.#receiptsById.clear();
     this.#reservationSessions.clear();
     this.#reservationExpiries.clear();
   }
@@ -398,6 +412,8 @@ export class InMemoryHostAnchorRoundCasStore implements HostAnchorRoundCas {
   }
 
   #deleteReservation(anchorId: string): void {
+    const receipt = this.#reservations.get(anchorId);
+    if (receipt) this.#receiptsById.delete(receipt.reservationId);
     this.#reservations.delete(anchorId);
     this.#reservationSessions.delete(anchorId);
     this.#reservationExpiries.delete(anchorId);
@@ -430,6 +446,72 @@ export interface RationaleRequiredControl {
   initialVerdict: RiskVerdict;
   reasonCode: "foreground-reviewer-threshold";
 }
+export interface RationaleHumanApprovalWaitLease { readonly kind: "human-approval-wait" }
+interface HumanApprovalWaitState {
+  readonly lease: RationaleHumanApprovalWaitLease;
+  readonly controlDigest: string;
+  readonly sessionId: string;
+  readonly startedAt: number;
+  phase: "pending" | "approved" | "consumed";
+}
+const humanApprovalWaits = new Map<string, HumanApprovalWaitState>();
+
+function humanApprovalWaitFor(control: RationaleRequiredControl, now: number): HumanApprovalWaitState | undefined {
+  try {
+    assertCanonicalJson(control, "RationaleRequiredControl");
+    const wait = humanApprovalWaits.get(control.ticketId);
+    return wait && Number.isFinite(now) && now >= wait.startedAt &&
+      wait.sessionId === control.anchor.sessionId && wait.controlDigest === digest(control) ? wait : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function beginRationaleHumanApprovalWait(control: RationaleRequiredControl, now = Date.now()): RationaleHumanApprovalWaitLease {
+  if (!verifyRationaleRequiredControl(control, { now }) || humanApprovalWaits.has(control.ticketId)) {
+    throw new Error("Human approval wait requires a fresh unpublished request");
+  }
+  const lease: RationaleHumanApprovalWaitLease = Object.freeze({ kind: "human-approval-wait" });
+  humanApprovalWaits.set(control.ticketId, { lease, controlDigest: digest(control), sessionId: control.anchor.sessionId, startedAt: now, phase: "pending" });
+  return lease;
+}
+
+export function approveRationaleHumanWait(control: RationaleRequiredControl, lease: RationaleHumanApprovalWaitLease, now = Date.now()): void {
+  const wait = humanApprovalWaitFor(control, now);
+  if (!wait || wait.lease !== lease || wait.phase !== "pending") throw new Error("Human approval wait is not current");
+  wait.phase = "approved";
+}
+
+export function consumeRationaleHumanWait(control: RationaleRequiredControl, lease: RationaleHumanApprovalWaitLease, now = Date.now()): void {
+  const wait = humanApprovalWaitFor(control, now);
+  if (!wait || wait.lease !== lease || wait.phase !== "approved") throw new Error("Human approval wait was not approved");
+  wait.phase = "consumed";
+}
+
+export function retireRationaleHumanWait(control: RationaleRequiredControl, lease: RationaleHumanApprovalWaitLease): void {
+  if (humanApprovalWaits.get(control.ticketId)?.lease === lease) humanApprovalWaits.delete(control.ticketId);
+}
+
+export function retireRationaleHumanWaitsForSession(sessionId: string): void {
+  for (const [ticketId, wait] of humanApprovalWaits) {
+    if (wait.sessionId === sessionId) humanApprovalWaits.delete(ticketId);
+  }
+}
+
+export function isRationaleHumanApprovalActive(control: RationaleRequiredControl, now = Date.now()): boolean {
+  return humanApprovalWaitFor(control, now)?.phase === "approved";
+}
+
+export function verifyRationaleTicketControl(control: RationaleRequiredControl, options: { now?: number; currentEligibilityContext?: HostRationaleEligibilityContext } = {}): boolean {
+  return verifyRationaleControl(control, options, humanApprovalWaitFor(control, options.now ?? Date.now()));
+}
+
+export function verifyRationaleExecutionControl(control: RationaleRequiredControl, options: { now?: number; currentEligibilityContext?: HostRationaleEligibilityContext } = {}): boolean {
+  const wait = humanApprovalWaitFor(control, options.now ?? Date.now());
+  if (wait && wait.phase !== "approved") return false;
+  return verifyRationaleControl(control, options, wait);
+}
+
 export interface RationaleProviderEnvelope {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;
   anchorId: string;
@@ -449,38 +531,32 @@ export interface RationaleProviderEnvelope {
 }
 
 
-export interface RationaleResponse {
+export type RationaleResponse = {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;
   anchorId: string;
   ticketId: string;
   actionDigest: string;
   round: 1;
-  suggestion: string;
-}
+} & (
+  | { choice: "accept" | "ask_user" }
+  | { choice: "resubmit"; rationale: string; userQuote: string }
+);
 
 export const RATIONALE_RESPONSE_SCHEMA: ToolSchema = {
   name: RATIONALE_RESPONSE_TOOL,
-  description:
-    "Return a user-facing explanation for the single sealed action. This tool cannot change the action or grant permission.",
+  description: "Choose accept, resubmit once with a verbatim user quote, or ask_user for the sealed denied action. This grants no permission.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
       contractVersion: { type: "integer", const: RATIONALE_CONTROL_CONTRACT_VERSION },
-      anchorId: { type: "string" },
-      ticketId: { type: "string" },
-      actionDigest: { type: "string" },
+      anchorId: { type: "string" }, ticketId: { type: "string" }, actionDigest: { type: "string" },
       round: { type: "integer", const: 1 },
-      suggestion: { type: "string", maxLength: 500 },
+      choice: { type: "string", enum: ["accept", "resubmit", "ask_user"] },
+      rationale: { type: "string", minLength: 1, maxLength: 500 },
+      userQuote: { type: "string", minLength: RATIONALE_USER_QUOTE_MIN_LENGTH, maxLength: RATIONALE_USER_QUOTE_MAX_LENGTH, pattern: RATIONALE_USER_QUOTE_PATTERN, description: "At least three words copied exactly from a native user turn, with whitespace or punctuation boundaries." },
     },
-    required: [
-      "contractVersion",
-      "anchorId",
-      "ticketId",
-      "actionDigest",
-      "round",
-      "suggestion",
-    ],
+    required: ["contractVersion", "anchorId", "ticketId", "actionDigest", "round", "choice"],
   },
 };
 
@@ -931,7 +1007,7 @@ export function createRequestAnchor(input: {
 }
 
 
-function isValidRequestAnchor(anchor: RequestAnchor, now: number): boolean {
+function isValidRequestAnchor(anchor: RequestAnchor, now: number, humanWait = false): boolean {
   try {
     assertCanonicalJson(anchor, "RequestAnchor");
     assertExactOwnKeys(anchor, [
@@ -954,7 +1030,7 @@ function isValidRequestAnchor(anchor: RequestAnchor, now: number): boolean {
       Number.isFinite(now) && Number.isFinite(anchor.createdAt) &&
       anchor.rationaleRoundBudget === 1 &&
       Number.isFinite(anchor.expiresAt) && anchor.expiresAt > anchor.createdAt &&
-      anchor.createdAt <= now && anchor.expiresAt > now
+      anchor.createdAt <= now && (anchor.expiresAt > now || humanWait)
     );
   } catch {
     return false;
@@ -1123,6 +1199,7 @@ export function isRationaleEligible(input: {
   invocationTrustOrigin: ToolTrustOrigin;
   rationaleProvenance: RationaleEligibilityProvenance;
   headless?: boolean;
+  humanApprovalControl?: RationaleRequiredControl;
   forceModal?: boolean;
   approvalReasonPrefix?: string;
   now?: number;
@@ -1130,7 +1207,7 @@ export function isRationaleEligible(input: {
   anchor: RequestAnchor;
   permission: PermissionCheckResult & {
     reviewer: {
-      route: "foreground-auto";
+      route: "foreground-auto" | "headless";
       verdict: RiskVerdict;
       outcome: "fresh" | "cache";
     };
@@ -1140,17 +1217,19 @@ export function isRationaleEligible(input: {
   const now = input.now ?? Date.now();
   return (
     input.permission.decision === "ask" &&
-    input.permission.layer === 5 &&
-    reviewer?.route === "foreground-auto" &&
+    input.permission.reasonCode === "reviewer-human-required" &&
+    reviewer?.verdict?.level === "high" &&
+    (reviewer?.route === "foreground-auto" || reviewer?.route === "headless") &&
     (reviewer.outcome === "fresh" || reviewer.outcome === "cache") &&
     reviewer.verdict !== undefined &&
-    input.headless !== true &&
     input.forceModal !== true &&
     input.permission.forceModal !== true &&
     !input.approvalReasonPrefix &&
     input.anchor !== null &&
     input.anchor !== undefined &&
-    isValidRequestAnchor(input.anchor, now) &&
+    (isValidRequestAnchor(input.anchor, now) || (input.humanApprovalControl !== undefined &&
+      isRationaleHumanApprovalActive(input.humanApprovalControl, now) &&
+      canonicalStringify(input.anchor) === canonicalStringify(input.humanApprovalControl.anchor))) &&
     isValidRationaleProvenance(input.rationaleProvenance) &&
     input.rationaleProvenance.startedFromUserKeyboard === true &&
     input.rationaleProvenance.taint === "none" &&
@@ -1169,7 +1248,7 @@ export function createRationaleRequiredControl(input: {
   eligibilityContext: HostRationaleEligibilityContext;
   permission: PermissionCheckResult & {
     reviewer: {
-      route: "foreground-auto";
+      route: "foreground-auto" | "headless";
       verdict: RiskVerdict;
       outcome: "fresh" | "cache";
     };
@@ -1286,12 +1365,17 @@ export function createRationaleRequiredControl(input: {
   }) as RationaleRequiredControl;
 }
 
-export function verifyRationaleRequiredControl(
+export function verifyRationaleRequiredControl(control: RationaleRequiredControl, options: { now?: number; currentEligibilityContext?: HostRationaleEligibilityContext } = {}): boolean {
+  return verifyRationaleControl(control, options);
+}
+
+function verifyRationaleControl(
   control: RationaleRequiredControl,
   options: {
     now?: number;
     currentEligibilityContext?: HostRationaleEligibilityContext;
   } = {},
+  humanWait?: HumanApprovalWaitState,
 ): boolean {
   try {
     const now = options.now ?? Date.now();
@@ -1326,7 +1410,7 @@ export function verifyRationaleRequiredControl(
       return false;
     }
     if (
-      !isValidRequestAnchor(control.anchor, now) ||
+      !isValidRequestAnchor(control.anchor, now, humanWait !== undefined) ||
       !verifyActionIdentity(control.action) ||
       control.anchor.anchorId !== control.action.anchorId ||
       !validateTriggeringBatchDisposition(control.triggeringBatchDisposition) ||
@@ -1338,6 +1422,7 @@ export function verifyRationaleRequiredControl(
         control.action,
         control.triggeringBatchDisposition,
         now,
+        humanWait !== undefined,
       ) ||
       control.ticketId !== control.anchorRoundReservation.ticketId ||
       control.nonce !== control.anchorRoundReservation.nonce
@@ -1479,42 +1564,38 @@ export function toRationaleProviderEnvelope(
 }
 
 
-export function parseRationaleResponse(
+export function parseRationaleResponse(input: unknown, control: RationaleRequiredControl, now = Date.now()): RationaleResponse | null {
+  return parseRationaleBoundResponse(input, control, now, false);
+}
+
+export function parseRationaleExecutionResponse(input: unknown, control: RationaleRequiredControl, now = Date.now()): RationaleResponse | null {
+  return parseRationaleBoundResponse(input, control, now, true);
+}
+
+function parseRationaleBoundResponse(
   input: unknown,
   control: RationaleRequiredControl,
-  now = Date.now(),
+  now: number,
+  humanWait: boolean,
 ): RationaleResponse | null {
-  if (!verifyRationaleRequiredControl(control, { now })) return null;
+  if (!(humanWait ? verifyRationaleTicketControl(control, { now }) : verifyRationaleRequiredControl(control, { now }))) return null;
   try {
     assertCanonicalJson(input, "RationaleResponse");
     if (!isRecord(input)) return null;
-    assertExactOwnKeys(input, [
-      "contractVersion", "anchorId", "ticketId", "actionDigest", "round",
-      "suggestion",
-    ], "RationaleResponse");
-    if (
-      input.contractVersion !== RATIONALE_CONTROL_CONTRACT_VERSION ||
-      input.anchorId !== control.anchor.anchorId ||
-      input.ticketId !== control.ticketId ||
-      input.actionDigest !== control.action.actionDigest ||
-      input.round !== 1 ||
-      typeof input.suggestion !== "string" ||
-      input.suggestion.length === 0 ||
-      input.suggestion.length > 500
-    ) {
-      return null;
-    }
-    const suggestion = sanitizeDisplayText(input.suggestion, 500);
-    if (!suggestion) return null;
-
-    return deepFreeze({
-      contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
-      anchorId: control.anchor.anchorId,
-      ticketId: control.ticketId,
-      actionDigest: control.action.actionDigest,
-      round: 1,
-      suggestion,
-    }) as RationaleResponse;
+    const baseKeys = ["contractVersion", "anchorId", "ticketId", "actionDigest", "round", "choice"];
+    if (input.choice !== "accept" && input.choice !== "resubmit" && input.choice !== "ask_user") return null;
+    assertExactOwnKeys(input, input.choice === "resubmit" ? [...baseKeys, "rationale", "userQuote"] : baseKeys, "RationaleResponse");
+    if (input.contractVersion !== RATIONALE_CONTROL_CONTRACT_VERSION ||
+        input.anchorId !== control.anchor.anchorId || input.ticketId !== control.ticketId ||
+        input.actionDigest !== control.action.actionDigest || input.round !== 1) return null;
+    const base = { contractVersion: RATIONALE_CONTROL_CONTRACT_VERSION,
+      anchorId: control.anchor.anchorId, ticketId: control.ticketId,
+      actionDigest: control.action.actionDigest, round: 1 as const };
+    if (input.choice !== "resubmit") return deepFreeze({ ...base, choice: input.choice });
+    if (typeof input.rationale !== "string" || !input.rationale.trim() || input.rationale.length > 500 ||
+        !isRationaleUserQuote(input.userQuote)) return null;
+    // Preserve exact quote bytes until verification; display redaction is a separate projection.
+    return deepFreeze({ ...base, choice: "resubmit" as const, rationale: input.rationale, userQuote: input.userQuote });
   } catch {
     return null;
   }

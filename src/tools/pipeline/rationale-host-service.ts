@@ -6,6 +6,7 @@ import type {
 import type { RationaleAuditSink } from "../../audit/rationale-audit-adapter.js";
 import {
   InMemoryHostAnchorRoundCasStore,
+  retireRationaleHumanWaitsForSession,
   type HostAnchorRoundCas,
 } from "./rationale-control.js";
 import { RationaleHostCoordinator } from "./rationale-host-coordinator.js";
@@ -13,14 +14,16 @@ import {
   InProcessRationaleTicketStore,
   type HostRationaleTicketSnapshot,
 } from "./rationale-ticket-store.js";
+import type { RationalePolicySnapshot } from "./rationale-policy-epoch.js";
 import type { HostInvocationStartCas } from "./rationale-ticket-lifecycle.js";
 
 type RationaleApprovalGate = Pick<
   ApprovalGate,
-  "requestAndWait" | "cancelPendingRationale"
+  "cancelPendingRequest"
 >;
 
 export interface RationaleHostServiceOptions {
+  readonly onReviewerChoiceResolved?: (sessionId: string, requestId: string, decision: "allow" | "deny") => void;
   readonly approvalGate: RationaleApprovalGate;
   readonly getRationaleScopeReviewer: () => RationaleScopeReviewer;
   readonly getRegistryGeneration: () => string | number;
@@ -34,12 +37,14 @@ export interface RationaleHostServiceOptions {
 export interface RationaleCoordinatorFactoryScope {
   // Include live session/turn directory scope as well as permission and hook generations.
   readonly getRationalePolicyEpoch: () => string;
+  readonly getRationalePolicySnapshot?: () => RationalePolicySnapshot;
   /** Rejects a delayed factory call after its loop has switched sessions. */
   readonly isSessionCurrent: (sessionId: string) => boolean;
 }
 
 // Ephemeral coordinators share process-owned ticket, anchor-round, and invocation-start authority.
 export class RationaleHostService {
+  readonly #onReviewerChoiceResolved: RationaleHostServiceOptions["onReviewerChoiceResolved"];
   readonly #approvalGate: RationaleApprovalGate;
   readonly #getRationaleScopeReviewer: () => RationaleScopeReviewer;
   readonly #getRegistryGeneration: () => string | number;
@@ -69,6 +74,7 @@ export class RationaleHostService {
       throw new TypeError("rationale host service requires invocation-start authority");
     }
     this.#approvalGate = options.approvalGate;
+    this.#onReviewerChoiceResolved = options.onReviewerChoiceResolved;
     this.#getRationaleScopeReviewer = options.getRationaleScopeReviewer;
     this.#getRegistryGeneration = options.getRegistryGeneration;
     this.#getSandboxGeneration = options.getSandboxGeneration;
@@ -141,10 +147,14 @@ export class RationaleHostService {
         return new RationaleHostCoordinator({
           requestAnchor: input.requestAnchor,
           rationaleProvenance: input.rationaleProvenance,
+          userRoleTexts: input.userRoleTexts,
+          getUserRoleTexts: input.getUserRoleTexts,
+          onReviewerChoiceResolved: this.#onReviewerChoiceResolved,
           ticketStore: this.#ticketStore,
           rationaleScopeReviewer: reviewer,
           approvalGate: this.#approvalGate,
           getRationalePolicyEpoch: scope.getRationalePolicyEpoch,
+          ...(scope.getRationalePolicySnapshot ? { getRationalePolicySnapshot: scope.getRationalePolicySnapshot } : {}),
           getRegistryGeneration: this.#getRegistryGeneration,
           getSandboxGeneration: this.#getSandboxGeneration,
           anchorRoundCas,
@@ -196,7 +206,7 @@ export class RationaleHostService {
     let closed: readonly HostRationaleTicketSnapshot[] = [];
     for (const ticketId of ticketIds) {
       try {
-        this.#approvalGate.cancelPendingRationale(ticketId, "session-close");
+        this.#approvalGate.cancelPendingRequest(ticketId, sessionId, "session-close");
       } catch (error) {
         failedGateCancellations.add(ticketId);
         errors.push(error);
@@ -223,6 +233,7 @@ export class RationaleHostService {
       errors.push(error);
     }
 
+    retireRationaleHumanWaitsForSession(sessionId);
     if (errors.length > 0) {
       throw new AggregateError(errors, "rationale host session close failed");
     }

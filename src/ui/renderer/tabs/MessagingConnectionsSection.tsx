@@ -129,9 +129,8 @@ function MessagingConnectionCatalog({ api, connection, rowId }: {
   );
 }
 
-function TelegramConnectionRow({ api, chatGroupId, catalog, expanded, onToggle, onCompleted }: {
+function TelegramConnectionRow({ api, catalog, expanded, onToggle, onCompleted }: {
   api: AveApi;
-  chatGroupId: string;
   /** The catalog entry, when the owner installed one. The row exists either way. */
   catalog: MarketplaceInstalledMessagingConnection | undefined;
   expanded: boolean;
@@ -172,7 +171,7 @@ function TelegramConnectionRow({ api, chatGroupId, catalog, expanded, onToggle, 
       <div className="space-y-3">
         <TelegramConnectionContent
           api={api}
-          chatGroupId={chatGroupId}
+
           onCompleted={onCompleted}
         />
         {catalog === undefined ? null : (
@@ -217,7 +216,6 @@ function MarketplaceConnectionRow({ api, connection, expanded, onToggle }: {
 
 export interface MessagingConnectionsSectionProps {
   api: AveApi;
-  chatGroupId: string;
   /** Every row the tab currently has open, across every vendor on the page. */
   expandedRowIds: readonly string[];
   onToggleRow: (rowId: string) => void;
@@ -227,7 +225,6 @@ export interface MessagingConnectionsSectionProps {
 
 export function MessagingConnectionsSection({
   api,
-  chatGroupId,
   expandedRowIds,
   onToggleRow,
   onRowCompleted,
@@ -280,7 +277,7 @@ export function MessagingConnectionsSection({
     >
       <TelegramConnectionRow
         api={api}
-        chatGroupId={chatGroupId}
+
         catalog={telegramCatalog}
         expanded={expandedRowIds.includes(TELEGRAM_ROW_ID)}
         onToggle={() => onToggleRow(TELEGRAM_ROW_ID)}

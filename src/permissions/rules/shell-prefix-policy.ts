@@ -24,6 +24,7 @@ interface WrapperGrammar {
   runtimeArgv?: true;
 }
 const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
+  exec: { flags: ["-c", "-l"], values: ["-a"] },
   xargs: { flags: ["-0", "-r", "-t", "-x", "-p", "--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive"], values: ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"], runtimeArgv: true },
   sudo: { flags: ["-A", "-b", "-B", "-E", "-H", "-i", "-k", "-K", "-n", "-P", "-S", "-s", "-v", "-e", "-l", "--askpass", "--background", "--bell", "--preserve-env", "--set-home", "--login", "--reset-timestamp", "--remove-timestamp", "--non-interactive", "--preserve-groups", "--stdin", "--shell", "--validate", "--edit", "--list"], values: ["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "--user", "--group"], assignments: true },
   doas: { flags: ["-L", "-n", "-s"], values: ["-u", "-C"] },

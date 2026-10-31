@@ -13,6 +13,7 @@ import { ensureAveHomePrivate, win32SystemBinary, _resetAveHomePrivacyForTest } 
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { permissionSettingsPath, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import { loadPolicy, savePolicy, userPolicyPath } from "../../permissions/policy-store.js";
+import { isPathAllowed } from "../../permissions/allowed-directories.js";
 import { buildMandatorySandboxWritePolicy } from "../../permissions/sandbox-write-policy.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
@@ -316,8 +317,12 @@ describe("protected home configuration", () => {
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/config/**");
     expect(isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(join(dir, "config", "settings.json"))), "read")).toBe("ave-home:config");
     expect(isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(join(dir, "config", "policy.json"))), "write")).toBe("ave-home:config");
-    expect(buildMandatorySandboxWritePolicy([]).denyWrite).toContain(join(dir, "config", "settings.json"));
-    expect(buildMandatorySandboxWritePolicy([]).denyWrite).toContain(join(dir, "config", "policy.json"));
+    const denyPaths = buildMandatorySandboxWritePolicy([]).denyWrite.map(entry =>
+      caseFoldForMatch((typeof entry === "string" ? entry : entry.path).replace(/\\/g, "/")));
+    expect(denyPaths).toContain(caseFoldForMatch(join(dir, "config").replace(/\\/g, "/")));
+    for (const name of ["settings.json", "policy.json", "future-control.json"]) {
+      expect(isPathAllowed(caseFoldForMatch(join(dir, "config", name).replace(/\\/g, "/")), { directories: denyPaths })).toBe(true);
+    }
     expect(getDefaultSensitiveWriteDenyPaths().map((path) => path.replace(/\\/g, "/").replace(/\/$/, "")))
       .toContain(join(dir, "config").replace(/\\/g, "/"));
   });
@@ -339,14 +344,14 @@ describe("protected home configuration", () => {
   it("saves through both legacy owners for the next protected boot", async () => {
     const dir = fixture();
     vi.stubEnv("AVE_HOME", dir);
-    await writePermissionSettings({ reviewer: { mode: "strict" } });
+    await writePermissionSettings({ reviewer: { mode: "llm" } });
     await savePolicy({ requireExplicitApproval: true }, undefined, join(dirname(dir), "absent-admin.json"));
     expect(existsSync(join(dir, "settings.json"))).toBe(true);
     expect(existsSync(join(dir, "policy.json"))).toBe(true);
     expect(existsSync(join(dir, "config", "settings.json"))).toBe(false);
     expect(existsSync(join(dir, "config", "policy.json"))).toBe(false);
     migrateAveHomeConfiguration(dir);
-    expect(JSON.parse(readFileSync(permissionSettingsPath(), "utf8")).permissions.reviewer.mode).toBe("strict");
+    expect(JSON.parse(readFileSync(permissionSettingsPath(), "utf8")).permissions.reviewer.mode).toBe("llm");
     expect(JSON.parse(readFileSync(userPolicyPath(), "utf8")).requireExplicitApproval).toBe(true);
   });
 

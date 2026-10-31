@@ -9,7 +9,7 @@ import type {
   WorkloadExecutionGrantProjection,
 } from "../workload/protocol.js";
 import type { JudgeAuditRecord } from "../permissions/judge/judge-engine.js";
-import type { DeferredApprovalSource, DeferredGrantScope, RiskLevel } from "../shared/permission-review-status.js";
+import type { RiskLevel } from "../shared/permission-review-status.js";
 
 
 /** Keep reviewer verdicts structurally compatible with RiskVerdict. */
@@ -104,7 +104,6 @@ interface AuditAllow extends AuditCommon {
   grantLifetime?: "turn" | "session" | "always" | "degraded-to-turn";
   /** Policy directory allows carry a rule id instead of grantLifetime; policy admission creates no user grant. */
   policyRule?: string;
-  layer: number;
   reviewer?: RiskVerdict;
   hookChain?: HookResult[];
   rateLimitRemaining?: number;
@@ -117,7 +116,6 @@ interface AuditAsk extends AuditCommon {
   source: ToolSource;
   category: ToolCategory;
   directory?: string;
-  layer: number;
   reason: string;
   hookChain?: HookResult[];
 }
@@ -128,34 +126,8 @@ interface AuditDeny extends AuditCommon {
   tool: string;
   source: ToolSource;
   category: ToolCategory;
-  denyReasons: ReadonlyArray<{ layer: number; reason: string; source: string }>;
+  denyReasons: ReadonlyArray<{ reason: string; source: string }>;
   hookChain?: HookResult[];
-}
-
-/** queueId links the deferred reviewer decision to its persisted queue entry. */
-interface AuditDeferred extends AuditCommon {
-  decision: "deferred";
-  tool: string;
-  source: ToolSource;
-  category: ToolCategory;
-  reviewerVerdict: RiskVerdict;
-  queueId: string;
-}
-
-/** Keep user resolution append-only on the authenticated chain while queue status remains mutable. */
-interface AuditDeferredResolve extends AuditCommon {
-  decision: "deferred_resolve";
-  tool: string;
-  source: ToolSource;
-  category: ToolCategory;
-  reviewerVerdict: RiskVerdict;
-  queueId: string;
-  resolution: "approved" | "rejected";
-  /** Require gesture provenance on new writes; older rows may omit it. */
-  approvalSource?: DeferredApprovalSource;
-  /** Grant breadth appears only on approvals; older rows may omit it. */
-  grantScope?: DeferredGrantScope;
-  reason?: string;
 }
 
 /** Mode slash commands require user-keyboard origin; retain the origin for forensic verification. */
@@ -190,8 +162,6 @@ export type PermissionAuditEntry =
   | AuditAllow
   | AuditAsk
   | AuditDeny
-  | AuditDeferred
-  | AuditDeferredResolve
   | AuditModeChange
   | AuditManifestViolation;
 

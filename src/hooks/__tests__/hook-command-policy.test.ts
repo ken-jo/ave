@@ -3,7 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,13 +13,18 @@ import { createHookCommandAuthorizer } from "../hook-command-policy.js";
 import { runOneHookScript, type RunnableHook } from "../script-hook-runner.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
-import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan,
   setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
+import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
+import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
+import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
+import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
@@ -70,6 +75,7 @@ const hook = { id: "config:PreToolUse#0.0", hookType: "pre" as const, hookPath: 
 const payload: ScriptHookStdin = { hookType: "pre", toolName: "read_file", source: "builtin", category: "read",
   input: {}, sessionId: "hook-policy-session", trustOrigin: "user-keyboard" };
 const roots: string[] = [];
+const reviewerResources = new PermissionTestResources();
 afterEach(async () => {
   sandboxedHost.active = false;
   plans.windowsPartial = false;
@@ -78,6 +84,7 @@ afterEach(async () => {
   permits.consumed.length = 0;
   vi.restoreAllMocks();
   __resetSandboxRequestedAtBootForTest();
+  await reviewerResources.cleanup();
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
@@ -95,9 +102,17 @@ function policy(choice: "allow-once" | "deny-once" = "deny-once") {
   const root = mkdtempSync(join(tmpdir(), "ave-hook-policy-"));
   roots.push(root);
   const permissionManager = new PermissionManager(join(root, "permissions.json"));
-  const requestAndWait = vi.fn(async () => ({ requestId: "hook", choice }));
-  return { permissionManager, requestAndWait,
+  const requestAndWait = vi.fn(async (_request: ApprovalRequestInput) => ({ requestId: "hook", choice }));
+  return { root, permissionManager, requestAndWait,
     authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate: { requestAndWait } }) };
+}
+
+function reviewPolicy(p: ReturnType<typeof policy>, level: "low" | "medium" | "high") {
+  const classify = vi.fn((_input: ToolInvocationContext) => ({ level, reason: "Hook command review" }));
+  p.permissionManager.setMode("auto");
+  setReviewerForTest(p.permissionManager, { classifier: { classify },
+    cache: reviewerResources.makeVerdictCache(join(p.root, "hook-review.jsonl")) });
+  return classify;
 }
 
 describe("hook command permission admission", () => {
@@ -111,16 +126,18 @@ describe("hook command permission admission", () => {
     expect(p.requestAndWait).not.toHaveBeenCalled();
   });
 
-  it("requires an exact affirmative approval when shell policy asks", async () => {
+  it("uses a normal shell card when strict policy asks", async () => {
     const p = policy("allow-once");
     p.permissionManager.setMode("strict");
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
     expect(result.decision, result.reason).toBe("allow");
     expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
       toolName: "bash", toolCategory: "shell", sessionId: "hook-policy-session",
-      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
       args: expect.objectContaining({ cwd: process.cwd(), hook: hook.id }),
+      evaluationContext: expect.objectContaining({ executionCwd: process.cwd(), category: "shell" }),
     }));
+    expect(p.requestAndWait.mock.calls[0]?.[0].forceExplicit).toBeUndefined();
+    expect(p.requestAndWait.mock.calls[0]?.[0].allowedChoices).toBeUndefined();
   });
 
   it("never spawns a denied command even when the hook would return allow", async () => {
@@ -141,23 +158,22 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
   });
 
-  // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): a hook runs without a sandbox, so only an exact Bash(<command>) rule admits it, on any host.
-  it.each([true, false])("admits a hook only through an exact allow (sandbox-capable host %s)", async (active) => {
+  it.each([true, false])("honors eligible prefix rules on the actual shell route (sandboxed %s)", async (active) => {
     sandboxedHost.active = active;
     const p = policy();
-    p.permissionManager.setRules([{ pattern: "Bash(printf *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    p.permissionManager.setRules([{ pattern: "Bash('printf' *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const command = { ...hook, command: ["printf", "ready"] };
-    expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("deny");
-    expect(p.requestAndWait).toHaveBeenCalledOnce();
+    expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("allow");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
     p.permissionManager.setRules([{ pattern: "Bash('printf' 'ready')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const admitted = await p.authorizeCommand(command, payload, process.cwd());
     expect(admitted.decision, admitted.reason).toBe("allow");
-    expect(p.requestAndWait).toHaveBeenCalledOnce();
+    expect(p.requestAndWait).not.toHaveBeenCalled();
   });
 
   it("invalidates an automatic admission when an ask rule replaces its allow", async () => {
     const p = policy();
-    // Exact: a hook runs without a sandbox, so a wildcard allow never admits it.
+    // Permission changes invalidate the authority captured for this invocation.
     const pattern = "Bash('printf' 'ready')";
     p.permissionManager.setRules([{ pattern, action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const admitted = await p.authorizeCommand({ ...hook, command: ["printf", "ready"] }, payload, process.cwd());
@@ -275,12 +291,140 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed during approval" });
   });
 
-  it("denies an unattended hook a prefix rule does not admit, without raising a card (unsandboxed shell exact-rule requirement, I5)", async () => {
+  it("denies an unattended unresolved hook command in the default mode without raising a card", async () => {
     const p = policy();
+    p.permissionManager.setMode("default");
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
       () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
     expect(result.decision).toBe("deny");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it.each(["low", "medium"] as const)("reviews an unattended hook before allowing its %s verdict", async (level) => {
+    const p = policy();
+    const classify = reviewPolicy(p, level);
+    const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
+      () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
+    expect(result.decision, result.reason).toBe("allow");
+    expect(JSON.parse(result.rawStdout).reason).toBe("received");
+    expect(classify).toHaveBeenCalledOnce();
+    expect(classify.mock.calls[0]?.[0]).toMatchObject({ toolName: "bash", finalInput: {
+      command: expect.stringContaining(COMMAND), cwd: process.cwd(),
+    } });
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("denies unattended high-risk hooks with the no-retry message after review", async () => {
+    const p = policy("allow-once");
+    const classify = reviewPolicy(p, "high");
+    const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
+      () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
+    expect(result).toMatchObject({ decision: "deny", rawStdout: "", reason: `hook command denied: ${NO_APPROVER_MESSAGE}` });
+    expect(classify).toHaveBeenCalledOnce();
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("uses a normal owner-away card after a high verdict", async () => {
+    const p = policy("allow-once");
+    const classify = reviewPolicy(p, "high");
+    const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, false, { ownerUnattended: true }),
+      () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
+    expect(result.decision, result.reason).toBe("allow");
+    expect(classify).toHaveBeenCalledOnce();
+    const request = p.requestAndWait.mock.calls[0]?.[0];
+    expect(request?.ownerUnattended).toBe(true);
+    expect(request?.forceExplicit).toBeUndefined();
+    expect(request?.allowedChoices).toBeUndefined();
+  });
+
+  it("keeps other-principal hook commands one-shot and outside reviewer authority", async () => {
+    const p = policy("allow-once");
+    const classify = reviewPolicy(p, "low");
+    const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, false, {
+      floor: { code: "other-principal", reason: "External content influenced this turn" },
+    }), () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
+    expect(result.decision, result.reason).toBe("allow");
+    expect(classify).not.toHaveBeenCalled();
+    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ forceExplicit: true,
+      allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }));
+  });
+
+  it("uses action-bound native permits for a normal allow-mode decision", async () => {
+    windowsPartialPlan();
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
+    expect(result.decision, result.reason).toBe("allow");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+  });
+
+  it("refuses an automatic hook decision after policy changes during review", async () => {
+    const p = policy("allow-once");
+    const classify = reviewPolicy(p, "low");
+    classify.mockImplementationOnce(() => {
+      p.permissionManager.setRules([{ pattern: "bash", action: "deny" }]);
+      return { level: "low", reason: "Earlier policy allowed" };
+    });
+    const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
+    expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("observes cancellation during review and at the final spawn assertion", async () => {
+    const p = policy("allow-once");
+    const controller = new AbortController();
+    const classify = reviewPolicy(p, "low");
+    classify.mockImplementationOnce(() => {
+      controller.abort();
+      return { level: "low", reason: "Completed after cancellation" };
+    });
+    const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, false, { abortSignal: controller.signal }),
+      () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
+    expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+    const next = new AbortController();
+    p.permissionManager.setMode("allow");
+    const admitted = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, false, { abortSignal: next.signal }),
+      () => p.authorizeCommand(hook, payload, process.cwd()));
+    expect(admitted.decision).toBe("allow");
+    next.abort();
+    expect(() => admitted.assertAllowed!()).toThrow("Hook command permission changed");
+  });
+
+  it("offers an eligible prefix rule through the existing signed shell card", async () => {
+    const p = policy();
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const authorize = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    const pending = authorize({ ...hook, command: ["printf", "ready"] }, payload, process.cwd());
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    expect(request.shellRule).toMatchObject({ persistentAllowed: true, sessionAllowed: true });
+    expect(shellRuleCoversCommand("bash", "Bash('printf' *)", "allow", "'printf' 'ready'", process.cwd())).toBe(true);
+    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    expect((await pending).decision).toBe("allow");
+  });
+
+  it("rejects a newly protected symlink target after review", async () => {
+    const p = policy("allow-once");
+    const ordinary = join(p.root, "ordinary.txt");
+    const alias = join(p.root, "alias.txt");
+    const control = join(p.root, ".git", "config");
+    mkdirSync(join(p.root, ".git"));
+    writeFileSync(ordinary, "ordinary");
+    writeFileSync(control, "protected");
+    symlinkSync(ordinary, alias);
+    const classify = reviewPolicy(p, "low");
+    classify.mockImplementationOnce(() => {
+      unlinkSync(alias);
+      symlinkSync(control, alias);
+      return { level: "low", reason: "Reviewed the original target" };
+    });
+    const result = await p.authorizeCommand({ ...hook, command: ["cat", alias] }, payload, p.root);
+    expect(result).toMatchObject({ decision: "deny", reason: "Hook command effect changed during approval" });
+    expect(classify).toHaveBeenCalledOnce();
     expect(p.requestAndWait).not.toHaveBeenCalled();
   });
 });

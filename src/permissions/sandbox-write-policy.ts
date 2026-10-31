@@ -1,8 +1,8 @@
-import { type BigIntStats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
+import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { settingsFilePath } from "../data/settings-store.js";
-import { aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { permissionSettingsPath } from "./permission-settings-store.js";
 import { egressGrantFilePath } from "./egress-grants.js";
@@ -18,6 +18,8 @@ export function isSandboxGitMetadataEntry(entry: string): boolean {
   return entry === ".git" || entry.startsWith(".git/");
 }
 const SANDBOX_LOADER_ENTRIES = [
+  ".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml",
+  ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml",
   ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky",
 ] as const;
 const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
@@ -136,6 +138,29 @@ function resolvePolicyDenyPath(path: string): string {
   }
 }
 
+function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly string[]): string[] {
+  const keyFor = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
+  const inheritedKeys = new Set(inherited.map(path => {
+    while (path.endsWith(sep) && dirname(path) !== path) path = path.slice(0, -1);
+    return keyFor(path);
+  }));
+  const retained = new Set(inheritedKeys);
+  for (const path of [...paths].sort((left, right) => left.length - right.length)) {
+    const key = keyFor(path);
+    if (retained.has(key)) continue;
+    let parent = dirname(key);
+    while (parent !== dirname(parent) && !retained.has(parent)) parent = dirname(parent);
+    if (!retained.has(parent)) retained.add(key);
+  }
+  const emitted = new Set<string>();
+  return paths.filter(path => {
+    const key = keyFor(path);
+    if (inheritedKeys.has(key) || !retained.has(key) || emitted.has(key)) return false;
+    emitted.add(key);
+    return true;
+  });
+}
+
 function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, routingPins: Set<string>, discovery?: GitControlDiscovery): string {
   const resolved = inspectPhysicalFilesystemPath(path, cwd, MAX_MISSING_PATH_ANCESTORS);
   if (resolved.unresolvedParentTraversal) {
@@ -150,15 +175,40 @@ function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, rou
   return resolved.path;
 }
 
-function addProtectedRoutingPins(path: string, routingPins: Set<string>): void {
+function addProtectedRoutingPins(path: string, routingPins: Set<string>, deniedPaths?: ReadonlySet<string>): void {
   try {
     const resolved = inspectPhysicalFilesystemPath(path, process.cwd(), MAX_MISSING_PATH_ANCESTORS);
+    if (resolved.firstMissingPath !== undefined && lstatSync(dirname(resolved.firstMissingPath), { throwIfNoEntry: false })?.isFile()) {
+      // Some native APIs report a child below a regular file as missing. The
+      // existing ancestor proof must still establish that the blocker is denied.
+      throw Object.assign(new Error("ENOTDIR: sandbox control path has a regular-file ancestor"), { code: "ENOTDIR" });
+    }
     for (const routingPath of resolved.routingSymlinkPaths) routingPins.add(routingPath);
   } catch (error) {
-    const marker = dirname(path);
-    // A regular.git pointer makes its child control paths structurally impossible. Every other inspection failure remains fail-closed.
-    if ((error as NodeJS.ErrnoException).code === "ENOTDIR"
-      && basename(marker) === ".git" && lstatSync(marker).isFile()) return;
+    if ((error as NodeJS.ErrnoException).code === "ENOTDIR") {
+      let ancestor = dirname(path);
+      for (let depth = 0; depth < MAX_MISSING_PATH_ANCESTORS; depth += 1) {
+        let entry: Stats;
+        try { entry = lstatSync(ancestor); }
+        catch (inspectionError) {
+          if (!isMissingPath(inspectionError)) throw inspectionError;
+          const parent = dirname(ancestor);
+          if (parent === ancestor) break;
+          ancestor = parent;
+          continue;
+        }
+        const physical = resolvePolicyPath(ancestor, process.cwd());
+        // A denied regular entry cannot contain children until that protected
+        // entry is replaced. Retain its own routing pins before omitting the
+        // structurally impossible descendant, including prior deny placeholders.
+        if ((entry.isFile() || entry.isSymbolicLink() && lstatSync(physical).isFile())
+          && (basename(ancestor) === ".git" || deniedPaths?.has(ancestor))) {
+          addProtectedRoutingPins(ancestor, routingPins);
+          return;
+        }
+        break;
+      }
+    }
     throw error;
   }
 }
@@ -270,7 +320,7 @@ function addConfiguredGitHookPaths(
   if (content !== undefined || protectMissing) {
     paths.add(configuration);
     paths.add(configPath);
-    addProtectedRoutingPins(configuration, routingPins);
+    addProtectedRoutingPins(configuration, routingPins, paths);
   }
   if (content === undefined) return;
   let section = "";
@@ -307,14 +357,51 @@ function addConfiguredGitHookPaths(
   }
 }
 
+function regularFileAncestor(path: string): string | undefined {
+  let ancestor = dirname(path);
+  for (let depth = 0; depth < MAX_MISSING_PATH_ANCESTORS; depth += 1) {
+    let entry: Stats;
+    try { entry = lstatSync(ancestor); }
+    catch (error) {
+      if (!isMissingPath(error)) throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return undefined;
+      ancestor = parent;
+      continue;
+    }
+    return entry.isFile() || entry.isSymbolicLink() && lstatSync(resolvePolicyPath(ancestor, process.cwd())).isFile()
+      ? ancestor : undefined;
+  }
+  throw new Error("Sandbox Git configuration ancestor limit exceeded");
+}
+
 function addInheritedGitConfigHookPaths(workingDirectories: readonly string[], paths: Set<string>, routingPins: Set<string>, budget: GitDiscoveryBudget): void {
   const home = process.env.HOME ?? process.env.USERPROFILE;
+  const userConfigDirectory = !process.env.GIT_CONFIG_GLOBAL && home
+    ? join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "git") : undefined;
+  if (userConfigDirectory !== undefined && regularFileAncestor(userConfigDirectory) === undefined) {
+    // Protect the loader directory itself before probing its possibly impossible child.
+    paths.add(userConfigDirectory);
+    paths.add(resolvePolicyDenyPath(userConfigDirectory));
+    addProtectedRoutingPins(userConfigDirectory, routingPins, paths);
+  }
   const configs = new Set([
     ...(process.env.GIT_CONFIG_NOSYSTEM === "1" ? [] : [process.env.GIT_CONFIG_SYSTEM ?? "/etc/gitconfig"]),
     ...(process.platform === "darwin" && process.env.GIT_CONFIG_SYSTEM === undefined ? ["/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig"] : []),
-    ...(process.env.GIT_CONFIG_GLOBAL ? [process.env.GIT_CONFIG_GLOBAL] : home ? [join(home, ".gitconfig"), join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "git", "config")] : []),
+    ...(process.env.GIT_CONFIG_GLOBAL ? [process.env.GIT_CONFIG_GLOBAL] : home ? [join(home, ".gitconfig"), join(userConfigDirectory!, "config")] : []),
   ]);
-  for (const config of configs) addConfiguredGitHookPaths(config, workingDirectories, paths, routingPins, budget);
+  const explicitConfigs = new Set([process.env.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_SYSTEM]);
+  for (const config of configs) {
+    // Only optional defaults may be omitted below regular files. An explicit
+    // override remains a required deny even when its current parent blocks it.
+    const blocker = regularFileAncestor(config);
+    if (explicitConfigs.has(config) || blocker === undefined) {
+      addConfiguredGitHookPaths(config, workingDirectories, paths, routingPins, budget);
+    } else if (!paths.has(blocker) && workingDirectories.some(root =>
+      isPhysicalPathWithin(root, blocker) || isPhysicalPathWithin(root, resolvePolicyPath(blocker, process.cwd())))) {
+      throw Object.assign(new Error("ENOTDIR: inherited sandbox configuration has a writable regular-file ancestor"), { code: "ENOTDIR" });
+    }
+  }
 }
 
 function addInheritedGitHookPaths(roots: readonly string[], paths: Set<string>, routingPins: Set<string>, budget: GitDiscoveryBudget): void {
@@ -780,16 +867,18 @@ function addNestedGitControlPaths(
   return true;
 }
 
-// Sensitive/application literal denies include absent paths. Linux Git controls alone use existing entries plus a recoverable post-command quarantine sweep. Store locations come from their writers so changing a layout also changes this boundary. Existing sensitive-write protection is unioned separately. Its paths are inspected only for routing links; their owning union remains responsible for emitting the corresponding deny entries.
+// Sensitive/application literal denies include absent paths. Linux Git controls alone use existing entries plus a recoverable post-command quarantine sweep. Store locations come from their writers so changing a layout also changes this boundary. Routing paths supply identity only. Inherited write denies must be absolute literal denies independently emitted in the caller's final union; they can cover redundant descendants after every target is resolved.
 export function buildMandatorySandboxWritePolicy(
   writeRoots: readonly FilesystemPathEntry[],
   userDataDir?: string,
   protectedRoutingPaths: readonly string[] = [],
+  inheritedWriteDenies: readonly string[] = [],
 ): Pick<FilesystemConfig, "denyWrite"> & {
   allowWrite: string[];
   narrowedWriteRoots: readonly { root: string; reason: "entry-budget" | "path-budget" | "filesystem-access" | "routing-link" }[];
   gitControlSnapshot?: SandboxGitControlSnapshot;
 } {
+  if (inheritedWriteDenies.some(path => !isAbsolute(path) || /[*?\[\]]/.test(path))) throw new Error("Invalid inherited sandbox write deny");
   const rootSnapshots = writeRoots.map(entry => {
     const original = typeof entry === "string" ? entry : entry.path;
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
@@ -798,6 +887,8 @@ export function buildMandatorySandboxWritePolicy(
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
       SANDBOX_PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
+    // The configuration directory is a control boundary, including future files.
+    join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),
     userApprovalFilePath(),
     egressGrantFilePath(),
@@ -868,9 +959,10 @@ export function buildMandatorySandboxWritePolicy(
       try { lstatSync(path); }
       catch (error) { if (isMissingPath(error)) discovered.delete(path); else throw error; }
     }
-    for (const path of paths) addProtectedRoutingPins(path, routingPins);
-    for (const path of discovered) addProtectedRoutingPins(path, discoveredRoutingPins);
-    for (const path of protectedRoutingPaths) addProtectedRoutingPins(path, routingPins);
+    const literalWriteDenies = new Set([...paths, ...inheritedWriteDenies]);
+    for (const path of paths) addProtectedRoutingPins(path, routingPins, literalWriteDenies);
+    for (const path of discovered) addProtectedRoutingPins(path, discoveredRoutingPins, literalWriteDenies);
+    for (const path of protectedRoutingPaths) addProtectedRoutingPins(path, routingPins, literalWriteDenies);
     // A bind mount follows a routing symlink to its target; it cannot pin the directory entry while leaving that entry's parent writable. Remove every grant that could replace the link. Independent child and sibling grants remain available because they do not make the routing parent writable.
     for (const routingPath of [...routingPins, ...discoveredRoutingPins]) {
       const routingParent = dirname(routingPath);
@@ -892,10 +984,15 @@ export function buildMandatorySandboxWritePolicy(
       || !roots.some(root => isPhysicalPathWithin(root, path))) routingPins.add(path);
   }
   // Preserve both the directory entry and its target when a setting is a link.
-  const entries: FilesystemPathEntry[] = [...new Set([...paths].flatMap((path) => [
+  const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => [
     path,
     resolvePolicyDenyPath(path),
-  ]))]
+  ]))];
+  // Resolve every child first so a linked loader keeps its physical deny even
+  // when its lexical spelling is already covered by a denied parent directory.
+  // Windows may omit an inherited deny during ACL narrowing; retain its full
+  // mandatory set until that later platform-specific decision has finished.
+  const entries: FilesystemPathEntry[] = minimalLiteralDenyPaths(resolvedDenyPaths, process.platform === "win32" ? [] : inheritedWriteDenies)
     .map((path) => /[*?\[\]]/.test(path) ? { path, literal: true } : path);
   // Linux consumes routing links only to revoke covering grants. Replaying one as a deny bind would follow its target and could mask an unrelated subtree.
   if (process.platform !== "linux") {

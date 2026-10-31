@@ -209,11 +209,6 @@
     },
     {
       "type": "exports",
-      "file": "src/permissions/host-shell-execution-permit.ts",
-      "name": "parseHostShellExecutionInput"
-    },
-    {
-      "type": "exports",
       "file": "src/plugins/installed-entry-fs.ts",
       "name": "deferTombstoneRemoval"
     },
@@ -659,21 +654,6 @@
     },
     {
       "type": "types",
-      "file": "src/permissions/category-registry.ts",
-      "name": "CategoryDecision"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/category-registry.ts",
-      "name": "CategoryDecisionInput"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/host-shell-execution-permit.ts",
-      "name": "ParsedHostShellExecutionInput"
-    },
-    {
-      "type": "types",
       "file": "src/permissions/host-shell-execution-plan.ts",
       "name": "HostShellExecutionMode"
     },
@@ -701,11 +681,6 @@
       "type": "types",
       "file": "src/permissions/permission-slash.ts",
       "name": "PermissionReviewerVerb"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/reviewer/deferred-queue.ts",
-      "name": "DeferredEntryStatus"
     },
     {
       "type": "types",
@@ -1101,11 +1076,6 @@
       "type": "types",
       "file": "src/ui/renderer/types.ts",
       "name": "LLMVendorSettingsRenderer"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
-      "name": "PermissionReviewerDispatchResult"
     },
     {
       "type": "types",

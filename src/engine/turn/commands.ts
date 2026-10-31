@@ -313,7 +313,7 @@ export async function handlePermissionCommand(
     );
     if (outcome.kind === "parse-error") return t("be_conversationLoop.permissionParseError", { error: outcome.error });
     if (outcome.kind === "show-current") {
-      const mode = self.deps.permissionManager?.getMode() ?? "default";
+      const mode = self.deps.permissionManager?.getMode() ?? "strict";
       return t("be_conversationLoop.permissionShowCurrent", { mode });
     }
     if (outcome.kind === "dir") {
@@ -346,13 +346,12 @@ export async function handlePermissionCommand(
         self.deps.rewireReviewerAgent,
       );
       if (!result.ok) return t("be_conversationLoop.permissionReviewerError", { error: result.error });
-      const { mode, fallbackOnError, interactive } = result.settings;
+      const { mode, fallbackOnError } = result.settings;
       return [
         t("be_conversationLoop.permissionReviewerSettings"),
         `mode=${mode}`,
         "provider/model=active LLM settings",
         `fallbackOnError=${fallbackOnError}`,
-        `interactiveAutoApprove=${interactive.autoApprove}`,
       ].join("\n");
     }
     if (outcome.kind === "audit") {

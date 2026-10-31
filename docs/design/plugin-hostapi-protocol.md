@@ -20,10 +20,12 @@ Its schema/client and wire fixtures live under `schemas/plugin-host-protocol/4/`
 and `src/plugins/isolation/__tests__/fixtures/host-protocol/4/`.
 
 The existing unreleased-candidate convention (§6.1) stores the new schema under
-`web/public/schemas/plugin-host-protocol/4/v0.14.1/`, with
+`web/public/schemas/plugin-host-protocol/4/v0.14.2/`, with
 `publishedTag: null`. That version segment identifies the open schema candidate,
-not an announcement that 0.14.1 has shipped protocol 4. Historical protocol-3
-schema copies remain unchanged. Publish protocol-4 plugin replacements only with
+not an announcement that 0.14.2 has shipped protocol 4. The previous 0.14.1
+protocol-4 candidate is retained byte-for-byte with its original hash and generation
+commit as a superseded, unpublished copy. Historical protocol-3 schema copies
+remain unchanged. Publish protocol-4 plugin replacements only with
 the coordinated app release; use its actual release tag and minimum version.
 Numbers in the historical plans below describe those steps, not this candidate.
 

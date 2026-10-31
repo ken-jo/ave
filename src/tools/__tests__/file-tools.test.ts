@@ -488,6 +488,24 @@ describe("file native tools", () => {
     expect(result.output).not.toContain("README.md");
   });
 
+  it("executes approved ordinary secret writes and reads", async () => {
+    const path = join(workDir, ".env");
+    const written = await new WriteFileTool().execute({ path, content: "SYNTHETIC=value" }, ctx());
+    expect(written.isError, written.output).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe("SYNTHETIC=value");
+    const read = await new ReadFileTool().execute({ path }, ctx());
+    expect(read.isError, read.output).toBe(false);
+    expect(read.output).toContain("SYNTHETIC=value");
+  });
+
+  it("lists an explicitly admitted ordinary secret root", async () => {
+    mkdirSync(join(workDir, ".ssh"));
+    writeFileSync(join(workDir, ".ssh", "id_rsa"), "synthetic-only");
+    const result = await new ListFilesTool().execute({ path: ".ssh", depth: 2, limit: 20 }, ctx());
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("id_rsa");
+  });
+
   it("list/glob/grep skip sensitive descendants under an allowed root", async () => {
     mkdirSync(join(workDir, ".ssh"), { recursive: true });
     mkdirSync(join(workDir, ".ave", "secrets"), { recursive: true });
@@ -843,9 +861,9 @@ describe("file native tools", () => {
   });
 
   // Wider directory reads must not relax the sensitive-path deny-list.
-  it("still refuses a read of a Layer 0 protected path", async () => {
+  it("still refuses a read of a host credential store", async () => {
     const result = await new ReadFileTool().execute(
-      { path: join(homedir(), ".ssh", "id_rsa") },
+      { path: join(homedir(), ".ave", "secrets", "key") },
       ctx(),
     );
 

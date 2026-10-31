@@ -17,10 +17,10 @@ let cwd: string;
 let manager: PermissionManager;
 beforeEach(() => {
   cwd = realpathSync(mkdtempSync(join(tmpdir(), "visible-literal-")));
-  vi.stubEnv("AVE_HOME", cwd);
+  vi.stubEnv("AVE_HOME", join(cwd, "state"));
   __resetSessionStoreForTest();
   manager = new PermissionManager(join(cwd, "permissions.json"));
-  manager.setMode("allow");
+  manager.setMode("default");
 });
 afterEach(() => {
   __resetSessionStoreForTest();
@@ -49,6 +49,7 @@ function measured(command: string, dialect: ShellRuleDialect, sandboxed: boolean
 
 describe("visible literal decision regressions", () => {
   it("bounds repeated ambiguous path segments inside one quoted argument", () => {
+    manager.setMode("allow");
     const observations = [64, 128, 256].map((repetitions) => {
       const command = `printf %s './${"AppData/Local/a/User Data/b/".repeat(repetitions)}tail'`;
       const timing = measured(command, "bash", true);
@@ -57,7 +58,7 @@ describe("visible literal decision regressions", () => {
     process.stdout.write(`literal path timing ${JSON.stringify(observations)}\n`);
     for (const { median, results } of observations) {
       expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
-      for (const result of results) expect(result).toMatchObject({ decision: "allow", layer: 3 });
+      for (const result of results) expect(result).toMatchObject({ decision: "allow" });
     }
   });
 
@@ -77,7 +78,7 @@ describe("visible literal decision regressions", () => {
     expect(keys[0]).not.toBe(keys[1]);
     expect(keys[0]).toBe("PowerShell(Write-Output '0x10')");
     expect(savedResult).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
+      ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
     expect(check(saved, "powershell", false, true).decision).toBe(UNPROVEN_STARTUP ? "deny" : "allow");
     expect(other.decision).toBe("ask");
     expect(headless.decision).toBe("deny");
@@ -114,8 +115,8 @@ describe("visible literal decision regressions", () => {
     const headless = check(command, "powershell", false, true);
     process.stdout.write(`literal pipeline timing ${JSON.stringify({ chars: command.length, ...timing, headless })}\n`);
     for (const result of timing.results) expect(result).toMatchObject(UNPROVEN_STARTUP
-      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
-    expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", layer: 2 } : { decision: "allow", layer: 3 });
+      ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
+    expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", reasonCode: "no-approver" } : { decision: "allow" });
     expect(timing.median).toBeLessThan(DECISION_COST_TARGET_MS);
   });
 });

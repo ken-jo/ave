@@ -14,7 +14,7 @@ function makeReviewedNetworkProbe(name: string, executeSpy: ReturnType<typeof vi
   const registry = new ToolRegistry();
   registry.register(createDynamicTool({
     name,
-    description: "MEDIUM reviewer retry boundary probe",
+    description: "Reviewer retry boundary probe",
     source: "plugin",
     pluginId: "test-plugin",
     category: "network",
@@ -43,7 +43,7 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
   it("never treats free-form approval text as authority without a session id", async () => {
     const executeSpy = vi.fn(async () => "sent");
     const classifySpy = vi.fn(() => ({
-      level: "medium" as const,
+      level: "high" as const,
       reason: "needs user confirmation",
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-retry-nosession-"));
@@ -89,7 +89,7 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
     // authorization bearer. Without ApprovalGate, both attempts fail closed.
     const executeSpy = vi.fn(async () => "sent");
     const classifySpy = vi.fn(() => ({
-      level: "medium" as const,
+      level: "high" as const,
       reason: "needs user confirmation",
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-retry-cap-"));
@@ -134,7 +134,7 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
   it("never elevates free-form retry text across trust origins", async () => {
     const executeSpy = vi.fn(async () => "sent");
     const classifySpy = vi.fn(() => ({
-      level: "medium" as const,
+      level: "high" as const,
       reason: "needs user confirmation",
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-retry-origin-"));
@@ -181,7 +181,7 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
   it("never elevates free-form retry text in headless attempts", async () => {
     const executeSpy = vi.fn(async () => "sent");
     const classifySpy = vi.fn(() => ({
-      level: "medium" as const,
+      level: "high" as const,
       reason: "needs user confirmation",
     }));
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-retry-headless-"));
@@ -259,7 +259,7 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
           statuses.push(event.status),
       };
 
-      const first = await executor.executeAll(
+      await expect(executor.executeAll(
         [{ id: "tu-abort-first", name: toolName, input }],
         {
           sessionId: "sess-reviewer-abort",
@@ -269,10 +269,9 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
             userIntent: "릴리즈 안내를 전송해줘",
           }),
         },
-      );
-      expect(first[0].is_error).toBe(true);
+      )).rejects.toMatchObject({ name: "AbortError" });
 
-      const second = await executor.executeAll(
+      await expect(executor.executeAll(
         [{ id: "tu-abort-retry", name: toolName, input }],
         {
           sessionId: "sess-reviewer-abort",
@@ -282,13 +281,13 @@ describe("ToolExecutor foreground reviewer free-form retry boundaries", () => {
             userIntent: "진행해",
           }),
         },
-      );
-
-      expect(second[0].is_error).toBe(true);
+      )).rejects.toMatchObject({ name: "AbortError" });
       expect(classifySpy).toHaveBeenCalledTimes(2);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(requestAndWait).not.toHaveBeenCalled();
       expect(statuses.filter((status) => status === "failed")).toHaveLength(2);
+      expect(statuses).not.toContain("auto_approved");
+      expect(statuses).not.toContain("needs_approval");
     } finally {
       await cleanupTmpDir(dir);
     }

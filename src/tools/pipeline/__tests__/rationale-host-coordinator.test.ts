@@ -1,4 +1,8 @@
+import { captureApprovalWorkingDirectory } from "../../../permissions/user-approval-store.js";
+import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";
+import { HookRunner } from "../../../hooks/hook-runner.js";
+import { captureRationalePolicySnapshot, type RationalePolicySnapshot } from "../rationale-policy-epoch.js";
 import { ApprovalGate } from "../../../permissions/approval-gate.js";
 import type {
   ApprovalChoice,
@@ -8,11 +12,18 @@ import type {
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { LlmRationaleScopeReviewer } from "../../../permissions/reviewer/rationale-scope-reviewer.js";
+import type { LlmReviewerProvider } from "../../../permissions/reviewer/risk-classifier.js";
 import type {
   RationaleScopeReviewer,
 } from "../../../permissions/reviewer/rationale-scope-reviewer.js";
 import {
   InMemoryHostAnchorRoundCasStore,
+  isRationaleEligible,
+  RationaleHumanApprovalDeniedError,
+  parseRationaleResponse,
+  verifyRationaleRequiredControl,
+  verifyRationaleExecutionControl,
   createRequestAnchor,
   createTriggeringBatchDisposition,
   type ActionIdentity,
@@ -48,23 +59,36 @@ const eligibilityContext = {
 } as const;
 const permission = {
   decision: "ask",
-  reason: "reviewer medium",
-  layer: 5,
+  reason: "Automatic review requires human approval.",
+  reasonCode: "reviewer-human-required",
   reviewer: {
+    requestId: "review-request-1",
     route: "foreground-auto",
-    verdict: { level: "medium", reason: "bounded destructive action" },
+    verdict: { level: "high", reason: "bounded destructive action" },
     outcome: "fresh",
   },
 } as const satisfies PermissionCheckResult;
 
 interface SetupOptions {
+  readonly sessionId?: string;
   readonly platform?: NodeJS.Platform;
+  readonly headless?: boolean;
+  readonly requestHumanApproval?: RationaleControlCandidate["requestHumanApproval"];
+  readonly humanApprovalAvailable?: boolean;
+  readonly recordTerminalDenial?: RationaleControlCandidate["recordTerminalDenial"];
+  readonly executionCwd?: string;
+  readonly now?: () => number;
+  readonly policySnapshot?: () => RationalePolicySnapshot;
+  readonly ownerUnattended?: boolean;
+  readonly userRoleTexts?: readonly string[];
+  readonly getUserRoleTexts?: () => readonly string[];
+  readonly onReviewerChoiceResolved?: (sessionId: string, requestId: string, decision: "allow" | "deny") => void;
   readonly approvalChoice?: ApprovalChoice;
   readonly reviewer?: RationaleScopeReviewer;
   readonly deferApproval?: boolean;
   readonly approvalGate?: Pick<
     ApprovalGate,
-    "requestAndWait" | "cancelPendingRationale"
+    "requestAndWait" | "cancelPendingRequest"
   >;
   readonly onTicketAudit?: (event: RationaleTicketStoreAuditEvent) => void;
   readonly onProjectionAudit?: (
@@ -115,9 +139,7 @@ function createCandidate(
     source: "builtin",
     category: "shell",
     invocationTrustOrigin: "llm-tool-arg",
-    targetFilePaths: ["workspace/private-build"],
     canonicalTargets: ["workspace/private-build"],
-    allowedDirectories: ["workspace"],
     approvalCacheKey: "shell_exec:workspace/private-build",
     sandboxCapability: {
       kind: "asrt",
@@ -132,18 +154,6 @@ function createCandidate(
       network: "strict-union",
     },
     permission,
-    permissionEvaluationContext: buildPermissionEvaluationContext({
-      policyMode: "default",
-      headless: false,
-      source: "builtin",
-      category: "shell",
-      trustOrigin: "llm-tool-arg",
-      executionCwd: "workspace",
-      allowedDirectories: ["workspace"],
-      pathFields: ["command"],
-      targetFilePaths: ["workspace/private-build"],
-      sensitivePathsAdjacent: [],
-    }),
     eligibilityContext,
   };
 }
@@ -152,8 +162,12 @@ const responseFor = (control: RationaleRequiredControl) =>
   rationaleResponseFor(control, "Remove the sealed build target.");
 
 function setup(options: SetupOptions = {}) {
-  const anchor = createAnchor();
-  const candidate = createCandidate(anchor, options.platform ?? "linux");
+  const anchor = createAnchor(options.sessionId);
+  const baseCandidate = createCandidate(anchor, options.platform ?? "linux");
+  const candidate = { ...baseCandidate,
+    requestHumanApproval: options.requestHumanApproval,
+    recordTerminalDenial: options.recordTerminalDenial,
+    eligibilityContext: { ...baseCandidate.eligibilityContext, headless: options.headless ?? false } };
   const ticketStore = new InProcessRationaleTicketStore({
     onAudit: options.onTicketAudit ?? (() => {}),
   });
@@ -166,7 +180,7 @@ function setup(options: SetupOptions = {}) {
     readonly at: number;
   }> = [];
   const approvalRequests: Array<Omit<ApprovalRequest, "requireExplicit">> = [];
-  // Default to unclear scope so modal tests cannot auto-approve; auto-approval cases supply an aligned reviewer.
+  // Modal tests use a high re-evaluation; allow cases supply a low/medium reviewer.
   const reviewer = options.reviewer ?? {
     async reevaluate(input) {
       return createReviewerScopeReevaluation({
@@ -175,8 +189,8 @@ function setup(options: SetupOptions = {}) {
         scopeAlignment: "unclear",
         scopeReasons: ["the sealed target scope could not be fully confirmed"],
         reevaluatedVerdict: {
-          level: "medium",
-          reason: "bounded destructive action remains medium",
+          level: "high",
+          reason: "bounded destructive action remains high",
         },
         now: input.now,
       });
@@ -216,18 +230,30 @@ function setup(options: SetupOptions = {}) {
         choice: options.approvalChoice ?? "allow-once",
       };
     }),
-    cancelPendingRationale: vi.fn((requestId: string) =>
+    cancelPendingRequest: vi.fn((requestId: string) =>
       resolvePendingApproval(requestId, "deny-once")
     ),
   };
   const approvalGate = options.approvalGate ?? fallbackApprovalGate;
+  const evaluationContext = buildPermissionEvaluationContext({
+    policyMode: "auto", headless: options.headless ?? false, source: "builtin", category: "shell", trustOrigin: "llm-tool-arg",
+    executionCwd: options.executionCwd ?? "workspace", allowedDirectories: ["workspace"], pathFields: ["command"],
+    targetFilePaths: [...candidate.canonicalTargets], sensitivePathsAdjacent: [],
+  });
+  if (options.humanApprovalAvailable !== false) candidate.requestHumanApproval = options.requestHumanApproval ?? createRationaleApprovalCallback({
+    candidate, approvalGate, evaluationContext, ownerUnattended: options.ownerUnattended,
+  });
   const coordinator = new RationaleHostCoordinator({
     requestAnchor: anchor,
+    userRoleTexts: options.userRoleTexts ?? ["remove the private build output"],
+    getUserRoleTexts: options.getUserRoleTexts,
+    onReviewerChoiceResolved: options.onReviewerChoiceResolved,
     rationaleProvenance,
     ticketStore,
     rationaleScopeReviewer: reviewer,
     approvalGate,
-    getRationalePolicyEpoch: () => generations.policy,
+    getRationalePolicyEpoch: options.policySnapshot ? () => options.policySnapshot!().epoch : () => generations.policy,
+    getRationalePolicySnapshot: options.policySnapshot,
     getRegistryGeneration: () => generations.registry,
     getSandboxGeneration: () => generations.sandbox,
     anchorRoundCas,
@@ -238,11 +264,12 @@ function setup(options: SetupOptions = {}) {
       projectionAudits.push({ sessionId, projection, at });
       return result;
     },
-    now: () => NOW,
+    now: options.now ?? (() => NOW),
   });
   return {
     coordinator,
     candidate,
+    evaluationContext,
     ticketStore,
     anchorRoundCas,
     hostInvocationStartCas,
@@ -296,6 +323,7 @@ describe("RationaleHostCoordinator", () => {
     const first = materialize(state);
     const second = new RationaleHostCoordinator({
       requestAnchor: state.candidate.requestAnchor,
+      userRoleTexts: ["remove the private build output"],
       rationaleProvenance,
       ticketStore: state.ticketStore,
       rationaleScopeReviewer: state.reviewer,
@@ -384,19 +412,14 @@ describe("RationaleHostCoordinator", () => {
     ]);
     expect(state.approvalRequests[0]).toMatchObject({
       id: materialized.control.ticketId,
-      kind: "rationale",
-      allowedChoices: ["allow-once", "deny-once"],
-      isReadOnly: false,
+      kind: "tool",
       sessionId: materialized.control.anchor.sessionId,
     });
-    expect(state.approvalRequests[0]).not.toHaveProperty("approvalCacheKey");
-    expect(JSON.stringify(state.approvalRequests[0]?.args)).not.toContain("rm -rf");
+    expect(state.approvalRequests[0]?.approvalCacheKey).toBe(materialized.action.approvalCacheKey);
+    expect(state.approvalRequests[0]?.allowedChoices).toBeUndefined();
+    expect(state.approvalRequests[0]?.args).toEqual(materialized.control.sealedAction.finalInput);
     const modalArgs = state.approvalRequests[0]!.args as Record<string, unknown>;
-    expect(modalArgs).toMatchObject({
-      display: "rationale-approval-display",
-      toolName: materialized.action.toolName,
-      rationaleStatus: "ready",
-    });
+    expect(modalArgs).toMatchObject({ command: "rm -rf workspace/private-build", confirmed: true });
     // Send only display facts to the renderer; retain replay-sensitive bindings in host and audit projections.
     expect(modalArgs).not.toHaveProperty("ticketId");
     expect(modalArgs).not.toHaveProperty("anchorId");
@@ -443,7 +466,7 @@ describe("RationaleHostCoordinator", () => {
           return await new Promise<never>(() => {});
         },
       };
-      const state = setup({ reviewer, approvalChoice: "allow-session" });
+      const state = setup({ reviewer, approvalChoice: "deny-once" });
       const materialized = materialize(state);
       const pending = runReadyRound(state, materialized);
       await vi.advanceTimersByTimeAsync(0);
@@ -467,8 +490,8 @@ describe("RationaleHostCoordinator", () => {
         { now: NOW + 2 },
       );
       expect(approval).toMatchObject({
-        outcome: "cancelled",
-        ticket: { state: "cancelled", terminalReason: "user-cancel" },
+        outcome: "denied",
+        ticket: { state: "denied", terminalReason: "user-deny" },
       });
       expect(await state.coordinator.createSealedResume({
         ticketId: materialized.control.ticketId,
@@ -511,8 +534,9 @@ describe("RationaleHostCoordinator", () => {
 
       await expect(pending).resolves.toBeNull();
       expect(reviewSignal?.aborted).toBe(true);
-      expect(state.approvalGate.cancelPendingRationale).toHaveBeenCalledWith(
+      expect(state.approvalGate.cancelPendingRequest).toHaveBeenCalledWith(
         materialized.control.ticketId,
+        materialized.control.anchor.sessionId,
         "caller-abort",
       );
       expect(state.ticketStore.get({
@@ -575,7 +599,8 @@ describe("RationaleHostCoordinator", () => {
       outcome: "denied",
       ticket: { state: "denied", terminalReason: "user-deny" },
     });
-    expect(state.approvalRequests[0]).not.toHaveProperty("approvalCacheKey");
+    expect(state.approvalRequests[0]?.approvalCacheKey).toBe(materialized.action.approvalCacheKey);
+    expect(state.approvalRequests[0]?.allowedChoices).toBeUndefined();
   });
 
   it("records an actual host modal timeout separately from a user deny", async () => {
@@ -586,7 +611,7 @@ describe("RationaleHostCoordinator", () => {
         isDestroyed: vi.fn(() => false),
       };
       const gate = new ApprovalGate(nativeWebContents as never, undefined, 25);
-      const state = setup({ approvalGate: gate });
+      const state = setup({ approvalGate: gate, executionCwd: process.cwd() });
       const materialized = materialize(state);
       await state.coordinator.handleRationaleRoundResult({
         ticketId: materialized.control.ticketId,
@@ -604,11 +629,10 @@ describe("RationaleHostCoordinator", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(gate.listPendingRendererRequests(nativeWebContents as never)).toEqual([expect.objectContaining({
         id: materialized.control.ticketId,
-        kind: "rationale",
-        allowedChoices: ["allow-once", "deny-once"],
+        kind: "tool",
       })]);
-      expect(gate.listPendingRendererRequests(nativeWebContents as never)[0]).not.toHaveProperty("persistentApprovalCwd");
-      expect(gate.getRequestSnapshot(materialized.control.ticketId)).toBeNull();
+      expect(gate.listPendingRendererRequests(nativeWebContents as never)[0]?.persistentApprovalCwd).toBe(captureApprovalWorkingDirectory(state.evaluationContext.executionCwd).path);
+      expect(gate.getRequestSnapshot(materialized.control.ticketId)).toMatchObject({ toolName: state.candidate.toolName, approvalCacheKey: state.candidate.approvalCacheKey });
       await vi.advanceTimersByTimeAsync(26);
       await expect(pending).resolves.toMatchObject({
         outcome: "timed-out",
@@ -851,11 +875,11 @@ describe("RationaleHostCoordinator", () => {
     const approvalGate = {
       requestAndWait: vi.fn((_request: Omit<ApprovalRequest, "requireExplicit">) =>
         new Promise<ApprovalDecision>(() => {})),
-      cancelPendingRationale: vi.fn(() => {
+      cancelPendingRequest: vi.fn(() => {
         if (failCancellation) throw new Error("approval cancellation unavailable");
         return false;
       }),
-    } satisfies Pick<ApprovalGate, "requestAndWait" | "cancelPendingRationale">;
+    } satisfies Pick<ApprovalGate, "requestAndWait" | "cancelPendingRequest">;
     const state = setup({
       approvalGate,
       onTicketAudit: (event) => ticketAudits.push(event),
@@ -895,7 +919,7 @@ describe("RationaleHostCoordinator", () => {
       state: "cancelled",
       terminalReason: "caller-abort",
     });
-    expect(approvalGate.cancelPendingRationale).toHaveBeenCalledTimes(2);
+    expect(approvalGate.cancelPendingRequest).toHaveBeenCalledTimes(2);
     expect(ticketAudits.some((event) => event.operation === "replay-rejected"))
       .toBe(false);
   });
@@ -956,12 +980,12 @@ describe("RationaleHostCoordinator", () => {
         new Promise<ApprovalDecision>((resolve) => {
           settleApproval = resolve;
         })),
-      cancelPendingRationale: vi.fn((requestId: string) => {
+      cancelPendingRequest: vi.fn((requestId: string) => {
         if (failCancellation) throw new Error("session cancellation unavailable");
         settleApproval?.({ requestId, choice: "deny-once" });
         return true;
       }),
-    } satisfies Pick<ApprovalGate, "requestAndWait" | "cancelPendingRationale">;
+    } satisfies Pick<ApprovalGate, "requestAndWait" | "cancelPendingRequest">;
     const state = setup({ approvalGate });
     const materialized = materialize(state);
     await state.coordinator.handleRationaleRoundResult({
@@ -996,7 +1020,7 @@ describe("RationaleHostCoordinator", () => {
       NOW + 3,
     )).toEqual([]);
     await expect(pending).resolves.toBeNull();
-    expect(approvalGate.cancelPendingRationale).toHaveBeenCalledTimes(2);
+    expect(approvalGate.cancelPendingRequest).toHaveBeenCalledTimes(2);
   });
 
   function reviewerReturning(
@@ -1035,7 +1059,7 @@ describe("RationaleHostCoordinator", () => {
     });
   }
 
-  it("auto-approves an aligned non-high reviewer terminal without a modal", async () => {
+  it("auto-approves a fresh low/medium reviewer terminal without a modal", async () => {
     const state = setup({ reviewer: reviewerReturning("aligned", "medium") });
     const materialized = materialize(state);
     const round = await runReadyRound(state, materialized);
@@ -1094,7 +1118,7 @@ describe("RationaleHostCoordinator", () => {
   });
 
   it.each(["low", "medium"] as const)(
-    "auto-approves aligned+%s and never opens the gate",
+    "auto-approves fresh %s and never opens the gate",
     async (level) => {
       const state = setup({ reviewer: reviewerReturning("aligned", level) });
       const materialized = materialize(state);
@@ -1106,8 +1130,8 @@ describe("RationaleHostCoordinator", () => {
 
   it.each([
     ["aligned", "high"],
-    ["outside", "medium"],
-    ["unclear", "medium"],
+    ["outside", "high"],
+    ["unclear", "high"],
   ] as const)(
     "routes %s+%s to the user modal instead of auto-approving",
     async (scopeAlignment, level) => {
@@ -1158,4 +1182,532 @@ describe("RationaleHostCoordinator", () => {
       now: NOW + 3,
     })).toBeNull();
   });
+});
+
+describe("reviewer denial model choices", () => {
+  const choiceCall = (control: RationaleRequiredControl, choice: "accept" | "ask_user") => {
+    const { rationale: _rationale, userQuote: _userQuote, ...binding } = responseFor(control);
+    return { id: "choice", name: "permission_rationale", input: { ...binding, choice } };
+  };
+  const review = (level: "low" | "high"): RationaleScopeReviewer => ({
+    async reevaluate(input) {
+      return createReviewerScopeReevaluation({ control: input.control, outcome: "fresh",
+        scopeAlignment: "aligned", scopeReasons: ["Same host-sealed action"],
+        reevaluatedVerdict: { level, reason: "Bounded review" }, now: input.now });
+    },
+  });
+
+  it("accept denies without a card or another reviewer call", async () => {
+    const reviewer = { reevaluate: vi.fn() } satisfies RationaleScopeReviewer;
+    const onReviewerChoiceResolved = vi.fn();
+    const state = setup({ reviewer, onReviewerChoiceResolved });
+    const { control } = materialize(state);
+    const resolution = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [choiceCall(control, "accept")] }, now: NOW });
+    expect(resolution?.modelDenied).toBe(true);
+    expect(onReviewerChoiceResolved).toHaveBeenCalledExactlyOnceWith(control.anchor.sessionId, "review-request-1", "deny");
+    expect(reviewer.reevaluate).not.toHaveBeenCalled();
+    expect(state.approvalRequests).toHaveLength(0);
+    expect(resolution?.ticket.ticket).toMatchObject({ state: "denied", terminalReason: "model-accepted-denial" });
+    expect(resolution?.projection.terminalReason).toBe("model-accepted-denial");
+    expect(state.ticketStore.get({ sessionId: control.anchor.sessionId, ticketId: control.ticketId, now: NOW })).toBeNull();
+  });
+
+  it.each(["low", "high"] as const)("verified resubmission with %s uses one reviewer judgment", async (level) => {
+    const reviewer = review(level);
+    const reevaluate = vi.spyOn(reviewer, "reevaluate");
+    const state = setup({ reviewer });
+    const { control } = materialize(state);
+    const resolution = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+    expect(reevaluate).toHaveBeenCalledTimes(1);
+    expect(reevaluate.mock.calls[0]?.[0]).toMatchObject({ verifiedUserQuote: "remove the private build output",
+      hostSafetyFacts: { targetPaths: control.action.canonicalTargets, changeScope: control.action.requestedEffects } });
+    expect(resolution?.autoApproved).toBe(level === "low");
+    if (level === "high") {
+      await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+      expect(state.approvalRequests).toHaveLength(1);
+    } else expect(state.approvalRequests).toHaveLength(0);
+    expect(await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "second", name: "permission_rationale", input: responseFor(control) }] }, now: NOW })).toBeNull();
+    expect(reevaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["tool output quote", "model turn quote"])("refuses %s without reviewer authority", async (quote) => {
+    const reviewer = { reevaluate: vi.fn() } satisfies RationaleScopeReviewer;
+    const state = setup({ reviewer, userRoleTexts: ["Only inspect the workspace."] });
+    const { control } = materialize(state);
+    const resolution = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: { ...responseFor(control), userQuote: quote } }] }, now: NOW });
+    expect(resolution?.autoApproved).toBe(false);
+    expect(reviewer.reevaluate).not.toHaveBeenCalled();
+    await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+    expect(state.approvalRequests).toHaveLength(1);
+  });
+
+  it.each([false, true])("ask_user is a normal card or a headless denial (headless=%s)", async (headless) => {
+    const recordTerminalDenial = vi.fn(async (_reason: string) => {});
+    const state = setup({ headless, recordTerminalDenial });
+    const { control } = materialize(state);
+    await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [choiceCall(control, "ask_user")] }, now: NOW });
+    const result = await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+    expect(result?.outcome).toBe(headless ? "denied" : "allowed-once");
+    expect(state.approvalRequests).toHaveLength(headless ? 0 : 1);
+    if (!headless) {
+      expect(state.approvalRequests[0]).toMatchObject({ kind: "tool", args: control.sealedAction.finalInput });
+      expect(state.approvalRequests[0]?.allowedChoices).toBeUndefined();
+    }
+    else expect(result?.ticket.terminalReason).toBe("no-approver");
+    if (headless) expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("Nobody can approve this request; do not retry.");
+    else expect(recordTerminalDenial).not.toHaveBeenCalled();
+  });
+});
+
+it("gives each distinct denied request its own round in one user turn", () => {
+  const state = setup();
+  const first = materialize(state);
+  const secondCandidate = {
+    ...state.candidate,
+    toolUseId: "second-request",
+    triggeringBatchDisposition: createTriggeringBatchDisposition({
+      batchId: "second-provider-batch",
+      originalToolUseIds: ["second-request"],
+      triggeringToolUseId: "second-request",
+      completedToolUseIds: [],
+    }),
+  };
+  const second = state.coordinator.materializeRationaleControl(secondCandidate);
+  expect(second).not.toBeNull();
+  expect(second?.control.anchor.anchorId).toBe(first.control.anchor.anchorId);
+  expect(second?.control.ticketId).not.toBe(first.control.ticketId);
+  expect(state.coordinator.materializeRationaleControl(state.candidate)).toBeNull();
+  expect(state.coordinator.materializeRationaleControl(secondCandidate)).toBeNull();
+  expect(state.coordinator.materializeRationaleControl({
+    ...secondCandidate, finalInput: { command: "a different action" },
+  })).toBeNull();
+});
+
+it.each([
+  ["aligned", "low"], ["outside", "low"], ["unclear", "low"],
+  ["aligned", "medium"], ["outside", "medium"], ["unclear", "medium"],
+] as const)("uses fresh %s metadata with %s as the re-judged allow result", async (scopeAlignment, level) => {
+  const state = setup({ reviewer: { async reevaluate(input) {
+    return createReviewerScopeReevaluation({ control: input.control, outcome: "fresh", scopeAlignment,
+      scopeReasons: ["Host-sealed action re-judged"], reevaluatedVerdict: { level, reason: "Re-judged action" }, now: input.now });
+  } } });
+  const { control } = materialize(state);
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  expect(result?.autoApproved).toBe(true);
+  expect(result?.reevaluation).toMatchObject({ scopeAlignment, reevaluatedVerdict: { level } });
+  expect(state.approvalRequests).toHaveLength(0);
+});
+
+it("does not count a caller abort before model choice resolves as a reviewer denial", () => {
+  const onReviewerChoiceResolved = vi.fn();
+  const state = setup({ onReviewerChoiceResolved });
+  const { control } = materialize(state);
+  state.coordinator.abort(control.ticketId, NOW);
+  expect(onReviewerChoiceResolved).not.toHaveBeenCalled();
+});
+
+it.each(["allow-once", "allow-session", "allow-always"] as const)("normal rationale fallback accepts %s and issues only one current execution receipt", async (approvalChoice) => {
+  const state = setup({ approvalChoice });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  const decision = await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(decision?.outcome).toBe("allowed-once");
+  expect(state.approvalRequests[0]).toMatchObject({ kind: "tool", args: control.sealedAction.finalInput,
+    approvalCacheKey: state.candidate.approvalCacheKey });
+  expect(state.approvalRequests[0]?.allowedChoices).toBeUndefined();
+  expect(await state.coordinator.promptForApproval(control.ticketId, { now: NOW })).toBeNull();
+});
+
+
+it("preserves an explicit hook or policy denial without relabeling it as user cancellation", async () => {
+  const state = setup({ requestHumanApproval: async () => { throw new RationaleHumanApprovalDeniedError("The permission hook blocked this request."); } });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  const result = await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(result).toMatchObject({ outcome: "denied", reason: "The permission hook blocked this request.",
+    ticket: { state: "denied", terminalReason: "host-denied" } });
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+});
+
+it("propagates approval callback contract failures without a cancellation result", async () => {
+  const failure = new Error("Approval response violated its host contract");
+  const state = setup({ requestHumanApproval: async () => { throw failure; } });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  await expect(state.coordinator.promptForApproval(control.ticketId, { now: NOW })).rejects.toBe(failure);
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+});
+
+
+it("preserves the no-retry message when an owner-away rationale card auto-skips", async () => {
+  vi.useFakeTimers();
+  try {
+    const nativeWebContents = { send: vi.fn(), isDestroyed: vi.fn(() => false) };
+    const gate = new ApprovalGate(nativeWebContents as never, undefined, 25);
+    gate.setOwnerAwayAutoSkipMinutes(1);
+    const recordTerminalDenial = vi.fn(async (_reason: string) => {});
+    const state = setup({ recordTerminalDenial, approvalGate: gate, executionCwd: process.cwd(), ownerUnattended: true });
+    const { control } = materialize(state);
+    await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "provider-failure", outcome: "generation-timeout" }, now: NOW });
+    const pending = state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.listPendingRendererRequests(nativeWebContents as never)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_001);
+    await expect(pending).resolves.toMatchObject({ outcome: "timed-out",
+      reason: "Nobody can approve this request; do not retry.", ticket: { terminalReason: "modal-timeout" } });
+    expect(gate.listPendingRendererRequests(nativeWebContents as never)).toHaveLength(0);
+    expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("Nobody can approve this request; do not retry.");
+    expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
+
+it("keeps an already published ordinary card waiting beyond the model-response deadline", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+  try {
+    const state = setup({ deferApproval: true, ownerUnattended: true, now: () => Date.now() });
+    const { control } = materialize(state);
+    await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] } });
+    const pending = state.coordinator.promptForApproval(control.ticketId);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(control.anchor.expiresAt - Date.now() + 1);
+    expect(state.approvalRequests).toHaveLength(1);
+    expect(verifyRationaleRequiredControl(control)).toBe(false);
+    expect(parseRationaleResponse(responseFor(control), control)).toBeNull();
+    expect(verifyRationaleExecutionControl(control)).toBe(false);
+    expect(state.resolvePendingApproval(control.ticketId, "allow-once")).toBe(true);
+    await expect(pending).resolves.toMatchObject({ outcome: "allowed-once" });
+    expect(verifyRationaleRequiredControl(control)).toBe(false);
+    expect(verifyRationaleExecutionControl(control)).toBe(true);
+    expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext })).not.toBeNull();
+    state.coordinator.abort(control.ticketId);
+    expect(verifyRationaleExecutionControl(control)).toBe(false);
+  } finally { vi.useRealTimers(); }
+});
+
+it("rejects an expired request that never published a human card", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+  try {
+    const state = setup({ now: () => Date.now() });
+    const { control } = materialize(state);
+    await vi.advanceTimersByTimeAsync(control.anchor.expiresAt - Date.now() + 1);
+    expect(verifyRationaleRequiredControl(control)).toBe(false);
+    expect(verifyRationaleExecutionControl(control)).toBe(false);
+    expect(await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "late", name: "permission_rationale", input: responseFor(control) }] } })).toBeNull();
+    expect(state.approvalRequests).toHaveLength(0);
+  } finally { vi.useRealTimers(); }
+});
+
+it("rejects a late human answer after the waiting request was aborted", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+  try {
+    const state = setup({ deferApproval: true, ownerUnattended: true, now: () => Date.now() });
+    const { control } = materialize(state);
+    await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] } });
+    const pending = state.coordinator.promptForApproval(control.ticketId);
+    await vi.advanceTimersByTimeAsync(control.anchor.expiresAt - Date.now() + 1);
+    state.coordinator.abort(control.ticketId);
+    await expect(pending).resolves.toBeNull();
+    expect(state.resolvePendingApproval(control.ticketId, "allow-once")).toBe(false);
+    expect(verifyRationaleExecutionControl(control)).toBe(false);
+    expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext })).toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
+it.each(["abort", "prestart-terminal"] as const)("revokes an approved human receipt on %s before execution", async (boundary) => {
+  const state = setup();
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  const sealed = await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW });
+  expect(sealed).not.toBeNull();
+  const receipt = sealed!.hostConsumedAllowOnceReceipt;
+  expect(state.ticketStore.isAuthenticConsumedAllowOnceReceipt(receipt, NOW)).toBe(true);
+  if (boundary === "abort") state.coordinator.abort(control.ticketId, NOW);
+  else state.coordinator.revokeUnstartedResume(sealed!.resumeRequest);
+  expect(state.ticketStore.isAuthenticConsumedAllowOnceReceipt(receipt, NOW)).toBe(false);
+  expect(state.coordinator.loadHostConsumedAllowOnceReceipt(sealed!.resumeRequest)).toBeNull();
+  expect(await state.coordinator.resolveCurrentActionIdentity({ request: sealed!.resumeRequest } as never)).toBeNull();
+});
+
+
+it("retires a changed policy before opening a stale ordinary card", async () => {
+  const hooks = new HookRunner();
+  const state = setup({ policySnapshot: () => captureRationalePolicySnapshot({ hookRunner: hooks, additionalDirectories: [] }) });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  hooks.registerPreHook("new-policy-boundary", () => ({ action: "allow" }));
+  const result = await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(result).toMatchObject({ outcome: "denied", reason: "Permission policy changed before approval; the action was not executed.",
+    ticket: { state: "rejected", terminalReason: "identity-mismatch" } });
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(state.ticketStore.get({ sessionId: control.anchor.sessionId, ticketId: control.ticketId, now: NOW })).toBeNull();
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+});
+
+it("propagates a sealed action contract violation before any approval card", () => {
+  const state = setup();
+  expect(() => state.coordinator.materializeRationaleControl({ ...state.candidate,
+    finalInput: { unsupported: () => "not JSON" } })).toThrow();
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(state.ticketStore.activeTicketIds(state.candidate.requestAnchor.sessionId, NOW)).toHaveLength(0);
+});
+
+
+it("throws an invalid trusted session contract instead of falling through to a human card", () => {
+  const state = setup({ sessionId: "invalid-host-session" });
+  expect(isRationaleEligible({ permission: state.candidate.permission,
+    anchor: state.candidate.requestAnchor, invocationTrustOrigin: state.candidate.invocationTrustOrigin,
+    rationaleProvenance, now: NOW })).toBe(true);
+  expect(() => state.coordinator.materializeRationaleControl(state.candidate)).toThrow("invalid rationale ticket session id");
+  expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(state.invocationAudits).toHaveLength(0);
+});
+
+
+it("sends the full native negative user context to re-review without granting on the matching substring", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  try {
+  const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
+    text: JSON.stringify({ level: "high", reason: "The user forbids this deletion.",
+      scopeAlignment: "outside", scopeReasons: ["The full user turn says not to delete generated output."] }),
+    tokensIn: 1, tokensOut: 1, costUsd: 0,
+  }));
+  const message = "do not delete generated output";
+  const state = setup({ userRoleTexts: [message], reviewer: new LlmRationaleScopeReviewer({ complete }, "reviewer-model") });
+  const candidate = { ...state.candidate, originalInput: { command: "rm -f X" }, finalInput: { command: "rm -f X" }, canonicalTargets: ["workspace/X"] };
+  candidate.requestHumanApproval = createRationaleApprovalCallback({ candidate, approvalGate: state.approvalGate,
+    evaluationContext: { ...state.evaluationContext, targetFilePaths: ["workspace/X"] } });
+  const materialized = state.coordinator.materializeRationaleControl(candidate);
+  if (!materialized) throw new Error("Negative-context request could not be materialized");
+  const { control } = materialized;
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale",
+      input: { ...responseFor(control), userQuote: "delete generated output", rationale: "The matching words authorize deletion." } }] }, now: NOW });
+  expect(complete).toHaveBeenCalledTimes(1);
+  const sent = complete.mock.calls[0]![0];
+  expect(JSON.parse(sent.userPrompt)).toMatchObject({ verifiedUserQuote: "delete generated output", verifiedUserMessages: [message], matchedUserMessageIndex: 0,
+    untrustedModelClaim: "The matching words authorize deletion." });
+  expect(sent.systemPrompt).toContain("preserving negation, later revocations, conditions and limits");
+  expect(result?.autoApproved).toBe(false);
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+  } finally { vi.useRealTimers(); }
+});
+
+it.each(["x".repeat(16 * 1024 + 1), "가".repeat(5500)])("falls back to a card when the full matching native turn exceeds the evidence budget %#", async (prefix) => {
+  const reviewer = { reevaluate: vi.fn() } satisfies RationaleScopeReviewer;
+  const state = setup({ userRoleTexts: ["delete generated output", prefix + " do not delete generated output"], reviewer });
+  const { control } = materialize(state);
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale",
+      input: { ...responseFor(control), userQuote: "delete generated output" } }] }, now: NOW });
+  expect(reviewer.reevaluate).not.toHaveBeenCalled();
+  expect(result?.autoApproved).toBe(false);
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+});
+
+
+it("includes later native revocation when the model quotes an earlier grant", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  try {
+  const messages = ["Please delete generated output", "Do not delete generated output; I revoke that permission", "Continue inspecting the project"];
+  const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
+    text: JSON.stringify({ level: "high", reason: "The later user turn revokes permission.",
+      scopeAlignment: "outside", scopeReasons: ["The earlier quote does not override the later constraint."] }),
+    tokensIn: 1, tokensOut: 1, costUsd: 0,
+  }));
+  const state = setup({ userRoleTexts: messages, reviewer: new LlmRationaleScopeReviewer({ complete }, "reviewer-model") });
+  const candidate = { ...state.candidate, originalInput: { command: "rm -f X" }, finalInput: { command: "rm -f X" }, canonicalTargets: ["workspace/X"] };
+  candidate.requestHumanApproval = createRationaleApprovalCallback({ candidate, approvalGate: state.approvalGate,
+    evaluationContext: { ...state.evaluationContext, targetFilePaths: ["workspace/X"] } });
+  const materialized = state.coordinator.materializeRationaleControl(candidate);
+  if (!materialized) throw new Error("Revoked-context request could not be materialized");
+  const { control } = materialized;
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale",
+      input: { ...responseFor(control), userQuote: messages[0]! } }] }, now: NOW });
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(complete.mock.calls[0]![0].userPrompt)).toMatchObject({
+    verifiedUserQuote: messages[0], verifiedUserMessages: messages, matchedUserMessageIndex: 0 });
+  expect(result?.autoApproved).toBe(false);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+  } finally { vi.useRealTimers(); }
+});
+
+it("falls back when the complete chronological evidence exceeds the total budget", async () => {
+  const reviewer = { reevaluate: vi.fn() } satisfies RationaleScopeReviewer;
+  const state = setup({ userRoleTexts: ["a".repeat(9000) + " delete generated output", "b".repeat(9000) + " do not delete generated output"], reviewer });
+  const { control } = materialize(state);
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: { ...responseFor(control), userQuote: "delete generated output" } }] }, now: NOW });
+  expect(reviewer.reevaluate).not.toHaveBeenCalled();
+  expect(result?.autoApproved).toBe(false);
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+});
+
+it.each([false, true])("records a final model-accepted denial once without opening a card (headless=%s)", async (headless) => {
+  const recordTerminalDenial = vi.fn(async (_reason: string) => {});
+  const state = setup({ recordTerminalDenial, headless });
+  const { control } = materialize(state);
+  const { rationale: _rationale, userQuote: _quote, ...binding } = responseFor(control);
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "accept", name: "permission_rationale", input: { ...binding, choice: "accept" } }] }, now: NOW });
+  expect(result?.modelDenied).toBe(true);
+  expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith(headless ? "Nobody can approve this request; do not retry."
+    : "The model accepted the reviewer denial; the action was not executed.");
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [] }, now: NOW })).toBeNull();
+  expect(recordTerminalDenial).toHaveBeenCalledTimes(1);
+});
+
+it("does not record a denied tool while the card is pending or when its caller cancels", async () => {
+  const recordTerminalDenial = vi.fn(async (_reason: string) => {});
+  const state = setup({ recordTerminalDenial, deferApproval: true });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "resubmit", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  expect(recordTerminalDenial).not.toHaveBeenCalled();
+  const caller = new AbortController();
+  const pending = state.coordinator.promptForApproval(control.ticketId, { abortSignal: caller.signal, now: NOW });
+  expect(recordTerminalDenial).not.toHaveBeenCalled();
+  caller.abort();
+  await expect(pending).resolves.toBeNull();
+  expect(recordTerminalDenial).not.toHaveBeenCalled();
+});
+
+it("requires the original non-headless approval callback instead of constructing a fallback card", async () => {
+  const state = setup({ humanApprovalAvailable: false });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "provider-failure", outcome: "generation-error" }, now: NOW });
+  await expect(state.coordinator.promptForApproval(control.ticketId, { now: NOW })).rejects.toThrow("Human approval callback is unavailable");
+  expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
+  expect(state.approvalRequests).toHaveLength(0);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+});
+
+it("denies headless fallback without requiring a human approval callback", async () => {
+  const state = setup({ humanApprovalAvailable: false, headless: true });
+  const { control } = materialize(state);
+  await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "provider-failure", outcome: "generation-error" }, now: NOW });
+  await expect(state.coordinator.promptForApproval(control.ticketId, { now: NOW })).resolves.toMatchObject({
+    outcome: "denied", reason: "Nobody can approve this request; do not retry." });
+  expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
+});
+
+it.each(["y", "the", "delete X", "notdelete generated output", "dеlete generated output"])("routes unverifiable quote %s to the normal card without re-review", async (quote) => {
+  const reevaluate = vi.fn();
+  const state = setup({ userRoleTexts: ["do not delete X", "delete generated output"], reviewer: { reevaluate } });
+  const { control } = materialize(state);
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "invalid-quote", name: "permission_rationale",
+      input: { ...responseFor(control), userQuote: quote } }] }, now: NOW });
+  expect(reevaluate).not.toHaveBeenCalled();
+  expect(result?.autoApproved).toBe(false);
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+});
+
+it("keeps an ask_user native owner-away card waiting with the default auto-skip setting off", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+  try {
+    const nativeWebContents = { send: vi.fn(), isDestroyed: vi.fn(() => false) };
+    const gate = new ApprovalGate(nativeWebContents as never, undefined, 25);
+    const state = setup({ approvalGate: gate, executionCwd: process.cwd(), ownerUnattended: true, now: () => Date.now() });
+    const { control } = materialize(state);
+    const { rationale: _rationale, userQuote: _quote, ...binding } = responseFor(control);
+    await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+      result: { kind: "calls", calls: [{ id: "ask-user", name: "permission_rationale", input: { ...binding, choice: "ask_user" } }] } });
+    let settled = false;
+    const pending = state.coordinator.promptForApproval(control.ticketId);
+    void pending.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gate.listPendingRendererRequests(nativeWebContents as never)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(Math.max(control.anchor.expiresAt - NOW, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
+      TOOL_TIMEOUT_POLICY.globalCeilingMs) + 1);
+    expect(settled).toBe(false);
+    const [card] = gate.listPendingRendererRequests(nativeWebContents as never);
+    expect(card).toBeDefined();
+    expect(verifyRationaleRequiredControl(control)).toBe(false);
+    expect(gate.resolveFromDesktopRenderer(card!.id, { requestId: card!.id, choice: "allow-once", nonce: card!.nonce, hmac: card!.hmac }, nativeWebContents as never)).toMatchObject({ choice: "allow-once" });
+    await expect(pending).resolves.toMatchObject({ outcome: "allowed-once" });
+    expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext })).not.toBeNull();
+    state.coordinator.closeSession(control.anchor.sessionId);
+  } finally { vi.useRealTimers(); }
+});
+
+it("rejects a quote removed from live native history after materialization", async () => {
+  let messages = ["remove the private build output"];
+  const reevaluate = vi.fn();
+  const state = setup({ userRoleTexts: messages, getUserRoleTexts: () => messages, reviewer: { reevaluate } });
+  const { control } = materialize(state);
+  messages = [];
+  const result = await state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "removed-quote", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  expect(reevaluate).not.toHaveBeenCalled();
+  expect(result?.autoApproved).toBe(false);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
+});
+
+it.each(["remove", "change", "revoke"] as const)("rejects a low result when native evidence changes during re-review: %s", async (mutation) => {
+  let messages = ["remove the private build output"];
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => { finish = resolve; });
+  let entered!: () => void;
+  const reached = new Promise<void>((resolve) => { entered = resolve; });
+  const reevaluate = vi.fn(async (input: Parameters<RationaleScopeReviewer["reevaluate"]>[0]) => {
+    entered();
+    await held;
+    return createReviewerScopeReevaluation({ control: input.control, outcome: "fresh", scopeAlignment: "aligned",
+      scopeReasons: ["The original request matched."], reevaluatedVerdict: { level: "low", reason: "bounded cleanup" }, now: input.now });
+  });
+  const state = setup({ userRoleTexts: messages, getUserRoleTexts: () => messages, reviewer: { reevaluate } });
+  const { control } = materialize(state);
+  const pending = state.coordinator.handleRationaleRoundResult({ ticketId: control.ticketId,
+    result: { kind: "calls", calls: [{ id: "changed-quote", name: "permission_rationale", input: responseFor(control) }] }, now: NOW });
+  await reached;
+  messages = mutation === "remove" ? [] : mutation === "change" ? ["Inspect the private build output"]
+    : [...messages, "Do not remove the private build output"];
+  finish();
+  const result = await pending;
+  expect(reevaluate).toHaveBeenCalledTimes(1);
+  expect(result?.autoApproved).toBe(false);
+  expect(await state.coordinator.createSealedResume({ ticketId: control.ticketId, currentEligibilityContext: eligibilityContext, now: NOW })).toBeNull();
+  await state.coordinator.promptForApproval(control.ticketId, { now: NOW });
+  expect(state.approvalRequests).toHaveLength(1);
 });

@@ -1,6 +1,9 @@
 // App guidance enters at round boundaries and stages the remaining turn origin.
 // User guidance must not inherit app permission requirements or provenance.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
@@ -10,7 +13,19 @@ import { formatAppMessageEnvelope } from "../../shared/mcp-app-message-source.js
 import type { PostTurnHookContext } from "../../hooks/post-turn-hook-chain.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
+import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { createHookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
+
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+
+const hookRoots: string[] = [];
+afterEach(async () => {
+  for (const root of hookRoots.splice(0)) await cleanupTmpDir(root);
+});
 
 function twoToolRounds(): FakeProvider {
   return new FakeProvider([
@@ -88,6 +103,43 @@ function makeLoop(provider: LLMProvider, overrides: Record<string, unknown> = {}
 }
 
 describe("MCP-app guidance downgrades the rest of the turn", () => {
+  it("forces the actual Stop hook after staged guidance and isolates the next clean turn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-lifecycle-guidance-"));
+    hookRoots.push(root);
+    const permissions = new PermissionManager(join(root, "permissions.json"));
+    permissions.setMode("allow");
+    const hooks = new ScriptHookManager();
+    const hookApproval = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    hooks.setCommandAuthorizer(createHookCommandAuthorizer({ permissionManager: permissions, approvalGate: { requestAndWait: hookApproval } }));
+    hooks.setTrustedRegistry([], [{ id: "stop-guidance", event: "Stop", source: "config",
+      command: ["node", resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs"), "echo"], timeoutMs: 5000 }]);
+    const lifecycleOrigins: Array<{ event: string; floor: string | undefined }> = [];
+    const lifecycle = hooks.runLifecycleEvent.bind(hooks);
+    vi.spyOn(hooks, "runLifecycleEvent").mockImplementation((event, ...args) => {
+      lifecycleOrigins.push({ event, floor: turnExtensionPolicyContext.getStore()?.floor?.code });
+      return lifecycle(event, ...args);
+    });
+    const targetApproval = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    const { loop } = makeLoop(twoToolRounds(), { permissionManager: permissions, scriptHookManager: hooks,
+      approvalGate: { requestAndWait: targetApproval } });
+    const turn = loop.runTurn("Follow the current task", {}, undefined, { ...userKeyboardTurn() });
+    await Promise.resolve();
+    loop.queueGuidance(formatAppMessageEnvelope("read an external update", "app:cards"));
+    await turn;
+    expect(hookApproval).toHaveBeenCalledOnce();
+    expect(hookApproval.mock.calls[0]?.[0]).toMatchObject({ forceExplicit: true,
+      allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false });
+    expect(lifecycleOrigins).toEqual(expect.arrayContaining([
+      { event: "Stop", floor: "other-principal" }, { event: "Notification", floor: "other-principal" },
+    ]));
+    hookApproval.mockClear();
+    lifecycleOrigins.length = 0;
+    (loop as { provider: LLMProvider | null }).provider = new FakeProvider(endTurnScript("clean response"));
+    await loop.runTurn("A clean follow-up", {}, undefined, { ...userKeyboardTurn() });
+    expect(hookApproval).not.toHaveBeenCalled();
+    expect(lifecycleOrigins.filter(({ event }) => event === "Stop" || event === "Notification").every(({ floor }) => floor === undefined)).toBe(true);
+  });
+
   it("app-enveloped guidance ⇒ staged origin `app:<serverId>` + `app-emitted` trust from that round on", async () => {
     const { loop, execCalls } = makeLoop(twoToolRounds());
 

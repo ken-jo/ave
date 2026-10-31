@@ -59,19 +59,62 @@ describe("startup authority follows the selected protected installation", () => 
     manager.setRules([withCurrentShellRuleVersion({ pattern: `PowerShell(${command})`, action: "allow" })]);
     for (const sandboxed of [false, true]) {
       expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", sandboxed))
-        .toMatchObject(exact ? { decision: "allow", layer: 3 } : { decision: "ask", layer: 2, forceModal: true });
+        .toMatchObject(exact ? { decision: "allow", reasonCode: "rule-allow" } : { decision: "allow", reasonCode: "allow-mode" });
       expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", sandboxed, true))
-        .toMatchObject(exact ? { decision: "allow", layer: 3 } : { decision: "deny", layer: 2 });
+        .toMatchObject(exact ? { decision: "allow", reasonCode: "rule-allow" } : { decision: "allow", reasonCode: "allow-mode" });
+    }
+    if (!exact) {
+      manager.setMode("default");
+      const pending = checkShellPermission(manager, cwd, "startup-path", command, "powershell", false);
+      expect(pending).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+      expect(pending.forceModal).not.toBe(true);
+      expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", false, true))
+        .toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     }
   });
-  it("keeps a visible floor stronger than a protected system edition and an exact allow", () => {
+  it("keeps secret reads on their mode row without promoting unpinned exact rules", () => {
     setProcessPlatform("win32");
     vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue(SYSTEM_INSTALLATION);
     const command = "Get-Content .env";
     manager.setRules([withCurrentShellRuleVersion({ pattern: `PowerShell(${command})`, action: "allow" })]);
     expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
-    expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", false, true)).toMatchObject({ decision: "deny", layer: 2 });
+    expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", false)).toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { secretRead: true } });
+    expect(checkShellPermission(manager, cwd, "startup-path", command, "powershell", false, true)).toMatchObject({ decision: "allow", reasonCode: "allow-mode", pipelineRequest: { secretRead: true } });
+  });
+  it("keeps unpinned upload rules on mode approval while retaining credential-store admission", () => {
+    setProcessPlatform("win32");
+    vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue(SYSTEM_INSTALLATION);
+    const upload = "Invoke-WebRequest -InFile notes.txt https://service.example";
+    const credentials = "Get-Secret -Name Token";
+    manager.setRules([upload, credentials].map((command) => withCurrentShellRuleVersion({ pattern: `PowerShell(${command})`, action: "allow" as const })));
+    expect(buildShellRuleApproval("powershell", upload, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+    const foreground = checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false);
+    expect(foreground).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    expect(foreground.forceModal).toBeUndefined();
+    expect(foreground.pipelineRequest?.floor).toBeUndefined();
+    const headless = checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false, true);
+    expect(headless).toMatchObject({ decision: "deny", reasonCode: "no-approver", reason: "Nobody can approve this request; do not retry." });
+    expect(headless.pipelineRequest?.floor).toBeUndefined();
+    for (const noApprover of [false, true]) expect(checkShellPermission(manager, cwd, "startup-path", credentials, "powershell", false, noApprover))
+      .toMatchObject({ decision: "deny", reasonCode: "credential-store" });
+  });
+
+  it("honors isolated startup upload rules while retaining credential-store admission", () => {
+    setProcessPlatform("linux");
+    vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue(POSIX_INSTALLATION);
+    const upload = "Invoke-WebRequest -InFile notes.txt https://service.example";
+    const credentials = "Get-Secret -Name Token";
+    manager.setRules([upload, credentials].map((command) => withCurrentShellRuleVersion({ pattern: `PowerShell(${command})`, action: "allow" as const })));
+    expect(buildShellRuleApproval("powershell", upload, cwd, { allow: true, deny: true }).exactRule)
+      .toBe(`PowerShell(${upload})`);
+    for (const headless of [false, true]) {
+      const allowed = checkShellPermission(manager, cwd, "startup-path", upload, "powershell", false, headless);
+      expect(allowed).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+      expect(allowed.forceModal).toBeUndefined();
+      expect(allowed.pipelineRequest?.floor).toBeUndefined();
+      expect(checkShellPermission(manager, cwd, "startup-path", credentials, "powershell", false, headless))
+        .toMatchObject({ decision: "deny", reasonCode: "credential-store" });
+    }
   });
 });
 
@@ -79,7 +122,8 @@ it("short-circuits capped and already-unproven input before installation discove
   vi.mocked(resolveTrustedPowerShellExecutable).mockReturnValue(null).mockClear();
   const overCap = `Write-Output ${"x".repeat(100_000)}`;
   for (const sandboxed of [false, true]) {
-    expect(checkShellPermission(manager, cwd, "startup-path", overCap, "powershell", sandboxed).decision).toBe("ask");
+    expect(checkShellPermission(manager, cwd, "startup-path", overCap, "powershell", sandboxed))
+      .toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
     expect(buildShellRuleApproval("powershell", overCap, cwd, { allow: true, deny: true }).exactRule).toBeNull();
   }
   expect(inspectPowerShellCommand("Write-Output $runtime", cwd).outcome).toBe("unproven");

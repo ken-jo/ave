@@ -124,8 +124,7 @@ export async function createPermissionAuditSelfTest(
         grant: { identity: challenge, effectDigest: challenge, action: "builtin-tool", planIdentity: null },
       },
       tool: "read_file", source: "builtin", category: "read",
-      directory: "/packaged-self-test", directoryAllowed: true, layer: 6,
-    });
+      directory: "/packaged-self-test", directoryAllowed: true, });
   } finally {
     await logger.close();
   }

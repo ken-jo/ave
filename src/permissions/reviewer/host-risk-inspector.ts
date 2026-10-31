@@ -1,5 +1,6 @@
 // Derive risk solely from host-owned evidence; unknown or path-bearing calls stay write-equivalent and only positive read-only proof can downgrade them. Do not trust plugin hints, perform I/O/global mutation or duplicate containment; isPathAllowed owns containment and the caller owns final permission (docs/architecture/architecture.md).
 import type { ToolCategory } from "../../tools/types.js";
+import type { PreparedShellAnalysis } from "../../shared/shell-analysis.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import { hasNetworkTarget } from "./network-target.js";
@@ -20,6 +21,8 @@ const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   // `split` is deliberately absent: with no flag at all it writes `xaa`, `xab`, … into the working directory. It was in this set, and only stayed harmless because its `null` entry in MUTATING_FLAGS escalated every call back to shell. Listing a writing verb as read-only and relying on a second table to undo it invites someone to prune the "redundant" entry.
   "column", "comm", "join", "paste", "expand", "unexpand", "fold",
 ]);
+
+const POWERSHELL_READ_ONLY_COMMANDS: ReadonlySet<string> = new Set(["get-childitem", "gci", "dir"]);
 
 // Read-listed verbs still escalate on mutating flags; null means always mutating, including defensive entries for excluded write utilities. Match exact/equals long flags and mutating letters in leading short clusters; unexpanded dollar tokens on mutation-capable verbs fail closed because expansion can synthesize hidden flags.
 const MUTATING_FLAGS: ReadonlyMap<string, ReadonlySet<string> | null> = new Map([
@@ -226,17 +229,17 @@ export function inspectHostRisk(signals: HostRiskSignals): ToolCategory {
 }
 
 // Every leaf must have a known read-only verb/form and no mutating flags; use the shared tokenizer. Parse failures, substitutions and all redirects fail closed, including input redirects whose paths argv checks cannot contain. Scan supported sed file/exec forms; exclude awk rather than pretend to parse its language.
-export function isReadOnlyCommand(command: string): boolean {
-  const { leaves, parseError } = tokenizeShell(command);
+export function isReadOnlyCommand(command: string, prepared?: PreparedShellAnalysis, dialect: "bash" | "powershell" = "bash"): boolean {
+  const { leaves, parseError } = tokenizeShell(command, prepared);
   if (parseError) return false;
   if (leaves.length === 0) return false;
-  return leaves.every((leaf) => isReadOnlyShellLeaf(leaf));
+  return leaves.every((leaf) => isReadOnlyShellLeaf(leaf, { dialect }));
 }
 
 // Risk and path containment share leaf classification. Only containment may ignore redirect taint when judging verb operands separately: cat x > y reads x but writes y; whole-call risk must still reject the redirect.
 export function isReadOnlyShellLeaf(
   leaf: ShellLeaf,
-  options?: { readonly ignoreRedirects?: boolean },
+  options?: { readonly ignoreRedirects?: boolean; readonly dialect?: "bash" | "powershell" },
 ): boolean {
   // Any hidden execution or redirect (output OR input) taints the whole command (default-strict — see the doc comment on isReadOnlyCommand). hasOutputRedirect covers both file-target redirects AND fd-dup (>&m, n>&m) so `ls 2>&1` / `ls >&2` correctly stay shell — they have an output-redirect operator even though no file target is named.
   if (leaf.hasCommandSubstitution || leaf.hasProcessSubstitution) return false;
@@ -254,7 +257,9 @@ export function isReadOnlyShellLeaf(
     return bareVerb !== undefined && READ_ONLY_COMMANDS.has(bareVerb);
   }
 
-  const verb = stripCommandPath(argv[0]!);
+  const spelling = stripCommandPath(argv[0]!);
+  const powerShellCmdlet = options?.dialect === "powershell" && POWERSHELL_READ_ONLY_COMMANDS.has(spelling.toLowerCase());
+  const verb = powerShellCmdlet ? spelling.toLowerCase() : spelling;
   // An option that hands the verb a program to run makes the leaf an execution, whatever the verb's read-only table says.
   if (namesProgramToRun(verb, argv.slice(1))) return false;
   if (verb === "git") {
@@ -263,7 +268,9 @@ export function isReadOnlyShellLeaf(
   if (verb === "tar") {
     return !leaf.argvHasExpandableDollar.some(Boolean) && parseTarListing(argv) !== null;
   }
-  if (!READ_ONLY_COMMANDS.has(verb)) return false;
+  if (!READ_ONLY_COMMANDS.has(verb) && !powerShellCmdlet) return false;
+  if (["get-childitem", "gci", "dir"].includes(verb) && argv.slice(1).some(argument => argument.startsWith("-")
+    && !/^-(?:path|literalpath|filter|include|exclude|recurse|name|file|directory|depth|force|attributes|hidden|readonly|system|followlink|followsymlink)(?::|$)/iu.test(argument))) return false;
   if (verb === "uniq" && hasUniqOutput(argv.slice(1))) return false;
   // A read-only verb still MUTATES when carrying a mutating flag (`sed -i`, `find … -delete`, …). Escalate to non-read-only.
   if (hasMutatingFlag(verb, argv.slice(1), leaf.argvHasExpandableDollar.slice(1))) return false;
@@ -457,8 +464,8 @@ function hasMutatingSedProgram(args: readonly string[]): boolean {
 export interface SedScriptFileAccess {
   // True when the script reads, writes or executes.
   hasWriteOrExec: boolean;
-  // Files the script names, verbatim, in script order.
-  fileOperands: string[];
+  // Files the script names, verbatim, with their actual effects in script order.
+  fileOperands: { value: string; effect: "read" | "write" }[];
   // Command lines the script runs with `e COMMAND`, verbatim, in script order. Like a file operand the command runs to end of line, so it is a span, not a word.
   execCommands: string[];
   // True when the script executes text that only exists at run time: `s///e` runs the pattern space AFTER substitution, and a bare `e` runs the pattern space as it stands. Neither can be read here, so a caller that needs to know what will run has to refuse rather than inspect.
@@ -466,7 +473,7 @@ export interface SedScriptFileAccess {
 }
 
 export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess {
-  const fileOperands: string[] = [];
+  const fileOperands: SedScriptFileAccess["fileOperands"] = [];
   const execCommands: string[] = [];
   let hasDynamicExec = false;
   let hasWriteOrExec = false;
@@ -495,7 +502,7 @@ export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess 
     }
     if (command === "w" || command === "W" || command === "r" || command === "R") {
       hasWriteOrExec = true;
-      i = takeSedFileOperand(script, i + 1, fileOperands);
+      i = takeSedFileOperand(script, i + 1, fileOperands, command === "r" || command === "R" ? "read" : "write");
       continue;
     }
     if (command === "e") {
@@ -514,7 +521,7 @@ export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess 
       // `s///e` executes the pattern space after the substitution has been applied, so the text that runs does not exist in this script.
       if (result.mutating && !result.writesFile) hasDynamicExec = true;
       i = result.writesFile
-        ? takeSedFileOperand(script, result.next, fileOperands)
+        ? takeSedFileOperand(script, result.next, fileOperands, "write")
         : result.next;
       continue;
     }
@@ -525,10 +532,10 @@ export function inspectSedScriptFileAccess(script: string): SedScriptFileAccess 
 }
 
 // Take the filename running from `start` to the end of the line, append it to `operands`, and return the index just past that line.
-function takeSedFileOperand(script: string, start: number, operands: string[]): number {
+function takeSedFileOperand(script: string, start: number, operands: SedScriptFileAccess["fileOperands"], effect: "read" | "write"): number {
   const end = skipToSedLineEnd(script, start);
   const operand = script.slice(start, end).replace(/[\r\n]+$/, "").trim();
-  if (operand.length > 0) operands.push(operand);
+  if (operand.length > 0) operands.push({ value: operand, effect });
   return end;
 }
 

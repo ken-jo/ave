@@ -24,8 +24,6 @@ import {
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
 let nativeApprovalEvent: ReturnType<typeof hostFrameEvent> | null = null;
-/** The ask callback registration handed to the permission manager. */
-let askDeferredEntry: ((entry: unknown) => void) | null = null;
 const recordApprovalMock = vi.hoisted(() => vi.fn(async () => undefined));
 
 const resolveProxyMock = vi.hoisted(() => vi.fn(async (_url: string) => "DIRECT"));
@@ -78,28 +76,11 @@ function invoke(channel: string, ...args: unknown[]): unknown {
       args = [{ ...payload, intent: { inputOrigin: "user-keyboard", userActivation: true } }, ...args.slice(1)];
     }
   }
-  const event = channel === PERMISSIONS.approvalRespond || channel === PERMISSIONS.approvalPending ||
+  const event = channel === PERMISSIONS.recentlyDeniedRerun || channel === PERMISSIONS.approvalRespond || channel === PERMISSIONS.approvalPending ||
     channel === PERMISSIONS.userApprovalRecord || channel === PERMISSIONS.approvalSentenceSelect
     ? nativeApprovalEvent : hostFrameEvent();
   if (!event) throw new Error("Native approval fixture is not registered");
   return fn(event, ...args);
-}
-
-function makeDeferredEntry(overrides: Record<string, unknown> = {}) {
-  return {
-    id: "deferred-1",
-    ts: "2026-05-10T00:00:00Z",
-    toolName: "bash",
-    source: "builtin",
-    category: "shell",
-    inputSummary: "bash command",
-    verdict: { level: "high", reason: "test" },
-    // Approving an entry applies its recorded grant; an entry without one cannot be approved at all (see the
-    // "no-grant-available" tests below), so the shared fixture carries the out-of-allowed-dir lane's grant.
-    grant: { kind: "directory", path: "/srv/app/data" },
-    status: "pending",
-    ...overrides,
-  };
 }
 
 function makeDeps(options: {
@@ -108,13 +89,14 @@ function makeDeps(options: {
   auditAppendError?: Error;
   queue?: Record<string, unknown> | null;
   mode?: string;
-  interactiveAutoApprove?: "off" | "low" | "medium";
   hasReviewer?: boolean;
   workspaceLifecycleAvailable?: boolean;
   durableApprovalRecordAllowed?: boolean;
   persistentAllowAllowed?: boolean;
   workingDirectoryIdentity?: string;
   snapshotArgs?: unknown;
+  snapshotToolName?: string;
+  snapshotSource?: string;
   snapshotSessionId?: string | null;
   shellRule?: import("../../../shared/permissions-events.js").ShellRuleApproval;
   egress?: { host: string; port: number; network: "public" | "local" | "unverified"; rule: string | null; projectCwd?: string; scopes: readonly ("once" | "session" | "tab" | "project" | "always")[]; terminalTabId?: string };
@@ -144,8 +126,8 @@ function makeDeps(options: {
     },
   ];
   const permissionManager = {
+    getPolicyEpoch: vi.fn(() => "0:0:default"),
     getMode: vi.fn(() => options.mode ?? "default"),
-    getInteractiveAutoApprove: vi.fn(() => options.interactiveAutoApprove ?? "off"),
     hasReviewer: vi.fn(() => options.hasReviewer ?? false),
     setMode: vi.fn(),
     setModePersist: vi.fn(async () => undefined),
@@ -158,12 +140,8 @@ function makeDeps(options: {
     addAlwaysDeniedPersist: vi.fn(async () => undefined),
     removeRule: vi.fn(async () => undefined),
     getVisibilityDenyRules: vi.fn(() => []),
-    getDeferredQueue: vi.fn(() => options.queue ?? null),
+    getRecentlyDenied: vi.fn(() => options.queue ?? null),
     isReviewerDegradedToRule: vi.fn(() => false),
-    // Registration hands the host's ask surface to the manager; the tests keep the callback so they can drive it the way a newly deferred entry would.
-    setDeferredEntryAsk: vi.fn((fn: (entry: unknown) => void) => {
-      askDeferredEntry = fn;
-    }),
   };
   // Answers by POSITION, not by label: the labels are localized, and a test that spelled one out
   // would be asserting the catalog rather than the map from the user's pick to the resolution.
@@ -194,6 +172,10 @@ function makeDeps(options: {
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRenderer: vi.fn((_requestId: string, decision: unknown) => decision),
       mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
+      beginApprovalRuleSave: vi.fn(() => Object.freeze({})),
+      beginExactApprovalSave: vi.fn(() => Object.freeze({})),
+      completeExactApprovalSave: vi.fn(),
+      completeApprovalRuleSave: vi.fn(),
       listPendingRendererRequests: vi.fn(() => []),
       canAccessRendererRequest: vi.fn(() => true),
       // #799 + CRITICAL-2 ralph iter 4: server-side ApprovalRequest binding. userApprovalRecord handler reads identity, raw args, and
@@ -203,9 +185,9 @@ function makeDeps(options: {
         projectCwd: "/srv/project",
         shellRule: options.shellRule,
         egress: options.egress,
-        toolName: "bash_run",
+        toolName: options.snapshotToolName ?? "bash_run",
         args: options.snapshotArgs ?? { command: "ls" },
-        source: "user-keyboard" as const,
+        source: options.snapshotSource ?? "user-keyboard",
         trustOrigin: "user-keyboard",
         approvalCacheKey: options.snapshotApprovalCacheKey,
         approvalMemory: options.snapshotApprovalMemory,
@@ -247,7 +229,6 @@ function makeDeps(options: {
 async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
   handlers.clear();
   vi.clearAllMocks();
-  askDeferredEntry = null;
   const { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate } =
     makeDeps(options);
   const { registerPermissionsHandlers } = await import("../permissions.js");
@@ -352,7 +333,6 @@ describe("permissions IPC handlers", () => {
   it("suggests LLM permission review after repeated default-mode approvals", async () => {
     const { appWindows } = await setup({
       mode: "default",
-      interactiveAutoApprove: "off",
       hasReviewer: false,
     });
 
@@ -389,6 +369,23 @@ describe("permissions IPC handlers", () => {
     expect(deps.auditLogger.log.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
   });
 
+  it.each(["allow", "auto", "ask"])("passes the literal surface choice %s only through the native gate", async (userOwnedSurfaceChoice) => {
+    const { deps, appWindows } = await setup();
+    const answer = { requestId: "surface-card", choice: "allow-once", userOwnedSurfaceChoice, nonce: "signed-nonce", hmac: "signed-hmac" };
+    expect(await invoke(PERMISSIONS.approvalRespond, answer)).toEqual({ ok: true });
+    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("surface-card", answer, appWindows[0].webContents);
+  });
+
+  it.each([null, {}, { requestId: "surface-card", choice: "invalid" },
+    { requestId: "surface-card", choice: "allow-once", userOwnedSurfaceChoice: "always" },
+    { requestId: "surface-card", choice: "allow-once", userOwnedSurface: "browser" },
+    { requestId: "surface-card", choice: "allow-once", userOwnedSurfaceReviewFallback: true },
+  ])("rejects malformed or host-only surface response fields %j", async (answer) => {
+    const { deps } = await setup();
+    expect(await invoke(PERMISSIONS.approvalRespond, answer)).toMatchObject({ ok: false, error: "invalid-payload" });
+    expect(deps.approvalGate.resolveFromDesktopRenderer).not.toHaveBeenCalled();
+  });
+
   it("passes a registered main-frame recipient to pending-card filtering", async () => {
     const { deps, appWindows } = await setup();
     expect(await invoke(PERMISSIONS.approvalPending)).toEqual([]);
@@ -405,7 +402,6 @@ describe("permissions IPC handlers", () => {
   it("suggests LLM permission review immediately after allow-always in default mode", async () => {
     const { appWindows } = await setup({
       mode: "default",
-      interactiveAutoApprove: "off",
       hasReviewer: false,
     });
 
@@ -425,7 +421,6 @@ describe("permissions IPC handlers", () => {
   it("does not suggest review switching when ApprovalGate forces the response to deny", async () => {
     const { deps, appWindows } = await setup({
       mode: "default",
-      interactiveAutoApprove: "off",
       hasReviewer: false,
     });
     deps.approvalGate.resolveFromDesktopRenderer.mockReturnValueOnce({
@@ -447,10 +442,9 @@ describe("permissions IPC handlers", () => {
     }
   });
 
-  it("does not suggest review switching when LLM auto-review is already active", async () => {
+  it("does not suggest review switching when automatic mode is already active", async () => {
     const { appWindows } = await setup({
-      mode: "default",
-      interactiveAutoApprove: "low",
+      mode: "auto",
       hasReviewer: true,
     });
 
@@ -598,7 +592,7 @@ describe("permissions IPC handlers", () => {
   it("reviewerDispatch rejects valid mutations without user-keyboard intent", async () => {
     const { deps } = await setup();
 
-    const result = await invoke(PERMISSIONS.reviewerDispatch, { rawArgs: "mode rule" });
+    const result = await invoke(PERMISSIONS.reviewerDispatch, { rawArgs: "mode llm" });
 
     expect(result).toMatchObject({ ok: false, error: "user-keyboard-required" });
     expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
@@ -615,7 +609,7 @@ describe("permissions IPC handlers", () => {
       process.env.HOME = reviewerHome;
       const { deps } = await setup();
       await invoke(PERMISSIONS.reviewerDispatch, {
-        rawArgs: "mode rule",
+        rawArgs: "mode disabled",
         intent: USER_INTENT,
       });
       deps.rewireReviewerAgent.mockImplementation(() => {
@@ -634,7 +628,7 @@ describe("permissions IPC handlers", () => {
       });
       expect(current).toMatchObject({
         ok: true,
-        settings: expect.objectContaining({ mode: "rule" }),
+        settings: expect.objectContaining({ mode: "disabled" }),
       });
       expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(3);
     } finally {
@@ -648,627 +642,21 @@ describe("permissions IPC handlers", () => {
     }
   });
 
-  it("deferredResolve rejects missing user-keyboard intent before queue lookup", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async () => ({ ...entry, status: "approved", resolvedAt: "2026-05-10T00:00:01Z" })),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-    });
-
+  it("history reruns require a user gesture before execution", async () => {
+    const rerun = vi.fn(async () => ({ ok: true }));
+    await setup({ queue: { rerun } });
+    const result = await invoke(PERMISSIONS.recentlyDeniedRerun, { id: "12345678-1234-1234-1234-123456789abc" });
     expect(result).toMatchObject({ ok: false, error: "user-keyboard-required" });
-    expect(queue.get).not.toHaveBeenCalled();
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
+    expect(rerun).not.toHaveBeenCalled();
   });
-
-  it.each(["approved", "rejected"] as const)(
-    "deferredResolve audits before queue mutation on %s",
-    async (decision) => {
-      const entry = makeDeferredEntry();
-      const order: string[] = [];
-      const queue = {
-        get: vi.fn(() => entry),
-        resolve: vi.fn(async (_id: string, status: string) => {
-          order.push("resolve");
-          return { ...entry, status, resolvedAt: "2026-05-10T00:00:01Z" };
-        }),
-      };
-      const { deps } = await setup({ queue });
-      deps.auditLogger.appendPermissionAuditEntry.mockImplementation(async (auditEntry: Record<string, unknown>) => {
-        order.push("audit");
-        return { ...auditEntry, prevHash: "h" };
-      });
-
-      const result = await invoke(PERMISSIONS.deferredResolve, {
-        id: "deferred-1",
-        decision,
-        reason: "reviewed by user",
-        approvalSource: "button",
-        intent: USER_INTENT,
-      });
-
-      expect(result).toMatchObject({
-        ok: true,
-        entry: expect.objectContaining({ id: "deferred-1", status: decision }),
-      });
-      expect(order).toEqual(["audit", "resolve"]);
-      expect(queue.resolve).toHaveBeenCalledWith(
-        "deferred-1",
-        decision,
-        "reviewed by user",
-        decision === "approved" ? "session" : undefined,
-      );
-      expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
-        expect.objectContaining({
-          decision: "deferred_resolve",
-          resolution: decision,
-          reason: "reviewed by user",
-          queueId: "deferred-1",
-          reviewerVerdict: entry.verdict,
-          approvalSource: "button",
-        }),
-      );
-    },
-  );
-
-  // The original call is dead by the time anyone resolves the entry, so these assert the forward-looking grant
-  // — the directory reaching the permission scope — not the JSONL `status` field, which is only bookkeeping.
-
-  it("approving a deferred entry registers its directory for the session", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({ ...entry, status })),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: true });
-    // The observable consequence: the next call under this directory passes Layer 1 without asking.
-    expect(deps.conversationLoop.addSessionAdditionalDirectory).toHaveBeenCalledWith(
-      expect.stringContaining("srv/app/data"),
-    );
-  });
-
-  it("approving with scope 'always' persists the directory through the lifecycle", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({ ...entry, status })),
-    };
-    const { workspaceRootLifecycle, deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      scope: "always",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: true });
-    expect(workspaceRootLifecycle.allowDirectory).toHaveBeenCalledWith(
-      expect.stringContaining("srv/app/data"),
-      "permission-slash",
-    );
-    // A persisted grant is not also a session grant.
-    expect(deps.conversationLoop.addSessionAdditionalDirectory).not.toHaveBeenCalled();
-  });
-
-  it("an omitted scope grants the narrowest breadth, never a persisted one", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({ ...entry, status })),
-    };
-    const { workspaceRootLifecycle, deps } = await setup({ queue });
-
-    await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(workspaceRootLifecycle.allowDirectory).not.toHaveBeenCalled();
-    expect(deps.conversationLoop.addSessionAdditionalDirectory).toHaveBeenCalled();
-  });
-
-  it("refuses to approve an entry whose lane recorded no grant", async () => {
-    // The strict-mode reviewer lane defers on an exact (tool, args, source) tuple and keeps only a redacted summary, so
-    // no grant is reconstructable. Recording an approval here would tell the user their click did something it did not.
-    const entry = makeDeferredEntry({ grant: undefined });
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async () => ({ ...entry, status: "approved" })),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: false, error: "no-grant-available" });
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-    expect(deps.conversationLoop.addSessionAdditionalDirectory).not.toHaveBeenCalled();
-  });
-
-  it("rejecting an entry with no grant still works — a rejection grants nothing", async () => {
-    const entry = makeDeferredEntry({ grant: undefined });
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({ ...entry, status })),
-    };
-    await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "rejected",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: true });
-  });
-
-  it("does not record an approval when applying the grant fails", async () => {
-    // A sensitive path is refused outright by validateDirectoryAddition ("path matches sensitive pattern
-    // '**/.ssh/**'"). The entry must stay pending rather than be marked approved with nothing granted.
-    const entry = makeDeferredEntry({
-      grant: { kind: "directory", path: "/srv/app/.ssh" },
-    });
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({ ...entry, status })),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: false, error: "grant-failed" });
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it("holds the adjacency gate instead of acknowledging on the user's behalf", async () => {
-    // Same widening gate the foreground card renders as a warning checkbox. ".git" warns; ".ssh" would be a hard reject, which is a different path.
-    const entry = makeDeferredEntry({
-      grant: { kind: "directory", path: "/srv/app/.git" },
-    });
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({ ...entry, status })),
-    };
-    const { deps } = await setup({ queue });
-
-    const blocked = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(blocked).toMatchObject({ ok: false, requiresAcknowledgement: true });
-    expect(deps.conversationLoop.addSessionAdditionalDirectory).not.toHaveBeenCalled();
-
-    const acknowledged = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      acknowledgeWarnings: true,
-      intent: USER_INTENT,
-    });
-
-    expect(acknowledged).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.addSessionAdditionalDirectory).toHaveBeenCalled();
-  });
-
-  it("rejects an out-of-range scope rather than coercing it", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async () => ({ ...entry, status: "approved" })),
-    };
-    await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      scope: "forever",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: false, error: "invalid-params" });
-    expect(queue.resolve).not.toHaveBeenCalled();
-  });
-
-  it("deferredResolve fails closed before queue mutation when audit chain is not ready", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async () => ({ ...entry, status: "approved", resolvedAt: "2026-05-10T00:00:01Z" })),
-    };
-    const { deps } = await setup({ auditReady: false, queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toEqual({ ok: false, error: "permission-audit-not-ready" });
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it("deferredResolve rejects a contradictory stale resolution without audit side effects", async () => {
-    const entry = makeDeferredEntry({
-      status: "approved",
-      resolvedAt: "2026-05-10T00:00:01Z",
-    });
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "rejected",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      error: "already-resolved",
-      entry,
-    });
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it("deferredResolve rejects a concurrent second resolution before writing a conflicting audit row", async () => {
-    const entry = makeDeferredEntry();
-    let releaseAudit!: () => void;
-    const auditStarted = new Promise<void>((resolve) => {
-      releaseAudit = resolve;
-    });
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({
-        ...entry,
-        status,
-        resolvedAt: "2026-05-10T00:00:01Z",
-      })),
-    };
-    const { deps } = await setup({ queue });
-    deps.auditLogger.appendPermissionAuditEntry.mockImplementation(async (auditEntry: Record<string, unknown>) => {
-      await auditStarted;
-      return { ...auditEntry, prevHash: "h" };
-    });
-
-    const first = invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    }) as Promise<unknown>;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const second = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "rejected",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(second).toEqual({ ok: false, error: "already-resolving" });
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledOnce();
-    releaseAudit();
-    await expect(first).resolves.toMatchObject({ ok: true });
-    expect(queue.resolve).toHaveBeenCalledOnce();
-  });
-
-  it("deferredResolve reports a post-audit stale queue mutation result", async () => {
-    const entry = makeDeferredEntry();
-    const resolvedElsewhere = {
-      ...entry,
-      status: "rejected",
-      resolvedAt: "2026-05-10T00:00:01Z",
-    };
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async () => resolvedElsewhere),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      error: "already-resolved",
-      entry: resolvedElsewhere,
-    });
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledOnce();
-    expect(queue.resolve).toHaveBeenCalledWith("deferred-1", "approved", undefined, "session");
-  });
-
-  it("deferredResolve reports no queue without audit side effects", async () => {
-    const { deps } = await setup({ queue: null });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "rejected",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toEqual({ ok: false, error: "no-deferred-queue" });
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it("deferredResolve fails closed before queue mutation when audit append fails", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async () => ({ ...entry, status: "approved", resolvedAt: "2026-05-10T00:00:01Z" })),
-    };
-    const { deps } = await setup({
-      queue,
-      auditAppendError: new Error("audit write failed"),
-    });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "button",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: false, error: "permission-audit-write-failed" });
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledOnce();
-  });
-
-  // End-to-end IPC → audit assertion that the surface the user gestured on reaches the audit chain.
-  it("deferredResolve records the question-card provenance in the audit entry", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({
-        ...entry,
-        status,
-        resolvedAt: "2026-05-10T00:00:01Z",
-      })),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "question-card",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toMatchObject({ ok: true });
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "deferred_resolve",
-        resolution: "approved",
-        approvalSource: "question-card",
-        queueId: "deferred-1",
-      }),
-    );
-    expect(queue.resolve).toHaveBeenCalledWith("deferred-1", "approved", undefined, "session");
-  });
-
-  // The in-chat approval chip that wrote this provenance is gone, and with it the value: an audit row may still carry it, but nothing may write one.
-  it("deferredResolve refuses the retired natural-language provenance", async () => {
-    const entry = makeDeferredEntry();
-    const queue = { get: vi.fn(() => entry), resolve: vi.fn() };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "natural-language",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toEqual({ ok: false, error: "invalid-params" });
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it("deferredResolve rejects omitted approvalSource as invalid-params", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({
-        ...entry,
-        status,
-        resolvedAt: "2026-05-10T00:00:01Z",
-      })),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toEqual({ ok: false, error: "invalid-params" });
-    expect(queue.get).not.toHaveBeenCalled();
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it("deferredResolve rejects an unknown approvalSource value as invalid-params", async () => {
-    const entry = makeDeferredEntry();
-    const queue = {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async () => ({ ...entry, status: "approved" })),
-    };
-    const { deps } = await setup({ queue });
-
-    const result = await invoke(PERMISSIONS.deferredResolve, {
-      id: "deferred-1",
-      decision: "approved",
-      approvalSource: "voice-assistant",
-      intent: USER_INTENT,
-    });
-
-    expect(result).toEqual({ ok: false, error: "invalid-params" });
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
+  it("history reruns call only the registered executor closure", async () => {
+    const rerun = vi.fn(async () => ({ ok: true }));
+    await setup({ queue: { rerun } });
+    const result = await invoke(PERMISSIONS.recentlyDeniedRerun, { id: "12345678-1234-1234-1234-123456789abc", intent: USER_INTENT });
+    expect(result).toEqual({ ok: true });
+    expect(rerun).toHaveBeenCalledWith("12345678-1234-1234-1234-123456789abc");
   });
 });
-
-describe("a deferred approval is asked as a question in the tile that raised it", () => {
-  function makeQueue(entry: Record<string, unknown>) {
-    return {
-      get: vi.fn(() => entry),
-      resolve: vi.fn(async (_id: string, status: string) => ({ ...entry, status })),
-    };
-  }
-
-  it("asks the conversation whose turn deferred the call", async () => {
-    const entry = makeDeferredEntry({ sessionId: "session-a" });
-    const { askUserQuestionGate } = await setup({ queue: makeQueue(entry) });
-
-    askDeferredEntry?.(entry);
-    await vi.waitFor(() => expect(askUserQuestionGate.ask).toHaveBeenCalledOnce());
-
-    expect(askUserQuestionGate.ask.mock.calls[0][0]).toMatchObject({
-      sessionId: "session-a",
-    });
-  });
-
-  it("two conversations each get their own question, never the other's", async () => {
-    const first = makeDeferredEntry({ id: "deferred-a", sessionId: "session-a" });
-    const second = makeDeferredEntry({ id: "deferred-b", sessionId: "session-b" });
-    const { askUserQuestionGate } = await setup({ queue: makeQueue(first) });
-
-    askDeferredEntry?.(first);
-    askDeferredEntry?.(second);
-    await vi.waitFor(() => expect(askUserQuestionGate.ask).toHaveBeenCalledTimes(2));
-
-    const asked = askUserQuestionGate.ask.mock.calls.map(
-      (call) => (call[0] as unknown as { sessionId: string }).sessionId,
-    );
-    expect(asked).toEqual(["session-a", "session-b"]);
-  });
-
-  it("an entry raised outside a conversation is not asked", async () => {
-    const entry = makeDeferredEntry();
-    const { askUserQuestionGate } = await setup({ queue: makeQueue(entry) });
-
-    askDeferredEntry?.(entry);
-
-    expect(askUserQuestionGate.ask).not.toHaveBeenCalled();
-  });
-
-  it("approving applies the entry's grant at the narrowest breadth", async () => {
-    const entry = makeDeferredEntry({ sessionId: "session-a" });
-    const queue = makeQueue(entry);
-    const { deps } = await setup({ queue, answerChoiceIndex: 0 });
-
-    askDeferredEntry?.(entry);
-    await vi.waitFor(() => expect(queue.resolve).toHaveBeenCalledOnce());
-
-    expect(queue.resolve).toHaveBeenCalledWith("deferred-1", "approved", undefined, "session");
-    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        decision: "deferred_resolve",
-        resolution: "approved",
-        approvalSource: "question-card",
-        grantScope: "session",
-      }),
-    );
-  });
-
-  it("denying rejects the entry", async () => {
-    const entry = makeDeferredEntry({ sessionId: "session-a" });
-    const queue = makeQueue(entry);
-    await setup({ queue, answerChoiceIndex: 1 });
-
-    askDeferredEntry?.(entry);
-    await vi.waitFor(() => expect(queue.resolve).toHaveBeenCalledOnce());
-
-    expect(queue.resolve).toHaveBeenCalledWith("deferred-1", "rejected", undefined, undefined);
-  });
-
-  it("keeping it deferred leaves the entry pending", async () => {
-    const entry = makeDeferredEntry({ sessionId: "session-a" });
-    const queue = makeQueue(entry);
-    const { deps, askUserQuestionGate } = await setup({ queue, answerChoiceIndex: 2 });
-
-    askDeferredEntry?.(entry);
-    await vi.waitFor(() => expect(askUserQuestionGate.ask).toHaveBeenCalledOnce());
-
-    expect(queue.resolve).not.toHaveBeenCalled();
-    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it("an unanswered question leaves the entry pending", async () => {
-    const entry = makeDeferredEntry({ sessionId: "session-a" });
-    const queue = makeQueue(entry);
-    const { askUserQuestionGate } = await setup({ queue });
-
-    askDeferredEntry?.(entry);
-    await vi.waitFor(() => expect(askUserQuestionGate.ask).toHaveBeenCalledOnce());
-
-    expect(queue.resolve).not.toHaveBeenCalled();
-  });
-
-  // An approval the resolve path would refuse is not an option: an entry with no recorded grant can only be denied or left pending.
-  it("offers no approval for an entry that recorded no grant", async () => {
-    const entry = makeDeferredEntry({ sessionId: "session-a", grant: undefined });
-    const queue = makeQueue(entry);
-    const { askUserQuestionGate } = await setup({ queue, answerChoiceIndex: 0 });
-
-    askDeferredEntry?.(entry);
-    await vi.waitFor(() => expect(queue.resolve).toHaveBeenCalledOnce());
-
-    const question = (askUserQuestionGate.ask.mock.calls[0][0] as {
-      questions: { choices: string[] }[];
-    }).questions[0];
-    expect(question.choices).toHaveLength(2);
-    expect(queue.resolve).toHaveBeenCalledWith("deferred-1", "rejected", undefined, undefined);
-  });
-});
-
-// `invoke` sends the trusted host-renderer frame; these send a frame the guards must refuse, exercising the UNAUTHORIZED_FRAME path.
 
 function makeForeignEvent(url = "https://attacker.example.com/pwn") {
   return foreignFrameEvent(url);
@@ -1338,6 +726,29 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
       expect.objectContaining({
         approvalCacheKey: { key: "web_fetch:web_fetch:host:a.example", memoryKey: "web_fetch:origin-a" },
       }));
+  });
+
+  it.each(["session", "persistent", "global"] as const)("records a server tool approval at %s scope using only the host identity", async (scope) => {
+    const key = 'mcp_catalog_update:["catalog","update"]';
+    const memoryKey = 'mcp_catalog_update:{"executionPlan":null,"scope":{"kind":"mcp-tool","serverId":"catalog","toolName":"update"}}';
+    await setup({ snapshotToolName: "mcp_catalog_update", snapshotSource: "mcp", snapshotApprovalCacheKey: key,
+      snapshotApprovalMemory: { kind: "key", key: memoryKey, scope: { kind: "mcp-tool", serverId: "catalog", toolName: "update" } },
+    });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, { requestId: "req-tool-scope", args: '{"forged":true}', scope, verdictAtApproval: "medium", nlJustification: null,
+      approvalCacheKey: "forged", approvalMemory: { kind: "key", key: "forged", scope: { kind: "mcp-tool", serverId: "other", toolName: "delete" } },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledWith("mcp_catalog_update", '{"command":"ls"}', "mcp", expect.objectContaining({ scope, approvalCacheKey: { key, memoryKey, scopeKind: "mcp-tool" } }));
+  });
+
+  it("keeps a stored exact denial of a server tool limited to its arguments", async () => {
+    const key = 'mcp_catalog_update:["catalog","update"]';
+    await setup({ snapshotToolName: "mcp_catalog_update", snapshotSource: "mcp", snapshotApprovalCacheKey: key,
+      snapshotApprovalMemory: { kind: "key", key: 'mcp_catalog_update:{"executionPlan":null,"scope":{"kind":"mcp-tool","serverId":"catalog","toolName":"update"}}', scope: { kind: "mcp-tool", serverId: "catalog", toolName: "update" } },
+    });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, { requestId: "req-tool-deny", args: '{"forged":true}', decision: "deny", scope: "persistent", verdictAtApproval: "medium", nlJustification: null });
+    expect(result).toMatchObject({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledWith("mcp_catalog_update", '{"command":"ls"}', "mcp", expect.objectContaining({ decision: "deny", approvalCacheKey: { key } }));
   });
 
   it("refuses a persistent allow for a session-only browser scope and records it for the session", async () => {
@@ -1733,7 +1144,7 @@ describe("rules recorded from live approval cards", () => {
   it("stores an edited wildcard allow and warns that it applies only to sandboxed runs", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
-      .toEqual({ ok: true, warning: "wildcard-allow-sandboxed-only" });
+      .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });

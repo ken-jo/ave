@@ -2487,7 +2487,7 @@ describe("host tabs and conversation-owned isolation", () => {
       const pending = gate.requestAndWait({
         id: "conversation-egress-request", category: "tool", kind: "egress-host", toolName: "terminal", toolCategory: "network",
         args: { host: "destination.example", port: 443, tabId: terminal.tabId }, reason: "Destination approval", createdAt: Date.now(),
-        allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, forceExplicit: true, isReadOnly: false,
+        allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, forceExplicit: true,
         egressHost: { host: "destination.example", port: 443, scopes: ["once"], network: "public", rule: null, terminalTabId: terminal.tabId },
       });
       await vi.waitFor(() => expect(sentApprovalCards<ApprovalRequest>(surface)).toHaveLength(1));

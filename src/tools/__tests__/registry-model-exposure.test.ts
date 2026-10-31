@@ -194,7 +194,7 @@ describe("executor refuses a model-origin call to an app-only tool (the model-un
   // Auto-allow makes a missing origin guard observable; model denial must precede permission checks.
   function executorFor(registry: ToolRegistry): ToolExecutor {
     const permMgr = new PermissionManager("/tmp/nonexistent-model-exposure.json");
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "test auto-allow", layer: 3 });
+    permMgr.checkDetailed = () => ({ decision: "allow", reason: "test auto-allow", });
     return new ToolExecutor(registry, undefined, permMgr);
   }
 

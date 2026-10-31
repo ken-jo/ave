@@ -11,7 +11,8 @@ import { isShellFloorLiteralData } from "./shell-floor-policy.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { literalRuleWord, type RuleSpecifier } from "./rule-specifier.js";
-import { inspectShellCommand, literalShellWord, shellScanOrdinaryAsk, shellScanProofBlocker } from "./shell-exfiltration.js";
+import { literalShellWord } from "./shell-exfiltration.js";
+import { inspectShellCommand, shellScanOrdinaryAsk, shellScanProofBlocker } from "./literal-shell-inspection.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import {
   arithmeticEvaluationReason,
@@ -326,7 +327,11 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const command = parsed.command;
   const hasRestrictions = rules.deny.length > 0 || rules.ask.length > 0;
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no shell rules" };
-  const shape = analyzeShellForRules(parsed, cwd);
+  const proofLimited = command.length > MAX_LITERAL_COMMAND_LENGTH;
+  // Restrictive rules use the bounded syntax even when reusable identity is too long.
+  const shape = hasRestrictions && proofLimited
+    ? shellFact(parsed, `restriction-shape\0${cwd ?? ""}`, () => shapeOf(parsed, cwd))
+    : analyzeShellForRules(parsed, cwd);
 
   if (hasRestrictions) {
     // deny > ask: a deny rule that matches a visible command wins even when another part of the input is hidden; hidden code then asks, because a deny rule the matcher could not evaluate must not be bypassed.
@@ -358,13 +363,13 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
     if (ask) return { decision: "ask", pattern: ask.pattern, reason: `ask rule ${ask.pattern}` };
   }
 
+  if (proofLimited) return { decision: null, reason: "literal command length limit exceeded" };
   if (rules.allow.length === 0) return { decision: null, reason: "no allow rule" };
   if (!shape.ok) return { decision: null, reason: `unparseable: ${shape.reason}` };
   if (shape.hidden.length > 0) return { decision: null, reason: shape.hidden[0]! };
   if (shape.allowBlockers.length > 0) return { decision: null, reason: shape.allowBlockers[0]! };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   const floor = inspectShellCommand(parsed, cwd);
-  if (floor.exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${floor.exfiltration}` };
   if (floor.sensitive) return { decision: null, reason: `sensitive path (floor): ${floor.sensitive}` };
   // Floor: destructive text anywhere is never covered by an allow rule.
   // An approved literal-evaluation payload is opaque. Its complete raw text is

@@ -15,6 +15,7 @@ import {
 } from "../shared/llm-vendor-defaults.js";
 import { DEFAULT_BUNDLE_ID } from "../shared/theme-bundles.js";
 import { DEFAULT_LOCALE } from "../i18n/index.js";
+import { DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-level.js";
 import { DEFAULT_SIDEBAR_TAB } from "../shared/sidebar-tab.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
@@ -78,6 +79,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // Off is the pre-existing behavior: a packaged update is offered as an upgrade marker and the user's live doc is never moved unprompted.
     keepLatest: false,
   },
+  permissions: { ownerAwayAutoSkipMinutes: DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES },
   privacy: {
     piiRedactEnabled: false,
   },
@@ -165,9 +167,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     memoryCaptureMode: "off",
     // Wake delivers background results through the normal parent turn and its fail-closed prompt gate; mailbox-only delivery waits for another user turn.
     subAgentAutonomousWake: true,
-    // A child ask that the automatic reviewer left at `ask` goes to the child's own parent agent before it goes to the user. Ships ON: the parent wrote the child's task and is the only party besides the user who knows whether a given call serves it, and a user who
-    // delegated the work did not ask to arbitrate each step of it. The lane can only narrow to a ONE-SHOT allow, under a host-enforced verdict ceiling, after every hard check in the approval gate; and anything it cannot decide still becomes the same user modal as before.
-    subAgentParentAdjudication: true,
     // External A2A wire routes are independently opt-in and default OFF.
     a2aLoopbackServer: false,
     a2aRemoteRouting: false,

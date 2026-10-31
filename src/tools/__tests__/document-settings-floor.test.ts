@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ToolExecutor } from "../executor.js";
+import { ToolRegistry } from "../registry.js";
 import { WriteFileTool, EditFileTool } from "../file-tools.js";
 import { ensureFileAccess } from "../file-access-policy.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 import { SettingsService, settingsFilePath } from "../../data/settings-store.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -18,6 +21,23 @@ import { createSensitivePathMatcher, protectRuntimeSettingsPath } from "../../pe
 let directory: string;
 let path: string;
 const releases: Array<() => void> = [];
+function writeDecision(path: string) {
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  manager.setMode("allow");
+  return manager.checkDetailed("write_file", "builtin", "write", undefined, { paths: [{ lexical: path, canonical: path, effect: "write" }] });
+}
+async function attemptSettingsMutation(name: "write_file" | "edit_file", input: Record<string, unknown>) {
+  const manager = new PermissionManager(join(directory, "permissions.json"));
+  manager.setMode("allow");
+  const registry = new ToolRegistry();
+  registry.register(new WriteFileTool());
+  registry.register(new EditFileTool());
+  const [result] = await new ToolExecutor(registry, undefined, manager).executeAll(
+    [{ id: "settings-mutation", name, input }],
+    { executionCwd: directory, sessionId: "settings-mutation", permissionContext: { trustOrigin: "user-keyboard", headless: true } },
+  );
+  return result!;
+}
 function protect(path: string): void {
   const release = protectRuntimeSettingsPath(path);
   if (typeof release === "function") releases.push(release);
@@ -72,23 +92,26 @@ describe("document settings user-only write floor", () => {
     const before = readFileSync(relocated, "utf8");
     const context = { cwd: directory, extraAllowedDirectories: [], metadata: {} };
     expect(ensureFileAccess(relocated, context, "read")).toBeNull();
-    expect(ensureFileAccess(relocated, context, "write")).toMatchObject({ isError: true, output: expect.stringContaining("Sensitive path:") });
-    expect(ensureFileAccess(userDataPath, context, "write")).toMatchObject({ isError: true });
+    expect(writeDecision(relocated)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
+    expect(writeDecision(userDataPath)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
     expect(ensureFileAccess(join(userDataPath, "sibling.txt"), context, "write")).toBeNull();
     for (const command of [
       `mv ${shellQuote(userDataPath)} ${shellQuote(join(directory, "moved-profile"))}`,
       `mv ${shellQuote(join(directory, "prepared-profile"))} ${shellQuote(userDataPath)}`,
     ]) {
-      expect(validateShellCommandPathPolicy(command, directory, directory, [], false,
-        { dialect: "bash", environment: { HOME: directory, PWD: directory } })).toContain("Sensitive path:");
+      const manager = new PermissionManager(join(directory, "permissions.json"));
+      manager.setMode("allow");
+      expect(manager.checkDetailed("bash", "builtin", "shell", undefined, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: directory }, shellExecution: { runsSandboxed: false } })).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
     }
     for (const replacement of [{}, { documents: null }, { documents: { openMode: "direct" } }]) {
-      const result = await new WriteFileTool().execute({ path: relocated, content: JSON.stringify(replacement) }, context);
-      expect(result).toMatchObject({ isError: true, output: expect.stringContaining("Sensitive path:") });
+      const result = await attemptSettingsMutation("write_file", { path: relocated, content: JSON.stringify(replacement) });
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain("Nobody can approve this request; do not retry.");
       expect(readFileSync(relocated, "utf8")).toBe(before);
     }
-    const edited = await new EditFileTool().execute({ path: relocated, oldText: '"link"', newText: '"direct"' }, context);
-    expect(edited).toMatchObject({ isError: true, output: expect.stringContaining("Sensitive path:") });
+    const edited = await attemptSettingsMutation("edit_file", { path: relocated, oldText: '"link"', newText: '"direct"' });
+    expect(edited.is_error).toBe(true);
+    expect(edited.content).toContain("Nobody can approve this request; do not retry.");
     expect(readFileSync(relocated, "utf8")).toBe(before);
   });
 
@@ -99,8 +122,8 @@ describe("document settings user-only write floor", () => {
     protect(settingsPath);
     const context = { cwd: directory, extraAllowedDirectories: [], metadata: {} };
     expect(ensureFileAccess(directory, context, "write")).toBeNull();
-    expect(ensureFileAccess(parent, context, "write")).toMatchObject({ isError: true });
-    expect(ensureFileAccess(settingsPath, context, "write")).toMatchObject({ isError: true });
+    expect(writeDecision(parent)).toMatchObject({ decision: "ask", forceModal: true });
+    expect(writeDecision(settingsPath)).toMatchObject({ decision: "ask", forceModal: true });
     expect(ensureFileAccess(join(parent, "sibling.txt"), context, "write")).toBeNull();
     for (const command of ["cp a.txt .", "mkdir newdir", "rm -rf ./build", "git clean -fdx"]) {
       expect(validateShellCommandPathPolicy(command, directory, directory, [], false,
@@ -128,7 +151,7 @@ describe("document settings user-only write floor", () => {
     const context = { cwd: directory, extraAllowedDirectories: [], metadata: {} };
     first();
     first();
-    expect(ensureFileAccess(settingsPath, context, "write")).toMatchObject({ isError: true });
+    expect(writeDecision(settingsPath)).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "protected-path" });
     second();
     expect(match(settingsPath)).toBeNull();
     expect(ensureFileAccess(settingsPath, context, "write")).toBeNull();

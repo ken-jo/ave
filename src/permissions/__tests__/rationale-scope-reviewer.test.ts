@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { PERMISSION_REVIEWER_FRAMEWORK, USER_OWNED_SURFACE_REVIEW_PROMPT } from "../../shared/permission-reviewer-framework.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import {
   LlmRationaleScopeReviewer,
@@ -19,7 +20,7 @@ import {
 
 const NOW = Date.now();
 
-function controlFixture(): RationaleRequiredControl {
+function controlFixture(finalInput: Record<string, unknown> = { command: "Remove-Item -Recurse build" }): RationaleRequiredControl {
   const anchor = createRequestAnchor({
     sessionId: "scope-review-session",
     turnId: "scope-review-turn",
@@ -31,7 +32,6 @@ function controlFixture(): RationaleRequiredControl {
   });
   if (!anchor) throw new Error("expected request anchor");
 
-  const finalInput = { command: "Remove-Item -Recurse build" };
   const action = createActionIdentity({
     anchorId: anchor.anchorId,
     invocationTrustOrigin: "llm-tool-arg",
@@ -85,11 +85,11 @@ function controlFixture(): RationaleRequiredControl {
     },
     permission: {
       decision: "ask",
-      reason: "reviewer medium",
-      layer: 5,
+      reason: "Automatic review requires human approval.",
+      reasonCode: "reviewer-human-required",
       reviewer: {
         route: "foreground-auto",
-        verdict: { level: "medium", reason: "bounded deletion needs review" },
+        verdict: { level: "high", reason: "bounded deletion needs review" },
         outcome: "fresh",
       },
     },
@@ -107,12 +107,14 @@ function responseFor(
     ticketId: control.ticketId,
     actionDigest: control.action.actionDigest,
     round: 1,
-    suggestion,
+    choice: "resubmit",
+    rationale: suggestion,
+    userQuote: control.anchor.sanitizedIntent,
   };
 }
 
 function providerReturning(text: string) {
-  const complete = vi.fn(async () => ({
+  const complete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text,
     tokensIn: 10,
     tokensOut: 5,
@@ -139,8 +141,8 @@ describe("LlmRationaleScopeReviewer", () => {
     const { provider, complete } = providerReturning(VALID_REVIEW);
     const reviewer = new LlmRationaleScopeReviewer(provider, "reviewer-model");
 
-    const first = await reviewer.reevaluate({ control, response, now: NOW });
-    const second = await reviewer.reevaluate({ control, response, now: NOW });
+    const first = await reviewer.reevaluate({ control, response, verifiedUserQuote: control.anchor.sanitizedIntent, verifiedUserMessage: control.anchor.sanitizedIntent, verifiedUserMessages: [control.anchor.sanitizedIntent], hostSafetyFacts: { targetPaths: control.action.canonicalTargets }, now: NOW });
+    const second = await reviewer.reevaluate({ control, response, verifiedUserQuote: control.anchor.sanitizedIntent, verifiedUserMessage: control.anchor.sanitizedIntent, verifiedUserMessages: [control.anchor.sanitizedIntent], hostSafetyFacts: { targetPaths: control.action.canonicalTargets }, now: NOW });
 
     expect(first.outcome).toBe("fresh");
     expect(second.outcome).toBe("fresh");
@@ -152,12 +154,14 @@ describe("LlmRationaleScopeReviewer", () => {
     expect(request.userPrompt).toBe(canonicalStringify(JSON.parse(request.userPrompt)));
     const payload = JSON.parse(request.userPrompt) as {
       kind: string;
-      explanation: { suggestion: string };
+      untrustedModelClaim: string;
       sealedAction: Record<string, unknown>;
+      sealedActionInput: string;
     };
     expect(payload.kind).toBe("rationale-scope-review");
-    expect(payload.explanation.suggestion).toBe(injection);
+    expect(payload.untrustedModelClaim).toBe(injection);
     expect(payload.sealedAction).not.toHaveProperty("finalInput");
+    expect(payload.sealedActionInput).toBe(canonicalStringify(control.sealedAction.finalInput));
   });
 
   it.each([
@@ -236,6 +240,8 @@ describe("LlmRationaleScopeReviewer", () => {
     const result = await reviewer.reevaluate({
       control,
       response: responseFor(control),
+      verifiedUserQuote: control.anchor.sanitizedIntent, verifiedUserMessage: control.anchor.sanitizedIntent, verifiedUserMessages: [control.anchor.sanitizedIntent],
+      hostSafetyFacts: { targetPaths: control.action.canonicalTargets },
       now: NOW,
     });
 
@@ -258,10 +264,42 @@ describe("LlmRationaleScopeReviewer", () => {
     const result = await reviewer.reevaluate({
       control,
       response: responseFor(control),
+      verifiedUserQuote: control.anchor.sanitizedIntent, verifiedUserMessage: control.anchor.sanitizedIntent, verifiedUserMessages: [control.anchor.sanitizedIntent],
+      hostSafetyFacts: { targetPaths: control.action.canonicalTargets },
       now: NOW,
     });
 
     expect(result.outcome).toBe("error");
     expect(result.modalFallbackRequired).toBe(true);
   });
+});
+
+it("redacts verified full-turn context at reviewer transport after exact host verification", async () => {
+  const secret = "sk-" + "a".repeat(48);
+  const control = controlFixture({ command: "Remove-Item -Recurse build # " + secret });
+  const message = `do not delete generated output; keep credential ${secret} private`;
+  const { provider, complete } = providerReturning(canonicalStringify({ level: "high",
+    reason: "The full turn forbids deletion.", scopeAlignment: "outside", scopeReasons: ["The quoted substring is negated."] }));
+  const reviewer = new LlmRationaleScopeReviewer(provider, "reviewer-model");
+  const response = { ...responseFor(control), userQuote: "delete generated output" };
+  const result = await reviewer.reevaluate({ control, response, verifiedUserQuote: "delete generated output",
+    verifiedUserMessage: message, verifiedUserMessages: [message], hostSafetyFacts: { targetPaths: control.action.canonicalTargets }, now: NOW });
+  const payload = complete.mock.calls[0]![0].userPrompt;
+  expect(payload).not.toContain(secret);
+  expect(JSON.parse(payload).sealedActionInput).toContain("Remove-Item -Recurse build");
+  expect(JSON.parse(payload)).toMatchObject({ verifiedUserQuote: "delete generated output",
+    verifiedUserMessages: [expect.stringContaining("do not delete generated output")], matchedUserMessageIndex: 0 });
+  expect(result.reevaluatedVerdict.level).toBe("high");
+});
+
+
+it("reuses general risk level definitions without using the user-owned logical-only prompt", () => {
+  expect(RATIONALE_SCOPE_REVIEWER_SYSTEM_PROMPT).toContain("GENERAL RISK");
+  for (const { level, definition } of PERMISSION_REVIEWER_FRAMEWORK.levels) {
+    expect(RATIONALE_SCOPE_REVIEWER_SYSTEM_PROMPT).toContain(level.toUpperCase() + ": " + definition);
+  }
+  expect(RATIONALE_SCOPE_REVIEWER_SYSTEM_PROMPT).toContain("Verified user intent does not erase concrete risk");
+  expect(RATIONALE_SCOPE_REVIEWER_SYSTEM_PROMPT).toContain("scopeAlignment and scopeReasons are explanatory metadata");
+  expect(RATIONALE_SCOPE_REVIEWER_SYSTEM_PROMPT).not.toBe(USER_OWNED_SURFACE_REVIEW_PROMPT);
+  expect(RATIONALE_SCOPE_REVIEWER_SYSTEM_PROMPT).not.toContain("Do not classify general security risk");
 });

@@ -5,6 +5,7 @@ import {
 } from "../../shared/subscription-runtime.js";
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { appendRequestOnlyText } from "./request-only-text.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
 import type { GuidanceInjectionSource, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, ToolScope } from "./types.js";
@@ -44,7 +45,7 @@ import { stripSuggestedReplies } from "../suggested-replies.js";
 import { isHostExitAbort } from "./turn-journal.js";
 import { HOST_EXIT_INTERRUPTION } from "../../memory/session-turn-journal.js";
 import { GUIDE_JOINED_MAX_CHARS, mergeGuidanceApprovalReasonPrefixes } from "./guidance-limits.js";
-import { parseStagedEnvelope } from "../../shared/staged-origins.js";
+import { isStagedTurnSource, parseStagedEnvelope } from "../../shared/staged-origins.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { MAX_TOOL_CALLS_PER_ROUND } from "../../shared/subagent-policy.js";
@@ -118,6 +119,7 @@ export async function queryLoop(
       permissionUserIntent?: string;
       rolePrompt?: ActiveRolePrompt;
       onMemoryCaptureTaint?: (reason: "staged-guidance") => void;
+      onPermissionProvenanceChanged?: (state: { toolTrustOrigin: ToolTrustOrigin; overlayTriggerOrigin: string | null; approvalReasonPrefix?: string }) => void;
       memoryQuery?: string;
       onStopHook?: (state: { toolCount: number; stopHookActive: boolean }) => Promise<string | undefined>;
     },
@@ -332,12 +334,25 @@ export async function queryLoop(
     let stagedOrigin = overlayTriggerOrigin;
     // Activation writes, reads, and clears must use the same overridden session ID as sessionContext.
     const effectiveSessionId = bounds.sessionIdOverride ?? self.sessionId;
+    if ((bounds.spawnDepth ?? 0) === 0) self.deps.permissionManager?.beginPermissionTurn(effectiveSessionId);
     let activeA2ACausalContext =
       isA2AAgentCausalContext(bounds.a2aCausalContext)
       && bounds.a2aCausalContext.recipientChildSessionId === effectiveSessionId
         ? bounds.a2aCausalContext
         : undefined;
     if (activeA2ACausalContext) toolTrustOrigin = "agent-message";
+    const refreshExtensionPolicy = (): void => {
+      const inherited = turnExtensionPolicyContext.getStore();
+      const otherPrincipal = toolTrustOrigin === "file-content" || toolTrustOrigin === "agent-message" || activeApprovalReasonPrefix !== undefined || isStagedTurnSource(stagedOrigin);
+      turnExtensionPolicyContext.enterWith(Object.freeze({
+        ...inherited,
+        allowExternalHooks: inherited?.allowExternalHooks !== false && bounds.remoteControllerAuthority === undefined,
+        floor: inherited?.floor ?? (otherPrincipal ? { code: "other-principal" as const, reason: activeApprovalReasonPrefix ?? "This principal requires local approval for the action." } : undefined),
+        overlayTriggerOrigin: stagedOrigin,
+      }));
+      bounds.onPermissionProvenanceChanged?.({ toolTrustOrigin, overlayTriggerOrigin: stagedOrigin, approvalReasonPrefix: activeApprovalReasonPrefix });
+    };
+    refreshExtensionPolicy();
 
     let assistantRoundsRun = 0;
     // Count progress outside history because compaction must not make a long turn appear short.
@@ -385,6 +400,8 @@ export async function queryLoop(
       if (!delivery) return;
       pendingGuidanceDelivery = null;
       const injectionId = delivery.historyMessage?.meta?.hostInjectionId;
+      // Revoke the original native quotation provenance even when compaction replaced its row object.
+      if (delivery.historyMessage !== null) self.history.removeExact(delivery.historyMessage);
       if (injectionId !== undefined) {
         // Remove by durable row ID; compaction can replace object identity and cause duplicate redelivery.
         self.history.removeByHostInjectionId(injectionId);
@@ -467,6 +484,7 @@ export async function queryLoop(
         && self.guidanceQueue.length > 0
         && continuationPrefillText === undefined
       ) {
+        const previousProvenance = { stagedOrigin, toolTrustOrigin, activeApprovalReasonPrefix };
         // Inspect the whole queue before truncation so staged provenance cannot be dropped.
         // Once non-user guidance enters, its stricter origin applies to the rest of the turn.
         const stagedGuidance = self.guidanceQueue
@@ -499,6 +517,7 @@ export async function queryLoop(
             toolTrustOrigin = "agent-message";
           }
         }
+        if (previousProvenance.stagedOrigin !== stagedOrigin || previousProvenance.toolTrustOrigin !== toolTrustOrigin || previousProvenance.activeApprovalReasonPrefix !== activeApprovalReasonPrefix) refreshExtensionPolicy();
 
         if (dropped.length > 0) {
           await Promise.allSettled(
@@ -555,7 +574,7 @@ export async function queryLoop(
             ...(subAgentHistoryMeta(subAgentSource).meta ?? {}),
           },
         // Only a batch the user typed, every entry of it, is the user's own words; anything else marks another principal at the history.
-        }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard" } : undefined);
+        }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard", userText: { sessionId: effectiveSessionId, text: joined } } : undefined);
         delivery.historyMessage = historyMessage;
       }
 
@@ -1262,6 +1281,7 @@ export async function queryLoop(
         enableDormantRationaleForTesting:
           self.deps.enableDormantRationaleForTesting,
       });
+      const rationaleUserRoleTexts = self.history.getUserQuoteTexts(effectiveSessionId);
       // Materialize the runtime before reordering meta tools; unavailable factories retain legacy ordering.
       const preparedRationaleRuntime = rationaleActivationRequested
         ? await prepareRationaleConversationRuntime({
@@ -1269,6 +1289,8 @@ export async function queryLoop(
             requestAnchor: bounds.requestAnchor ?? null,
             rationaleProvenance: currentRationaleProvenance,
             sessionId: effectiveSessionId,
+            userRoleTexts: rationaleUserRoleTexts,
+            getUserRoleTexts: () => self.history.getUserQuoteTexts(effectiveSessionId),
           })
         : null;
       const rationaleOrchestrationEnabled = preparedRationaleRuntime !== null;
@@ -1567,7 +1589,7 @@ export async function queryLoop(
           permissionContext: {
             // One-turn unattended authority selects routine approval policy without changing tool or egress scope.
             ...(bounds.unattendedAuthority !== undefined
-              ? { headless: true, ownerUnattended: true }
+              ? { headless: self.deps.headless, ownerUnattended: true }
               : { headless: self.deps.headless }),
             approvalSurface: self.deps.approvalSurface,
             allowedPluginIds: new Set(scope.activePluginIds),
@@ -1575,6 +1597,7 @@ export async function queryLoop(
             additionalDirectories: self.getTurnAdditionalDirectories(),
             getAdditionalDirectories: () => self.getTurnAdditionalDirectories(),
             trustOrigin: toolTrustOrigin,
+            otherPrincipal: toolTrustOrigin === "file-content" || toolTrustOrigin === "agent-message" || activeApprovalReasonPrefix !== undefined,
             ...(bounds.remoteControllerAuthority
               ? { remoteControllerAuthority: bounds.remoteControllerAuthority }
               : {}),
@@ -1585,6 +1608,8 @@ export async function queryLoop(
                 }
               : {}),
             ...(bounds.permissionUserIntent ? { userIntent: bounds.permissionUserIntent } : {}),
+            currentTaskStep: mergedText.trim().slice(0, 2048) ||
+              `Assistant round ${roundIndex}: ${toolUsesForExecutor.map((tool) => tool.name).join(", ").slice(0, 2048)}`,
             onTurnDirectoryGrant: (path) => self.addTurnAdditionalDirectory(path),
             onSessionDirectoryGrant: (path) => self.addSessionAdditionalDirectory(path),
           },
@@ -1782,6 +1807,8 @@ export async function queryLoop(
             rationaleProvenance: currentRationaleProvenance,
             sessionId: effectiveSessionId,
             rationaleRuntime: preparedRationaleRuntime,
+            userRoleTexts: rationaleUserRoleTexts,
+            getUserRoleTexts: () => self.history.getUserQuoteTexts(effectiveSessionId),
             ...(orderedMetaToolHandler
               ? { interceptedMetaToolHandler: orderedMetaToolHandler }
               : {}),
@@ -1808,7 +1835,11 @@ export async function queryLoop(
       if (rationaleBatch.rationaleUsage) {
         recordProviderUsage(rationaleBatch.rationaleUsage, false);
       }
-      toolTrustOrigin = nextToolTrustOrigin(toolTrustOrigin, toolUsesForExecutor, toolResults);
+      const nextTrustOrigin = nextToolTrustOrigin(toolTrustOrigin, toolUsesForExecutor, toolResults);
+      if (nextTrustOrigin !== toolTrustOrigin) {
+        toolTrustOrigin = nextTrustOrigin;
+        refreshExtensionPolicy();
+      }
 
       for (let i = 0; i < toolUsesForExecutor.length; i++) {
         allToolCalls.push({
@@ -2627,8 +2658,6 @@ export async function gateCrossAgentInterceptedMetaTools(
           reason: `${approvalReasonPrefix} cross-agent message requested ${toolUse.name}`,
           source: "builtin",
           createdAt: Date.now(),
-          isReadOnly: false,
-          mode: "ask_all",
           trustOrigin,
           // Use the active turn controller so user stop cancels this pending approval too.
           ...(self.currentAbortController === null
