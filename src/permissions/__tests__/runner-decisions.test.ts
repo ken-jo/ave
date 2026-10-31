@@ -300,6 +300,29 @@ describe("shared runner decisions", () => {
     expect(checkCommand(manager, "bash", command, false, true).decision).toBe("deny");
   });
 
+  it("resolves a present-drive write to ordinary under a saved grant", async () => {
+    const command = "echo ready > /c/x";
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addAlwaysAllowedPersist(actionKey("bash", command));
+    manager.setRules(([{ pattern: actionKey("bash", command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+    expect(checkCommand(manager, "bash", command).decision).toBe("allow");
+    expect(checkCommand(manager, "bash", command, false, true).decision).toBe("allow");
+  });
+
+  // The MSYS shell-root namespace has no native drive, so a drive-less absolute write is unresolvable on win32 regardless of which volumes exist.
+  it.runIf(process.platform === "win32")("keeps an unresolved shell-root write forced despite a saved grant", async () => {
+    const command = "echo ready > /logs/result";
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addAlwaysAllowedPersist(actionKey("bash", command));
+    expect(checkCommand(manager, "bash", command)).toMatchObject({
+      decision: "ask", reasonCode: "protected-path", forceModal: true,
+      pipelineRequest: { floor: { code: "protected-path" } },
+    });
+    expect(checkCommand(manager, "bash", command, false, true).decision).toBe("deny");
+  });
+
   it("retains background uncertainty without hiding subsequent literal effects", () => {
     const command = "Get-Date & Get-Date";
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ outcome: "unproven", exfiltration: null });
