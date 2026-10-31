@@ -120,7 +120,9 @@ rather than an inversion:
 Captures switch to their dark (Tokyo Night) versions. The built workspace's
 `--a-*` tokens take the Tokyo Night colours the dark captures show. The
 previewed sample site stays light in both themes, as it does in the dark
-captures.
+captures. The permissions-settings image is one actual 1243 x 768 (1x)
+light-theme app capture reused in both site themes. The isolated capture
+profile had no installed dark theme.
 
 Pastel gradients appear only behind captures and fragments.
 
@@ -301,7 +303,7 @@ soon as one exists.
       through `pkg()`. Connector copy claims reading only, because most
       connectors are read-only by default.
 21. Names match the app's labels (Settings → Model, Allow once, Split pane,
-    Work complete, Confirm writes outside the project).
+    Work complete, Default, Allow writes).
 
 ## Libraries
 

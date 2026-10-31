@@ -113,7 +113,7 @@ const ko: Pages = {
     },
     faqTitle: "자주 묻는 질문",
     faqs: [
-      { q: "에이전트가 내가 로그인해 둔 탭을 마음대로 쓸 수 있나요?", a: "내가 연 탭에서 누르기, 입력, 키 누르기, 이동, 닫기는 어떤 권한 모드에서든 매번 묻고 기억되지 않습니다. 물어볼 사람이 없으면 거부됩니다. 그 탭을 읽거나 캡처하는 것은 네트워크 동작으로, 사이트별로 이번 세션 동안 한 번 묻고 ‘모두 허용’에서는 묻지 않습니다." },
+      { q: "에이전트가 내가 로그인해 둔 탭을 마음대로 쓸 수 있나요?", a: "내가 연 탭에서 누르기, 입력, 키 누르기, 이동, 닫기는 어떤 권한 모드에서든 매번 묻고 기억되지 않습니다. 물어볼 사람이 없으면 거부됩니다. 그 탭을 읽거나 캡처하는 것은 네트워크 동작으로, 사이트별로 이번 세션 동안 한 번 묻고 ‘허용’에서는 묻지 않습니다." },
       { q: "비밀번호도 입력하나요?", a: "아니요. 에이전트는 비밀번호, 결제 카드, 일회용 코드 입력란에는 입력하지 않습니다." },
       { q: "승인 창이 떠 있는 동안 페이지가 바뀌면요?", a: "그 동작은 아무것도 하지 않습니다. 에이전트가 다시 시도하면 바뀐 페이지를 기준으로 다시 묻습니다." },
       { q: "에이전트가 일하는 동안 제가 페이지를 만지면요?", a: "에이전트는 동작하는 순간에만 페이지 포커스를 잡고 바로 돌려줍니다. 탭의 중지 버튼을 누르거나 페이지를 직접 누르고 입력하면 대기 중인 동작이 멈춥니다." },
@@ -397,30 +397,30 @@ const ko: Pages = {
   security: {
     meta: {
       title: "보안",
-      description: "Ave는 복구 가능한 프로젝트 파일 변경을 허용하고, 보호 대상 작업은 실행 전에 묻고, 민감한 경로는 항상 막습니다. OS 샌드박스로 도구를 가두고 HMAC 체인 감사 로그를 남깁니다.",
+      description: "Ave는 선택한 권한 모드와 규칙에 따라 작업을 허용하거나 확인합니다. 보호 대상은 이번 한 번 승인을 받고, 앱 자격 증명 저장소는 차단합니다. OS 샌드박스와 HMAC 체인 감사 로그로 실행을 관리합니다.",
     },
     hero: {
       eyebrow: "보안",
       title: "무엇이 바뀌는지 보고 나서 허용합니다",
-      lead: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고 위험도는 낮음, 중간, 높음입니다. 기본 모드는 읽기와 복구 가능한 프로젝트 파일 변경을 허용합니다. 프로젝트 밖 쓰기와 보호 대상 작업은 대화를 가리지 않는 승인 독에서 묻습니다.",
+      lead: "새 설치의 기본 모드는 일반 읽기와 입증된 읽기 전용 샌드박스 명령을 허용하고, 파일 변경과 나머지 작업은 확인합니다. 쓰기 허용은 복구 가능한 프로젝트 변경과 안전한 샌드박스 명령도 허용합니다. 기존에 선택한 모드는 업데이트 후에도 유지됩니다.",
       pic: { k: "approval-shell", alt: "builtin:bash 승인 창. 중간 위험, OS 격리 활성, 명령마다 임시 HOME, 거부·이번 세션 동안 허용·한 번만 허용 버튼" },
     },
     first: {
       eyebrow: "권한 모드",
       title: "얼마나 자주 물을지는 내가 정합니다",
-      body: "모드와 상관없이 강제 차단 규칙이 먼저 돕니다. 민감한 경로, 잘못된 매니페스트, 샌드박스 한계가 여기에 걸립니다.",
+      body: "모든 모드는 입장 검사와 거부 규칙을 먼저 적용합니다. 보호 대상은 항상 이번 한 번 승인이 필요하며, 읽기 전용으로 선언된 MCP 도구는 일반 읽기처럼 허용합니다.",
       points: [
-        ["프로젝트 밖 쓰기 확인.", "기본값입니다. 읽기와 복구 가능한 프로젝트 파일 변경은 허용합니다. 프로젝트 밖 쓰기와 보호 경로는 승인을 요청하며, 나머지 도구는 해당 권한 규칙을 따릅니다."],
-        ["모두 확인.", "읽기를 포함해 모든 도구가 승인을 받습니다."],
-        ["자동 검증.", "복구 가능한 프로젝트 파일 변경은 허용합니다. 나머지 대화형 검증 대상은 설정한 리뷰어 임계값을 적용하고, 헤드리스 실행은 별도의 리뷰 대기열을 씁니다."],
-        ["모두 허용.", "강제 차단 밖은 허용하지만, 허용된 폴더 밖 접근은 따로 승인을 받습니다."],
+        ["기본.", "새 설치의 기본값입니다. 일반 읽기와 입증된 읽기 전용 샌드박스 명령은 허용하고, 파일 변경과 나머지 작업은 확인합니다."],
+        ["쓰기 허용.", "복구 가능한 프로젝트 파일 변경과 안전한 샌드박스 명령을 허용합니다. 프로젝트 밖 쓰기, 호스트 셸, 네트워크, 비밀 파일 읽기와 그 외 MCP 작업은 확인합니다."],
+        ["auto.", "쓰기 허용과 같은 자동 허용 뒤 나머지는 리뷰어가 검증합니다. 저·중위험은 허용하고, 고위험이나 오류는 사용자가 확인합니다."],
+        ["허용.", "입장 검사와 거부 규칙을 통과한 작업을 허용합니다. 보호 경로, 위험 삭제, 프로젝트 탈출, 유출 신호와 다른 주체의 작업은 계속 이번 한 번 승인이 필요합니다."],
       ],
-      pic: { k: "settings-permissions", alt: "권한 설정의 권한 정책 목록. 모두 확인, 프로젝트 밖 쓰기 확인(선택됨), 자동 검증, 모두 허용" },
+      pic: { k: "settings-permissions", alt: "auto와 허용 모드가 보이는 권한 설정. 부재 중 자동 스킵 0분(무제한)과 민감값이 가려진 최근 거부 내역" },
     },
     grid: {
       eyebrow: "실제 화면",
       title: "승인, 격리, 기록",
-      body: "승인 창은 무엇을, 어디서, 어떤 격리 아래 실행하는지 보여 줍니다. ‘항상 허용’은 정확히 그 도구, 그 입력, 그 작업 폴더에만 묶입니다.",
+      body: "승인 창은 실행할 작업과 기억할 범위를 보여 줍니다. 한 번 허용은 현재 호출에만 적용됩니다. MCP 도구의 기억된 허용은 해당 서버의 그 도구를 모든 인자에 대해 허용하므로, 카드에 표시된 대상과 적용 기간을 확인합니다.",
       cards: [
         {
           title: "파일 쓰기 승인",
@@ -466,21 +466,21 @@ const ko: Pages = {
     facts: {
       title: "그 밖에 정해 둔 것",
       items: [
-        { title: "허용 디렉터리", body: "프로젝트 루트, ~/.ave, 전용 임시 폴더, 시스템 임시 폴더(macOS와 Linux는 /tmp 포함)에서 시작하고 설정의 permissions.additionalDirectories로 늘립니다. 그 밖은 따로 묻습니다." },
-        { title: "검토기 선택", body: "검증 끔(자동 통과), 규칙 기반 검증, LLM 검증, 엄격(모두 보류) 중에서 고릅니다. 엄격은 바꾸는 작업을 모두 보류 대기열로 보내 직접 승인하게 합니다." },
+        { title: "허용 디렉터리", body: "자동 파일 변경 범위는 프로젝트 루트와 사용자가 추가한 프로젝트 폴더입니다. 앱 홈과 임시 폴더는 프로젝트가 아니며, 승인이 필요한 외부 쓰기는 폴더 허용 선택을 포함한 카드 한 장으로 확인합니다." },
+        { title: "검토기 선택", body: "auto에서는 일반 승인 요청을 리뷰어가 검증합니다. 저·중위험은 허용하고 고위험, 오류와 검증 중단은 사용자에게 확인합니다. 보호 대상은 리뷰어를 거치지 않습니다." },
         { title: "정책 파일", body: "사용자와 관리자가 각자 policy.json을 둘 수 있고, 유효한 관리자 정책은 다루는 설정을 잠급니다." },
       ],
     },
     faqTitle: "자주 묻는 질문",
     faqs: [
-      { q: "‘항상 허용’은 무엇을 기억하나요?", a: "정확히 그 도구, 그 입력, 그 작업 폴더입니다. 대상 이름에 와일드카드가 있으면 규칙을 저장하지 않고 ‘한 번 허용’을 권합니다." },
-      { q: "검토기가 실패하면요?", a: "요청은 통과되지 않고 보류됩니다. LLM 검토는 위험도를 올릴 수만 있고 내릴 수는 없습니다." },
-      { q: "헤드리스 실행이나 루틴에서는 누가 승인하나요?", a: "낮은 위험을 넘는 요청은 지연 대기열에 들어가 내가 볼 때까지 기다립니다." },
-      { q: "어떤 경로는 항상 막히나요?", a: "~/.ssh 아래 키나 .env 파일 같은 민감한 경로는 어떤 모드에서도 막힙니다." },
+      { q: "‘항상 허용’은 무엇을 기억하나요?", a: "카드에 표시된 도구·대상·범위와 선택한 적용 기간을 기억합니다. MCP 도구의 경우 같은 서버의 해당 도구를 모든 인자에 대해 허용할 수 있습니다. 거부·확인 규칙과 필수 승인은 계속 적용됩니다." },
+      { q: "검토기가 실패하면요?", a: "고위험 판정이나 오류, 검증 중단은 일반 승인 카드로 사용자에게 확인합니다. 승인할 사람이 없으면 거부하고 모델에 재시도하지 않도록 알립니다." },
+      { q: "헤드리스 실행이나 루틴에서는 누가 승인하나요?", a: "기존 규칙·승인이나 모드로 허용되지 않는 요청은 거부하고 재시도하지 않도록 알립니다. auto는 검증 가능한 요청을 먼저 검증합니다. 앱이 열린 부재 중 턴은 기본 무제한 대기하며, 선택한 자동 스킵 시간이 지나면 거부합니다. 다시 실행 가능한 요청은 최근 거부 내역에서 새 승인을 받아 실행합니다." },
+      { q: "어떤 경로는 항상 막히나요?", a: "앱이 관리하는 자격 증명 저장소는 항상 차단합니다. 일반 비밀 파일 읽기는 모드와 규칙에 따라 확인하고, 쓰기는 프로젝트 범위와 체크포인트 등 일반 파일 규칙을 따릅니다. 보호 설정 경로는 모든 모드에서 이번 한 번 승인이 필요합니다." },
       { q: "모델에 비밀 값이 넘어가나요?", a: "API 키를 비롯한 자격 증명은 설정과 무관하게 항상 제거하고 보냅니다. 이메일, 전화번호, 카드 번호 같은 개인 정보는 설정의 PII 리댁트(기본값 꺼짐)를 켜면 [REDACTED:*]로 바꿔 보내고, 가린 개수를 감사 로그에 남깁니다." },
       { q: "플러그인이 스스로 대화를 시작할 수 있나요?", a: "host:overlay 기능이 있는 플러그인은 대화를 제안할 수 있지만, 수락해야 시작합니다. 그 대화 안에서도 쓰기, 셸, 네트워크 도구는 다시 묻습니다." },
       { q: "Windows에서는 무엇이 다른가요?", a: "srt-win은 파일과 네트워크를 가두지만 프로세스는 가두지 않습니다. 플러그인끼리의 격리는 macOS와 Linux에서만 됩니다." },
-      { q: "OS 샌드박스는 기본으로 켜져 있나요?", a: "아니요. 직접 켜는 기능이고, 켜면 앱을 다시 시작해야 합니다. 켜면 네트워크는 기본으로 막힙니다." },
+      { q: "OS 샌드박스는 기본으로 켜져 있나요?", a: "macOS와 Linux의 셸 샌드박스는 기본으로 켜지고 Windows에서는 기본으로 꺼집니다. 플러그인 작업자 격리는 별도로 켜는 옵션입니다. 지원 여부와 적용 상태는 권한 설정에서 확인합니다." },
     ],
     next: {
       doc: "권한 모드, 결정 순서, 허용 폴더, 샌드박스, 감사 로그를 설명합니다.",
@@ -558,7 +558,7 @@ const en: Pages = {
     },
     faqTitle: "Questions",
     faqs: [
-      { q: "Can the agent use a tab I’m signed in to?", a: "In a tab you opened, clicking, typing, pressing keys, navigating and closing ask every time, in every permission mode, and nothing is remembered; with no one to ask, they are denied. Reading or capturing that tab is a network action: it asks once per site for the session, and passes under Allow all." },
+      { q: "Can the agent use a tab I’m signed in to?", a: "In a tab you opened, clicking, typing, pressing keys, navigating and closing ask every time, in every permission mode, and nothing is remembered; with no one to ask, they are denied. Reading or capturing that tab is a network action: it asks once per site for the session, and passes under Allow." },
       { q: "Does it type passwords?", a: "No. The agent does not type into password, payment-card or one-time-code fields." },
       { q: "What if the page changes while the approval card is open?", a: "The action does nothing. If the agent tries again, it asks about the page as it is now." },
       { q: "What if I touch the page while the agent works?", a: "The agent holds the page’s focus only while it acts, then gives it back. Press Stop on the tab, or click or type in the page, and its pending actions stop." },
@@ -842,30 +842,30 @@ const en: Pages = {
   security: {
     meta: {
       title: "Security",
-      description: "Ave allows recoverable project file edits, asks before protected operations, always blocks sensitive paths, confines tools with the OS sandbox, and keeps an HMAC-chained audit log.",
+      description: "Ave applies your permission mode and rules, asks once for protected actions, blocks app credential stores, shows isolation state, and keeps an HMAC-chained audit log.",
     },
     hero: {
       eyebrow: "Security",
       title: "See what will change, then allow it",
-      lead: "Tool calls fall into read, write, shell, network and meta, and risk is low, medium or high. The default mode allows reads and recoverable project file edits. Writes outside the project and protected operations ask in an approval dock that does not cover the conversation.",
+      lead: "New installs use Default: ordinary reads and proven read-only sandboxed commands are allowed; file changes and other actions ask. Allow writes also permits recoverable project edits and safe sandboxed commands. Existing users keep their selected mode after an update.",
       pic: { k: "approval-shell", alt: "An approval card for builtin:bash: medium risk, OS isolation active, a temporary HOME for each command, and Deny, Allow for session and Allow once" },
     },
     first: {
       eyebrow: "Permission modes",
       title: "You decide how often it asks",
-      body: "In every mode, hard-deny rules run first: sensitive paths, invalid manifests and sandbox limits.",
+      body: "Every mode applies admission checks and deny rules first. Protected actions always need one-time approval; tools declared as read-only through MCP are allowed like ordinary reads.",
       points: [
-        ["Confirm writes outside the project.", "The default. Reads and recoverable project file edits are allowed; writes outside the project and protected paths ask for approval. Other tools follow their own permission rules."],
-        ["Confirm all.", "Every tool asks for approval, reads included."],
-        ["Auto-verify.", "Recoverable project file edits are allowed. Other eligible calls in chat use the configured reviewer threshold. Headless runs use a separate reviewer queue."],
-        ["Allow all.", "Everything outside the hard blocks is allowed, but access outside the allowed folders still asks."],
+        ["Default.", "The default for new installs. Ordinary reads and proven read-only sandboxed commands are allowed; file changes and other actions ask."],
+        ["Allow writes.", "Recoverable project file edits and safe sandboxed commands are allowed. Outside-project writes, host shells, network calls, secret-file reads and other MCP actions ask."],
+        ["auto.", "Allows the same actions as Allow writes, then reviews other eligible requests. Low and medium risk allow; high risk and errors ask a person."],
+        ["Allow.", "Allows actions after admission checks and deny rules. Protected paths, critical deletion, project escapes, exfiltration signals and other-principal actions still need one-time approval."],
       ],
-      pic: { k: "settings-permissions", alt: "The permission policy list in Permissions settings: Confirm all, Confirm writes outside the project (selected), Auto-verify and Allow all" },
+      pic: { k: "settings-permissions", alt: "Permissions settings showing auto and Allow, owner-away auto-skip at 0 (unlimited), and a redacted Recently denied entry" },
     },
     grid: {
       eyebrow: "In the app",
       title: "Approvals, isolation and a record",
-      body: "An approval card shows what runs, where, and under which isolation. Always allow is bound to exactly that tool, input and working folder.",
+      body: "The approval card shows the action and the scope it can remember. Allow once covers only the current call. Remembered MCP approval covers that tool on that server with any arguments, so check the displayed target and duration.",
       cards: [
         {
           title: "Approving a file write",
@@ -911,21 +911,21 @@ const en: Pages = {
     facts: {
       title: "Also decided for you",
       items: [
-        { title: "Allowed folders", body: "They start with the project root, ~/.ave, a private scratch folder and the system temporary folder (plus /tmp on macOS and Linux), and grow through permissions.additionalDirectories in settings. Anything outside them asks separately." },
-        { title: "Choose the reviewer", body: "Validation off (auto-pass), rule-based validation, LLM validation, or strict, where every request that changes something waits in a queue for you." },
+        { title: "Allowed folders", body: "Automatic file changes are limited to the project root and project folders you add. App home and temporary folders are not projects. When an outside write needs approval, one card also offers a folder grant." },
+        { title: "Choose the reviewer", body: "In auto, the reviewer checks ordinary approval requests. Low and medium risk allow; high risk, errors and cancellation ask a person. Protected actions never go to the reviewer." },
         { title: "Policy files", body: "Users and administrators can each keep a policy.json, and a valid administrator policy locks the settings it covers." },
       ],
     },
     faqTitle: "Questions",
     faqs: [
-      { q: "What does Always allow remember?", a: "Exactly that tool, input and working folder. If the target name contains a wildcard, Ave won’t save the rule and suggests Allow once instead." },
-      { q: "What if the reviewer fails?", a: "The request is held, not passed. LLM validation can raise a risk rating, never lower it." },
-      { q: "Who approves in routines and headless runs?", a: "Anything above low risk goes to a deferred queue and waits for you." },
-      { q: "Which paths are always blocked?", a: "Sensitive paths, such as keys under ~/.ssh and .env files, are blocked in every mode." },
+      { q: "What does Always allow remember?", a: "It remembers the displayed tool, target and scope for the duration you choose. MCP tool approval can cover every argument of that tool on the same server. Deny/ask rules and mandatory approvals still apply." },
+      { q: "What if the reviewer fails?", a: "High risk, errors and cancellation lead to a normal approval card. If nobody can approve, the request is denied and the model is told not to retry." },
+      { q: "Who approves in routines and headless runs?", a: "Requests not already permitted by rules, approvals or the mode are denied with a do-not-retry message; auto reviews eligible requests first. An owner-away turn with the app open waits without a limit by default, or denies after the optional auto-skip time. Available requests can be rerun from Recently denied with fresh approval." },
+      { q: "Which paths are always blocked?", a: "App-owned credential stores are always blocked. Ordinary secret-file reads follow the mode and rules; writes follow ordinary project and checkpoint rules. Protected configuration paths need one-time approval in every mode." },
       { q: "Do secrets reach the model?", a: "API keys and other credentials are always removed before anything is sent, whatever the settings say. Personal data such as email addresses, phone numbers and card numbers is replaced with [REDACTED:*] when you turn on PII Redaction (off by default), and the count is recorded in the audit log." },
       { q: "Can a plugin start a conversation by itself?", a: "A plugin with the host:overlay capability can suggest one, but it starts only when you accept it, and write, shell and network tools inside it ask again." },
       { q: "What is different on Windows?", a: "srt-win confines files and network, not processes, and isolation between plugins is available on macOS and Linux only." },
-      { q: "Is the OS sandbox on by default?", a: "No. You turn it on, and it needs a restart. With the sandbox on, network is denied by default." },
+      { q: "Is the OS sandbox on by default?", a: "Shell isolation is on by default on macOS and Linux, and off by default on Windows. Plugin worker confinement is a separate opt-in. Permissions settings show support and the current state." },
     ],
     next: {
       doc: "Permission modes, how a request is decided, allowed folders, the sandbox and the audit log.",
