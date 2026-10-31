@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import type { VerifiedDocumentEngineInstallation } from "../main/document-engine-installation.js";
 import { createPrivateTempDirectory, assertCodexLocations } from "../main/codex-executable-location.js";
@@ -75,6 +76,9 @@ const RUNTIME_OWNER = "owner.json";
 const RUNTIME_OWNER_KIND = "ave-document-engine-runtime";
 
 function runtimeTempRoot(): string {
+  // POSIX uses the world-shared temp; privacy comes from createPrivateTempDirectory (mkdtemp + owner
+  // claim + 0700), not the root. On win32 the absolute-path analogue is the system temp directory.
+  if (process.platform === "win32") return tmpdir();
   return process.platform === "darwin" ? "/private/tmp" : "/tmp";
 }
 

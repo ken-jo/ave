@@ -95,6 +95,24 @@ describe("shell-resolver", () => {
     expect(shell.windowsFlavor).toBe("msys");
   });
 
+  it("ignores an env-redirected Program Files root; a drive root is user-writable by default", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    // A non-admin can set these process-env vars and create a folder at a drive root (Authenticated
+    // Users may create subdirectories at C:\ by default), so an env-derived root would be attacker
+    // controllable. The shell roots stay hardcoded and admin-owned by construction: no D:\evil candidate.
+    for (const key of ["ProgramW6432", "ProgramFiles"]) vi.stubEnv(key, "D:\\evil");
+    vi.stubEnv("ProgramFiles(x86)", "D:\\evil (x86)");
+    vi.mocked(execFileSync).mockImplementation((cmd) => {
+      if (cmd === "C:\\Program Files\\Git\\bin\\bash.exe") return "__ave_shell_ok__";
+      throw new Error("not installed");
+    });
+
+    const shell = resolveShell("bash");
+
+    expect(shell.cmd).toBe("C:\\Program Files\\Git\\bin\\bash.exe");
+    expect(vi.mocked(execFileSync).mock.calls.every(([cmd]) => !/^d:\\evil/i.test(String(cmd)))).toBe(true);
+  });
+
   it("returns sh on POSIX", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux" as NodeJS.Platform);
 
