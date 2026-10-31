@@ -253,7 +253,7 @@ describe("shared runner decisions", () => {
     if (platform) expect(headless.reasonCode).toBe("no-approver");
   });
 
-  it.each(["C:/work/project", "D:/work/project"])("retains the saved-grant backslash operand disposition with cwd %s", async (cwd) => {
+  it.runIf(process.platform === "win32").each(["C:/work/project", "D:/work/project"])("retains the saved-grant backslash operand disposition with cwd %s", async (cwd) => {
     const cwdProbe = process.platform === "win32" ? vi.spyOn(process, "cwd").mockReturnValue(cwd) : undefined;
     try {
       if (process.platform === "win32") {
