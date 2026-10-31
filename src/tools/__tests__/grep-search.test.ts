@@ -8,6 +8,7 @@ import { GrepFilesTool } from "../file-tools.js";
 import {
   buildRipgrepArgs,
   GrepFilesInputSchema,
+  isWithinAdmittedRoot,
   resolveBundledRipgrep,
   searchWithRipgrep,
 } from "../grep-search.js";
@@ -191,5 +192,29 @@ describe("grep_files ripgrep engine", () => {
       controller.signal,
     );
     expect(result).toMatchObject({ isError: true, output: "turn aborted" });
+  });
+});
+
+describe("isWithinAdmittedRoot", () => {
+  it("admits the root and its descendants only, at a separator boundary", () => {
+    // Backslash (win32) root spelling: the root itself and files beneath it.
+    expect(isWithinAdmittedRoot("C:\\u\\.ssh", "C:\\u\\.ssh")).toBe(true);
+    expect(isWithinAdmittedRoot("C:\\u\\.ssh\\id_rsa", "C:\\u\\.ssh")).toBe(true);
+    // A sibling that only shares the root's name prefix is not a descendant.
+    expect(isWithinAdmittedRoot("C:\\u\\.ssh-other\\id_rsa", "C:\\u\\.ssh")).toBe(false);
+  });
+
+  it("is case-exact, so a differently-cased sibling dir is not admitted", () => {
+    // On a per-directory case-sensitive NTFS folder, .SSH is a different dir
+    // than .ssh; folding case would wrongly admit it.
+    expect(isWithinAdmittedRoot("C:\\u\\.SSH\\id_rsa", "C:\\u\\.ssh")).toBe(false);
+  });
+
+  it("treats either separator spelling of the root the same after folding", () => {
+    // Forward-slash (POSIX, or a mixed win32) root behaves like the backslash one.
+    expect(isWithinAdmittedRoot("/home/u/.ssh/id_rsa", "/home/u/.ssh")).toBe(true);
+    expect(isWithinAdmittedRoot("/home/u/.ssh-other/id_rsa", "/home/u/.ssh")).toBe(false);
+    // Root and entry spelled with different separators still match once folded.
+    expect(isWithinAdmittedRoot("C:/u/.ssh\\id_rsa", "C:\\u\\.ssh")).toBe(true);
   });
 });
