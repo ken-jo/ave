@@ -52,6 +52,19 @@ describe("grep_files ripgrep engine", () => {
     expect(result.output).not.toContain("host-token");
   });
 
+  it("does not admit a sibling directory that only shares the admitted secret dir's name prefix", async () => {
+    mkdirSync(join(workDir, ".ssh"));
+    writeFileSync(join(workDir, ".ssh", "id_rsa"), "needle synthetic-key\n");
+    mkdirSync(join(workDir, ".ssh-other"));
+    writeFileSync(join(workDir, ".ssh-other", "id_rsa"), "needle sibling-secret\n");
+    // The admitted-root membership test uses a separator boundary (root + sep),
+    // not a bare string prefix, so admitting ".ssh" never admits ".ssh-other".
+    const result = await grep({ path: ".ssh", pattern: "needle" });
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("synthetic-key");
+    expect(result.output).not.toContain("sibling-secret");
+  });
+
   it("resolves the ripgrep build of the pinned per-platform package", () => {
     const executable = resolveBundledRipgrep();
     expect(existsSync(executable)).toBe(true);
