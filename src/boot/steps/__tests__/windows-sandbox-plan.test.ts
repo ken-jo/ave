@@ -192,6 +192,17 @@ describe("boot warning for requested extension confinement", () => {
     expect(warning).not.toContain("REFUSED");
   });
 
+  it("mentions container shells only when this substrate has them or is still checking them", () => {
+    const shellInput = { ...input, shellRequested: true } as const;
+    expect(windowsExtensionBootWarning(windowsSubstrateFor(input, "none"))).not.toContain("agent shells");
+    expect(windowsExtensionBootWarning(windowsSubstrateFor(shellInput, "proxy-only"))).not.toContain("Execution Containers");
+    expect(windowsExtensionBootWarning(windowsSubstrateFor({ ...shellInput, mxc: { state: "checking" } }, "proxy-only")))
+      .toContain("once the container start check passes");
+    const live = windowsExtensionBootWarning(windowsSubstrateFor({ ...shellInput, mxc: AVAILABLE }, "proxy-only"));
+    expect(live).toContain("agent shells run in Microsoft Execution Containers");
+    expect(live).not.toContain("once the container start check passes");
+  });
+
   it("stays silent when an extension substrate was selected", () => {
     expect(windowsExtensionBootWarning(planWindowsSandbox({ ...input, srtWinReady: true }).substrate)).toBeUndefined();
   });

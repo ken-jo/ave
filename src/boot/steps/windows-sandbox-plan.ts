@@ -133,8 +133,13 @@ export function windowsExtensionBootWarning(substrate: SandboxWindowsSubstrateIn
     return `boot: extension confinement is ON and no extension backend admitted this session (${plan.readiness}, ${plan.reason}) — ` +
       "plugin workers, plugin children, plugin hooks and MCP stdio servers are REFUSED until a backend is admitted; nothing runs unconfined.";
   }
+  // The shell clause describes this substrate's shells, never a container route it does not have.
+  const shells = substrate.shells !== "mxc" && !(substrate.shells === "approved-host" && substrate.mxc.state === "checking")
+    ? ""
+    : substrate.shells === "mxc"
+      ? "; agent shells run in Microsoft Execution Containers"
+      : "; agent shells run in Microsoft Execution Containers once the container start check passes";
   return "boot: extension confinement is ON but the Windows sandbox (srt-win) is NOT ready — " +
     "plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation " +
-    "until the one-time administrator install completes; agent shells run in Microsoft Execution Containers " +
-    "once the container start check passes.";
+    `until the one-time administrator install completes${shells}.`;
 }

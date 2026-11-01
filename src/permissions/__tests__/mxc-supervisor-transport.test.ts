@@ -4,7 +4,7 @@ import type { ChildProcess } from "node:child_process";
 import type { MxcProcess, ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { describe, expect, it, vi } from "vitest";
 import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
-import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
+import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, spawnMxcExtensionProcessForDiagnostics, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
 import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
 import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
@@ -50,7 +50,13 @@ async function collect(stream: PassThrough): Promise<Buffer> {
 
 describe("supervisor transport and lifecycle with an injected SDK (unit only)", () => {
   it("requires the supported platform and a packaged installation on the public path", async () => {
-    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), { beforeSpawn: () => {} })).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    await expect(spawnMxcExtensionProcessForDiagnostics(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+  });
+
+  it("refuses a production native spawn that carries no row-2 admission at the spawn boundary", async () => {
+    const unadmitted = { signal: new AbortController().signal } as unknown as Parameters<typeof spawnMxcExtensionProcess>[1];
+    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), unadmitted)).rejects.toThrow(/requires row-2 admission/);
   });
 
   it("forwards binary stdin, stdout, stderr and terminal status, omitting telemetry", async () => {

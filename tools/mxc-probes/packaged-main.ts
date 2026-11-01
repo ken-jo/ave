@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { once } from "node:events";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { configureHostResources } from "../../src/main/host-resources.js";
-import { spawnMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../../src/permissions/mxc-extension-process.js";
+import { spawnMxcExtensionProcessForDiagnostics, type MxcProcessLifecycleEvent } from "../../src/permissions/mxc-extension-process.js";
 import { TOOL_TIMEOUT_POLICY } from "../../src/shared/tool-timeout-policy.js";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 // @ts-expect-error standalone probe helpers intentionally have no declaration output
@@ -87,11 +87,11 @@ async function run(): Promise<void> {
     }
     if (mode === "cancel" && event.type === "spawning") controller.abort();
   };
-  let activeProcess: Awaited<ReturnType<typeof spawnMxcExtensionProcess>> | undefined;
+  let activeProcess: Awaited<ReturnType<typeof spawnMxcExtensionProcessForDiagnostics>> | undefined;
   try {
     emit({ event: "main-ready", pid: process.pid });
     await command("begin");
-    const owned = await spawnMxcExtensionProcess(request, { signal: controller.signal, onLifecycle });
+    const owned = await spawnMxcExtensionProcessForDiagnostics(request, { signal: controller.signal, onLifecycle });
     activeProcess = owned;
     emit({ event: "owned", mainPid: process.pid, id: owned.id, diagnostics: owned.diagnostics, filesystemPolicy: policy });
     if (mode === "cancel") {

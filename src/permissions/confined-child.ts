@@ -26,7 +26,7 @@ import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } f
 import { getWindowsExtensionBackendPlan } from "./sandbox-capability.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
 import { buildMxcConfinedChildRequest } from "./mxc-confined-child-request.js";
-import { isWindowsPathAtOrUnder, rankMxcFilesystem, type MxcFilesystemGrants } from "./mxc-windows.js";
+import { isWindowsPathAtOrUnder, rankMxcFilesystem, strictlyUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
 import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "./mxc-extension-process.js";
 import {
   MxcNativeEntryRequiredError,
@@ -186,43 +186,58 @@ function measureExecutableIdentity(command: string): string {
     stat.mtimeNs, stat.ctimeNs, stat.birthtimeNs].join("\0")).digest("hex");
 }
 
-// Lexical and canonical spellings, so a junction-spelled path and its target compare as one location.
+const NOT_FOUND = new Set(["ENOENT", "ENOTDIR"]);
+
+// Lexical and canonical spellings, so a junction-spelled path and its target compare as one location. A path that does
+// not exist yet is canonicalized through its longest existing ancestor, so `link\new` still compares as `target\new`.
 function pathForms(path: string): readonly string[] {
   const lexical = winPath.normalize(path);
-  try {
-    const canonical = winPath.normalize(realpathSync.native(path).replace(/^\\\\\?\\/u, ""));
-    return canonical.toLowerCase() === lexical.toLowerCase() ? [lexical] : [lexical, canonical];
-  } catch (error) {
-    // A path that does not exist yet has no canonical spelling; its lexical form is still compared.
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return [lexical];
-    throw error;
+  const remainder: string[] = [];
+  for (let existing = lexical; ;) {
+    try {
+      const canonical = winPath.join(winPath.normalize(realpathSync.native(existing).replace(/^\\\\\?\\/u, "")), ...remainder);
+      return canonical.toLowerCase() === lexical.toLowerCase() ? [lexical] : [lexical, canonical];
+    } catch (error) {
+      if (!NOT_FOUND.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      const parent = winPath.dirname(existing);
+      // No existing ancestor at all (not even the volume root): only the lexical spelling exists.
+      if (parent === existing) return [lexical];
+      remainder.unshift(winPath.basename(existing));
+      existing = parent;
+    }
   }
 }
 
-/** Writable roots of every holder that is admitted or still owned (pending, live or quarantined). */
-interface LiveHolderWritableRoots { readonly writable: readonly string[] }
-const liveHolderWritableRoots = new Set<LiveHolderWritableRoots>();
-
-function strictlyInside(path: string, root: string): boolean {
-  return isWindowsPathAtOrUnder(path, root) && winPath.normalize(path).replace(/\\+$/u, "").toLowerCase()
-    !== winPath.normalize(root).replace(/\\+$/u, "").toLowerCase();
+/** What a holder that is admitted or still owned (pending, live or quarantined) can write and depends on, in every spelling. */
+interface LiveHolderFootprint {
+  /** Write grants, HOME, temp and captured write roots. */
+  readonly writable: readonly string[];
+  /** Every grant, deny, cwd, HOME and temp path whose identity must not be substituted. */
+  readonly paths: readonly string[];
+  /** HOME and temp: never shareable, so even an equal writable root of another holder is refused. */
+  readonly privateDirectories: readonly string[];
+  readonly command: readonly string[];
 }
+const liveHolderFootprints = new Set<LiveHolderFootprint>();
 
 /** A confined co-holder (the parent included) that can write above a path can swap a reparse point there between the
- * host's final identity check and the SDK's native string-path open. Refuse such nesting; equal pinned roots are allowed.
- * The executable must lie outside every live writable root, this holder's own included. */
-function assertNoCoHolderNesting(self: LiveHolderWritableRoots, paths: readonly string[], command: string): void {
-  const candidates = paths.flatMap(pathForms);
-  const commandForms = pathForms(command);
-  for (const holder of new Set([...liveHolderWritableRoots, self])) {
-    for (const root of holder.writable) {
-      if (commandForms.some((form) => isWindowsPathAtOrUnder(form, root))) {
-        throw new MxcProcessContractError("Container executable lies inside a holder's writable root");
-      }
-      if (holder !== self && candidates.some((candidate) => strictlyInside(candidate, root))) {
-        throw new MxcProcessContractError("Container path lies inside another live holder's writable root");
-      }
+ * host's final identity check and the SDK's native string-path open. Refuse such nesting in BOTH directions, so the
+ * outcome does not depend on admission order: a new holder's paths inside a live holder's writable root, and a live
+ * holder's paths inside the new holder's writable root. Equal pinned roots are allowed, except for HOME/temp. Every
+ * executable must lie outside every live writable root, this holder's own included. */
+function assertNoCoHolderNesting(self: LiveHolderFootprint): void {
+  const writableContains = (writer: LiveHolderFootprint, target: LiveHolderFootprint): string | undefined => {
+    for (const root of writer.writable) {
+      if (target.command.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container executable lies inside a holder's writable root";
+      if (writer === target) continue;
+      if (target.privateDirectories.some((form) => isWindowsPathAtOrUnder(form, root))) return "Container HOME or temp lies at or inside another live holder's writable root";
+      if (target.paths.some((form) => strictlyUnder(form, root))) return "Container path lies inside another live holder's writable root";
     }
+    return undefined;
+  };
+  for (const holder of new Set([...liveHolderFootprints, self])) {
+    const refusal = writableContains(holder, self) ?? (holder === self ? undefined : writableContains(self, holder));
+    if (refusal !== undefined) throw new MxcProcessContractError(refusal);
   }
 }
 
@@ -264,10 +279,14 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
     sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });
-  const ownRoots: LiveHolderWritableRoots = Object.freeze({ writable: Object.freeze([...new Set(
-    [...grants.readwrite, spec.home, spec.temp, ...spec.filesystemOwnership.writeRoots].flatMap(pathForms))]) });
-  const nestedPaths = Object.freeze([...grants.readwrite, ...grants.readonly, ...grants.denied, spec.cwd, spec.home, spec.temp]);
-  const assertNesting = (): void => assertNoCoHolderNesting(ownRoots, nestedPaths, spec.command);
+  const forms = (paths: readonly string[]): readonly string[] => Object.freeze([...new Set(paths.flatMap(pathForms))]);
+  const ownRoots: LiveHolderFootprint = Object.freeze({
+    writable: forms([...grants.readwrite, spec.home, spec.temp, ...spec.filesystemOwnership.writeRoots]),
+    paths: forms([...grants.readwrite, ...grants.readonly, ...grants.denied, spec.cwd, spec.home, spec.temp]),
+    privateDirectories: forms([spec.home, spec.temp]),
+    command: forms([spec.command]),
+  });
+  const assertNesting = (): void => assertNoCoHolderNesting(ownRoots);
   assertNesting();
   if (!spec.holder || typeof spec.holder !== "object" || admittedNativeHolderIdentities.has(spec.holder)) {
     throw new MxcProcessContractError("Extension holder incarnation is invalid or already admitted");
@@ -299,12 +318,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       await lease?.close();
       egress.release();
       admittedNativeHolderIdentities.delete(spec.holder);
-      liveHolderWritableRoots.delete(ownRoots);
+      liveHolderFootprints.delete(ownRoots);
       if (spec.parent) nativeHolderBindings.get(spec.parent)?.children.delete(lifetime);
     });
     admittedNativeHolderIdentities.add(spec.holder);
     // Owned from registration until verified termination, so a concurrent admission sees these roots.
-    liveHolderWritableRoots.add(ownRoots);
+    liveHolderFootprints.add(ownRoots);
     if (spec.parent) nativeHolderBindings.get(spec.parent)!.children.add(lifetime);
   } catch (error) { egress.release(); throw error; }
   try {

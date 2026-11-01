@@ -10,6 +10,9 @@ const state = vi.hoisted(() => ({
   plan: { selectedBackend: "mxc", readiness: "ready" },
   realPlan: false,
   executableStamp: 1n,
+  // Synthetic junctions (lexical prefix -> target) and not-yet-created paths for canonical spelling.
+  junctions: new Map<string, string>(),
+  missing: new Set<string>(),
   spawn: vi.fn(), close: vi.fn(), admit: vi.fn(), validate: vi.fn(), allowed: vi.fn(), lease: vi.fn(),
 }));
 vi.mock("../asrt-sandbox.js", () => ({
@@ -28,7 +31,17 @@ vi.mock("../../main/managed-child-processes.js", () => ({ assertManagedChildProc
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
   // Synthetic Windows paths: canonical spelling is the lexical one, and the executable's file identity is a fixture stamp.
-  const realpathSync = Object.assign((path: string) => path, { native: (path: string) => path });
+  const canonical = (path: string): string => {
+    const key = path.toLowerCase();
+    if ([...state.missing].some((missing) => key === missing.toLowerCase() || key.startsWith(`${missing.toLowerCase()}\\`))) {
+      throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+    }
+    for (const [link, target] of state.junctions) {
+      if (key === link.toLowerCase() || key.startsWith(`${link.toLowerCase()}\\`)) return target + path.slice(link.length);
+    }
+    return path;
+  };
+  const realpathSync = Object.assign(canonical, { native: canonical });
   const statSync = (_path: string) => ({ isFile: () => true, dev: 7n, ino: 11n, size: 4096n,
     mtimeNs: state.executableStamp, ctimeNs: state.executableStamp, birthtimeNs: 1n });
   return { ...actual, existsSync: () => true, realpathSync, statSync };
@@ -67,6 +80,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.realPlan = false;
   state.executableStamp = 1n;
+  state.junctions.clear();
+  state.missing.clear();
   state.plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
     fallback: { version: "0.0.80", ready: false } });
   state.close.mockResolvedValue(undefined);
@@ -259,8 +274,12 @@ describe("co-holder nesting and executable identity", () => {
     await parent.release();
   });
 
-  it("allows an equal pinned writable root shared with the parent", async () => {
-    const parent = await spawnMxcConfinedChild(spec());
+  it("allows an equal pinned writable root shared with the parent when neither HOME nor temp lies inside it", async () => {
+    // HOME/temp are never shareable, so the parent keeps them in its own staging root beside the shared one.
+    admitWrites("D:\\work", "D:\\parent-stage");
+    const parent = await spawnMxcConfinedChild({ ...spec(), home: "D:\\parent-stage\\home", temp: "D:\\parent-stage\\temp",
+      allowWrite: ["D:\\work", "D:\\parent-stage"],
+      filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\parent-stage"], hostStorageRoots: [] } });
     admitWrites("D:\\work", "D:\\child");
     const child = await spawnMxcConfinedChild({ ...siblingChild(parent), allowWrite: ["D:\\work", "D:\\child"],
       filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\child"], hostStorageRoots: [] } });
@@ -269,14 +288,17 @@ describe("co-holder nesting and executable identity", () => {
   });
 
   it("refuses an equal shared root once any deny lands inside it, so descendants use sibling roots in practice", async () => {
-    const parent = await spawnMxcConfinedChild(spec());
+    admitWrites("D:\\work", "D:\\parent-stage");
+    const parent = await spawnMxcConfinedChild({ ...spec(), home: "D:\\parent-stage\\home", temp: "D:\\parent-stage\\temp",
+      allowWrite: ["D:\\work", "D:\\parent-stage"],
+      filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\parent-stage"], hostStorageRoots: [] } });
     // Production ranking always places floor denies (e.g. the .git control) below a writable root; the parent could
     // swap that denied subpath, so sharing the parent's exact root is refused as soon as such a deny exists.
     state.admit.mockReturnValueOnce({ policy: { allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work", "D:\\child"],
       denyRead: [], denyWrite: ["D:\\work\\.git"], protectedFloor: [] }, assertStillValid: state.validate });
     await expect(spawnMxcConfinedChild({ ...siblingChild(parent), allowWrite: ["D:\\work", "D:\\child"],
       filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\child"], hostStorageRoots: [] } }))
-      .rejects.toThrow(/another live holder's writable root/);
+      .rejects.toThrow(/Container path lies inside another live holder's writable root/);
     await parent.release();
   });
 
@@ -286,22 +308,23 @@ describe("co-holder nesting and executable identity", () => {
     await expect(spawnMxcConfinedChild({ ...siblingChild(first), parent: undefined, cwd: "D:\\work\\sub" }))
       .rejects.toThrow(/another live holder's writable root/);
     await first.release();
-    // A holder that becomes live while another is between admission and native creation is caught in beforeSpawn.
-    let late: Promise<MxcConfinedChildSpawn> | undefined;
+    // A holder still between admission and native creation is already registered: a holder whose root would contain
+    // its paths is refused at admission, and the pending one still reaches native creation.
+    let late: unknown;
     state.spawn.mockImplementationOnce(async (_request, options) => {
       const child = { id: 44, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
         completion: new Promise(() => {}), dispose: vi.fn().mockResolvedValue(undefined) };
       options.onOwned(child);
       admitWrites("D:\\outer");
-      late = spawnMxcConfinedChild({ ...siblingChild(first, "D:\\outer"), parent: undefined });
-      await late;
+      late = await spawnMxcConfinedChild({ ...siblingChild(first, "D:\\outer"), parent: undefined }).catch((error: unknown) => error);
       options.beforeSpawn();
       return child;
     });
     admitWrites("D:\\outer\\inner");
-    await expect(spawnMxcConfinedChild({ ...siblingChild(first, "D:\\outer\\inner"), parent: undefined }))
-      .rejects.toThrow(/another live holder's writable root/);
-    await (await late!).release();
+    const pending = await spawnMxcConfinedChild({ ...siblingChild(first, "D:\\outer\\inner"), parent: undefined });
+    expect(late).toBeInstanceOf(Error);
+    expect(String(late)).toMatch(/another live holder's writable root|HOME or temp/);
+    await pending.release();
   });
 
   it("refuses an executable inside any live writable root, the holder's own included", async () => {
@@ -334,5 +357,42 @@ describe("co-holder nesting and executable identity", () => {
       filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "C:\\ave\\sandbox\\home\\holder-a"], hostStorageRoots: [] } }))
       .rejects.toThrow(/dedicated staging tree/);
     expect(state.lease).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes a not-yet-created path through its longest existing ancestor", async () => {
+    admitWrites("D:\\work", "D:\\parent-stage");
+    const parent = await spawnMxcConfinedChild({ ...spec(), home: "D:\\parent-stage\\home", temp: "D:\\parent-stage\\temp",
+      allowWrite: ["D:\\work", "D:\\parent-stage"],
+      filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\parent-stage"], hostStorageRoots: [] } });
+    // D:\\alias is a junction to the parent's writable D:\\work; the child's HOME below it does not exist yet, so only
+    // canonicalizing its existing ancestor reveals that it would be created inside the parent's root.
+    state.junctions.set("D:\\alias", "D:\\work");
+    state.missing.add("D:\\alias\\child-home");
+    admitWrites("D:\\child");
+    await expect(spawnMxcConfinedChild({ ...siblingChild(parent), home: "D:\\alias\\child-home",
+      filesystemOwnership: { readRoots: [], writeRoots: ["D:\\child", "D:\\alias\\child-home"], hostStorageRoots: [] } }))
+      .rejects.toThrow(/HOME or temp lies at or inside another live holder's writable root/);
+    await parent.release();
+  });
+
+  it("refuses in the reverse direction too, so the outcome does not depend on admission order", async () => {
+    const parent = await spawnMxcConfinedChild(spec());
+    admitWrites("D:\\outer\\inner");
+    const inner = await spawnMxcConfinedChild(siblingChild(parent, "D:\\outer\\inner"));
+    // A new holder whose writable root contains a live holder's paths is the same race seen from the other side.
+    admitWrites("D:\\outer");
+    await expect(spawnMxcConfinedChild({ ...siblingChild(inner, "D:\\outer"), parent: undefined }))
+      .rejects.toThrow(/another live holder's writable root|HOME or temp/);
+    await drainMxcHolderLifetimes();
+  });
+
+  it("never lets HOME or temp share an equal root with another live holder", async () => {
+    const parent = await spawnMxcConfinedChild(spec());
+    // Equal writable roots are otherwise allowed; HOME exactly at the parent's writable root is not.
+    admitWrites("D:\\work", "D:\\child");
+    await expect(spawnMxcConfinedChild({ ...siblingChild(parent), home: "D:\\work", allowWrite: ["D:\\work", "D:\\child"],
+      filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\child"], hostStorageRoots: [] } }))
+      .rejects.toThrow(/HOME or temp lies at or inside another live holder's writable root/);
+    await parent.release();
   });
 });

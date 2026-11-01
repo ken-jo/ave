@@ -160,8 +160,12 @@ spawn cannot be synchronous at the spawn boundary, and an earlier draft hashed
 the host's own Electron instead of the admitted executable. A same-size rewrite
 can restore settable timestamps, so admission also refuses any executable inside
 any live holder's writable root, the new holder's own planned writable roots
-included. Between admission and spawn only the signed-in user, outside this
-contract's threat model, can then change the executable.
+included. Among extension holders, only the signed-in user, outside this
+contract's threat model, can then change the executable between admission and
+spawn. Agent shell containers are not in that registry: a live MXC shell whose
+writable workspace contains an extension executable could still rewrite it, so
+holder adapters must not admit executables from a workspace (see the adapter
+requirements below).
 `consumeMxcExtensionAdmission()` runs at the native spawn boundary; a mismatch
 or second use refuses the start and cannot retry the receipt. A globally ready
 selection, a copied receipt or another holder's evidence cannot substitute.
@@ -205,13 +209,56 @@ junction or symlink in that interval. For example, a plugin child writing
 PSEC follows the reparse point when applying the grant. The host therefore
 refuses a new holder when any of its read, write or deny grants, cwd, HOME, temp
 or executable lies strictly inside another live holder's writable root, the
-parent included. Equal roots are permitted only when no deny or demoted path
-lands strictly inside the other holder's root, because write roots are pinned
-and cannot be replaced by their holder; production ranking places floor denies
-(such as a `.git` control) below writable roots, so in practice a descendant
-uses sibling roots. Live roots stay registered from admission
-until verified termination, including quarantined holders, and the check runs at
-admission and again synchronously in `beforeSpawn`.
+parent included, and symmetrically when its writable root would contain a live
+holder's paths, so the outcome does not depend on admission order. Every path is
+compared in its lexical and canonical spelling; a path that does not exist yet is
+canonicalized through its longest existing ancestor. Equal roots are permitted
+only when no deny or demoted path lands strictly inside the other holder's root,
+because write roots are pinned and cannot be replaced by their holder. HOME and
+temp never share: HOME or temp equal to or inside another live holder's writable
+root is refused. Live footprints stay registered from admission until verified
+termination, including quarantined holders, and the check runs at admission and
+again synchronously in `beforeSpawn`.
+
+The registry covers extension holders admitted through `spawnMxcConfinedChild`
+only. Agent shell containers (`prepareMxcShellLaunch`, outside this slice) are
+not registered: a live shell with write access to the workspace can still race
+substitutions of any extension path inside that workspace. The nesting guarantee
+therefore does not extend to workspace paths while an agent shell runs.
+
+Every production native extension spawn goes through `spawnMxcConfinedChild`.
+`spawnMxcExtensionProcess` requires its admission callback (`beforeSpawn`) and
+refuses a call without it; a structural test pins its callers to
+`confined-child.ts`. The packaged owned-process verification entry uses the
+separately named, diagnostic-only `spawnMxcExtensionProcessForDiagnostics`, which
+is bundled only into an explicit, never-published native verification build.
+
+Hard requirements for holder adapters (rows 3–5):
+- Sibling roots are mandatory. A descendant, delegated worker or bundled helper
+  never receives a root inside its parent's or caller's writable roots. Production
+  ranking places floor denies (such as a `.git` control) below writable roots, so
+  even an exactly equal root is refused in practice; HOME and temp are never
+  shared.
+- A caller's exact plan cannot be passed through. A bundled helper or descendant
+  that receives the caller's admitted plan unchanged lands its `.git` floor deny,
+  HOME and temp inside the caller's live root and is refused. The adapter must
+  admit the helper with its own sibling roots, or run it within the caller's own
+  holder instead of as a second holder.
+- Workspace-holder concurrency is limited. Two holders whose write grants cover
+  the same workspace (for example two delegated workers on one workspace) cannot
+  both be live: the second is refused while the first is owned. Serialize such
+  holders, or give each a disjoint root.
+- HOME/temp go in `<AVE_HOME>\mxc-staging\<opaque-id>`, inside the holder's
+  captured write roots.
+- Executables come from installation or generation roots, never from a workspace
+  or any holder-writable root.
+
+Confined child DLL search from cwd/PATH is not host-hardened; PSEC behavior is
+native-unverified. The request forwards `PATH` (`FORWARD_ENV_KEYS`), and a Node
+holder's entry script and its modules sit outside the executable rule above. A
+DLL planted in the cwd, a `PATH` directory or a holder-writable root may be
+loaded by the confined child. That stays within the child's own confinement but
+is not prevented by the host; the native release gate must observe it.
 
 This narrows the raw-path interval but does not remove it: it is not a
 handle-relative launch, and it does not protect against the signed-in user

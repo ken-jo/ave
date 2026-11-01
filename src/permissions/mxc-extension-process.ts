@@ -281,12 +281,13 @@ async function spawnWith(request: ContainerRequest, nodeModules: string, entry: 
   }
 }
 
-/** The caller supplies an already-admitted immutable plan. beforeSpawn synchronously
- * revalidates its identities after native readiness; onOwned retains cleanup ownership
- * before startup begins, including when startup rejects with unverified cleanup.
- */
+interface MxcNativeSpawnOptions {
+  readonly signal?: AbortSignal;
+  readonly onLifecycle?: LifecycleObserver;
+  readonly onOwned?: (owned: OwnedMxcExtensionProcess) => void;
+}
 
-export async function spawnMxcExtensionProcess(request: ContainerRequest, options: { signal?: AbortSignal; onLifecycle?: LifecycleObserver; beforeSpawn?: () => void; onOwned?: (owned: OwnedMxcExtensionProcess) => void } = {}): Promise<OwnedMxcExtensionProcess> {
+function spawnPackaged(request: ContainerRequest, options: MxcNativeSpawnOptions, beforeSpawn: (() => void) | undefined): Promise<OwnedMxcExtensionProcess> {
   if (process.platform !== "win32") throw new MxcCapabilityUnavailableError("Native extension processes require Windows");
   const resources = getHostResources();
   if (!resources.isPackaged) throw new MxcCapabilityUnavailableError("Native extension processes require a verified packaged installation");
@@ -296,7 +297,30 @@ export async function spawnMxcExtensionProcess(request: ContainerRequest, option
   // is a separate sealed request and never inherits the supervisor's environment.
   return spawnWith(request, nodeModules, entry, (file, modules, generation) => spawnManaged(process.execPath, [file, modules, generation], {
     env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }), cwd: resources.resourcePath, stdio: ["pipe", "pipe", "pipe", "pipe"],
-  }, { label: "extension-native-supervisor" }), options.signal, options.onLifecycle, options.beforeSpawn, options.onOwned);
+  }, { label: "extension-native-supervisor" }), options.signal, options.onLifecycle, beforeSpawn, options.onOwned);
+}
+
+/** Production native extension spawn. Its only sanctioned caller is `spawnMxcConfinedChild` (`confined-child.ts`),
+ * whose `beforeSpawn` runs the row-2 admission at the native boundary: the start guard, the single-use receipt, the
+ * co-holder nesting registry, the executable identity re-measure and HOME/temp placement. `beforeSpawn` is therefore
+ * required: a call without it would create a container no admission ever authorized. A structural test pins the
+ * caller set (`mxc-native-spawn-callers.test.ts`). onOwned retains cleanup ownership before startup begins, including
+ * when startup rejects with unverified cleanup.
+ */
+export async function spawnMxcExtensionProcess(request: ContainerRequest, options: MxcNativeSpawnOptions & { readonly beforeSpawn: () => void }): Promise<OwnedMxcExtensionProcess> {
+  if (typeof options?.beforeSpawn !== "function") {
+    throw new MxcProcessContractError("Native extension spawn requires row-2 admission at the spawn boundary; use spawnMxcConfinedChild");
+  }
+  return spawnPackaged(request, options, options.beforeSpawn);
+}
+
+/** Diagnostic-only: the packaged owned-process verification entry (`tools/mxc-probes/packaged-main.ts`), which is
+ * bundled only into an explicit native verification build (`AVE_MXC_VERIFICATION_BUILD=1`, never published). It
+ * measures the primitive itself, below holder admission, so it carries no admission receipt. No production module
+ * may call it; the structural caller test enforces that.
+ */
+export async function spawnMxcExtensionProcessForDiagnostics(request: ContainerRequest, options: MxcNativeSpawnOptions = {}): Promise<OwnedMxcExtensionProcess> {
+  return spawnPackaged(request, options, undefined);
 }
 
 export const _spawnMxcExtensionProcessForTest = spawnWith;

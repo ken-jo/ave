@@ -259,7 +259,7 @@ export function isWindowsPathAtOrUnder(child: string, parent: string): boolean {
   return c.startsWith(p.endsWith("\\") ? p : `${p}\\`);
 }
 
-function strictlyUnder(child: string, parent: string): boolean {
+export function strictlyUnder(child: string, parent: string): boolean {
   return foldPath(child) !== foldPath(parent) && isWindowsPathAtOrUnder(child, parent);
 }
 

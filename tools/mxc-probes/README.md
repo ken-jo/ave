@@ -116,7 +116,7 @@ The generator deterministically reads installed files, semantic manifest fields 
 
 This focused app checks SDK packaging and does not compile the unrelated native helpers, run the full application hook's other asset checks, create an installer or execute Windows code. The ordinary `dist:win` entry still requires a native Windows host for its helper build; cross-packaging here does not claim a complete application installer or native readiness.
 
-The verification build invokes the real public `spawnMxcExtensionProcess` entry and packaged supervisor. Diagnostic code is omitted from normal release builds; explicitly enable it only for this local verification build. Use a **non-elevated, standard-user Windows x64 interactive desktop session** in the checkout used to build the app. The driver rejects session 0 and elevated tokens; it does not install or prepare the host.
+The verification build invokes the real packaged supervisor through the named diagnostic-only entry `spawnMxcExtensionProcessForDiagnostics`, which measures the owned-process primitive below holder admission; production code must use `spawnMxcConfinedChild`, whose admission the production `spawnMxcExtensionProcess` requires. Diagnostic code is omitted from normal release builds; explicitly enable it only for this local verification build. Use a **non-elevated, standard-user Windows x64 interactive desktop session** in the checkout used to build the app. The driver rejects session 0 and elevated tokens; it does not install or prepare the host.
 
 The existing unsigned directory build selects x64 on an x64 host, builds native helpers, and assembles `release\win-unpacked\Ave.exe`. Neither `--dir` nor the probe installs the app.
 
