@@ -83,3 +83,91 @@ Local, non-native checks:
 node --test tools/mxc-probes/probe-common.test.mjs tools/mxc-probes/process-lifecycle.test.mjs tools/mxc-probes/filesystem-policy.test.mjs
 node --check tools/mxc-probes/sdk-supervisor.mjs
 ```
+
+## Packaged extension-process acceptance
+
+Run the explicit packaging regression before the native peer check:
+
+```powershell
+bun run check:mxc-packaging
+# Or select one architecture:
+bun run check:mxc-packaging -- --arch arm64
+```
+
+This script runs the real locked packager with `--win --dir --x64` and `--win --dir --arm64`, unsigned, `npmRebuild:false` and `--publish=never`, on macOS/Linux or Windows. It downloads verified target runtime/addon archives, copies the actual installed dependency graph into an owned temporary app without inventing root dependencies, and uses the production build configuration, file/unpack rules and nested-semver extra-resource rule. Its after-pack hook calls the same `finalizePackagedMxcSdk` as the application hook. It requires rewritten manifests to pass their semantic pins, nested semver to resolve at the pinned path, executable bytes to match, debug symbols to be absent, and the recorded runtime inventory to verify. The required `build-and-test` job in `.github/workflows/ci.yml` runs this check for both targets after checking generated pins; the Windows permission job also checks both targets. Any packaging failure fails its job. It remains outside default Vitest because it downloads and assembles both target runtimes. CI caches the Windows runtime ZIPs through `ELECTRON_CACHE`; local runs can set that variable to an absolute cache directory too. JSON prints the exact `work` path, per-target manifest hashes and semver version. Successful runs remove only their owned work tree and report `workRemoved:true`; an external cache is preserved. Failed runs retain that tree, `result.json` and `builder.log`, report `workRemoved:false`, and exit nonzero. Remove only that exact reported path after reviewing a failed run.
+
+The `build-only-headers` exclusion removes `node-addon-api` from the PTY nested dependency path and its hoisted root path. The prebuilt runtime does not import this native-build dependency, so neither runtime nor before-pack pins require its headers or build scripts. The check requires that the installed nested tree exists, then verifies that neither packaged location contains it. Its earlier reduced dependency graph retained this nested package while the production graph hoisted it; the production collector reproduces that relocation on macOS as well. The check now preserves the production dependency graph, and Windows CI supplies a native-host backstop.
+
+The other nested runtime pins belong only to `@microsoft/mxc-sdk/node_modules/semver`: that runtime dependency is explicitly copied through extra resources and verified at the exact nested path. `koffi` has no nested dependency pins; its selected optional addon is staged and verified at its top-level package path.
+
+Empty `node-pty/.bun-tag-<16 lowercase hex digits>` patch-install markers are declared package-manager bookkeeping and are removed before packaged inventory verification. Nonempty or malformed markers remain unexpected payloads and fail verification.
+
+Regenerate payload pins after an intentional dependency or patch change:
+
+```powershell
+bun install --frozen-lockfile
+bun run update:mxc-pins
+bun run check:mxc-pins
+# Equivalent read-only drift check:
+node scripts/update-mxc-pins.mjs --check
+```
+
+The generator deterministically reads installed files, semantic manifest fields and both architectures. Missing optional target addons are fetched only from their separately pinned archives into an isolated temporary source directory, which is removed afterward; `--no-download` requires those sources to be installed already. It does not modify shared dependencies or silently skip an architecture. Review generated changes; archive, launcher and license trust anchors still require explicit review. Before packaging, original manifest byte hashes are verified as well. Packaged manifests use semantic pins after normalization. The strict unpacked inventory covers the SDK, nested semver, FFI and PTY trees, while excluding the declared build-only header package; unknown scripts, manifests, native files and redirects are rejected. Unused PTY build/source directories and foreign prebuilds are removed as declared non-runtime categories; retained build-source/declaration/license allowances are scoped by path and extension.
+
+This focused app checks SDK packaging and does not compile the unrelated native helpers, run the full application hook's other asset checks, create an installer or execute Windows code. The ordinary `dist:win` entry still requires a native Windows host for its helper build; cross-packaging here does not claim a complete application installer or native readiness.
+
+The verification build invokes the real public `spawnMxcExtensionProcess` entry and packaged supervisor. Diagnostic code is omitted from normal release builds; explicitly enable it only for this local verification build. Use a **non-elevated, standard-user Windows x64 interactive desktop session** in the checkout used to build the app. The driver rejects session 0 and elevated tokens; it does not install or prepare the host.
+
+The existing unsigned directory build selects x64 on an x64 host, builds native helpers, and assembles `release\win-unpacked\Ave.exe`. Neither `--dir` nor the probe installs the app.
+
+The command uses `--skip-native-rebuild`, as the [release workflow](../../.github/workflows/build-installers.yml) does, because the locked `node-abi` 4.31.0 cannot resolve Electron 45.2.1 and causes `@electron/rebuild` to abort on `better-sqlite3`.
+
+```powershell
+bun install --frozen-lockfile
+if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+$env:AVE_MXC_VERIFICATION_BUILD = '1'
+try {
+  bun run dist:win -- --dir --skip-code-sign --skip-native-rebuild --publish never
+  if ($LASTEXITCODE -ne 0) { throw 'Verification build failed' }
+} finally { $env:AVE_MXC_VERIFICATION_BUILD = $null }
+$App = (Resolve-Path '.\release\win-unpacked\Ave.exe').Path
+$Driver = (Resolve-Path '.\tools\mxc-probes\packaged.mjs').Path
+$env:ELECTRON_RUN_AS_NODE = '1'
+try {
+  & $App $Driver --app $App | Tee-Object -FilePath '.\mxc-packaged-observations.jsonl'
+  $ProbeExit = $LASTEXITCODE
+} finally { $env:ELECTRON_RUN_AS_NODE = $null }
+$ProbeExit
+```
+
+The app used as driver must be the same locally built payload being measured. Its Node mode runs the standalone controller, which verifies the packaged SDK and runtime bytes before loading the verified observer addon. The diagnostic main uses that untouched original package for its independent pin inspector, including in the planted-DLL case; the public primitive and its supervisor still verify only the mutable copied package. This keeps the negative control on the real public spawn path. The observer has **no outer lifetime job**, so it cannot mask the main-death EOF test. The controller copies the app into one fresh `ave-mxc-packaged-*` OS-temp directory and refuses redirected source files before copying. Source validation, copying, retained-size walks and recursive cleanup temporarily set `process.noAsar = true`, treating `app.asar` as one ordinary file; `finally` restores the prior setting before archive entry loading. All measured processes execute from that copy. The planted DLL is added only to the copy's unpacked SDK bin directory. The real package/install and repository dependencies are read-only inputs.
+
+The filesystem audit also covers the controller's exact executable/journal/DLL reads, observer module-path resolution, fixture journal writes, public spawn entry and supervisor bootstrap. Production integrity walks are confined to `app.asar.unpacked/node_modules`; runtime verification reads the exact `resources/mxc/<arch>/supervisor-runtime-pins.json` and enumerates only the executable's immediate directory. None recursively walks the resources archive. The supervisor and diagnostic main intentionally load their entry from `app.asar` with archive handling enabled. Archive handling is restored before either bundled entry loads.
+
+Each row pins the main process through an owned nonce challenge. The diagnostic main pins its supervisor synchronously in the public spawn callback, holds the exact process object across even a fast startup rejection, and lets the controller duplicate that object before release. Container fixtures publish atomic PID/token journals and answer fresh file-based nonce challenges while held before stdio transfer. Every successfully admitted process object requires matching PID, creation time, executable-image evidence and terminal signaling; a PID's absence or a failed temp deletion is never death evidence. Survivor records name the exact pinned role, PID, creation time and image path before cleanup.
+
+All modes, including cancellation, await an explicit controller `release` before closing supervisor or container pins. `case-complete` reports `controlsClosed`; a disconnected controller is a `HarnessHandleLifetimeError`, exit 2, rather than implicit release. On that failure the pins remain owned until the diagnostic process exits. After duplicating a process handle, the controller checks its PID before querying creation time or executable identity. A mismatch reports expected and actual PIDs and a possible handle-lifetime race; a failed PID query is reported separately. A matching PID still requires a successful creation-time query. Identity-query failures name the native call and error code. For the cancellation container only, a failed image query can use live pin-time image evidence when the duplicated handle is already signaled, its PID and creation time exactly match the pinned frame, and the resolved pin-time image matches the copied executable. The main marks `aliveAtPinTime:true` only if the object is unsignaled both before and after its identity query. Accepted records carry `identityEvidence:"exited-before-duplication: pid+createdAt+pin-time image"` and the image-query error code. A running handle, missing live image evidence, failed time query or any identity mismatch remains a hard failure; an image-query failure alone never establishes death. Changes to the bundled diagnostic main or observer require rebuilding the verification app even when all edits are under this toolkit.
+
+The JSON `observations` array contains:
+
+- `packaged-stdio-bytes-eof`: a held, identity-confirmed container sends exactly 4 MiB, the SHA-256 must match, and stdin EOF must produce the expected stderr marker and successful exit. This proves byte count, hash and EOF only. It does not claim measured end-to-end backpressure.
+- `dispose`, `main-death`, `supervisor-death`: nonce-confirmed container and grandchild objects must still be live immediately before the action and independently signaled afterward. `survivorsBeforeCleanup` records any still-live pinned objects before survivor termination. The observer separately records resolved supervisor module paths; authenticated diagnostics include their total count and any truncated selected-first diagnostic list.
+- `fd3NonInheritance`, within each lifetime row: decode the supervisor owner pipe's object type, compare only descendant handles of that same type, require at least one successfully inspected matching-type handle per descendant, and require no matching owner object. Unrelated, non-duplicable handle types are not inspected. Empty/no-matching snapshots, failed matching-type duplication, unsupported comparisons and incomplete snapshots are inconclusive.
+- `cancel-during-native-spawn`: cancellation starts at the authenticated `spawning` receipt after SDK invocation. The authenticated stop receipt must confirm that cancellation overlapped the pending native await. Immediately after native spawn resolves, the supervisor opens a non-inheritable query/synchronize handle to the container PID, before disposal. Its authenticated `native-created` receipt lets the diagnostic main duplicate that process object synchronously before acknowledging it. The main retains its duplicate until the outer controller has independently duplicated and checked the PID, creation time and executable. `containerObservationComplete:true` requires that exact object; successful cancellation additionally requires `WaitForSingleObject == 0` on the container, main and supervisor. No post-disposal fixture journal or live-child acknowledgement is needed. A missing duplicate, surviving process or cancellation timing miss cannot pass. The cancellation fixture never spawns descendants; the three lifetime rows independently test container and grandchild death. No lifetime job handle is duplicated.
+- `planted-dll-before-load`: a real extra DLL in the copied unpacked SDK directory must produce `MxcIntegrityError` identifying `@microsoft/mxc-sdk/bin/x64/planted.dll`, before any native creating/readiness receipt. That authenticated pre-creation failure establishes `containerNotCreated:true`; main and supervisor termination are still checked through their pinned objects.
+
+`verdict:"measured"`, exit 0, requires all six rows and process cleanup checks to pass. Native failure, unsupported APIs, a cancellation timing miss, unpinned ownership or incomplete evidence returns `inconclusive`/`error`, exit 2. This implementation has **not been run on Windows**; portable tests establish only fixture IO, parsing, bounds and evidence classification. Record the actual JSON. Native module imports, handle-table layout/access, object comparison, nested job/PSEC behavior and cancellation timing remain native-unverified. This entry currently requires x64.
+
+The harness makes no explicit ACL, registry, account, service or firewall changes, and passes no telemetry options. The SDK/OS still manages per-container WFP and WinHTTP state as described above. A local proxy refuses every request and opens no upstream connection. No helper is compiled and no shell/profile executes during the probe. Only exact, identity-pinned process objects may be terminated during cleanup; no process-name search or wildcard kill is used. Observation handles remain query/synchronize-only when transferred from the supervisor. Emergency cleanup opens a separate terminate-capable handle and requires `NtCompareObjects == 0` against the pinned process object before mutation; access, comparison or termination failures are recorded as `cleanupError`. Killing a survivor during cleanup never converts failed death evidence into a passing row.
+
+On any failed observation the temporary copy, possibly incomplete, is retained as evidence, including the planted DLL if that row was reached. The planted artifact is not separately deleted. The JSON reports its exact `temp` path and logical file-byte `tempSizeBytes` (including retained observations); sizing or retention errors are explicit and cannot pass. `spawned:false` explicitly establishes that no measured child process was started, including a failure during the initial copy. Otherwise, before removing a retained directory, independently confirm every recorded process identity is dead and resolve any `unverifiedProcesses` entry. `retainedTempRemovalSafe` is true only when nothing spawned or process-cleanup evidence confirms death with no unresolved process identities; missing evidence is never treated as death. Then remove **only the exact path reported by that run**, without globbing:
+
+```powershell
+$Evidence = Get-Content -LiteralPath '.\mxc-packaged-observations.jsonl' -Raw | ConvertFrom-Json
+$Evidence.temp
+$Evidence.tempSizeBytes
+$Evidence.spawned
+$Evidence.retainedTempRemovalSafe
+# Run only when nothing spawned, or after confirming all recorded processes are dead.
+Remove-Item -LiteralPath $Evidence.temp -Recurse
+```

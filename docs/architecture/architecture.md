@@ -2484,25 +2484,101 @@ terminate the wrapped worker.
 
 By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
-BaseContainer where the host offers one. Ave ships only the MIT-licensed
+BaseContainer where the host offers one. The shell path uses the MIT-licensed
 `wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.1 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
-npm tarball's sha512, each launcher's sha256). Ave does not load the SDK's
-JavaScript yet; loading it (its Windows stdio path needs Node 24.21+ or
-26.8+, which the bundled Electron Node now meets) is deferred to the change
-that runs extensions in MXC. Each
+npm tarball's sha512, each launcher's sha256). The extension process primitive
+runs SDK operations in a dedicated supervisor under the packaged executable's
+Node mode with `ELECTRON_RUN_AS_NODE=1`; the Electron RunAsNode fuse must remain
+explicitly enabled in packaging configuration. The pinned packager reads this fuse
+configuration globally. Only `runAsNode: true` is set, matching the runtime default;
+every other fuse remains inherited, including newer unnamed fuse slots. The
+packager applies fuse changes immediately before signing; the macOS path still
+signs before notarization. A regression applies the installed fuse writer to a
+copy of the pristine runtime fuse wire and requires every fuse value to remain
+equal to its default. This global setting changes neither signing nor notarization
+order on other platforms. Existing holders
+are not routed to this primitive yet. SDK JS,
+FFI addon and architecture-specific DLLs live under `app.asar.unpacked`.
+Installed-byte pins cover SDK `dist` JavaScript, the FFI ESM entry chain and CJS
+entries, locked nested `semver` JavaScript, PTY JavaScript/prebuilds, and the selected
+bootstrap addon. Import-condition resolution must match those pinned roots; tests
+record the static SDK spawn/probe import graph without executing native code.
+This does not claim coverage of arbitrary computed dynamic imports.
+
+Package manifests use the required semantic pins for `name`, `version`, `main`, `exports`, `type` and `imports`, including field absence and condition declaration order; descriptive/build metadata may be removed by packaging. Their raw source hashes remain archive/staging audit inputs. Every JavaScript, addon, DLL and executable entry still requires its exact SHA-256. The locked nested semver tree is copied explicitly through Windows extra resources into its pinned unpacked path because dependency collection can hoist it. PTY `.pdb` files are a declared debug-symbol category, excluded from runtime pins and packages because they are not loaded; no executable hash is skipped. The `node-addon-api` tree used to build PTY prebuilds is a declared `build-only-headers` category, excluded explicitly from package files and runtime pins at both its installed nested path and its hoisted root path. PTY runtime JavaScript loads prebuilt addons and does not import those headers or their build tools; before-pack verification does not require unused header bytes.
+
+Empty `node-pty/.bun-tag-<16 lowercase hex digits>` patch-install markers are declared package-manager bookkeeping and are removed before packaged inventory verification. Nonempty or malformed markers remain unexpected payloads and fail verification.
+
+Before-pack source verification also requires the original package-manifest byte hashes; semantic verification applies to normalized packaged manifests. `bun run update:mxc-pins` regenerates file hashes, semantic manifest fields and both native architectures deterministically from installed sources. `bun run check:mxc-pins` (`node scripts/update-mxc-pins.mjs --check`) fails on drift without rewriting pins. Missing optional target addons are staged from their separately verified archives into temporary sources and cleaned up; `--no-download` requires all sources locally. Archive, launcher and license trust anchors remain explicit review inputs. The required `build-and-test` CI job checks the generated pins and runs `check:mxc-packaging` for x64 and arm64, sharing a lock-keyed Windows runtime ZIP cache. The Windows permission job also runs both packaging targets with a cached runtime download, so the native-host collector path is covered. Successful packaging checks delete their owned temporary trees, failures retain and report the exact path. Strict packaged inventory checks include the FFI, PTY and nested semver trees; unknown scripts, manifests, binaries and redirects fail closed. Retained source/declaration/license allowances are scoped by path and extension. Unused PTY local build/source directories and non-target prebuilds are declared packaging exclusions; unknown selected-target files remain available for rejection.
+
+The packaging regression uses the production dependency declarations and installed dependency graph, with production build configuration and the same locked dependency collector. A reduced graph with added root dependencies is insufficient: hoisting can keep a nested build dependency in that graph while moving it to the root in the application graph. The installed collector reproduces this relocation on macOS too; it is not established as an operating-system-specific omission. The check requires an installed nested PTY header tree before collection and its absence, including the hoisted root copy, in the assembled payload. Diagnostic-only entry/output, unsigned packaging and the focused SDK finalizer do not replace the full application hook or execute native code.
+
+The nested runtime-pin audit has two results: `node-pty/node_modules/node-addon-api` is build-only and excluded, while `@microsoft/mxc-sdk/node_modules/semver` is required at runtime and copied through explicit extra resources before exact resolution, semantic manifest and byte verification. There are no nested `node_modules` pins under `koffi`; its selected optional addon is staged at its pinned top-level package path. Installation-only nested command shims are pruned as described below.
+
+The installed SDK inventory rejects unknown files. Its allowed archive extras
+are declarations/source maps, README/license text, generated native declarations,
+provenance metadata and the explicit unused backend filename set in the integrity
+verifier. Nested runtime dependency files are checked against their pins; the
+locked semver package additionally permits its LICENSE, README and `range.bnf`.
+Named semver command shims under nested `.bin` are installation-only extras;
+symlinks must target the pinned command, and packaging excludes/prunes that
+directory. Unused native backends are removed before packaging.
+Before any native require the supervisor verifies these pins and the
+whole selected native directories plus the packaged executable/runtime DLL inventory,
+then loads only the verified bootstrap addon. The inventory is recorded after
+assembly and signing, and all non-system loaded modules must match it or the SDK pins.
+That trusted addon immediately restricts this process's DLL search to system
+and verified native directories before SDK import or native container loading.
+Every enumerated module is audited; only the selected-first diagnostic list is bounded, with
+`nativeModuleCount` and `nativeModulesTruncated` recording omitted paths. A large
+valid snapshot does not disable the process.
+Loaded paths and allowlist paths, including the actual system directory, are
+realpath-resolved and normalized identically before admission. Only pinned files
+or modules under that system directory are admitted. WinSxS and injected EDR/IME
+modules elsewhere fail closed with `MxcIntegrityError`; signatures alone do not
+authorize them. This compatibility policy remains native-unverified. Startup
+refuses loader overrides, tamper and unexpected modules without a backend retry.
+The trust model allows user-owned installation
+contents and does not protect against the same user racing replacement after
+verification. The current per-machine installer setting is unchanged and is not
+required by this trust premise. See [the bootstrap and lifetime contract](../design/windows-extensions-mxc.md#placement-and-dll-loading).
+A private inherited key/liveness pipe and direction-authenticated bounded frames
+connect main and supervisor; EOF starts teardown even while control input is blocked.
+Startup cancellation sends a stop frame while retaining liveness through native
+process observation, so cancellation cannot imitate owner loss and release the
+process pin before duplication. A failed stop-frame send closes liveness for
+EOF-driven teardown. After readiness has confirmed observation, disposal closes
+liveness immediately to interrupt a backpressured control reader. Forced
+termination waits for the cleanup deadline.
+The supervisor explicitly clears inheritance on fd 3 as well as all three control
+standard handles, resolving fd 3 through the running runtime’s `uv_get_osfhandle`
+export; unavailable protection is a capability error. The supervisor retains a
+non-inherited kill-on-close job without breakaway permission before SDK spawn.
+Terminal receipts follow stream drain, native wait and disposal. After spawn resolves, the supervisor retains a non-inheritable query/synchronize process handle and sends its PID and handle in an authenticated `native-created` receipt. Main acknowledges only after its synchronous lifecycle observer can duplicate the process object; the supervisor retains its handle through that acknowledgement, including during cancellation. The packaged diagnostic main retains its duplicate until the external controller has checked the object and can independently observe terminal signaling. No lifetime job handle is duplicated. Missing acknowledgements remain bounded by owner-EOF teardown and its cleanup watchdog. Missing receipts,
+crashes or cleanup deadlines after possible native creation remain failures with
+unverified termination. Authenticated failures before native creation preserve
+integrity, capability-unavailable, contract or supervisor-lost error types.
+The packaged diagnostic entry requires the explicit build-time flag
+`AVE_MXC_VERIFICATION_BUILD=1`; normal builds omit it and remove stale diagnostic
+output, and every platform’s packaging hook checks the build record and files.
+Actual packaged imports, DLL paths and job/PSEC descendant cleanup require native
+verification on x64 and arm64 before readiness or holder activation. Each shell
 command spawns `wxc-exec.exe --config-base64 <request>`
 from the launcher's own directory (`mxc-windows.ts`, `mxc-shell-launch.ts`);
-no administrator rights or UAC prompt are needed per run or at install.
+no administrator rights or UAC prompt are needed per run. Installation follows
+the existing per-machine installer configuration.
 
-The package's other binaries are not shipped because Ave never takes their
+The SDK payload includes pinned `mxc_ffi.dll` and `wslcsdk.dll`; packaged native
+loading must establish the dynamic dependency inventory on each architecture.
+The remaining backend executables are excluded because Ave never takes their
 paths: `winhttp-proxy-shim.exe` is the elevated, UAC-raising proxy fallback of
 the AppContainer tier, which MXC refuses for `runtimeConfig.networkProxy` with
 egress deny + ingress allow (the only shape Ave sends; boot also requires the
 dry run to select `base-container`); `plm.exe` is the elevated tracing helper
-behind `telemetry`, which Ave never enables; `wslcsdk.dll` and the daemon and
-host-prep binaries serve the WSL-container, Windows Sandbox, isolation-session
+behind `telemetry`, which Ave never enables; the daemon and host-prep binaries
+serve the WSL-container, Windows Sandbox, isolation-session
 and AppContainer+DACL backends. Every PR 9 measurement ran the launcher alone
 in its directory.
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { verifyMxcSupervisorRuntime } from "./lib/mxc-sdk-integrity.mjs";
+import { assertPackagedMxcSdk } from "./lib/mxc-sdk-packaging.mjs";
 // Launch the unpacked artifact to catch production dependency pruning failures before publication.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -111,6 +113,10 @@ function resourcesDirForExecutable(target, executable) {
 }
 
 function assertPackagedFootprint(target, executable) {
+  if (target === "win") {
+    assertPackagedMxcSdk(resourcesDirForExecutable(target, executable), process.arch);
+    verifyMxcSupervisorRuntime(executable, resourcesDirForExecutable(target, executable), process.arch);
+  }
   const asarPath = join(resourcesDirForExecutable(target, executable), "app.asar");
   if (!existsSync(asarPath)) {
     throw new Error(`packaged app.asar missing: ${asarPath}`);

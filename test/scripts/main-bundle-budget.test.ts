@@ -408,6 +408,8 @@ describe("main bundle budget", () => {
     expect(isSafeMainBundleManifestPath("main.js")).toBe(true);
     expect(isSafeMainBundleManifestPath("subscription-grok-tool-policy-hook.js")).toBe(true);
     expect(isSafeMainBundleManifestPath("subscription-tool-mcp-server.js")).toBe(true);
+    expect(isSafeMainBundleManifestPath("mxc-extension-supervisor.js")).toBe(true);
+    expect(isSafeMainBundleManifestPath("mxc-packaged-probe.js")).toBe(true);
     expect(isSafeMainBundleManifestPath("chunks/shared-AB12cd.js")).toBe(true);
 
     expect(isSafeMainBundleManifestPath("unexpected-root.js")).toBe(false);

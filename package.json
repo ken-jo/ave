@@ -110,6 +110,9 @@
     "dist:linux": "node scripts/build-installers.mjs --linux",
     "dist:headless": "node scripts/package-headless-runtime.mjs",
     "dist:win": "node scripts/build-installers.mjs --win",
+    "check:mxc-packaging": "node scripts/check-mxc-packaging.mjs",
+    "update:mxc-pins": "node scripts/update-mxc-pins.mjs",
+    "check:mxc-pins": "node scripts/update-mxc-pins.mjs --check",
     "dist:fast": "node scripts/build-installers.mjs --current --fast",
     "dist:mac:fast": "node scripts/build-installers.mjs --mac --fast",
     "dist:linux:fast": "node scripts/build-installers.mjs --linux --fast",
@@ -127,6 +130,7 @@
     "@ai-sdk/otel": "^1.0.155",
     "@anthropic-ai/sandbox-runtime": "0.0.80",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
+    "@microsoft/mxc-sdk": "1.0.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -261,6 +265,10 @@
       "!node_modules/*/{docs,doc,test,tests,__tests__,example,examples,benchmark,benchmarks,coverage}{,/**/*}",
       "!node_modules/@*/*/{docs,doc,test,tests,__tests__,example,examples,benchmark,benchmarks,coverage}{,/**/*}",
       "!node_modules/**/{browser-test,system-test,*-test,test-*}{,/**/*}",
+      "!node_modules/node-pty/third_party{,/**/*}",
+      "!node_modules/node-pty/node_modules/node-addon-api{,/**/*}",
+      "!node_modules/node-addon-api{,/**/*}",
+      "!node_modules/node-pty/prebuilds/win32-*/**/*.pdb",
       "!node_modules/better-sqlite3/deps{,/**/*}",
       "!node_modules/better-sqlite3/src{,/**/*}",
       "!node_modules/better-sqlite3/binding.gyp",
@@ -281,7 +289,12 @@
       "!node_modules/**/*.{map,ts,tsx,mts,cts,md,markdown}",
       "!node_modules/**/tsconfig*.json",
       "!resources/uv{,/**/*}",
-      "!resources/uv-runtime{,/**/*}"
+      "!resources/uv-runtime{,/**/*}",
+      "!node_modules/@koromix/koffi-win32-*/**/*.{lib,exp}",
+      "!node_modules/@microsoft/mxc-sdk/node_modules/.bin{,/**/*}",
+      "!node_modules/@microsoft/mxc-sdk/bin/**/dotnet{,/**/*}",
+      "!node_modules/@microsoft/mxc-sdk/bin/**/*.{exe,so,dylib}",
+      "!node_modules/@microsoft/mxc-sdk/bin/**/{lxc-exec,unix-test-proxy}"
     ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/sandbox-runtime/vendor/**",
@@ -291,8 +304,12 @@
       "node_modules/sharp/**",
       "node_modules/@napi-rs/**",
       "node_modules/pdfjs-dist/{standard_fonts,cmaps,iccs,wasm}/**",
-      "node_modules/@img/**"
+      "node_modules/@img/**",
+      "node_modules/@microsoft/mxc-sdk/**",
+      "node_modules/koffi/**",
+      "node_modules/@koromix/koffi-win32-*/**"
     ],
+    "electronFuses": { "runAsNode": true },
     "directories": {
       "output": "release"
     },
@@ -466,11 +483,16 @@
       ]
     },
     "win": {
-      "signExts": ["!srt-win.exe"],
+      "signExts": ["!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node", "!OpenConsole.exe", "!winpty-agent.exe", "!conpty.dll", "!winpty.dll"],
       "target": [
         "nsis"
       ],
       "extraResources": [
+        {
+          "from": "node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "to": "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "filter": ["**/*"]
+        },
         {
           "from": "resources/windows-job/${arch}/ave-job.exe",
           "to": "windows-job/${arch}/ave-job.exe"

@@ -1,10 +1,11 @@
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 
 // @ts-expect-error — plain .mjs build script without declarations
-import { currentMxcArch, stageMxcLauncher } from "../../scripts/fetch-mxc.mjs";
+import { currentMxcArch, stageMxcLauncher, stageMxcSdkAddon } from "../../scripts/fetch-mxc.mjs";
 
 const roots: string[] = [];
 function projectRoot(license: string | null): string {
@@ -43,5 +44,26 @@ describe("fetch-mxc --current", () => {
     expect(currentMxcArch("darwin", "arm64")).toBeNull();
     expect(currentMxcArch("linux", "x64")).toBeNull();
     expect(() => currentMxcArch("win32", "ia32")).toThrow(/no pinned launcher for win32-ia32/);
+  });
+});
+
+
+describe("target SDK addon staging", () => {
+  it.each(["x64", "arm64"])("rejects an unpinned %s archive before extraction", async (arch) => {
+    const root = projectRoot(null), tarball = path.join(root, "addon.tgz");
+    writeFileSync(tarball, "not the published addon");
+    await expect(stageMxcSdkAddon({ arch, tarball, projectRoot: root })).rejects.toThrow(/integrity mismatch/);
+  });
+
+  it("refuses an existing altered target instead of repairing it silently", async () => {
+    const root = projectRoot(null);
+    const target = path.join(root, "node_modules/@koromix/koffi-win32-x64");
+    for (const relative of Object.keys(PINS.sdk.architectures.x64).filter((file) => file.startsWith("@koromix/koffi-win32-x64/"))) {
+      const file = path.join(root, "node_modules", relative);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "tampered");
+    }
+    await expect(stageMxcSdkAddon({ arch: "x64", projectRoot: root })).rejects.toThrow(/hash mismatch/);
+    expect(readFileSync(path.join(target, "package.json"), "utf8")).toBe("tampered");
   });
 });

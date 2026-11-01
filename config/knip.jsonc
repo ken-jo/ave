@@ -36,6 +36,12 @@
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
         "src/tools/preview-document-child-main.ts",
+        // Executed as a dedicated native-process supervisor by its installed path.
+        "src/permissions/mxc-extension-supervisor.ts",
+        // Diagnostic entry launched explicitly under the packaged runtime.
+        "tools/mxc-probes/packaged-main.ts",
+        "tools/mxc-probes/packaged.mjs",
+        "tools/mxc-probes/packaged-fixture.mjs",
         "scripts/smoke-live-model.mjs",
         // Informational hook-matcher benchmark, run by hand (see its header).
         "scripts/bench-hook-matchers.ts",

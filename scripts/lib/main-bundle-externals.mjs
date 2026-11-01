@@ -5,6 +5,8 @@ export const MAIN_BUNDLE_EXTERNALS = [
   "better-sqlite3",
   // Keep native addons external so filesystem-relative binding resolution works.
   "node-pty",
+  "@microsoft/mxc-sdk",
+  "koffi",
   // The decoder resolves its native addon and codec libraries from real packages.
   "sharp",
   // Page decoding resolves its worker and native drawing backend from packages.

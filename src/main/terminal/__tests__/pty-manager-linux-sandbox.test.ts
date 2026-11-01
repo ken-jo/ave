@@ -201,7 +201,10 @@ describe.runIf(process.platform === "linux")("workspace terminal under the Linux
 
       // Raw input reaches the original namespace. The write happens while a foreground process still withholds the next command-end marker.
       await userRuns(tabId, tracker, "printf changed > later/.git/config && printf hook > later/.git/hooks/pre-commit && sleep 100");
-      await until(() => readFileSync(join(marker, "config"), "utf8") === "changed");
+      // The first redirect can be visible before the shell executes the second.
+      const hook = join(marker, "hooks", "pre-commit");
+      await until(() => existsSync(hook) && readFileSync(hook, "utf8") === "hook");
+      expect(readFileSync(join(marker, "config"), "utf8")).toBe("changed");
       expect(readFileSync(join(marker, "hooks", "pre-commit"), "utf8")).toBe("hook");
       expect(tracker.get(tracker.nextBlockId() - 1)?.status).toBe("running");
       killTerminal(tabId);

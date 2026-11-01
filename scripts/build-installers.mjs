@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { hostRuntimeAssetSummary } from "./packaged-runtime-assets.mjs";
 import { installerUvTargetFor } from "./uv-targets.mjs";
+import { assertMxcVerificationPublish } from "./lib/mxc-verification-build.mjs";
 import { assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 import { archSpec, crossNodeGypRebuildArgs, describeMachine, nodeGypHeadersDir, parseElfHeader } from "./lib/linux-package-arch.mjs";
 
@@ -378,6 +379,7 @@ async function main() {
   const { selected, arch, publish, skipBuild, skipCodeSign, skipNativeRebuild, fast, dirOnly } = parseArgs(
     process.argv.slice(2),
   );
+  assertMxcVerificationPublish(publish);
   const crossBuild = arch !== process.arch;
   if (crossBuild && !skipNativeRebuild) {
     // The default rebuild would use the host compiler for target modules.

@@ -1,10 +1,10 @@
-// Stage only the per-architecture container launcher and its license.
+// Stage the per-architecture launcher and the selected SDK addon.
 // Verify archive integrity and pinned launcher hashes; keep an already matching binary.
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -82,6 +82,46 @@ export async function stageMxcLauncher({ arch, tarball, projectRoot = PROJECT_RO
   } finally {
     await rm(work, { recursive: true, force: true });
   }
+  return target;
+}
+
+// Cross-architecture packaging cannot assume optional addons for the target
+// were installed on the build host. Stage only a missing target; refuse drift.
+export async function stageMxcSdkAddon({ arch, tarball, projectRoot = PROJECT_ROOT }) {
+  const pin = PINS.sdk.addons[arch];
+  if (!pin) throw new Error("fetch-mxc: unsupported SDK addon architecture");
+  const modules = path.join(projectRoot, "node_modules");
+  const target = path.join(modules, ...pin.package.split("/"));
+  const prefix = pin.package + "/";
+  const files = Object.entries(PINS.sdk.architectures[arch]).filter(([name]) => name.startsWith(prefix));
+  const verify = async (directory) => {
+    for (const [name, expected] of files) {
+      if (sha256(await readFile(path.join(directory, name.slice(prefix.length)))) !== expected) {
+        throw new Error("fetch-mxc: SDK addon hash mismatch");
+      }
+    }
+  };
+  if (existsSync(target)) { await verify(target); return target; }
+  const archive = tarball ? await readFile(tarball) : await (async () => {
+    const name = pin.package.split("/")[1];
+    const url = "https://registry.npmjs.org/" + pin.package + "/-/" + name + "-" + pin.version + ".tgz";
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("fetch-mxc: SDK addon archive unavailable");
+    return Buffer.from(await response.arrayBuffer());
+  })();
+  if (createHash("sha512").update(archive).digest("base64") !== pin.tarballSha512Base64) {
+    throw new Error("fetch-mxc: SDK addon tarball integrity mismatch");
+  }
+  const work = await mkdtemp(path.join(tmpdir(), "ave-mxc-addon-"));
+  try {
+    await writeFile(path.join(work, "addon.tgz"), archive);
+    execFileSync("tar", ["-xzf", "addon.tgz"], { cwd: work, stdio: "inherit" });
+    const extracted = path.join(work, "package");
+    await verify(extracted);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(extracted, target, { recursive: true, errorOnExist: true, force: false });
+    await verify(target);
+  } finally { await rm(work, { recursive: true, force: true }); }
   return target;
 }
 

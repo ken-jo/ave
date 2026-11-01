@@ -340,4 +340,10 @@ module.exports = async function afterPack(context) {
     );
   }
   assertGraphicsRuntimeFiles(libraryDirectory, context.electronPlatformName);
+  if (context.electronPlatformName === "win32") {
+    const { finalizePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
+    finalizePackagedMxcSdk(electronResourcesDir(context), ARCH_DIR_BY_ENUM[context.arch], join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`));
+  } else {
+    rmSync(join(electronResourcesDir(context), "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin"), { recursive: true, force: true });
+  }
 };

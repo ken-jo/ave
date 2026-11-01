@@ -21,6 +21,7 @@ import {
 import { assertHeadlessBundleBoundary, HEADLESS_CHILD_ENTRY_POINTS } from "./lib/headless-bundle-boundary.mjs";
 import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { MAIN_BUNDLE_EXTERNALS } from "./lib/main-bundle-externals.mjs";
+import { mxcVerificationBuild, mxcVerificationEntries } from "./lib/mxc-verification-build.mjs";
 import { buildSkillScripts } from "./build-skill-scripts.mjs";
 import { assertBundledDocumentInputs, assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
@@ -32,6 +33,7 @@ const chunksDir = resolve(outdir, "chunks");
 const manifestPath = resolve(outdir, "bundle-manifest.json");
 const watchMode = process.argv.includes("--watch");
 await buildSkillScripts();
+if (!mxcVerificationBuild()) rmSync(resolve(outdir, "mxc-packaged-probe.js"), { force: true });
 
 const buildOptions = {
   // esbuild uses the caller's cwd for the module-label comments it emits. Pin
@@ -47,6 +49,8 @@ const buildOptions = {
     // rather than a module of the main bundle because a different process
     // executes it: `spawnConfinedPluginChild` runs `dist/src/main/plugin-child-main.js`
     // directly, and a module buried inside `main.js` has no path to be run from.
+    "mxc-extension-supervisor": resolve(repoRoot, "src", "permissions", "mxc-extension-supervisor.ts"),
+    ...mxcVerificationEntries(repoRoot),
     "plugin-child-main": resolve(repoRoot, "src", "plugins", "isolation", "plugin-child-main.ts"),
     "preview-document-child-main": resolve(repoRoot, "src", "tools", "preview-document-child-main.ts"),
   },
@@ -154,6 +158,7 @@ if (watchMode) {
     outdir,
     absWorkingDir: repoRoot,
   });
+  bundleManifest.mxcVerificationBuild = mxcVerificationBuild();
   writeFileSync(manifestPath, `${JSON.stringify(bundleManifest, null, 2)}\n`, "utf8");
   process.stdout.write(`${formatMainBundleBudget(bundleMeasurement)}\n`);
 
