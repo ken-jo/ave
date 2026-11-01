@@ -337,6 +337,8 @@ export class SecretDocumentStore {
   private readonly runtime: SecretStoreRuntime;
   private readonly onCommittedSecretsChanged?: (keys: readonly string[], before: SecretDocumentIdentity | null, after: SecretDocumentIdentity) => void;
   private cachedIdentity?: { stamp: string; identity: SecretDocumentIdentity | null };
+  // The parsed (still encrypted) committed document; plaintext is never retained.
+  private cachedState?: { stamp: string; state: StoredState; compatible: boolean };
 
   constructor(options: SecretDocumentStoreOptions) {
     this.originalPath = resolve(options.path);
@@ -391,7 +393,7 @@ export class SecretDocumentStore {
 
   has(key: string): boolean {
     validateSecretKey(key);
-    const state = this.readState(false);
+    const state = this.readCommittedState();
     this.assertCompatibleBackend(state);
     if (!Object.hasOwn(state.document.entries, key)) return false;
     if (state.document.entries[key].encoding === "plain-development") {
@@ -404,8 +406,8 @@ export class SecretDocumentStore {
 
   get(key: string): string | null {
     validateSecretKey(key);
-    const state = this.readState(false);
-    this.assertCompatibleDocument(state);
+    const state = this.readCommittedState();
+    this.assertCompatibleCommittedDocument(state);
     if (!Object.hasOwn(state.document.entries, key)) return null;
     const entry = state.document.entries[key];
     if (entry.encoding === "plain-development") {
@@ -418,8 +420,8 @@ export class SecretDocumentStore {
 
   getEncrypted(key: string): string | null {
     validateSecretKey(key);
-    const state = this.readState(false);
-    this.assertCompatibleDocument(state);
+    const state = this.readCommittedState();
+    this.assertCompatibleCommittedDocument(state);
     if (!Object.hasOwn(state.document.entries, key)) return null;
     const entry = state.document.entries[key];
     if (entry.encoding === "plain-development") {
@@ -503,6 +505,36 @@ export class SecretDocumentStore {
       }
       return needsWrite || modeWasRepaired;
     }, { repairModeBeforeRead: true, rewriteLegacy: true });
+  }
+
+  // Same stamp discipline as identity(): reuse a parse only while the file's metadata is unchanged across the read.
+  private readCommittedState(): StoredState {
+    if (this.runtime.read !== DEFAULT_RUNTIME.read || this.runtime.exists !== DEFAULT_RUNTIME.exists) {
+      return this.readState(false);
+    }
+    // An unstampable entry is left to the guarded read, which reports it.
+    const stamp = this.committedStamp();
+    if (stamp === undefined) return this.readState(false);
+    if (this.cachedState?.stamp === stamp) return this.cachedState.state;
+    const state = this.readState(false);
+    if (this.committedStamp() === stamp) this.cachedState = { stamp, state, compatible: false };
+    return state;
+  }
+
+  private committedStamp(): string | undefined {
+    try {
+      const stamp = this.statStamp();
+      return stamp === "missing" ? undefined : stamp;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private assertCompatibleCommittedDocument(state: StoredState): void {
+    const cached = this.cachedState?.state === state ? this.cachedState : undefined;
+    if (cached?.compatible && (!this.externalKey || this.isEncryptionUsable())) return;
+    this.assertCompatibleDocument(state);
+    if (cached) cached.compatible = true;
   }
 
   private readState(allowLegacy: boolean): StoredState {
@@ -673,6 +705,7 @@ export class SecretDocumentStore {
             });
             if (changed.length === 0) changed.push(...(options.forceChangedKeys ?? Object.keys(document.entries)));
             this.cachedIdentity = undefined;
+            this.cachedState = undefined;
             this.onCommittedSecretsChanged?.(
               changed,
               state.raw === null ? null : { fingerprint: documentFingerprint(state.raw), mutation: state.document.mutation ?? null },

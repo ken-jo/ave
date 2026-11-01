@@ -556,7 +556,8 @@ export type AveApi = {
   codexSubscriptionCancelLogin: () => Promise<CodexSubscriptionActionResult>;
   codexSubscriptionLogout: () => Promise<CodexSubscriptionActionResult>;
   codexSubscriptionListModels: () => Promise<CodexSubscriptionModelsResult>;
-  subscriptionRuntimeStatus: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
+  /** `refresh` re-runs discovery instead of reusing main's settled status. */
+  subscriptionRuntimeStatus: (provider: SubscriptionRuntimeId, options?: { refresh?: boolean }) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionChooseRuntime: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionForgetRuntime: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionVerifyRuntime: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;

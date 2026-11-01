@@ -1059,12 +1059,33 @@ class BridgedAcpSubscriptionTextSession implements SubscriptionTextSession {
   }
 }
 
+// Settings surfaces may reuse a settled read this long; a user's "check again" and every chat/selection gate read live.
+const SETTINGS_READ_CACHE_TTL_MS = 5 * 60_000;
+
+export interface SubscriptionReadOptions {
+  readonly allowCached?: boolean;
+}
+
+type SubscriptionRuntimeCatalog = {
+  status: SubscriptionRuntimeStatus;
+  models: SubscriptionRuntimeModel[];
+};
+
+type CachedRead<T> = { readonly value: T; readonly expiresAt: number };
+
+function isSettledStatus(status: SubscriptionRuntimeStatus): boolean {
+  return status.connection !== "pending" && status.pendingLogin === null;
+}
+
 // Main-process-only facade. It is the only owner of authenticated runtime state and live governed model sessions. Chat availability is intentionally
 // stricter than authentication: it becomes true only after safety verification.
 export class SubscriptionRuntimeService {
   private readonly safelyVerified = new Set<SubscriptionRuntimeId>();
   private readonly safetyEpochByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly activeSessions = new Set<SubscriptionTextSession>();
+  private readonly cachedStatuses = new Map<SubscriptionRuntimeId, CachedRead<SubscriptionRuntimeStatus>>();
+  private readonly cachedCatalogs = new Map<SubscriptionRuntimeId, CachedRead<SubscriptionRuntimeCatalog>>();
+  private readonly readGenerationByProvider = new Map<SubscriptionRuntimeId, number>();
   // Terminal per-instance guard for callers that retained a service reference during shutdown.
   private stopped = false;
   private stopPromise: Promise<void> | null = null;
@@ -1175,16 +1196,26 @@ export class SubscriptionRuntimeService {
   }
 
   // Read-only status. A connected account remains unavailable until verify() proves isolation.
-  async getStatus(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
+  async getStatus(
+    runtimeId: SubscriptionRuntimeId,
+    options: SubscriptionReadOptions = {},
+  ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
-    return this.withStableErrors(async () => {
+    return this.withStableErrors(() => this.readThrough(this.cachedStatuses, runtimeId, options, async () => {
       if (runtimeId === "codex") return this.projectCodexStatus(await this.codexClient.getStatus());
       if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         return this.projectClaudeCodeStatus(await this.claudeCodeClient.getStatus());
       }
       return this.projectAcpStatus(await this.acpRegistry.getStatus(runtimeId));
-    });
+    }, (status) => status));
+  }
+
+  /** Drop settled reads kept for settings surfaces, e.g. after a settings change for this provider. */
+  invalidateCachedReads(runtimeId: SubscriptionRuntimeId): void {
+    this.cachedStatuses.delete(runtimeId);
+    this.cachedCatalogs.delete(runtimeId);
+    this.readGenerationByProvider.set(runtimeId, this.readGeneration(runtimeId) + 1);
   }
 
   // Error projection without forcing a new runtime start or credential refresh.
@@ -1230,6 +1261,19 @@ export class SubscriptionRuntimeService {
     this.assertRunning();
     const verificationEpoch = this.invalidateSafety(runtimeId);
     await this.stopSessionsFor(runtimeId);
+    const status = await this.verifyRuntime(runtimeId, verificationEpoch);
+    // A proof supersedes reads begun before it; only an uncontested proof is kept.
+    if (runtimeId !== "chatgpt-plan" && this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) {
+      this.invalidateCachedReads(runtimeId);
+      if (isSettledStatus(status)) this.cachedStatuses.set(runtimeId, this.cachedRead(status));
+    }
+    return status;
+  }
+
+  private async verifyRuntime(
+    runtimeId: SubscriptionRuntimeId,
+    verificationEpoch: number,
+  ): Promise<SubscriptionRuntimeStatus> {
     return this.withStableErrors(async () => {
       if (runtimeId === "codex") {
         const status = await this.codexClient.getStatus();
@@ -1361,31 +1405,33 @@ export class SubscriptionRuntimeService {
     return this.requireChatGptPlan().acknowledgeNotice();
   }
 
-  async listModels(runtimeId: SubscriptionRuntimeId): Promise<{
-    status: SubscriptionRuntimeStatus;
-    models: SubscriptionRuntimeModel[];
-  }> {
+  async listModels(
+    runtimeId: SubscriptionRuntimeId,
+    options: SubscriptionReadOptions = {},
+  ): Promise<SubscriptionRuntimeCatalog> {
     this.assertRunning();
     return this.withStableErrors(async () => {
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         // Model choices come from the catalog. No choice keeps the CLI's own default; account availability is enforced by the runtime.
         return {
-          status: await this.getStatus(runtimeId),
+          status: await this.getStatus(runtimeId, options),
           models: catalogChatModelIds("claude").map((id) => ({ id, displayName: id, isDefault: false })),
         };
       }
       // The signed-in account's own list; a failure is an error, never an empty catalog.
       if (runtimeId === "chatgpt-plan") return this.requireChatGptPlan().listModels();
-      if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId), models: [] };
-      const result = await this.codexClient.listModels();
-      return {
-        status: this.projectCodexStatus(result.status),
-        models: result.models.map((model) => ({
-          id: model.id,
-          displayName: model.displayName,
-          isDefault: model.isDefault,
-        })),
-      };
+      if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId, options), models: [] };
+      return this.readThrough(this.cachedCatalogs, runtimeId, options, async () => {
+        const result = await this.codexClient.listModels();
+        return {
+          status: this.projectCodexStatus(result.status),
+          models: result.models.map((model) => ({
+            id: model.id,
+            displayName: model.displayName,
+            isDefault: model.isDefault,
+          })),
+        };
+      }, (catalog) => catalog.status);
     });
   }
 
@@ -1515,6 +1561,8 @@ export class SubscriptionRuntimeService {
       this.activeSessions.clear();
       await Promise.allSettled(sessions.map((session) => session.stop()));
       this.safelyVerified.clear();
+      this.cachedStatuses.clear();
+      this.cachedCatalogs.clear();
       this.chatGptPlan?.stop();
       this.codexClient.stop();
       await Promise.all([
@@ -1579,7 +1627,39 @@ export class SubscriptionRuntimeService {
     provider: SubscriptionRuntimeId,
     status: { readonly runtime: SubscriptionRuntimeState; readonly connection: SubscriptionConnectionState },
   ): void {
-    if (!isConnectedAndReady(status)) this.invalidateSafety(provider);
+    if (isConnectedAndReady(status)) return;
+    // A cached projection carries the proof; only losing one makes it stale.
+    if (this.safelyVerified.has(provider)) this.invalidateCachedReads(provider);
+    this.revokeSafety(provider);
+  }
+
+  // Live reads always refresh the cache; a read is kept only if no mutation or proof landed while it ran.
+  private async readThrough<T>(
+    cache: Map<SubscriptionRuntimeId, CachedRead<T>>,
+    runtimeId: SubscriptionRuntimeId,
+    options: SubscriptionReadOptions,
+    read: () => Promise<T>,
+    statusOf: (value: T) => SubscriptionRuntimeStatus,
+  ): Promise<T> {
+    if (runtimeId === "chatgpt-plan") return read();
+    if (options.allowCached === true) {
+      const cached = cache.get(runtimeId);
+      if (cached && cached.expiresAt > Date.now()) return cached.value;
+    }
+    const generation = this.readGeneration(runtimeId);
+    const value = await read();
+    if (!this.stopped && this.readGeneration(runtimeId) === generation && isSettledStatus(statusOf(value))) {
+      cache.set(runtimeId, this.cachedRead(value));
+    }
+    return value;
+  }
+
+  private cachedRead<T>(value: T): CachedRead<T> {
+    return { value, expiresAt: Date.now() + SETTINGS_READ_CACHE_TTL_MS };
+  }
+
+  private readGeneration(provider: SubscriptionRuntimeId): number {
+    return this.readGenerationByProvider.get(provider) ?? 0;
   }
 
   private async stopSessionsFor(provider: SubscriptionRuntimeId): Promise<void> {
@@ -1591,6 +1671,11 @@ export class SubscriptionRuntimeService {
   // Synchronously revoke every proof tied to this provider and advance its epoch. Any in-flight verify/open operation that captured an earlier epoch must
   // fail closed rather than re-authorizing a newly selected runtime.
   private invalidateSafety(provider: SubscriptionRuntimeId): number {
+    this.invalidateCachedReads(provider);
+    return this.revokeSafety(provider);
+  }
+
+  private revokeSafety(provider: SubscriptionRuntimeId): number {
     this.safelyVerified.delete(provider);
     const nextEpoch = this.safetyEpoch(provider) + 1;
     this.safetyEpochByProvider.set(provider, nextEpoch);
