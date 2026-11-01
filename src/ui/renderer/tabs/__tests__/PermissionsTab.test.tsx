@@ -1327,6 +1327,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   it.each([
     ["srt-win-not-found", "permissionsTab.osSandboxWindowsInstallFailedHelperMissing"],
     ["srt-win-integrity-mismatch", "permissionsTab.osSandboxWindowsHelperIntegrityError"],
+    ["srt-win-profile-read-granted", "permissionsTab.osSandboxWindowsProfileGrantError"],
   ] as const)("shows %s and restores setup actions on a fresh status", async (helperError, messageKey) => {
     const sandboxWindowsStatus = vi.fn().mockResolvedValueOnce({
       applicable: true, userState: null, wfpState: null, ready: false,

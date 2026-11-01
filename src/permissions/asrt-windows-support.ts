@@ -1,3 +1,4 @@
+import { WindowsProfileReadError } from "./windows-profile-read.js";
 // Keep version-sensitive calls in this adapter. Incomplete machine credentials leave confinement inactive until idempotent installation repairs them; installation also seals ambient writable roots. Every helper needs the explicit verified binary descriptor, and status/install probes stay async so elevation cannot freeze the UI.
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
@@ -25,6 +26,7 @@ type WindowsUserState = NonNullable<SandboxWindowsStatusInfo["userState"]>;
 type WindowsWfpState = NonNullable<SandboxWindowsStatusInfo["wfpState"]>;
 
 export interface AsrtWindowsSandboxUserStatusLike {
+  readonly profileGrant?: { readonly state: "present" | "unknown" };
   readonly provisioned?: boolean;
   readonly sid?: string;
   readonly groupExists?: boolean;
@@ -283,7 +285,7 @@ export async function resolveAsrtWindowsReady(
   if (isAsrtWindowsReady(userState, wfpState)) return true;
   if (userState !== "ready" || wfpState !== "cannot-read") return false;
 
-  // ASRT 0.0.80 reports `cannot-read` when BFE enumeration is admin-gated. The non-elevated readiness proof is behavioral WFP egress verification.
+  // ASRT 0.0.81 reports `cannot-read` when BFE enumeration is admin-gated. The non-elevated readiness proof is behavioral WFP egress verification.
   try {
     await verifyWindowsWfpEgress({
       proxyPortRange: DEFAULT_WINDOWS_PROXY_PORT_RANGE,
@@ -351,10 +353,19 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
       instructions: mod.windowsInstallInstructions(undefined),
     };
   }
-  // ASRT 0.0.80: ONE `srt-win status` spawn returns BOTH the sandbox-user and WFP state (checkWindowsSandboxStatusAsync), non-blocking — replaces the two separate synchronous user + wfp probes.
+  // ASRT 0.0.81: ONE `srt-win status` spawn returns BOTH the sandbox-user and WFP state (checkWindowsSandboxStatusAsync), non-blocking — replaces the two separate synchronous user + wfp probes.
   const { user, wfp } = await mod.checkWindowsSandboxStatusAsync({ srtWin });
   const userState = normalizeAsrtWindowsUserState(user);
   const wfpState = normalizeAsrtWindowsWfpState(wfp);
+  // A status snapshot can precede profile forget: use the live profile record.
+  if (user.profileGrant) {
+    const profile = await mod.getWindowsProfileReadStatusAsync({ srtWin });
+    if (profile.state !== "none") {
+      const error = new WindowsProfileReadError();
+      return { applicable: true, userState, wfpState, ready: false,
+        helperError: error.code, instructions: error.message, profileReadDenyWarnings };
+    }
+  }
   const ready = await resolveAsrtWindowsReady(
     userState,
     wfpState,
@@ -378,6 +389,10 @@ export async function installAsrtWindowsSandbox(
   // Status is read HERE, after the IPC handler has validated the click's gesture intent, and not in the renderer before it calls this: a status read can take ~45 s (15 s srt-win status + 30 s WFP egress verify), and the renderer's transient user activation lapses after ~5 s, so an install invoked after a renderer-side read is refused as `user-keyboard-required` on exactly the machines that need the repair. Already ready → no UAC. A status read that fails does not block the repair: the install is the way out of it.
   try {
     const before = await (dependencies.readStatus ?? readAsrtWindowsStatus)();
+    if (before.helperError === "srt-win-profile-read-granted") {
+      const error = new WindowsProfileReadError();
+      return failedInstall(error, error.code);
+    }
     if (before.applicable && before.ready) {
       return {
         outcome: "already-ready",
@@ -401,7 +416,7 @@ export async function installAsrtWindowsSandbox(
     return failedInstall(error, error instanceof SrtWinIntegrityError ? error.code : "unexpected");
   }
 
-  // ASRT 0.0.80: the install is ASYNC — the modal UAC prompt is still shown, but the main-process event loop stays live (spinners/timers keep running) rather than freezing for the full consent wait (class). The srt-win descriptor is explicit (no implicit vendored fallback since 0.0.67).
+  // ASRT 0.0.81: the install is ASYNC — the modal UAC prompt is still shown, but the main-process event loop stays live (spinners/timers keep running) rather than freezing for the full consent wait (class). The srt-win descriptor is explicit (no implicit vendored fallback since 0.0.67).
   let result: AsrtWindowsInstallCancelledLike | AsrtWindowsInstallSuccessLike;
   try {
     result = await runtime.installWindowsSandboxAsync({
@@ -416,7 +431,7 @@ export async function installAsrtWindowsSandbox(
         log.warn({ errorCode: error.code, err: error }, "Windows sandbox install timed out; result unconfirmed");
         return { outcome: "timed-out" };
       }
-      // install_ambient_failed (ASRT 0.0.80 exit 17) lands here too: the WFP filters and the sandbox user may both be in place, but the ambient write-deny stamps on the stock world-writable system directories did not. Treating that as installed would be dishonest in the dangerous direction — the filesystem confinement Ave publishes for win32 (`sandboxConfinementForPlatform` → `filesystem: true`) assumes those stamps exist — so it is a failure like any other ASRT code.
+      // install_ambient_failed (ASRT 0.0.81 exit 17) lands here too: the WFP filters and the sandbox user may both be in place, but the ambient write-deny stamps on the stock world-writable system directories did not. Treating that as installed would be dishonest in the dangerous direction — the filesystem confinement Ave publishes for win32 (`sandboxConfinementForPlatform` → `filesystem: true`) assumes those stamps exist — so it is a failure like any other ASRT code.
       return failedInstall(error, error.code);
     }
     return failedInstall(error, "unexpected");
@@ -424,6 +439,19 @@ export async function installAsrtWindowsSandbox(
 
   if ((result as AsrtWindowsInstallCancelledLike | undefined)?.cancelled) {
     return { outcome: "cancelled", cancelled: true };
+  }
+
+  const success = (result ?? {}) as Partial<AsrtWindowsInstallSuccessLike>;
+  if (success.user?.profileGrant) {
+    try {
+      const profile = await mod.getWindowsProfileReadStatusAsync({ srtWin });
+      if (profile.state !== "none") {
+        const error = new WindowsProfileReadError();
+        return failedInstall(error, error.code);
+      }
+    } catch (error) {
+      return failedInstall(error, "unexpected");
+    }
   }
 
   try {
@@ -434,7 +462,6 @@ export async function installAsrtWindowsSandbox(
   }
 
   // A result without user/wfp (an unexpected ASRT shape) normalizes to absent → not ready → `installed-unverified`: what Ave can claim, no more.
-  const success = (result ?? {}) as Partial<AsrtWindowsInstallSuccessLike>;
   const userState = normalizeAsrtWindowsUserState(success.user ?? {});
   const wfpState = normalizeAsrtWindowsWfpState(success.wfp ?? {});
   const ready = await resolveAsrtWindowsReady(

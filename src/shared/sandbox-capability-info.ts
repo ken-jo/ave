@@ -22,11 +22,11 @@ export interface SandboxWindowsStatusInfo {
   userState: "absent" | "incomplete" | "ready" | null;
   /** `absent` | `installed` | `cannot-read`, or null when not observed. */
   wfpState: "absent" | "installed" | "cannot-read" | null;
-  /** True when the sandbox user is ready and WFP is either directly observed as installed or
+  /** True only without a recorded broad profile read grant, when the sandbox user is ready and WFP is either directly observed as installed or
    * `cannot-read` plus ASRT behavioral egress verification succeeds. Always false off-win32. */
   ready: boolean;
-  /** Expected helper resolution failure; never a readiness or provisioning claim. */
-  helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch";
+  /** Expected helper resolution or policy refusal; never a provisioning claim. */
+  helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch" | "srt-win-profile-read-granted";
   /** Confinement is refused until this private directory verifies at restart. */
   homePrivacyError?: {
     approvedForSession?: boolean;
@@ -38,7 +38,7 @@ export interface SandboxWindowsStatusInfo {
     path: string;
     principals?: readonly WindowsReadDenyPrincipal[];
   }[];
-  /** Verbatim ASRT install instructions. Empty off-win32. */
+  /** Host setup diagnostics and recovery instructions. Empty off-win32. */
   instructions: string;
 }
 

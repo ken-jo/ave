@@ -75,7 +75,7 @@ describe("windows sandbox — mirrored constants pinned against ASRT", () => {
     ]);
   });
 
-  // ASRT 0.0.80 ranks the Windows lists in JavaScript before srt-win sees them: a write grant at or beneath a denyWrite is handed over as a read grant, and a grant at or beneath a credential file entry is dropped. The srt-win drift guard (NSIS smoke test) pins only the Rust side, so this pins the JS side: a change in either rank fails here instead of silently changing what a Windows workspace or plugin root under a write deny can do.
+  // ASRT 0.0.81 ranks the Windows lists in JavaScript before srt-win sees them: a write grant at or beneath a denyWrite is handed over as a read grant, and a grant at or beneath a credential file entry is dropped. The srt-win drift guard (NSIS smoke test) pins only the Rust side, so this pins the JS side: a change in either rank fails here instead of silently changing what a Windows workspace or plugin root under a write deny can do.
   it("rankWindowsFsAccess keeps denyWrite over allowWrite and credentials over every grant", () => {
     const ranked = rankWindowsFsAccess({
       allowRead: ["C:/read-denied/inside"],

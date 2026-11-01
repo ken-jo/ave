@@ -2245,3 +2245,36 @@ describe.runIf(process.platform === "linux")("ordinary temporary write policy", 
     }
   });
 });
+
+describe("Windows inherited profile read grant", () => {
+  it.each(["granted", "absent", undefined] as const)("checks %s before publishing confinement", async (state) => {
+    await resetAsrtSandbox();
+    const original = process.platform;
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const integrity = await import("../srt-win-integrity.js");
+    const initialized = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
+    const reset = vi.spyOn(SandboxManager, "reset").mockResolvedValue(undefined);
+    const read = vi.spyOn(SandboxManager, "getWindowsProfileRead").mockReturnValue(state);
+    vi.spyOn(integrity, "prepareSrtWinExecutable").mockImplementation(path => path);
+    setProcessPlatform("win32");
+    try {
+      const result = initializeAsrtSandbox({ allowedDomains: [] });
+      if (state === "absent") {
+        await result;
+        expect(isAsrtSandboxActive()).toBe(true);
+      } else {
+        await expect(result).rejects.toThrow(state === "granted" ? /srt-win profile forget/ : /did not report/);
+        if (state === "granted") await expect(result).rejects.toMatchObject({ name: "WindowsProfileReadError", code: "srt-win-profile-read-granted" });
+        expect(isAsrtSandboxActive()).toBe(false);
+        expect(reset).toHaveBeenCalledOnce();
+      }
+      expect(initialized).toHaveBeenCalledOnce();
+      expect(read).toHaveBeenCalledOnce();
+      expect(initialized.mock.invocationCallOrder[0]).toBeLessThan(read.mock.invocationCallOrder[0]);
+    } finally {
+      await resetAsrtSandbox();
+      setProcessPlatform(original);
+      vi.restoreAllMocks();
+    }
+  });
+});

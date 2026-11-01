@@ -1683,10 +1683,14 @@ describe("Windows NSIS installer smoke contracts", () => {
       dependencies?: Record<string, string>;
       build?: { nsis?: { deleteAppDataOnUninstall?: boolean } };
     };
+    expect(installer).toContain('${if} $R3 == 22');
+    expect(installer).toContain('Close Ave and other sandbox sessions, then retry.');
+    expect(installer).toContain('${if} $R3 == 23');
+    expect(installer).toContain('srt-win profile forget and srt-win acl forget --all');
     // Version bumps must recheck the vendored installer CLI: recovery and uninstall commands, cancellation exit 10, and removal of ambient deny stamps.
     // The installer must not retain the sandbox user; type checks cannot verify this binary contract.
     expect(packageJson.dependencies?.["@anthropic-ai/sandbox-runtime"]).toBe(
-      "0.0.80",
+      "0.0.81",
     );
     expect(packageJson.build?.nsis?.deleteAppDataOnUninstall).toBe(false);
   });

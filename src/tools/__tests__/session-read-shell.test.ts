@@ -271,7 +271,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(result.output).not.toContain(CONTENT.trim());
   });
 
-  // A registered worker socket turns on `allowAllUnixSockets` on Linux, which takes the seccomp helper out of the chain; ASRT 0.0.80 then asks bubblewrap 0.8+ for
+  // A registered worker socket turns on `allowAllUnixSockets` on Linux, which takes the seccomp helper out of the chain; ASRT 0.0.81 then asks bubblewrap 0.8+ for
   // `--disable-userns` . Every shell wrap after a worker starts carries that wrap shape, so it must still run, and a command inside it must not get a user namespace of its own.
   it("runs a sandboxed shell after a worker socket is registered", async (test) => {
     await requireSandboxCases(test);

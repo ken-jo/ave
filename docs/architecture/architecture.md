@@ -2096,8 +2096,14 @@ the invocation by such processes; these temporal and failed-cleanup risks are
 defined by the
 [same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
-The Windows installer passes `skipProfileGrant: true`: installation does not
-open a broad profile read grant. Normal helper sessions retain the runtime's
+The Windows installer passes `skipProfileGrant: true`. After initialization,
+Ave also rejects an inherited machine-wide profile read grant before publishing
+confinement, resets the session and reports a typed startup failure. Settings
+shows the sandbox as not ready with instructions to end sandbox sessions and
+run `srt-win profile forget` using the helper that recorded the grant, then restart
+Ave. A stale status snapshot whose profile grant has since been forgotten is
+checked against the live record. No permission decision stage is bypassed.
+Normal helper sessions retain the runtime's
 capability and setup checks, profile-exclusion checks, persistent write-root
 grants and restricted-token WFP verification. Persistent write roots survive
 session reset; grant revocation must complete before session deny ACEs can be

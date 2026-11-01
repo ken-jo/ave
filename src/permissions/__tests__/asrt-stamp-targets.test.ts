@@ -663,6 +663,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
         provisioned: true, credPresent: true, sid: "S-1-5-21-100-200-300-1001",
         groupExists: true, inBuiltinUsers: false, inSandboxGroup: true, hiddenFromLogon: true,
         realUserSid: "S-1-5-21-100-200-300-1002",
+        capabilities: [],
       };
     });
     const grant = vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});

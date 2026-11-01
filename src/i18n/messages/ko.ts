@@ -3,6 +3,7 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "permissionsTab.osSandboxWindowsProfileGrantError": "이 컴퓨터에 srt-win의 광범위한 프로필 읽기 권한이 기록되어 있거나 없음을 확인할 수 없어 Ave가 샌드박스 시작을 거부했습니다. 샌드박스 세션을 종료하고 권한을 기록한 도우미로 srt-win profile forget을 실행한 뒤 Ave를 다시 시작하세요.",
   "sidebarPreview.localFile": "로컬 파일",
   "sidebarPreview.running": "에이전트 응답",
   "ptyTerminal.hostChipApproval": "호스트 · 대화별 사용 권한",

@@ -3626,7 +3626,7 @@ function posixSingleQuote(arg: string): string {
  *
  * Filesystem jail mirrors bash.ts: `allowWrite` = the derived write-jail, and
  * reads keep the existing sensitive and private-session floors.
- * Windows ASRT is not shell-contained and ASRT 0.0.80 cannot accept the
+ * Windows ASRT is not shell-contained and ASRT 0.0.81 cannot accept the
  * per-exec allowRead/allowWrite grants this path needs, so executeTyped refuses
  * before this function on win32; the win32 binShell branch remains defensive
  * for future ASRT capability changes.

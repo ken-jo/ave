@@ -1,3 +1,4 @@
+import { assertWindowsProfileReadAbsent } from "./windows-profile-read.js";
 
 
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -437,7 +438,7 @@ export function assertPerExecFilesystemSupported(
     return;
   }
   throw new Error(
-    `${caller}: ASRT 0.0.80 on Windows does not support per-exec ` +
+    `${caller}: ASRT 0.0.81 on Windows does not support per-exec ` +
       "filesystem.allowRead/allowWrite; only per-exec denyRead/denyWrite " +
       "are supported. Long-lived plugin workers must use the holder-PID " +
       "Windows ACL grant path instead.",
@@ -1602,7 +1603,7 @@ export function buildSandboxConfig(
             ...(trustedSettings.windows?.proxyPortRange ??
               DEFAULT_WINDOWS_PROXY_PORT_RANGE),
           ] as [number, number],
-          // ASRT 0.0.80: srt-win path is REQUIRED — no implicit vendored resolution. Supply the explicit SoT path so SandboxManager.initialize (+ wrapWithSandboxArgv + the in-initialize dependency check) can spawn the backend instead of throwing. See getVendoredSrtWinExePath.
+          // ASRT 0.0.81: srt-win path is REQUIRED — no implicit vendored resolution. Supply the explicit SoT path so SandboxManager.initialize (+ wrapWithSandboxArgv + the in-initialize dependency check) can spawn the backend instead of throwing. See getVendoredSrtWinExePath.
           ...(srtWinPath !== undefined ? { srtWin: { path: srtWinPath } } : {}),
         }
       : undefined;
@@ -1630,7 +1631,7 @@ export function buildSandboxConfig(
   };
 }
 
-// A fixed, no-I/O workload used only to prove that Linux can actually start the configured ASRT/bwrap wrapper. ASRT 0.0.80's dependency check verifies binaries, but cannot detect hosts that prohibit the wrapper's user namespace / seccomp setup until a wrapped process starts. This command has no arguments, performs no writes, and makes no network request. It is passed through the SAME initialized ASRT config that tools use (no custom config), so a successful probe proves the real wrapper path rather than merely the presence of `bwrap` on PATH.
+// A fixed, no-I/O workload used only to prove that Linux can actually start the configured ASRT/bwrap wrapper. ASRT 0.0.81's dependency check verifies binaries, but cannot detect hosts that prohibit the wrapper's user namespace / seccomp setup until a wrapped process starts. This command has no arguments, performs no writes, and makes no network request. It is passed through the SAME initialized ASRT config that tools use (no custom config), so a successful probe proves the real wrapper path rather than merely the presence of `bwrap` on PATH.
 const ASRT_LINUX_RUNTIME_PROBE_COMMAND = "true";
 const ASRT_LINUX_RUNTIME_PROBE_TIMEOUT_MS = 5_000;
 // A SIGKILL request is not proof that bwrap has released its mount state. Give the child a short, bounded chance to emit `close` before ASRT cleanup/reset.
@@ -1871,6 +1872,9 @@ export async function initializeAsrtSandbox(
     SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
     checkWindowsSandboxStampTargets(config.filesystem);
     await SandboxManager.initialize(config, askCb, enableLogMonitor);
+    if (process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true) {
+      assertWindowsProfileReadAbsent(SandboxManager.getWindowsProfileRead());
+    }
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
   } catch (error) {

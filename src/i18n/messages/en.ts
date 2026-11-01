@@ -1,6 +1,7 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "permissionsTab.osSandboxWindowsProfileGrantError": "A broad srt-win profile read grant is recorded or could not be ruled out on this machine. Ave refused sandbox startup. End sandbox sessions, run srt-win profile forget using the helper that recorded the grant, then restart Ave.",
   "sidebarPreview.localFile": "Local file",
   "sidebarPreview.running": "Agent responding",
   "ptyTerminal.hostChipApproval": "Host · conversation permissions",

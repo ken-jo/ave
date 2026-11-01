@@ -450,7 +450,7 @@ function fakeBwrapWithDisableUserns(): string {
   return bwrap;
 }
 
-// ASRT 0.0.80 : with no seccomp helper in the chain, which is what `allowAllUnixSockets` means and what a registered worker socket turns on, bubblewrap 0.8+ is asked for `--disable-userns`. The hardener must accept that wrap, or every wrap fails once a worker starts.
+// ASRT 0.0.81 : with no seccomp helper in the chain, which is what `allowAllUnixSockets` means and what a registered worker socket turns on, bubblewrap 0.8+ is asked for `--disable-userns`. The hardener must accept that wrap, or every wrap fails once a worker starts.
 it.runIf(process.platform !== "win32")("accepts the --disable-userns a socket-permitting wrap carries", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-floor-userns-")));
   temporaryRoots.push(root);
@@ -547,7 +547,7 @@ it("knows every option the installed Linux wrapper can emit", () => {
     "utf8",
   );
   const literals = new Set([...source.matchAll(/'(--[a-z][a-z-]*)'/g)].map((match) => match[1]!));
-  // The extraction relies on ASRT's single-quoted literals. If a release changed its quote style the set would come back empty or partial, and the checks below would pass on nothing; 0.0.80 yields 26 distinct literals.
+  // The extraction relies on ASRT's single-quoted literals. If a release changed its quote style the set would come back empty or partial, and the checks below would pass on nothing; 0.0.81 yields 26 distinct literals.
   for (const known of ["--ro-bind", "--bind", "--tmpfs", "--unshare-net", "--disable-userns"]) {
     expect(literals.has(known), `extraction missed ${known}`).toBe(true);
   }

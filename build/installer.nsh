@@ -480,8 +480,9 @@ FunctionEnd
   ; ── ASRT OS sandbox teardown (every genuine uninstall) ──
   ; Recover dead holder-PID grants before deleting the sandbox principal, then
   ; remove the WFP filters, sandbox user/group, credential and setup marker.
-  ; Both operations are fail-closed here: silently deleting app files while
-  ; leaving machine security state behind would make a green smoke misleading.
+  ; Non-zero results retain the helper for recovery. Exit 22 means a live
+  ; session; exit 23 means teardown left recorded grants. Offline grant records
+  ; and ambient cleanup warnings remain in the helper's diagnostic output.
   !insertmacro resolveSrtWinPath $R2
   ${if} $R2 != ""
     DetailPrint "Ave: recovering stranded ASRT holder ACLs…"
@@ -495,11 +496,19 @@ FunctionEnd
     DetailPrint "Ave: removing the Windows OS sandbox (srt-win uninstall)…"
     nsExec::ExecToLog '"$R2" uninstall'
     Pop $R3
+    ${if} $R3 == 22
+      SetErrorLevel 1
+      Abort "Ave uninstall blocked: sandbox sessions are running. Close Ave and other sandbox sessions, then retry."
+    ${endif}
+    ${if} $R3 == 23
+      SetErrorLevel 1
+      Abort "Ave uninstall incomplete: kept grants remain. Run srt-win profile forget and srt-win acl forget --all with the retained helper, then retry."
+    ${endif}
     ${if} $R3 != 0
       SetErrorLevel 1
       Abort "Ave uninstall failed: ASRT teardown returned exit $R3"
     ${endif}
-    DetailPrint "Ave: OS sandbox removed (holder ACLs + srt-sandbox user/group + credential + WFP rules)."
+    DetailPrint "Ave: OS sandbox teardown completed; inspect helper output for retained offline grant records or ambient cleanup warnings."
   ${else}
     SetErrorLevel 1
     Abort "Ave uninstall failed: packaged srt-win.exe is missing; ASRT teardown cannot be verified"

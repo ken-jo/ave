@@ -393,7 +393,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("returns timed-out for an install_timeout WindowsSandboxError (UAC left open)", async () => {
-    // ASRT 0.0.80 installWindowsSandboxAsync throws WindowsSandboxError with code 'install_timeout' when the self-elevating subprocess is killed by the 120s spawn timeout with the UAC consent dialog still open. The adapter must surface that distinctly (not as a generic failure), and must NOT run the backend ACL grant or the WFP verification.
+    // ASRT 0.0.81 installWindowsSandboxAsync throws WindowsSandboxError with code 'install_timeout' when the self-elevating subprocess is killed by the 120s spawn timeout with the UAC consent dialog still open. The adapter must surface that distinctly (not as a generic failure), and must NOT run the backend ACL grant or the WFP verification.
     const { WindowsSandboxError } = await import("@anthropic-ai/sandbox-runtime");
     const grantBackendAcl = vi.fn(async () => undefined);
     const verifyWindowsWfpEgress = vi.fn(async () => undefined);
@@ -761,7 +761,7 @@ describe("asrt-windows-support adapter", () => {
     }
   });
 
-  it("normalizes the ASRT 0.0.80 ready sandbox-user shape", () => {
+  it("normalizes the ASRT 0.0.81 ready sandbox-user shape", () => {
     expect(
       normalizeAsrtWindowsUserState({
         provisioned: true,
@@ -918,5 +918,61 @@ function releaseWindowsSessionAcls(sandboxUserSid, srtWin) {
       const swallowed = FAIL_CLOSED.replace("throw e;", "throw new Error('boom');");
       expect(rollsBackWindowsAclOnFailedInitialize(swallowed)).toBe(false);
     });
+  });
+});
+
+describe("Windows profile grant readiness", () => {
+  it("does not re-provision over an inherited broad profile grant", async () => {
+    const install = vi.fn();
+    const result = await installAsrtWindowsSandbox({
+      readStatus: async () => ({ applicable: true, userState: "ready", wfpState: "installed", ready: false,
+        helperError: "srt-win-profile-read-granted", instructions: "" }),
+      loadRuntime: async () => ({ installWindowsSandboxAsync: install, verifyWindowsWfpEgress: vi.fn() }),
+    });
+    expect(result).toEqual({ outcome: "failed", errorCode: "srt-win-profile-read-granted" });
+    expect(install).not.toHaveBeenCalled();
+  });
+  it.each(["current", "none", "absent"] as const)("rechecks a %s grant without publishing broad read access", async (state) => {
+    const original = process.platform;
+    const runtime = await import("@anthropic-ai/sandbox-runtime");
+    const status = vi.spyOn(runtime, "getWindowsProfileReadStatusAsync").mockResolvedValue({
+      state: state === "absent" ? "none" : state, capabilities: [],
+      notGranted: [], selfClosed: [], unverifiable: [], unprotected: [], staleAllow: [],
+      replacedFiles: [], extraExclusions: [], exclusions: [], ungrantedOnly: [],
+      counts: { containers: 0, granted: 0, files: 0, denied: 0 }, env: {},
+    });
+    checkWindowsSandboxStatusAsyncMock.mockResolvedValue({
+      user: { ...READY_USER, ...(state === "absent" ? {} : { profileGrant: { state: "present" } }) },
+      wfp: { state: "installed", filters: 3 },
+    });
+    setProcessPlatform("win32");
+    try {
+      const result = await readAsrtWindowsStatus();
+      expect(result.ready).toBe(state !== "current");
+      if (state === "current") {
+        expect(result.helperError).toBe("srt-win-profile-read-granted");
+        expect(result.instructions).toContain("srt-win profile forget");
+      } else expect(result.helperError).toBeUndefined();
+      expect(status).toHaveBeenCalledTimes(state === "absent" ? 0 : 1);
+      const grantBackendAcl = vi.fn();
+      const installed = await installAsrtWindowsSandbox({
+        readStatus: async () => ({ applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "" }),
+        loadRuntime: async () => ({
+          installWindowsSandboxAsync: async () => ({ user: { ...READY_USER,
+            ...(state === "absent" ? {} : { profileGrant: { state: "present" as const } }) },
+          wfp: { state: "installed" } }),
+          verifyWindowsWfpEgress: vi.fn(),
+        }),
+        grantBackendAcl,
+      });
+      if (state === "current") {
+        expect(installed).toEqual({ outcome: "failed", errorCode: "srt-win-profile-read-granted" });
+        expect(grantBackendAcl).not.toHaveBeenCalled();
+      } else expect(installed).toMatchObject({ outcome: "ready", ready: true });
+    } finally {
+      setProcessPlatform(original);
+      status.mockRestore();
+      checkWindowsSandboxStatusAsyncMock.mockReset();
+    }
   });
 });
