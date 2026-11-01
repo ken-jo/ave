@@ -469,7 +469,17 @@ async function spawnNewTerminal(
 
   // FAIL CLOSED: an interactive arbitrary-command shell may spawn ONLY when the active OS sandbox contains shell effects (filesystem +
   // process). No plain-spawn fallback (No-Fallback rule) — a terminal outside shell confinement is strictly more dangerous than a one-shot bash tool.
-  if (process.platform === "win32" || !isShellSandboxActive() || !isActiveSandboxShellContained()) {
+  if (process.platform === "win32") {
+    // No Windows backend confines an interactive shell yet, whatever the sandbox setting; sending the user to Settings would not help.
+    return {
+      ok: false,
+      reason: "not-shell-contained",
+      message:
+        "An isolated agent terminal is not available on Windows yet; turning on the sandbox in Settings does not change this. " +
+        "Run the command with the shell tool instead, or from a side chat attached to a terminal tab.",
+    };
+  }
+  if (!isShellSandboxActive() || !isActiveSandboxShellContained()) {
     return {
       ok: false,
       reason: "not-shell-contained",
