@@ -60,6 +60,14 @@ describe("chooseVersion (design §6.1)", () => {
     expect(versionExclusions("acme", "agent-plugin", "alpha", undeclared, [], context())).toEqual([]);
   });
 
+  it("still offers a legacy protocol-3 version", () => {
+    const legacy = version("1.5.0", { hostProtocol: "3" });
+    expect(versionExclusions("acme", "plugin", "alpha", legacy, [], context())).toEqual([]);
+    expect(chooseVersion("acme", plugin([legacy]), [], context())).toMatchObject({
+      state: "candidate", version: { version: "1.5.0" },
+    });
+  });
+
   it("takes the highest version that survives every drop, whatever the listing order", () => {
     const choice = chooseVersion("acme", pkg([version("1.2.0"), version("1.10.0"), version("1.9.0")]), [], context());
     expect(choice).toEqual({ state: "candidate", version: expect.objectContaining({ version: "1.10.0" }) });

@@ -49,14 +49,23 @@ import { randomBytes } from "node:crypto";
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The one host protocol version this build serves. A breaking release replaces
- * the previous version after its announced boundary (§3.2). The same value
- * governs both directions of the connection.
+ * The current host protocol: what new plugins declare and what the published
+ * schema and typed client describe (§3.2).
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["4"] as const;
+export const HOST_PROTOCOL_CURRENT_VERSION = "4" as const;
 
-/** One served version, as it travels: an integer written as a string. */
-export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
+/** The current version, as it travels: an integer written as a string. */
+export type HostProtocolVersion = typeof HOST_PROTOCOL_CURRENT_VERSION;
+
+/**
+ * Every version this build serves, oldest first. A connection speaks exactly
+ * one, its plugin's declared `requires.hostProtocol`, for both directions.
+ * Protocol 3 is served as legacy without `authRedirect` (§3.3.1).
+ */
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["3", HOST_PROTOCOL_CURRENT_VERSION] as const;
+
+/** One served version, current or legacy. */
+export type ServedHostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
 
 /**
  * Known first published app release for each served protocol. An unreleased
@@ -64,13 +73,19 @@ export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number]
  * availability, independently of the open app-version candidate. Release
  * preparation records the actual first version when that protocol ships.
  */
-export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string | undefined>> = {
+export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<ServedHostProtocolVersion, string | undefined>> = {
+  "3": "0.14.0",
   "4": undefined,
 };
 
 /** Whether `value` names a version this build serves. */
-export function isServedHostProtocolVersion(value: unknown): value is HostProtocolVersion {
+export function isServedHostProtocolVersion(value: unknown): value is ServedHostProtocolVersion {
   return (HOST_PROTOCOL_VERSIONS_SERVED as readonly unknown[]).includes(value);
+}
+
+/** Whether a served version is legacy: it runs, but without the members §3.3.1 withholds. */
+export function isLegacyHostProtocolVersion(version: ServedHostProtocolVersion): boolean {
+  return version !== HOST_PROTOCOL_CURRENT_VERSION;
 }
 
 /**

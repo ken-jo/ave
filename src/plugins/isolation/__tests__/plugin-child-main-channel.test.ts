@@ -4,7 +4,7 @@ import { frameMessage } from "../../../mcp/stdio-framing.js";
 import { nextFramedMessage } from "../../../mcp/__tests__/test-helpers.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import { PendingCallTable } from "../child-stream-multiplex.js";
-import { HOST_PROTOCOL_VERSIONS_SERVED, hostApiMethodOf, type HostApiChannel } from "../host-api-wire.js";
+import { HOST_PROTOCOL_CURRENT_VERSION, hostApiMethodOf, type HostApiChannel } from "../host-api-wire.js";
 import type { PluginChildRuntime } from "../plugin-child-runtime.js";
 
 const observed = vi.hoisted(() => ({
@@ -37,7 +37,7 @@ async function constructedChild() {
   input.write(frameMessage({
     jsonrpc: "2.0", id: "construct", method: "ave/instance/construct",
     params: {
-      hostProtocol: { version: HOST_PROTOCOL_VERSIONS_SERVED[0], capabilities: [] },
+      hostProtocol: { version: HOST_PROTOCOL_CURRENT_VERSION, capabilities: [] },
       manifest: { id: "channel-probe", name: "Channel probe", version: "1.0.0", entry: "entry.mjs", description: "Channel lifecycle", tools: [] },
       context: { pluginId: "channel-probe", pluginRoot: "/plugins/channel-probe", hostRoot: "/app", pluginDataDir: "/plugins/channel-probe/data", userHome: "/Users/example", aveHome: "/Users/example/.ave", installedPluginIds: [] },
       entryPath: "/plugins/channel-probe/entry.mjs", declaredToolNames: [],

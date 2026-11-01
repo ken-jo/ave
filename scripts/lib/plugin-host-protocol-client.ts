@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compile, type JSONSchema } from "json-schema-to-typescript";
-import { HOST_PROTOCOL_VERSIONS_SERVED } from "../../src/plugins/isolation/host-api-wire.js";
+import { HOST_PROTOCOL_CURRENT_VERSION } from "../../src/plugins/isolation/host-api-wire.js";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -37,14 +37,9 @@ function hostProtocolClientPath(version: string): string {
   return `schemas/plugin-host-protocol/${version}/protocol-client.ts`;
 }
 
-function servedVersion(): string {
-  if (HOST_PROTOCOL_VERSIONS_SERVED.length !== 1) {
-    fail(
-      `the host serves ${HOST_PROTOCOL_VERSIONS_SERVED.join(", ")}; one client per version `
-        + "needs a schema per version, which this generator does not yet read",
-    );
-  }
-  return HOST_PROTOCOL_VERSIONS_SERVED[0]!;
+// Legacy protocols keep their frozen clients; only the current one is generated.
+function currentVersion(): string {
+  return HOST_PROTOCOL_CURRENT_VERSION;
 }
 
 function isRecord(value: unknown): value is JsonSchema {
@@ -304,7 +299,7 @@ export function isHostNotification(frame: unknown): frame is HostNotificationFra
 }
 
 export async function generateHostProtocolClient(): Promise<{ path: string; text: string }> {
-  const version = servedVersion();
+  const version = currentVersion();
   const schemaPath = hostProtocolSchemaPath(version);
   let schemaText: string;
   try {

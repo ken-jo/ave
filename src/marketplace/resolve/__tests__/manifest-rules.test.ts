@@ -172,6 +172,23 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
     expect(() => assertGitInstallManifest(processManifest("0.12.0"), below)).toThrow(expect.objectContaining({ code: "MANIFEST_MISMATCH" }));
   });
 
+  it("installs a legacy protocol-3 package at its 0.14.0 floor and refuses one below it", () => {
+    const legacyAuthority = (minAppVersion: string): PluginAuthority => ({
+      ...authority(),
+      requires: { capabilities: ["llm.chat"], minAppVersion, hostProtocol: "3" },
+    });
+    const legacyManifest = (minAppVersion: string) => {
+      const document = manifest({ ...legacyAuthority(minAppVersion), process: { command: "./bin/plugin" }, tools: [] });
+      delete (document.extensions as { "ai.agent-connector.ave": Record<string, unknown> })["ai.agent-connector.ave"].entry;
+      return document;
+    };
+    const at = (minAppVersion: string) => admitted({ minAppVersion, hostProtocol: "3", authority: legacyAuthority(minAppVersion) });
+    expect(gitInstallManifestMismatches(legacyManifest("0.14.0"), at("0.14.0"))).toEqual([]);
+    expect(gitInstallManifestMismatches(legacyManifest("0.13.0"), at("0.13.0"))).toEqual([
+      'minAppVersion in ave-package.json is "0.13.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it',
+    ]);
+  });
+
   it("leaves an entry manifest that runs on win32 from the tree rung untouched", () => {
     const entryOnTree = { ...expected(), platforms: ["darwin", "win32", "linux"] as const, artifact: { tree: "plugins/alpha" } };
     expect(gitInstallManifestMismatches(manifest(), entryOnTree)).toEqual([]);

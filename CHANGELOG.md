@@ -14,6 +14,14 @@
   `hostProtocol`을 `"4"`로, `minAppVersion`을 실제 지원 릴리스로 갱신해야 합니다.
   호환되지 않는 계약은 프로토콜 협상으로 활성화 전에 거부됩니다. [이전 방법](docs/guides/plugin-development.md#loopback-oauth-with-pkce)
 
+- **프로토콜 3 익스텐션을 레거시로 계속 실행합니다.** 현재 프로토콜은 4이며, 3은
+  `authRedirect`(루프백 OAuth)를 제외하고 그대로 동작합니다. 프로토콜 3 익스텐션의
+  `authRedirect.open`·`wait`·`close`는 "authRedirect requires host protocol 4 — migrate
+  this extension" 오류(`path-not-implemented`)로 거부되며, 플러그인이 state를 직접
+  검사하던 방식으로 돌아가지 않습니다. 마켓플레이스도 프로토콜 3 패키지를
+  `minAppVersion` `0.14.0` 이상이면 설치할 수 있습니다. 로그인에 루프백 OAuth가
+  필요한 익스텐션은 프로토콜 4로 옮겨야 합니다.
+
 - **창 폭에 맞춰 작업 화면이 바뀝니다.** 별도 화면 전환 설정을 없애고 하나의 반응형
   화면으로 통합했습니다. 창은 중앙에 1243×768로 열리며 최소 너비는 360px입니다.
   캔버스가 좁아지면 포커스된 타일 하나를 보여 주고 분할·닫기·최대화·새 타일 열기를

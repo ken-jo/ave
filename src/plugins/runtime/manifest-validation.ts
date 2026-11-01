@@ -50,7 +50,7 @@ import { TOOL_NAME_PATTERN, isValidToolName } from "../../tools/types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { sandboxDeclarationProblem } from "../sandbox-authority.js";
-import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
+import { HOST_PROTOCOL_CURRENT_VERSION } from "../isolation/host-api-wire.js";
 import { isRecord } from "../../shared/is-record.js";
 
 /** Stable SemVer permits no prerelease, build metadata or leading zeros; keep schema and publish validation aligned. */
@@ -614,7 +614,7 @@ function checkProcessEntryShape(
     fail(
       "requires.minAppVersion",
       `a plugin with a 'process' entry must require Ave ${PROCESS_ENTRY_FIRST_APP_VERSION} or newer, the first release that runs one`,
-      `"requires": { "minAppVersion": "${PROCESS_ENTRY_FIRST_APP_VERSION}", "hostProtocol": "${HOST_PROTOCOL_VERSIONS_SERVED[0]}" }`,
+      `"requires": { "minAppVersion": "${PROCESS_ENTRY_FIRST_APP_VERSION}", "hostProtocol": "${HOST_PROTOCOL_CURRENT_VERSION}" }`,
     );
   }
 }
@@ -1186,7 +1186,7 @@ export async function parsePluginJson(
         fail(
           "requires.hostProtocol",
           "must be a positive integer written as a string, with no leading zeros — manifest_schema",
-          `"requires": { "hostProtocol": "${HOST_PROTOCOL_VERSIONS_SERVED[0]}" }`,
+          `"requires": { "hostProtocol": "${HOST_PROTOCOL_CURRENT_VERSION}" }`,
         );
       }
     }

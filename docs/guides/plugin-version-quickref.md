@@ -23,7 +23,9 @@ this app does not serve.
 
 ## What To Declare
 
-Released hosts serve protocol `"3"`; published extensions currently declare:
+Released hosts serve protocol `"3"`; published extensions currently declare the
+following. This development build also serves `"3"`, as legacy: the extension
+runs, but `authRedirect` (loopback OAuth) is refused until it moves to `"4"`.
 
 ```jsonc
 "extensions": {
@@ -36,7 +38,8 @@ Released hosts serve protocol `"3"`; published extensions currently declare:
 **Upcoming, unreleased:** this development build serves protocol 4 and requires
 host-issued loopback OAuth state. Do not publish protocol-4 packages for released
 protocol-3 hosts: the host-protocol declaration, independently of `minAppVersion`,
-refuses an unserved contract. No first published app version exists for protocol 4;
+refuses an unserved contract. Protocol 3 stays served as legacy with a `0.14.0`
+floor; only protocol 4 serves `authRedirect`. No first published app version exists for protocol 4;
 the release PR selects it and records the numeric floor. The untagged
 `4/v0.14.1` schema candidate is not a compatibility promise.
 See [protocol §3.3.1](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth)

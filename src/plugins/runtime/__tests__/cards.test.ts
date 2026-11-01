@@ -49,3 +49,27 @@ describe("buildPluginCard onboarding projection", () => {
     expect(card.active).toBe(false);
   });
 });
+
+describe("buildPluginCard host protocol projection", () => {
+  const card = (hostProtocol: string | undefined) => {
+    const manifest = makeTestManifest({ id: "sample-plugin", requires: { hostProtocol } });
+    return buildPluginCard(
+      manifest.id,
+      manifest,
+      "loaded",
+      null,
+      { active: true, runtimeLoaded: true },
+      { preparationStatus: undefined, installAliases: undefined },
+    );
+  };
+
+  it("names a served protocol so the settings UI can mark legacy extensions", () => {
+    expect(card("3").hostProtocol).toBe("3");
+    expect(card("4").hostProtocol).toBe("4");
+  });
+
+  it("omits the field for an undeclared or unserved protocol", () => {
+    expect(card(undefined)).not.toHaveProperty("hostProtocol");
+    expect(card("2")).not.toHaveProperty("hostProtocol");
+  });
+});

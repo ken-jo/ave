@@ -26,8 +26,9 @@ unchanged into `contract/` at an app release tag, and record their hashes in
 contract source.
 
 **Upcoming, unreleased:** protocol 4 requires host-validated loopback OAuth state.
-This development build serves 4, but released hosts still serve 3. Keep published
-packages on protocol 3 until the coordinated release. The future app version is
+This development build serves 4 as current and 3 as legacy, without
+`authRedirect`; released hosts still serve 3. Keep published packages on
+protocol 3 until the coordinated release. The future app version is
 owned by release preparation; protocol negotiation, rather than a guessed
 `minAppVersion`, determines whether a host can run the new contract.
 
@@ -193,7 +194,10 @@ below targets the unreleased contract. Keep published packages on protocol 3
 until the app release ships. For private testing, use a separate unpublished
 package with `requires.hostProtocol: "4"` and retain the minimum app version
 needed by its existing features; do not infer a new minimum from the candidate
-schema path. Protocol-3 packages cannot activate in this protocol-4-only build.
+schema path. Protocol-3 packages still activate in this build as legacy, but
+their `authRedirect.open`, `wait` and `close` calls are refused with
+`path-not-implemented` (`detail.requiredHostProtocol: "4"`); there is no
+plugin-checked state fallback.
 
 The host owns the redirect listener and its state. `authRedirect.open()` returns
 `{ handle, redirectUri, state }`; send that state unchanged, alongside a fresh
@@ -238,8 +242,9 @@ to `hostProtocol: "4"` and the actual first supporting app version, and update e
 OAuth library adapter to use the host's state. If a library owns state, use its
 supported state option, or exchange the host-validated code directly with the
 same attempt's PKCE verifier; never disable host validation.
-Protocol-3 packages fail before activation on the protocol-4 build and require
-an updated package; released protocol-3 hosts continue to require the old contract.
+Protocol-3 packages keep running on this build, except that `authRedirect` is
+refused; loopback OAuth requires an updated protocol-4 package. Released
+protocol-3 hosts continue to require the old contract.
 
 ## UI Extensions
 

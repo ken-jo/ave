@@ -167,10 +167,10 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("incompatible-host-protocol");
-    expect(card?.installFailureMessage).toMatch(/speaks host protocol 2; this app serves 4/);
+    expect(card?.installFailureMessage).toMatch(/speaks host protocol 2; this app serves 3, 4/);
     const missing = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-undeclared");
     expect(missing?.installFailureKind).toBe("incompatible-host-protocol");
-    expect(missing?.installFailureMessage).toMatch(/does not declare a host protocol; this app serves 4/);
+    expect(missing?.installFailureMessage).toMatch(/does not declare a host protocol; this app serves 3, 4/);
     const kept = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-served");
     expect(kept?.loadStatus).not.toBe("failed");
   });

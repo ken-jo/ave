@@ -211,6 +211,8 @@ export type PluginCardSummary = {
   lastAttemptRefusal?: PluginAttemptRefusal;
   /** Marketplace request slugs that should collapse onto this installed plugin. */
   installAliases?: string[];
+  /** Declared host protocol when served; "3" is legacy (no authRedirect) and warrants a "Legacy v3" badge. */
+  hostProtocol?: "3" | "4";
 };
 
 /**

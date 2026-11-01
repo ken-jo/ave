@@ -7,8 +7,15 @@ import {
   createStorageHostApiPaths,
   type DelegatedWorkerConfinement,
   type HostApiPathHandler,
+  unimplementedHostApiPath,
 } from "./host-api-dispatcher.js";
-import type { HostApiPath } from "./host-api-wire.js";
+import {
+  HOST_PROTOCOL_CURRENT_VERSION,
+  HostApiBoundaryError,
+  isLegacyHostProtocolVersion,
+  type HostApiPath,
+  type ServedHostProtocolVersion,
+} from "./host-api-wire.js";
 
 /** Intersect handler-group requirements so every group is satisfied by the same host object. */
 export type DispatchableHostApi = Parameters<typeof createStorageHostApiPaths>[0] &
@@ -39,4 +46,32 @@ export function createBoundHostApiDispatchTable(
     ...createServiceHostApiPaths(hostApi, confinement, onMalformedCredentialSelector),
     [BOUND_CONFINEMENT]: confinement,
   };
+}
+
+/** Members a legacy connection never reaches: protocol 3 had plugin-checked OAuth state (§3.3.1). */
+const LEGACY_WITHHELD_PATHS = ["authRedirect.open", "authRedirect.wait", "authRedirect.close"] as const satisfies readonly HostApiPath[];
+
+/** Refuse without reaching the host; unimplemented status keeps the member out of advertised capabilities. */
+function legacyWithheldPath(path: HostApiPath, version: ServedHostProtocolVersion): HostApiPathHandler {
+  return {
+    ...unimplementedHostApiPath(path),
+    invoke: () =>
+      Promise.reject(
+        new HostApiBoundaryError(
+          "path-not-implemented",
+          `[host-api-dispatcher] '${path}': authRedirect requires host protocol ${HOST_PROTOCOL_CURRENT_VERSION} — migrate this extension`,
+          { path, hostProtocol: version, requiredHostProtocol: HOST_PROTOCOL_CURRENT_VERSION },
+        ),
+      ),
+  };
+}
+
+/** The table one connection serves at its negotiated version; the current version serves the bound table unchanged. */
+export function hostApiTableForProtocol(
+  table: BoundHostApiDispatchTable,
+  version: ServedHostProtocolVersion,
+): BoundHostApiDispatchTable {
+  if (!isLegacyHostProtocolVersion(version)) return table;
+  const withheld = Object.fromEntries(LEGACY_WITHHELD_PATHS.map((path) => [path, legacyWithheldPath(path, version)]));
+  return { ...table, ...withheld };
 }

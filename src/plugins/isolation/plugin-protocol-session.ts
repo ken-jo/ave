@@ -19,6 +19,7 @@ import {
   HOST_PROTOCOL_NOTIFICATIONS,
   IncompatibleHostProtocolError,
   type HostProtocolVersion,
+  type ServedHostProtocolVersion,
 } from "./host-api-wire.js";
 import {
   PLUGIN_INSTANCE_METHODS,
@@ -32,7 +33,11 @@ import {
   type PluginMcpRequestMethod,
 } from "./plugin-child-transport.js";
 import type { PluginChildContext } from "./plugin-child-runtime.js";
-import type { BoundHostApiDispatchTable, DispatchableHostApi } from "./bound-host-api-table.js";
+import {
+  hostApiTableForProtocol,
+  type BoundHostApiDispatchTable,
+  type DispatchableHostApi,
+} from "./bound-host-api-table.js";
 
 const log = createLogger("plugin-protocol-session");
 
@@ -44,7 +49,8 @@ type SessionHostApi = DispatchableHostApi &
 export interface PluginProtocolSessionSpec {
   readonly pluginId: string;
   readonly manifest: PluginManifest;
-  readonly hostProtocolVersion: HostProtocolVersion;
+  /** The negotiated version; it fixes which members this connection serves. */
+  readonly hostProtocolVersion: ServedHostProtocolVersion;
   readonly link: ChildLink;
   readonly context: PluginRuntimeContext;
   /** Construct names the resolved plugin module or process executable, never the child runtime entry. */
@@ -184,6 +190,8 @@ export async function openPluginProtocolSession(
   const { pluginId, context, signal } = spec;
   // The connection is the incarnation; generation identity never crosses as caller input.
   const hostApi = context.hostApi as unknown as SessionHostApi;
+  // Serve and advertise the version-filtered table, never the raw bound one.
+  const table = hostApiTableForProtocol(spec.table, spec.hostProtocolVersion);
 
   let live = true;
   const transport = new PluginChildTransport({
@@ -226,7 +234,7 @@ export async function openPluginProtocolSession(
       log.warn(entry, entry.type);
     },
     // Serve and advertise the same bound table.
-    table: spec.table,
+    table,
     link: spec.link,
   });
 
@@ -354,9 +362,10 @@ export async function openPluginProtocolSession(
       // Omit the snapshot entirely when no reader exists so unavailable differs from unset.
       ...(constructionPreferences ? { appPreferences: constructionPreferences } : {}),
     };
-    const capabilities = hostProtocolCapabilities(spec.table);
+    const capabilities = hostProtocolCapabilities(table);
     const constructParams: PluginConstructParams = {
-      hostProtocol: { version: spec.hostProtocolVersion, capabilities },
+      // The published schema names only the current version; legacy versions travel the same field.
+      hostProtocol: { version: spec.hostProtocolVersion as HostProtocolVersion, capabilities },
       manifest: spec.manifest,
       context: childContext,
       entryPath: spec.entryPath,
