@@ -10,6 +10,8 @@ import {
 import { createConversationSurfaceRuntime } from "../../../engine/conversation-surface-runtime.js";
 import { ApprovalGate } from "../../../permissions/approval-gate.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
+import { bindRemoteControllerToSession } from "../../../shared/chat-origin.js";
+import { makePlatformBridgeAuthority } from "../../../permissions/__tests__/test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -67,7 +69,9 @@ describe("ave:chat:abort with a turn parked on an approval", () => {
       reason: "write outside the workspace",
       source: "builtin",
       createdAt: Date.now(),
+      // The gate derives remote origin only from host-issued, session-bound controller authority; a bare origin marker is refused as forged.
       remoteControllerOrigin: "platform-bridge",
+      remoteControllerAuthority: bindRemoteControllerToSession(makePlatformBridgeAuthority(), "conv-parked"),
       abortSignal: turnAbortController.signal,
     });
     const lease = runtime.activity.tryTrackTurn(async () => {

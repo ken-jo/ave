@@ -175,20 +175,22 @@ async function runTurnInSpan(
     if (options.initialGuidance) memoryCaptureTaint.add("initial-guidance");
     if (options.a2aCausalContext) memoryCaptureTaint.add("a2a-causal-context");
     if (options.originSource) memoryCaptureTaint.add("overlay-origin");
+    // An admitted, session-bound remote controller is the user (owner decision 2026-11-02): its turn enters the permission tree with keyboard provenance.
+    const permissionInputOrigin: ChatInputOrigin = isRemoteControllerTurn ? "user-keyboard" : inputOrigin;
     const toolTrustOrigin = attachmentParts.length > 0
       ? "file-content"
-      : initialToolTrustOrigin(isRemoteControllerTurn ? "user-keyboard" : inputOrigin, turnInput);
+      : initialToolTrustOrigin(permissionInputOrigin, turnInput);
     let lifecycleProvenance: { toolTrustOrigin: ChatInputOrigin; overlayTriggerOrigin: string | null; approvalReasonPrefix?: string } = {
       toolTrustOrigin, overlayTriggerOrigin: options.originSource ?? null, approvalReasonPrefix: options.approvalReasonPrefix,
     };
-    const permissionUserIntent = summarizePermissionUserIntent(isRemoteControllerTurn ? "user-keyboard" : inputOrigin, turnInput,
+    const permissionUserIntent = summarizePermissionUserIntent(permissionInputOrigin, turnInput,
   );
     const requestAnchor = options.requestAnchorRawIntent !== undefined
       ? createRequestAnchor({
           sessionId: effectiveSessionId,
           turnId: randomUUID(),
           inputMessageId: randomUUID(),
-          inputOrigin: isRemoteControllerTurn ? "user-keyboard" : inputOrigin,
+          inputOrigin: permissionInputOrigin,
           rawIntent: options.requestAnchorRawIntent,
         })
       : null;
