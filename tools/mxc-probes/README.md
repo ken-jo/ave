@@ -217,3 +217,57 @@ Portable harness checks:
 node --test tools/mxc-probes/ancestor-exposure.test.mjs tools/mxc-probes/filesystem-policy.test.mjs tools/mxc-probes/probe-common.test.mjs
 node --check tools/mxc-probes/sdk-supervisor.mjs
 ```
+
+## MCP and hook holder acceptance (row 5)
+
+These two diagnostics measure the row-5 holder shapes inside a UI-enabled container
+over native standard streams. They are diagnostic only: the request mirrors the
+production holder layout (cwd in an admitted data root, host-owned holder
+variables, a private `mxc-staging\<opaque-id>\{home,temp}`), but every grant stays
+inside this run's own temp directory. They do not call `spawnMxcConfinedChild` and
+do not establish packaged holder activation; that remains the row-7 gate.
+
+Run from the checkout root in a standard-user Windows x64 interactive session,
+after staging the pinned SDK and locked runtime as above. Git for Windows supplies
+the Bash negative control.
+
+```powershell
+$Sdk = (Resolve-Path '.\node_modules\@microsoft\mxc-sdk').Path
+$Runtime = (Resolve-Path '.\node_modules\electron\dist\electron.exe').Path
+$Bash = 'C:\Program Files\Git\bin\bash.exe'
+$GitRoot = 'C:\Program Files\Git'
+$env:ELECTRON_RUN_AS_NODE = '1'
+try {
+  & $Runtime tools/mxc-probes/holder-mcp-stdio.mjs --sdk-root $Sdk --runtime $Runtime |
+    Tee-Object -FilePath '.\mxc-holder-mcp-stdio.jsonl'
+  & $Runtime tools/mxc-probes/holder-hook-json.mjs --sdk-root $Sdk --runtime $Runtime --git-bash $Bash --git-root $GitRoot |
+    Tee-Object -FilePath '.\mxc-holder-hook-json.jsonl'
+} finally { $env:ELECTRON_RUN_AS_NODE = $null }
+```
+
+| Entry | Measurement | `measured` requires |
+| --- | --- | --- |
+| `holder-mcp-stdio.mjs` | A newline-delimited JSON-RPC server (`holder-payload.mjs mcp-server`) in one long-lived container: `server/discover` (answered `-32601`), `initialize`, `notifications/initialized`, `tools/list`, `tools/call`. Then a `tools/call` that never answers is cancelled by `dispose()` with stdin still open. Then a second container with a fresh staging tree repeats the handshake and call and ends on stdin EOF. | Dual-era handshake; the call echoes the admitted cwd, the staged HOME/TEMP and the holder variable; the outstanding call stays unanswered; the server process, pinned by creation time, image path and a fresh nonce over its own pipe, is signaled dead after disposal; the reconnect succeeds with fresh staging and exit 0. |
+| `holder-hook-json.mjs` | Three one-shot hook containers (`holder-payload.mjs hook allow/exit2/exit5`) receive hook JSON on stdin; a PowerShell hook control; a Git Bash control. | `allow` returns decision JSON with the tool name, admitted cwd and `AVE_HOOK_TYPE`/`PLUGIN_ROOT`; `exit2` carries stderr with status 2; `exit5` returns 5; PowerShell reads the JSON and answers with status 0; Git Bash does **not** start (expected `0xc0000142`, recorded as `bashIncompatible`). Missing `--git-bash` is inconclusive. |
+
+Safety limits: the only listener is the harness's existing refusing proxy on
+`127.0.0.1` (the static loopback scan covers these files). Every container has the
+shared measurement deadline. Only the server process handle pinned by
+`pinRuntimeProcesses` may be terminated, and only if it survives disposal. The
+probes write only below the run's own temp directory and delete nothing; the run
+directory is retained for inspection like the other probes. No ACL, registry,
+account, service or firewall changes are made.
+
+Harness self-assessment: the fixtures and the measurement logic are exercised off
+Windows by `holder-probes.test.mjs` with host child processes behind a fake
+container context, including cancel-by-disposal and the pinned-handle rule. That
+proves the probe logic, not containment. What only the Windows run establishes:
+the native pipes under PSEC, the cwd/env as the container sees them, disposal
+death under a real container, and the Git Bash startup failure. Not measured here:
+production request construction (row 2's builder), the packaged supervisor, and
+reparse/DLL-search observations (row 7).
+
+```sh
+node --test tools/mxc-probes/holder-probes.test.mjs
+node --check tools/mxc-probes/holder-probes.mjs
+```

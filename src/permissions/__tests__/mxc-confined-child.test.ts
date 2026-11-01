@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   junctions: new Map<string, string>(),
   missing: new Set<string>(),
   spawn: vi.fn(), close: vi.fn(), admit: vi.fn(), validate: vi.fn(), allowed: vi.fn(), lease: vi.fn(),
+  shellPlan: undefined as unknown, issued: new WeakSet<object>(),
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
@@ -23,7 +24,12 @@ vi.mock("../asrt-sandbox.js", () => ({
 }));
 vi.mock("../sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../sandbox-capability.js")>();
-  return { ...actual, getWindowsExtensionBackendPlan: () => state.realPlan ? actual.getWindowsExtensionBackendPlan() : state.plan };
+  return { ...actual, getWindowsExtensionBackendPlan: () => state.realPlan ? actual.getWindowsExtensionBackendPlan() : state.plan,
+    // A host-issued shell plan of the live generation, for the user-hook shell-plan route.
+    getHostShellExecutionPlan: () => state.shellPlan ?? actual.getHostShellExecutionPlan(),
+    isIssuedHostShellExecutionPlan: (plan: object) => state.issued.has(plan),
+    getIssuedHostShellExecutionPlanGeneration: (plan: object) => state.issued.has(plan) ? actual.getSandboxGeneration() : undefined,
+  };
 });
 vi.mock("../egress-host-listener.js", () => ({ openMxcEgressLease: (...args: unknown[]) => state.lease(...args) }));
 vi.mock("../mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: (...args: unknown[]) => state.spawn(...args) }));
@@ -47,7 +53,8 @@ vi.mock("node:fs", async (original) => {
   return { ...actual, existsSync: () => true, realpathSync, statSync };
 });
 
-import { spawnConfinedChild, spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../confined-child.js";
+import { liveMxcHolderWritableRoots, spawnConfinedChild, spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../confined-child.js";
+import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import { __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../sandbox-capability.js";
 import { mxcShellCapability, windowsSubstrateFor, type WindowsSandboxPlanInputs } from "../../boot/steps/windows-sandbox-plan.js";
 
@@ -231,6 +238,62 @@ describe("native confined holder admission", () => {
     await expect(spawnConfinedChild({ ...spec(), egressOwner: pluginOwner, grantMode: "deny-only" }))
       .rejects.toBeInstanceOf(MxcNativeEntryRequiredError);
     expect(state.lease).not.toHaveBeenCalled();
+  });
+});
+
+describe("user-hook shell-plan route under a container extension backend", () => {
+  const userHookOwner = { kind: "worker", role: "hook", pluginId: undefined, instanceId: "a1" } as MxcConfinedChildSpec["egressOwner"];
+  const issuedPlan = (substrate: "asrt" | "mxc" = "asrt") => {
+    const plan = { mode: "asrt", substrate, identity: `issued-${substrate}` };
+    state.issued.add(plan);
+    state.shellPlan = plan;
+    return plan as never;
+  };
+  afterEach(() => { state.shellPlan = undefined; });
+
+  it("lets a plugin-less user hook on its issued srt-win plan past the extension guard", async () => {
+    const plan = issuedPlan();
+    for (const readiness of ["ready", "rejected"] as const) {
+      if (readiness === "rejected") state.plan = { selectedBackend: "none", readiness };
+      const refusal = await spawnConfinedChild({ ...spec(), egressOwner: userHookOwner, grantMode: "deny-only", userHookShellPlan: plan })
+        .catch((error: unknown) => error);
+      // Past the guard the legacy wrap runs (unmocked here); neither the native-entry nor the readiness refusal fires.
+      expect(refusal).not.toBeInstanceOf(MxcNativeEntryRequiredError);
+      expect(refusal).not.toBeInstanceOf(MxcProcessContractError);
+    }
+  });
+
+  it("never grants the exemption to a plugin hook, even carrying an issued plan", async () => {
+    const plan = issuedPlan();
+    const pluginHook = { kind: "worker", role: "hook", pluginId: "sample" } as MxcConfinedChildSpec["egressOwner"];
+    await expect(spawnConfinedChild({ ...spec(), egressOwner: pluginHook, grantMode: "deny-only", userHookShellPlan: plan }))
+      .rejects.toThrow("Only a plugin-less user hook");
+    await expect(spawnConfinedChild({ ...spec(), egressOwner: pluginHook, grantMode: "deny-only" }))
+      .rejects.toBeInstanceOf(MxcNativeEntryRequiredError);
+    expect(state.lease).not.toHaveBeenCalled();
+  });
+
+  it("refuses a plan the host did not issue, a stale plan and a container-substrate plan", async () => {
+    issuedPlan();
+    const forged = { mode: "asrt", substrate: "asrt", identity: "issued-asrt" } as never;
+    await expect(spawnConfinedChild({ ...spec(), egressOwner: userHookOwner, grantMode: "deny-only", userHookShellPlan: forged }))
+      .rejects.toThrow("not the current issued srt-win plan");
+    const stale = issuedPlan();
+    issuedPlan("asrt");
+    state.shellPlan = { mode: "asrt", substrate: "asrt", identity: "newer" };
+    await expect(spawnConfinedChild({ ...spec(), egressOwner: userHookOwner, grantMode: "deny-only", userHookShellPlan: stale }))
+      .rejects.toThrow("not the current issued srt-win plan");
+    await expect(spawnConfinedChild({ ...spec(), egressOwner: userHookOwner, grantMode: "deny-only", userHookShellPlan: issuedPlan("mxc") }))
+      .rejects.toThrow("not the current issued srt-win plan");
+  });
+});
+
+describe("live holder writable roots for adapters", () => {
+  it("lists an owned holder's writable roots until verified termination", async () => {
+    const result = await spawnMxcConfinedChild(spec());
+    expect(liveMxcHolderWritableRoots()).toContain("D:\\work");
+    await result.release();
+    expect(liveMxcHolderWritableRoots()).not.toContain("D:\\work");
   });
 });
 

@@ -37,6 +37,22 @@ describe("per-holder native request", () => {
     expect(request.inheritDefaultEnvironment).toBe(false);
   });
 
+  it("carries the holder's host-owned variables, leaving wrapper and container-owned keys alone", () => {
+    const spec = input();
+    const request = buildMxcConfinedChildRequest({ ...spec, holderEnv: {
+      AVE_HOOK_TYPE: "pre", PLUGIN_DATA: "D:\\staging\\data", FS_TOKEN: "k", LANG: "ko_KR.UTF-8",
+      HTTP_PROXY: "http://evil.test", HOME: "C:\\host", TEMP: "C:\\host", PWD: "C:\\host",
+    } });
+    expect(request.environment).toMatchObject({ AVE_HOOK_TYPE: "pre", PLUGIN_DATA: "D:\\staging\\data", FS_TOKEN: "k",
+      LANG: "ko_KR.UTF-8", HOME: spec.home, TEMP: spec.temp, PWD: spec.cwd });
+    expect(request.environment).not.toHaveProperty("HTTP_PROXY");
+  });
+
+  it("refuses duplicate or loader-override holder variables", () => {
+    expect(() => buildMxcConfinedChildRequest({ ...input(), holderEnv: { Token: "a", TOKEN: "b" } })).toThrow("duplicate");
+    expect(() => buildMxcConfinedChildRequest({ ...input(), holderEnv: { NODE_OPTIONS: "--require=x" } })).toThrow();
+  });
+
   it.each(["command", "cwd", "home", "temp"] as const)("refuses unadmitted %s without widening", (field) => {
     const spec = input();
     const bad = field === "command" ? "E:\\outside\\runtime.exe" : "E:\\outside";

@@ -61,7 +61,16 @@ import {
   assertExtensionStartAllowed,
   cleanupAsrtSandboxAfterCommand,
 } from "../permissions/asrt-sandbox.js";
-import { bundledWrappedEnv, spawnWindowsBundledProcess, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
+import {
+  assertMxcHolderNotBashForm,
+  bundledWrappedEnv,
+  isMxcExtensionBackendSelected,
+  MxcHolderQuarantinedError,
+  spawnMxcBundledHolder,
+  spawnWindowsBundledProcess,
+  wrapBundledCommand,
+  type MxcBundledHolder,
+} from "../sandbox/wrap-bundled-command.js";
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
@@ -1686,8 +1695,17 @@ export class McpClient {
   }
 }
 
+/** Servers whose contained incarnation could not be confirmed stopped. Each keeps its leases, and its reconnect is refused
+ * until the host restarts (a row-6 disclosure item). Keyed by server id: a replacement would share its roots. */
+const quarantinedContainedMcpServers = new Set<string>();
+/** The pending termination of each server's last contained incarnation; a replacement starts only after it settles. */
+const terminatingContainedMcpServers = new Map<string, Promise<void>>();
+
 class StdioTransport implements McpTransport {
   readonly kind = "stdio" as const;
+  /** The contained incarnation (`spawnMxcBundledHolder`) when the extension container backend is selected. */
+  private native: MxcBundledHolder | null = null;
+  private nativeEnded = false;
   private process: ChildProcess | null = null;
   private inputBuffer = Buffer.alloc(0);
   private messageHandler: ((msg: JsonRpcResponse) => void) | null = null;
@@ -1725,6 +1743,15 @@ class StdioTransport implements McpTransport {
 
     // Minimal, secret-stripped base env (Least Privilege). On the PLAIN path this is the spawn env verbatim; on
     // the WRAPPED path it is the baseline that the ASRT proxy keys are merged onto (see buildWrappedStdioEnv).
+    // The host-owned part: NODE_ENV, the approved configured variables and the API key. A container receives exactly
+    // these on top of its forwarded runtime keys, as the other paths do.
+    const holderEnv: Record<string, string> = {
+      ...(process.env.NODE_ENV !== undefined ? { NODE_ENV: process.env.NODE_ENV } : {}),
+      ...this.config.env, // 관리자 승인 환경변수만
+      ...(this.config.apiKey && this.config.apiKeyEnv
+        ? { [this.config.apiKeyEnv]: this.config.apiKey }
+        : {}),
+    };
     const baseEnv: NodeJS.ProcessEnv = {
       // C2 fix: 최소 환경변수만 허용; API 키 유출 방지 (Least Privilege)
       PATH: process.env.PATH,
@@ -1732,12 +1759,15 @@ class StdioTransport implements McpTransport {
       USERPROFILE: process.env.USERPROFILE,
       APPDATA: process.env.APPDATA,
       LANG: process.env.LANG,
-      NODE_ENV: process.env.NODE_ENV,
-      ...this.config.env, // 관리자 승인 환경변수만
-      ...(this.config.apiKey && this.config.apiKeyEnv
-        ? { [this.config.apiKeyEnv]: this.config.apiKey }
-        : {}),
+      ...holderEnv,
     };
+
+    // A selected container backend runs the server as its own extension holder through the native entry; the legacy
+    // wrap below would be refused by the start guard (`native-entry-required`).
+    if (isMxcExtensionBackendSelected()) {
+      await this.openContained(spawnCommand, baseEnv, holderEnv);
+      return;
+    }
 
     // When the OS-tool sandbox is active, route this long-lived stdio worker through ASRT's wrapWorkerCommand so its egress is enforced by the attributed worker proxy policy and its writes are confined to the per-server filesystem jail. ASRT is stdio-transparent on mac/linux: it wraps as `[shell, -c, <wrapped>]`; a child spawned with
     // inherited stdio:["pipe","pipe","pipe"] passes stdin/stdout through, so MCP's newline-delimited framing survives. srt-win relays no stdin and grants no per-exec allow, so on Windows openWrapped hands the server to the host's stdio relay under a held ACL grant (openWrappedWindows). Gate OFF ⇒ the plain spawn below is UNCHANGED.
@@ -1876,6 +1906,90 @@ class StdioTransport implements McpTransport {
     this.setupProcessHandlers();
   }
 
+  /** The container form: native pipes carry the MCP framing, and the server keeps its sandbox/data write roots and payload
+   * read root. A configured cwd is honored only inside those roots, never added to them. A replacement waits for the
+   * previous incarnation's verified termination and is refused for good when that termination is unverified. */
+  private async openContained(
+    spawnCommand: { command: string; args: string[] },
+    baseEnv: NodeJS.ProcessEnv,
+    holderEnv: Record<string, string>,
+  ): Promise<void> {
+    const id = this.config.id;
+    const label = `mcp:${id}`;
+    await terminatingContainedMcpServers.get(id);
+    if (quarantinedContainedMcpServers.has(id)) throw new MxcHolderQuarantinedError(label);
+    assertMxcHolderNotBashForm(spawnCommand.command);
+    const allowWrite = [...(this.config.sandboxRoot ? [this.config.sandboxRoot] : []),
+      ...(this.config.pluginDataDir ? [this.config.pluginDataDir] : [])];
+    const payload = this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [];
+    const holder = await spawnMxcBundledHolder({
+      label,
+      command: spawnCommand.command,
+      args: spawnCommand.args,
+      baseEnv,
+      holderEnv,
+      ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
+      allowRead: payload,
+      allowWrite,
+      ownedReadRoots: payload,
+      egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: id },
+    });
+    this.native = holder;
+    this.nativeEnded = false;
+    this.processStdin = holder.process.stdin;
+    this.processStdout = holder.process.stdout;
+    holder.process.stdin.on("error", (err: Error) => log.warn(`${id} stdin error: %s`, err.message));
+    holder.process.stdout.on("data", (chunk: Buffer) => {
+      try {
+        this.handleStdout(chunk);
+      } catch (err) {
+        log.error(`${id} stdout processing error: %s`, err);
+      }
+    });
+    holder.process.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf-8").trim();
+      if (text) log.warn(`${id} stderr: %s`, scrubSecrets(text));
+    });
+    void holder.process.completion.then(
+      (result) => this.containedEnded(holder, `code=${result.exitCode} timedOut=${result.timedOut}`),
+      (error: unknown) => this.containedEnded(holder, `stream fault: ${errorMessage(error)}`),
+    ).catch((error: unknown) => log.error(`${id} contained exit handling failed: %s`, errorMessage(error)));
+  }
+
+  private containedEnded(holder: MxcBundledHolder, detail: string): void {
+    if (this.native !== holder || this.nativeEnded) return;
+    this.nativeEnded = true;
+    log.warn(`${this.config.id} contained process exited: ${detail}`);
+    this.revokeContainedMarker();
+    this.releaseContained(holder);
+    if (!this.closedExternally) this.closeHandler?.(t("be_mcpClient.processExitedUnexpectedly"));
+  }
+
+  /** `windows-mxc` is reported only once the native pipes carried a framed reply, and withdrawn at revocation. */
+  private confirmContainedTransport(): void {
+    if (this.native !== null && !this.nativeEnded && this.wrappedOwner === null) {
+      this.wrappedOwner = markMcpServerWrapped(this.config.id);
+    }
+  }
+
+  private revokeContainedMarker(): void {
+    if (this.wrappedOwner === null) return;
+    unmarkMcpServerWrapped(this.config.id, this.wrappedOwner);
+    this.wrappedOwner = null;
+  }
+
+  private releaseContained(holder: MxcBundledHolder): void {
+    const id = this.config.id;
+    const pending = holder.release().catch((error: unknown) => {
+      quarantinedContainedMcpServers.add(id);
+      log.error(`${id} contained process termination is unverified; reconnect refused until restart: %s`, errorMessage(error));
+    });
+    terminatingContainedMcpServers.set(id, pending);
+    void pending.finally(() => {
+      if (terminatingContainedMcpServers.get(id) === pending) terminatingContainedMcpServers.delete(id);
+    });
+  }
+
   /** Release the per-command ASRT state exactly ONCE after the wrapped worker has definitively exited or closed. Shutdown intent alone must not release confinement while a TERM-ignoring child is still alive. Consequences of running this: 1. Drops the no-leak reviewer marker
    * (`unmarkMcpServerWrapped`) so a later reconnect that takes the plain-spawn path cannot inherit a stale `asrt` report; exactly the leak class #1359 targeted. 2. Runs `cleanupAsrtSandboxAfterCommand()`; decrements the ASRT activeSandboxCount ref-counter and tears down Linux bwrap mount artifacts. */
   private runAsrtCleanupOnce(): void {
@@ -1896,7 +2010,7 @@ class StdioTransport implements McpTransport {
   }
 
   async send(message: JsonRpcMessage): Promise<void> {
-    if (this.process === null || !this.processStdin?.writable) {
+    if ((this.process === null && (this.native === null || this.nativeEnded)) || !this.processStdin?.writable) {
       throw new Error(`[mcp-client] ${t("be_mcpClient.stdinNotWritable")}`);
     }
     // MCP stdio transport: one JSON-RPC message per line, no embedded newlines. JSON.stringify
@@ -1911,6 +2025,24 @@ class StdioTransport implements McpTransport {
 
   async close(): Promise<void> {
     this.closedExternally = true;
+    const contained = this.native;
+    if (contained !== null) {
+      // Revoke first; disposal, not a signal, establishes the container's termination.
+      this.native = null;
+      this.revokeContainedMarker();
+      const stdin = this.processStdin;
+      this.processStdin = null;
+      try {
+        stdin?.end();
+      } catch {
+        // A broken stdin must not suppress termination below.
+      }
+      if (!this.nativeEnded) {
+        this.nativeEnded = true;
+        this.releaseContained(contained);
+      }
+      return;
+    }
     // Capture the process reference BEFORE nulling `this.process` so the SIGKILL fallback timer can still reach it. Without this,
     // `close()` used to null the field synchronously and the 3-second timer would dereference `this.process?.kill("SIGKILL")` as a no-op.
     const proc = this.process;
@@ -1932,6 +2064,7 @@ class StdioTransport implements McpTransport {
   }
 
   isAlive(): boolean {
+    if (this.native !== null) return !this.nativeEnded;
     return this.process !== null && this.process.exitCode === null;
   }
 
@@ -1997,6 +2130,7 @@ class StdioTransport implements McpTransport {
 
       try {
         const parsed = JSON.parse(messageStr) as JsonRpcResponse;
+        this.confirmContainedTransport();
         this.messageHandler?.(parsed);
       } catch {
         log.warn(`${this.config.id} JSON parse failed: %s`, messageStr.slice(0, 200));

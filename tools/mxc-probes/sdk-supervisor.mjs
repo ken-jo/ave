@@ -12,6 +12,7 @@ import { assertEnumerationSupport, buildProbeFilesystem, filesystemObservation, 
 import { runEgressPolicyProbe } from "./egress-policy-run.mjs";
 import { evaluateAncestorExposure } from "./ancestor-exposure-results.mjs";
 import { finishProcess, pinRuntimeProcesses, ProcessIdentityError } from "./process-lifecycle.mjs";
+import { runHolderHookProbe, runHolderMcpProbe } from "./holder-probes.mjs";
 
 const { name, options, budgets, temp } = JSON.parse(process.env.MXC_PROBE_INPUT);
 const resources = [];
@@ -288,6 +289,11 @@ try {
     const results = await runEgressPolicyProbe({ launch, request, temp, ioBudget, observation, bounded });
     details.push(...results);
     if (!results.length || results.some((result) => result.accepted !== true)) verdict = "inconclusive";
+  } else if (name === "holder-mcp-stdio" || name === "holder-hook-json") {
+    const holderContext = { launch, request, finish, bounded, pause, temp, ioBudget, pollMs, budgets, native, options, runtime: options.runtime };
+    const result = name === "holder-mcp-stdio" ? await runHolderMcpProbe(holderContext) : await runHolderHookProbe(holderContext);
+    details.push(result);
+    if (!result.accepted) verdict = "inconclusive";
   } else if (name === "ancestor-exposure") {
 
     const result = await ancestorExposure(); details.push(result);
