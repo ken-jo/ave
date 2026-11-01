@@ -38,6 +38,13 @@ export interface WorkspaceTab {
   /** Set on a browser tab opened for the agent's `browser_tab_new`: main's request id, echoed on the tab's bind so main can
    * tell the agent opened it. */
   agentRequestId?: string;
+  /** The chat whose agent opened this tab; only that chat lists it. */
+  agentSessionId?: string;
+}
+
+/** Whether a chat's panel lists this tab: another chat's agent tab stays mounted but unlisted. */
+export function tabVisibleTo(tab: WorkspaceTab, sessionId: string | null | undefined): boolean {
+  return tab.agentSessionId === undefined || tab.agentSessionId === sessionId;
 }
 
 export interface WorkspaceTabsStore {
@@ -76,7 +83,7 @@ export interface WorkspaceTabsStore {
   hasTab: (id: string) => boolean;
   /** Open a NEW pinned browser tab for the agent (`browser_tab_new`) and activate it. Never reuses a tab showing the same
    * url: the agent gets a tab of its own. Returns the new tab's id, or null for an unsafe url. */
-  openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean) => string | null;
+  openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean, sessionId?: string) => string | null;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -305,14 +312,14 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
-  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string, active: boolean): string | null => {
+  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string, active: boolean, sessionId?: string): string | null => {
     const content: WorkspaceTabContentRef | null = isBrowserBlankBootstrap(rawUrl, agentRequestId)
       ? { source: "browser", url: rawUrl }
       : normalizeContentRef({ source: "browser", url: rawUrl });
     if (!content) return null;
     // The id is taken here, outside the updater: an updater runs at flush time, and the caller needs the id now.
     const id = mintTabId("browser");
-    const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId };
+    const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId, ...(sessionId === undefined ? {} : { agentSessionId: sessionId }) };
     setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: active ? id : prev.activeTabId }));
     return id;
   }, []);

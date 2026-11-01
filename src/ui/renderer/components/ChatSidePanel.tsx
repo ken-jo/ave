@@ -2,7 +2,7 @@ import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
-import type { WorkspaceTab, WorkspaceTabKind, WorkspaceTabsStore } from "../preview/workspace-tabs.js";
+import { tabVisibleTo, type WorkspaceTab, type WorkspaceTabKind, type WorkspaceTabsStore } from "../preview/workspace-tabs.js";
 import {
   WORKSPACE_TAB_LAUNCHER,
   matchesLauncherShortcut,
@@ -953,7 +953,7 @@ export function ChatSidePanel({
   };
 
   const {
-    tabs,
+    tabs: allTabs,
     activeTabId,
     browserUrlByTab,
     setActiveTabId,
@@ -963,6 +963,7 @@ export function ChatSidePanel({
     closeTab,
     setBrowserTabUrl,
   } = workspaceTabs;
+  const tabs = useMemo(() => allTabs.filter((tab) => tabVisibleTo(tab, sessionId)), [allTabs, sessionId]);
 
   // #1444: closing a terminal tab must also kill its live PTY in the main
   // process (the store only drops the tab record). Non-terminal tabs are
@@ -1014,7 +1015,8 @@ export function ChatSidePanel({
   }, [frontSurface?.tabId]);
   const sideChatActive = activeTab?.kind === "side-chat" && !activeTab.content;
   const sideChatMounted = tabs.some((tab) => tab.kind === "side-chat" && !tab.content);
-  const browserTabs = useMemo(() => tabs.filter((tab) => tab.kind === "browser" && tab.content !== null), [tabs]);
+  // Every chat's pages, so switching chats never unloads one.
+  const browserTabs = useMemo(() => allTabs.filter((tab) => tab.kind === "browser" && tab.content !== null), [allTabs]);
   const agentControlledTabIds = useAgentControlledTabIds();
 
 
