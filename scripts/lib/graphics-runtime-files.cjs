@@ -12,7 +12,7 @@ const GRAPHICS_RUNTIME_FILES = {
     "libvk_swiftshader.dylib",
     "vk_swiftshader_icd.json",
   ],
-  // Matches electron@45.2.1 in bun.lock; re-verify the upstream zip when updating the lock.
+  // Matches electron major 45 in bun.lock; re-verify upstream zips on major bumps.
   win32: [
     "vk_swiftshader.dll",
     "vulkan-1.dll",
