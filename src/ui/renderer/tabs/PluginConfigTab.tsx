@@ -512,13 +512,14 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   useEffect(() => {
     let current = true;
     setProtocolUpdatePath(null);
-    if (selectedPlugin?.loadStatus === "failed" && selectedPlugin.installFailureKind === "incompatible-host-protocol") {
+    const legacyLoaded = selectedPlugin?.loadStatus !== "failed" && selectedPlugin?.hostProtocol === "3";
+    if (legacyLoaded || (selectedPlugin?.loadStatus === "failed" && selectedPlugin.installFailureKind === "incompatible-host-protocol")) {
       void resolvePluginProtocolUpdatePath((api ?? getApi()).gitMarketplace, selectedPlugin)
         .then((path) => { if (current) setProtocolUpdatePath(path); })
         .catch(() => { if (current) setProtocolUpdatePath({ kind: "unavailable" }); });
     }
     return () => { current = false; };
-  }, [api, selectedId, selectedPlugin?.loadStatus, selectedPlugin?.installFailureKind]);
+  }, [api, selectedId, selectedPlugin?.loadStatus, selectedPlugin?.installFailureKind, selectedPlugin?.hostProtocol]);
   const selectedPluginActive = selectedPlugin
     ? (selectedPlugin.active ?? selectedPlugin.loadStatus !== "disabled")
     : false;
@@ -880,6 +881,15 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       {selectedPlugin.version && (
                         <span className="text-[10px] text-muted-foreground">· v{selectedPlugin.version}</span>
                       )}
+                      {selectedPlugin.hostProtocol === "3" && (
+                        <span
+                          className="rounded border border-amber-500/40 px-1 text-[10px] text-amber-600 dark:text-amber-400"
+                          data-testid={`plugin-config:legacy-protocol:${selectedPlugin.id}`}
+                          title={t("pluginConfigTab.legacyProtocolTitle")}
+                        >
+                          {t("pluginConfigTab.legacyProtocolBadge")}
+                        </span>
+                      )}
                     </div>
                     {selectedPlugin.description && (
                       <p className="mt-1 break-words text-xs text-muted-foreground">{selectedPlugin.description}</p>
@@ -903,8 +913,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         {selectedPlugin.loadStatus === "preparing" ? t("pluginConfigTab.statusPreparing") : t("pluginConfigTab.notRunnable")}
                       </span>
                     )}
-                    {selectedPlugin.loadStatus === "failed" && (
-                      selectedPlugin.installFailureKind === "incompatible-host-protocol" && protocolUpdatePath?.kind === "catalog" ? (
+                    {(selectedPlugin.loadStatus === "failed" || selectedPlugin.hostProtocol === "3") && (
+                      (selectedPlugin.installFailureKind === "incompatible-host-protocol" || selectedPlugin.hostProtocol === "3")
+                        && protocolUpdatePath?.kind === "catalog" ? (
                         <Button
                           size="sm"
                           variant="outline"
@@ -917,7 +928,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         >
                           {t("pluginConfigTab.protocolUpdateButton", { version: protocolUpdatePath.version })}
                         </Button>
-                      ) : selectedPlugin.installFailureKind === "incompatible-host-protocol" ? (
+                      ) : selectedPlugin.installFailureKind === "incompatible-host-protocol" || selectedPlugin.hostProtocol === "3" ? (
                         <Button
                           size="sm"
                           variant="outline"

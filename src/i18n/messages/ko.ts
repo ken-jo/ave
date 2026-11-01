@@ -380,6 +380,8 @@ export const ko: Record<SeedMessageKey, string> = {
   "pluginConfigTab.protocolUpdateUnavailable": "업데이트 필요: 익스텐션 배포자에게 호환 버전을 문의하세요.",
   "pluginConfigTab.protocolUpdateButton": "{version}(으)로 업데이트",
   "pluginConfigTab.doctorMigrateButton": "AI로 마이그레이션",
+  "pluginConfigTab.legacyProtocolBadge": "레거시 v3",
+  "pluginConfigTab.legacyProtocolTitle": "호스트 프로토콜 3으로 실행 중입니다. authRedirect 로그인은 프로토콜 4가 필요하니 마이그레이션하세요.",
   "pluginConfigTab.installFromFolder": "폴더에서 설치…",
   "pluginConfigTab.installUnreviewedDev": "검토 없이 설치 (개발)",
   "pluginConfigTab.runtimeArmLabel": "실행 방식",

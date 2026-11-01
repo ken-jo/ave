@@ -589,6 +589,30 @@ describe("PluginConfigTab", () => {
     expect(market.planInstall).not.toHaveBeenCalled();
   });
 
+  it("marks a running protocol-3 extension as legacy and offers its migration", async () => {
+    bind("meeting");
+    market.listSources.mockResolvedValue({ ok: true, value: [] });
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards: vi.fn().mockResolvedValue([makePluginCard({ hostProtocol: "3" })]) },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+    const drafts: string[] = [];
+    const stop = onNewChatDraft((draft) => drafts.push(draft));
+
+    render(<PluginConfigTab />);
+    expect(await screen.findByTestId("plugin-config:legacy-protocol:meeting")).toBeTruthy();
+    expect(screen.queryByTestId("plugin-config:doctor:meeting")).toBeNull();
+    fireEvent.click(await screen.findByTestId("plugin-config:doctor-migrate:meeting"));
+    stop();
+
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]).toContain("host protocol 3 to host protocol 4");
+  });
+
   it("opens the reviewed folder install in every build, and the unreviewed one only in dev", async () => {
     const navigate = vi.fn();
     Object.defineProperty(window, "ave", {

@@ -378,6 +378,8 @@ export const en = {
   "pluginConfigTab.protocolUpdateUnavailable": "Update required: contact the extension publisher for a compatible release.",
   "pluginConfigTab.protocolUpdateButton": "Update to {version}",
   "pluginConfigTab.doctorMigrateButton": "Migrate with AI",
+  "pluginConfigTab.legacyProtocolBadge": "Legacy v3",
+  "pluginConfigTab.legacyProtocolTitle": "Runs on host protocol 3. Sign-in through authRedirect needs protocol 4; migrate to keep it working.",
   "pluginConfigTab.installFromFolder": "Install from folder…",
   "pluginConfigTab.installUnreviewedDev": "Install unreviewed (dev)",
   "pluginConfigTab.runtimeArmLabel": "Runs as",
