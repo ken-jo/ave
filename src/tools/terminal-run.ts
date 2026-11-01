@@ -8,7 +8,7 @@ import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
  * Require a fresh empty shell prompt before approval and execution; refuse busy, unmarked, edited, or exited terminals.
  * Accept only one plain command line with no control/invisible text, history expansion, comments, dialect-only syntax, or persistent shell-state changes. */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
-import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
+import { ToolUnavailableError, type ToolExecutionContext, type ToolExecutionResult } from "./types.js";
 import { getWindowTerminalBlockTracker, type TerminalBlockTracker } from "../main/terminal/terminal-blocks.js";
 import type { TerminalSessionRef, TerminalSessionInfo } from "../shared/terminal-session.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
@@ -227,6 +227,9 @@ function waitForBlock(
   });
 }
 
+/** The call named a terminal it may not use. Unlike every other target failure, this one is in the arguments. */
+class TerminalTargetArgumentError extends Error {}
+
 export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
   type IsolatedTarget = {
     kind: "isolated";
@@ -261,7 +264,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
 
   /** The pane chat's own host terminal, from main-owned state only. Any missing piece refuses; it never falls through to another terminal. */
   const resolveHostTarget = async (input: TerminalRunInput, sessionId: string, windowId: number, tabId: string): Promise<HostTarget> => {
-    if (input.tabId !== undefined && input.tabId !== tabId) throw new Error("terminal_run types only into this pane chat's own terminal");
+    if (input.tabId !== undefined && input.tabId !== tabId) throw new TerminalTargetArgumentError("terminal_run types only into this pane chat's own terminal");
     const turn = currentHostTerminalTurn(sessionId);
     if (turn === undefined) {
       throw new Error("Only a message the user typed in this pane's chat can run a command in its terminal; this turn did not come from the user. Nothing was typed.");
@@ -314,7 +317,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     if (bound?.kind === "terminal") return resolveHostTarget(input, sessionId, windowId, bound.tabId);
     const session = await deps.ensureConversationTerminal(sessionId, windowId, initialCwd);
     const tabId = session.tabId;
-    if (input.tabId !== undefined && input.tabId !== tabId) throw new Error("terminal_run cannot target a host terminal or another conversation's terminal");
+    if (input.tabId !== undefined && input.tabId !== tabId) throw new TerminalTargetArgumentError("terminal_run cannot target a host terminal or another conversation's terminal");
     if (session.lane !== "agent" || session.substrate !== "asrt") throw new Error("terminal_run requires an isolated agent terminal");
     const tracker = getWindowTerminalBlockTracker(session, windowId);
     if (!tracker) {
@@ -332,7 +335,9 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
 
   const approvalMemoryScope = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ApprovalMemoryScope> => {
     const input = parseInput(raw);
-    const target = await resolveTarget(input, ctx?.sessionId, ctx?.cwd);
+    const target = await resolveTarget(input, ctx?.sessionId, ctx?.cwd).catch((err: unknown) => {
+      throw err instanceof TerminalTargetArgumentError ? err : new ToolUnavailableError(errorMessage(err), { cause: err });
+    });
     if (target.kind === "host") {
       return {
         kind: "terminal-command",
