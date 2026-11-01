@@ -6,7 +6,7 @@
  * Require a fresh empty shell prompt before approval and execution; refuse busy, unmarked, edited, or exited terminals.
  * Accept only one plain command line with no control/invisible text, history expansion, comments, dialect-only syntax, or persistent shell-state changes. */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
-import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
+import { ToolUnavailableError, type ToolExecutionContext, type ToolExecutionResult } from "./types.js";
 import { getWindowTerminalBlockTracker, type TerminalBlockTracker } from "../main/terminal/terminal-blocks.js";
 import type { TerminalSessionRef, TerminalSessionInfo } from "../shared/terminal-session.js";
 import type { TerminalBlock } from "../shared/terminal-blocks.js";
@@ -330,7 +330,9 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
 
   const approvalMemoryScope = async (raw: unknown, ctx?: ToolPolicyContext): Promise<ApprovalMemoryScope> => {
     const input = parseInput(raw);
-    const target = await resolveTarget(input, ctx?.sessionId, ctx?.cwd);
+    const target = await resolveTarget(input, ctx?.sessionId, ctx?.cwd).catch((err: unknown) => {
+      throw new ToolUnavailableError(errorMessage(err), { cause: err });
+    });
     if (target.kind === "host") {
       return {
         kind: "terminal-command",

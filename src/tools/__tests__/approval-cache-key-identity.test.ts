@@ -19,7 +19,7 @@ import {
   captureApprovalWorkingDirectory,
   recordApproval,
 } from "../../permissions/user-approval-store.js";
-import type { ToolTrustOrigin } from "../types.js";
+import { ToolUnavailableError, type ToolTrustOrigin } from "../types.js";
 import type { Tool } from "../base.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
@@ -29,6 +29,7 @@ import { ToolRegistry } from "../registry.js";
 import { createRoutineScheduleTool } from "../routine-schedule.js";
 import { createWebFetchTool } from "../web-fetch.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { t } from "../../i18n/index.js";
 
 type CardAnswer = "allow-once" | "allow-session" | "deny-exact";
 
@@ -142,7 +143,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     };
     const reviewedUrls = () => classify.mock.calls.map(([ctx]) => (ctx.finalInput as { url?: string }).url);
     const reviewedTools = () => classify.mock.calls.map(([ctx]) => ctx.toolName);
-    return { cards, run, reviewedUrls, reviewedTools, approvalInputs };
+    return { cards, run, reviewedUrls, reviewedTools, approvalInputs, manager };
   }
 
   /** The real web_fetch identity (keys + schema), with the network stubbed out. */
@@ -421,6 +422,28 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     await run("shell_probe", { target: "b" });
     expect(cards).toHaveLength(2);
     expect(cards[0].approvalMemory).toEqual({ kind: "args" });
+  });
+
+  it("names a tool that cannot run here as unavailable, not as bad input, and offers no rerun of it", async () => {
+    const execute = vi.fn(async () => ({ output: "ok", isError: false }));
+    const probe = (name: string, failure: Error) => createDynamicTool({
+      name, description: "probe", source: "builtin", category: "shell",
+      jsonSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      approvalMemoryScope: () => { throw failure; },
+      execute,
+    });
+    const { cards, run, manager } = harness([
+      probe("unavailable_probe", new ToolUnavailableError("Terminal requires the OS tool sandbox")),
+      probe("bad_input_probe", new Error("command must not be empty")),
+    ]);
+    const unavailable = await run("unavailable_probe", { command: "Get-Location" });
+    expect(unavailable).toMatchObject({ is_error: true });
+    expect(unavailable.content).toBe(t("be_executor.toolUnavailable", { name: "unavailable_probe", error: "Terminal requires the OS tool sandbox" }));
+    const badInput = await run("bad_input_probe", { command: "" });
+    expect(badInput.content).toBe(t("be_executor.invalidToolInput", { name: "bad_input_probe", error: "command must not be empty" }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(cards).toHaveLength(0);
+    expect(await manager.getRecentlyDenied()!.list()).toEqual([]);
   });
 
   it("declaring only a policy approvalCacheKey never widens memory", async () => {
