@@ -8,7 +8,7 @@ import { openPackagedObserver } from "./packaged-observer.mjs";
 import { writeProbeJson } from "./packaged-processes.mjs";
 import { pinRuntimeProcesses } from "./process-lifecycle.mjs";
 import { loadBudgets, safeEnvironment } from "./probe-common.mjs";
-import { cancellationObservation, exactOwnedPath, finalizePackagedObservation, ownerHandleObservationPassed, packagedProbeOptions, pinnedProcessIdentity, plantedDllRejected, stdioObservation, terminatePinnedProcess } from "./packaged-protocol.mjs";
+import { cancellationObservation, exactOwnedPath, finalizePackagedObservation, ownerHandleObservationPassed, packagedObservation, packagedProbeOptions, pinnedProcessIdentity, plantedDllRejected, stdioObservation, terminatePinnedProcess } from "./packaged-protocol.mjs";
 import { copyPackagedTree } from "./packaged-filesystem.mjs";
 
 function imageKey(file) { return path.win32.normalize(file).toLowerCase(); }
@@ -161,7 +161,7 @@ async function main(result) {
         processDeathVerified: survivorsBeforeCleanup.length === 0 && run.unverifiedProcesses.length === 0 };
     };
     const observe = async (name, operation) => {
-      try { const observation = await operation(); result.observations.push({ name, ...observation }); }
+      try { const observation = await operation(); result.observations.push(packagedObservation(name, observation)); }
       catch (error) { cleanupVerified = false; result.observations.push({ name, passed: false, error: error.message,
         processes: processes.slice(-1).map((run) => ({ mainPid: run.child.pid, observations: run.frames, pinned: run.records.map(({ handle, ...record }) => record), unverifiedProcesses: run.unverifiedProcesses })) }); }
     };

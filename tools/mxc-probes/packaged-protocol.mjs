@@ -21,14 +21,22 @@ export function stdioObservation(frame) {
 }
 
 export function cancellationObservation(frame, accounting) {
+  const { name: errorName, ...observation } = frame;
   const container = accounting.processObservations.find((record) => record.role === "container");
   const containerObservationComplete = !!container;
-  return { ...frame, ...accounting, containerObservationComplete,
+  return { ...observation, ...accounting, errorName, containerObservationComplete,
     passed: frame.pending === true && frame.name === "MxcProcessContractError"
       && accounting.exit.code === 0 && !accounting.exit.signal && accounting.processDeathVerified === true
       && containerObservationComplete && container.signaled === true,
     ...(!containerObservationComplete ? { inconclusive: "Native container process object was not independently duplicated" }
       : frame.pending === true ? {} : { inconclusive: "Cancellation did not overlap the native spawn await" }) };
+}
+
+export function packagedObservation(name, observation) {
+  const fields = { ...observation };
+  // Verdict belongs to the controller; row identity belongs to the caller.
+  delete fields.verdict;
+  return { ...fields, name };
 }
 
 export class PackagedImageQueryError extends Error {
