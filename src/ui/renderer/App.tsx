@@ -127,6 +127,9 @@ import { TEST_IDS } from "../../shared/test-ids.js";
 import { errorMessage } from "../../shared/error-message.js";
 
 /** A canvas not laid out yet measures 0x0 — that is "unmeasured", not "no room". */
+const NEW_CHAT_DRAFT_ATTEMPTS = 40;
+const NEW_CHAT_DRAFT_RETRY_MS = 50;
+
 function measuredCanvasSize(canvas: HTMLElement | null) {
   return canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0
     ? { width: canvas.clientWidth, height: canvas.clientHeight }
@@ -1358,12 +1361,23 @@ export function App() {
     resolveKnownProject, setActiveView, streaming,
   ]);
 
-  // A draft prepared elsewhere (Doctor's migration) lands in a fresh conversation's composer once that tile is drawn.
+  // A draft prepared elsewhere (Doctor's migration) lands in a fresh conversation's composer once that tile publishes its handle.
+  // Beside a busy tile it goes to the adopted tile; at the ceiling it goes nowhere rather than into the running conversation.
   useEffect(() => onNewChatDraft((draft) => {
-    void handleNewChat().then(() => {
-      setTimeout(() => chatGroupSessions.read(chatGroupsRef.current.focusedId)?.prefillComposer(draft), 0);
-    });
-  }), [chatGroupSessions, handleNewChat]);
+    const fill = (target: string, attempts = 0) => {
+      const tile = chatGroupSessions.read(target);
+      if (tile) tile.prefillComposer(draft);
+      else if (attempts < NEW_CHAT_DRAFT_ATTEMPTS) setTimeout(() => fill(target, attempts + 1), NEW_CHAT_DRAFT_RETRY_MS);
+    };
+    if (streaming) {
+      const adopted = adoptGroupBeside(chatGroupsRef.current.focusedId);
+      if (adopted === null) return;
+      setActiveView("home");
+      fill(adopted);
+      return;
+    }
+    void handleNewChat().then(() => setTimeout(() => fill(chatGroupsRef.current.focusedId), 0));
+  }), [adoptGroupBeside, chatGroupSessions, handleNewChat, setActiveView, streaming]);
 
   // Refresh the conversation list after every row mutation.
   const conversationActions = useMemo<ConversationRowActions>(() => {
