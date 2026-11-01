@@ -1,6 +1,6 @@
-Third-party notices for the @napi-rs/canvas 1.0.13 native binary (skia.*.node).
+Third-party notices for the @napi-rs/canvas 1.1.0 native binary (skia.*.node).
 The binary statically links Skia, the Skia third-party libraries enabled by its build,
-libavif/libaom and the Rust crates in its Cargo.lock. Sources: Brooooooklyn/canvas tag v1.0.13
+libavif/libaom and the Rust crates in its Cargo.lock. Sources: Brooooooklyn/canvas tag v1.1.0
 (scripts/build-skia.js, scripts/skia-gn-args.cjs, Cargo.lock), Skia b94213a11b3a2edadfae89f0c57a7f4ab72772c9 and the
 revisions pinned in its DEPS file, and the crates.io packages at the locked versions.
 Crate archives are verified against Cargo.lock SHA-256 checksums. When an archive omits
@@ -19357,7 +19357,7 @@ http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 option.
 
 ==============================================================================
-Rust crate skia-fontations 0.0.0 (canvas v1.0.13 local bridge to google/skia@b94213a11b3a2edadfae89f0c57a7f4ab72772c9) - LICENSE
+Rust crate skia-fontations 0.0.0 (canvas v1.1.0 local bridge to google/skia@b94213a11b3a2edadfae89f0c57a7f4ab72772c9) - LICENSE
 
 Copyright (c) 2011 Google Inc. All rights reserved.
 
