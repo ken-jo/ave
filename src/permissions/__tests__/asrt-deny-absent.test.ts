@@ -6,6 +6,7 @@ import * as sandboxUtils from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbo
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { mockWindowsProfileIsolation } from "../../__tests__/support/windows-profile-isolation.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as evidence from "../../shared/windows-read-deny-evidence.js";
@@ -79,6 +80,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   });
 
   function captureRuntime() {
+    mockWindowsProfileIsolation(runtime);
     vi.spyOn(manager, "initialize").mockImplementation(async next => { config = next; });
     vi.spyOn(manager, "getConfig").mockImplementation(() => config);
     vi.spyOn(manager, "updateConfig").mockImplementation(next => { config = next; });

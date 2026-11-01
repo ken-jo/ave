@@ -19,6 +19,7 @@ import * as defaultWorkspace from "../../main/default-workspace-root.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { mockWindowsProfileIsolation } from "../../__tests__/support/windows-profile-isolation.js";
 import { buildSandboxConfig, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
@@ -54,6 +55,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.spyOn(runtime, "stampWindowsAcl").mockImplementation(() => {});
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);
     vi.spyOn(runtime.SandboxManager, "initialize").mockImplementation(async next => { config = next; });
+    mockWindowsProfileIsolation(runtime);
     vi.spyOn(runtime.SandboxManager, "getConfig").mockImplementation(() => config);
     vi.spyOn(runtime.SandboxManager, "updateConfig").mockImplementation(next => { config = next; });
     vi.spyOn(runtime.SandboxManager, "reset").mockImplementation(async () => { config = undefined; });

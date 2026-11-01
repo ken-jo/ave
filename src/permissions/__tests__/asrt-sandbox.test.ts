@@ -21,7 +21,7 @@ import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import type { SandboxManager as SandboxManagerType, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
@@ -37,6 +37,20 @@ import * as windowsStampTargets from "../windows-stamp-targets.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { WindowsProfileReadError, WindowsProfileReadContractError, WindowsProfileIsolationVerificationError } from "../windows-profile-read.js";
+import { mockWindowsProfileIsolation, windowsProfileReadStatus } from "../../__tests__/support/windows-profile-isolation.js";
+
+const packageFixture = vi.hoisted(() => ({ path: undefined as string | undefined }));
+vi.mock("node:module", async original => {
+  const actual = await original<typeof import("node:module")>();
+  const createRequire = (...args: Parameters<typeof actual.createRequire>) => {
+    const real = actual.createRequire(...args);
+    const resolve = Object.assign((id: string, options?: { paths?: string[] }) =>
+      id === "@anthropic-ai/sandbox-runtime/package.json" && packageFixture.path !== undefined
+        ? packageFixture.path : real.resolve(id, options), { paths: real.resolve.paths });
+    return Object.assign((id: string) => real(id), real, { resolve });
+  };
+  return { ...actual, createRequire };
+});
 
 vi.mock("@anthropic-ai/sandbox-runtime", async original => {
   const actual = await original<typeof import("@anthropic-ai/sandbox-runtime")>();
@@ -704,10 +718,12 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
 
   // A fake runtime: the evidence path is Ave-side, so these cases run without the sandbox account and stamp nothing.
   beforeEach(async () => {
-    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const runtimeModule = await import("@anthropic-ai/sandbox-runtime");
+    const { SandboxManager } = runtimeModule;
     let config: SandboxRuntimeConfig | undefined;
     wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["echo"], env: {} });
     runtime = [
+      ...mockWindowsProfileIsolation(runtimeModule),
       wrap,
       vi.spyOn(SandboxManager, "initialize").mockImplementation(async next => { config = next; }),
       vi.spyOn(SandboxManager, "getConfig").mockImplementation(() => config),
@@ -2274,6 +2290,14 @@ describe("Windows inherited profile read grant", () => {
     const scripts = join(resourcePath, "skill-scripts");
     const executable = join(root, "host-runtime.exe");
     const profile = join(root, "profile");
+    const packageRoot = join(root, "sandbox-runtime");
+    const vendor = join(packageRoot, "vendor", "srt-win");
+    const source = getVendoredSrtWinExePath();
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    mkdirSync(join(vendor, arch), { recursive: true });
+    copyFileSync(source, join(vendor, arch, "srt-win.exe"));
+    packageFixture.path = join(packageRoot, "package.json");
+    writeFileSync(packageFixture.path, "{}");
     mkdirSync(scripts, { recursive: true });
     mkdirSync(profile);
     writeFileSync(executable, "runtime fixture");
@@ -2290,12 +2314,14 @@ describe("Windows inherited profile read grant", () => {
     configureHostResources({ resourcePath, isPackaged: true });
     const runtime = await import("@anthropic-ai/sandbox-runtime");
     const { SandboxManager } = runtime;
-    const integrity = await import("../srt-win-integrity.js");
     const initialized = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
     const reset = vi.spyOn(SandboxManager, "reset").mockResolvedValue(undefined);
-    const read = vi.spyOn(SandboxManager, "getWindowsProfileRead").mockImplementation(() => {
+    const [read, status] = mockWindowsProfileIsolation(runtime);
+    const readAbsent = read.getMockImplementation()!;
+    const readNone = status.getMockImplementation()!;
+    read.mockImplementation(() => {
       expect(isAsrtSandboxActive()).toBe(false);
-      return snapshot;
+      return snapshot === "absent" ? readAbsent() : snapshot;
     });
     const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     let finishRead!: () => void;
@@ -2303,15 +2329,14 @@ describe("Windows inherited profile read grant", () => {
     const readStarted = new Promise<void>(resolve => { reachedRead = resolve; });
     const readReleased = new Promise<void>(resolve => { finishRead = resolve; });
     const readError = new Error("Profile status could not be read");
-    const status = vi.spyOn(runtime, "getWindowsProfileReadStatusAsync").mockClear().mockImplementation(async () => {
+    status.mockClear().mockImplementation(async (...args) => {
       reachedRead();
       await readReleased;
       if (live === "read-error") throw readError;
-      return { state: live, capabilities: [], notGranted: [], selfClosed: [], unverifiable: [], unprotected: [],
-        staleAllow: [], replacedFiles: [], extraExclusions: [], exclusions: [], ungrantedOnly: [],
-        counts: { containers: 0, granted: 0, files: 0, denied: 0 }, env: {} };
+      if (live === "none") return readNone(...args);
+      // Deliberately malformed for the unexpected-state contract case.
+      return windowsProfileReadStatus(live as Parameters<typeof windowsProfileReadStatus>[0]);
     });
-    vi.spyOn(integrity, "prepareSrtWinExecutable").mockReturnValue(executable);
     setProcessPlatform("win32");
     try {
       const result = initializeAsrtSandbox({ allowedDomains: [] });
@@ -2354,6 +2379,9 @@ describe("Windows inherited profile read grant", () => {
       expect(status).toHaveBeenCalledTimes(snapshot === "absent" ? 1 : 0);
       expect(initialized.mock.invocationCallOrder[0]).toBeLessThan(read.mock.invocationCallOrder[0]);
       const denyWrite = initialized.mock.calls[0][0].filesystem.denyWrite;
+      const paths = denyWrite.map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
+      expect(paths).toContain(vendor);
+      expect(paths.some(path => path.includes("node_modules"))).toBe(false);
       expect(denyWrite).toContain(scripts);
       expect(denyWrite).toContain(executable);
       expect(denyWrite).not.toContain(resolve("dist/skill-scripts"));
@@ -2366,6 +2394,7 @@ describe("Windows inherited profile read grant", () => {
       configureHostResources(originalResources);
       vi.unstubAllEnvs();
       vi.restoreAllMocks();
+      packageFixture.path = undefined;
       rmSync(root, { recursive: true, force: true });
     }
   });
