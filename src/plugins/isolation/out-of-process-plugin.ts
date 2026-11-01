@@ -74,6 +74,8 @@ import {
   type DispatchableHostApi,
 } from "./bound-host-api-table.js";
 import { openPluginProtocolSession } from "./plugin-protocol-session.js";
+import { spawnMxcPluginChild, type MxcPluginChild, type MxcPluginChildLaunch } from "./mxc-plugin-child.js";
+import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 
 const log = createLogger("out-of-process-plugin");
 
@@ -720,6 +722,17 @@ export interface OutOfProcessPluginSpec {
   /** Defaults to the emitted `plugin-child-main.js` under the runtime asset dir. The plugin runtime always passes the path its composition root resolved (`PluginRuntimeOptions.childEntryPath`: {@link
    * resolvePluginChildEntryPath} in the app, a bundle of the same entry in the tests). It is the path the CONFINED spawn runs for an `entry` launch, so a test that serves a stand-in still runs it under the real wrap and bypasses nothing. */
   readonly childEntryPath?: string;
+  /** Internal backend-plan integration. Absent until the policy owner admits this holder;
+   * the existing path stays authoritative otherwise. Never infer readiness from the OS or a PID.
+   * The planner must bind the exact command, cwd and captured envelope, and own revocation.
+   * Capability publication remains with that planner, after native spawn and protocol setup. */
+  readonly prepareMxcChild?: (intent: {
+    readonly pluginId: string;
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly cwd: string;
+    readonly envelope: DelegatedWorkerConfinement;
+  }) => Promise<MxcPluginChildLaunch>;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
     assertCurrent(): void;
     dispose(): void;
@@ -761,6 +774,9 @@ export function createOutOfProcessPluginFactory(
     // Refused before anything is spawned. `runtime/index.ts` refuses the same manifest at every load path; this is the spawn path's
     // own copy of the rule, so a factory reached any other way cannot start a child that would be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
+    if (spec.prepareMxcChild && spec.launch.kind !== "entry") {
+      throw new MxcProcessContractError("Native plugin launch requires the reference child runtime");
+    }
     // A `process` launch runs code the host cannot read, so it runs only under a live sandbox that confines processes: never unwrapped (unlike an `entry` launch with
     // the sandbox off), and never on Windows, whose sandbox does not confine process creation (§2.2, §7.3). The deny floor and the wrap stay `spawnConfinedChild`'s.
     if (spec.launch.kind === "process" && (!isPluginWorkerConfinementActive() || process.platform === "win32")) {
@@ -779,10 +795,16 @@ export function createOutOfProcessPluginFactory(
       onUserChosenDirectory: (path) => chosenPaths.push(path),
     });
     const registration = spec.registerSandboxEnvelope?.(chosenPaths, context.pluginRoot, context.pluginDataDir);
-    // The only way this factory obtains a child: the confined spawn, with the envelope derived above.
-    let child: ConfinedPluginChild | undefined;
+    // Both launch paths receive the same captured envelope used by the effect boundary.
+    let child: ConfinedPluginChild | MxcPluginChild | undefined;
     try {
-      child = await spawnConfinedPluginChild({
+      if (spec.prepareMxcChild) {
+        const launch = await spec.prepareMxcChild({
+          pluginId, command: process.execPath, args: [childEntryPath],
+          cwd: context.pluginRoot, envelope,
+        });
+        child = await spawnMxcPluginChild(launch);
+      } else child = await spawnConfinedPluginChild({
         pluginId,
         envelope,
         assertStillValid: () => registration?.assertCurrent(),
@@ -792,7 +814,7 @@ export function createOutOfProcessPluginFactory(
           ? { kind: "entry", childEntryPath }
           : spec.launch,
       });
-      spec.onChildSpawned?.(child.confinement);
+      if ("confinement" in child) spec.onChildSpawned?.(child.confinement);
       registration?.assertCurrent();
     } catch (error) {
       child?.link.terminate("sandbox grant changed during spawn");
@@ -834,11 +856,9 @@ export function createOutOfProcessPluginFactory(
       table,
       ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
       onClosed: async () => {
-        try {
-          await spawned.waitForExit?.();
-        } finally {
-          registration?.dispose();
-        }
+        await spawned.waitForExit?.();
+        // Unverified termination keeps the registration quarantined with its launch lease.
+        registration?.dispose();
       },
     });
     // The channel and `teardown` stay here: the lifecycle gets the instance, whose `stop` is its one hand on the child's lifetime.

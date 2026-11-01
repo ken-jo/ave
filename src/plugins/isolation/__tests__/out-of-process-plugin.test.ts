@@ -12,6 +12,8 @@ import { configureHostResources } from "../../../main/host-resources.js";
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const spawnConfinedChild = vi.hoisted(() => vi.fn());
+const spawnNativeChild = vi.hoisted(() => vi.fn());
+vi.mock("../../../permissions/mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: spawnNativeChild }));
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/confined-child.js")>()),
   spawnConfinedChild,
@@ -124,6 +126,8 @@ import { createSandboxProcessHome } from "../../../permissions/sandbox-process-h
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
+import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
+import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 
 const PLUGIN_ID = "sampleassistant";
 const EMPTY_SCHEMA = { type: "object", properties: {} } as const;
@@ -910,6 +914,46 @@ function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () 
 }
 
 describe("construct negotiates the host protocol", () => {
+  it.each([false, true])("keeps the native envelope and quarantines uncertain termination: %s", async (cleanupFailure) => {
+    const roots = spawnableRoots();
+    const { dir, entryPath } = writePluginModule();
+    const input = new PassThrough(), output = new PassThrough(), stderr = new PassThrough();
+    const service = servePluginChild(input, output);
+    let finish!: (result: { exitCode: number; timedOut: boolean }) => void;
+    const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve) => { finish = resolve; });
+    const dispose = vi.fn(async () => {
+      service.hostGone();
+      if (cleanupFailure) throw new MxcProcessCleanupError("Termination unverified");
+      finish({ exitCode: 0, timedOut: false });
+    });
+    const release = vi.fn();
+    const unregister = vi.fn();
+    const prepare = vi.fn(async () => ({ request: createMxcExtensionRequest(), signal: new AbortController().signal,
+      assertCurrent() {}, release }));
+    const legacyMarker = vi.fn();
+    spawnNativeChild.mockReset().mockResolvedValue({ id: 42, stdin: input, stdout: output, stderr, completion, dispose });
+    spawnConfinedChild.mockClear();
+    try {
+      const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath },
+        prepareMxcChild: prepare, onChildSpawned: legacyMarker,
+        registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose: unregister }) });
+      const instance = await factory(hostContext(fakeHostApi(), roots.context));
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ pluginId: PLUGIN_ID, command: process.execPath,
+        cwd: roots.context.pluginRoot, envelope: expect.objectContaining({ write: expect.arrayContaining([roots.context.pluginDataDir]) }) }));
+      expect(spawnNativeChild).toHaveBeenCalledOnce(); expect(spawnConfinedChild).not.toHaveBeenCalled();
+      expect(legacyMarker).not.toHaveBeenCalled();
+      await expect(instance.handlers.pilot_echo!({ text: "native" })).resolves.toMatchObject({ payload: { text: "native" } });
+      if (cleanupFailure) {
+        await expect(instance.stop!()).rejects.toThrow("Termination unverified");
+        expect(release).not.toHaveBeenCalled(); expect(unregister).not.toHaveBeenCalled();
+      } else {
+        await instance.stop?.();
+        expect(release).toHaveBeenCalledOnce(); expect(unregister).toHaveBeenCalledOnce();
+      }
+      expect(dispose).toHaveBeenCalledOnce();
+    } finally { service.hostGone(); finish({ exitCode: 0, timedOut: false }); roots.remove(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("refuses a factory start before home privacy approval and reaches the child spawn after approval", async () => {
     const roots = spawnableRoots();
     const originalPlatform = process.platform;

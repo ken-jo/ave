@@ -62,8 +62,7 @@ function claimProtocolStdout(): Writable {
   globalThis.console = new Console(process.stderr, process.stderr);
   return new Writable({
     write(chunk: Buffer, _encoding, callback) {
-      rawWrite(chunk);
-      callback();
+      rawWrite(chunk, callback);
     },
   });
 }

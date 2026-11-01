@@ -72,6 +72,7 @@ export class FramedMessageStream {
     if (this.started) throw new Error("[child-stream-multiplex] already started");
     this.started = true;
     const onData = (chunk: Buffer): void => {
+      if (this.violated) return;
       let messages: Array<Record<string, unknown>>;
       try {
         messages = this.decoder.push(chunk);
@@ -89,9 +90,10 @@ export class FramedMessageStream {
 
   /** Write each complete frame once so concurrent writers cannot interleave its bytes. */
   send(message: unknown): void {
+    if (this.violated) return;
     const frame = frameMessage(message);
     if (frame.length - 1 <= FRAME_BYTES_MAX) {
-      this.output.write(frame);
+      this.write(frame);
       return;
     }
     const dropped = droppedNotificationOf(message, frame.length - 1);
@@ -99,18 +101,30 @@ export class FramedMessageStream {
       this.onDroppedNotification(dropped);
       return;
     }
-    this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+    this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 
   /** Prebuilt MCP frames obey the same outbound size limit. */
   forward(frame: Buffer): void {
+    if (this.violated) return;
     if (frame.length - 1 <= FRAME_BYTES_MAX) {
-      this.output.write(frame);
+      this.write(frame);
       return;
     }
     // Parse prebuilt frames only to recover their request ID.
     const message: unknown = JSON.parse(frame.toString("utf-8"));
-    this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+    this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+  }
+
+  /** Synchronous protocol producers cannot await drain. Refuse a stalled peer
+   * before its writable queue grows without bound; never drop a request silently. */
+  private write(frame: Buffer): void {
+    if (this.output.writableLength + frame.length > 4 * (FRAME_BYTES_MAX + 1)) {
+      this.violated = true;
+      this.onViolation("Plugin output queue exceeds limit");
+      return;
+    }
+    this.output.write(frame);
   }
 }
 

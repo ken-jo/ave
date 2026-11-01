@@ -73,7 +73,7 @@ test("copies and measures a real archive as bytes before restoring entry loading
       assert.equal(result.tempSizeBytes, await retainedTreeSize(copied));
       assert.equal(process.noAsar, previous);
       // Exercise the real recursive removal under ordinary filesystem semantics.
-      const removed = await finalizePackagedObservation({ spawned: true, observations: Array.from({ length: 6 }, () => ({ passed: true })),
+      const removed = await finalizePackagedObservation({ spawned: true, observations: Array.from({ length: 8 }, () => ({ passed: true })),
         processCleanup: [{ cleanupDeathVerified: true }], unverifiedProcesses: [] }, copied, true);
       assert.equal(removed.tempRemoved, true);
       assert.equal(process.noAsar, previous);

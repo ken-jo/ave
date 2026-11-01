@@ -128,6 +128,7 @@ export class PluginChildTransport {
     this.link = options.link;
     this.dispatcher = new HostApiDispatcher({
       ...options,
+      isActive: () => this.closedReason === undefined && options.isActive(),
       invocations: {
         resolve: (token) => this.liveInvocations.get(token) ?? this.settledInvocations.get(token),
         toolCallsInFlight: () => this.liveInvocations.size,
@@ -337,6 +338,9 @@ export class PluginChildTransport {
   }
 
   private route(message: MultiplexedMessage): void {
+    // Keep the existing inactive reply for late host requests while refusing
+    // effects through the dispatcher's liveness predicate during native drain.
+    if (this.closedReason !== undefined && classifyMultiplexedMessage(message) !== "host-request") return;
     switch (classifyMultiplexedMessage(message)) {
       case "response": {
         const id = String(message.id);

@@ -1,6 +1,6 @@
 /** Bound frames in both directions; a peer withholding newline must not grow the reader indefinitely. */
 import { describe, expect, it } from "vitest";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
 import { RAW_RESULT_META } from "../../../mcp/protocol-constants.js";
 import { FramedMessageStream } from "../child-stream-multiplex.js";
@@ -15,6 +15,42 @@ function lineOf(bytes: number): Buffer {
 }
 
 describe("the frame bound", () => {
+  it("bounds queued output for a peer that never drains and stops both directions", () => {
+    const input = new PassThrough();
+    const output = new Writable({ write() { /* deliberately retain the first write */ } });
+    const violations: string[] = [];
+    const received: unknown[] = [];
+    const stream = new FramedMessageStream(input, output, (message) => received.push(message),
+      (reason) => violations.push(reason), () => {});
+    stream.start();
+    const message = { jsonrpc: "2.0", id: "large", result: "x".repeat(FRAME_BYTES_MAX - 100) };
+    for (let index = 0; index < 10; index++) stream.send(message);
+    const queued = output.writableLength;
+    expect(queued).toBeLessThanOrEqual(4 * (FRAME_BYTES_MAX + 1));
+    expect(violations).toEqual(["Plugin output queue exceeds limit"]);
+    stream.forward(frameMessage({ id: 1, result: null }));
+    expect(output.writableLength).toBe(queued);
+    input.write(frameMessage({ id: 2, method: "ave/host/logEvent", params: {} }));
+    expect(received).toEqual([]);
+    input.destroy(); output.destroy();
+  });
+
+  it("delivers large frames across a slow writable in order", async () => {
+    const messages: unknown[] = [];
+    const input = new PassThrough();
+    const output = new Writable({ write(chunk: Buffer, _encoding, callback) {
+      setImmediate(() => { input.write(chunk); callback(); });
+    } });
+    const violations: string[] = [];
+    const stream = new FramedMessageStream(input, output, (message) => messages.push(message),
+      (reason) => violations.push(reason), () => {});
+    stream.start();
+    const frames = Array.from({ length: 3 }, (_, id) => ({ id, result: "한".repeat(256 * 1024) }));
+    for (const frame of frames) stream.send(frame);
+    await new Promise<void>((resolve) => output.end(resolve));
+    expect(messages).toEqual(frames); expect(violations).toEqual([]);
+    input.destroy();
+  });
   it("holds the largest frame the protocol produces: a payload at the limit, twice", () => {
     // Tool results carry both text and raw values; a payload-sized string can cross twice.
     const encoded = Buffer.alloc(WIRE_BYTES_MAX, 0xff).toString("base64");

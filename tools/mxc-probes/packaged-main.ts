@@ -7,6 +7,7 @@ import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { configureHostResources } from "../../src/main/host-resources.js";
 import { spawnMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../../src/permissions/mxc-extension-process.js";
 import { TOOL_TIMEOUT_POLICY } from "../../src/shared/tool-timeout-policy.js";
+import { probePluginStreams } from "./plugin-stream-session.js";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 // @ts-expect-error standalone probe helpers intentionally have no declaration output
 import { buildProbeFilesystem } from "./filesystem-policy.mjs";
@@ -56,7 +57,9 @@ async function run(): Promise<void> {
   if (!address || typeof address === "string") throw new Error("Missing fixture proxy address");
   const policy = buildProbeFilesystem(process.execPath, runDirectory, process.env.SYSTEMROOT);
   const request: ContainerRequest = {
-    command: [process.execPath, path.join(runDirectory, "fixture.mjs"), mode, token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)].map(windowsQuote).join(" "),
+    command: [process.execPath, path.join(runDirectory, "fixture.mjs"), mode, token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs),
+      ...(mode.startsWith("plugin") ? [path.join(resources, "app.asar", "dist", "src", "main", "plugin-child-main.js")] : []),
+    ].map(windowsQuote).join(" "),
     containment: { type: "processcontainer", config: { filesystem: { enumeratePaths: policy.enumeratePaths } } },
     workingDirectory: runDirectory, environment: safeEnvironment(runDirectory), inheritDefaultEnvironment: false,
     filesystem: policy.filesystem,
@@ -96,6 +99,9 @@ async function run(): Promise<void> {
     emit({ event: "owned", mainPid: process.pid, id: owned.id, diagnostics: owned.diagnostics, filesystemPolicy: policy });
     if (mode === "cancel") {
       await owned.dispose(); emit({ event: "cancel", error: "Cancellation completed after readiness", pending: false });
+    } else if (mode === "plugin" || mode === "plugin-overflow") {
+      await command("run");
+      emit({ event: "plugin-streams", ...await probePluginStreams(owned, runDirectory, mode === "plugin-overflow") });
     } else if (mode === "echo") {
       await command("run");
       const bytes = Buffer.alloc(4 * 1024 * 1024);
