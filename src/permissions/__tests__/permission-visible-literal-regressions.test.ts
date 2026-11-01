@@ -49,7 +49,8 @@ function measured(command: string, dialect: ShellRuleDialect, sandboxed: boolean
     samples.push(performance.now() - start);
     results.push(result);
   }
-  return { samples, median: [...samples].sort((a, b) => a - b)[1]!, results, referenceMs, budgetMs };
+  const median = [...samples].sort((a, b) => a - b)[1]!;
+  return { samples, median, results, referenceMs, budgetMs, ratio: median / referenceMs };
 }
 
 describe("visible literal decision regressions", () => {
