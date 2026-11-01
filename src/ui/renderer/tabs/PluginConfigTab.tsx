@@ -883,7 +883,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       )}
                       {selectedPlugin.hostProtocol === "3" && (
                         <span
-                          className="rounded border border-amber-500/40 px-1 text-[10px] text-amber-600 dark:text-amber-400"
+                          className="rounded border border-warning/40 px-1 text-[10px] text-warning"
                           data-testid={`plugin-config:legacy-protocol:${selectedPlugin.id}`}
                           title={t("pluginConfigTab.legacyProtocolTitle")}
                         >
