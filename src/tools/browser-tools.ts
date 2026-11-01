@@ -85,6 +85,8 @@ export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends 
   readonly tabs: BrowserTabsAccess<G>;
   readonly pickUploadFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null>;
   readonly loadActions: () => Promise<BrowserPageActions<G>>;
+  /** False for a hosted conversation no renderer opens agent tabs for (side and pane chats); they act in their attached page. Absent: all may. */
+  readonly opensAgentTabs?: (hostSessionId: string) => boolean;
 }
 
 /** Keys `browser_press_key` accepts (mirrors browser-actions.ts PRESSABLE_KEYS). */
@@ -353,7 +355,11 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       name: BROWSER_TOOL.tabNew,
       description: t("be_browserTools.tabNewDescription"),
       category: "network",
-      categoryForInput: urlCategory,
+      // A chat that cannot open tabs is refused without asking: approving it would approve nothing.
+      categoryForInput: (raw, ctx) => {
+        const scope = policy.windowOf(ctx?.sessionId);
+        return scope && deps.opensAgentTabs?.(scope.hostSessionId) === false ? "read" : urlCategory(raw);
+      },
       approvalMemoryScope: (raw) => urlScope(raw, "agent"),
       jsonSchema: object({ url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
       execute: execute(BROWSER_TOOL.tabNew),
