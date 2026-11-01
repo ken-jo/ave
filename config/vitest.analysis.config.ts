@@ -149,7 +149,7 @@ export default defineConfig({
           // Backend tests require forks for native modules, confinement and mock identity.
           pool: "vmForks",
           // Pin Korean to preserve renderer string assertions and exercise the catalog.
-          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts")],
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts"), rootPath("src/__tests__/vitest-vm-exit-hooks.ts"), rootPath("src/__tests__/vitest-renderer-web-streams.ts")],
           include: rendererTestGlobs,
           exclude: baseExclude,
         },
