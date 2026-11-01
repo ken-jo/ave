@@ -87,6 +87,8 @@ function cleanupRootConfiguration(home: string): string[] {
           try {
             const opened = fstatSync(descriptor);
             if (!opened.isFile() || opened.ino !== identity.ino || opened.dev !== identity.dev) throw new Error("Legacy configuration changed before cleanup");
+            // A sandbox deny placeholder is absent, not a source: leave it for the sandbox to re-stamp.
+            if (opened.size === 0) continue;
             identical = createHash("sha256").update(readFileSync(descriptor)).digest("base64") === hashes[name];
           } finally { closeSync(descriptor); }
           const current = lstatSync(path);
@@ -142,6 +144,7 @@ function migratePosixConfiguration(home: string): string[] {
         input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         const identity = fstatSync(input);
         if (!identity.isFile() || identity.ino !== oldEntry.ino || identity.dev !== oldEntry.dev) throw new Error("Source changed");
+        if (identity.size === 0) continue;
         const bytes = readFileSync(input);
         validateConfiguration(name, bytes);
         const output = openSync(staged, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
@@ -267,7 +270,7 @@ function migrateWindowsConfiguration(home: string): string[] {
           || windowsObjectKey(current) !== windowsObjectKey(row) || after.dev !== opened.dev || after.ino !== opened.ino
           || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs
           || BigInt(bytes.length) !== opened.size) return "!Source could not be read safely";
-        return bytes.toString("base64");
+        return bytes.length === 0 ? null : bytes.toString("base64");
       } finally { closeSync(descriptor); }
     } catch {
       return "!Source could not be read safely";
