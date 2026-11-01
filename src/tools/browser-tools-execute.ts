@@ -21,6 +21,7 @@ import {
   type ResolvedBrowserTab,
 } from "./browser-tools.js";
 import type { BrowserSessionActor } from "../shared/browser-surface.js";
+import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import { t } from "../i18n/index.js";
 
 const MAX_TYPED_CHARS = 10_000;
@@ -99,6 +100,14 @@ export function fenceBrowserContent(header: unknown, body?: string): string {
 
 function fenced(header: unknown, body?: string): ToolExecutionResult {
   return { output: fenceBrowserContent(header, body), isError: false };
+}
+
+async function previewOf<G extends BrowserGuest>(actions: BrowserPageActions<G>, target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined> {
+  try { return await actions.capturePreview?.(target, png); } catch { return undefined; }
+}
+
+function withPreview(result: ToolExecutionResult, browserPreview: BrowserPreviewImage | undefined): ToolExecutionResult {
+  return browserPreview ? { ...result, browserPreview } : result;
 }
 
 function signalOptions(ctx: ToolExecutionContext): { signal?: AbortSignal } {
@@ -314,14 +323,15 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           pageTarget(ctx, fresh),
           { interactive: input.interactive === true, delta: input.delta === true },
         );
-        return fenced({
+        const browserPreview = await previewOf(actions, pageTarget(ctx, fresh));
+        return withPreview(fenced({
           tabId: target.resolved.tab.handle,
           url: shot.url,
           title: shot.title,
           refs: shot.refCount,
           ...(shot.delta ? { delta: true } : {}),
           ...(shot.truncated ? { truncated: true } : {}),
-        }, shot.text);
+        }, shot.text), browserPreview);
       });
     },
 
@@ -338,11 +348,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
         if (changed) return changed;
         const image = await actions.screenshot(pageTarget(ctx, fresh), { fullPage: input.fullPage === true });
-        return {
+        const browserPreview = await previewOf(actions, pageTarget(ctx, fresh), image.data);
+        return withPreview({
           output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "", fullPage: input.fullPage === true }),
           isError: false,
           image: { data: image.data, mimeType: image.mimeType, bytes: image.bytes },
-        };
+        }, browserPreview);
       });
     },
 

@@ -19,6 +19,7 @@ import type {
 import type { BrowserToolExecutors } from "./browser-tools-execute.js";
 import type { BrowserSessionActor, BrowserControlLease } from "../shared/browser-surface.js";
 import type { BrowserObservationElement } from "../shared/agent-observation.js";
+import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import type { BrowserUploadPickerRequest, BrowserUploadResult } from "../main/browser/browser-upload.js";
 import { t } from "../i18n/index.js";
 import { issueUserOwnedBrowserScope } from "../permissions/user-owned-browser-scope.js";
@@ -64,6 +65,8 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
     delta: boolean;
   }>;
   screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
+  /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
+  capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
   waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number }): Promise<{ found: boolean; waitedMs: number }>;
   click(target: BrowserActionTab<G>, ref: string): Promise<void>;
   hover(target: BrowserActionTab<G>, ref: string): Promise<void>;
