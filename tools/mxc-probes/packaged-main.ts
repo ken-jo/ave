@@ -7,6 +7,9 @@ import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { configureHostResources } from "../../src/main/host-resources.js";
 import { spawnMxcExtensionProcessForDiagnostics, type MxcProcessLifecycleEvent } from "../../src/permissions/mxc-extension-process.js";
 import { TOOL_TIMEOUT_POLICY } from "../../src/shared/tool-timeout-policy.js";
+import { probePluginStreams } from "./plugin-stream-session.js";
+import { assertLaunchMatchesIntent } from "../../src/plugins/isolation/mxc-plugin-child.js";
+import { windowsCommandLine } from "../../src/shared/windows-command-line.js";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 // @ts-expect-error standalone probe helpers intentionally have no declaration output
 import { buildProbeFilesystem } from "./filesystem-policy.mjs";
@@ -55,8 +58,11 @@ async function run(): Promise<void> {
   const address = proxy.address();
   if (!address || typeof address === "string") throw new Error("Missing fixture proxy address");
   const policy = buildProbeFilesystem(process.execPath, runDirectory, process.env.SYSTEMROOT);
+  const args = [path.join(runDirectory, "fixture.mjs"), mode, token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs),
+    ...(mode.startsWith("plugin") ? [path.join(resources, "app.asar", "dist", "src", "main", "plugin-child-main.js")] : [])];
+  // Plugin rows quote exactly as the production planner must, so the adapter's intent check runs natively.
   const request: ContainerRequest = {
-    command: [process.execPath, path.join(runDirectory, "fixture.mjs"), mode, token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)].map(windowsQuote).join(" "),
+    command: mode.startsWith("plugin") ? windowsCommandLine(process.execPath, args) : [process.execPath, ...args].map(windowsQuote).join(" "),
     containment: { type: "processcontainer", config: { filesystem: { enumeratePaths: policy.enumeratePaths } } },
     workingDirectory: runDirectory, environment: safeEnvironment(runDirectory), inheritDefaultEnvironment: false,
     filesystem: policy.filesystem,
@@ -90,12 +96,17 @@ async function run(): Promise<void> {
   let activeProcess: Awaited<ReturnType<typeof spawnMxcExtensionProcessForDiagnostics>> | undefined;
   try {
     emit({ event: "main-ready", pid: process.pid });
+    // Inside the try so a refused intent still closes the controls and the loopback proxy in `finally`.
+    if (mode.startsWith("plugin")) assertLaunchMatchesIntent(request, { command: process.execPath, args, cwd: runDirectory });
     await command("begin");
     const owned = await spawnMxcExtensionProcessForDiagnostics(request, { signal: controller.signal, onLifecycle });
     activeProcess = owned;
     emit({ event: "owned", mainPid: process.pid, id: owned.id, diagnostics: owned.diagnostics, filesystemPolicy: policy });
     if (mode === "cancel") {
       await owned.dispose(); emit({ event: "cancel", error: "Cancellation completed after readiness", pending: false });
+    } else if (mode === "plugin" || mode === "plugin-overflow") {
+      await command("run");
+      emit({ event: "plugin-streams", ...await probePluginStreams(owned, runDirectory, mode === "plugin-overflow") });
     } else if (mode === "echo") {
       await command("run");
       const bytes = Buffer.alloc(4 * 1024 * 1024);

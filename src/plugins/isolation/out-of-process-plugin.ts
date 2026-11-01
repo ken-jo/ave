@@ -63,7 +63,7 @@ import {
   isServedHostProtocolVersion,
   type HostProtocolVersion,
 } from "./host-api-wire.js";
-import type { ChildLink } from "./plugin-child-transport.js";
+import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
 import {
   CHILD_LOOPBACK_TRANSPORT_ARG,
   connectToAnnouncedChild,
@@ -74,6 +74,9 @@ import {
   type DispatchableHostApi,
 } from "./bound-host-api-table.js";
 import { openPluginProtocolSession } from "./plugin-protocol-session.js";
+import { spawnMxcPluginChild, type MxcPluginChild, type MxcPluginChildLaunch } from "./mxc-plugin-child.js";
+import { nativePluginChildFactoryBudgetMs, nativePluginChildStopBudgetMs } from "../../shared/tool-timeout-policy.js";
+import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 
 const log = createLogger("out-of-process-plugin");
 
@@ -720,9 +723,30 @@ export interface OutOfProcessPluginSpec {
   /** Defaults to the emitted `plugin-child-main.js` under the runtime asset dir. The plugin runtime always passes the path its composition root resolved (`PluginRuntimeOptions.childEntryPath`: {@link
    * resolvePluginChildEntryPath} in the app, a bundle of the same entry in the tests). It is the path the CONFINED spawn runs for an `entry` launch, so a test that serves a stand-in still runs it under the real wrap and bypasses nothing. */
   readonly childEntryPath?: string;
+  /** Internal backend-plan integration. Absent until the policy owner admits this holder;
+   * the existing path stays authoritative otherwise. Never infer readiness from the OS or a PID.
+   * The planner supplies the holder's staging HOME/temp (`<AVE_HOME>\mxc-staging\<opaque-id>`), the captured
+   * filesystem ownership, the readiness probe and revocation. The command, arguments, cwd, environment and
+   * grants are the host's, from this intent and the envelope; the spawn goes through row 2's admitted
+   * `spawnMxcConfinedChild`, whose request forms `command` with `windowsCommandLine(intent.command, intent.args)`
+   * and passes `intent.cwd` verbatim. The adapter compares the measured request with the intent exactly and
+   * refuses anything else. `windows-mxc` is published through `onChildSpawned` after native spawn and the
+   * protocol handshake, and withdrawn when termination begins. Requires `registerSandboxEnvelope`. */
+  readonly prepareMxcChild?: (intent: {
+    readonly pluginId: string;
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly cwd: string;
+    readonly envelope: DelegatedWorkerConfinement;
+  }) => Promise<MxcPluginChildLaunch>;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
     assertCurrent(): void;
+    /** Verified termination: the grants leave with the incarnation. */
     dispose(): void;
+    /** Unverified termination: keep the grants in place, fail closed, and refuse replacement. */
+    quarantine(reason: string): void;
+    /** Termination began; until it is verified or quarantined, no replacement may spawn beside this child. */
+    terminating(): void;
   };
   readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   /**
@@ -733,9 +757,11 @@ export interface OutOfProcessPluginSpec {
    * cannot replace, re-spawn or terminate it.
    */
   readonly observeChild?: (child: ObservedPluginChild) => void;
-  /** Told the wrap a child was spawned under, once, the moment the spawn returns; before the grant re-check, so a construction that fails after a child existed still reports
-   * that child's confinement. Not called when no child was spawned. The runtime records it for the Doctor (`PluginConfinementReport`); it can read a value and nothing more. */
-  readonly onChildSpawned?: (confinement: SpawnConfinement) => void;
+  /** Told the confinement a child runs under, once. The existing path reports the wrap the moment the spawn returns, before the grant re-check, so a construction
+   * that fails after a child existed still reports that child's confinement. A native child reports `windows-mxc` only after the native spawn AND the protocol
+   * handshake succeed (never for a child that died first), and calls the returned function when it begins terminating, which withdraws the marker. Not
+   * called when no child was spawned. The runtime records it for the Doctor (`PluginConfinementReport`); it can read a value and nothing more. */
+  readonly onChildSpawned?: (confinement: SpawnConfinement) => (() => void) | void;
 }
 
 /** The host protocol version this plugin's connection speaks (§3.2). Its declared, served `requires.hostProtocol`. Omission and unserved
@@ -755,12 +781,20 @@ export function createOutOfProcessPluginFactory(
 ): RuntimePluginFactory {
   const childEntryPath = spec.childEntryPath ?? resolvePluginChildEntryPath();
   const pluginId = spec.manifest.id;
+  // Quarantine, termination tracking and the replacement refusal all live on the registration; without it a
+  // native child could outlive an unverified termination unnoticed.
+  if (spec.prepareMxcChild && !spec.registerSandboxEnvelope) {
+    throw new MxcProcessContractError("Native plugin launch requires a sandbox envelope registration");
+  }
 
-  return async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
+  const factory = async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
     assertExtensionStartAllowed();
     // Refused before anything is spawned. `runtime/index.ts` refuses the same manifest at every load path; this is the spawn path's
     // own copy of the rule, so a factory reached any other way cannot start a child that would be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
+    if (spec.prepareMxcChild && spec.launch.kind !== "entry") {
+      throw new MxcProcessContractError("Native plugin launch requires the reference child runtime");
+    }
     // A `process` launch runs code the host cannot read, so it runs only under a live sandbox that confines processes: never unwrapped (unlike an `entry` launch with
     // the sandbox off), and never on Windows, whose sandbox does not confine process creation (§2.2, §7.3). The deny floor and the wrap stay `spawnConfinedChild`'s.
     if (spec.launch.kind === "process" && (!isPluginWorkerConfinementActive() || process.platform === "win32")) {
@@ -779,10 +813,41 @@ export function createOutOfProcessPluginFactory(
       onUserChosenDirectory: (path) => chosenPaths.push(path),
     });
     const registration = spec.registerSandboxEnvelope?.(chosenPaths, context.pluginRoot, context.pluginDataDir);
-    // The only way this factory obtains a child: the confined spawn, with the envelope derived above.
-    let child: ConfinedPluginChild | undefined;
+    // Both launch paths receive the same captured envelope used by the effect boundary.
+    let child: ConfinedPluginChild | MxcPluginChild | undefined;
+    // A native child's `windows-mxc` marker is published only after the handshake and withdrawn when it begins terminating.
+    let nativeRevoked = false;
+    let withdrawConfinement: (() => void) | undefined;
     try {
-      child = await spawnConfinedPluginChild({
+      if (spec.prepareMxcChild) {
+        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot };
+        const launch = await spec.prepareMxcChild({ ...intent, envelope });
+        // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
+        // recheck synchronously right before spawn (and again after it) through the registration.
+        const native = await spawnMxcPluginChild({
+          ...launch,
+          assertCurrent: () => {
+            registration?.assertCurrent();
+            launch.assertCurrent();
+          },
+        }, {
+          ...intent,
+          envelope,
+          floorPierces: envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
+          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+        }, () => {
+          nativeRevoked = true;
+          withdrawConfinement?.();
+          registration?.terminating();
+        });
+        child = native;
+        // Whoever starts termination (teardown, a transport fault, revocation or the child's own exit), the
+        // registration learns at once, and an unverified result quarantines it without waiting for onClosed,
+        // which a fault-driven termination never reaches.
+        native.waitForExit().catch((cleanupError: unknown) => {
+          registration?.quarantine(new PluginChildTerminationUnverifiedError(pluginId, { cause: cleanupError }).message);
+        });
+      } else child = await spawnConfinedPluginChild({
         pluginId,
         envelope,
         assertStillValid: () => registration?.assertCurrent(),
@@ -792,13 +857,22 @@ export function createOutOfProcessPluginFactory(
           ? { kind: "entry", childEntryPath }
           : spec.launch,
       });
-      spec.onChildSpawned?.(child.confinement);
+      if ("confinement" in child) spec.onChildSpawned?.(child.confinement);
       registration?.assertCurrent();
     } catch (error) {
-      child?.link.terminate("sandbox grant changed during spawn");
-      await child?.waitForExit?.();
-      registration?.dispose();
-      throw error;
+      let failure = error;
+      if (child) {
+        child.link.terminate("sandbox grant changed during spawn");
+        try {
+          await child.waitForExit?.();
+        } catch (cleanupError) {
+          failure = terminationUnverified(pluginId, error, cleanupError);
+        }
+      }
+      // Unverified termination keeps the registration with its launch lease; the runtime quarantines the lifecycle.
+      if (failure instanceof PluginChildTerminationUnverifiedError) registration?.quarantine(failure.message);
+      else registration?.dispose();
+      throw failure;
     }
     const spawned = child;
 
@@ -824,24 +898,67 @@ export function createOutOfProcessPluginFactory(
         ? () => spec.onMalformedCredentialSelector?.(pluginId)
         : undefined,
     );
-    const session = await openPluginProtocolSession({
-      pluginId,
-      manifest: spec.manifest,
-      hostProtocolVersion,
-      link: spawned.link,
-      context,
-      entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
-      table,
-      ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
-      onClosed: async () => {
-        try {
-          await spawned.waitForExit?.();
-        } finally {
+    let session: Awaited<ReturnType<typeof openPluginProtocolSession>>;
+    try {
+      session = await openPluginProtocolSession({
+        pluginId,
+        manifest: spec.manifest,
+        hostProtocolVersion,
+        link: spawned.link,
+        context,
+        entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
+        table,
+        ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
+        onClosed: async () => {
+          try {
+            await spawned.waitForExit?.();
+          } catch (cleanupError) {
+            // Unverified termination keeps the registration quarantined with its launch lease.
+            const failure = new PluginChildTerminationUnverifiedError(pluginId, { cause: cleanupError });
+            registration?.quarantine(failure.message);
+            throw failure;
+          }
           registration?.dispose();
-        }
-      },
-    });
-    // The channel and `teardown` stay here: the lifecycle gets the instance, whose `stop` is its one hand on the child's lifetime.
+        },
+      });
+    } catch (error) {
+      // The session starts teardown on a bring-up failure but does not wait for it. A native child's exit
+      // settles within the primitive's own disposal deadline, and this whole factory is bounded by the
+      // runtime's factory deadline, so the refusal is reported only once termination is known: an
+      // unverified one quarantines before the runtime releases the lifecycle lock.
+      if (!spec.prepareMxcChild) throw error;
+      try {
+        await spawned.waitForExit?.();
+      } catch (cleanupError) {
+        const failure = terminationUnverified(pluginId, error, cleanupError);
+        registration?.quarantine(failure.message);
+        throw failure;
+      }
+      // Verified: release now rather than racing the session's own release, so a retry is not refused.
+      registration?.dispose();
+      throw error;
+    }
+    if (spec.prepareMxcChild) {
+      // Native spawn and transport setup have both succeeded; a child that began terminating meanwhile is never reported.
+      if (!nativeRevoked) withdrawConfinement = spec.onChildSpawned?.("windows-mxc") ?? undefined;
+      // The channel and `teardown` stay here: the lifecycle gets the instance, whose `stop` is its one hand on the child's lifetime.
+      nativeInstances.add(session.instance);
+    }
     return session.instance;
   };
+  if (spec.prepareMxcChild) nativeFactories.add(factory);
+  return factory;
+}
+
+const nativeFactories = new WeakSet<RuntimePluginFactory>();
+const nativeInstances = new WeakSet<RuntimePlugin>();
+
+/** The runtime's deadline for one factory call: a native child also needs startup, construct and disposal time. */
+export function pluginFactoryDeadlineMs(factory: RuntimePluginFactory, fallbackMs: number): number {
+  return nativeFactories.has(factory) ? Math.max(fallbackMs, nativePluginChildFactoryBudgetMs()) : fallbackMs;
+}
+
+/** The runtime's stop budget for one instance: a native child's stop includes the owned process's disposal deadline. */
+export function pluginStopBudgetMs(instance: RuntimePlugin, fallbackMs: number): number {
+  return nativeInstances.has(instance) ? Math.max(fallbackMs, nativePluginChildStopBudgetMs()) : fallbackMs;
 }

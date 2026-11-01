@@ -4,6 +4,12 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
+
+const removeRetainedPluginGeneration = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../../plugin-contributions.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../plugin-contributions.js")>(),
+  removeRetainedPluginGeneration,
+}));
 import { derivePluginChildEnvelope } from "../../isolation/out-of-process-plugin.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
@@ -42,10 +48,35 @@ class WithdrawalRuntime extends PluginRuntime {
   running(pluginId = PLUGIN_ID): boolean {
     return this.plugins.has(pluginId);
   }
+
+  lifecycleAvailable(pluginId = PLUGIN_ID): void {
+    this.assertPluginLifecycleAvailable(pluginId);
+  }
+
+  quarantine(reason: string, pluginId = PLUGIN_ID): void {
+    this.quarantinePluginLifecycle(pluginId, reason);
+  }
+
+  releaseWithPayload(runtimeRoot: string, pluginId = PLUGIN_ID): Promise<unknown[]> {
+    return this.releaseAttempt({ pluginId, runtimeRoot } as never, "test attempt");
+  }
+
+  removeCandidatePayload(generationId: string, pluginId = PLUGIN_ID): Promise<boolean> {
+    return this.removeRetainedGenerationPayload(pluginId, generationId);
+  }
+
+  failBoot(stop: () => Promise<void>, runtimeRoot: string, pluginId = PLUGIN_ID): Promise<void> {
+    this.attach(stop, () => [], pluginId);
+    const plugin = this.plugins.get(pluginId)!;
+    plugin.pluginRoot = runtimeRoot;
+    plugin.hostEffects = { retire: () => [], isPreparing: () => false } as never;
+    return this.failBootPlugin(pluginId, plugin, "test start failure");
+  }
 }
 
 function runtime(): WithdrawalRuntime {
   return new WithdrawalRuntime({
+    installReceiptCacheRoot: join(root, "receipts"),
     childEntryPath: pluginChildEntryPath(),
     hostRoot: root,
     manifestPaths: [],
@@ -67,6 +98,42 @@ afterEach(() => {
   if (previousHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousHome;
   rmSync(root, { recursive: true, force: true });
+});
+
+describe("generation payload after unverified termination", () => {
+  const generationId = "a".repeat(64);
+  const payload = () => join(root, "receipts", PLUGIN_ID, "generations", generationId, "payload");
+
+  it("releases an attempt's payload normally and keeps it once the lifecycle is quarantined", async () => {
+    const subject = runtime();
+    removeRetainedPluginGeneration.mockClear();
+    await subject.releaseWithPayload(payload());
+    expect(removeRetainedPluginGeneration).toHaveBeenCalledWith(join(root, "receipts"), PLUGIN_ID, generationId);
+    removeRetainedPluginGeneration.mockClear();
+    // A possibly-alive child runs from this payload: its cwd and entry code stay with the retained lease.
+    subject.quarantine("Plugin child termination is unverified");
+    await subject.releaseWithPayload(payload());
+    expect(removeRetainedPluginGeneration).not.toHaveBeenCalled();
+  });
+
+  it("keeps a generation candidate's payload while quarantined (the one removal every cleanup path uses)", async () => {
+    const subject = runtime();
+    removeRetainedPluginGeneration.mockClear();
+    expect(await subject.removeCandidatePayload(generationId)).toBe(true);
+    subject.quarantine("Plugin child termination is unverified");
+    expect(await subject.removeCandidatePayload(generationId)).toBe(false);
+    expect(removeRetainedPluginGeneration).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a boot plugin's payload when its stop fails, and removes it after a clean stop", async () => {
+    const subject = runtime();
+    removeRetainedPluginGeneration.mockClear();
+    await subject.failBoot(async () => { throw new Error("Plugin child termination is unverified"); }, payload());
+    expect(removeRetainedPluginGeneration).not.toHaveBeenCalled();
+    const other = runtime();
+    await other.failBoot(async () => {}, payload());
+    expect(removeRetainedPluginGeneration).toHaveBeenCalledOnce();
+  });
 });
 
 describe("approved-directory withdrawal", () => {
@@ -216,6 +283,43 @@ describe("approved-directory withdrawal", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(subject.running()).toBe(false);
     expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
+  });
+
+  it("reports a quarantined incarnation without waiting for it and keeps retiring the others", async () => {
+    const approved = join(root, "approved");
+    mkdirSync(approved, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const grants = new Map<string, ReturnType<WithdrawalRuntime["register"]>>();
+    for (const pluginId of ["unverified-plugin", "verified-plugin"]) {
+      const pluginRoot = join(root, "home", "plugins", pluginId);
+      const dataDir = join(pluginRoot, "data");
+      mkdirSync(dataDir, { recursive: true });
+      const grant = subject.register(approved, pluginRoot, dataDir, pluginId);
+      grants.set(pluginId, grant);
+      subject.attach(async () => {
+        if (pluginId === "verified-plugin") { grant.dispose(); return; }
+        // The owner could not establish termination: the grant stays, and stop reports it.
+        grant.quarantine("Plugin child termination is unverified: unverified-plugin");
+        throw new Error("Plugin child termination is unverified: unverified-plugin");
+      }, () => [], pluginId);
+    }
+    setApproved([]);
+    const failure = await subject.retireSandboxGrantsOutsideCeiling().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(String(((failure as AggregateError).errors as AggregateError[]).flatMap((error) => error.errors.map(String))))
+      .toContain("sandbox grant incarnation is quarantined; its grants stay in place: unverified-plugin");
+    expect(subject.running("verified-plugin")).toBe(false);
+    expect(subject.failureKind("verified-plugin")).toBe("sandbox-grant-outside-ceiling");
+    // Fail closed: the quarantined grant stays registered and refuses every later check and replacement.
+    expect(grants.get("unverified-plugin")!.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+    expect(() => subject.lifecycleAvailable("unverified-plugin")).toThrow(/quarantined until host restart/);
+    // A later withdrawal settles at once and reports the same quarantine again rather than hanging.
+    await expect(subject.retireSandboxGrantsOutsideCeiling()).rejects.toThrow(/sandbox grant retirement failed/);
+    // Restoring the ceiling does not reopen the quarantined grant.
+    setApproved([approved]);
+    expect(grants.get("unverified-plugin")!.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+    expect(await subject.retireSandboxGrantsOutsideCeiling()).toEqual([]);
   });
 
   it("retires every affected plugin even when an earlier cleanup fails", async () => {

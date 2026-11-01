@@ -100,6 +100,20 @@ export const TOOL_TIMEOUT_POLICY = {
   processGroupRetentionWarningMs: 5 * 60 * 1000,
 } as const;
 
+/** Stopping a native plugin child: its stop hook (handler plus kill grace), then the owned process's own disposal deadline. */
+export function nativePluginChildStopBudgetMs(): number {
+  return TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
+    + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+}
+
+/** Constructing a native plugin child: native startup, the construct request (import plus factory), and, after a
+ * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
+ * Row-2 admission also runs inside this budget: the egress lease and the readiness probe with its `mxcExtensionReadinessMs` (30 s) deadline. */
+export function nativePluginChildFactoryBudgetMs(): number {
+  return TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.pluginImportMs
+    + TOOL_TIMEOUT_POLICY.pluginFactoryMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+}
+
 /** Broker wall clock adds handshake, terminal receipt, and post-effect host work to semantic effect time. */
 export function resolveWorkloadBrokerInvocationBudgetMs(
   effectMs: number,

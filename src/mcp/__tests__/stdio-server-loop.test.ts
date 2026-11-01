@@ -223,3 +223,30 @@ describe("StdioServerLoop — subprocess serving core over real streams", () => 
     expect(() => loop.start()).toThrow(/already started/);
   });
 });
+
+describe("StdioServerLoop unwritten output limit", () => {
+  it("refuses a response that would exceed the limit, as an error for that call, and keeps serving input", async () => {
+    const { Writable } = await import("node:stream");
+    const input = new PassThrough();
+    const written: Buffer[] = [];
+    // An output that never drains: everything after the first write stays unwritten.
+    const output = new Writable({ highWaterMark: 1, write(chunk: Buffer) { written.push(chunk); } });
+    const big = "x".repeat(4096);
+    const handler: StdioRequestHandler = {
+      handle: async (request) => ({ jsonrpc: "2.0", id: request.id, result: { text: request.method === "big" ? big : "small" } }),
+    };
+    const limit = 10_000;
+    new StdioServerLoop(input, output, handler, LINE_MAX, limit).start();
+    for (let id = 1; id <= 3; id++) input.write(frameMessage({ jsonrpc: "2.0", id, method: "big", params: {} }));
+    input.write(frameMessage({ jsonrpc: "2.0", id: 4, method: "small", params: {} }));
+    await vi.waitFor(() => expect(output.writableLength).toBeGreaterThan(2 * big.length));
+    await new Promise((resolve) => setImmediate(resolve));
+    // Two large replies fit; the third is refused clearly instead of queued; later small calls are still answered.
+    expect(output.writableLength).toBeLessThanOrEqual(limit + 1024);
+    const queued = (output as unknown as { writableBuffer: Array<{ chunk: Buffer }> }).writableBuffer.map((entry) => entry.chunk);
+    const frames = [...written, ...queued].map((chunk) => JSON.parse(chunk.toString("utf8")) as { id: number; result?: unknown; error?: { data?: { code?: string } } });
+    expect(frames.find((frame) => frame.id === 3)?.error?.data?.code).toBe("payload-too-large");
+    expect(frames.find((frame) => frame.id === 4)?.result).toEqual({ text: "small" });
+    expect(frames.filter((frame) => frame.id === 1 || frame.id === 2).every((frame) => frame.result !== undefined)).toBe(true);
+  });
+});

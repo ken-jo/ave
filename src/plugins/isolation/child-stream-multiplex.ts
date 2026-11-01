@@ -72,6 +72,7 @@ export class FramedMessageStream {
     if (this.started) throw new Error("[child-stream-multiplex] already started");
     this.started = true;
     const onData = (chunk: Buffer): void => {
+      if (this.violated) return;
       let messages: Array<Record<string, unknown>>;
       try {
         messages = this.decoder.push(chunk);
@@ -89,9 +90,10 @@ export class FramedMessageStream {
 
   /** Write each complete frame once so concurrent writers cannot interleave its bytes. */
   send(message: unknown): void {
+    if (this.violated) return;
     const frame = frameMessage(message);
     if (frame.length - 1 <= FRAME_BYTES_MAX) {
-      this.output.write(frame);
+      this.write(frame);
       return;
     }
     const dropped = droppedNotificationOf(message, frame.length - 1);
@@ -99,20 +101,66 @@ export class FramedMessageStream {
       this.onDroppedNotification(dropped);
       return;
     }
-    this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+    this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 
   /** Prebuilt MCP frames obey the same outbound size limit. */
   forward(frame: Buffer): void {
+    if (this.violated) return;
     if (frame.length - 1 <= FRAME_BYTES_MAX) {
-      this.output.write(frame);
+      this.write(frame);
       return;
     }
     // Parse prebuilt frames only to recover their request ID.
     const message: unknown = JSON.parse(frame.toString("utf-8"));
-    this.output.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+    this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+  }
+
+  /** Forward a prebuilt frame, then call `ready` only once the output has drained (or closed). A caller that
+   * awaits `ready` before its next frame keeps at most one of its frames queued, so a burst of large results
+   * waits upstream instead of reaching {@link OUTBOUND_QUEUE_BYTES_MAX}; the bound itself is unchanged. */
+  forwardPaced(frame: Buffer, ready: () => void): void {
+    this.forward(frame);
+    if (this.violated || !this.output.writableNeedDrain || this.output.destroyed) {
+      ready();
+      return;
+    }
+    const resume = (): void => {
+      this.output.off("drain", resume);
+      this.output.off("close", resume);
+      ready();
+    };
+    this.output.on("drain", resume);
+    this.output.on("close", resume);
+  }
+
+  /** Synchronous protocol producers cannot await drain. Refuse a stalled peer
+   * before its writable queue grows without bound; never drop a request silently. */
+  private write(frame: Buffer): void {
+    if (this.output.writableLength + frame.length > OUTBOUND_QUEUE_BYTES_MAX) {
+      this.violated = true;
+      this.onViolation("Plugin output queue exceeds limit");
+      return;
+    }
+    this.output.write(frame);
   }
 }
+
+/** Headroom beside queued maximal frames for the small replies, notifications and cancellations that keep flowing. */
+const OUTBOUND_QUEUE_HEADROOM_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Bytes one direction may queue for a peer that has not yet read them, per connection.
+ *
+ * Two maximal frames (each `FRAME_BYTES_MAX` plus its newline) so two concurrent largest
+ * replies still pass a slow-but-draining peer, plus fixed headroom for control traffic.
+ * About 100 MB with the current frame limit, against roughly 183 MB for the earlier four-frame
+ * bound. A queue past it means the peer has stopped reading for longer than any permitted
+ * burst, so the channel ends as a violation instead of buffering without limit. This is
+ * enforced on every plugin connection, confined or native, and is stricter than the
+ * unbounded queue before it.
+ */
+export const OUTBOUND_QUEUE_BYTES_MAX = 2 * (FRAME_BYTES_MAX + 1) + OUTBOUND_QUEUE_HEADROOM_BYTES;
 
 /** Report oversized notifications to their owner. */
 export interface DroppedNotification {

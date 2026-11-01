@@ -14,7 +14,7 @@ export async function writeProbeJson(directory, name, value) {
 
 export function packagedMainArguments(argv) {
   const [runDirectory, mode, token, observerExecutable] = argv;
-  if (argv.length !== 4 || !path.isAbsolute(runDirectory) || !["echo", "lifetime", "cancel"].includes(mode)
+  if (argv.length !== 4 || !path.isAbsolute(runDirectory) || !["echo", "lifetime", "cancel", "plugin", "plugin-overflow"].includes(mode)
     || !/^[a-f0-9]{32}$/.test(token) || !path.isAbsolute(observerExecutable ?? "") || !/\.exe$/i.test(observerExecutable)) {
     throw new Error("Invalid packaged probe arguments");
   }

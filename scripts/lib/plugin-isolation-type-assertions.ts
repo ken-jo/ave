@@ -25,6 +25,7 @@ export type OutOfProcessPluginSpecKeysAreExact = Expect<
     | "auditLog"
     | "launch"
     | "childEntryPath"
+    | "prepareMxcChild"
     | "registerSandboxEnvelope"
     | "onMalformedCredentialSelector"
     | "observeChild"

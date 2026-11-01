@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertMxcExtensionFilesystemOwnership, assertMxcHolderPrivateDirectories } from "../mxc-filesystem-ownership.js";
+import { assertMxcExtensionFilesystemOwnership, assertMxcHolderPrivateDirectories, assertMxcHolderStaging } from "../mxc-filesystem-ownership.js";
 
 const PLUGINS = "C:\\private\\plugins";
 const CACHE = `${PLUGINS}\\.cache`;
@@ -83,5 +83,36 @@ describe("holder HOME and temp placement", () => {
     const owned = { ...ownership, writeRoots: [leaf] };
     expect(() => assertMxcHolderPrivateDirectories({ home: leaf, temp: leaf, ownership: owned, sharedPrivateRoots: shared }))
       .toThrow(/dedicated staging tree/);
+  });
+});
+
+describe("holder staging layout", () => {
+  const aveHome = "C:\\Users\\example\\.ave";
+  const S = `${aveHome}\\mxc-staging\\0123456789abcdef0123456789abcdef`;
+
+  it("accepts exactly S\\home and S\\temp and returns S", () => {
+    expect(assertMxcHolderStaging({ aveHome, home: `${S}\\home`, temp: `${S}\\temp` })).toBe(S);
+  });
+
+  it.each([
+    ["case alias of the same leaf", `${S}\\home`, `${S}\\HOME`],
+    ["upper-case home leaf", `${S}\\HOME`, `${S}\\temp`],
+    ["dot segment", `${S}\\.`, `${S}\\temp`],
+    ["parent segment", `${S}\\..`, `${S}\\temp`],
+    ["dot segment inside the path", `${S}\\.\\home`, `${S}\\temp`],
+    ["trailing separator", `${S}\\home\\`, `${S}\\temp`],
+    ["forward slash", `${S}/home`, `${S}\\temp`],
+    ["trailing dot trimmed by Win32", `${S}\\home.`, `${S}\\home`],
+    ["trailing space trimmed by Win32", `${S}\\home `, `${S}\\home`],
+    ["alternate data stream", `${S}\\home::$DATA`, `${S}\\temp`],
+    ["shared HOME and temp", `${S}\\home`, `${S}\\home`],
+    ["swapped leaves", `${S}\\temp`, `${S}\\home`],
+    ["nested below the leaf", `${S}\\home\\deeper`, `${S}\\temp`],
+    ["different staging directories", `${S}\\home`, `${aveHome}\\mxc-staging\\fedcba9876543210fedcba9876543210\\temp`],
+    ["upper-case id", `${aveHome}\\mxc-staging\\0123456789ABCDEF0123456789ABCDEF\\home`, `${aveHome}\\mxc-staging\\0123456789ABCDEF0123456789ABCDEF\\temp`],
+    ["plugin-named id", `${aveHome}\\mxc-staging\\native-probe\\home`, `${aveHome}\\mxc-staging\\native-probe\\temp`],
+    ["outside AVE_HOME", `C:\\Other\\mxc-staging\\0123456789abcdef0123456789abcdef\\home`, `C:\\Other\\mxc-staging\\0123456789abcdef0123456789abcdef\\temp`],
+  ])("refuses %s", (_label, home, temp) => {
+    expect(() => assertMxcHolderStaging({ aveHome, home, temp })).toThrow(/mxc-staging/u);
   });
 });

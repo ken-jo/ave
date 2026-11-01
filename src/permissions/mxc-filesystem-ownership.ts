@@ -70,3 +70,22 @@ export function assertMxcHolderPrivateDirectories(input: {
     }
   }
 }
+
+/** Holder adapters (rows 3–5) place HOME and temp at exactly `<AVE_HOME>\mxc-staging\<opaque-id>\home` and `…\temp`,
+ * where the id is 32 lowercase hex digits (no plugin ID or other name). Every spelling Win32 would alias is refused:
+ * each path must already be in `win32.normalize` form (no `.`/`..` or forward slash) with no trailing separator, which `normalize` keeps, the leaf
+ * names are the exact lowercase literals (no case alias, trailing dot or space, or `:` stream suffix), and the parent
+ * is compared exactly. The planner forms these with `win32.join` and passes them on unchanged. Returns the staging
+ * directory, which the adapter grants as the holder's private write root. */
+export function assertMxcHolderStaging(input: { readonly aveHome: string; readonly home: string; readonly temp: string }): string {
+  const staging = winPath.dirname(input.home);
+  const id = winPath.basename(staging);
+  const canonical = (path: string): boolean => winPath.normalize(path) === path && !/[\\/]$/u.test(path);
+  if (!canonical(input.home) || !canonical(input.temp)
+      || winPath.basename(input.home) !== "home" || winPath.basename(input.temp) !== "temp"
+      || winPath.dirname(input.temp) !== staging || !/^[0-9a-f]{32}$/u.test(id)
+      || staging !== winPath.join(input.aveHome, "mxc-staging", id)) {
+    throw new MxcProcessContractError("Container HOME and temp must be <AVE_HOME>\\mxc-staging\\<opaque-id>\\home and \\temp");
+  }
+  return staging;
+}
