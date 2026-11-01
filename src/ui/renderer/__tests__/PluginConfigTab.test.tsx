@@ -4,6 +4,7 @@ import { act, render, screen, waitFor, fireEvent, within } from "@testing-librar
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
 import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
+import { onNewChatDraft } from "../chat-draft-request.js";
 import { makePluginCard } from "./support/plugin-card.js";
 
 const mockCards = vi.fn(async () => [
@@ -547,17 +548,64 @@ describe("PluginConfigTab", () => {
     // Its own diagnosis, not "update the app": a newer app may have dropped the version rather than lacking it.
     expect(screen.getByText("다른 Ave 프로토콜용 익스텐션")).toBeInTheDocument();
     expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
-    expect(await screen.findByText(/마켓플레이스에서 2.0.0 버전 검토/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText(/마켓플레이스에서 2.0.0 버전 검토/));
+    // One action, in the header: the compatible catalog version replaces Doctor.
+    const update = await screen.findByTestId("plugin-config:protocol-update-button:meeting");
+    expect(update).toHaveTextContent("2.0.0(으)로 업데이트");
+    expect(screen.queryByTestId("plugin-config:doctor:meeting")).toBeNull();
+    expect(screen.queryByTestId("plugin-config:doctor-migrate:meeting")).toBeNull();
+    fireEvent.click(update);
     expect(navigate).toHaveBeenCalledWith("marketplace");
     expect(takeUpdateReview()).toEqual({ kind: "package", key: { sourceId: "ave", kind: "plugin", name: "meeting" } });
+    expect(market.planInstall).not.toHaveBeenCalled();
+  });
 
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
-
-    await waitFor(() => {
-      expect(market.planInstall).not.toHaveBeenCalled();
-      expect(cards).toHaveBeenCalledTimes(2);
+  it("offers an AI migration chat for a protocol mismatch with no compatible version", async () => {
+    bind("meeting");
+    market.listSources.mockResolvedValue({ ok: true, value: [{
+      id: "ave", label: "Plugin source", transport: "git", url: "https://example.invalid/plugins/meeting", path: null,
+    }] });
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards: vi.fn().mockResolvedValue([makePluginCard({
+          loadStatus: "failed",
+          installFailureKind: "incompatible-host-protocol",
+        })]) },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
     });
+    const drafts: string[] = [];
+    const stop = onNewChatDraft((draft) => drafts.push(draft));
+
+    render(<PluginConfigTab />);
+    await screen.findByText("https://example.invalid/plugins/meeting");
+    fireEvent.click(screen.getByTestId("plugin-config:doctor-migrate:meeting"));
+    stop();
+
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]).toContain("host protocol 3 to host protocol 4");
+    expect(drafts[0]).toContain("https://example.invalid/plugins/meeting");
+    expect(market.planInstall).not.toHaveBeenCalled();
+  });
+
+  it("opens the reviewed folder install in every build, and the unreviewed one only in dev", async () => {
+    const navigate = vi.fn();
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards: vi.fn().mockResolvedValue([makePluginCard({})]) },
+        pluginConfig: { get: mockGet, set: mockSet },
+      },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab onNavigate={navigate} />);
+    fireEvent.click(await screen.findByTestId("plugin-config:install-folder"));
+
+    expect(navigate).toHaveBeenCalledWith("marketplace");
+    expect(takeUpdateReview()).toEqual({ kind: "install-direct" });
+    expect(screen.queryByTestId("plugin-config:install-unreviewed")).toBeNull();
   });
 
   it("shows the installed source repository when no compatible catalog version exists", async () => {
@@ -608,7 +656,7 @@ describe("PluginConfigTab", () => {
     });
     expect(screen.getByText("파일 접근 범위 초과")).toBeInTheDocument();
     expect(screen.getByText(/요청 범위를 줄인 새 버전으로 업데이트하거나 제거하세요/)).toBeInTheDocument();
-    expect(screen.getByTestId("plugin-config:doctor-remove:meeting")).toBeInTheDocument();
+    expect(screen.getByTestId("plugin-config:remove:meeting")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("plugin-config:doctor:meeting"));
     await waitFor(() => {
@@ -755,7 +803,7 @@ describe("PluginConfigTab", () => {
       expect(screen.getByTestId("plugin-config:doctor-panel:samplehub")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId("plugin-config:doctor-remove:samplehub"));
+    fireEvent.click(screen.getByTestId("plugin-config:remove:samplehub"));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "제거" }));
 
