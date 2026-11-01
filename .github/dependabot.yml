@@ -16,6 +16,11 @@ updates:
       # re-designed.
       - dependency-name: "@anthropic-ai/sandbox-runtime"
         versions: [">= 0.0.81"]
+      # 1.0.11-1.0.13 abort under Electron on Linux (upstream issue 1405) and
+      # 1.1.0 renders PDF pages ~7x slower on the hosted Windows runner (480 ms
+      # -> over the 3 s parse budget). Later releases are proposed again.
+      - dependency-name: "@napi-rs/canvas"
+        versions: ["1.0.11", "1.0.12", "1.0.13", "1.1.0"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

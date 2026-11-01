@@ -20,7 +20,7 @@ export const PDF_RUNTIME_FIXTURE_ENTRIES = Object.freeze([
 ]);
 
 /** Fixture bytes model the canvas package layout; they are not executable addons. Returns the binding path. */
-export function writeCanvasRuntimePackage(nodeModules: string, platform: string, arch = "x64", version = "1.1.0"): string {
+export function writeCanvasRuntimePackage(nodeModules: string, platform: string, arch = "x64", version = "1.0.10"): string {
   const abi = platform === "linux" ? "-gnu" : platform === "win32" ? "-msvc" : "";
   const name = `@napi-rs/canvas-${platform}-${arch}${abi}`;
   const binding = `skia.${platform}-${arch}${abi}.node`;
