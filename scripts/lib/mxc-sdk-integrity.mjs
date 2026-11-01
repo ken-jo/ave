@@ -11,6 +11,30 @@ export class MxcIntegrityError extends Error {
   }
 }
 
+const PACKAGE_RUNTIME_FIELDS = ["name", "version", "main", "exports", "type", "imports"];
+
+function assertPackageMetadata(bytes, relative, metadata) {
+  const expected = metadata && Object.hasOwn(metadata, relative) ? metadata[relative] : undefined;
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)
+    || typeof expected.name !== "string" || typeof expected.version !== "string"
+    || ["main", "type"].some((field) => Object.hasOwn(expected, field) && typeof expected[field] !== "string")
+    || Object.keys(expected).some((field) => !PACKAGE_RUNTIME_FIELDS.includes(field))) {
+    throw new MxcIntegrityError(`Missing or invalid package metadata pin: ${relative}`);
+  }
+  const actual = JSON.parse(bytes.toString("utf8"));
+  if (!actual || typeof actual !== "object" || Array.isArray(actual)) {
+    throw new MxcIntegrityError(`Invalid runtime package manifest: ${relative}`);
+  }
+  for (const field of PACKAGE_RUNTIME_FIELDS) {
+    // Conditions are selected in declaration order, so preserve object order.
+    // An absent field also differs from an explicit null or empty value.
+    if (Object.hasOwn(actual, field) !== Object.hasOwn(expected, field)
+      || JSON.stringify(actual[field]) !== JSON.stringify(expected[field])) {
+      throw new MxcIntegrityError(`Runtime package metadata mismatch: ${relative} (${field})`);
+    }
+  }
+}
+
 // Installation files belong to the signed-in user. Verification detects drift,
 // but cannot protect against that user racing replacement during native loading.
 export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env, strictNativeDirectories = false) {
@@ -31,7 +55,14 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
       if (resolved !== file || !lstatSync(file).isFile()) {
         throw new MxcIntegrityError(`Native payload path redirected: ${relative}`);
       }
-      const digest = createHash("sha256").update(readFileSync(file)).digest("hex");
+      const bytes = readFileSync(file);
+      if (relative.endsWith("/package.json")) {
+        // Raw manifest hashes remain source/archive audit pins. Packaging may
+        // remove build metadata, so installed manifests pin runtime fields only.
+        assertPackageMetadata(bytes, relative, pins.sdk.packageMetadata);
+        continue;
+      }
+      const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== expected) throw new MxcIntegrityError(`Native payload hash mismatch: ${relative}`);
     }
     assertMxcSdkInventory(root, pins);

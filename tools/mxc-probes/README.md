@@ -86,6 +86,18 @@ node --check tools/mxc-probes/sdk-supervisor.mjs
 
 ## Packaged extension-process acceptance
 
+Run the explicit packaging regression before the native peer check:
+
+```powershell
+bun run check:mxc-packaging
+# Or select one architecture:
+bun run check:mxc-packaging -- --arch arm64
+```
+
+This script runs the real locked packager with `--win --dir --x64` and `--win --dir --arm64`, unsigned, `npmRebuild:false` and `--publish=never`, on macOS/Linux or Windows. It downloads verified target runtime/addon archives, copies the actual installed dependency trees into an owned temporary app, and uses the production file/unpack rules and nested-semver extra-resource rule. Its after-pack hook calls the same `finalizePackagedMxcSdk` as the application hook. It requires rewritten manifests to pass their semantic pins, nested semver to resolve at the pinned path, executable bytes to match, debug symbols to be absent, and the recorded runtime inventory to verify. This is an explicit script outside default Vitest because it downloads and assembles both target runtimes. JSON names the retained result file's directory and package outputs, with per-target manifest hashes and semver version; `builder.log` records the actual collector/packaging run. Remove only the exact reported `work` directory when finished.
+
+This focused app checks SDK packaging and does not compile the unrelated native helpers, run the full application hook's other asset checks, create an installer or execute Windows code. The ordinary `dist:win` entry still requires a native Windows host for its helper build; cross-packaging here does not claim a complete application installer or native readiness.
+
 The verification build invokes the real public `spawnMxcExtensionProcess` entry and packaged supervisor. Diagnostic code is omitted from normal release builds; explicitly enable it only for this local verification build. Use a **non-elevated, standard-user Windows x64 interactive desktop session** in the checkout used to build the app. The driver rejects session 0 and elevated tokens; it does not install or prepare the host.
 
 The existing unsigned directory build selects x64 on an x64 host, builds native helpers, and assembles `release\win-unpacked\Ave.exe`. Neither `--dir` nor the probe installs the app.

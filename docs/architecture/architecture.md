@@ -2500,6 +2500,9 @@ entries, locked nested `semver` JavaScript, PTY JavaScript/prebuilds, and the se
 bootstrap addon. Import-condition resolution must match those pinned roots; tests
 record the static SDK spawn/probe import graph without executing native code.
 This does not claim coverage of arbitrary computed dynamic imports.
+
+Package manifests use the required semantic pins for `name`, `version`, `main`, `exports`, `type` and `imports`, including field absence and condition declaration order; descriptive/build metadata may be removed by packaging. Their raw source hashes remain archive/staging audit inputs. Every JavaScript, addon, DLL and executable entry still requires its exact SHA-256. The locked nested semver tree is copied explicitly through Windows extra resources into its pinned unpacked path because dependency collection can hoist it. PTY `.pdb` files are a declared debug-symbol category, excluded from runtime pins and packages because they are not loaded; no executable hash is skipped.
+
 The installed SDK inventory rejects unknown files. Its allowed archive extras
 are declarations/source maps, README/license text, generated native declarations,
 provenance metadata and the explicit unused backend filename set in the integrity

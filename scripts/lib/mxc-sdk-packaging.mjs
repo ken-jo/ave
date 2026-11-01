@@ -4,6 +4,11 @@ import path from "node:path";
 import { MxcIntegrityError, verifyMxcSdk, verifyMxcSupervisorRuntime } from "./mxc-sdk-integrity.mjs";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 
+export function finalizePackagedMxcSdk(resources, arch, executable) {
+  prunePackagedMxcSdk(resources, arch);
+  recordMxcSupervisorRuntime(resources, arch, executable);
+}
+
 export function assertPackagedMxcSdk(resources, arch) {
   return withPackagingPayload(() => {
     const modules = path.join(resources, "app.asar.unpacked", "node_modules");

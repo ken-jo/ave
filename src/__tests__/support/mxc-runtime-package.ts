@@ -22,7 +22,7 @@ export function writeMxcRuntimePackage(resources: string, executable: string): s
   // The real installed JS, DLLs and their production hashes stay unchanged.
   if (substituted) {
     for (const [relative, bytes] of Object.entries({
-      "package.json": JSON.stringify({ name: "@koromix/koffi-win32-x64", main: "index.js" }),
+      "package.json": JSON.stringify(pins.sdk.packageMetadata["@koromix/koffi-win32-x64/package.json"]),
       "index.js": "throw new Error('Packaging fixture must never execute');\n",
       "win32_x64/koffi.node": "inert packaging addon fixture",
     })) {

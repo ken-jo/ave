@@ -3,6 +3,14 @@ export interface MxcSdkPins {
   sdk: {
     versions: Record<string, string>;
     packages: Record<string, string>;
+    packageMetadata: Record<string, {
+      name: string;
+      version: string;
+      main?: string;
+      exports?: unknown;
+      type?: string;
+      imports?: unknown;
+    }>;
     files: Record<string, string>;
     architectures: Record<string, Record<string, string>>;
   };

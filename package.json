@@ -110,6 +110,7 @@
     "dist:linux": "node scripts/build-installers.mjs --linux",
     "dist:headless": "node scripts/package-headless-runtime.mjs",
     "dist:win": "node scripts/build-installers.mjs --win",
+    "check:mxc-packaging": "node scripts/check-mxc-packaging.mjs",
     "dist:fast": "node scripts/build-installers.mjs --current --fast",
     "dist:mac:fast": "node scripts/build-installers.mjs --mac --fast",
     "dist:linux:fast": "node scripts/build-installers.mjs --linux --fast",
@@ -263,6 +264,7 @@
       "!node_modules/@*/*/{docs,doc,test,tests,__tests__,example,examples,benchmark,benchmarks,coverage}{,/**/*}",
       "!node_modules/**/{browser-test,system-test,*-test,test-*}{,/**/*}",
       "!node_modules/node-pty/third_party{,/**/*}",
+      "!node_modules/node-pty/prebuilds/win32-*/**/*.pdb",
       "!node_modules/better-sqlite3/deps{,/**/*}",
       "!node_modules/better-sqlite3/src{,/**/*}",
       "!node_modules/better-sqlite3/binding.gyp",
@@ -482,6 +484,11 @@
         "nsis"
       ],
       "extraResources": [
+        {
+          "from": "node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "to": "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/node_modules/semver",
+          "filter": ["**/*"]
+        },
         {
           "from": "resources/windows-job/${arch}/ave-job.exe",
           "to": "windows-job/${arch}/ave-job.exe"

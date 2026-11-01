@@ -138,15 +138,10 @@
         "node-pty/prebuilds/win32-x64/conpty/OpenConsole.exe": "d1fe7faa62f9e955e2ac2371f95d7e5513df4d496255097158f979c94782c5fc",
         "node-pty/prebuilds/win32-x64/conpty/conpty.dll": "7c7430632052ff703540b68371ec43821820aa1335d8e11dfbcd9ff00e9daaed",
         "node-pty/prebuilds/win32-x64/conpty.node": "ee8f4e6f4dad71939eecfda11de249400e34bfefe4c8b48af13f3b5476f4035b",
-        "node-pty/prebuilds/win32-x64/conpty.pdb": "51ee5739eba477cf41100a6c1e68a5da96f9815717162e01599e8888ef6880ac",
         "node-pty/prebuilds/win32-x64/conpty_console_list.node": "879dd94cfc79f1e263a00077597ae9448a5394b7d193381aaa50d992a1f91090",
-        "node-pty/prebuilds/win32-x64/conpty_console_list.pdb": "3e7c44de002c30875cb6ede95f13e7efc8e13b2d2faa11dfb0e14eae9071ff92",
         "node-pty/prebuilds/win32-x64/pty.node": "ae323edd0835ee7b9e18cc96a7b2bb4b8173ff768317d178af2788406feb71ff",
-        "node-pty/prebuilds/win32-x64/pty.pdb": "4dfc9da6c08ccee030e3540cd92b8f761962af72f2a313dc1c9970992a1d3445",
         "node-pty/prebuilds/win32-x64/winpty-agent.exe": "0c4834a0ab2a4f8c855a2f1db9b21fa6e5fc324ae8e3c82addd53d503d999825",
-        "node-pty/prebuilds/win32-x64/winpty-agent.pdb": "58cf72749645e0b494c5fd5dfe771122b50385709a9099ea4d73677dab9f265c",
-        "node-pty/prebuilds/win32-x64/winpty.dll": "e1cb26d868c954ba26817bedf3e4a5744e4ca2030adf51a7156e5ff2fadb881b",
-        "node-pty/prebuilds/win32-x64/winpty.pdb": "5566d3f6498fd3b1ea180fffa8444e036be509877defffb986d578b7b78f8a45"
+        "node-pty/prebuilds/win32-x64/winpty.dll": "e1cb26d868c954ba26817bedf3e4a5744e4ca2030adf51a7156e5ff2fadb881b"
       },
       "arm64": {
         "@microsoft/mxc-sdk/bin/arm64/mxc_ffi.dll": "1becaf695ad9ab6f6fe21ca4ad2e838d9218996a5d42cb82e609df1eb4d3db6b",
@@ -157,15 +152,10 @@
         "node-pty/prebuilds/win32-arm64/conpty/OpenConsole.exe": "b7763ba27e80d5e84f9e60d1368ec2ddb25dfd10283336c0c9f3f252d35cb2f8",
         "node-pty/prebuilds/win32-arm64/conpty/conpty.dll": "b6cca5f1081111f59e5255eec043d924ebd11a86d09986c0d121b680540b3380",
         "node-pty/prebuilds/win32-arm64/conpty.node": "25a06916c5cb1a3aac7acc401424d8e6a6a9e8eea441a3604cd657a0619555cd",
-        "node-pty/prebuilds/win32-arm64/conpty.pdb": "a26c1c6e6e1f12bc669a1075f67edef559c147245417ff9e0d7227bf1ce6ec2d",
         "node-pty/prebuilds/win32-arm64/conpty_console_list.node": "fda76b16afb3bf9a4de085c943b5fb4138ecbeb08e8254c09d5555ea5426bd4e",
-        "node-pty/prebuilds/win32-arm64/conpty_console_list.pdb": "262b2995833e2d4f28fc719cb26c10e30ff1964ca8967f133d6662d81318ec23",
         "node-pty/prebuilds/win32-arm64/pty.node": "eae1266e3c34f4c7b67a756a6ff342b699847deaf29c944b7a6bed190ec61982",
-        "node-pty/prebuilds/win32-arm64/pty.pdb": "36620a358a8f7dc11ad398eba195a4a2a721e97f20068ac963a4ad09c3a00581",
         "node-pty/prebuilds/win32-arm64/winpty-agent.exe": "9a5f66fbe444728988f51e8099d0d84c515945a1873dbbbec65aec6e07eac50a",
-        "node-pty/prebuilds/win32-arm64/winpty-agent.pdb": "7a036659c203caf045faecdbdacecb0be5df5b8693434fa682ed23247d74eea4",
-        "node-pty/prebuilds/win32-arm64/winpty.dll": "0247b4d007fcb8059cc2221ec41d736fa548246ce1e10256c15c96d1ef6f2e9c",
-        "node-pty/prebuilds/win32-arm64/winpty.pdb": "d334454d6734da2ddf20e387f76943b51fd2530a29cac126d5ef653ca3fd1513"
+        "node-pty/prebuilds/win32-arm64/winpty.dll": "0247b4d007fcb8059cc2221ec41d736fa548246ce1e10256c15c96d1ef6f2e9c"
       }
     },
     "notices": {
@@ -194,6 +184,71 @@
       "koffi": "koffi",
       "semver": "@microsoft/mxc-sdk/node_modules/semver",
       "node-pty": "node-pty"
-    }
+    },
+    "packageMetadata": {
+      "@microsoft/mxc-sdk/package.json": {
+        "name": "@microsoft/mxc-sdk",
+        "version": "1.0.1",
+        "exports": {
+          ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "default": "./dist/index.js"
+          },
+          "./v1": {
+            "types": "./dist/v1/index.d.ts",
+            "import": "./dist/v1/index.js",
+            "default": "./dist/v1/index.js"
+          },
+          "./package.json": "./package.json"
+        },
+        "type": "module"
+      },
+      "koffi/package.json": {
+        "name": "koffi",
+        "version": "3.3.6",
+        "main": "./index.cjs",
+        "exports": {
+          ".": {
+            "import": "./index.js",
+            "require": "./index.cjs",
+            "types": "./index.d.ts"
+          },
+          "./indirect": {
+            "import": "./indirect.js",
+            "require": "./indirect.cjs",
+            "types": "./index.d.ts"
+          }
+        },
+        "type": "module"
+      },
+      "@microsoft/mxc-sdk/node_modules/semver/package.json": {
+        "name": "semver",
+        "version": "7.8.5",
+        "main": "index.js"
+      },
+      "node-pty/package.json": {
+        "name": "node-pty",
+        "version": "1.1.0",
+        "main": "./lib/index.js"
+      },
+      "@koromix/koffi-win32-x64/package.json": {
+        "name": "@koromix/koffi-win32-x64",
+        "version": "3.3.6",
+        "main": "./index.js"
+      },
+      "@koromix/koffi-win32-arm64/package.json": {
+        "name": "@koromix/koffi-win32-arm64",
+        "version": "3.3.6",
+        "main": "./index.js"
+      }
+    },
+    "excludedPayloads": [
+      {
+        "category": "debug-symbols",
+        "pattern": "node-pty/prebuilds/win32-*/**/*.pdb",
+        "reason": "Debug symbols are not loaded by the runtime and are excluded from packaged native payloads."
+      }
+    ]
   }
 }
