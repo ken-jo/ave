@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { maxEgressGrantScope } from "../../../shared/sandbox-capability-info.js";
+import { assertSandboxWindowsExtensionPlan, maxEgressGrantScope } from "../../../shared/sandbox-capability-info.js";
 import {
   mxcShellCapability,
   planWindowsSandbox,
@@ -114,4 +114,58 @@ describe("Windows substrate helpers", () => {
     expect(maxEgressGrantScope("kernel-channel")).toBe("always");
     expect(maxEgressGrantScope("shared")).toBe("session");
   });
+});
+
+describe("independent holder backend selection", () => {
+  it.each([
+    [false, true, "checking", "none", "none", "checking"],
+    [false, true, "available", "none", "mxc", "ready"],
+    [true, false, "checking", "mxc", "none", "off"],
+    [true, false, "available", "mxc", "none", "off"],
+  ] as const)("keeps shell=%s extension=%s selection independent of extension %s", (shellRequested, workerRequested, state, shells, extensions, readiness) => {
+    const plan = planWindowsSandbox({ shellRequested, workerRequested, mxc: AVAILABLE,
+      extensionMxc: { state }, windowsBuild: BUILD, srtWinReady: false });
+    expect(plan.start).toBe("proxy-only");
+    expect(plan.substrate).toMatchObject({ shells, extensions, extensionPlan: { readiness, uiPolicy: "ui-enabled" } });
+    expect(windowsProxyOnlyCapability(plan.substrate).confines).toEqual({ filesystem: false, process: false, network: false });
+  });
+
+  it("does not derive extension readiness from a successful shell probe", () => {
+    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
+    expect(plan.substrate.extensionPlan).toMatchObject({ selectedBackend: "srt-win", readiness: "fallback", reason: "native-validation-required", fallbackVersion: "0.0.80" });
+  });
+
+  it("checks extensions without admitting a temporary fallback holder", () => {
+    const plan = planWindowsSandbox({ shellRequested: false, workerRequested: true, mxc: UNAVAILABLE,
+      extensionMxc: { state: "checking" }, windowsBuild: BUILD, srtWinReady: true });
+    expect(plan.substrate).toMatchObject({ shells: "none", extensions: "none", extensionPlan: { selectedBackend: "none", readiness: "checking" } });
+  });
+
+  it("refuses an unpinned fallback and any fallback below an admitted ancestor", () => {
+    const input = { shellRequested: false, workerRequested: true, mxc: UNAVAILABLE,
+      extensionMxc: { state: "unavailable", reason: "readiness-deadline" }, windowsBuild: BUILD, srtWinReady: true } as const;
+    expect(planWindowsSandbox({ ...input, fallbackVersion: "0.0.81" })).toMatchObject({ start: "none", substrate: { extensions: "none" } });
+    expect(planWindowsSandbox({ ...input, holderOrAncestorAdmitted: true }).substrate.extensionPlan).toMatchObject({ selectedBackend: "none", readiness: "rejected", reason: "ancestor-already-admitted" });
+  });
+});
+
+it("preserves deadline rejection, checking and off when no runtime can start", () => {
+  const input = { shellRequested: false, workerRequested: true, mxc: UNAVAILABLE,
+    windowsBuild: BUILD, srtWinReady: false } as const;
+  const deadline = planWindowsSandbox({ ...input, extensionMxc: { state: "unavailable", reason: "readiness-deadline" } }).substrate;
+  expect(deadline.extensionPlan).toMatchObject({ selectedBackend: "none", readiness: "rejected", reason: "readiness-deadline" });
+  expect(windowsSubstrateWithoutAsrt(deadline).extensionPlan).toEqual(deadline.extensionPlan);
+  const checking = windowsSubstrateFor({ ...input, extensionMxc: { state: "checking" } }, "none");
+  expect(windowsSubstrateWithoutAsrt(checking).extensionPlan).toMatchObject({ selectedBackend: "none", readiness: "checking" });
+  const off = windowsSubstrateFor({ ...input, workerRequested: false }, "none");
+  expect(windowsSubstrateWithoutAsrt(off).extensionPlan).toMatchObject({ selectedBackend: "none", readiness: "off" });
+});
+
+it("withdraws a selected fallback without retaining its selected-only version", () => {
+  const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+    mxc: UNAVAILABLE, srtWinReady: true, windowsBuild: BUILD });
+  expect(substrate.extensionPlan).toMatchObject({ selectedBackend: "srt-win", fallbackVersion: "0.0.80" });
+  const withdrawn = windowsSubstrateWithoutAsrt(substrate);
+  expect(withdrawn.extensionPlan).toMatchObject({ selectedBackend: "none", fallbackVersion: null, readiness: "unavailable" });
+  expect(() => assertSandboxWindowsExtensionPlan(withdrawn.extensionPlan)).not.toThrow();
 });

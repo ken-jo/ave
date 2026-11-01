@@ -8,7 +8,7 @@ export const MXC_FRAME_MAX_BYTES = 64 * 1024;
 export const MXC_STREAM_CHUNK_BYTES = 32 * 1024;
 
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
-type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" };
+type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" | "spawn-authorized" };
 type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
 type NativeObservedFrame = { type: "native-observed"; id: number };
@@ -35,7 +35,7 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
         || Buffer.byteLength(frame.data, "base64") > MXC_STREAM_CHUNK_BYTES) fail();
       fields = ["data"];
       break;
-    case "stdin-end": case "stop": case "creating": case "spawning": fields = []; break;
+    case "stdin-end": case "stop": case "creating": case "spawning": case "spawn-authorized": fields = []; break;
     case "native-created":
       if (typeof frame.processHandle !== "string" || !/^[1-9][0-9]{0,19}$/.test(frame.processHandle)
         || BigInt(frame.processHandle) >= 18446744073709551615n) fail();

@@ -158,6 +158,11 @@ Packaging requirements:
 
 ## 4. Host selection and readiness
 
+The shared selection/disclosure fields and admission API are documented in the
+[extension backend policy contract](windows-extension-policy-contract.md). Its
+plan is distinct from a process-active marker and retains native verification
+as a separate release gate.
+
 Current `windows-sandbox-plan.ts` makes MXC a candidate only for requested shells, assigns extensions `srt-win | none`, and keeps process-wide confinement false for proxy-only startup. The shared substrate type does not yet admit MXC extensions. Extend the planner and shared validators/producers/consumers together; do not merely mark ASRT globally active. [A13] [A17]
 
 Readiness is a conjunction, not a version/build predicate: verified installed SDK/DLL/addon; BaseContainer probe; dry-run of the exact holder request; actual SDK spawn under the intended runtime with the selected D3 UI policy and admitted cwd/env; stdin/stdout/stderr round-trip and clean termination; and the decided D2 endpoint-isolation probe (no peer-owner authentication claim). D3 requires UI enabled; ancestor query access and runtime start are now measured on the peer, but readiness must repeat them for each shipped holder/runtime instead of retrying with UI disabled. Probe deadline comes from a centralized `TOOL_TIMEOUT_POLICY` entry. On a readiness deadline, evaluate `fallbackReady := pinnedFallbackVersion == "0.0.80" && fallbackReadiness == "ready" for this boot/session && !holderOrAncestorAdmitted`. `holderOrAncestorAdmitted` includes any already-admitted owner/parent of the queued start. If `fallbackReady` is true, select that fallback before admitting any holder; otherwise reject the queued start. Do not initialize or wait for a fallback after the deadline. This predicate never authorizes a backend change for an already-admitted parent. Never leave a queued operation waiting indefinitely or silently execute it unconfined. Initial degraded-host behavior applies only after a settled no-backend plan. D1-dependent workers require the versioned stdio contract and a migrated client/runtime; the bridge failed the native gate. [A10] [A13] [A21]

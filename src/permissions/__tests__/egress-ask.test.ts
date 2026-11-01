@@ -162,7 +162,7 @@ describe("egress ask callback — attribution", () => {
     expect(audit).toHaveLength(1);
   });
 
-  it("offers strong scopes only to the host-owned shell lane on a shared host", async () => {
+  it("distinguishes host-owned listeners from shared labels and terminal scope", async () => {
     const platform = process.platform;
     setProcessPlatform("win32");
     answer = async () => ({ allow: true, scope: "once" });
@@ -181,7 +181,9 @@ describe("egress ask callback — attribution", () => {
       expect(egressIdentityStrength("shell", { identity: "listener" })).toBe("kernel-channel");
       expect(egressIdentityStrength("shell", { identity: "username" })).toBe("shared");
       expect(egressIdentityStrength("shell")).toBe("shared");
-      expect(egressIdentityStrength("extension", { identity: "listener" })).toBe("shared");
+      expect(egressIdentityStrength("extension", { identity: "listener" })).toBe("kernel-channel");
+      expect(egressIdentityStrength("extension", { identity: "username" })).toBe("shared");
+      expect(egressIdentityStrength("extension")).toBe("shared");
       expect(await ask({ host: "one.example", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
       expect(await ask({ host: "two.example", port: 443 }, { ...listener(OTHER_SHELL_TOKEN), identity: "username" })).toBe(true);
       expect(await ask({ host: "three.example", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);

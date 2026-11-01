@@ -171,3 +171,49 @@ $Evidence.retainedTempRemovalSafe
 # Run only when nothing spawned, or after confirming all recorded processes are dead.
 Remove-Item -LiteralPath $Evidence.temp -Recurse
 ```
+
+## Ancestor query and name-exposure acceptance
+
+Run this additional diagnostic from a standard-user Windows x64 interactive
+session after staging the pinned SDK and locked runtime. The runtime must meet
+native stdio requirements; no host installation or permission changes are made.
+From the checkout root in PowerShell:
+
+```powershell
+$Sdk = (Resolve-Path '.\node_modules\@microsoft\mxc-sdk').Path
+$Runtime = (Resolve-Path '.\node_modules\electron\dist\electron.exe').Path
+$Driver = (Resolve-Path '.\tools\mxc-probes\ancestor-exposure.mjs').Path
+$env:ELECTRON_RUN_AS_NODE = '1'
+try {
+  & $Runtime $Driver --sdk-root $Sdk --runtime $Runtime |
+    Tee-Object -FilePath '.\mxc-ancestor-exposure.jsonl'
+  if ($LASTEXITCODE -ne 0) { throw 'Ancestor exposure acceptance incomplete; retain observations' }
+} finally { $env:ELECTRON_RUN_AS_NODE = $null }
+```
+
+`measured` requires a positive host control, successful UI-enabled script entry,
+query-only ancestor grants on all involved volumes, identical read-only security
+descriptor snapshots, visible synthetic profile sibling names, and denied
+sibling/descendant file contents. The fixture records whether enumeration cascades
+into an ungranted sibling's nested directory; either visibility or an explicit
+refusal is an observation, never a promise that names are private. Root content
+grants are refused in policy; the fixture does not read arbitrary root files.
+The synthetic profile and markers are created only below this run's exact owned
+temp directory. Actual profile directories may still appear in the ancestor list
+when the OS temp tree is under the user profile. Descriptor snapshots cover the
+query list, not every object the OS manages. This diagnostic uses the pinned SDK
+request shape directly; it does not establish packaged holder activation.
+
+There are no ACL, registry, account, service or firewall mutations in the toolkit.
+SDK-managed container effects remain as described above. The probe starts one
+bounded host control and one bounded container, retains its exact temp tree for
+inspection, and never deletes it automatically. Use the existing exact-path
+cleanup procedure after process termination has been verified. A session-0,
+unsupported-enumeration, security-snapshot or baseline failure cannot pass.
+
+Portable harness checks:
+
+```sh
+node --test tools/mxc-probes/ancestor-exposure.test.mjs tools/mxc-probes/filesystem-policy.test.mjs tools/mxc-probes/probe-common.test.mjs
+node --check tools/mxc-probes/sdk-supervisor.mjs
+```

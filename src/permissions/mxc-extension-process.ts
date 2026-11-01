@@ -48,6 +48,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   private result: ProcessResult | undefined;
   private failure: Error | undefined;
   private lifecycleFailure: Error | undefined;
+  private creationRequested = false;
   private creationStarted = false;
   private spawnInvoked = false;
   private nativeId = 0;
@@ -61,7 +62,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   private resolveCompletion!: (result: ProcessResult) => void;
   private rejectCompletion!: (error: Error) => void;
 
-  constructor(private readonly child: ChildProcess, generation: string, key: Buffer, private readonly onLifecycle?: LifecycleObserver) {
+  constructor(private readonly child: ChildProcess, generation: string, key: Buffer, private readonly onLifecycle?: LifecycleObserver, private readonly beforeSpawn?: () => void) {
     if (!child.stdin || !child.stdout || !child.stderr || !child.stdio[3]) {
       child.kill();
       throw new MxcProcessContractError("Supervisor requires private standard streams");
@@ -120,11 +121,27 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
     for await (const frame of this.channel.frames()) {
       if (this.result || this.stopped || this.failureReceipt) throw new MxcProcessContractError("Supervisor sent data after termination");
       if (frame.type === "creating") {
-        if (this.creationStarted || this.id) throw new MxcProcessContractError("Duplicate supervisor creation receipt");
-        this.creationStarted = true;
+        if (this.creationRequested || this.id) throw new MxcProcessContractError("Duplicate supervisor creation receipt");
+        this.creationRequested = true;
         this.observe({ type: "creating" });
+        if (this.stopping || this.failure) continue;
+        try {
+          // The authenticated request arrives after native bootstrap and probing.
+          // Recheck admission synchronously; no asynchronous caller work may extend it.
+          const result: unknown = this.beforeSpawn?.();
+          if (result !== undefined) {
+            void Promise.resolve(result).catch(() => {});
+            throw new MxcProcessContractError("Extension admission check must be synchronous");
+          }
+        } catch (cause) {
+          this.fail(new MxcProcessContractError("Extension admission revalidation failed", { cause }));
+          continue;
+        }
+        if (this.stopping || this.failure) continue;
+        this.creationStarted = true;
+        await this.channel.send({ type: "spawn-authorized" });
       } else if (frame.type === "spawning") {
-        if (!this.creationStarted || this.spawnInvoked || this.id) throw new MxcProcessContractError("Unexpected supervisor spawning receipt");
+        if (!this.creationRequested || !this.creationStarted || this.spawnInvoked || this.id) throw new MxcProcessContractError("Unexpected supervisor spawning receipt");
         this.spawnInvoked = true;
         this.observe({ type: "spawning" });
       } else if (frame.type === "native-created") {
@@ -221,18 +238,19 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
 }
 
 async function spawnWith(request: ContainerRequest, nodeModules: string, entry: string,
-  spawn: (entry: string, nodeModules: string, generation: string) => ChildProcess, signal?: AbortSignal, onLifecycle?: LifecycleObserver): Promise<OwnedMxcExtensionProcess> {
+  spawn: (entry: string, nodeModules: string, generation: string) => ChildProcess, signal?: AbortSignal, onLifecycle?: LifecycleObserver, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void): Promise<OwnedMxcExtensionProcess> {
   assertMxcExtensionRequest(request);
   if (signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
   const generation = randomBytes(32).toString("hex"), key = randomBytes(32);
   const child = spawn(entry, nodeModules, generation);
-  const owned = new SupervisedMxcProcess(child, generation, key, onLifecycle);
+  const owned = new SupervisedMxcProcess(child, generation, key, onLifecycle, beforeSpawn);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let startupAbort: (() => void) | undefined;
   const abort = (): void => { void owned.dispose().catch(() => {}); };
   signal?.addEventListener("abort", abort, { once: true });
   void owned.completion.finally(() => signal?.removeEventListener("abort", abort)).catch(() => {});
   try {
+    onOwned?.(owned);
     if (child.pid !== undefined) notifyLifecycle(onLifecycle, { type: "supervisor-started", pid: child.pid });
     if (signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
     await Promise.race([
@@ -263,8 +281,12 @@ async function spawnWith(request: ContainerRequest, nodeModules: string, entry: 
   }
 }
 
-/** The caller supplies an already-admitted immutable plan; no holder is wired here. */
-export async function spawnMxcExtensionProcess(request: ContainerRequest, options: { signal?: AbortSignal; onLifecycle?: LifecycleObserver } = {}): Promise<OwnedMxcExtensionProcess> {
+/** The caller supplies an already-admitted immutable plan. beforeSpawn synchronously
+ * revalidates its identities after native readiness; onOwned retains cleanup ownership
+ * before startup begins, including when startup rejects with unverified cleanup.
+ */
+
+export async function spawnMxcExtensionProcess(request: ContainerRequest, options: { signal?: AbortSignal; onLifecycle?: LifecycleObserver; beforeSpawn?: () => void; onOwned?: (owned: OwnedMxcExtensionProcess) => void } = {}): Promise<OwnedMxcExtensionProcess> {
   if (process.platform !== "win32") throw new MxcCapabilityUnavailableError("Native extension processes require Windows");
   const resources = getHostResources();
   if (!resources.isPackaged) throw new MxcCapabilityUnavailableError("Native extension processes require a verified packaged installation");
@@ -274,7 +296,7 @@ export async function spawnMxcExtensionProcess(request: ContainerRequest, option
   // is a separate sealed request and never inherits the supervisor's environment.
   return spawnWith(request, nodeModules, entry, (file, modules, generation) => spawnManaged(process.execPath, [file, modules, generation], {
     env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }), cwd: resources.resourcePath, stdio: ["pipe", "pipe", "pipe", "pipe"],
-  }, { label: "extension-native-supervisor" }), options.signal, options.onLifecycle);
+  }, { label: "extension-native-supervisor" }), options.signal, options.onLifecycle, options.beforeSpawn, options.onOwned);
 }
 
 export const _spawnMxcExtensionProcessForTest = spawnWith;

@@ -25,3 +25,11 @@ export class MxcCapabilityUnavailableError extends Error {
     this.name = "MxcCapabilityUnavailableError";
   }
 }
+
+export class WorkerTransportUnsupportedError extends Error {
+  readonly code = "worker-transport-unsupported";
+  constructor() {
+    super("Selected container backend requires native streams; workers require stdio control v1. Update the process adapter and its client before starting it");
+    this.name = "WorkerTransportUnsupportedError";
+  }
+}

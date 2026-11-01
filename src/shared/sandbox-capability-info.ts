@@ -232,20 +232,74 @@ export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGra
 }
 
 /** Why Microsoft Execution Containers cannot carry agent shells on this host (`mxc-windows.ts`). */
-export type SandboxMxcUnavailableReason =
-  | "not-windows"
-  | "unsupported-arch"
-  | "binary-missing"
-  | "probe-failed"
-  | "tier-unsupported"
-  | "request-rejected"
-  /** The shipped launcher's sha256 is not the pinned one (`mxc-launcher-pins.json`). */
-  | "launcher-mismatch"
-  /** Windows PowerShell 5.1 did not start inside a real container on this host. */
-  | "powershell-start-failed"
-  /** It failed to initialize its UI subsystem (`STATUS_DLL_INIT_FAILED`), which a non-interactive session
-   * (a service, SSH) causes: whether it starts for the signed-in user is unverified, so MXC is not claimed. */
-  | "unverified-session";
+const MXC_UNAVAILABLE_REASONS = {
+  "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true,
+  "tier-unsupported": true, "request-rejected": true,
+  /** Installed launcher integrity does not match its pin. */
+  "launcher-mismatch": true,
+  "powershell-start-failed": true,
+  /** An interactive runtime start has not been established. */
+  "unverified-session": true,
+} as const;
+export type SandboxMxcUnavailableReason = keyof typeof MXC_UNAVAILABLE_REASONS;
+
+/** A plan is selection evidence, never proof that a particular process has started. */
+export interface SandboxWindowsExtensionPlan {
+  readonly requestedBackend: "mxc" | "none";
+  readonly selectedBackend: "mxc" | "srt-win" | "none";
+  readonly readiness: "off" | "checking" | "ready" | "fallback" | "unavailable" | "rejected";
+  readonly reason: SandboxWindowsExtensionReason;
+  readonly fallbackVersion: "0.0.80" | null;
+  /** Requested container posture; UI/ancestor fields do not describe fallback confinement. */
+  readonly uiPolicy: "ui-enabled";
+  readonly egressIdentity: EgressIdentityStrength;
+  /** Endpoint scoping does not authenticate the host process owning that endpoint. */
+  readonly proxyOwnerVerified: false;
+  readonly hostLoopback: "bidirectional";
+  readonly inboundProtection: "host-firewall";
+  readonly dnsProtection: "host-resolver";
+  readonly ancestorAccess: "query-enumerate-only";
+  /** Enumeration may reveal profile sibling names; descendant reach needs native measurement. */
+  readonly ancestorNameExposure: true;
+}
+
+const WINDOWS_EXTENSION_REASONS = {
+  ...MXC_UNAVAILABLE_REASONS,
+  "not-requested": true, "native-validation-required": true, checking: true, ready: true,
+  "readiness-deadline": true, "ancestor-policy-unsupported": true, "runtime-start-failed": true,
+  "endpoint-isolation-unverified": true, "bash-incompatible": true, "ancestor-already-admitted": true,
+  "runtime-unavailable": true,
+} as const;
+export type SandboxWindowsExtensionReason = keyof typeof WINDOWS_EXTENSION_REASONS;
+
+/** Validate snapshots before they cross the capability publication boundary. */
+export function assertSandboxWindowsExtensionPlan(value: unknown): asserts value is SandboxWindowsExtensionPlan {
+  const fail = (): never => { throw new Error("Invalid Windows extension backend plan"); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail();
+  const plan = value as SandboxWindowsExtensionPlan;
+  const keys: readonly (keyof SandboxWindowsExtensionPlan)[] = ["requestedBackend", "selectedBackend", "readiness", "reason", "fallbackVersion",
+    "uiPolicy", "egressIdentity", "proxyOwnerVerified", "hostLoopback", "inboundProtection", "dnsProtection", "ancestorAccess", "ancestorNameExposure"];
+  if (Object.keys(plan).length !== keys.length || Object.keys(plan).some(key => !keys.includes(key as keyof SandboxWindowsExtensionPlan))
+      || !Object.hasOwn(WINDOWS_EXTENSION_REASONS, plan.reason)
+      || plan.uiPolicy !== "ui-enabled" || plan.proxyOwnerVerified !== false || plan.hostLoopback !== "bidirectional"
+      || plan.inboundProtection !== "host-firewall" || plan.dnsProtection !== "host-resolver"
+      || plan.ancestorAccess !== "query-enumerate-only" || plan.ancestorNameExposure !== true) fail();
+  if (plan.readiness === "off") {
+    if (plan.requestedBackend !== "none" || plan.selectedBackend !== "none" || plan.reason !== "not-requested") fail();
+  } else {
+    if (plan.requestedBackend !== "mxc") fail();
+    switch (plan.readiness) {
+      case "checking": if (plan.selectedBackend !== "none" || plan.reason !== "checking") fail(); break;
+      case "ready": if (plan.selectedBackend !== "mxc" || plan.reason !== "ready") fail(); break;
+      case "fallback": if (plan.selectedBackend !== "srt-win" || ["not-requested", "checking", "ready", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
+      case "unavailable": if (plan.selectedBackend !== "none" || ["not-requested", "checking", "ready", "readiness-deadline", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
+      case "rejected": if (plan.selectedBackend !== "none" || !["readiness-deadline", "ancestor-already-admitted", "request-rejected"].includes(plan.reason)) fail(); break;
+      default: fail();
+    }
+  }
+  if (plan.fallbackVersion !== (plan.selectedBackend === "srt-win" ? "0.0.80" : null)
+      || plan.egressIdentity !== (plan.selectedBackend === "mxc" ? "kernel-channel" : "shared")) fail();
+}
 
 /** Windows only: which substrate carries each kind of process this boot, and how strongly their egress is attributed. Sealed at boot, like the gate. */
 export interface SandboxWindowsSubstrateInfo {
@@ -263,7 +317,9 @@ export interface SandboxWindowsSubstrateInfo {
    * an ordinary process after a per-command approval (`approved-host`), or without the sandbox at all (`none`). */
   readonly shells: "mxc" | "approved-host" | "none";
   /** Plugin processes: under srt-win's shared account, or not confined. */
-  readonly extensions: "srt-win" | "none";
+  readonly extensions: "mxc" | "srt-win" | "none";
+  /** Absent only in older snapshots; absence cannot establish MXC readiness. New boot producers always set it. */
+  readonly extensionPlan?: SandboxWindowsExtensionPlan;
   readonly shellEgressIdentity: EgressIdentityStrength;
   readonly extensionEgressIdentity: EgressIdentityStrength;
 }

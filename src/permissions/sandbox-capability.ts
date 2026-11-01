@@ -1,11 +1,13 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
+import { assertSandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   SandboxBootOutcome,
   SandboxConfinement,
   SandboxWindowsSubstrateInfo,
+  SandboxWindowsExtensionPlan,
 } from "../shared/sandbox-capability-info.js";
 import {
   buildHostShellExecutionPlan,
@@ -147,7 +149,23 @@ export function setWindowsSandboxSubstrate(
   if (info.shells !== "mxc" && mxcShellCapability !== undefined) {
     throw new Error("setWindowsSandboxSubstrate: an MXC shell capability needs shells: \"mxc\"");
   }
-  _windowsSubstrate = Object.freeze({ ...info, mxc: Object.freeze({ ...info.mxc }) });
+  if (info.extensionPlan !== undefined) assertSandboxWindowsExtensionPlan(info.extensionPlan);
+  if (!["mxc", "approved-host", "none"].includes(info.shells) || !["mxc", "srt-win", "none"].includes(info.extensions)
+      || info.shellEgressIdentity !== (info.shells === "mxc" ? "kernel-channel" : "shared")) {
+    throw new Error("setWindowsSandboxSubstrate: invalid substrate or shell egress identity");
+  }
+  if (info.extensions === "mxc" && (info.extensionPlan?.selectedBackend !== "mxc" || info.extensionPlan.readiness !== "ready")) {
+    throw new Error("setWindowsSandboxSubstrate: MXC extensions require dedicated ready request evidence");
+  }
+  if (info.extensionPlan !== undefined && info.extensionPlan.selectedBackend !== info.extensions) {
+    throw new Error("setWindowsSandboxSubstrate: extension plan contradicts the selected substrate");
+  }
+  if (info.extensionEgressIdentity !== (info.extensions === "mxc" ? "kernel-channel" : "shared")) {
+    throw new Error("setWindowsSandboxSubstrate: extension egress identity contradicts the selected substrate");
+  }
+  _windowsSubstrate = Object.freeze({ ...info, mxc: Object.freeze({ ...info.mxc }),
+    ...(info.extensionPlan ? { extensionPlan: Object.freeze({ ...info.extensionPlan }) } : {}),
+  });
   _mxcShellCapability = mxcShellCapability === undefined ? undefined : Object.freeze({ ...mxcShellCapability });
   _sandboxGeneration += 1;
 }
@@ -155,6 +173,11 @@ export function setWindowsSandboxSubstrate(
 // What boot recorded for Windows, or null (off Windows, or before the gate ran).
 export function getWindowsSandboxSubstrate(): SandboxWindowsSubstrateInfo | null {
   return _windowsSubstrate;
+}
+
+/** Selected extension plan; absent records confer no MXC authority. Per-process markers remain mandatory. */
+export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | undefined {
+  return _windowsSubstrate?.extensionPlan;
 }
 
 // The capability of a Bash/PowerShell tool command launched in an MXC container, or undefined when that route is not live: MXC carries the shells this boot, the shell sandbox was requested, and the process-wide ASRT runtime (whose proxy the containers reach) is still published.
@@ -209,6 +232,13 @@ export function detectShellSandboxCapability(): SandboxCapability {
 }
 // The OS sandbox extension processes (plugin workers, plugin children, plugin hooks, MCP stdio servers) get when wrapped: the ASRT capability when plugin-worker confinement was requested at boot, `none` otherwise — including when ASRT is active only for the shell sandbox. A per-process claim still needs that process's wrapped registry (resolveReviewerSandboxCapability); this is the scope-level view the settings surface reports.
 export function detectPluginWorkerSandboxCapability(): SandboxCapability {
+  if (_pluginWorkerConfinementRequestedAtBoot && _windowsSubstrate?.extensions === "mxc") {
+    return {
+      kind: "none", confidence: "verified", platform: process.platform,
+      reason: "container selection requires each extension process's native spawn and transport evidence",
+      confines: { filesystem: false, process: false, network: false },
+    };
+  }
   if (_pluginWorkerConfinementRequestedAtBoot && _windowsSubstrate?.extensions === "none" && _activeCapability !== undefined) {
     // Windows with ASRT running as the MXC shells' proxy only: there is no substrate that confines plugin processes this boot.
     return {
@@ -216,8 +246,7 @@ export function detectPluginWorkerSandboxCapability(): SandboxCapability {
       confidence: "verified",
       platform: process.platform,
       reason:
-        "extension confinement needs the one-time Windows sandbox install (srt-win); " +
-        "Microsoft Execution Containers confine agent shells only",
+        "extension confinement is unavailable for the selected runtime/request; no per-holder isolation is established",
     };
   }
   if (_pluginWorkerConfinementRequestedAtBoot) return detectSandboxCapability();
@@ -381,6 +410,13 @@ export const HOST_TERMINAL_SANDBOX_CAPABILITY: SandboxCapability = Object.freeze
   confines: Object.freeze({ filesystem: false, process: false, network: false }),
 });
 
+// Legacy wrap markers do not establish a native container spawn or transport handshake.
+function detectMarkedExtensionCapability(): SandboxCapability {
+  return _windowsSubstrate?.extensions === "mxc"
+    ? detectPluginWorkerSandboxCapability()
+    : detectSandboxCapability();
+}
+
 export function resolveReviewerSandboxCapability(
   source: ToolSource,
   toolName: string,
@@ -411,7 +447,7 @@ export function resolveReviewerSandboxCapability(
     workerId !== undefined &&
     isPluginWorkerWrapped(pluginId, workerId)
   ) {
-    const active = detectSandboxCapability();
+    const active = detectMarkedExtensionCapability();
     if (active.kind === "asrt") {
       return {
         ...active,
@@ -425,7 +461,7 @@ export function resolveReviewerSandboxCapability(
     pluginId !== undefined &&
     isPluginChildConfined(pluginId)
   ) {
-    const active = detectSandboxCapability();
+    const active = detectMarkedExtensionCapability();
     if (active.kind === "asrt") {
       return {
         ...active,
@@ -435,7 +471,7 @@ export function resolveReviewerSandboxCapability(
   }
   // External server confinement needs both its successful local wrap record and the still-live verified published capability; teardown or missing markers returns none without renderer-unsafe runtime imports.
   if (source === "mcp" && mcpServerId !== undefined && isMcpServerWrapped(mcpServerId)) {
-    const active = detectSandboxCapability();
+    const active = detectMarkedExtensionCapability();
     if (active.kind === "asrt") {
       return {
         ...active,

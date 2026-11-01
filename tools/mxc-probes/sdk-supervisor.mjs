@@ -1,6 +1,6 @@
 import { spawn as spawnHost } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, copyFile, readFile, realpath, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import http from "node:http";
 import path from "node:path";
@@ -9,6 +9,8 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { captureChild, safeEnvironment, spawnWithoutTelemetry, windowsQuote } from "./probe-common.mjs";
 
 import { assertEnumerationSupport, buildProbeFilesystem, filesystemObservation, recordFilesystemObservation } from "./filesystem-policy.mjs";
+import { runEgressPolicyProbe } from "./egress-policy-run.mjs";
+import { evaluateAncestorExposure } from "./ancestor-exposure-results.mjs";
 import { finishProcess, pinRuntimeProcesses, ProcessIdentityError } from "./process-lifecycle.mjs";
 
 const { name, options, budgets, temp } = JSON.parse(process.env.MXC_PROBE_INPUT);
@@ -45,7 +47,17 @@ async function initialize() {
   const getTimes = kernel.func("bool __stdcall GetProcessTimes(void *, _Out_ uint64_t *, _Out_ uint64_t *, _Out_ uint64_t *, _Out_ uint64_t *)");
   const getImage = kernel.func("bool __stdcall QueryFullProcessImageNameW(void *, uint32_t, void *, _Inout_ uint32_t *)");
   const getTime = kernel.func("void __stdcall GetSystemTimePreciseAsFileTime(_Out_ uint64_t *)");
+  const security = koffi.load(path.join(process.env.SYSTEMROOT, "System32", "advapi32.dll"));
+  const getFileSecurity = security.func("bool __stdcall GetFileSecurityW(str16, uint32_t, void *, uint32_t, _Out_ uint32_t *)");
   native = {
+    descriptor(directory) {
+      const bytes = Buffer.alloc(65536), length = [0];
+      if (!getFileSecurity(directory, 7, bytes, bytes.length, length) || !length[0] || length[0] > bytes.length) {
+        throw new Error("Cannot snapshot directory security descriptor");
+      }
+      return bytes.subarray(0, length[0]).toString("hex");
+    },
+
     now() { const value = [0n]; getTime(value); return BigInt(value[0]); },
     identity(handle) {
       const created = [0n], exited = [0n], kernelTime = [0n], userTime = [0n];
@@ -177,7 +189,50 @@ async function lifetime() {
   }
 }
 
+async function ancestorExposure() {
+  // All synthetic profile data remains below this run's owned temp directory.
+  const profile = path.join(temp, "profiles", "sample"), sibling = path.join(profile, "Documents");
+  const holder = path.join(profile, "Temp", "holder"), descendant = path.join(sibling, "nested");
+  await mkdir(holder, { recursive: true });
+  await mkdir(descendant, { recursive: true });
+  await writeFile(path.join(sibling, "sibling-name.txt"), "host-only-marker");
+  await writeFile(path.join(descendant, "descendant-name.txt"), "descendant-marker");
+  const entry = path.join(holder, "child-payload.mjs");
+  await copyFile(new URL("./child-payload.mjs", import.meta.url), entry);
+  const fixture = { directories: { profile, sibling, descendant }, files: {
+    siblingContent: path.join(sibling, "sibling-name.txt"), descendantContent: path.join(descendant, "descendant-name.txt"),
+  } };
+  const args = [entry, "ancestor-exposure", String(ioBudget), JSON.stringify(fixture)];
+  const baseline = await captureChild(spawnHost(options.runtime, args, {
+    cwd: holder, env: safeEnvironment(holder), stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+  }), deadline);
+  if (baseline.code !== 0 || baseline.timedOut) throw new Error("Exposure host control failed");
+  const host = JSON.parse(baseline.stdout.trim());
+  if (host.observations.siblingContent.contents !== "host-only-marker"
+    || host.observations.descendantContent.contents !== "descendant-marker") throw new Error("Exposure fixture control missing");
+  const policy = buildProbeFilesystem(options.runtime, holder, process.env.SYSTEMROOT);
+  if (policy.enumeratePaths.length > 64) throw new Error("Exposure fixture ancestor limit exceeded");
+  const before = policy.enumeratePaths.map((directory) => [directory, native.descriptor(directory)]);
+  const config = request(options.runtime, args, false);
+  config.workingDirectory = holder;
+  config.environment = safeEnvironment(holder);
+  config.filesystem = policy.filesystem;
+  config.containment.config.filesystem.enumeratePaths = policy.enumeratePaths;
+  if (sdk.probe(config).needsDaclAugmentation !== false) throw new Error("No-augmentation policy is unverified");
+  const child = await launch(config, "script-file");
+  const result = await finish(child);
+  const after = policy.enumeratePaths.map((directory) => [directory, native.descriptor(directory)]);
+  if (result.exitCode !== 0) throw new Error(`Exposure fixture failed: ${result.stderr}`);
+  const measured = JSON.parse(result.stdout.trim());
+  const descriptorUnchanged = JSON.stringify(before) === JSON.stringify(after);
+  return { filesystemPolicy: child.filesystemPolicy, hostControl: host, measured,
+    descriptorUnchanged, descriptorSnapshots: { before, after },
+    ...evaluateAncestorExposure(host, measured, descriptorUnchanged),
+    rootContentGrants: false, actualUserProfileEnumeratedByFixture: false };
+}
+
 async function kernelObjects() {
+
   const source = fileURLToPath(new URL("./kernel-objects.cs", import.meta.url));
   const executable = path.join(temp, "kernel-objects.exe");
   await copyFile(source, path.join(temp, "kernel-objects.cs"));
@@ -229,7 +284,16 @@ try {
   } else if (name === "stdio-lifetime") {
     const result = await lifetime(); details.push(result);
     if (!result.processDead || !result.grandchildDead) verdict = "inconclusive";
+  } else if (name === "egress-policy") {
+    const results = await runEgressPolicyProbe({ launch, request, temp, ioBudget, observation, bounded });
+    details.push(...results);
+    if (!results.length || results.some((result) => result.accepted !== true)) verdict = "inconclusive";
+  } else if (name === "ancestor-exposure") {
+
+    const result = await ancestorExposure(); details.push(result);
+    if (!result.accepted) verdict = "inconclusive";
   } else if (name === "kernel-objects") {
+
     details.push(await kernelObjects());
     // Partial reach measurements cannot certify the unresolved non-file-object security contract.
     verdict = "inconclusive";

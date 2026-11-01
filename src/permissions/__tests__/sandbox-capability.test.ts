@@ -727,3 +727,43 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     expect(plan.requiresExplicitUserApproval).toBe(true);
   });
 });
+
+describe("extension selection is not per-process confinement evidence", () => {
+  afterEach(() => {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    __resetWindowsSandboxSubstrateForTest();
+  });
+
+  it("does not borrow the account backend's dimensions for selected container extensions", () => {
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32",
+      reason: "account backend active", confines: { filesystem: true, process: false, network: true } });
+    const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+      mxc: { state: "available" }, extensionMxc: { state: "available" },
+      windowsBuild: null, srtWinReady: true });
+    setWindowsSandboxSubstrate(substrate);
+    expect(detectPluginWorkerSandboxCapability()).toMatchObject({ kind: "none", confines: { filesystem: false, process: false, network: false } });
+    markPluginWorkerWrapped("sample", "worker");
+    try {
+      expect(resolveReviewerSandboxCapability("plugin", "query", undefined, "worker", "sample").kind).toBe("none");
+    } finally { unmarkPluginWorkerWrapped("sample", "worker"); }
+  });
+
+  it("rejects a container extension claim without dedicated ready evidence", () => {
+    const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+      mxc: { state: "available" }, windowsBuild: null, srtWinReady: true });
+    expect(() => setWindowsSandboxSubstrate({ ...substrate, extensions: "mxc" })).toThrow(/dedicated ready request evidence/);
+  });
+});
+
+it("rejects serialized extension posture and outer egress contradictions at publication", () => {
+  const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+    mxc: { state: "available" }, extensionMxc: { state: "available" },
+    windowsBuild: null, srtWinReady: false });
+  expect(() => setWindowsSandboxSubstrate({ ...substrate, extensionEgressIdentity: "shared" })).toThrow(/extension egress identity/);
+  expect(() => setWindowsSandboxSubstrate({ ...substrate, shellEgressIdentity: "kernel-channel" })).toThrow(/shell egress identity/);
+  const malformed = JSON.parse(JSON.stringify(substrate)) as typeof substrate;
+  Object.assign(malformed.extensionPlan!, { proxyOwnerVerified: true });
+  expect(() => setWindowsSandboxSubstrate(malformed)).toThrow(/Invalid Windows extension backend plan/);
+});

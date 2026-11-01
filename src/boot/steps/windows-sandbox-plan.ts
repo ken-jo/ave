@@ -7,6 +7,9 @@ import type {
   SandboxWindowsSubstrateInfo,
 } from "../../shared/sandbox-capability-info.js";
 
+import SRT_WIN_PINS from "../../permissions/srt-win-pins.json" with { type: "json" };
+import { planWindowsExtensionHolder, type WindowsExtensionMxcState } from "../../permissions/mxc-extension-readiness.js";
+
 type WindowsAsrtStart = "srt-win" | "proxy-only" | "none";
 
 type WindowsMxcState =
@@ -19,6 +22,11 @@ export interface WindowsSandboxPlanInputs {
   readonly workerRequested: boolean;
   /** While the post-boot shell probe is checking, prepare the proxy but do not use container shells yet. */
   readonly mxc: WindowsMxcState;
+  /** Dedicated SDK/request readiness; a successful shell launcher probe cannot supply this evidence. */
+  readonly extensionMxc?: WindowsExtensionMxcState;
+  /** Readiness must belong to this boot, and the installed fallback must have the exact version. */
+  readonly fallbackVersion?: string;
+  readonly holderOrAncestorAdmitted?: boolean;
   readonly windowsBuild: string | null;
   /** ASRT's Windows dependency check passed (srt-win provisioned, WFP fence usable). */
   readonly srtWinReady: boolean;
@@ -30,25 +38,32 @@ export interface WindowsSandboxPlan {
 }
 
 export function planWindowsSandbox(input: WindowsSandboxPlanInputs): WindowsSandboxPlan {
-  const start: WindowsAsrtStart = input.srtWinReady ? "srt-win" : mxcCandidate(input) ? "proxy-only" : "none";
+  const fallbackReady = input.srtWinReady && (input.fallbackVersion ?? SRT_WIN_PINS.version) === "0.0.80";
+  const start: WindowsAsrtStart = fallbackReady ? "srt-win" : mxcCandidate(input) ? "proxy-only" : "none";
   return { start, substrate: windowsSubstrateFor(input, start) };
 }
 
 function mxcCandidate(input: WindowsSandboxPlanInputs): boolean {
-  return input.mxc.state !== "unavailable" && input.shellRequested;
+  return (input.mxc.state !== "unavailable" && input.shellRequested)
+    || (input.workerRequested && input.extensionMxc !== undefined && input.extensionMxc.state !== "unavailable");
 }
 
 /** Retry failed session setup as proxy-only only while container shells remain a candidate and none has run. */
 export function canRetryWindowsAsProxyOnly(input: WindowsSandboxPlanInputs, started: WindowsAsrtStart): boolean {
-  return started === "srt-win" && mxcCandidate(input);
+  return started === "srt-win" && input.holderOrAncestorAdmitted !== true && mxcCandidate(input);
 }
 
 /** A failed probe on proxy-only boot keeps the proxy running; shells use the approved host route. */
 export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: WindowsAsrtStart): SandboxWindowsSubstrateInfo {
   const shells: SandboxWindowsSubstrateInfo["shells"] =
     started === "none" || !input.shellRequested ? "none" : input.mxc.state === "available" ? "mxc" : "approved-host";
-  const extensions: SandboxWindowsSubstrateInfo["extensions"] =
-    started === "srt-win" && input.workerRequested ? "srt-win" : "none";
+  const extensionPlan = planWindowsExtensionHolder({
+    requested: input.workerRequested,
+    mxc: input.extensionMxc ?? { state: "unavailable", reason: "native-validation-required" },
+    fallback: { version: input.fallbackVersion ?? SRT_WIN_PINS.version, ready: started === "srt-win" && input.srtWinReady },
+    holderOrAncestorAdmitted: input.holderOrAncestorAdmitted ?? false,
+  });
+  const extensions = started === "none" ? "none" : extensionPlan.selectedBackend;
   return {
     mxc: input.mxc.state === "unavailable" ? { state: "unavailable", reason: input.mxc.reason } : { state: input.mxc.state },
     windowsBuild: input.windowsBuild,
@@ -56,12 +71,17 @@ export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: Wi
     shells,
     extensions,
     shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared",
-    extensionEgressIdentity: "shared",
+    extensionEgressIdentity: extensions === "mxc" ? "kernel-channel" : "shared",
+    extensionPlan: started === "none" && extensionPlan.selectedBackend !== "none" ? { ...extensionPlan, selectedBackend: "none", readiness: "unavailable", reason: "runtime-unavailable", fallbackVersion: null, egressIdentity: "shared" } : extensionPlan,
   };
 }
 
 export function windowsSubstrateWithoutAsrt(substrate: SandboxWindowsSubstrateInfo): SandboxWindowsSubstrateInfo {
-  return { ...substrate, shells: "none", extensions: "none", shellEgressIdentity: "shared" };
+  return { ...substrate, shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+    ...(substrate.extensionPlan ? { extensionPlan: substrate.extensionPlan.selectedBackend === "none"
+      ? substrate.extensionPlan
+      : { ...substrate.extensionPlan, selectedBackend: "none", readiness: "unavailable", reason: "runtime-unavailable", fallbackVersion: null, egressIdentity: "shared" } } : {}),
+  };
 }
 
 /** Container confinement covers processes and outbound connections, not DNS signaling or inbound traffic. */
@@ -93,7 +113,7 @@ export function windowsProxyOnlyCapability(substrate?: SandboxWindowsSubstrateIn
     platform: "win32",
     reason:
       `Proxy only — ${shellReason}; ` +
-      "nothing else is confined (extension confinement needs the one-time Windows sandbox install)",
+      "extension confinement is selected separately for each admitted holder",
     confines: { filesystem: false, process: false, network: false },
   };
 }

@@ -493,6 +493,8 @@ async function detectWindowsBootInputs(
     shellRequested,
     workerRequested,
     mxc: mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
+    // Shell startup never certifies the separate installed SDK/request/endpoint native gate.
+    extensionMxc: { state: "unavailable", reason: "native-validation-required" },
     windowsBuild: mxc.windowsBuild,
     srtWinReady,
   };

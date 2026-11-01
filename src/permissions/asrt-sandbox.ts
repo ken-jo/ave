@@ -1,5 +1,8 @@
 
 
+import { MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
+import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
+import type { ShellFilesystemPolicy } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { spawn } from "node:child_process";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
@@ -39,6 +42,7 @@ export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
 import {
+  getWindowsExtensionBackendPlan,
   isPluginWorkerConfinementRequestedAtBoot,
   isShellSandboxRequestedAtBoot,
 } from "./sandbox-capability.js";
@@ -605,6 +609,96 @@ function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted:
   };
 }
 
+/** Admit only this holder's roots. This path never consults live account grants or changes host ACLs. */
+export function admitMxcExtensionFilesystem(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership): {
+  readonly policy: ShellFilesystemPolicy;
+  readonly assertStillValid: () => void;
+} {
+  if (process.platform !== "win32") throw new Error("Container filesystem admission requires win32");
+  if (filesystem.allowRead === undefined || filesystem.allowWrite === undefined) {
+    throw new Error("Container filesystem admission requires explicit holder read and write roots");
+  }
+  const lexicalNamespaces = [...pluginOwnedReadRoots(), resolvePluginPaths().cacheRoot, ...appOwnedSandboxPrivateRoots()];
+  const namespacePins = pinWindowsFilesystemConfig<Partial<FilesystemConfig>>({ allowRead: lexicalNamespaces, allowWrite: [] });
+  const namespaceRoots = [...lexicalNamespaces, ...windowsPinnedPaths(namespacePins.allowRead ?? [])];
+  assertMxcExtensionFilesystemOwnership({ ...filesystem, allowRead: filesystem.allowRead, allowWrite: filesystem.allowWrite,
+    pluginNamespaceRoots: namespaceRoots, ownership });
+  const ownershipPins = ownership === undefined ? undefined : pinWindowsFilesystemConfig<Partial<FilesystemConfig>>({
+    allowRead: [...ownership.readRoots, ...ownership.hostStorageRoots], allowWrite: [...ownership.writeRoots],
+  });
+  const pinnedOwnership = ownershipPins === undefined ? undefined : {
+    readRoots: windowsPinnedPaths((ownershipPins.allowRead ?? []).slice(0, ownership?.readRoots.length ?? 0)),
+    hostStorageRoots: windowsPinnedPaths((ownershipPins.allowRead ?? []).slice(ownership?.readRoots.length ?? 0)),
+    writeRoots: windowsPinnedPaths(ownershipPins.allowWrite ?? []),
+  };
+  const admitted = admitFilesystemPolicy({
+    allowRead: [...filesystem.allowRead], allowWrite: [...filesystem.allowWrite],
+    denyRead: [...(filesystem.denyRead ?? []), ...(_baseTrustedSettings?.denyRead ?? [])],
+    denyWrite: [...(filesystem.denyWrite ?? []), ...(_baseTrustedSettings?.denyWrite ?? [])],
+  });
+  const pinned = admittedWindowsPolicies.get(admitted);
+  if (pinned === undefined) throw new Error("Container filesystem admission has no pinned identity");
+  if ([pinned.allowRead, pinned.allowWrite].some(entries => entries !== undefined && existingWindowsGrants(entries).length !== entries.length)) {
+    throw new Error("Container filesystem grant target is missing");
+  }
+  if ([...admitted.allowRead, ...admitted.allowWrite].some(path => win32.parse(path).root === win32.normalize(path))) {
+    throw new Error("Container filesystem volume roots permit query access only");
+  }
+  assertMxcExtensionFilesystemOwnership({ allowRead: admitted.allowRead, allowWrite: admitted.allowWrite,
+    pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
+  const floor = getProtectedReadDenyPaths();
+  const pierces = filesystem.floorPierces ?? [];
+  const sensitiveWriteDenies = getDefaultSensitiveWriteDenyPaths();
+  const mandatory = buildMandatorySandboxWritePolicy(
+    pinned.allowWrite ?? [], _baseTrustedSettings?.userDataDir,
+    sensitiveWriteDenies, sensitiveWriteDenies.filter(path => isAbsolute(path) && !containsGlobCharsWin(path)),
+  );
+  // Pattern denies cannot be represented by a fixed literal container policy, including future matches.
+  const literalDenies = (entries: readonly FilesystemPathEntry[]): readonly string[] => [...new Set(entries.flatMap(entry => {
+    const raw = typeof entry === "string" ? entry : entry.path;
+    if (/^\/(?!\/)/.test(raw)) return [];
+    const expanded = expandLeadingTilde(expandWindowsEnvRefs(raw));
+    if (containsGlobCharsWin(expanded) || !win32.isAbsolute(expanded) || isUncPath(expanded)) {
+      throw new Error("Container filesystem deny cannot be represented literally");
+    }
+    const literal = win32.normalize(expanded);
+    try { return [literal, stripExtendedPathPrefix(realpathSync.native(literal))]; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return [literal];
+      throw error;
+    }
+  }))];
+  // Only the shared private/namespace masks are re-openable by this holder's own leaf roots.
+  // An explicit literal deny below those masks, or anywhere else, remains a hard floor.
+  const reallowableMasks = literalDenies([...appOwnedSandboxPrivateRoots(), ...namespaceRoots]);
+  const samePath = (left: string, right: string): boolean =>
+    win32.normalize(left).replace(/[\\/]+$/, "").toLowerCase() === win32.normalize(right).replace(/[\\/]+$/, "").toLowerCase();
+  const explicitReadFloor = literalDenies(admitted.denyRead).filter(path => !reallowableMasks.some(mask => samePath(path, mask)));
+  const protectedFloor = [...new Set([...literalDenies(floor), ...explicitReadFloor])];
+  const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces);
+  const policy: ShellFilesystemPolicy = Object.freeze({
+    allowRead: Object.freeze(allowRead),
+    allowWrite: Object.freeze([...mandatory.allowWrite]),
+    denyRead: Object.freeze([...literalDenies([
+      ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
+      ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
+    ])]),
+    denyWrite: Object.freeze([...literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite])]),
+    protectedFloor: Object.freeze(protectedFloor),
+    floorPierces: Object.freeze([...pierces]),
+  });
+  const assertStillValid = (): void => {
+    for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? []),
+      ...(ownershipPins?.allowRead ?? []), ...(ownershipPins?.allowWrite ?? []), ...(namespacePins.allowRead ?? [])]) {
+      if (typeof entry !== "string") void entry.path;
+    }
+    assertMxcExtensionFilesystemOwnership({ allowRead: admitted.allowRead, allowWrite: admitted.allowWrite,
+      pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
+  };
+  assertStillValid();
+  return { policy, assertStillValid };
+}
+
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
   onNotice?: (notice: string) => void,
@@ -914,7 +1008,17 @@ export function isPluginWorkerConfinementActive(): boolean {
 }
 
 // Refuse extension starts until private storage or session approval is established.
-export function assertExtensionStartAllowed(): void {
+export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" }): void {
+  const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
+  if (plan?.readiness === "checking" || plan?.readiness === "rejected") {
+    throw new MxcProcessContractError("Extension backend readiness has not admitted this start");
+  }
+  if (plan?.selectedBackend === "mxc" && options?.backend !== "mxc") {
+    throw new WorkerTransportUnsupportedError();
+  }
+  if (options?.backend === "mxc" && (plan?.selectedBackend !== "mxc" || plan.readiness !== "ready")) {
+    throw new MxcProcessContractError("Native extension backend is not ready for this start");
+  }
   // Intentionally gated by the boot request: a user who turned isolation off is not asked.
   if (process.platform === "win32" && isPluginWorkerConfinementRequestedAtBoot()) {
     if (areExtensionsWithoutIsolationApproved()) return;
