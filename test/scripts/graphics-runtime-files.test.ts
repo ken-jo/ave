@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -7,11 +8,43 @@ import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
 import { writeCanvasRuntimePackage, writePageRuntimeResources } from "../../src/__tests__/support/page-runtime-package.js";
+import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
 
 const require = createRequire(import.meta.url);
-const afterPack = require("../../scripts/electron-after-pack.cjs") as (
+const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
+async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["context"]): Promise<void> {
+  if (context.electronPlatformName !== "win32") return packageHook(context);
+  // The real hook and all verifiers run against this owned unit payload. Only
+  // the fixture's architecture-dependent pins are substituted, never checks.
+  const script = `
+    import { readFileSync } from 'node:fs';
+    import { registerHooks, createRequire } from 'node:module';
+    const context = JSON.parse(process.argv[1]);
+    const pins = readFileSync(process.argv[2], 'utf8');
+    registerHooks({ load(url, options, nextLoad) {
+      if (url.endsWith('/src/permissions/mxc-launcher-pins.json')) return {
+        format: 'json', shortCircuit: true, source: pins,
+      };
+      return nextLoad(url, options);
+    }});
+    try {
+      await createRequire(import.meta.url)(process.argv[3])(context);
+      console.log(JSON.stringify({ passed: true }));
+    } catch (error) {
+      console.log(JSON.stringify({ name: error.name, message: error.message }));
+      process.exitCode = 1;
+    }
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
+    join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs")], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  const observation = JSON.parse(result.stdout);
+  if (result.status !== 0) throw Object.assign(new Error(observation.message), { name: observation.name });
+}
 const { assertGraphicsRuntimeFiles } = require("../../scripts/lib/graphics-runtime-files.cjs") as {
   assertGraphicsRuntimeFiles(directory: string, platform: string): void;
 };
@@ -75,6 +108,7 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     putFile(join(resources, "licenses", "ripgrep", notice));
   }
   for (const file of RUNTIME_FILES[platform]) putFile(join(libraryDirectory, file), file);
+  if (platform === "win32") writeMxcRuntimePackage(resources, join(root, "Client.exe"));
   return {
     libraryDirectory,
     resources,
@@ -130,6 +164,15 @@ describe("packaged graphics runtime", () => {
     bytes[0x20] ^= 1;
     writeFileSync(helper, bytes);
     await expect(afterPack(context)).rejects.toThrow("srt-win-integrity-mismatch: x64");
+  });
+
+  it("rejects a missing native SDK payload with a typed packaging error", async () => {
+    const { context, modules } = await createPackage("win32");
+    const missing = join(modules, "@koromix");
+    rmSync(missing, { recursive: true });
+    await expect(afterPack(context)).rejects.toMatchObject({
+      name: "MxcIntegrityError", message: `Native SDK packaging payload missing: ${missing}`,
+    });
   });
 
   it("rejects a missing PDF page renderer, its pdf.js data or notices at package creation", async () => {

@@ -328,3 +328,84 @@ it("permits only named package-manager command shims and excludes them from pack
   expect(() => assertMxcSdkInventory(root, pins)).not.toThrow();
   expect(JSON.parse(readFileSync("package.json", "utf8")).build.files).toContain("!node_modules/@microsoft/mxc-sdk/node_modules/.bin{,/**/*}");
 });
+
+describe("packaging payload failures", () => {
+  function packageRoot() {
+    const root = mkdtempSync(path.join(tmpdir(), "ave-package-missing-"));
+    roots.push(root);
+    return root;
+  }
+
+  function expectMissingPayload(operation: () => unknown, file: string) {
+    let caught: unknown;
+    try { operation(); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(MxcIntegrityError);
+    expect((caught as Error).message).toBe(`Native SDK packaging payload missing: ${file}`);
+    let cause = (caught as Error).cause as NodeJS.ErrnoException;
+    while (cause instanceof MxcIntegrityError) cause = cause.cause as NodeJS.ErrnoException;
+    expect(cause).toMatchObject({ code: "ENOENT", path: file });
+  }
+
+  it("reports the missing unpacked modules path from packaged verification", async () => {
+    const { assertPackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const resources = packageRoot();
+    mkdirSync(path.join(resources, "app.asar.unpacked"));
+    expectMissingPayload(() => assertPackagedMxcSdk(resources, "x64"), path.join(resources, "app.asar.unpacked", "node_modules"));
+  });
+
+  it("reports the exact missing pinned file from packaged verification", async () => {
+    const { assertPackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const resources = packageRoot();
+    const modules = path.join(resources, "app.asar.unpacked", "node_modules");
+    const file = path.join(modules, Object.keys(PINS.sdk.files)[0]!);
+    mkdirSync(path.dirname(file), { recursive: true });
+    expectMissingPayload(() => assertPackagedMxcSdk(resources, "x64"), file);
+  });
+
+  it.each(["scope", "bin", "architecture", "addon"] as const)("reports a missing %s directory while pruning the package", async (missing) => {
+    const { prunePackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const resources = packageRoot();
+    const modules = path.join(resources, "app.asar.unpacked", "node_modules");
+    const scope = path.join(modules, "@koromix");
+    const addon = path.join(scope, "koffi-win32-x64", "win32_x64");
+    const bin = path.join(modules, "@microsoft", "mxc-sdk", "bin");
+    if (missing !== "scope") mkdirSync(path.dirname(addon), { recursive: true });
+    if (["architecture", "addon"].includes(missing)) mkdirSync(bin, { recursive: true });
+    if (missing === "addon") mkdirSync(path.join(bin, "x64"));
+    const expected = { scope, bin, architecture: path.join(bin, "x64"), addon }[missing];
+    expectMissingPayload(() => prunePackagedMxcSdk(resources, "x64"), expected);
+  });
+
+  it("reports a missing addon scope from the standalone architecture pruner", async () => {
+    const { pruneMxcSdkAddonArchitectures } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const modules = packageRoot();
+    expectMissingPayload(() => pruneMxcSdkAddonArchitectures(modules, "x64"), path.join(modules, "@koromix"));
+  });
+
+  it.each(["directory", "executable"] as const)("reports a missing runtime %s before recording pins", async (missing) => {
+    const { recordMxcSupervisorRuntime } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const root = packageRoot();
+    const directory = missing === "directory" ? path.join(root, "runtime") : root;
+    const executable = path.join(directory, "Ave.exe");
+    const resources = path.join(root, "resources");
+    expectMissingPayload(() => recordMxcSupervisorRuntime(resources, "x64", executable), missing === "directory" ? directory : executable);
+    expect(existsSync(path.join(resources, "mxc", "x64", "supervisor-runtime-pins.json"))).toBe(false);
+  });
+
+  it("preserves existing integrity errors unrelated to missing payloads", async () => {
+    const { assertPackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    expect(() => assertPackagedMxcSdk(packageRoot(), "ia32")).toThrow("Unsupported SDK installation or architecture");
+    expect(() => assertPackagedMxcSdk(packageRoot(), "ia32")).toThrow(MxcIntegrityError);
+  });
+
+  it("preserves filesystem errors other than missing payloads", async () => {
+    const { recordMxcSupervisorRuntime } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const root = packageRoot();
+    const executable = path.join(root, "Ave.exe");
+    mkdirSync(executable);
+    let caught: unknown;
+    try { recordMxcSupervisorRuntime(path.join(root, "resources"), "x64", executable); } catch (error) { caught = error; }
+    expect(caught).not.toBeInstanceOf(MxcIntegrityError);
+    expect(caught).toMatchObject({ code: "EISDIR" });
+  });
+});
