@@ -1,7 +1,7 @@
 import type { Readable } from "node:stream";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
-import { MXC_STREAM_CHUNK_BYTES } from "./mxc-extension-protocol.js";
+import { MXC_STREAM_CHUNK_BYTES, mxcModuleDiagnostics } from "./mxc-extension-protocol.js";
 import { MxcNativeProcess } from "./mxc-native-process.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
@@ -84,7 +84,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
               await owned.dispose();
               return null;
             }
-            await channel.send({ type: "ready", id: owned.id, nodeVersion: process.versions.node, nativeModules, ownerHandle: runtime.ownerHandle });
+            await channel.send({ type: "ready", id: owned.id, nodeVersion: process.versions.node, ...mxcModuleDiagnostics(nativeModules), ownerHandle: runtime.ownerHandle });
             forwarding = true;
             const stdout = forward(owned.stdout, "stdout"), stderr = forward(owned.stderr, "stderr");
             void stdout.catch(fail); void stderr.catch(fail);

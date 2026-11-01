@@ -9,6 +9,7 @@ export function assertPackagedMxcSdk(resources, arch) {
   if (existsSync(path.join(modules, "node-pty", "third_party"))) throw new Error("Unexpected packaged PTY source-build payload");
   const verified = verifyMxcSdk(modules, arch, PINS, {}, true);
   assertMxcSdkAddonArchitecture(modules, arch);
+  if (existsSync(path.join(verified.sdkRoot, "node_modules", ".bin"))) throw new Error("Unexpected packaged SDK command shims");
   const bin = path.join(verified.sdkRoot, "bin");
   for (const entry of readdirSync(bin)) {
     if (entry !== arch) throw new Error(`Unexpected packaged SDK architecture: ${entry}`);
@@ -27,6 +28,7 @@ export function assertPackagedMxcSdk(resources, arch) {
 export function prunePackagedMxcSdk(resources, arch) {
   const modules = path.join(resources, "app.asar.unpacked", "node_modules");
   pruneMxcSdkAddonArchitectures(modules, arch);
+  rmSync(path.join(modules, "@microsoft", "mxc-sdk", "node_modules", ".bin"), { recursive: true, force: true });
   const bin = path.join(resources, "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin");
   for (const entry of readdirSync(bin)) {
     if (entry !== arch) rmSync(path.join(bin, entry), { recursive: true, force: true });

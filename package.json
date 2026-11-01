@@ -285,6 +285,7 @@
       "!resources/uv{,/**/*}",
       "!resources/uv-runtime{,/**/*}",
       "!node_modules/@koromix/koffi-win32-*/**/*.{lib,exp}",
+      "!node_modules/@microsoft/mxc-sdk/node_modules/.bin{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/dotnet{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/*.{exe,so,dylib}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/{lxc-exec,unix-test-proxy}"

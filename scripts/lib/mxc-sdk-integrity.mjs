@@ -34,6 +34,7 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
       const digest = createHash("sha256").update(readFileSync(file)).digest("hex");
       if (digest !== expected) throw new MxcIntegrityError(`Native payload hash mismatch: ${relative}`);
     }
+    assertMxcSdkInventory(root, pins);
     const sdkRoot = path.join(root, "@microsoft", "mxc-sdk");
     const require = createRequire(pathToFileURL(path.join(sdkRoot, "package.json")));
     for (const [name, version] of Object.entries(pins.sdk.versions)) {
@@ -112,4 +113,42 @@ export function verifyMxcSupervisorRuntime(executable, resources, arch) {
     if (error instanceof MxcIntegrityError) throw error;
     throw new MxcIntegrityError("Supervisor runtime verification failed", { cause: error });
   }
+}
+
+// These upstream backends are present in the installed archive but are never
+// loaded by the extension path and are removed from the packaged native bin.
+const SDK_INSTALLATION_AUXILIARIES = new Set([
+  "libmxc_ffi.so", "libmxc_ffi.dylib", "lxc-exec", "mxc-exec-mac", "unix-test-proxy",
+  "mxc-diagnostic-console.exe", "plm.exe", "winhttp-proxy-shim.exe", "wxc-exec.exe",
+  "wxc-host-prep.exe", "wxc-test-proxy.exe", "wxc-windows-sandbox-daemon.exe",
+  "wxc-windows-sandbox-guest.exe", "wxc-wslc-daemon.exe",
+]);
+
+export function assertMxcSdkInventory(nodeModules, pins) {
+  const sdkRoot = path.join(nodeModules, "@microsoft", "mxc-sdk");
+  const pinned = new Set([...Object.keys(pins.sdk.files), ...Object.values(pins.sdk.architectures).flatMap(Object.keys)]);
+  const semverRoot = pins.sdk.packages.semver.replace(/^@microsoft\/mxc-sdk\//, "");
+  const allowed = (relative) => pinned.has("@microsoft/mxc-sdk/" + relative)
+    || ["README.md", "LICENSE.md"].includes(relative)
+    || (semverRoot && ["LICENSE", "README.md", "range.bnf"].some((name) => relative === semverRoot + "/" + name))
+    || /^dist\/.+\.(?:d\.ts(?:\.map)?|js\.map)$/.test(relative)
+    || /^bin\/(?:x64|arm64)\/dotnet\/NativeMethods\.g\.cs$/.test(relative)
+    || /^bin\/(?:x64|arm64)\/_manifest\/.+\.(?:json(?:\.sha256)?|cose|cat)$/.test(relative)
+    || (/^bin\/(?:x64|arm64)\/[^/]+$/.test(relative) && SDK_INSTALLATION_AUXILIARIES.has(relative.split("/").at(-1)));
+  const walk = (directory, prefix = "") => {
+    for (const name of readdirSync(directory)) {
+      const relative = prefix + name, file = path.join(directory, name);
+      const entry = lstatSync(file);
+      if (/^node_modules\/\.bin\/semver(?:\.(?:cmd|ps1|exe|bunx))?$/.test(relative)) {
+        if (entry.isDirectory() || (entry.isSymbolicLink() && realpathSync(file) !== realpathSync(path.join(sdkRoot, semverRoot, "bin", "semver.js")))) {
+          throw new MxcIntegrityError(`SDK command shim redirected: ${relative}`);
+        }
+        continue;
+      }
+      if (entry.isSymbolicLink()) throw new MxcIntegrityError(`SDK inventory path redirected: ${relative}`);
+      if (entry.isDirectory()) walk(file, relative + "/");
+      else if (!entry.isFile() || !allowed(relative)) throw new MxcIntegrityError(`Unexpected installed SDK file: @microsoft/mxc-sdk/${relative}`);
+    }
+  };
+  walk(sdkRoot);
 }

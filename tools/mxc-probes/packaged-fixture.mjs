@@ -1,32 +1,34 @@
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { setTimeout as pause } from "node:timers/promises";
 import { once } from "node:events";
+import { writeProbeJson } from "./packaged-processes.mjs";
 const [mode, token, heartbeatText] = process.argv.slice(2);
 const heartbeat = Number(heartbeatText);
 if (!Number.isSafeInteger(heartbeat) || heartbeat <= 0) throw new Error("Invalid fixture heartbeat interval");
-const emit = (frame) => process.stdout.write(JSON.stringify({ token, ...frame }) + "\n");
+const directory = path.dirname(process.argv[1]);
+await writeProbeJson(directory, mode === "grandchild" ? "grandchild.json" : "process.json", { token, pid: process.pid, role: mode });
+async function file(name) {
+  try { return JSON.parse(await readFile(path.join(directory, name), "utf8")); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+let challenged;
+async function answerChallenge() {
+  const challenge = await file(`challenge-${process.pid}.json`);
+  if (challenge?.nonce && challenge.nonce !== challenged) {
+    challenged = challenge.nonce;
+    await writeProbeJson(directory, `ack-${process.pid}.json`, { token, nonce: challenged, pid: process.pid });
+  }
+}
 if (mode === "echo") {
+  while (!(await file("go.json"))) { await answerChallenge(); await pause(heartbeat); }
   for await (const bytes of process.stdin) if (!process.stdout.write(bytes)) await once(process.stdout, "drain");
   process.stderr.write("fixture-input-eof\n");
 } else if (mode === "lifetime") {
-  const child = spawn(process.execPath, [process.argv[1], "grandchild", token, heartbeatText], {
-    env: process.env, stdio: ["pipe", "pipe", "inherit"], windowsHide: true,
-  });
-  child.on("error", (error) => { emit({ marker: "error", message: error.message }); process.exitCode = 2; });
-  const keepAlive = setInterval(() => {}, heartbeat);
-  child.once("spawn", () => emit({ marker: "ready", pid: process.pid, grandchildPid: child.pid }));
-  child.stdin.on("error", () => {});
-  createInterface({ input: process.stdin }).on("line", (line) => child.stdin.write(line + "\n"));
-  createInterface({ input: child.stdout }).on("line", (line) => {
-    const frame = JSON.parse(line);
-    emit({ ...frame, pid: process.pid, grandchildPid: frame.pid });
-  });
-  process.on("exit", () => clearInterval(keepAlive));
-  // Deliberately survive stdin EOF: only the measured lifetime boundary ends us.
+  const child = spawn(process.execPath, [process.argv[1], "grandchild", token, heartbeatText], { env: process.env, stdio: ["ignore", "ignore", "inherit"], windowsHide: true });
+  child.on("error", (error) => { process.stderr.write(error.message + "\n"); process.exitCode = 2; });
+  while (true) { await answerChallenge(); await pause(heartbeat); }
 } else if (mode === "grandchild") {
-  setInterval(() => {}, heartbeat);
-  createInterface({ input: process.stdin }).on("line", (line) => {
-    const { nonce } = JSON.parse(line);
-    emit({ marker: "confirmed", nonce, pid: process.pid });
-  });
+  while (true) { await answerChallenge(); await pause(heartbeat); }
 } else throw new Error("Unknown packaged fixture mode");

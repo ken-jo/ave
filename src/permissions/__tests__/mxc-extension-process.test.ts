@@ -3,7 +3,7 @@ import { createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.j
 import { describe, expect, it, vi } from "vitest";
 import { MxcNativeProcess } from "../mxc-native-process.js";
 import { MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
-import { encodeMxcFrame, MxcFrameDecoder, MXC_FRAME_MAX_BYTES, MXC_STREAM_CHUNK_BYTES, type MxcStreamFrame } from "../mxc-extension-protocol.js";
+import { mxcModuleDiagnostics, encodeMxcFrame, MxcFrameDecoder, MXC_FRAME_MAX_BYTES, MXC_STREAM_CHUNK_BYTES, type MxcStreamFrame } from "../mxc-extension-protocol.js";
 
 const GENERATION = "a".repeat(64);
 const KEY = Buffer.alloc(32, 1);
@@ -123,11 +123,11 @@ describe("bounded supervisor frames", () => {
   });
 
   it.each(["0", "-1", "01", "18446744073709551616", "not-a-handle"])("rejects the invalid liveness handle diagnostic %s", (ownerHandle) => {
-    expect(() => encode({ version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], ownerHandle })).toThrow(MxcProcessContractError);
+    expect(() => encode({ version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle })).toThrow(MxcProcessContractError);
   });
 
   it("round trips the maximum unsigned native liveness handle diagnostic", () => {
-    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], ownerHandle: "18446744073709551615" };
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "18446744073709551615" };
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
   });
 
@@ -185,11 +185,23 @@ describe("supervisor frame authentication", () => {
 
 
 describe("bounded native dependency diagnostics", () => {
-  it("admits the full module snapshot only within the frame and module-count limits", () => {
+  it("reports truncation without rejecting a large audited module snapshot", () => {
+    const modules = Array.from({ length: 2000 }, (_, index) => "C:\\Windows\\System32\\dependency" + index + ".dll");
+    modules.push("C:\\installed\\mxc_ffi.dll");
+    const diagnostics = mxcModuleDiagnostics(modules);
+    expect(diagnostics.nativeModuleCount).toBe(2001);
+    expect(diagnostics.nativeModulesTruncated).toBe(true);
+    expect(diagnostics.nativeModules).toContain(modules.at(-1));
     const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42,
-      nodeVersion: "24.22.1", ownerHandle: "5", nativeModules: Array.from({ length: 256 }, (_, index) => "C:\\Windows\\System32\\dependency" + index + ".dll") };
+      nodeVersion: "24.22.1", ownerHandle: "5", ...diagnostics };
     expect(() => encode(frame)).not.toThrow();
-    expect(() => encode({ ...frame, nativeModules: [...frame.nativeModules, "extra.dll"] })).toThrow(MxcProcessContractError);
-    expect(() => encode({ ...frame, nativeModules: Array(256).fill("x".repeat(300)) })).toThrow(MxcProcessContractError);
+    expect(() => encode({ ...frame, nativeModulesTruncated: false })).toThrow(MxcProcessContractError);
+    expect(() => encode({ ...frame, nativeModuleCount: 0 })).toThrow(MxcProcessContractError);
+  });
+
+  it("bounds encoded bytes as well as module count and preserves small snapshots", () => {
+    expect(mxcModuleDiagnostics(["small.dll"])).toEqual({ nativeModules: ["small.dll"], nativeModuleCount: 1, nativeModulesTruncated: false });
+    const diagnostics = mxcModuleDiagnostics(Array(300).fill("x".repeat(32768)));
+    expect(diagnostics).toEqual({ nativeModules: [], nativeModuleCount: 300, nativeModulesTruncated: true });
   });
 });

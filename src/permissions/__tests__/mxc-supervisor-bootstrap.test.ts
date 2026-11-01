@@ -143,3 +143,13 @@ describe("canonical module admission with injected native calls", () => {
     await expect(_bootstrapMxcSupervisorForTest(f.modules, "x64", {}, f.deps)).rejects.toBeInstanceOf(MxcIntegrityError);
   });
 });
+
+
+it("audits every loaded module even when transport diagnostics will be truncated", async () => {
+  const f = bootstrapFixture();
+  for (let index = 0; index < 300; index++) f.loaded.push(String.raw`C:\Windows\System32\dependency` + index + ".dll");
+  const runtime = await _bootstrapMxcSupervisorForTest(f.modules, "x64", {}, f.deps);
+  expect(runtime.auditModules()).toHaveLength(302);
+  f.loaded.push(String.raw`C:\temp\unpinned-late.dll`);
+  expect(() => runtime.auditModules()).toThrow("Unexpected supervisor native module: C:\\temp\\unpinned-late.dll");
+});

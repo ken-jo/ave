@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { contentHash } from "../../__tests__/support/content-hash.js";
-import { MxcIntegrityError, verifyMxcSdk } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
+import { assertMxcSdkInventory, MxcIntegrityError, verifyMxcSdk } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import PINS from "../mxc-launcher-pins.json" with { type: "json" };
 
 const roots: string[] = [];
@@ -55,7 +55,7 @@ describe("installed SDK integrity", () => {
   it("rejects a planted dependency without loading it", () => {
     const { root, pins } = installation();
     writeFileSync(path.join(root, "@microsoft/mxc-sdk/bin/x64/planted.dll"), "must never execute");
-    expect(() => verifyMxcSdk(root, "x64", pins, {})).toThrow(/Unexpected native payload/);
+    expect(() => verifyMxcSdk(root, "x64", pins, {})).toThrow(/Unexpected installed SDK file/);
   });
 
   it("rejects missing native bytes and unsupported architectures", () => {
@@ -135,6 +135,7 @@ describe("packaged supervisor runtime byte inventory", () => {
 describe("installed SDK import graph", () => {
   it("verifies an isolated copy of the real installed layout without modifying shared dependencies", () => {
     const installed = path.resolve("node_modules");
+    expect(() => assertMxcSdkInventory(installed, PINS)).not.toThrow();
     const directory = mkdtempSync(path.join(tmpdir(), "ave-sdk-real-tree-")); roots.push(directory);
     const modules = path.join(directory, "node_modules");
     const pins = structuredClone(PINS);
@@ -304,4 +305,26 @@ describe("runtime fuse defaults and signing order", () => {
     expect(mac.indexOf("await this.helper.notarizeIfProvided(appPath)", macSign)).toBeGreaterThan(macSign);
     expect(platform).toContain("this.generateFuseConfig(this.config.electronFuses)");
   });
+});
+
+
+describe("complete installed SDK inventory", () => {
+  it("rejects extra executable JS and native files rather than copying only the pins", () => {
+    for (const relative of ["dist/planted.js", "bin/x64/planted.dll", "bin/x64/unknown.exe", "extra.json", "node_modules/semver/planted.js", "node_modules/unexpected/package.json", "node_modules/.bin/planted.js"]) {
+      const { root, pins } = installation();
+      const file = path.join(root, "@microsoft/mxc-sdk", relative);
+      mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, "unexpected");
+      expect(() => assertMxcSdkInventory(root, pins)).toThrow(/Unexpected installed SDK file/);
+    }
+  });
+});
+
+
+it("permits only named package-manager command shims and excludes them from packaging", () => {
+  const { root, pins } = installation();
+  const directory = path.join(root, "@microsoft/mxc-sdk/node_modules/.bin");
+  mkdirSync(directory, { recursive: true });
+  for (const name of ["semver", "semver.cmd", "semver.ps1", "semver.exe", "semver.bunx"]) writeFileSync(path.join(directory, name), "package manager shim");
+  expect(() => assertMxcSdkInventory(root, pins)).not.toThrow();
+  expect(JSON.parse(readFileSync("package.json", "utf8")).build.files).toContain("!node_modules/@microsoft/mxc-sdk/node_modules/.bin{,/**/*}");
 });

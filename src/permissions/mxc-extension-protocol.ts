@@ -1,3 +1,4 @@
+import { win32 as winPath } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
@@ -10,7 +11,7 @@ type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
 type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" };
 type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type StartFrame = { type: "start"; request: ContainerRequest };
-type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; ownerHandle: string };
+type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
 type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string };
 export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
@@ -42,9 +43,11 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || typeof frame.nodeVersion !== "string" || frame.nodeVersion.length > 64
         || !Array.isArray(frame.nativeModules) || frame.nativeModules.length > 256
         || frame.nativeModules.some((entry) => typeof entry !== "string" || entry.length > 32768)
+        || !Number.isSafeInteger(frame.nativeModuleCount) || (frame.nativeModuleCount as number) < frame.nativeModules.length
+        || frame.nativeModulesTruncated !== ((frame.nativeModuleCount as number) > frame.nativeModules.length)
         || typeof frame.ownerHandle !== "string" || !/^[1-9][0-9]{0,19}$/.test(frame.ownerHandle)
         || BigInt(frame.ownerHandle) > 18446744073709551615n) fail();
-      fields = ["id", "nodeVersion", "nativeModules", "ownerHandle"];
+      fields = ["id", "nodeVersion", "nativeModules", "nativeModuleCount", "nativeModulesTruncated", "ownerHandle"];
       break;
     case "exit":
       if (!Number.isInteger(frame.exitCode) || typeof frame.timedOut !== "boolean") fail();
@@ -134,4 +137,19 @@ export class MxcFrameDecoder {
     if (this.failed || this.headerBytes || this.bodyBytes) throw new MxcProcessContractError("Truncated supervisor stream");
     this.failed = true;
   }
+}
+
+
+/** Bound selected-first diagnostics only; the caller must first audit the entire snapshot. */
+export function mxcModuleDiagnostics(modules: readonly string[]): Pick<ReadyFrame, "nativeModules" | "nativeModuleCount" | "nativeModulesTruncated"> {
+  const nativeModules: string[] = [];
+  let bytes = 2;
+  const selected = (file: string): boolean => ["mxc_ffi.dll", "wslcsdk.dll", "koffi.node"].includes(winPath.basename(file).toLowerCase());
+  const ordered = [...modules.filter(selected), ...modules.filter((file) => !selected(file))];
+  for (const file of ordered) {
+    const size = Buffer.byteLength(JSON.stringify(file)) + 1;
+    if (nativeModules.length >= 256 || bytes + size > 16 * 1024) break;
+    nativeModules.push(file); bytes += size;
+  }
+  return { nativeModules, nativeModuleCount: modules.length, nativeModulesTruncated: nativeModules.length < modules.length };
 }

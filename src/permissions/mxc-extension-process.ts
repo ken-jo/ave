@@ -29,7 +29,7 @@ export interface OwnedMxcExtensionProcess {
   readonly stdout: PassThrough;
   readonly stderr: PassThrough;
   readonly completion: Promise<ProcessResult>;
-  readonly diagnostics: { nodeVersion: string; nativeModules: readonly string[]; ownerHandle: string };
+  readonly diagnostics: { nodeVersion: string; nativeModules: readonly string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string };
   dispose(): Promise<void>;
 }
 
@@ -40,7 +40,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   readonly stdin: Writable;
   readonly completion: Promise<ProcessResult>;
   readonly ready: Promise<void>;
-  diagnostics = { nodeVersion: "", nativeModules: [] as string[], ownerHandle: "" };
+  diagnostics = { nodeVersion: "", nativeModules: [] as string[], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" };
   private readonly channel: MxcExtensionChannel;
   private readonly liveness: Duplex;
   private readonly closed: Promise<void>;
@@ -129,7 +129,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         if (!this.spawnInvoked) throw new MxcProcessContractError("Supervisor readiness preceded native invocation");
         if (this.id) throw new MxcProcessContractError("Duplicate supervisor readiness");
         this.id = frame.id;
-        this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules, ownerHandle: frame.ownerHandle };
+        this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules, nativeModuleCount: frame.nativeModuleCount, nativeModulesTruncated: frame.nativeModulesTruncated, ownerHandle: frame.ownerHandle };
         this.resolveReady();
       } else if (frame.type === "stdout" || frame.type === "stderr") {
         if (!this.id) throw new MxcProcessContractError("Supervisor output preceded readiness");

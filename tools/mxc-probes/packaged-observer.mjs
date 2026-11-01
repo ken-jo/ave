@@ -1,14 +1,14 @@
 import { createRequire } from "node:module";
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { handleSnapshot } from "./packaged-protocol.mjs";
+import { handleSnapshot, inspectOwnerHandleCandidates } from "./packaged-protocol.mjs";
 import { verifyMxcSdk, verifyMxcSupervisorRuntime } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 
 // This observer has no lifetime job: otherwise killing the measured main could
 // be masked by an outer job rather than exercising the supervisor's EOF path.
-export function openPackagedObserver(executable) {
+export function openPackagedObserver(executable, suppliedPins) {
   const resources = path.join(path.dirname(executable), "resources");
-  const pins = JSON.parse(readFileSync(new URL("../../src/permissions/mxc-launcher-pins.json", import.meta.url), "utf8"));
+  const pins = suppliedPins ?? JSON.parse(readFileSync(new URL("../../src/permissions/mxc-launcher-pins.json", import.meta.url), "utf8"));
   const installed = verifyMxcSdk(path.join(resources, "app.asar.unpacked/node_modules"), process.arch, pins, process.env, true);
   verifyMxcSupervisorRuntime(executable, resources, process.arch);
   const ffi = createRequire(import.meta.url)(installed.addonPath);
@@ -28,6 +28,17 @@ export function openPackagedObserver(executable) {
   const close = kernel.func("bool __stdcall CloseHandle(void *)");
   const open = kernel.func("void * __stdcall OpenProcess(uint32_t, bool, uint32_t)");
   const api = {
+    handleValue(handle) {
+      const value = typeof handle === "bigint" || typeof handle === "number" ? BigInt(handle) : BigInt(ffi.address(handle));
+      if (value <= 0n || value >= 0xffffffffffffffffn) throw new Error("Invalid measured process handle");
+      return value.toString();
+    },
+    duplicateProcessHandle(sourceProcess, handleValue) {
+      if (!/^[1-9][0-9]{0,19}$/.test(handleValue) || BigInt(handleValue) >= 0xffffffffffffffffn) throw new Error("Invalid transferred process handle");
+      const copied = [0n];
+      if (!duplicate(sourceProcess, BigInt(handleValue), current, copied, 0, false, 2)) throw new Error("Cannot duplicate measured process handle");
+      return copied[0];
+    },
     now() { const value = [0n]; now(value); return BigInt(value[0]); },
     identity(handle) {
       const created = [0n], exit = [0n], kernelTime = [0n], userTime = [0n];
@@ -86,20 +97,14 @@ export function openPackagedObserver(executable) {
       const copied = [0n];
       if (!duplicate(supervisor, expected, current, copied, 0, false, 2)) throw new Error("Cannot pin supervisor owner pipe object");
       try {
-        const observations = descendants.map((processHandle) => {
-          let inspected = 0;
-          for (const item of api.handles(processHandle)) {
+        const observations = descendants.map((processHandle) => inspectOwnerHandleCandidates(entry, api.handles(processHandle), {
+          duplicate(value) {
             const candidate = [0n];
-            if (!duplicate(processHandle, item.value, current, candidate, 0, false, 2)) throw new Error("Child handle changed during snapshot; non-inheritance inconclusive");
-            try {
-              const status = compare(copied[0], candidate[0]);
-              if (status === 0) return { inherited: true, inspected };
-              if (status !== 0xc00001ac && status !== 0xc0000024) throw new Error(`Handle comparison failed: 0x${status.toString(16)}`);
-              inspected++;
-            } finally { close(candidate[0]); }
-          }
-          return { inherited: false, inspected };
-        });
+            return duplicate(processHandle, value, current, candidate, 0, false, 2) ? candidate[0] : null;
+          },
+          compare: (candidate) => compare(copied[0], candidate),
+          close,
+        }));
         return { supervisorInheritable: (entry.attributes & 2) !== 0, descendants: observations };
       } finally { close(copied[0]); }
     },

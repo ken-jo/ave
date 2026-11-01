@@ -329,7 +329,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
         controls.once("data", () => {
           void (async () => {
             for (const type of types) {
-              if (type === "ready") await channel.send({ type, id: 42, nodeVersion: process.versions.node, nativeModules: [], ownerHandle: "271828" });
+              if (type === "ready") await channel.send({ type, id: 42, nodeVersion: process.versions.node, nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "271828" });
               else await channel.send({ type: type as "creating" | "spawning" });
             }
             await channel.end();

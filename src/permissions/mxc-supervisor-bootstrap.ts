@@ -127,7 +127,7 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
       const systemModule = !winPath.isAbsolute(systemRelative) && systemRelative !== ".." && !systemRelative.startsWith("..\\");
       if ((selected && !pinned.has(normalized))
         || (!systemModule && !pinned.has(normalized) && !admittedRuntime.has(normalized))) {
-        throw new MxcIntegrityError("Unexpected supervisor native module");
+        throw new MxcIntegrityError(`Unexpected supervisor native module: ${file}`);
       }
     }
     return loaded.map((file) => deps.resolvePath(file));

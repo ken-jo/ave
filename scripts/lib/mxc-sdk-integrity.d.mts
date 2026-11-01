@@ -15,3 +15,5 @@ export function verifyMxcSdk(
   strictNativeDirectories?: boolean,
 ): { sdkRoot: string; nativeDirectories: string[]; addonPath: string };
 export function verifyMxcSupervisorRuntime(executable: string, resources: string, arch: string): string[];
+
+export function assertMxcSdkInventory(nodeModules: string, pins: MxcSdkPins): void;

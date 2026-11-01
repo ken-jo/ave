@@ -2500,12 +2500,23 @@ entries, locked nested `semver` JavaScript, PTY JavaScript/prebuilds, and the se
 bootstrap addon. Import-condition resolution must match those pinned roots; tests
 record the static SDK spawn/probe import graph without executing native code.
 This does not claim coverage of arbitrary computed dynamic imports.
+The installed SDK inventory rejects unknown files. Its allowed archive extras
+are declarations/source maps, README/license text, generated native declarations,
+provenance metadata and the explicit unused backend filename set in the integrity
+verifier. Nested runtime dependency files are checked against their pins; the
+locked semver package additionally permits its LICENSE, README and `range.bnf`.
+Named semver command shims under nested `.bin` are installation-only extras;
+symlinks must target the pinned command, and packaging excludes/prunes that
+directory. Unused native backends are removed before packaging.
 Before any native require the supervisor verifies these pins and the
 whole selected native directories plus the packaged executable/runtime DLL inventory,
 then loads only the verified bootstrap addon. The inventory is recorded after
 assembly and signing, and all non-system loaded modules must match it or the SDK pins.
 That trusted addon immediately restricts this process's DLL search to system
 and verified native directories before SDK import or native container loading.
+Every enumerated module is audited; only the selected-first diagnostic list is bounded, with
+`nativeModuleCount` and `nativeModulesTruncated` recording omitted paths. A large
+valid snapshot does not disable the process.
 Loaded paths and allowlist paths, including the actual system directory, are
 realpath-resolved and normalized identically before admission. Only pinned files
 or modules under that system directory are admitted. WinSxS and injected EDR/IME
@@ -2528,6 +2539,9 @@ Terminal receipts follow stream drain, native wait and disposal. Missing receipt
 crashes or cleanup deadlines after possible native creation remain failures with
 unverified termination. Authenticated failures before native creation preserve
 integrity, capability-unavailable, contract or supervisor-lost error types.
+The packaged diagnostic entry requires the explicit build-time flag
+`AVE_MXC_VERIFICATION_BUILD=1`; normal builds omit it and remove stale diagnostic
+output, and every platform’s packaging hook checks the build record and files.
 Actual packaged imports, DLL paths and job/PSEC descendant cleanup require native
 verification on x64 and arm64 before readiness or holder activation. Each shell
 command spawns `wxc-exec.exe --config-base64 <request>`
