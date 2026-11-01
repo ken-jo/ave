@@ -12,7 +12,10 @@ export interface GitRepositoryInputs {
 
 const MAX_METADATA_ENTRIES = 4096;
 const MAX_METADATA_DEPTH = 32;
-const MAX_CONFIG_BYTES = 64 * 1024;
+// Large control files (including packed refs) decline the verified read-only
+// path; the aggregate cap prevents thousands of small refs from multiplying I/O.
+const MAX_CONTROL_FILE_BYTES = 64 * 1024;
+const MAX_CONTROL_TOTAL_BYTES = 4 * 1024 * 1024;
 const FORBIDDEN_METADATA_PATHS = new Set(["commondir", "worktrees", "objects/info/alternates", "objects/info/http-alternates"]);
 
 function hasSupportedConfig(contents: Buffer): boolean {
@@ -45,12 +48,12 @@ function metadataIdentity(stat: BigIntStats): string {
   return [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.size, stat.nlink, stat.mtimeNs, stat.ctimeNs].join(":");
 }
 
-function readConfigFingerprint(path: string, expectedIdentity: string): string | null {
+function readControlFingerprint(path: string, expectedIdentity: string, maxBytes: number, isConfig: boolean): { hash: string; bytes: number } | null {
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync(descriptor, { bigint: true });
-    if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(MAX_CONFIG_BYTES) || metadataIdentity(stat) !== expectedIdentity) return null;
-    const contents = Buffer.alloc(MAX_CONFIG_BYTES + 1);
+    if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes) || metadataIdentity(stat) !== expectedIdentity) return null;
+    const contents = Buffer.alloc(maxBytes + 1);
     let length = 0;
     while (length < contents.length) {
       const count = readSync(descriptor, contents, length, contents.length - length, null);
@@ -58,13 +61,23 @@ function readConfigFingerprint(path: string, expectedIdentity: string): string |
       length += count;
     }
     const bytes = contents.subarray(0, length);
-    if (length > MAX_CONFIG_BYTES || !hasSupportedConfig(bytes)
+    if (length > maxBytes || (isConfig && !hasSupportedConfig(bytes))
       || metadataIdentity(fstatSync(descriptor, { bigint: true })) !== expectedIdentity
       || metadataIdentity(lstatSync(path, { bigint: true })) !== expectedIdentity) return null;
-    return createHash("sha256").update(bytes).digest("hex");
+    return { hash: createHash("sha256").update(bytes).digest("hex"), bytes: length };
   } finally {
     closeSync(descriptor);
   }
+}
+
+function needsContentEvidence(path: string): boolean {
+  // gitReadOnlyEnvironment redirects index reads to a protected absent path.
+  // Object storage is content-addressed, not mutable control state; reflog
+  // selectors are excluded by readOnlyGitArguments. Keep their metadata
+  // evidence without reading potentially huge data files. This is not an
+  // integrity check against arbitrary in-place corruption of object storage.
+  return path !== "index" && !/^sharedindex\.[^/]+$/.test(path)
+    && !path.startsWith("objects/") && !path.startsWith("logs/");
 }
 
 // Keeps each helper command line well below the 32,767-character CreateProcess limit.
@@ -108,6 +121,7 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
     const evidence: [string, string, string][] = [];
     const gitDirectory = join(workTree, ".git");
     let entries = 0;
+    let controlBytes = 0;
     const inspect = (path: string, relative: string, depth: number): boolean => {
       const metadataPath = relative.toLowerCase();
       if (++entries > MAX_METADATA_ENTRIES || depth > MAX_METADATA_DEPTH
@@ -119,9 +133,15 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       if (relative === "" && !stat.isDirectory()) return false;
       const isConfig = metadataPath === "config" || metadataPath === "config.worktree";
       if (stat.isFile()) {
-        const configHash = isConfig ? readConfigFingerprint(path, identity) : "";
-        if (configHash === null) return false;
-        evidence.push([relative, identity, configHash]);
+        let contentHash = "";
+        if (needsContentEvidence(process.platform === "win32" ? metadataPath : relative)) {
+          const fingerprint = readControlFingerprint(path, identity,
+            Math.min(MAX_CONTROL_FILE_BYTES, MAX_CONTROL_TOTAL_BYTES - controlBytes), isConfig);
+          if (fingerprint === null) return false;
+          controlBytes += fingerprint.bytes;
+          contentHash = fingerprint.hash;
+        }
+        evidence.push([relative, identity, contentHash]);
         return true;
       }
       if (isConfig) return false;
