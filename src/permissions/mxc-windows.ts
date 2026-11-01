@@ -11,7 +11,7 @@ import { errorMessage } from "../shared/error-message.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 
-// The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.0.0's, pinned by scripts/fetch-mxc.mjs.
+// The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.0.1's, pinned by scripts/fetch-mxc.mjs.
 const MXC_CONFIG_SCHEMA_VERSION = "1.0.0";
 
 // Why MXC cannot carry agent shells on this host. Stable codes, shown in Settings.
@@ -133,7 +133,7 @@ export function classifyMxcStartProbe(
   return { ok: false, reason: "powershell-start-failed", detail };
 }
 
-// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC 1.0.0 needs the PSEC 1.1 ingress contract for an identity-less loopback proxy while 1.0.1 relaxes that, so a build floor would be wrong now and drift on the next bump. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` must select `base-container`, `--dry-run` of the exact request shape Ave launches (proxy mode, DACL fallback refused) must validate on that tier, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape. Any failure leaves the shells on the approved-host route.
+// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC 1.0.1 no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` must select `base-container`, `--dry-run` of the exact request shape Ave launches (proxy mode, DACL fallback refused) must validate on that tier, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape. Any failure leaves the shells on the approved-host route.
 export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const prerequisites = await detectMxcPrerequisites(deps);
   if (prerequisites.state === "unavailable") return prerequisites;
@@ -328,7 +328,7 @@ export function rankMxcFilesystem(policy: ShellFilesystemPolicy, exists: (path: 
   };
 }
 
-// The MXC 1.0.0 one-shot request Ave launches. Only the fields Ave sets.
+// The MXC 1.0.1 one-shot request Ave launches. Only the fields Ave sets.
 export interface MxcContainerRequest {
   readonly version: typeof MXC_CONFIG_SCHEMA_VERSION;
   readonly containment: "processcontainer";
