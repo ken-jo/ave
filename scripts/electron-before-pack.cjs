@@ -13,11 +13,12 @@ module.exports = async function beforePack(context) {
     execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
       join(context.packager.projectDir, "scripts", "build-windows-job.ps1"), "-Arch", arch, "-Helper", helper], { stdio: "inherit", env: windowsPowerShellEnv() });
   }
+  const { stageMxcSdkAddon, stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);
+  await stageMxcSdkAddon({ arch, projectRoot: context.packager.projectDir });
   const { verifyMxcSdk } = await import("./lib/mxc-sdk-integrity.mjs");
   const pins = require("../src/permissions/mxc-launcher-pins.json");
   verifyMxcSdk(join(context.packager.projectDir, "node_modules"), arch, pins, {});
   // Stage the hash-pinned container launcher; mismatches fail the build.
-  const { stageMxcLauncher } = await import(pathToFileURL(join(context.packager.projectDir, "scripts", "fetch-mxc.mjs")).href);
   const staged = await stageMxcLauncher({ arch, projectRoot: context.packager.projectDir });
   console.log(`fetch-mxc: ${staged} verified against src/permissions/mxc-launcher-pins.json`);
 };

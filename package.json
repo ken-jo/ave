@@ -283,6 +283,7 @@
       "!node_modules/**/tsconfig*.json",
       "!resources/uv{,/**/*}",
       "!resources/uv-runtime{,/**/*}",
+      "!node_modules/@koromix/koffi-win32-*/**/*.{lib,exp}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/dotnet{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/*.{exe,so,dylib}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/{lxc-exec,unix-test-proxy}"
@@ -474,7 +475,7 @@
       ]
     },
     "win": {
-      "signExts": ["!srt-win.exe"],
+      "signExts": ["!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node"],
       "target": [
         "nsis"
       ],

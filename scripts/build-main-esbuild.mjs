@@ -47,6 +47,7 @@ const buildOptions = {
     // rather than a module of the main bundle because a different process
     // executes it: `spawnConfinedPluginChild` runs `dist/src/main/plugin-child-main.js`
     // directly, and a module buried inside `main.js` has no path to be run from.
+    "mxc-extension-supervisor": resolve(repoRoot, "src", "permissions", "mxc-extension-supervisor.ts"),
     "plugin-child-main": resolve(repoRoot, "src", "plugins", "isolation", "plugin-child-main.ts"),
     "preview-document-child-main": resolve(repoRoot, "src", "tools", "preview-document-child-main.ts"),
   },

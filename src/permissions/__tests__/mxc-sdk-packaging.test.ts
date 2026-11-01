@@ -18,7 +18,10 @@ function installation() {
     writeFileSync(path.join(root, file), contents);
     files[file] = contentHash(contents);
   };
-  for (const [name, version] of Object.entries(versions)) put(`${name}/package.json`, JSON.stringify({ name, version }));
+  for (const [name, version] of Object.entries(versions)) {
+    put(`${name}/package.json`, JSON.stringify({ name, version, exports: { ".": "./index.js" } }));
+    put(`${name}/index.js`, "module.exports = {};\n");
+  }
   put("@microsoft/mxc-sdk/bin/x64/mxc_ffi.dll", "fixture-dll");
   put("@koromix/koffi-win32-x64/package.json", JSON.stringify({ name: "@koromix/koffi-win32-x64", main: "index.js" }));
   put("@koromix/koffi-win32-x64/index.js", "module.exports = {};");
@@ -85,5 +88,43 @@ describe("SDK packaging source assertions", () => {
     expect(readFileSync("scripts/electron-before-pack.cjs", "utf8")).toContain("verifyMxcSdk(");
     expect(readFileSync("scripts/electron-after-pack.cjs", "utf8")).toContain("prunePackagedMxcSdk(");
     expect(readFileSync("scripts/smoke-packaged-app.mjs", "utf8")).toContain("assertPackagedMxcSdk(");
+  });
+});
+
+describe("strict bootstrap native directory inventory", () => {
+  it("rejects every additional file, including a non-DLL, before bootstrap loading", () => {
+    for (const name of ["planted.dll", "extra.txt"]) {
+      const { root, pins } = installation();
+      writeFileSync(path.join(root, "@microsoft/mxc-sdk/bin/x64", name), "unexpected");
+      expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).toThrow(MxcIntegrityError);
+    }
+  });
+});
+
+describe("packaged supervisor runtime byte inventory", () => {
+  it("records target runtime bytes and rejects altered or newly planted DLLs", async () => {
+    const { recordMxcSupervisorRuntime } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const { verifyMxcSupervisorRuntime } = await import("../../../scripts/lib/mxc-sdk-integrity.mjs");
+    const root = mkdtempSync(path.join(tmpdir(), "ave-runtime-inventory-")); roots.push(root);
+    const resources = path.join(root, "resources"), executable = path.join(root, "Ave.exe");
+    writeFileSync(executable, "unit-runtime-bytes");
+    writeFileSync(path.join(root, "runtime.dll"), "unit-dll-bytes");
+    recordMxcSupervisorRuntime(resources, "x64", executable);
+    expect(verifyMxcSupervisorRuntime(executable, resources, "x64")).toContain(executable);
+    writeFileSync(path.join(root, "planted.dll"), "unexpected");
+    expect(() => verifyMxcSupervisorRuntime(executable, resources, "x64")).toThrow(/Unexpected supervisor runtime DLL/);
+    rmSync(path.join(root, "planted.dll"));
+    writeFileSync(path.join(root, "runtime.dll"), "changed");
+    expect(() => verifyMxcSupervisorRuntime(executable, resources, "x64")).toThrow(/runtime mismatch/);
+  });
+
+  it("keeps addon archive pins aligned with locked resolutions and verifies notice bytes", () => {
+    const lock = readFileSync("bun.lock", "utf8");
+    for (const arch of ["x64", "arm64"] as const) expect(lock).toContain(`sha512-${PINS.sdk.addons[arch].tarballSha512Base64}`);
+    for (const [notice, expected] of Object.entries(PINS.sdk.notices)) {
+      expect(contentHash(readFileSync(path.join("resources/licenses/mxc", notice))), notice).toBe(expected);
+    }
+    expect(readFileSync("scripts/electron-after-sign.cjs", "utf8")).toContain("recordMxcSupervisorRuntime(");
+    expect(readFileSync("scripts/electron-before-pack.cjs", "utf8")).toContain("stageMxcSdkAddon(");
   });
 });

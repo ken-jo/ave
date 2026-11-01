@@ -11,9 +11,9 @@ export class MxcIntegrityError extends Error {
   }
 }
 
-// The installed tree is administrator-writable. A developer checkout does not
-// protect against concurrent mutation between verification and native loading.
-export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env) {
+// Installation files belong to the signed-in user. Verification detects drift,
+// but cannot protect against that user racing replacement during native loading.
+export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env, strictNativeDirectories = false) {
   if (!path.isAbsolute(nodeModules) || !Object.hasOwn(pins.sdk.architectures, arch)) {
     throw new MxcIntegrityError("Unsupported SDK installation or architecture");
   }
@@ -40,7 +40,11 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env)
       const file = path.join(root, ...name.split("/"), "package.json");
       const pkg = JSON.parse(readFileSync(file, "utf8"));
       if (pkg.name !== name || pkg.version !== version) throw new MxcIntegrityError(`Runtime resolution mismatch: ${name}`);
-      if (require.resolve(`${name}/package.json`) !== file) throw new MxcIntegrityError(`Runtime resolution redirected: ${name}`);
+      const entry = require.resolve(name);
+      const relativeEntry = path.relative(root, entry).split(path.sep).join("/");
+      if (!entry.startsWith(path.join(root, ...name.split("/")) + path.sep) || !Object.hasOwn(entries, relativeEntry)) {
+        throw new MxcIntegrityError(`Runtime resolution redirected: ${name}`);
+      }
     }
     const addonPackage = `@koromix/koffi-win32-${arch}`;
     const addonRoot = path.join(root, "@koromix", `koffi-win32-${arch}`);
@@ -52,14 +56,45 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env)
     const nativeDirectories = [path.join(sdkRoot, "bin", arch), path.join(addonRoot, `win32_${arch}`)];
     for (const directory of nativeDirectories) {
       for (const name of readdirSync(directory)) {
-        if (!/\.(dll|node)$/i.test(name)) continue;
+        if (!strictNativeDirectories && !/\.(dll|node)$/i.test(name)) continue;
         const relative = path.relative(root, path.join(directory, name)).split(path.sep).join("/");
-        if (!Object.hasOwn(entries, relative)) throw new MxcIntegrityError(`Unexpected native payload: ${relative}`);
+        if (!lstatSync(path.join(directory, name)).isFile() || !Object.hasOwn(entries, relative)) throw new MxcIntegrityError(`Unexpected native payload: ${relative}`);
       }
     }
     return { sdkRoot, nativeDirectories, addonPath: path.join(addonRoot, `win32_${arch}`, "koffi.node") };
   } catch (error) {
     if (error instanceof MxcIntegrityError) throw error;
     throw new MxcIntegrityError("Native SDK verification failed", { cause: error });
+  }
+}
+
+export function verifyMxcSupervisorRuntime(executable, resources, arch) {
+  try {
+    if (!["x64", "arm64"].includes(arch) || !path.isAbsolute(executable) || !path.isAbsolute(resources)) {
+      throw new MxcIntegrityError("Invalid supervisor runtime installation");
+    }
+    const manifest = JSON.parse(readFileSync(path.join(resources, "mxc", arch, "supervisor-runtime-pins.json"), "utf8"));
+    if (manifest.version !== 1 || manifest.arch !== arch || !manifest.files || typeof manifest.files !== "object" || Array.isArray(manifest.files)
+      || !Object.hasOwn(manifest.files, path.basename(executable))) throw new MxcIntegrityError("Invalid supervisor runtime pins");
+    const directory = path.dirname(realpathSync(executable));
+    const modules = [];
+    for (const [name, expected] of Object.entries(manifest.files)) {
+      if (path.basename(name) !== name || !/\.(exe|dll)$/i.test(name) || typeof expected !== "string" || !/^[a-f0-9]{64}$/.test(expected)) {
+        throw new MxcIntegrityError("Invalid supervisor runtime pin entry");
+      }
+      const file = path.join(directory, name);
+      if (realpathSync(file) !== file || !lstatSync(file).isFile()
+        || createHash("sha256").update(readFileSync(file)).digest("hex") !== expected) {
+        throw new MxcIntegrityError(`Supervisor runtime mismatch: ${name}`);
+      }
+      modules.push(file);
+    }
+    for (const name of readdirSync(directory)) {
+      if (/\.dll$/i.test(name) && !Object.hasOwn(manifest.files, name)) throw new MxcIntegrityError(`Unexpected supervisor runtime DLL: ${name}`);
+    }
+    return modules;
+  } catch (error) {
+    if (error instanceof MxcIntegrityError) throw error;
+    throw new MxcIntegrityError("Supervisor runtime verification failed", { cause: error });
   }
 }

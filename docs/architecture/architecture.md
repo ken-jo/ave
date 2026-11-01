@@ -2482,11 +2482,29 @@ BaseContainer where the host offers one. The shell path uses the MIT-licensed
 `wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.1 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
-npm tarball's sha512, each launcher's sha256). Ave does not load the SDK's
-JavaScript yet. The SDK JS, FFI addon and per-architecture DLL payloads are
-staged under `app.asar.unpacked` with installed-byte pins for the extension
-supervisor work in [the extension design](../design/windows-extensions-mxc.md#3-sdk-js-launcher-packaging-and-integrity).
-The native bootstrap and crash containment remain prerequisites to SDK loading. Each
+npm tarball's sha512, each launcher's sha256). The extension process primitive
+runs SDK operations in a dedicated supervisor under the packaged executable's
+Node mode. Existing holders are not routed to this primitive yet. SDK JS,
+FFI addon and architecture-specific DLLs live under `app.asar.unpacked`.
+Before any native require the supervisor verifies installed-byte pins and the
+whole selected native directories plus the packaged executable/runtime DLL inventory,
+then loads only the verified bootstrap addon. The inventory is recorded after
+assembly and signing, and all non-system loaded modules must match it or the SDK pins.
+That trusted addon immediately restricts this process's DLL search to system
+and verified native directories before SDK import or native container loading.
+Loaded module paths are audited; startup refuses overrides, tamper and unexpected
+modules without a backend retry. The trust model allows user-owned installation
+contents and does not protect against the same user racing replacement after
+verification. The current per-machine installer setting is unchanged and is not
+required by this trust premise. See [the bootstrap and lifetime contract](../design/windows-extensions-mxc.md#placement-and-dll-loading).
+A private inherited key/liveness pipe and direction-authenticated bounded frames
+connect main and supervisor; EOF starts teardown even while control input is blocked.
+Disposal closes liveness immediately. The supervisor retains a
+non-inherited kill-on-close job without breakaway permission before SDK spawn.
+Terminal receipts follow stream drain, native wait and disposal. Missing receipts,
+crashes or cleanup deadlines remain failures with unverified termination.
+Actual packaged imports, DLL paths and job/PSEC descendant cleanup require native
+verification on x64 and arm64 before readiness or holder activation. Each shell
 command spawns `wxc-exec.exe --config-base64 <request>`
 from the launcher's own directory (`mxc-windows.ts`, `mxc-shell-launch.ts`);
 no administrator rights or UAC prompt are needed per run or at install.

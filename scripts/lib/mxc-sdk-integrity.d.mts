@@ -11,4 +11,6 @@ export function verifyMxcSdk(
   arch: string,
   pins: MxcSdkPins,
   environment?: NodeJS.ProcessEnv,
+  strictNativeDirectories?: boolean,
 ): { sdkRoot: string; nativeDirectories: string[]; addonPath: string };
+export function verifyMxcSupervisorRuntime(executable: string, resources: string, arch: string): string[];

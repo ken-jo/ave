@@ -164,6 +164,26 @@
         "node-pty/prebuilds/win32-arm64/winpty.dll": "0247b4d007fcb8059cc2221ec41d736fa548246ce1e10256c15c96d1ef6f2e9c",
         "node-pty/prebuilds/win32-arm64/winpty.pdb": "d334454d6734da2ddf20e387f76943b51fd2530a29cac126d5ef653ca3fd1513"
       }
+    },
+    "notices": {
+      "koffi-LICENSE.txt": "22bcbbbacd739b026a8dc484f62a31484ce4c4e31f3408b60b29b4e41d62b290",
+      "koffi-node-addon-api-LICENSE.txt": "89024017b88a9f2b763f79b941a4f2db3b4428edfcacdc0b23866b2da633ad0c",
+      "koffi-node-api-headers-LICENSE.txt": "a553508f516031c91f3af1148d44970cb81bbae6c4f091be6835d39cc252238c",
+      "node-pty-LICENSE.txt": "a3d60eaf32d2fb09c9d82ef39f14bd6e2c0f3ca7de30daa827486c0d6f8b6e9f",
+      "node-pty-node-addon-api-LICENSE.txt": "89024017b88a9f2b763f79b941a4f2db3b4428edfcacdc0b23866b2da633ad0c",
+      "semver-LICENSE.txt": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b"
+    },
+    "addons": {
+      "x64": {
+        "package": "@koromix/koffi-win32-x64",
+        "version": "3.3.6",
+        "tarballSha512Base64": "g9KC6VKQLe88Tjgeubk3yhu0CjtqSeRq4XjWFWxUq4rsP0/wfLUBoeISvG60HoPmhYQp+U7hVd8Ms+amOMHDvA=="
+      },
+      "arm64": {
+        "package": "@koromix/koffi-win32-arm64",
+        "version": "3.3.6",
+        "tarballSha512Base64": "WDVsrvWAaHbA7xiCMXX3PBmfDf4+VnfY67ryRAW86QNW8109W9WPS3YVGGD2YoPswDmSZsMBVzzZCEFUrLdJuA=="
+      }
     }
   }
 }

@@ -1,138 +1,215 @@
-import { Readable, Writable } from "node:stream";
-import { finished } from "node:stream/promises";
-import type { MxcProcess } from "@microsoft/mxc-sdk/v1";
+import { randomBytes } from "node:crypto";
+import { PassThrough, Writable, type Duplex } from "node:stream";
+import type { ChildProcess } from "node:child_process";
+import { join } from "node:path";
+import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
+import { getHostResources } from "../main/host-resources.js";
+import { spawnManaged } from "../main/managed-child-processes.js";
+import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
+import { MxcExtensionChannel } from "./mxc-extension-channel.js";
+import { MXC_STREAM_CHUNK_BYTES } from "./mxc-extension-protocol.js";
+import { MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 
-export class MxcProcessContractError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "MxcProcessContractError";
-  }
-}
-
-export class MxcProcessCleanupError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "MxcProcessCleanupError";
-  }
-}
-
-export class MxcSupervisorLostError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "MxcSupervisorLostError";
-  }
-}
-
-type NativeProcess = Pick<MxcProcess, "id" | "standardInput" | "standardOutput" | "standardError" | "wait" | "kill" | "dispose">;
-type ProcessResult = Awaited<ReturnType<MxcProcess["wait"]>>;
-
-/** Lives only inside the dedicated native supervisor, never in the host process. */
-export class MxcExtensionProcess {
+interface ProcessResult { exitCode: number; timedOut: boolean }
+export interface OwnedMxcExtensionProcess {
   readonly id: number;
   readonly stdin: Writable;
-  readonly stdout: Readable;
-  readonly stderr: Readable;
+  readonly stdout: PassThrough;
+  readonly stderr: PassThrough;
   readonly completion: Promise<ProcessResult>;
-  private phase: "running" | "stopping" | "terminated" | "cleanup-failed" = "running";
-  private cleanup: Promise<void> | undefined;
-  private disposed = false;
+  readonly diagnostics: { nodeVersion: string; nativeModules: readonly string[] };
+  dispose(): Promise<void>;
+}
 
-  constructor(private readonly native: NativeProcess) {
-    this.id = native.id;
-    // Taking all three endpoints must precede wait, including on startup failure.
-    const stdin = native.standardInput;
-    const stdout = native.standardOutput;
-    const stderr = native.standardError;
-    if (!stdin || !stdout || !stderr) {
-      const failure = new MxcProcessContractError("Native process requires all standard streams");
-      try { void native.wait().catch(() => {}); } catch (error) { failure.cause = error; }
-      try { native.kill(); } catch (error) { failure.cause = error; }
-      try { native.dispose(); } catch (error) { failure.cause = error; }
-      throw failure;
+class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
+  id = 0;
+  readonly stdout = new PassThrough({ highWaterMark: MXC_STREAM_CHUNK_BYTES });
+  readonly stderr = new PassThrough({ highWaterMark: MXC_STREAM_CHUNK_BYTES });
+  readonly stdin: Writable;
+  readonly completion: Promise<ProcessResult>;
+  readonly ready: Promise<void>;
+  diagnostics = { nodeVersion: "", nativeModules: [] as string[] };
+  private readonly channel: MxcExtensionChannel;
+  private readonly liveness: Duplex;
+  private readonly closed: Promise<void>;
+  private result: ProcessResult | undefined;
+  private failure: Error | undefined;
+  private stopping = false;
+  private stopped = false;
+  private cleanup: Promise<void> | undefined;
+  private closedAlready = false;
+  private resolveReady!: () => void;
+  private rejectReady!: (error: Error) => void;
+  private resolveCompletion!: (result: ProcessResult) => void;
+  private rejectCompletion!: (error: Error) => void;
+
+  constructor(private readonly child: ChildProcess, generation: string, key: Buffer) {
+    if (!child.stdin || !child.stdout || !child.stderr || !child.stdio[3]) {
+      child.kill();
+      throw new MxcProcessContractError("Supervisor requires private standard streams");
     }
-    this.stdin = stdin;
-    this.stdout = stdout;
-    this.stderr = stderr;
-    // Stream errors remain visible to consumers and cannot become unhandled events.
-    for (const stream of [stdin, stdout, stderr]) stream.on("error", this.handleStreamError);
-    let waiting: Promise<ProcessResult>;
-    try {
-      waiting = native.wait();
-    } catch (cause) {
-      const failures: unknown[] = [cause];
-      try { native.kill(); } catch (error) { failures.push(error); }
-      try { native.dispose(); } catch (error) { failures.push(error); }
-      for (const stream of [stdin, stdout, stderr]) stream.off("error", this.handleStreamError);
-      throw new MxcProcessContractError("Native process attachment failed", { cause: new AggregateError(failures) });
-    }
-    this.completion = waiting.then(
-      (result) => {
-        if (!Number.isInteger(result.exitCode) || typeof result.timedOut !== "boolean") {
-          throw new MxcProcessContractError("Invalid native process completion");
-        }
-        if (this.phase !== "cleanup-failed") this.phase = "terminated";
-        return result;
+    this.channel = new MxcExtensionChannel(child.stdout, child.stdin, generation, key, "host");
+    this.liveness = child.stdio[3] as Duplex;
+    this.ready = new Promise<void>((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
+    this.completion = new Promise<ProcessResult>((resolve, reject) => { this.resolveCompletion = resolve; this.rejectCompletion = reject; });
+    void this.ready.catch(() => {}); void this.completion.catch(() => {});
+    this.stdin = new Writable({ highWaterMark: MXC_STREAM_CHUNK_BYTES,
+      write: (chunk: Buffer, _encoding, callback) => {
+        const send = async () => {
+          if (this.stopping || !this.id || this.result) throw new MxcProcessContractError("Extension input is closed");
+          for (let offset = 0; offset < chunk.length; offset += MXC_STREAM_CHUNK_BYTES) {
+            await this.channel.send({ type: "stdin", data: chunk.subarray(offset, offset + MXC_STREAM_CHUNK_BYTES).toString("base64") });
+          }
+        };
+        void send().then(() => callback(), (error: Error) => callback(error));
       },
-    ).catch((cause: unknown) => {
-      this.phase = "cleanup-failed";
-      if (cause instanceof MxcProcessContractError) throw cause;
-      throw new MxcSupervisorLostError("Native process termination is unverified", { cause });
+      final: (callback) => {
+        if (this.stopping || this.result) return callback();
+        void this.channel.send({ type: "stdin-end" }).then(() => callback(), (error: Error) => callback(error));
+      },
     });
-    // Keep the rejection observed even before the forwarding loop attaches.
-    void this.completion.catch(() => {});
+    const fail = (error: Error): void => this.fail(error);
+    for (const stream of [this.stdin, this.stdout, this.stderr, child.stdin, child.stdout, child.stderr, this.liveness]) stream.on("error", fail);
+    child.once("error", fail);
+    // Raw supervisor diagnostics are bounded and never interpreted as frames.
+    let diagnosticBytes = 0;
+    child.stderr.on("data", (chunk: Buffer) => {
+      diagnosticBytes += chunk.length;
+      if (diagnosticBytes > MXC_STREAM_CHUNK_BYTES) this.fail(new MxcProcessContractError("Supervisor diagnostics exceed limit"));
+    });
+    const reading = this.read();
+    void reading.catch(fail);
+    this.closed = new Promise<void>((resolve) => child.once("close", (code, signal) => {
+      this.closedAlready = true;
+      this.liveness.destroy();
+      void reading.catch(() => {}).then(() => {
+        if (!this.failure && code === 0 && !signal && this.result && this.id) this.resolveCompletion(this.result);
+        else if (!this.failure && code === 0 && !signal && this.stopped && this.stopping) {
+          const error = new MxcProcessContractError("Extension start was cancelled");
+          this.rejectReady(error); this.rejectCompletion(error);
+        } else this.fail(this.failure ?? new MxcSupervisorLostError("Extension supervisor exited without verified termination"));
+        this.stdout.end(); this.stderr.end(); this.stdin.destroy();
+        resolve();
+      });
+    }));
+    // The key is never placed in argv, environment, or the container request.
+    this.liveness.write(key, (error) => { if (error) fail(error); });
   }
 
-  get state(): string { return this.phase; }
+  async start(request: ContainerRequest): Promise<void> { await this.channel.send({ type: "start", request }); }
 
-  /** Resolves only after terminal settlement, output drain and successful disposal. */
+  private async read(): Promise<void> {
+    for await (const frame of this.channel.frames()) {
+      if (this.result || this.stopped) throw new MxcProcessContractError("Supervisor sent data after termination");
+      if (frame.type === "ready") {
+        if (this.id) throw new MxcProcessContractError("Duplicate supervisor readiness");
+        this.id = frame.id;
+        this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules };
+        this.resolveReady();
+      } else if (frame.type === "stdout" || frame.type === "stderr") {
+        if (!this.id) throw new MxcProcessContractError("Supervisor output preceded readiness");
+        await new Promise<void>((resolve, reject) => this[frame.type].write(Buffer.from(frame.data, "base64"),
+          (error) => error ? reject(error) : resolve()));
+      } else if (frame.type === "exit") {
+        if (!this.id) throw new MxcProcessContractError("Supervisor exit preceded readiness");
+        this.result = { exitCode: frame.exitCode, timedOut: frame.timedOut };
+      } else if (frame.type === "stopped") {
+        if (!this.stopping || this.id) throw new MxcProcessContractError("Unexpected supervisor stop receipt");
+        this.stopped = true;
+      } else if (frame.type === "error") {
+        if (frame.code === "cleanup") throw new MxcProcessCleanupError(frame.message);
+        if (frame.code === "supervisor-lost") throw new MxcSupervisorLostError(frame.message);
+        throw new MxcProcessContractError(frame.message);
+      } else throw new MxcProcessContractError("Unexpected supervisor event frame");
+    }
+  }
+
+  private fail(error: Error): void {
+    if (this.failure) return;
+    this.failure = error instanceof MxcProcessContractError || error instanceof MxcProcessCleanupError || error instanceof MxcSupervisorLostError
+      ? error : new MxcSupervisorLostError("Extension supervisor channel failed", { cause: error });
+    this.rejectReady(this.failure); this.rejectCompletion(this.failure);
+    void this.dispose().catch(() => {});
+  }
+
   dispose(): Promise<void> {
     this.cleanup ??= this.stop();
     return this.cleanup;
   }
 
-  private readonly handleStreamError = (): void => {
-    void this.dispose().catch(() => {});
-  };
-
   private async stop(): Promise<void> {
-    const failures: unknown[] = [];
-    const terminal = this.phase === "terminated";
-    if (!terminal) this.phase = "stopping";
+    this.stopping = true;
+    if (!this.liveness.destroyed && !this.liveness.writableEnded) this.liveness.end();
+    this.stdout.resume(); this.stderr.resume(); this.stdin.destroy();
+    if (!this.closedAlready && !this.result && !this.stopped) void this.channel.send({ type: "stop" }).catch(() => { this.child.kill(); });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Teardown drains bounded native pipe buffers even when the caller stopped reading.
-      this.stdout.resume();
-      this.stderr.resume();
-      const drained = Promise.all([
-        finished(this.stdout, { cleanup: true }),
-        finished(this.stderr, { cleanup: true }),
-      ]);
-      void drained.catch(() => {});
-      this.stdin.end();
-      if (!terminal) this.native.kill();
       await Promise.race([
-        Promise.all([this.completion, drained]),
+        this.closed,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new MxcProcessCleanupError("Native process cleanup deadline exceeded")),
-            TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+          timer = setTimeout(() => {
+            this.liveness.destroy(); this.child.kill();
+            reject(new MxcProcessCleanupError("Extension supervisor cleanup deadline exceeded"));
+          }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
         }),
       ]);
-    } catch (error) {
-      failures.push(error);
-    } finally {
-      clearTimeout(timer);
-      // dispose can reject wait asynchronously; completion already has a rejection observer.
-      if (!this.disposed) {
-        this.disposed = true;
-        try { this.native.dispose(); } catch (error) { failures.push(error); }
-      }
-    }
-    if (failures.length) {
-      this.phase = "cleanup-failed";
-      throw new MxcProcessCleanupError("Native process cleanup is unverified", { cause: new AggregateError(failures) });
-    }
-    this.phase = "terminated";
-    for (const stream of [this.stdin, this.stdout, this.stderr]) stream.off("error", this.handleStreamError);
+      if (this.failure || (!this.result && !this.stopped)) throw new MxcProcessCleanupError("Extension termination is unverified", { cause: this.failure });
+    } finally { clearTimeout(timer); }
   }
 }
+
+async function spawnWith(request: ContainerRequest, nodeModules: string, entry: string,
+  spawn: (entry: string, nodeModules: string, generation: string) => ChildProcess, signal?: AbortSignal): Promise<OwnedMxcExtensionProcess> {
+  assertMxcExtensionRequest(request);
+  if (signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+  const generation = randomBytes(32).toString("hex"), key = randomBytes(32);
+  const child = spawn(entry, nodeModules, generation);
+  const owned = new SupervisedMxcProcess(child, generation, key);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let startupAbort: (() => void) | undefined;
+  const abort = (): void => { void owned.dispose().catch(() => {}); };
+  signal?.addEventListener("abort", abort, { once: true });
+  void owned.completion.finally(() => signal?.removeEventListener("abort", abort)).catch(() => {});
+  try {
+    await Promise.race([
+      owned.start(request).then(() => owned.ready),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new MxcSupervisorLostError("Extension supervisor startup deadline exceeded")), TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
+        if (signal) {
+          startupAbort = () => reject(new MxcProcessContractError("Extension start was cancelled"));
+          signal.addEventListener("abort", startupAbort, { once: true });
+          if (signal.aborted) startupAbort();
+        }
+      }),
+    ]);
+    if (signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+    return owned;
+  } catch (error) {
+    signal?.removeEventListener("abort", abort);
+    try { await owned.dispose(); } catch (cleanupError) {
+      throw new MxcProcessCleanupError("Extension startup cleanup is unverified", { cause: new AggregateError([error, cleanupError]) });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (startupAbort) signal?.removeEventListener("abort", startupAbort);
+  }
+}
+
+/** The caller supplies an already-admitted immutable plan; no holder is wired here. */
+export async function spawnMxcExtensionProcess(request: ContainerRequest, options: { signal?: AbortSignal } = {}): Promise<OwnedMxcExtensionProcess> {
+  if (process.platform !== "win32") throw new MxcProcessContractError("Native extension processes require Windows");
+  const resources = getHostResources();
+  if (!resources.isPackaged) throw new MxcProcessContractError("Native extension processes require a verified packaged installation");
+  const nodeModules = join(resources.resourcePath, "app.asar.unpacked", "node_modules");
+  const entry = join(resources.resourcePath, "app.asar", "dist", "src", "main", "mxc-extension-supervisor.js");
+  // The supervisor needs only the runtime mode; the admitted container environment
+  // is a separate sealed request and never inherits the supervisor's environment.
+  return spawnWith(request, nodeModules, entry, (file, modules, generation) => spawnManaged(process.execPath, [file, modules, generation], {
+    env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }), cwd: resources.resourcePath, stdio: ["pipe", "pipe", "pipe", "pipe"],
+  }, { label: "extension-native-supervisor" }), options.signal);
+}
+
+export const _spawnMxcExtensionProcessForTest = spawnWith;

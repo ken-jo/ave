@@ -186,4 +186,4 @@ THE SOFTWARE.
 - **semver:** 7.7.4 (ISC).
 - **node-pty:** 1.1.0 (MIT), shared with the existing terminal runtime.
 
-License texts are included under `resources/licenses/mxc/`. Installed-byte hashes for the selected runtime artifacts are recorded in `src/permissions/mxc-launcher-pins.json`. Native packaged loading and dynamic DLL dependencies require verification on each target architecture.
+License texts and the native API header notices embedded by the FFI and terminal addons are included under `resources/licenses/mxc/`. Installed-byte hashes for the selected runtime artifacts are recorded in `src/permissions/mxc-launcher-pins.json`. Native packaged loading and dynamic DLL dependencies require verification on each target architecture.
