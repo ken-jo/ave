@@ -154,6 +154,8 @@ describe("browser tools", () => {
     beforeActions?: () => void | Promise<void>;
     onPrepare?: (target: BrowserActionTab<FakeGuest>) => void | Promise<void>;
     mode?: "default" | "strict" | "auto" | "allow";
+    /** The conversation is a side or pane chat: no window opens agent tabs for it. */
+    noTabOpener?: boolean;
   } = {}) {
     const tabs = new BrowserTabRegistry<FakeGuest>();
     const ops: Array<{ windowId: number; requestId?: string; op: string }> = [];
@@ -171,6 +173,7 @@ describe("browser tools", () => {
       liveOriginSessionId: (sessionId) => sessionId === CHILD_SESSION ? HOST_SESSION : undefined,
       tabs,
       pickUploadFiles: async () => null,
+      opensAgentTabs: () => options.noTabOpener !== true,
       loadActions: async () => {
         await options.beforeActions?.();
         return page.actions;
@@ -345,6 +348,19 @@ describe("browser tools", () => {
     expect(result).toMatchObject({ isError: true, output: expect.stringContaining("Action fixture failed") });
     expect(observed.begun).toEqual(["click"]);
     expect(observed.completed).toEqual([]);
+  });
+
+  it("refuses browser_tab_new at once in a chat that cannot open tabs, naming its attached page", async () => {
+    const h = harness({ noTabOpener: true });
+    const attached = h.userTab("https://www.google.com/");
+    h.tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${attached.guest.id}` });
+    const result = await h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain(`it works in ${attached.handle} (https://www.google.com/)`);
+    expect(result.output).toContain("browser_navigate");
+    expect(h.ops.filter((op) => op.op === "new")).toHaveLength(0);
+    expect(h.cards).toHaveLength(0);
+    expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain(`it works in ${attached.handle}`);
   });
 
   it("observes successful agent open, switch and close operations", async () => {
