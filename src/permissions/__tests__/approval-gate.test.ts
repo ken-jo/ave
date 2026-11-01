@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import "../../__tests__/support/trusted-powershell.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
@@ -1620,6 +1621,14 @@ describe("ApprovalGate", () => {
 
   // Remote-controller origin The marker answers "was a remote controller's turn blocked on this approval?" It is a fact the host wrote down, not one a later reader reconstructs from the reason text, and not one the renderer is asked for or told. Every assertion below is about that: the value the host set, on the rows that outlive the request, and nowhere the renderer can see.
   describe("remote-controller origin", () => {
+    function makeControllerRequest(overrides: Partial<RequestInput>): RequestInput {
+      const sessionId = overrides.sessionId ?? "controller-session";
+      const authority = overrides.remoteControllerOrigin === "platform-bridge"
+        ? makePlatformBridgeAuthority()
+        : { kind: "tailnet-controller" as const, actorId: "tailnet:controller-digest" as const };
+      return makeRequest({ ...overrides, sessionId, remoteControllerAuthority: bindRemoteControllerToSession(authority, sessionId) });
+    }
+
     function originOf(row: string): string | undefined {
       return /(?:^| )remoteControllerOrigin=(\S+)/.exec(row)?.[1];
     }
@@ -1635,7 +1644,7 @@ describe("ApprovalGate", () => {
       const { wc, auditLogger, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(
-        makeRequest({
+        makeControllerRequest({
           id: "origin-tailnet",
           remoteControllerOrigin: "tailnet-controller",
         }),
@@ -1665,7 +1674,7 @@ describe("ApprovalGate", () => {
       const { wc, auditLogger, gate } = makeAuditingGate();
 
       const promise = gate.requestAndWait(
-        makeRequest({
+        makeControllerRequest({
           id: "origin-bridge",
           remoteControllerOrigin: "platform-bridge",
         }),
@@ -1688,7 +1697,7 @@ describe("ApprovalGate", () => {
     it("states positively that no controller is behind an ordinary approval", async () => {
       const { wc, auditLogger, gate } = makeAuditingGate();
 
-      const promise = gate.requestAndWait(makeRequest({ id: "origin-desk" }));
+      const promise = gate.requestAndWait(makeControllerRequest({ id: "origin-desk" }));
       const { nonce, hmac } = lastSentNonceHmac(wc);
       gate.resolve("origin-desk", {
         requestId: "origin-desk",
@@ -1711,7 +1720,7 @@ describe("ApprovalGate", () => {
         const { auditLogger, gate } = makeAuditingGate();
 
         const promise = gate.requestAndWait(
-          makeRequest({
+          makeControllerRequest({
             id: "origin-timeout",
             remoteControllerOrigin: "tailnet-controller",
           }),
@@ -1736,7 +1745,7 @@ describe("ApprovalGate", () => {
 
       await expect(
         gate.requestAndWait(
-          makeRequest({
+          makeControllerRequest({
             id: "origin-blocked",
             remoteControllerOrigin: "platform-bridge",
             target: { filePath: "/home/u/.ssh/id_rsa" },
@@ -1756,7 +1765,7 @@ describe("ApprovalGate", () => {
       const { wc, gate } = makeAuditingGate();
 
       void gate.requestAndWait(
-        makeRequest({
+        makeControllerRequest({
           id: "origin-not-sent",
           remoteControllerOrigin: "tailnet-controller",
           abortSignal: new AbortController().signal,
@@ -1819,15 +1828,26 @@ describe("ApprovalGate", () => {
     });
   });
 
-  it("keeps a remote-controller read request on a one-shot human card", async () => {
+  it("keeps bound remote requests eligible for the ordinary approval choices", async () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const request = makeRequest({ sessionId: "away-session", remoteControllerOrigin: "platform-bridge", remoteControllerAuthority: makePlatformBridgeAuthority(), toolCategory: "read", durableApprovalRecordAllowed: false });
+    const request = makeRequest({ sessionId: "away-session", remoteControllerOrigin: "platform-bridge", remoteControllerAuthority: bindRemoteControllerToSession(makePlatformBridgeAuthority(), "away-session"), toolCategory: "write", allowedChoices: ["allow-once", "allow-session", "deny-once"] });
     const pending = gate.requestAndWait(request);
     const card = sentApprovalCards<ApprovalRequest>(wc)[0]!;
-    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(card.allowedChoices).toEqual(["allow-once", "allow-session", "deny-once"]);
     gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, wc as never);
     await expect(pending).resolves.toMatchObject({ choice: "deny-once" });
+  });
+
+  it.each(["missing", "unbound", "wrong-session"] as const)("denies a remote card with %s session authority", async kind => {
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const authority = makePlatformBridgeAuthority();
+    const remoteControllerAuthority = kind === "missing" ? undefined : kind === "unbound" ? authority : bindRemoteControllerToSession(authority, "another-session");
+    const decision = await gate.requestAndWait(makeRequest({ sessionId: "controller-card", remoteControllerOrigin: "platform-bridge", remoteControllerAuthority }));
+    expect(decision.choice).toBe("deny-once");
+    expect(isHostApprovalRejectedDecision(decision)).toBe(true);
+    expect(wc.send).not.toHaveBeenCalled();
   });
 
   describe("turn abort", () => {

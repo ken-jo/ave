@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,15 @@ function check(patch: PermissionCheckContext = {}) {
 }
 
 describe("host terminal admission before directory authorization", () => {
+  it("admits the bound remote owner through the shared terminal choice", async () => {
+    const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner" }, "pane");
+    manager.setUserOwnedSurfaceChoice("pane", "browser", "allow");
+    await runWithHostTerminalTurn({ sessionId: "pane", turnId: "typed-turn" }, async () => {
+      expect(check({ remoteControllerAuthority, trustOrigin: "tailnet-surface" })).toMatchObject({ decision: "allow", reasonCode: "user-owned-surface-allow" });
+      noteToolResultsReturnedToModel();
+      expect(check({ remoteControllerAuthority, trustOrigin: "file-content" })).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "other-principal" });
+    });
+  });
   it("normalizes a manual scope to its physical host rule target when the caller omits that target", async () => {
     manager.setMode("default");
     const command = "touch output.txt";
@@ -54,7 +64,6 @@ describe("host terminal admission before directory authorization", () => {
   it.each([
     { headless: true },
     { approvalSurface: "unavailable" as const },
-    { remoteControllerAuthority: {} as never },
     { trustOrigin: "plugin-emitted" as const },
     { trustOrigin: undefined },
     { sessionId: "another-pane" },

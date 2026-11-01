@@ -14,7 +14,7 @@ export interface ApprovalScopeOption {
 export interface ApprovalScopeInput {
   candidatePath: string;
   suggestedParent: string | null;
-  // Host-imposed narrowing (e.g. a remote-controller one-shot request).
+  // Host-imposed narrowing for a forced one-shot request.
   allowedChoices?: readonly ApprovalChoice[];
 }
 

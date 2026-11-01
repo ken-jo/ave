@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 // Establish the remote-controller extension boundary before asynchronous lifecycle dispatch.
 import { describe, expect, it, vi } from "vitest";
 
@@ -30,12 +31,12 @@ function buildLoop(scriptHookManager: ScriptHookManager): ConversationLoop {
 }
 
 describe("ConversationLoop Tailnet extension policy", () => {
-  it("propagates disabled external hooks through an asynchronous lifecycle dispatch", async () => {
+  it("propagates ordinary external hooks through an asynchronous lifecycle dispatch", async () => {
     const provider = new SingleTurnProvider();
     const manager = new ScriptHookManager();
     const lifecycleDispatch = vi.spyOn(manager, "runLifecycleEvent").mockImplementation(async () => {
-      expect(areExternalTurnHooksAllowed()).toBe(false);
-      return { decision: "allow", reason: "suppressed", results: [] };
+      expect(areExternalTurnHooksAllowed()).toBe(true);
+      return { decision: "allow", reason: "observed", results: [] };
     });
     const promptDispatch = vi.spyOn(manager, "runUserPromptSubmit");
     const loop = buildLoop(manager);
@@ -43,14 +44,15 @@ describe("ConversationLoop Tailnet extension policy", () => {
 
     const result = await loop.runTurn("tailnet request", undefined, undefined, {
       inputOrigin: "tailnet-surface",
-      remoteControllerAuthority: {
+      remoteControllerAuthority: bindRemoteControllerToSession({
         kind: "tailnet-controller",
         actorId: "tailnet:conversation-loop-policy-test",
-      },
+      }, loop.getSessionId()),
     });
 
     expect(result.text).toBe("ok");
-    expect(promptDispatch).not.toHaveBeenCalled();
+    expect(loop.history.getUserQuoteTexts(loop.getSessionId())).toEqual(["tailnet request"]);
+    expect(promptDispatch).toHaveBeenCalled();
     expect(lifecycleDispatch.mock.calls.some((call) => call[0] === "Stop")).toBe(true);
   });
 });

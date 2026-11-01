@@ -135,7 +135,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           id: randomUUID(),
           category: "tool",
           toolName: "skill_load",
-          // Leave allowedChoices unset so remote one-shot read grants cannot approve unseen skill bodies.
+          // Leave allowedChoices unset so loading unseen skill bodies retains its own approval contract.
           toolCategory: SKILL_LOAD_CATEGORY,
           // Attribute approval to the loading session; preserve rejection of missing identity after the user's decision.
           ...(typeof ctx.metadata?.sessionId === "string" && ctx.metadata.sessionId

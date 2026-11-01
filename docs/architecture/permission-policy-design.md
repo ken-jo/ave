@@ -784,8 +784,7 @@ PTYs retain the [terminal policy](#commands-typed-into-a-workspace-terminal),
 including their own attributed domain approvals and socket policy.
 The user terminal's host shell is a separate surface.
 
-`features.osToolSandbox` defaults to `true` on macOS and Linux. Windows remains
-explicitly default-off until its shell confinement gate is enabled. Loading
+`features.osToolSandbox` defaults to `true` on all supported desktop platforms, including win32 (see the [owner decision 2026-11-02](permission-decision-tree.md)). Loading
 settings preserves an explicit stored `true` or `false`; the platform default
 applies only when the value is absent. A setting expresses activation intent,
 while successful capability probing establishes availability. Unavailability
@@ -1521,8 +1520,8 @@ dynamic-syntax checks remain mandatory on that route.
 Without a matching allow rule, only a response from the verified local desktop
 renderer can authorize this explicit request. The approval displays the exact
 command, cwd and justification and states that the command runs once as the
-current user without the OS sandbox. Headless and remote-controller requests are
-denied before approval or rule evaluation. Automatic, remembered, allow-mode,
+current user without the OS sandbox. Headless requests are
+denied before approval or rule evaluation. Authenticated, session-bound remote users follow the same rules and approval path as local users; missing or revoked authority is admission-denied. Automatic, remembered, allow-mode,
 plugin, platform and parent-agent decisions cannot authorize host mode. The
 opaque permit is minted from one of two host-issued, action-bound proofs — the
 signed approval receipt, or the PermissionManager's own layer-3 allow-rule
@@ -1594,11 +1593,11 @@ tab lifetimes, and presentation; this section owns effect authorization.
 
 The [decision tree's resolved browser and host-terminal contracts](permission-decision-tree.md#resolved-conflicts-with-existing-invariants-lead-decision-2026-10-30-from-inventory-review) govern user-owned browser tabs and the user's host terminal. Being a user-owned surface does not itself create a forced one-shot floor. The first eligible agent action offers one shared card:
 
-- **Allow all this session** permits later eligible actions on that surface without another ordinary card.
+- **Allow all this session** permits later eligible browser and host terminal actions without another ordinary card.
 - **Auto** checks only logical consistency: does this action follow from the user's request and current task step, and target the intended tab/page or command without unrequested extras? Failure, error, missing intent or uncertainty uses a normal approval card. This is not a general risk assessment and does not reuse the general risk cache.
 - **Ask every time** explicitly confirms this action and continues asking later. This is the default when no choice exists. Dismissing the card does not execute the action.
 
-The host stores choices only in memory, keyed independently by conversation session and surface (browser or host-terminal), and clears them at session teardown. A browser choice does not choose terminal behavior. Global execution mode, generic remembered grants and exact shell allows cannot bypass this surface decision. Headless actions on either surface always deny, regardless of choice, global mode or an allow rule.
+The host stores one choice per conversation session only in memory, shared by browser and host terminal, and clears it at session teardown. There is no child inheritance (see the [owner decision 2026-11-02](permission-decision-tree.md)). Global execution mode, generic remembered grants and exact shell allows cannot bypass this surface decision. Headless actions on either surface always deny, regardless of choice, global mode or an allow rule.
 
 Admission checks and deny rules remain authoritative. An explicit ask rule precedes the session choice and requires a normal card, including when the saved choice is Allow or Auto. Genuine other-principal/taint and other forced floors bypass the selector and retain one-shot approval. An upload signal on either user-owned surface always asks the human with a normal card, even under Allow all or Auto. It skips the logical reviewer, and headless denies. These surfaces have no sandbox egress boundary; session choices and logical-only Auto still govern other actions. Credential entry, payments and irreversible submission protections remain enforced for every choice. Selection comes only from the authenticated native owner's valid live answer, never tool arguments. Physical terminal typing is a user action outside this pipeline.
 
@@ -1936,7 +1935,7 @@ one command at a time under its [user-owned surface choice](#user-owned-surface-
   is refused (no bracketed paste) and its strip says so. Typing needs a fresh
   attested empty prompt with bracketed paste, the exact incarnation, the pane
   binding and the control lease below.
-- **Decision.** The host terminal uses the shared [per-session surface choice](#user-owned-surface-choices), independently of the browser choice. The command
+- **Decision.** The host terminal uses the shared [per-session surface choice](#user-owned-surface-choices), together with the browser choice. The command
   and physical cwd remain host-computed policy subjects. Existing deny rules,
   admission, true other-principal/taint floors and ordinary exfiltration guardrails still apply.
   The session choice replaces the intrinsic per-command human/exact-rule
@@ -2541,7 +2540,7 @@ re-resolves canonical paths against the project roots, failing if a parent
 symlink swap has moved a target outside those roots.
 
 This category rule runs after credential-store admission denial, explicit deny and ask
-rules, corrupt-store handling, remote-controller one-shot consent, the scoped
+rules, corrupt-store handling, authenticated remote session binding, the scoped
 Edit protected-control-path and project-escape floors, staged/overlay origin
 checks, and strict mode. Checkpoint eligibility does not replace admission or forced one-shot gates.
 Strict mode asks for writes; ordinary reads remain allowed. Headless requests

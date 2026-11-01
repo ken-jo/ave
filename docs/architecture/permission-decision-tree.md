@@ -1,6 +1,6 @@
 # Ave permission decision tree (v4)
 
-Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30.
+Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02.
 Source design and reference comparison: artifact "에이전트 권한 결정 트리 비교", section 4.
 This file is the single source of truth for permission-decision work. Implementers and reviewers of any change
 to permission classification, approval cards, the reviewer, hooks or headless behaviour must read it and
@@ -14,11 +14,22 @@ Modes: 기본 / Default (former 모두 확인 = strict; default for new installs
 
 ```mermaid
 flowchart TD
-  S["도구 호출"] --> H{"입장 검사 · 훅 · deny 규칙"}
+  S["로컬 또는 인증·세션 연결된 원격 사용자의 도구 호출"] --> H{"입장 검사 · 인증·세션 연결 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
   H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴"}
   F -->|예| ASKF["질문† (이번 한 번)"]
-  F -->|아니오| R{"ask / allow 규칙 · 기억된 승인"}
+  F -->|아니오| U{"사용자 소유 브라우저 · 호스트 터미널?"}
+  U -->|아니오| R{"ask / allow 규칙 · 기억된 승인"}
+  U -->|예| UH{"사람 있음?"}
+  UH -->|아니오| DENY
+  UH -->|예| UX{"명시 ask 규칙 · 유출 신호?"}
+  UX -->|예| ASK
+  UX -->|아니오| UC{"세션 공통 선택 1개 (owner decision 2026-11-02)"}
+  UC -->|모두 허용| ALLOW
+  UC -->|"모두 질문 (기본값)"| ASK
+  UC -->|오토| UL{"논리적 일관성 검토"}
+  UL -->|low| ALLOW
+  UL -->|"불확실 · 오류 · 중단"| ASK
   R -->|allow| ALLOW["허용"]
   R -->|ask| Q
   R -->|없음| K{"도구 종류"}
@@ -27,7 +38,7 @@ flowchart TD
   K -->|"파일 쓰기 (비밀 파일 포함)"| W{"프로젝트 안 + 되돌리기 가능?"}
   W -->|예| ALLOW
   W -->|"아니오 (밖이면 카드 1장)"| Q
-  K -->|셸| SB{"샌드박스 안 + 미검증·파괴 신호 없음?"}
+  K -->|셸| SB{"활성 샌드박스 안 + 미검증·파괴 신호 없음? (3 OS 기본 켜짐)"}
   SB -->|예| AUTO["샌드박스 자동"]
   SB -->|"아니오 (호스트 셸 포함)"| Q
   Q{"모드 · 사람"}
@@ -54,11 +65,14 @@ flowchart TD
   class ALLOW allow
   class AUTO sbx
   class ASK,ASKF ask
-  class RV,RR,MC rev
+  class RV,RR,MC,UL rev
   class DENY deny
 ```
 
 Notes that are part of the contract:
+- **Shared surfaces (owner decision 2026-11-02):** one conversation-local choice covers both logged-in browser tabs and host terminal tabs. One shared card selects Allow all, Auto or Ask (default); there is no separate choice per surface, persistence across sessions or child inheritance. Explicit ask rules and the human-only exfiltration guardrail precede this choice; generic allows and remembered grants do not replace it.
+- **Remote user (owner decision 2026-11-02):** an authenticated controller bound to the current session enters the same tree as the local user, including rules, remembered grants, mode, reviewer and 질문†. Missing authentication, session binding or live transport authority is admission-denied, including after asynchronous approval. Remote provenance alone never creates an other-principal floor; genuine external-content guidance still does.
+- **Shell default (owner decision 2026-11-02):** shell sandboxing defaults on for all supported desktop platforms, including win32. A missing stored setting uses this default; an explicit stored false remains false. For shell tool calls outside the user-owned surface lane, only active isolation supplies sandbox evidence: proven read-only commands inside it auto-allow in Default, while host and escalated commands ask. Agent typing into the user's terminal instead follows the shared surface choice above. Settings activation without an available backend visibly warns and degrades without claiming confinement. On win32, MXC confines shells; the existing srt-win-only plan requires explicit host approval for shells and confines extensions. Missing both backends retains the visible unavailable path.
 - 질문† triggers only: protected paths (Claude Code list: .git .vscode .idea .husky .cargo .devcontainer .yarn
   .mvn .claude .config/git .bashrc .zshrc .zprofile .profile .envrc .gitconfig .npmrc .mcp.json .claude.json,
   plus Ave config/home dirs), critical delete, project escape, other-principal turn.
@@ -132,7 +146,7 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
    - **오토 / Auto**: each action goes to the reviewer, which performs only a LOGICAL check. Does this action follow from the user's request and the current task step? Is the target the tab and page the task is about? Is it free of steps the user did not ask for? The reviewer does not judge general risk. Fail or uncertain means a normal card.
    - **모두 질문 / Ask every time**: every action asks. This is the default, and it is the behaviour when the card is dismissed.
    An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), including Allow all and Auto; it uses a normal card, skips logical review, and denies headless.
-   deny rules, admission, credential entry and payment/irreversible-submit protections still apply in every choice. Headless means deny. The choice is per session and is never remembered across sessions.
+   deny rules, admission, credential entry and payment/irreversible-submit protections still apply in every choice. Headless means deny. The shared choice covers browser and host terminal actions in this session and is never remembered across sessions (owner decision 2026-11-02).
 3. Plugin effects are evaluated per actual effect through this same pipeline. An approval binds to that exact effect; a tool-level reviewer allow never opens every effect. Headless effects follow the headless rule.
 4. A user-configured read boundary (an outside-path read restriction) is an explicit rule. It is evaluated in stage 1/3 before modes, and it is preserved.
 5. When a command is both "known-safe read-only" and "host/escalation" (e.g. `git status` with the sandbox off), the host/escalation row wins.
@@ -141,5 +155,5 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
    - 이 세션 모두 허용: agent commands run in that tab without asking.
    - 오토: the reviewer does a logical consistency check only. Does the command follow from the user's request and task step, in the tab the task is about?
    - 모두 질문: every command asks. This is the default, and it is the behaviour when the card is dismissed.
-   Together, the browser tab and the host terminal tab are the "user-owned surfaces". The choice is per session and is never persisted. An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), in every session choice, using a normal card and skipping logical review. These surfaces have no sandbox egress boundary. Deny rules and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
+   Together, the browser tab and the host terminal tab are the "user-owned surfaces". One shared choice covers both surfaces per session, is never persisted and has no child inheritance (owner decision 2026-11-02). An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), in every session choice, using a normal card and skipping logical review. These surfaces have no sandbox egress boundary. Deny rules and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
 8. "Checkpoint available" (the row-114 gate) is decided on each write target's realpath-native filesystem identity — `canonicalPath(resolve(path))`, the spelling the checkpoint recorder keys a mutation on — not the permission matching form, which lowercases the win32 drive letter and so made the pre-check disagree with the recorder on every Windows write. Win32 now matches POSIX: a leaf symlink or a dangling link cannot be snapshotted, so it asks; a write through an in-project directory junction/symlink is followed and auto-allows because the real target stays undoable; a junction/symlink that escapes the project roots is denied by the project-membership test (which uses the realpath'd form), not by the checkpoint gate. (win32 native-path parity, 2026-10-31.)

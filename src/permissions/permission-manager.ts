@@ -10,7 +10,7 @@ import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permiss
 import { UserOwnedSurfaceReviewError, type UserOwnedSurfaceReviewInput } from "./reviewer/user-owned-surface-reviewer.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
+import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -101,23 +101,6 @@ export type PermissionDecision = "allow" | "deny" | "ask";
 
 // Which host shell's language a shell rule subject is written in.
 
-
-// The first Tailnet-controller release intentionally excludes tools that either create work beyond the current turn or expand the tool/instruction surface. This is a host-owned boundary; it is evaluated before any local permission memory, allow rule, reviewer, or global allow-mode decision.
-const TAILNET_CONTROLLER_P1_BLOCKED_TOOLS = new Set([
-  "bash",
-  "bash_kill",
-  "bash_output",
-  "powershell",
-  "request_plugin",
-  "routine_schedule",
-  "skill_load",
-  "tool_search",
-]);
-
-// Shared fail-closed check for the executor fallback when no manager is wired.
-export function isTailnetControllerP1BlockedTool(toolName: string): boolean {
-  return TAILNET_CONTROLLER_P1_BLOCKED_TOOLS.has(toolName);
-}
 
 // graduated grant tier. A persisted "Allow always" grant carries a tier so a grant made on a read tool ("read") does NOT silently authorize a later write/shell/network/meta invocation of the same pattern, while a grant made on a write/shell/network/meta tool ("write") covers everything. This makes a grant category-aware instead of the previous flat, all-or-nothing behaviour. The ranking is monotone (read < write): a grant is only ever upgraded, never downgraded, and the covered set widens with the tier.
 export type GrantTier = "read" | "write";
@@ -244,7 +227,7 @@ export interface PermissionCheckContext {
   ownerUnattended?: boolean;
   // Permission policy — full approval-cache identity for authority-sensitive tools. When present, user allow rules / allow-always entries match this key instead of the bare tool name so a benign prior approval cannot silently authorize a later call with a broader argument scope.
   approvalCacheKey?: string;
-  // Host-owned remote-controller provenance; bypasses every remembered allow.
+  // Host-owned authenticated controller provenance, bound to this session.
   remoteControllerAuthority?: RemoteControllerAuthority;
   // Tool-author `decisionOverride` for `meta`-category builtin tools, carried from the executor so the post-computation guard owns re-elevation (V1 SOT). A foreground `"ask"` meta invocation uses the same reviewer route as write/shell/network in automatic execution mode; otherwise it remains a per-invocation `forceModal` ask. `"always-allow-with-audit"` is short-circuited before checkDetailed runs. Non-meta callers pass `undefined`.
   decisionOverride?: "ask" | "always-allow-with-audit";
@@ -1276,16 +1259,18 @@ export class PermissionManager {
   }
 
   private hostTerminalEvidence(context: HostTerminalPermissionContext, admissionDenial: PermissionDecisionRequest["admissionDenial"], floor: PermissionDecisionRequest["floor"]): Pick<PermissionDecisionRequest, "admissionDenial" | "floor"> {
+    if (!isRemoteControllerBoundToSession(context.remoteControllerAuthority, context.sessionId) || ((context.trustOrigin === "tailnet-surface" || context.trustOrigin === "platform-bridge") && context.remoteControllerAuthority === undefined)) {
+      admissionDenial ??= { code: "remote-controller-unbound", reason: "Remote controller authentication or session binding is unavailable." };
+    }
     if (context.hostTerminalTurn) {
       const scope = context.hostTerminalTurn;
-      if (context.remoteControllerAuthority) {
-        admissionDenial ??= { code: "host-terminal-turn", reason: "Host terminal typing is unavailable to remote-controller requests" };
-      } else if (context.headless === true || context.approvalSurface === "unavailable") {
+      if (context.headless === true || context.approvalSurface === "unavailable") {
         admissionDenial ??= { code: "host-terminal-turn", reason: NO_APPROVER_MESSAGE };
       } else {
         const hostTurn = currentHostTerminalTurn(scope.sessionId);
         const externalContent = hostTurn?.externalContentSeen() === true;
         const trusted = context.trustOrigin !== undefined && isUntaintedToolTrustOrigin(context.trustOrigin)
+          || context.remoteControllerAuthority !== undefined && isRemoteControllerBoundToSession(context.remoteControllerAuthority, context.sessionId) && (context.trustOrigin === "tailnet-surface" || context.trustOrigin === "platform-bridge")
           || context.trustOrigin === "file-content" && externalContent;
         if (!trusted || !hostTurn || hostTurn.turnId !== scope.turnId || context.sessionId !== scope.sessionId || hostTurn.otherPrincipalGuidance()) {
           admissionDenial ??= { code: "host-terminal-turn", reason: "Host terminal typing is available only to the user's own turn in its pane chat" };
@@ -1297,7 +1282,7 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
-    const hostTerminalContext = context?.hostTerminalTurn || context?.userOwnedBrowser ? Object.freeze({
+    const hostTerminalContext = context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
       ...(context.hostTerminalTurn ? { hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }) } : {}), userOwnedBrowser: context.userOwnedBrowser,
       trustOrigin: context.trustOrigin, sessionId: context.sessionId,
       remoteControllerAuthority: context.remoteControllerAuthority, headless: context.headless, approvalSurface: context.approvalSurface,
@@ -1372,7 +1357,7 @@ export class PermissionManager {
           typeof judge.rationale !== "string" || typeof judge.breakerTripped !== "boolean" ||
           judge.fallback !== undefined && !["timeout", "error", "unparseable", "unavailable"].includes(judge.fallback) ||
           judge.pause !== undefined && judge.pause !== "consecutive" && judge.pause !== "total"
-        : !["judge-off", "rule-decided", "strict-mode", "capability-grant", "remote-controller", "category-not-judged", "category-disabled", "breaker-open"].includes(judge.skip))) {
+        : !["judge-off", "rule-decided", "strict-mode", "capability-grant", "category-not-judged", "category-disabled", "breaker-open"].includes(judge.skip))) {
       throw new JudgeContractError("Permission review requires valid judge evidence");
     }
     this.pipelineRequests.delete(result);
@@ -1432,10 +1417,10 @@ export class PermissionManager {
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
     const policyError = this.rulesLoadError?.message ?? (projectRuleState?.ok === false ? projectRuleState.error.message : undefined) ?? context.permissionStoreError;
     if (policyError) admissionDenial ??= { code: "policy-unreadable", reason: policyError };
-    if (context.remoteControllerAuthority && (category === "meta" || isTailnetControllerP1BlockedTool(toolName))) {
-      admissionDenial ??= { code: "controller-capability", reason: "Remote controller capability-expanding operations are not enabled." };
+    if (!isRemoteControllerBoundToSession(context.remoteControllerAuthority, context.sessionId) || ((context.trustOrigin === "tailnet-surface" || context.trustOrigin === "platform-bridge") && context.remoteControllerAuthority === undefined)) {
+      admissionDenial ??= { code: "remote-controller-unbound", reason: "Remote controller authentication or session binding is unavailable." };
     }
-    if (context.remoteControllerAuthority || isStagedTurnSource(overlayTriggerOrigin ?? null)) {
+    if (isStagedTurnSource(overlayTriggerOrigin ?? null)) {
       floor ??= { code: "other-principal", reason: "This principal requires local approval for the action." };
     }
     let secretRead = context.secretRead === true;
@@ -1967,7 +1952,7 @@ export class PermissionManager {
     const reviewedRequest = input.permissionDecision ? this.pipelineRequests.get(input.permissionDecision as PermissionCheckResult)?.request : undefined;
     const gate: JudgeGate = {
       priorDecision: "undecided", strictMode: context?.scopeAssessment !== true && context?.logicalSurface !== true && (reviewedRequest?.mode ?? this.mode) === "strict",
-      capabilityGrant: !baseline && input.category === "meta", remoteController: false,
+      capabilityGrant: !baseline && input.category === "meta",
       reviewerBaseline: baseline,
     };
     const request: JudgeRequest = {

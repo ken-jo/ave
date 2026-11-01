@@ -1,3 +1,4 @@
+import { isRemoteControllerBoundToSession, type RemoteControllerAuthority } from "../../shared/chat-origin.js";
 import { describe, expect, it, vi } from "vitest";
 import { createConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { IpcDeps } from "../../ipc/types.js";
@@ -112,7 +113,11 @@ describe("ConversationCommandPort", () => {
         actorId: `tailnet:${"a".repeat(64)}`,
       },
     });
-    expect(turnOptions(runTurn)).not.toHaveProperty("requestAnchorRawIntent");
+    expect(turnOptions(runTurn)).toHaveProperty("requestAnchorRawIntent", "remote controller input");
+    const authority = turnOptions(runTurn).remoteControllerAuthority as RemoteControllerAuthority;
+    expect(isRemoteControllerBoundToSession(authority, "surface-command-session")).toBe(true);
+    expect(isRemoteControllerBoundToSession(authority, "another-session")).toBe(false);
+    expect(isRemoteControllerBoundToSession({ ...authority }, "surface-command-session")).toBe(false);
     expect(turnOptions(runTurn)).not.toHaveProperty("rolePrompt");
   });
   it("mints platform-bridge provenance and preserves only its host-owned remote authority", async () => {
@@ -140,7 +145,11 @@ describe("ConversationCommandPort", () => {
         bridgeGuard,
       },
     });
-    expect(turnOptions(runTurn)).not.toHaveProperty("requestAnchorRawIntent");
+    expect(turnOptions(runTurn)).toHaveProperty("requestAnchorRawIntent", "external platform request");
+    const authority = turnOptions(runTurn).remoteControllerAuthority as RemoteControllerAuthority;
+    expect(isRemoteControllerBoundToSession(authority, "surface-command-session")).toBe(true);
+    expect(isRemoteControllerBoundToSession(authority, "another-session")).toBe(false);
+    expect(isRemoteControllerBoundToSession({ ...authority }, "surface-command-session")).toBe(false);
     expect(turnOptions(runTurn)).not.toHaveProperty("rolePrompt");
   });
 

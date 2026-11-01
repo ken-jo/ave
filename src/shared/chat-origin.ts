@@ -14,7 +14,7 @@ export type ChatInputOrigin =
   | "file-content"
   /** The transport mints local-surface provenance; request bodies cannot elevate it to keyboard intent. */
   | "surface-user"
-  /** Native remote-controller authority requires local one-shot approval at effects and cannot use remembered grants. */
+  /** Remote input requires authenticated authority bound to the receiving session. */
   | "tailnet-surface"
   /** Verified paired webhooks carry separate controller authority and cannot inherit grants from another transport. */
   | "platform-bridge"
@@ -34,7 +34,7 @@ export interface TailnetPairingShareBinding {
   readonly scope: string;
 }
 
-/** Pairing-store guards stay host-private and unserialized; direct control retains allow-once semantics. */
+/** Pairing-store guards stay host-private and unserialized. */
 export interface TailnetPairedShareGuard {
   isCurrent(binding: TailnetPairingShareBinding): boolean;
 }
@@ -105,6 +105,21 @@ export function isRemoteControllerAuthorityCurrent(
   } catch {
     return false;
   }
+}
+
+const remoteControllerSessions = new WeakMap<object, string>();
+
+/** Bind admitted transport authority to exactly one receiving session; never accept this proof from the wire. */
+export function bindRemoteControllerToSession(authority: RemoteControllerAuthority, sessionId: string): RemoteControllerAuthority {
+  if (!sessionId.trim() || !isRemoteControllerAuthorityCurrent(authority) || !authority.actorId?.trim()) throw new Error("Invalid remote controller session binding");
+  const bound = Object.freeze({ ...authority });
+  remoteControllerSessions.set(bound, sessionId);
+  return bound;
+}
+
+/** Missing, copied, revoked and cross-session authority cannot enter the user's tree. */
+export function isRemoteControllerBoundToSession(authority: RemoteControllerAuthority | undefined, sessionId: string | undefined): boolean {
+  return authority === undefined || !!sessionId && remoteControllerSessions.get(authority) === sessionId && isRemoteControllerAuthorityCurrent(authority);
 }
 
 /** Derive record markers from the authority union so every controller kind has a marker. */

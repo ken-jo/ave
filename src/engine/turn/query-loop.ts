@@ -346,7 +346,7 @@ export async function queryLoop(
       const otherPrincipal = toolTrustOrigin === "file-content" || toolTrustOrigin === "agent-message" || activeApprovalReasonPrefix !== undefined || isStagedTurnSource(stagedOrigin);
       turnExtensionPolicyContext.enterWith(Object.freeze({
         ...inherited,
-        allowExternalHooks: inherited?.allowExternalHooks !== false && bounds.remoteControllerAuthority === undefined,
+        allowExternalHooks: inherited?.allowExternalHooks !== false,
         floor: inherited?.floor ?? (otherPrincipal ? { code: "other-principal" as const, reason: activeApprovalReasonPrefix ?? "This principal requires local approval for the action." } : undefined),
         overlayTriggerOrigin: stagedOrigin,
       }));
@@ -2583,9 +2583,9 @@ export async function gateCrossAgentInterceptedMetaTools(
   approvalReasonPrefix: string | undefined,
   trustOrigin: ToolTrustOrigin,
   sessionId: string,
-  remoteControllerAuthority?: RemoteControllerAuthority,
+  _remoteControllerAuthority?: RemoteControllerAuthority,
 ): Promise<InterceptedMetaGateResult> {
-  if (!approvalReasonPrefix && !remoteControllerAuthority) {
+  if (!approvalReasonPrefix) {
     return { approved: toolUses, denied: [] };
   }
 
@@ -2594,16 +2594,6 @@ export async function gateCrossAgentInterceptedMetaTools(
   for (const toolUse of toolUses) {
     if (toolUse.name !== REQUEST_PLUGIN_TOOL && toolUse.name !== TOOL_SEARCH_TOOL) {
       approved.push(toolUse);
-      continue;
-    }
-
-    // Remote controllers cannot create cross-turn capabilities without an actor-scoped continuation protocol.
-    if (remoteControllerAuthority !== undefined) {
-      denied.push({
-        toolUseId: toolUse.id,
-        toolName: toolUse.name,
-        content: `remote-controller-meta-disabled: ${toolUse.name}`,
-      });
       continue;
     }
 

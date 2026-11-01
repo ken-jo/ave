@@ -105,7 +105,7 @@ describe("explicit host shell authorization", () => {
     expect(result.isError).toBe(true);
   });
 
-  it("rejects headless and remote-origin requests before showing approval", async () => {
+  it("rejects headless and unauthenticated remote-origin requests before showing approval", async () => {
     const { request, webContents } = prepare();
     const headless = new ApprovalGate(null);
     expect((await headless.requestAndWait(request)).choice).toBe("deny-once");

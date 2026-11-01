@@ -55,6 +55,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { assertAveHomePrivacyForConfinement, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -192,6 +193,15 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(h.initialize).not.toHaveBeenCalled();
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade" });
     expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none" });
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ mode: "plain", sandboxed: false, fallbackReason: "requested-sandbox-unavailable" });
+    expect(plan.capability.confines).toEqual({ filesystem: false, process: false, network: false });
+    expect(decidePermission({
+      tool: { name: "powershell", source: "builtin", kind: "shell" }, mode: "strict", headless: false,
+      shell: { sandboxed: plan.sandboxed, readOnlyProven: true, unproven: false, destructive: false },
+    })).toMatchObject({ outcome: "ask" });
+    expect(getSandboxBootOutcome()).toMatchObject({ onSignal: "default-settings", causes: ["windows-sandbox-missing"] });
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("NO OS isolation"));
   });
 
   it("never aborts on Windows: an explicit extension request without srt-win still gets contained shells and a loud warning", async () => {

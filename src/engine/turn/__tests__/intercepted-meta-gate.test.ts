@@ -20,7 +20,7 @@ function gateSelf(
 }
 
 describe("intercepted meta gate — Tailnet controller", () => {
-  it("denies tool-surface expansion without opening an approval route", async () => {
+  it("uses the local meta route for controller operations", async () => {
     const requestAndWait = vi.fn();
     const self = gateSelf(requestAndWait);
     const toolUses: ToolUseBlock[] = [
@@ -38,19 +38,8 @@ describe("intercepted meta gate — Tailnet controller", () => {
       tailnetAuthority,
     );
 
-    expect(result.approved).toEqual([toolUses[2]]);
-    expect(result.denied).toEqual([
-      {
-        toolUseId: "plugin-expand",
-        toolName: "request_plugin",
-        content: "remote-controller-meta-disabled: request_plugin",
-      },
-      {
-        toolUseId: "tool-expand",
-        toolName: "tool_search",
-        content: "remote-controller-meta-disabled: tool_search",
-      },
-    ]);
+    expect(result.approved).toEqual(toolUses);
+    expect(result.denied).toEqual([]);
     expect(requestAndWait).not.toHaveBeenCalled();
   });
 });

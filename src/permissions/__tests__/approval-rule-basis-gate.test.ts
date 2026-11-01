@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
@@ -66,13 +67,21 @@ describe("host-issued rules-only approval ceiling", () => {
   it.each([
     { forceExplicit: true as const },
     { durableApprovalRecordAllowed: false },
-    { remoteControllerOrigin: "platform-bridge" as const },
     { childProvenance: { childSessionId: "child", childTitle: "Child", originSessionId: "owner", spawnTaskSummary: "Request action" } },
   ])("keeps one-shot memory restrictions despite issued evidence %j", async (restriction) => {
     const input = request();
     const basis = issueApprovalRuleBasis(invocation(), { level: "medium", reason: "Rules-only assessment" }, input.approvalCacheKey);
     expect(await cardSnapshot({ ...input, ...restriction, approvalRuleBasis: basis })).toMatchObject({
       riskCeilingAtApproval: undefined, persistentAllowAllowed: false, durableApprovalRecordAllowed: false,
+    });
+  });
+
+  it("retains the ordinary memory ceiling for an authenticated session-bound remote user", async () => {
+    const input = request();
+    const basis = issueApprovalRuleBasis(invocation(), { level: "medium", reason: "Rules-only assessment" }, input.approvalCacheKey);
+    const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner" }, "session");
+    expect(await cardSnapshot({ ...input, sessionId: "session", remoteControllerOrigin: "tailnet-controller", remoteControllerAuthority, approvalRuleBasis: basis })).toMatchObject({
+      riskCeilingAtApproval: "medium", persistentAllowAllowed: true,
     });
   });
 

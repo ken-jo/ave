@@ -1768,7 +1768,7 @@ describe("SettingsService role presets", () => {
   it.each([
     ["darwin", true],
     ["linux", true],
-    ["win32", false],
+    ["win32", true],
     ["freebsd", false],
   ] as const)(
     "osToolSandbox default on %s = %s",
@@ -1783,6 +1783,14 @@ describe("SettingsService role presets", () => {
         );
         const service = new FreshSettingsService({ userDataPath: dir, encryption: mockedElectron.safeStorage });
         expect(service.get("features")?.osToolSandbox ?? false).toBe(expected);
+        for (const storedFeatures of [{}, { osToolSandbox: false }, { osToolSandbox: true }]) {
+          writeFileSync(join(dir, "ave-settings.json"), JSON.stringify({ features: storedFeatures }), "utf-8");
+          const loaded = new FreshSettingsService({ userDataPath: dir, encryption: mockedElectron.safeStorage });
+          expect(loaded.get("features")?.osToolSandbox).toBe(
+            "osToolSandbox" in storedFeatures ? storedFeatures.osToolSandbox : expected,
+          );
+          expect(loaded.get("features")?.pluginWorkerConfinement).toBe(storedFeatures.osToolSandbox === true);
+        }
       } finally {
         setProcessPlatform(original);
         vi.resetModules();

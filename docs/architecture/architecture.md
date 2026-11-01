@@ -1942,10 +1942,10 @@ Windows srt-win provides filesystem and network confinement but no process
 confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
-`features.osToolSandbox` defaults to `true` on macOS and Linux and `false` on
-Windows. An explicit stored value is preserved. The Windows default remains
-gated until its shell confinement lane is ready; plugin confinement alone
-does not satisfy that gate. Activation still requires a successful runtime
+`features.osToolSandbox` defaults to `true` on macOS, Linux and Windows.
+An explicit stored value is preserved. Windows requests container-backed shell
+confinement by default; plugin confinement remains independently opt-in.
+Activation still requires a successful runtime
 probe. The host issues one immutable `HostShellExecutionPlan` per invocation;
 its `sandboxed` field describes the selected child, including exclusions and
 unsandboxed retries, rather than merely repeating the setting. Permission,
@@ -2041,7 +2041,7 @@ the project, then the global entry; since each of them allows, a project
 entry neither narrows nor widens a global one. Settings → Permissions lists
 global entries as "Everywhere" and revokes them like the others. Where the
 host will not record an exact decision for a request (a layer-1/2 ask, a
-forced modal, a non-read reason prefix, a remote out-of-folder one-shot),
+forced modal or a non-read reason prefix),
 the gate says so on the request (`exactRecordAllowed: false`) and the card
 shows Always deny disabled with the one-shot reason instead of offering a
 choice the host refuses with `one-shot-not-recordable`.

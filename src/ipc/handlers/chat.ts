@@ -490,7 +490,7 @@ export async function handleChatSend(
           // user-keyboard payload without it); main mints the turn's one verified intent from it.
           ...(inputOrigin === "user-keyboard" ? { userKeyboardIntent: mintUserKeyboardIntent({ inputOrigin, userActivation }) } : {}),
           ...(displayText === undefined ? {} : { displayText }),
-          ...(inputOrigin === "user-keyboard" && userActivation === true
+          ...((inputOrigin === "user-keyboard" && userActivation === true || ctx.remoteControllerAuthority !== undefined)
             ? { requestAnchorRawIntent: input }
             : {}),
           ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),

@@ -114,7 +114,7 @@ export async function runScriptHook(
   callerSignal?.addEventListener("abort", onAbort, { once: true });
   if (callerSignal?.aborted) onAbort();
   const operation = turnExtensionPolicyContext.run({
-    ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false && context.remoteControllerAuthority === undefined,
+    ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false,
     headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
     remoteControllerAuthority: context.remoteControllerAuthority,
     abortSignal: controller.signal,

@@ -22,6 +22,7 @@ import {
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import type { MessageMeta } from "../llm/types.js";
 import type * as QueryLoopModule from "./query-loop.js";
+import { isRemoteControllerBoundToSession } from "../../shared/chat-origin.js";
 import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
@@ -143,6 +144,9 @@ async function runTurnInSpan(
     }
     const inputOrigin: ChatInputOrigin = options.inputOrigin;
     const isRemoteControllerTurn = options.remoteControllerAuthority !== undefined;
+    if (!isRemoteControllerBoundToSession(options.remoteControllerAuthority, effectiveSessionId) || ((inputOrigin === "tailnet-surface" || inputOrigin === "platform-bridge") && !isRemoteControllerTurn)) {
+      throw new Error("Remote controller authentication or session binding is unavailable");
+    }
     // Spend only host-minted unattended authority once; lookalikes and replay fail closed.
     if (
       options.unattendedAuthority !== undefined
@@ -166,25 +170,25 @@ async function runTurnInSpan(
     let customCommandDisplayText: string | undefined;
     const attachmentParts = options.attachments ?? [];
     const memoryCaptureTaint = new Set<MemoryCaptureTaintReason>();
-    if (!isUserKeyboardOrigin(inputOrigin)) memoryCaptureTaint.add("non-keyboard-origin");
+    if (!isUserKeyboardOrigin(inputOrigin) && !isRemoteControllerTurn) memoryCaptureTaint.add("non-keyboard-origin");
     if (attachmentParts.length > 0) memoryCaptureTaint.add("attachment");
     if (options.initialGuidance) memoryCaptureTaint.add("initial-guidance");
     if (options.a2aCausalContext) memoryCaptureTaint.add("a2a-causal-context");
     if (options.originSource) memoryCaptureTaint.add("overlay-origin");
     const toolTrustOrigin = attachmentParts.length > 0
       ? "file-content"
-      : initialToolTrustOrigin(inputOrigin, turnInput);
+      : initialToolTrustOrigin(isRemoteControllerTurn ? "user-keyboard" : inputOrigin, turnInput);
     let lifecycleProvenance: { toolTrustOrigin: ChatInputOrigin; overlayTriggerOrigin: string | null; approvalReasonPrefix?: string } = {
       toolTrustOrigin, overlayTriggerOrigin: options.originSource ?? null, approvalReasonPrefix: options.approvalReasonPrefix,
     };
-    const permissionUserIntent = summarizePermissionUserIntent(inputOrigin, turnInput,
+    const permissionUserIntent = summarizePermissionUserIntent(isRemoteControllerTurn ? "user-keyboard" : inputOrigin, turnInput,
   );
     const requestAnchor = options.requestAnchorRawIntent !== undefined
       ? createRequestAnchor({
           sessionId: effectiveSessionId,
           turnId: randomUUID(),
           inputMessageId: randomUUID(),
-          inputOrigin,
+          inputOrigin: isRemoteControllerTurn ? "user-keyboard" : inputOrigin,
           rawIntent: options.requestAnchorRawIntent,
         })
       : null;
@@ -225,7 +229,7 @@ async function runTurnInSpan(
         lifecycleProvenance.approvalReasonPrefix !== undefined || memoryCaptureTaint.has("staged-guidance");
       return turnExtensionPolicyContext.run(Object.freeze({
         ...inherited,
-        allowExternalHooks: inherited?.allowExternalHooks !== false && !isRemoteControllerTurn,
+        allowExternalHooks: inherited?.allowExternalHooks !== false,
         headless: self.deps.headless, ownerUnattended: options.unattendedAuthority !== undefined,
         approvalSurface: self.deps.approvalSurface, remoteControllerAuthority: options.remoteControllerAuthority,
         floor: inherited?.floor ?? (otherPrincipal ? { code: "other-principal" as const, reason: lifecycleProvenance.approvalReasonPrefix ?? "This principal requires local approval for the action." } : undefined),
@@ -282,7 +286,7 @@ async function runTurnInSpan(
     self.tracer.step("TURN_ORCHESTRATE", { sessionId: self.sessionId });
 
     // Fire observe-only SessionStart once per session after command short-circuiting.
-    if (!isRemoteControllerTurn && self.sessionStartFiredFor !== effectiveSessionId) {
+    if (self.sessionStartFiredFor !== effectiveSessionId) {
       self.sessionStartFiredFor = effectiveSessionId;
       await runLifecycle(() => self.fireLifecycleEvent(
         "SessionStart",
@@ -292,9 +296,7 @@ async function runTurnInSpan(
     }
 
     // Blocking prompt hooks run before queryLoop and fail closed; unmatched trusted hooks allow.
-    const promptGate = isRemoteControllerTurn
-      ? { decision: "allow" as const, reason: "Remote-controller pre-approval prompt hook disabled" }
-      : await runLifecycle(() => self.fireUserPromptSubmit(
+    const promptGate = await runLifecycle(() => self.fireUserPromptSubmit(
           {
             inputText: options?.initialGuidance
               ? `${turnInput}\n\n${options.initialGuidance}`
@@ -511,7 +513,7 @@ async function runTurnInSpan(
       role: "user",
       content: userContent,
       ...(Object.keys(userMeta).length > 0 ? { meta: userMeta } : {}),
-    }, isUserKeyboardOrigin(inputOrigin) && options?.resumesInterruptedTurn !== true
+    }, (isUserKeyboardOrigin(inputOrigin) || isRemoteControllerTurn) && options?.resumesInterruptedTurn !== true
       ? { principal: "user-keyboard", userText: { sessionId: effectiveSessionId, text: input } }
       : undefined);
     if (options?.initialGuidance) {
@@ -602,9 +604,9 @@ async function runTurnInSpan(
         })
       : undefined;
     // Bind async context to the effective session ID so delegates read isolated session activations.
-    // Only a turn the user typed here, with nothing else speaking through it, may type into the user's own host terminal.
-    const hostTerminalTurn = userKeyboardVerified && isUntaintedToolTrustOrigin(toolTrustOrigin) && memoryCaptureTaint.size === 0
-      && !isRemoteControllerTurn && options?.unattendedAuthority === undefined && self.sessionKind !== "subagent"
+    // Only an authenticated user turn, with nothing else speaking through it, may type into the user's own host terminal.
+    const hostTerminalTurn = (userKeyboardVerified || isRemoteControllerTurn) && isUntaintedToolTrustOrigin(toolTrustOrigin) && memoryCaptureTaint.size === 0
+      && options?.unattendedAuthority === undefined && self.sessionKind !== "subagent"
       ? { sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId } : undefined;
     const runQuery = () => runWithHostTerminalTurn(hostTerminalTurn, () => runWithAgentObservationTurn({ sessionId: effectiveSessionId, turnId: turnUserMessage.meta.messageId }, () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
       queryLoop(
