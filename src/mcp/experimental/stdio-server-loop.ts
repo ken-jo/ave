@@ -13,12 +13,15 @@ export class StdioServerLoop {
   private readonly decoder: StdioFrameDecoder;
   private started = false;
 
-  /** The mounting channel supplies its line cap; overflow propagates to the input writer. */
+  /** The mounting channel supplies its line cap; overflow propagates to the input writer. A mount may also cap
+   * the bytes its output may hold unwritten: a response that would exceed it is refused as an error reply
+   * for that call, so memory stays bounded without pausing input (cancellations and later calls still arrive). */
   constructor(
     private readonly input: Readable,
     private readonly output: Writable,
     private readonly handler: StdioRequestHandler,
     maxLineBytes: number,
+    private readonly maxQueuedOutputBytes?: number,
   ) {
     this.decoder = new StdioFrameDecoder(maxLineBytes);
   }
@@ -53,6 +56,18 @@ export class StdioServerLoop {
         },
       };
     }
-    this.output.write(frameMessage(response));
+    let frame = frameMessage(response);
+    if (this.maxQueuedOutputBytes !== undefined && this.output.writableLength + frame.length > this.maxQueuedOutputBytes) {
+      frame = frameMessage({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: {
+          code: RPC_INTERNAL_ERROR,
+          message: `[stdio-server-loop] response refused: ${frame.length} bytes would exceed the ${this.maxQueuedOutputBytes}-byte unwritten output limit`,
+          data: { code: "payload-too-large", byteLength: frame.length, limit: this.maxQueuedOutputBytes },
+        },
+      });
+    }
+    this.output.write(frame);
   }
 }

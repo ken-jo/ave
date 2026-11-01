@@ -4,6 +4,12 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
+
+const removeRetainedPluginGeneration = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../../plugin-contributions.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../plugin-contributions.js")>(),
+  removeRetainedPluginGeneration,
+}));
 import { derivePluginChildEnvelope } from "../../isolation/out-of-process-plugin.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
@@ -55,14 +61,22 @@ class WithdrawalRuntime extends PluginRuntime {
     return this.releaseAttempt({ pluginId, runtimeRoot } as never, "test attempt");
   }
 
-  payloadRemover() {
-    return vi.spyOn(this as unknown as { removeUnpublishedRuntimeRoot(pluginId: string, root: string): Promise<void> },
-      "removeUnpublishedRuntimeRoot").mockResolvedValue(undefined);
+  removeCandidatePayload(generationId: string, pluginId = PLUGIN_ID): Promise<boolean> {
+    return this.removeRetainedGenerationPayload(pluginId, generationId);
+  }
+
+  failBoot(stop: () => Promise<void>, runtimeRoot: string, pluginId = PLUGIN_ID): Promise<void> {
+    this.attach(stop, () => [], pluginId);
+    const plugin = this.plugins.get(pluginId)!;
+    plugin.pluginRoot = runtimeRoot;
+    plugin.hostEffects = { retire: () => [], isPreparing: () => false } as never;
+    return this.failBootPlugin(pluginId, plugin, "test start failure");
   }
 }
 
 function runtime(): WithdrawalRuntime {
   return new WithdrawalRuntime({
+    installReceiptCacheRoot: join(root, "receipts"),
     childEntryPath: pluginChildEntryPath(),
     hostRoot: root,
     manifestPaths: [],
@@ -86,18 +100,39 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe("attempt release after unverified termination", () => {
-  it("keeps the generation payload of a quarantined attempt and removes it otherwise", async () => {
+describe("generation payload after unverified termination", () => {
+  const generationId = "a".repeat(64);
+  const payload = () => join(root, "receipts", PLUGIN_ID, "generations", generationId, "payload");
+
+  it("releases an attempt's payload normally and keeps it once the lifecycle is quarantined", async () => {
     const subject = runtime();
-    const remover = subject.payloadRemover();
-    const payload = join(root, "generations", "a".repeat(64), "payload");
-    await subject.releaseWithPayload(payload);
-    expect(remover).toHaveBeenCalledWith(PLUGIN_ID, payload);
-    remover.mockClear();
+    removeRetainedPluginGeneration.mockClear();
+    await subject.releaseWithPayload(payload());
+    expect(removeRetainedPluginGeneration).toHaveBeenCalledWith(join(root, "receipts"), PLUGIN_ID, generationId);
+    removeRetainedPluginGeneration.mockClear();
     // A possibly-alive child runs from this payload: its cwd and entry code stay with the retained lease.
     subject.quarantine("Plugin child termination is unverified");
-    await subject.releaseWithPayload(payload);
-    expect(remover).not.toHaveBeenCalled();
+    await subject.releaseWithPayload(payload());
+    expect(removeRetainedPluginGeneration).not.toHaveBeenCalled();
+  });
+
+  it("keeps a generation candidate's payload while quarantined (the one removal every cleanup path uses)", async () => {
+    const subject = runtime();
+    removeRetainedPluginGeneration.mockClear();
+    expect(await subject.removeCandidatePayload(generationId)).toBe(true);
+    subject.quarantine("Plugin child termination is unverified");
+    expect(await subject.removeCandidatePayload(generationId)).toBe(false);
+    expect(removeRetainedPluginGeneration).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a boot plugin's payload when its stop fails, and removes it after a clean stop", async () => {
+    const subject = runtime();
+    removeRetainedPluginGeneration.mockClear();
+    await subject.failBoot(async () => { throw new Error("Plugin child termination is unverified"); }, payload());
+    expect(removeRetainedPluginGeneration).not.toHaveBeenCalled();
+    const other = runtime();
+    await other.failBoot(async () => {}, payload());
+    expect(removeRetainedPluginGeneration).toHaveBeenCalledOnce();
   });
 });
 

@@ -69,7 +69,6 @@ async function run(): Promise<void> {
     network: { egress: { default: "deny" }, ingress: { default: "allow", hostLoopback: "allow" }, runtimeConfig: { networkProxy: `http://127.0.0.1:${address.port}` } },
     ui: { disable: false, clipboard: "none", allowInputInjection: false },
   };
-  if (mode.startsWith("plugin")) assertLaunchMatchesIntent(request, { command: process.execPath, args, cwd: runDirectory });
   const controller = new AbortController();
   const events: MxcProcessLifecycleEvent[] = [];
   const onLifecycle = (event: MxcProcessLifecycleEvent): void => {
@@ -97,6 +96,8 @@ async function run(): Promise<void> {
   let activeProcess: Awaited<ReturnType<typeof spawnMxcExtensionProcess>> | undefined;
   try {
     emit({ event: "main-ready", pid: process.pid });
+    // Inside the try so a refused intent still closes the controls and the loopback proxy in `finally`.
+    if (mode.startsWith("plugin")) assertLaunchMatchesIntent(request, { command: process.execPath, args, cwd: runDirectory });
     await command("begin");
     const owned = await spawnMxcExtensionProcess(request, { signal: controller.signal, onLifecycle });
     activeProcess = owned;

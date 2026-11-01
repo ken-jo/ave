@@ -118,7 +118,12 @@ export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Omi
 }
 
 /** No retries or fallback after admission. The common primitive already tracks its supervisor for shutdown. */
-export async function spawnMxcPluginChild(launch: MxcPluginChildLaunch, intent: MxcPluginChildIntent): Promise<MxcPluginChild> {
+export async function spawnMxcPluginChild(
+  launch: MxcPluginChildLaunch,
+  intent: MxcPluginChildIntent,
+  /** Attached before the post-spawn recheck, so even a child terminated inside this call is reported. */
+  onTerminating?: () => void,
+): Promise<MxcPluginChild> {
   let owned: OwnedMxcExtensionProcess;
   try {
     launch.assertCurrent();
@@ -134,6 +139,7 @@ export async function spawnMxcPluginChild(launch: MxcPluginChildLaunch, intent: 
     throw error;
   }
   const child = attachMxcPluginChild(owned, launch);
+  if (onTerminating) child.onTerminating(onTerminating);
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");

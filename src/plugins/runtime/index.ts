@@ -53,7 +53,7 @@ import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPlugi
 import { buildImportUrl, buildMethodMap, declaredAppVisibleToolMethods } from "./plugin-loader.js";
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
-import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError } from "../isolation/out-of-process-plugin.js";
+import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import {
   HOST_PROTOCOL_VERSIONS_SERVED,
@@ -1406,15 +1406,20 @@ abstract class PluginRuntimeState {
     terminating(): void;
   } {
     // Make-before-break may start a replacement beside a live incumbent, never beside one whose
-    // termination has begun but is not yet verified, nor beside a quarantined one.
-    for (const existing of this.sandboxEnvelopes.get(pluginId) ?? []) {
-      if (existing.quarantined) this.assertPluginLifecycleAvailable(pluginId);
-      if (existing.quarantined || existing.terminating) {
-        throw Object.assign(new Error(
-          `Plugin child termination is not yet verified; refusing a replacement beside it: ${pluginId}`,
-        ), { code: existing.quarantined ? "plugin-lifecycle-quarantined" : "plugin-child-termination-pending" });
+    // termination has begun but is not yet verified, nor beside a quarantined one. Checked here and again,
+    // through assertCurrent, immediately before and after the spawn.
+    const assertNoUnverifiedIncumbent = (self?: object): void => {
+      for (const existing of this.sandboxEnvelopes.get(pluginId) ?? []) {
+        if (existing === self) continue;
+        if (existing.quarantined) this.assertPluginLifecycleAvailable(pluginId);
+        if (existing.quarantined || existing.terminating) {
+          throw Object.assign(new Error(
+            `Plugin child termination is not yet verified; refusing a replacement beside it: ${pluginId}`,
+          ), { code: existing.quarantined ? "plugin-lifecycle-quarantined" : "plugin-child-termination-pending" });
+        }
       }
-    }
+    };
+    assertNoUnverifiedIncumbent();
     let resolveSettled!: (settlement: SandboxEnvelopeSettlement) => void;
     const settled = new Promise<SandboxEnvelopeSettlement>((resolve) => { resolveSettled = resolve; });
     const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, terminating: false, settled, resolveSettled };
@@ -1426,6 +1431,7 @@ abstract class PluginRuntimeState {
         if (!record.active || record.grants.some((grant) => !isPluginSandboxGrantCovered(grant, pluginRoot, pluginDataDir))) {
           throw new Error("sandbox-grant-outside-ceiling");
         }
+        assertNoUnverifiedIncumbent(record);
       },
       // Idempotent: a second release must not drop a later incarnation's entry set.
       dispose: () => {
@@ -2298,6 +2304,11 @@ abstract class PluginRuntimeState {
   protected assertPluginLifecycleAvailable(pluginId: string): void {
     // No generation is added, replaced or reloaded once shutdown has begun.
     if (this.isShuttingDown()) throw new PluginRuntimeShutdownError(pluginId, "plugin lifecycle");
+    this.assertPluginLifecycleNotQuarantined(pluginId);
+  }
+
+  /** A quarantined lifecycle neither starts nor commits a generation until host restart. */
+  protected assertPluginLifecycleNotQuarantined(pluginId: string): void {
     const canonicalId = this.resolveKnownPluginId(pluginId);
     const reason = this.quarantinedPluginLifecycles.get(canonicalId)
       ?? this.quarantinedPluginLifecycles.get(pluginId);
@@ -2432,11 +2443,14 @@ abstract class PluginRuntimeState {
     lifecycleHookScope?: PluginLifecycleHookScope,
   ): Promise<boolean> {
     if (!instance.stop) return true;
+    // A native child's stop includes its owned process's disposal deadline; a shorter race would
+    // quarantine a normal, verified shutdown until host restart.
+    const stopBudgetMs = pluginStopBudgetMs(instance, START_FAILURE_STOP_TIMEOUT_MS);
     try {
       await raceWithTimeout(
         this.runPluginLifecycleHook(lifecycleHookScope, () => instance.stop!()),
-        START_FAILURE_STOP_TIMEOUT_MS,
-        () => new Error(`stop timeout (>${START_FAILURE_STOP_TIMEOUT_MS}ms)`),
+        stopBudgetMs,
+        () => new Error(`stop timeout (>${stopBudgetMs}ms)`),
       );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.STOP_OK }, "plugin stopped");
       return true;
@@ -2883,6 +2897,14 @@ abstract class PluginRuntimeState {
     );
   }
 
+  /** The one removal of a retained generation payload. A quarantined lifecycle may still have a live child
+   * whose cwd and entry code are this payload, so it stays with the lease until host restart. */
+  protected async removeRetainedGenerationPayload(pluginId: string, generationId: string): Promise<boolean> {
+    if (this.isPluginLifecycleQuarantined(pluginId)) return false;
+    await removeRetainedPluginGeneration(this.installReceiptCacheRoot!, pluginId, generationId);
+    return true;
+  }
+
   protected async removeUnpublishedRuntimeRoot(pluginId: string, runtimeRoot: string): Promise<void> {
     if (!this.installReceiptCacheRoot) {
       throw new Error("plugin generation lifecycle requires installReceiptCacheRoot");
@@ -2892,7 +2914,7 @@ abstract class PluginRuntimeState {
     if (dirname(generationDir) !== generationsRoot || basename(runtimeRoot) !== "payload") return;
     const generationId = basename(generationDir);
     if (!/^[a-f0-9]{64}$/.test(generationId)) return;
-    await removeRetainedPluginGeneration(this.installReceiptCacheRoot, pluginId, generationId);
+    await this.removeRetainedGenerationPayload(pluginId, generationId);
   }
 
   setGenerationAccess(access: PluginRuntimeGenerationAccess): void {
@@ -3147,6 +3169,8 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     predecessorGenerationId: string | undefined,
   ): PreparedPluginRuntimeGenerationPublication {
     const pluginId = runtime.manifest.id;
+    // A replacement never publishes while an earlier child's termination is unverified.
+    this.assertPluginLifecycleNotQuarantined(pluginId);
     if (runtime.installId === undefined) {
       throw new Error(`Plugin runtime generation install provenance missing: ${pluginId}`);
     }
@@ -3201,8 +3225,11 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         this.committedUnmappedGenerations.delete(pluginId);
         this.rememberPluginManifest(pluginId, runtime.manifest, runtime.approvedPluginAccess);
         this.markPluginUiRevision(pluginId);
-        this.failedPluginIds.delete(pluginId);
-        this.loadFailureInfo.delete(pluginId);
+        // A lifecycle quarantined meanwhile keeps reporting failure; it is not shown as healthy.
+        if (!this.isPluginLifecycleQuarantined(pluginId)) {
+          this.failedPluginIds.delete(pluginId);
+          this.loadFailureInfo.delete(pluginId);
+        }
         // A committed generation supersedes earlier refused attempts.
         this.lastAttemptRefusal.delete(pluginId);
         this.disabledPluginIds.delete(pluginId);
@@ -3739,9 +3766,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         drainHostApiOperations: incarnation.drainOperations,
       }));
     }
-    // A quarantined attempt may still have a live child whose cwd and entry code are this payload.
-    // Keep it with the rest of the lease for as long as the lifecycle stays quarantined (until host restart).
-    if (runtimeRoot && !this.isPluginLifecycleQuarantined(pluginId)) {
+    // The payload removal itself is skipped for a quarantined lifecycle (removeRetainedGenerationPayload).
+    if (runtimeRoot) {
       await step(() => this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot));
     }
     attempt.cleanupFailures?.push(...failures);
@@ -3957,6 +3983,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           deactivate();
           await this.stopAfterStartFailure(manifest.id, lateInstance, lifecycleHookScope);
         },
+        pluginFactoryDeadlineMs(createPlugin, TOOL_TIMEOUT_POLICY.pluginFactoryMs),
       );
     } catch (err) {
       if (factoryFailureRequiresQuarantine(err)) {
@@ -4607,14 +4634,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         }
       };
       if (hostEffects) await step(() => hostEffects.discard());
-      // A quarantined candidate may still have a live child running from this payload.
-      if (!this.isPluginLifecycleQuarantined(manifest.id)) {
-        await step(() => removeRetainedPluginGeneration(
-          this.installReceiptCacheRoot!,
-          manifest.id,
-          generationId,
-        ));
-      }
+      await step(() => this.removeRetainedGenerationPayload(manifest.id, generationId));
     };
     let routed: RoutedPluginFactory;
     try {
@@ -4683,14 +4703,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         await step(() => this.drainPluginHostApiOperations(manifest.id, {
           drainHostApiOperations: drainOperations,
         }));
-        // A quarantined candidate may still have a live child running from this payload.
-        if (!this.isPluginLifecycleQuarantined(manifest.id)) {
-          await step(() => removeRetainedPluginGeneration(
-            this.installReceiptCacheRoot!,
-            manifest.id,
-            generationId,
-          ));
-        }
+        await step(() => this.removeRetainedGenerationPayload(manifest.id, generationId));
         construction.cleanupFailures.push(...failures);
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {
@@ -4717,6 +4730,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           deactivate();
           await this.stopAfterStartFailure(manifest.id, lateInstance, lifecycleHookScope);
         },
+        pluginFactoryDeadlineMs(createPlugin, TOOL_TIMEOUT_POLICY.pluginFactoryMs),
       );
       const methods = buildMethodMap(manifest, instance, (toolName) =>
         logPluginLifecycle(
@@ -5258,6 +5272,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
           deactivate();
           await this.stopAfterStartFailure(manifest.id, lateInstance, lifecycleHookScope);
         },
+        pluginFactoryDeadlineMs(createPlugin, TOOL_TIMEOUT_POLICY.pluginFactoryMs),
       );
     } catch (err) {
       if (factoryFailureRequiresQuarantine(err)) {
@@ -5502,9 +5517,10 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (this.plugins.get(pluginId) !== plugin) return;
     this.rejectCapabilityBlockedRetry(pluginId, new Error(reason));
     logPluginLifecycle("error", { pluginId, phase: PluginPhase.START_FAIL, reason }, "plugin start failed");
-    await this.failClosedLoadedPlugin(pluginId, plugin, "start failure cleanup");
+    const stopped = await this.failClosedLoadedPlugin(pluginId, plugin, "start failure cleanup");
     if (plugin.hostEffects?.isPreparing()) plugin.hostEffects.discard();
-    await this.removeUnpublishedRuntimeRoot(pluginId, plugin.pluginRoot);
+    // An incarnation that did not stop cleanly keeps its payload: its child may still run from it.
+    if (stopped) await this.removeUnpublishedRuntimeRoot(pluginId, plugin.pluginRoot);
   }
 
   private deferBlockedLoadedPlugin(
@@ -6107,6 +6123,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
             replacementLifecycleHookScope,
           );
         },
+        pluginFactoryDeadlineMs(createPlugin, TOOL_TIMEOUT_POLICY.pluginFactoryMs),
       );
     } catch (err) {
       if (factoryFailureRequiresQuarantine(err)) {
@@ -6195,6 +6212,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
           if (!isCurrent()) {
             throw new Error(`plugin restart cancelled for ${pluginId}`);
           }
+          this.assertPluginLifecycleNotQuarantined(pluginId);
           this.assertActiveCapabilityDependencies(manifest, "plugin restart");
           this.assertActiveCapabilityDependentsRemainSatisfied(
             pluginId,
@@ -7036,9 +7054,10 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         // Disabled cards report runtimeLoaded false while retaining the settings switch needed to re-enable them.
         : !enabled
           ? "disabled"
-          : runtimeLoaded
+          // A quarantined lifecycle (an unverified child termination) is never reported as healthy.
+          : runtimeLoaded && !this.isPluginLifecycleQuarantined(pluginId)
           ? "loaded"
-          : this.failedPluginIds.has(pluginId)
+          : this.failedPluginIds.has(pluginId) || this.isPluginLifecycleQuarantined(pluginId)
           ? "failed"
           : this.disabledPluginIds.has(pluginId)
             ? "disabled"

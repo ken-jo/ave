@@ -13,6 +13,9 @@ import { createOutOfProcessPluginFactory } from "../../isolation/out-of-process-
 import { servePluginChild } from "../../isolation/plugin-child-main.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import type { PluginManifest } from "../../types.js";
+import { MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
+import { pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../../isolation/out-of-process-plugin.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import type { PluginRuntime } from "../../runtime.js";
 
 const spawnNativeChild = vi.hoisted(() => vi.fn());
@@ -20,16 +23,21 @@ vi.mock("../../../permissions/mxc-extension-process.js", () => ({ spawnMxcExtens
 
 const PLUGIN_ID = "nativequarantine";
 
-/** One owned native process served by the real child runtime, with disposal the test settles. */
-function ownedChild() {
+/** One owned native process served by the real child runtime. Disposal settles when the test says, or,
+ * with `disposeAfterMs`, verifies termination after that long. */
+function ownedChild(disposeAfterMs?: number) {
   const hostToChild = new PassThrough(), childToHost = new PassThrough();
   const service = servePluginChild(hostToChild, childToHost);
   let failCompletion!: (error: Error) => void, finish!: (result: { exitCode: number; timedOut: boolean }) => void;
   const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve, reject) => { finish = resolve; failCompletion = reject; });
-  let rejectDisposal!: (error: Error) => void;
-  const disposal = new Promise<void>((_resolve, reject) => { rejectDisposal = reject; });
+  let rejectDisposal!: (error: Error) => void, resolveDisposal!: () => void;
+  const disposal = new Promise<void>((resolve, reject) => { resolveDisposal = resolve; rejectDisposal = reject; });
   void disposal.catch(() => undefined);
-  const dispose = vi.fn(() => { service.hostGone(); return disposal; });
+  const dispose = vi.fn(() => {
+    service.hostGone();
+    if (disposeAfterMs !== undefined) setTimeout(resolveDisposal, disposeAfterMs);
+    return disposal;
+  });
   return {
     owned: { id: 4242, stdin: hostToChild, stdout: childToHost, stderr: new PassThrough(), completion, dispose,
       diagnostics: { nodeVersion: "", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" } },
@@ -39,7 +47,7 @@ function ownedChild() {
 }
 
 /** Route every lifecycle factory through the native arm, after the runtime's own admission checks. */
-function routeNative(runtime: PluginRuntime, release: () => void): void {
+function routeNative(runtime: PluginRuntime, release: () => void, admitted: () => Promise<void> = async () => {}): void {
   const routing = runtime as unknown as {
     importPluginFactoryForLifecycle(...args: unknown[]): Promise<{ createPlugin: unknown; arm: string }>;
     registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): never;
@@ -55,7 +63,7 @@ function routeNative(runtime: PluginRuntime, release: () => void): void {
         launch: { kind: "entry", entryPath: source.resolvedEntryPath },
         registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) =>
           routing.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
-        prepareMxcChild: async (intent) => ({
+        prepareMxcChild: async (intent) => (await admitted(), {
           request: { ...createMxcExtensionRequest(), command: windowsCommandLine(intent.command, intent.args), workingDirectory: intent.cwd },
           signal: new AbortController().signal, assertCurrent() {}, release,
         }),
@@ -139,5 +147,130 @@ describe("native plugin child quarantine through the runtime", () => {
     });
     expect(spawnNativeChild).toHaveBeenCalledOnce();
     expect(release).not.toHaveBeenCalled();
+  });
+
+  const PONG = `export default async function createPlugin() {
+  return { handlers: { native_quarantine_ping: async () => "pong" } };
+}`;
+
+  it("restarts a healthy native child: verified exit releases its record and the next restart starts", async () => {
+    await installPlugin(PONG);
+    const children = [ownedChild(0), ownedChild(0), ownedChild(0)];
+    spawnNativeChild.mockReset().mockImplementation(async () => children[spawnNativeChild.mock.calls.length - 1]!.owned);
+    const release = vi.fn();
+    const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+    routeNative(runtime, release);
+    await runtime.startAll();
+    await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
+    // onTerminating → disposal resolves → onClosed → the incumbent's registration is released exactly once.
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(children[0]!.dispose).toHaveBeenCalledOnce();
+    expect(spawnNativeChild).toHaveBeenCalledTimes(2);
+    // Its record is gone, so a second restart is neither pending nor quarantined.
+    await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
+    expect(spawnNativeChild).toHaveBeenCalledTimes(3);
+    await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+    await expect(runtime.call("native_quarantine_ping")).resolves.toBe("pong");
+  });
+
+  it("does not quarantine a native stop whose disposal takes five seconds", async () => {
+    await installPlugin(PONG);
+    const children = [ownedChild(5_000), ownedChild(0), ownedChild(0)];
+    spawnNativeChild.mockReset().mockImplementation(async () => children[spawnNativeChild.mock.calls.length - 1]!.owned);
+    const release = vi.fn();
+    const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+    routeNative(runtime, release);
+    await runtime.startAll();
+    await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce(), { timeout: 15_000 });
+    await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
+  }, 30_000);
+
+  it("refuses to spawn when the incumbent faults after the replacement registered", async () => {
+    await installPlugin(PONG);
+    const incumbent = ownedChild();
+    spawnNativeChild.mockReset().mockResolvedValue(incumbent.owned);
+    const release = vi.fn();
+    let admissions = 0;
+    let admit!: () => void;
+    const held = new Promise<void>((resolve) => { admit = resolve; });
+    const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+    routeNative(runtime, release, async () => { if (++admissions > 1) await held; });
+    await runtime.startAll();
+    const restarting = runtime.restartPlugin(PLUGIN_ID);
+    // The replacement registered beside a healthy incumbent and is awaiting admission.
+    await vi.waitFor(() => expect(admissions).toBe(2));
+    incumbent.failCompletion(new Error("Supervisor stream fault"));
+    await vi.waitFor(() => expect(incumbent.dispose).toHaveBeenCalledOnce());
+    admit();
+    // The synchronous pre-spawn recheck sees the terminating incumbent and refuses.
+    await expect(restarting).resolves.toBe("failed");
+    expect(spawnNativeChild).toHaveBeenCalledOnce();
+    incumbent.failCleanup();
+    await vi.waitFor(async () => {
+      await expect(runtime.restartPlugin(PLUGIN_ID)).rejects.toMatchObject({ code: "plugin-lifecycle-quarantined" });
+    });
+    expect(spawnNativeChild).toHaveBeenCalledOnce();
+    // Only the replacement's never-used launch lease is released; the incumbent's stays with its quarantine.
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to publish a replacement once the incumbent is quarantined mid-construct, and reports failure", async () => {
+    // The in-process child runtime shares this realm, so the replacement's construct can be held at a known point.
+    const hook = globalThis as { __nativeConstructHook?: () => Promise<void> };
+    await installPlugin(`export default async function createPlugin() {
+  await globalThis.__nativeConstructHook?.();
+  return { handlers: { native_quarantine_ping: async () => "pong" } };
+}`);
+    const incumbent = ownedChild(), replacement = ownedChild(0);
+    spawnNativeChild.mockReset().mockResolvedValueOnce(incumbent.owned).mockResolvedValueOnce(replacement.owned);
+    const release = vi.fn();
+    const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+    routeNative(runtime, release);
+    await runtime.startAll();
+    try {
+      // Past both spawn rechecks: the incumbent faults and its disposal fails while the replacement constructs.
+      hook.__nativeConstructHook = async () => {
+        incumbent.failCompletion(new Error("Supervisor stream fault"));
+        await vi.waitFor(() => expect(incumbent.dispose).toHaveBeenCalledOnce());
+        incumbent.failCleanup();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      };
+      await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("failed");
+      expect(spawnNativeChild).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(replacement.dispose).toHaveBeenCalledOnce());
+      const card = runtime.listPluginCards().find((entry) => entry.id === PLUGIN_ID);
+      expect(card?.loadStatus).toBe("failed");
+      await expect(runtime.restartPlugin(PLUGIN_ID)).rejects.toMatchObject({ code: "plugin-lifecycle-quarantined" });
+    } finally {
+      delete hook.__nativeConstructHook;
+    }
+  });
+
+  it("refuses a native launch that has no envelope registration to quarantine", () => {
+    expect(() => createOutOfProcessPluginFactory({
+      manifest: { id: PLUGIN_ID, name: "n", version: "1.0.0", entry: "entry.mjs", description: "d", tools: [] } as PluginManifest,
+      launch: { kind: "entry", entryPath: join(testDir, "entry.mjs") },
+      prepareMxcChild: async () => { throw new Error("never admitted"); },
+    })).toThrow(MxcProcessContractError);
+  });
+
+  it("budgets a native factory and stop from the same policy as the owned process's deadlines", () => {
+    const native = createOutOfProcessPluginFactory({
+      manifest: { id: PLUGIN_ID, name: "n", version: "1.0.0", entry: "entry.mjs", description: "d", tools: [] } as PluginManifest,
+      launch: { kind: "entry", entryPath: join(testDir, "entry.mjs") },
+      registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose() {}, quarantine() {}, terminating() {} }),
+      prepareMxcChild: async () => { throw new Error("never admitted"); },
+    });
+    const legacy = createOutOfProcessPluginFactory({
+      manifest: { id: PLUGIN_ID, name: "n", version: "1.0.0", entry: "entry.mjs", description: "d", tools: [] } as PluginManifest,
+      launch: { kind: "entry", entryPath: join(testDir, "entry.mjs") },
+    });
+    const policy = TOOL_TIMEOUT_POLICY;
+    // Startup, the construct request, then a refused bring-up's disposal all fit inside the factory deadline.
+    expect(pluginFactoryDeadlineMs(native, policy.pluginFactoryMs)).toBeGreaterThanOrEqual(
+      policy.windowsAclHostStartupMs + policy.pluginImportMs + policy.pluginFactoryMs + policy.windowsProcessTreeKillMs);
+    expect(pluginFactoryDeadlineMs(legacy, policy.pluginFactoryMs)).toBe(policy.pluginFactoryMs);
+    expect(pluginStopBudgetMs({ handlers: {} }, 2_000)).toBe(2_000);
   });
 });

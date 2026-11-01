@@ -949,7 +949,9 @@ describe("native factory failures with unverified termination", () => {
   it("keeps the grant failure and the cleanup failure when the post-spawn recheck teardown is unverified", async () => {
     const roots = spawnableRoots();
     const changed = new Error("sandbox-grant-outside-ceiling");
-    const registration = { assertCurrent: vi.fn(() => { throw changed; }), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
+    // The pre-spawn recheck passes; the grant changes before the post-spawn recheck.
+    const registration = { assertCurrent: vi.fn().mockImplementationOnce(() => {}).mockImplementation(() => { throw changed; }),
+      dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
     const cleanup = new MxcProcessCleanupError("Termination unverified");
     const completion = new Promise<never>(() => {});
     spawnNativeChild.mockReset().mockResolvedValue({ id: 42, stdin: new PassThrough(), stdout: new PassThrough(),
