@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 const require = createRequire(import.meta.url);
 const agentPath = require.resolve("node-pty/lib/windowsPtyAgent.js");
@@ -20,13 +21,14 @@ function loadAgent() {
   const kill = vi.fn((pid: number) => { events.push(`sweep:${pid}`); });
   const nativeKill = vi.fn(() => { events.push("native-kill"); });
   const dispose = vi.fn(() => { events.push("dispose"); });
+  const schedule = vi.fn(setTimeout);
   const exports = {} as { WindowsPtyAgent: { prototype: PtyAgent } };
   runInNewContext(readFileSync(agentPath, "utf8"), {
     exports,
     require: (id: string) => id === "child_process" ? { fork } : createRequire(agentPath)(id),
     __dirname: require.resolve("node-pty/package.json").replace(/package\.json$/, "lib"),
     process: { kill },
-    setTimeout,
+    setTimeout: schedule,
     clearTimeout,
   }, { filename: agentPath });
   const agent = Object.assign(Object.create(exports.WindowsPtyAgent.prototype) as PtyAgent, {
@@ -39,12 +41,39 @@ function loadAgent() {
     _ptyNative: { kill: nativeKill },
     _conoutSocketWorker: { dispose },
   });
-  return { agent, child, fork, kill, nativeKill, dispose, events };
+  return { agent, child, fork, kill, nativeKill, dispose, events, schedule };
 }
 
 afterEach(() => { vi.useRealTimers(); });
 
 describe("installed PTY console termination", () => {
+  it("requests teardown only once while lookup is pending and after completion", async () => {
+    vi.useFakeTimers();
+    const { agent, child, fork, nativeKill, dispose, kill } = loadAgent();
+    agent.kill();
+    agent.kill();
+    expect(fork).toHaveBeenCalledTimes(1);
+    expect(nativeKill).not.toHaveBeenCalled();
+    child.emit("message", { consoleProcessList: [321] });
+    await Promise.resolve();
+    agent.kill();
+    await vi.runAllTimersAsync();
+    expect(fork).toHaveBeenCalledTimes(1);
+    expect(nativeKill).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledExactlyOnceWith(321);
+  });
+
+  it("bounds console enumeration below the Windows shutdown wait", async () => {
+    vi.useFakeTimers();
+    const { agent, schedule } = loadAgent();
+    agent.kill();
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(schedule.mock.calls[0][1]).toBeGreaterThan(0);
+    expect(schedule.mock.calls[0][1]).toBeLessThan(TOOL_TIMEOUT_POLICY.windowsPtyShutdownMs);
+    await vi.runAllTimersAsync();
+  });
+
   it("reads console members before native teardown and sweeps only those members", async () => {
     vi.useFakeTimers();
     const { agent, child, kill, nativeKill, events } = loadAgent();
@@ -75,8 +104,11 @@ describe("installed PTY console termination", () => {
       expect(nativeKill).toHaveBeenCalledTimes(1);
       expect(dispose).toHaveBeenCalledTimes(1);
       expect(kill).not.toHaveBeenCalled();
+      agent.kill();
       child.emit("message", { consoleProcessList: [123] });
       await vi.runAllTimersAsync();
+      expect(fork).toHaveBeenCalledTimes(1);
+      expect(nativeKill).toHaveBeenCalledTimes(1);
       expect(kill).not.toHaveBeenCalled();
       expect(child.kill).toHaveBeenCalledTimes(failure === "timeout" ? 1 : 0);
     },

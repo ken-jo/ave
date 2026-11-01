@@ -19,10 +19,18 @@ index 8c4fca9022a6d6f015bca87f61625cde2278f428..4aead5a994e3e981b84091aeae9ce50f
  //# sourceMappingURL=conpty_console_list_agent.js.map
 \ No newline at end of file
 diff --git a/lib/windowsPtyAgent.js b/lib/windowsPtyAgent.js
-index a358ffb177357e177661033c1b092f9c9d0e5f5a..3e9f33d150ec8576ec1de9bd16440a529fec5e26 100644
+index a358ffb177357e177661033c1b092f9c9d0e5f5a..c90669f6b3a769e156c120f2794598ec2279e9f0 100644
 --- a/lib/windowsPtyAgent.js
 +++ b/lib/windowsPtyAgent.js
-@@ -137,7 +137,11 @@ var WindowsPtyAgent = /** @class */ (function () {
+@@ -132,12 +132,19 @@ var WindowsPtyAgent = /** @class */ (function () {
+     };
+     WindowsPtyAgent.prototype.kill = function () {
+         var _this = this;
++        // One request owns teardown, including the asynchronous console lookup.
++        if (this._killRequested) return;
++        this._killRequested = true;
+         // Tell the agent to kill the pty, this releases handles to the process
+         if (this._useConpty) {
              if (!this._useConptyDll) {
                  this._inSocket.readable = false;
                  this._outSocket.readable = false;
@@ -34,7 +42,7 @@ index a358ffb177357e177661033c1b092f9c9d0e5f5a..3e9f33d150ec8576ec1de9bd16440a52
                      consoleProcessList.forEach(function (pid) {
                          try {
                              process.kill(pid);
-@@ -147,8 +151,7 @@ var WindowsPtyAgent = /** @class */ (function () {
+@@ -147,8 +154,7 @@ var WindowsPtyAgent = /** @class */ (function () {
                          }
                      });
                  });
@@ -44,7 +52,7 @@ index a358ffb177357e177661033c1b092f9c9d0e5f5a..3e9f33d150ec8576ec1de9bd16440a52
              }
              else {
                  // Close the input write handle to signal the end of session.
-@@ -181,16 +184,36 @@ var WindowsPtyAgent = /** @class */ (function () {
+@@ -181,16 +187,36 @@ var WindowsPtyAgent = /** @class */ (function () {
      WindowsPtyAgent.prototype._getConsoleProcessList = function () {
          var _this = this;
          return new Promise(function (resolve) {

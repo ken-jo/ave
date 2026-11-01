@@ -1,5 +1,6 @@
 /** Host terminals belong to visible tabs; confined terminals belong to conversations. */
 import { killPty } from "./pty-kill.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { randomBytes } from "node:crypto";
 import { beginAgentTerminalObservation, type AgentTerminalObservationLease } from "../../tools/agent-terminal-observation.js";
 import { accessSync, constants, mkdirSync, realpathSync, statSync } from "node:fs";
@@ -1885,7 +1886,8 @@ function killTerminalLane(key: string): void {
   } catch (err) {
     log.warn({ tabId, err: errorMessage(err) }, "terminal: kill failed");
   }
-  if (session.exited) return;
+  // Windows teardown is single-shot; retain ownership until exit instead of requesting it twice.
+  if (session.exited || process.platform === "win32") return;
   session.forceKillTimer = setTimeout(() => {
     if (session.exited) return;
     try {
@@ -1911,8 +1913,12 @@ export function killAllTerminals(): number {
 }
 
 /** App-shutdown path: signal every PTY immediately and wait only until all exit callbacks run or the bounded
- * deadline expires. Unlike a tab close, shutdown cannot rely on a later timer after Electron has already quit. */
+ * deadline expires. Positive Windows waits cover console enumeration and exit cleanup; zero is the
+ * emergency path after the outer shutdown deadline. Shutdown cannot rely on a later timer after quit. */
 export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promise<number> {
+  const waitMs = process.platform === "win32" && timeoutMs > 0
+    ? Math.max(timeoutMs, TOOL_TIMEOUT_POLICY.windowsPtyShutdownMs)
+    : timeoutMs;
   terminalShutdownStarted = true;
   logicalTabs.clear();
   conversationTerminals.clear();
@@ -1962,17 +1968,17 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
         resolve();
         return;
       }
-      if (Date.now() - startedAt >= timeoutMs) {
+      if (Date.now() - startedAt >= waitMs) {
         if (!inFlightSettled) {
           log.warn(
-            { unresolved: terminalSpawnsInFlight.size, timeoutMs },
+            { unresolved: terminalSpawnsInFlight.size, timeoutMs: waitMs },
             "terminal: shutdown deadline expired with in-flight spawns",
           );
         }
         const unresolvedSessions = sessionsToKill.filter(([, session]) => !session.exited).length;
         if (unresolvedSessions > 0) {
           log.warn(
-            { unresolved: unresolvedSessions, timeoutMs },
+            { unresolved: unresolvedSessions, timeoutMs: waitMs },
             "terminal: shutdown deadline expired with live PTYs",
           );
         }
