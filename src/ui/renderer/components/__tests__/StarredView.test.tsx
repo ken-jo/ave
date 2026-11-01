@@ -259,7 +259,7 @@ describe("StarredView", () => {
   });
 
   it("disables calendar dates that have no activity signal", async () => {
-    // Pin mid-month: on the 1st, "yesterday" falls outside the rendered month and has no day button.
+    // Pin mid-month: when the 1st is a Sunday "yesterday" has no calendar button, and on Jan 1 the yearly heatmap omits it.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 9, 15, 12));
     try {
