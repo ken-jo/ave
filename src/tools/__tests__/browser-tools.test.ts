@@ -158,10 +158,11 @@ describe("browser tools", () => {
     noTabOpener?: boolean;
   } = {}) {
     const tabs = new BrowserTabRegistry<FakeGuest>();
-    const ops: Array<{ windowId: number; requestId?: string; op: string }> = [];
+    const ops: Array<{ windowId: number; requestId?: string; op: string; inTabId?: string }> = [];
     tabs.setRendererLink({
       sendTabOp: (windowId, request) => {
-        ops.push({ windowId, op: request.op, ...("requestId" in request ? { requestId: request.requestId } : {}) });
+        ops.push({ windowId, op: request.op, ...("requestId" in request ? { requestId: request.requestId } : {}),
+          ...(request.op === "new" && request.inTabId !== undefined ? { inTabId: request.inTabId } : {}) });
         return true;
       },
       sendControl: () => {},
@@ -361,6 +362,27 @@ describe("browser tools", () => {
     expect(h.ops.filter((op) => op.op === "new")).toHaveLength(0);
     expect(h.cards).toHaveLength(0);
     expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain(`it works in ${attached.handle}`);
+  });
+
+  it("loads browser_tab_new into the empty page a pane chat is bound to, and binds only that page", async () => {
+    const h = harness({ noTabOpener: true });
+    h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "browser:pane" } });
+    expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain("This chat's page is empty");
+    const opening = h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" });
+    await vi.waitFor(() => expect(h.ops.at(-1)).toMatchObject({ op: "new", inTabId: "browser:pane" }));
+    const requestId = h.ops.at(-1)!.requestId!;
+    const stray = new FakeGuest(600, "about:blank");
+    h.tabs.guestAttached(stray, 1);
+    expect(h.tabs.bindTab(1, { tabId: "browser:other", webContentsId: 600, requestId })).toEqual({ ok: false, error: "guest-not-hosted" });
+    const guest = new FakeGuest(601, "about:blank", "Start");
+    h.tabs.guestAttached(guest, 1);
+    expect(h.tabs.bindTab(1, { tabId: "browser:pane", webContentsId: 601, requestId })).toEqual({ ok: true });
+    const result = await opening;
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain('"openedBy":"agent"');
+    expect(h.cards.some((card) => card.toolName === BROWSER_TOOL.tabNew)).toBe(true);
+    const bound = h.tabs.defaultBrowserTab(1, HOST_SESSION);
+    expect(bound.ok && h.tabs.liveTab(bound.handle)?.opener).toBe("agent");
   });
 
   it("observes successful agent open, switch and close operations", async () => {

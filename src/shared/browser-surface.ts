@@ -34,7 +34,8 @@ export type BrowserTabOpRequest =
    * `sessionId` names the conversation the tab is opened for (a sub-agent's
    * parent), so a window with several chats opens it beside that one.
    */
-  | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly active: boolean; readonly sessionId?: string }
+  /** `inTabId` loads the page into that existing, still empty renderer tab (a pane chat's own page) instead of a new one. */
+  | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly active: boolean; readonly sessionId?: string; readonly inTabId?: string }
   | { readonly requestId: string; readonly op: "select"; readonly tabId: string }
   | { readonly requestId: string; readonly op: "close"; readonly tabId: string }
   /** Focus this existing renderer slot without selecting or moving another surface. */
@@ -47,16 +48,19 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
   const record = value as { requestId?: unknown; op?: unknown; url?: unknown; active?: unknown; tabId?: unknown };
   if (typeof record.requestId !== "string" || record.requestId.length === 0) return null;
   if (record.op === "new") {
-    if (!hasOnlyKeys(value, ["requestId", "op", "url", "active", "sessionId"])) return null;
+    if (!hasOnlyKeys(value, ["requestId", "op", "url", "active", "sessionId", "inTabId"])) return null;
     if (typeof record.url !== "string" || typeof record.active !== "boolean") return null;
     const sessionId = (value as { sessionId?: unknown }).sessionId;
     if (sessionId !== undefined && (typeof sessionId !== "string" || sessionId.length === 0)) return null;
+    const inTabId = (value as { inTabId?: unknown }).inTabId;
+    if (inTabId !== undefined && (typeof inTabId !== "string" || inTabId.length === 0)) return null;
     return {
       requestId: record.requestId,
       op: "new",
       url: record.url,
       active: record.active,
       ...(typeof sessionId === "string" ? { sessionId } : {}),
+      ...(typeof inTabId === "string" ? { inTabId } : {}),
     };
   }
   if ((record.op === "select" || record.op === "close" || record.op === "focus" || record.op === "restore-focus") && typeof record.tabId === "string") {

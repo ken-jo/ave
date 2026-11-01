@@ -12,6 +12,8 @@ export interface BrowserTabHost {
   hasTab: (tabId: string) => boolean;
   /** Absent for a host that holds tabs but does not open the agent's new ones. */
   openAgentTab?: (url: string, requestId: string, active: boolean) => void;
+  /** Load an agent page into this host's existing empty browser tab; false when the tab is not an empty browser page. */
+  loadAgentTab?: (tabId: string, url: string, requestId: string) => boolean;
   selectTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
 }
@@ -98,6 +100,12 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
   }
   if (request.op === "restore-focus") {
     hostFocus?.restore();
+    return;
+  }
+  if (request.op === "new" && request.inTabId !== undefined) {
+    const inTabId = request.inTabId;
+    candidates.find((candidate) => candidate.loadAgentTab !== undefined && candidate.hasTab(inTabId))
+      ?.loadAgentTab?.(inTabId, request.url, request.requestId);
     return;
   }
   if (request.op === "new") {
