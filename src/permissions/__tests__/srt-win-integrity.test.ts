@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, win32 } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -34,7 +34,7 @@ describe("Windows helper integrity", () => {
 
   it("excludes the pinned helper from signing while preserving application signing", () => {
     const { build } = require("../../../package.json");
-    expect(build.win.signExts).toEqual(["!srt-win.exe"]);
+    expect(build.win.signExts).toContain("!srt-win.exe");
     expect(build.win.signExecutable).not.toBe(false);
     expect(build.win.signAndEditExecutable).not.toBe(false);
     // Exercise the installed packager's filter, without a signing identity.
@@ -45,6 +45,7 @@ describe("Windows helper integrity", () => {
     expect(shouldSign(join("app.asar.unpacked", "vendor", "srt-win", "arm64", "srt-win.exe"))).toBe(false);
     expect(shouldSign("Ave.exe")).toBe(true);
     expect(shouldSign("other-helper.exe")).toBe(true);
+    expect(shouldSign("srt-win-renamed.exe")).toBe(true);
   });
 
   // Owner SID and image sharing checks require the native filesystem APIs.
@@ -267,7 +268,7 @@ describe("Windows helper integrity", () => {
     expect(() => assertSrtWinVendor(vendor, ["unknown"])).toThrow();
   });
 
-  it("checks the final unpacked images after signing and fails the build on a changed image", async () => {
+  it("checks the final unpacked images after signing and fails the build on a changed image", () => {
     const directory = mkdtempSync(join(tmpdir(), "ave-srt-package-test-"));
     directories.push(directory);
     const outputVendor = join(directory, "resources", "app.asar.unpacked", "node_modules", "@anthropic-ai", "sandbox-runtime", "vendor");
@@ -276,14 +277,49 @@ describe("Windows helper integrity", () => {
       mkdirSync(target, { recursive: true });
       copyFileSync(join(vendor, "srt-win", arch, "srt-win.exe"), join(target, "srt-win.exe"));
     }
-    const afterSign = require("../../../scripts/electron-after-sign.cjs") as (context: { electronPlatformName: string; appOutDir: string }) => Promise<void>;
-    await expect(afterSign({ electronPlatformName: "win32", appOutDir: directory })).resolves.toBeUndefined();
+    // Isolate the separate SDK boundary; the actual signing hook and helper
+    // verifier still read the final unpacked images in this subprocess.
+    const script = `
+      import { registerHooks, createRequire } from 'node:module';
+      const calls = [];
+      globalThis.sdkCalls = calls;
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith('/scripts/lib/mxc-sdk-packaging.mjs')) return {
+          format: 'module', shortCircuit: true,
+          source: 'export function recordMxcSupervisorRuntime(...args) { globalThis.sdkCalls.push(["record", ...args]); }'
+            + 'export function assertPackagedMxcSdk(...args) { globalThis.sdkCalls.push(["verify", ...args]); }',
+        };
+        return nextLoad(url, context);
+      }});
+      const afterSign = createRequire(import.meta.url)(process.argv[3]);
+      try {
+        await afterSign({ electronPlatformName: process.argv[2], appOutDir: process.argv[1],
+          arch: 1, packager: { appInfo: { productFilename: 'Ave' } } });
+        console.log(JSON.stringify(calls));
+      } catch (error) { console.error(error.message); process.exitCode = 1; }
+    `;
+    const afterSign = (platform: string, output: string) => spawnSync(process.execPath, ["--input-type=module", "-e", script, output, platform,
+      require.resolve("../../../scripts/electron-after-sign.cjs")], {
+      cwd: resolve("."),
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8",
+    });
+    const valid = afterSign("win32", directory);
+    expect(valid.error).toBeUndefined();
+    expect(valid.status, valid.stderr).toBe(0);
+    expect(JSON.parse(valid.stdout)).toEqual([
+      ["record", join(directory, "resources"), "x64", join(directory, "Ave.exe")],
+      ["verify", join(directory, "resources"), "x64"],
+    ]);
     const target = join(outputVendor, "srt-win", "arm64", "srt-win.exe");
     const bytes = readFileSync(target);
     bytes[0x20] ^= 1;
     writeFileSync(target, bytes);
-    await expect(afterSign({ electronPlatformName: "win32", appOutDir: directory })).rejects.toThrow("srt-win-integrity-mismatch");
-    await expect(afterSign({ electronPlatformName: "linux", appOutDir: "unused" })).resolves.toBeUndefined();
+    const changed = afterSign("win32", directory);
+    expect(changed.status).toBe(1);
+    expect(changed.stderr).toContain("srt-win-integrity-mismatch");
+    const linux = afterSign("linux", "unused");
+    expect(linux.status, linux.stderr).toBe(0);
+    expect(JSON.parse(linux.stdout)).toEqual([]);
   });
 
   it.skipIf(process.platform !== "win32")("allows runner read and execute access while keeping the host the sole image modifier", () => {
