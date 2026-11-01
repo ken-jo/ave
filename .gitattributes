@@ -77,3 +77,4 @@ tools/shell-parser/*.patch whitespace=-blank-at-eol,-space-before-tab
 # Pretendard OFL text has trailing spaces). Editing them to pass the whitespace
 # check would alter a legal text, so only end-of-line blanks are exempt.
 web/public/fonts/**/LICENSE.txt whitespace=-blank-at-eol
+resources/licenses/canvas/THIRD-PARTY-NOTICES.txt whitespace=-blank-at-eol
