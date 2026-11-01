@@ -507,6 +507,7 @@
     "beforePack": "scripts/electron-before-pack.cjs"
   },
   "patchedDependencies": {
-    "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch"
+    "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch",
+    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
   }
 }

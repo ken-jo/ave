@@ -1422,6 +1422,8 @@ improvement.
 
 ### Host terminals and conversation shells
 
+PTY termination uses `killPty` in `src/main/terminal/pty-kill.ts`: Windows omits signals, including forced cleanup; POSIX retains the requested signal. The `node-pty@1.1.0` patch in `patches/node-pty@1.1.0.patch` reads console members before native teardown and sweeps only the returned list. Lookup failure, agent exit without a result, or timeout yields an empty list rather than a cached shell PID. Remove the patch when an upstream release fixes [node-pty#952](https://github.com/microsoft/node-pty/issues/952), including the ordering and failure behavior. Any integrity manifest covering these dependency files must be regenerated when adopting or removing the patch.
+
 Each visible terminal tab owns one
 native host shell, with a host badge/color band. A side-work-panel mount is
 labeled **No agent access**; eligible workspace agent commands follow the

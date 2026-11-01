@@ -1,4 +1,5 @@
 /** Host terminals belong to visible tabs; confined terminals belong to conversations. */
+import { killPty } from "./pty-kill.js";
 import { randomBytes } from "node:crypto";
 import { beginAgentTerminalObservation, type AgentTerminalObservationLease } from "../../tools/agent-terminal-observation.js";
 import { accessSync, constants, mkdirSync, realpathSync, statSync } from "node:fs";
@@ -624,7 +625,7 @@ async function spawnNewTerminal(
         env: { ...ttyHandoff.TRAMPOLINE_ENV },
       });
       trampolinePty = trampoline;
-      addCleanup(() => trampoline.kill("SIGKILL"));
+      addCleanup(() => killPty(trampoline, "SIGKILL"));
       ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
@@ -674,7 +675,7 @@ async function spawnNewTerminal(
       assertSrtWinSpawnIntegrity(cmd);
       pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
       wrappedProcessStarted = true;
-      addCleanup(() => pty.kill("SIGKILL"));
+      addCleanup(() => killPty(pty, "SIGKILL"));
     }
     // node-pty starts the shell in its own session, so its pid is the process group the sandbox keeps the ended tab's listener port for.
     if (pty.pid > 1) egress.noteProcessGroup(pty.pid);
@@ -824,7 +825,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     if (registered) return;
     disposeData?.();
     disposeExit?.();
-    try { pty?.kill("SIGKILL"); } finally { integration?.cleanup(); }
+    try { if (pty) killPty(pty, "SIGKILL"); } finally { integration?.cleanup(); }
   };
   owner.cleanupResources = cleanup;
   try {
@@ -1880,7 +1881,7 @@ function killTerminalLane(key: string): void {
   session.egressAbort?.abort(new Error("terminal tab closed"));
   session.disposeData();
   try {
-    if (!session.exited) session.pty.kill();
+    if (!session.exited) killPty(session.pty);
   } catch (err) {
     log.warn({ tabId, err: errorMessage(err) }, "terminal: kill failed");
   }
@@ -1889,7 +1890,7 @@ function killTerminalLane(key: string): void {
     if (session.exited) return;
     try {
       // node-pty defaults to SIGHUP. A shell may trap/ignore it, so retain ownership until this definitive escalation or the exit callback.
-      session.pty.kill("SIGKILL");
+      killPty(session.pty, "SIGKILL");
     } catch (err) {
       // Keep the session registered even when signal delivery fails. Losing the only owner here would
       // allow a replacement PTY while this one may still be alive and would strand its ASRT/HOME finalizers.
@@ -1936,7 +1937,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
       session.forceKillTimer = null;
     }
     try {
-      session.pty.kill("SIGKILL");
+      killPty(session.pty, "SIGKILL");
     } catch (err) {
       // Keep ownership until a late exit callback; the bounded wait below prevents a broken native PTY from hanging application shutdown.
       log.warn(
