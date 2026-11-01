@@ -131,7 +131,8 @@ function WebPanelBody({
         <div className="shrink-0 border-b px-3 py-1.5 text-[11px] text-destructive" data-testid="web-panel-address-error">{error}</div>
       ) : null}
       {surface.url ? (
-        <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`} />
+        <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}
+          {...(surface.agentRequestId === undefined ? {} : { bindRequestId: surface.agentRequestId })} />
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-sm text-muted-foreground" data-testid="web-panel-empty">
           {t("mainPanels.webEmpty")}
