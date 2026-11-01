@@ -112,8 +112,22 @@ describe("bounded supervisor frames", () => {
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
   });
 
-  it("authenticates the native-creation boundary receipt", () => {
-    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "creating" };
+  it.each(["creating", "spawning"] as const)("authenticates the native creation receipt %s", (type) => {
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type };
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
+  });
+
+  it.each([false, true])("authenticates the pending-spawn cancellation observation %s", (spawnPendingAtCancellation) => {
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "stopped", spawnPendingAtCancellation };
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
+  });
+
+  it.each(["0", "-1", "01", "18446744073709551616", "not-a-handle"])("rejects the invalid liveness handle diagnostic %s", (ownerHandle) => {
+    expect(() => encode({ version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], ownerHandle })).toThrow(MxcProcessContractError);
+  });
+
+  it("round trips the maximum unsigned native liveness handle diagnostic", () => {
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], ownerHandle: "18446744073709551615" };
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
   });
 
@@ -166,5 +180,16 @@ describe("supervisor frame authentication", () => {
     expect(() => [...new MxcFrameDecoder(GENERATION, KEY, "host").read(packet)]).toThrow(/authentication/);
     const changed = Buffer.from(packet); changed[8] ^= 1;
     expect(() => [...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(changed)]).toThrow(/authentication/);
+  });
+});
+
+
+describe("bounded native dependency diagnostics", () => {
+  it("admits the full module snapshot only within the frame and module-count limits", () => {
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42,
+      nodeVersion: "24.22.1", ownerHandle: "5", nativeModules: Array.from({ length: 256 }, (_, index) => "C:\\Windows\\System32\\dependency" + index + ".dll") };
+    expect(() => encode(frame)).not.toThrow();
+    expect(() => encode({ ...frame, nativeModules: [...frame.nativeModules, "extra.dll"] })).toThrow(MxcProcessContractError);
+    expect(() => encode({ ...frame, nativeModules: Array(256).fill("x".repeat(300)) })).toThrow(MxcProcessContractError);
   });
 });

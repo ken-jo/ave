@@ -83,3 +83,94 @@ Local, non-native checks:
 node --test tools/mxc-probes/probe-common.test.mjs tools/mxc-probes/process-lifecycle.test.mjs tools/mxc-probes/filesystem-policy.test.mjs
 node --check tools/mxc-probes/sdk-supervisor.mjs
 ```
+
+## Packaged extension-process acceptance
+
+This harness uses the real public `spawnMxcExtensionProcess` entry and its
+packaged supervisor. It never routes an existing holder or enables extension
+confinement. Run it from a **non-elevated, standard-user Windows x64 interactive
+desktop session**, from the checkout used to build the app. The driver rejects
+session 0 and an elevated token. It does not install or prepare the host.
+
+Build an unsigned unpacked x64 app with the existing installer command. On a
+Windows x64 host it selects x64, builds the app and native helpers, and assembles
+`release\win-unpacked\Ave.exe`; `--dir` does not install anything and
+`--skip-code-sign` removes signing credentials for this build:
+
+```powershell
+bun install --frozen-lockfile
+bun run dist:win -- --dir --skip-code-sign
+$App = (Resolve-Path '.\release\win-unpacked\Ave.exe').Path
+$Driver = (Resolve-Path '.\tools\mxc-probes\packaged.mjs').Path
+$env:ELECTRON_RUN_AS_NODE = '1'
+& $App $Driver --app $App | Tee-Object -FilePath '.\mxc-packaged-observations.jsonl'
+$LASTEXITCODE
+Remove-Item Env:ELECTRON_RUN_AS_NODE
+```
+
+The app used as driver must be the same locally built payload being measured.
+Its Node mode runs the standalone controller, which verifies the packaged SDK
+and runtime bytes before loading the verified observer addon. The observer has
+**no outer lifetime job**, so it cannot mask the main-death EOF test. The
+controller copies the app into one fresh `ave-mxc-packaged-*` OS-temp directory;
+all measured main/supervisor processes execute from that copy. It refuses
+redirected source files before copying. A new `planted.dll` is added only to the
+copy's unpacked SDK bin directory, then removed by its exact path. The real
+package/install and repository dependencies are read-only inputs.
+
+The controller prints one bounded JSON observation object. `observations`
+contains these acceptance measurements:
+
+- `packaged-stdio-backpressure-eof`: real supervisor verification and a 4 MiB
+  binary stdin/stdout round trip. It pauses output consumption, records input
+  backpressure, compares exact byte counts and SHA-256, and requires the fixture's
+  stderr EOF marker plus a successful native terminal result. The production
+  bootstrap's reported selected native-module paths are retained.
+- `dispose`, `main-death`, `supervisor-death`: a fixture child and grandchild
+  answer a fresh nonce over the owned stdio before their OS process handles
+  become eligible for termination. Image paths and creation times must match the
+  copied runtime and launch order. The observer independently records all loaded
+  supervisor module paths, then calls dispose or terminates the exact pinned
+  main/supervisor object. `deadBeforeCleanup` records kernel process-handle
+  signals **before** any survivor cleanup; a wait rejection is not death proof.
+- `fd3NonInheritance`, within each lifetime row: the authenticated ready receipt
+  names the supervisor's actual fd 3 OS handle. An external handle-table snapshot
+  checks that its inheritance attribute is clear, duplicates that object into the
+  observer temporarily, and compares it with every snapshotted child/grandchild
+  handle. A matching object fails; incomplete snapshots, inaccessible handles,
+  stale handles or unsupported native calls are inconclusive. The observer never
+  assumes that an absent CRT descriptor proves an absent OS handle.
+- `cancel-during-native-spawn`: cancellation starts at the authenticated `spawning`
+  receipt, emitted after the SDK spawn call has returned its pending native
+  promise. The earlier `creating` receipt remains the ownership boundary. A
+  separate authenticated stop receipt records whether cancellation
+  actually overlapped the pending native spawn await. `pending:false` remains
+  inconclusive and is never counted as a cancellation-during-spawn pass.
+- `planted-dll-before-load`: an extra real DLL file in the temporary unpacked SDK
+  directory must produce `MxcIntegrityError` before any creating/readiness receipt.
+  The copy is the only payload mutated by this negative control.
+
+`verdict:"measured"`, exit 0, requires every observation and cleanup check to
+pass. Any native failure, unsupported API, timing miss or incomplete evidence
+returns `inconclusive`/`error`, exit 2. This implementation has **not been run on
+Windows**; portable tests establish only parsing, bounds and evidence
+classification. Record the JSON rather than treating the presence of the script
+as native verification. Actual DLL imports, handle-table queries, nested job/PSEC
+behavior, crash cleanup and the cancellation timing all remain native-unverified
+until this command succeeds on the peer. Repeat on arm64 only after adding an
+explicit matching-architecture cohort; this entry currently requires x64.
+
+The harness makes no explicit ACL, registry, account, service or firewall changes,
+and passes no telemetry options. The SDK/OS still manages per-container WFP and
+WinHTTP state as described above. A local proxy refuses every request and opens
+no upstream connection. No helper is compiled and no shell/profile is executed.
+Only nonce-confirmed, identity-pinned process handles may be terminated during
+survivor cleanup; no process-name search or wildcard kill is used. On verified
+cleanup the controller removes its exact newly allocated temp directory. On
+uncertain cleanup it retains that directory and `observations.json`, reports
+`cleanupVerified:false`, and names the path for manual investigation; it never
+claims a clean gate after terminating a survivor during cleanup. Temp-removal or
+observation-file write failures preserve the prior rows and owned temp path in
+the returned JSON, report `finalizationErrors`, and force
+`cleanupVerified:false`/`nativeVerified:false`; diagnostic-write failure is never
+silently discarded.

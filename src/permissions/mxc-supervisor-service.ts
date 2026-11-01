@@ -14,6 +14,9 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   let owned: MxcNativeProcess | undefined;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
   let creationStarted = false;
+  let spawnPending = false;
+  let forwarding = false;
+  let spawnPendingAtCancellation = false;
   let stopping = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let resolveTerminal!: (result: { exitCode: number; timedOut: boolean } | null) => void;
@@ -23,9 +26,10 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   });
   const stop = (): void => {
     if (stopping) return;
+    spawnPendingAtCancellation = spawnPending;
     stopping = true;
     watchdog = setTimeout(onFatal, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
-    if (owned) void owned.dispose({ drainOutput: false }).catch(rejectTerminal);
+    if (owned) void owned.dispose({ drainOutput: !forwarding }).catch(rejectTerminal);
     else if (!starting) resolveTerminal(null);
   };
   const fail = (error: unknown): void => { stop(); rejectTerminal(error); };
@@ -66,14 +70,22 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             if (stopping) return null;
             creationStarted = true;
             // A single argument is deliberate: telemetry options are never passed.
-            const native = await runtime.sdk.spawn(frame.request);
+            spawnPending = true;
+            const nativePending = runtime.sdk.spawn(frame.request).finally(() => { spawnPending = false; });
+            // Keep adopting a late handle even if the notification channel fails.
+            // The failure requests teardown while the native promise remains owned.
+            const spawning = Promise.resolve().then(() => channel.send({ type: "spawning" }));
+            void spawning.catch(fail);
+            const native = await nativePending;
             owned = new MxcNativeProcess(native);
+            await spawning;
             const nativeModules = runtime.auditModules();
             if (stopping) {
               await owned.dispose();
               return null;
             }
-            await channel.send({ type: "ready", id: owned.id, nodeVersion: process.versions.node, nativeModules });
+            await channel.send({ type: "ready", id: owned.id, nodeVersion: process.versions.node, nativeModules, ownerHandle: runtime.ownerHandle });
+            forwarding = true;
             const stdout = forward(owned.stdout, "stdout"), stderr = forward(owned.stderr, "stderr");
             void stdout.catch(fail); void stderr.catch(fail);
             try {
@@ -115,7 +127,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   try {
     const result = await terminal;
     if (result) await channel.send({ type: "exit", ...result });
-    else await channel.send({ type: "stopped" });
+    else await channel.send({ type: "stopped", spawnPendingAtCancellation });
     await channel.end();
   } catch (cause) {
     stop();

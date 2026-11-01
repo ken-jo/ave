@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -133,31 +133,41 @@ describe("packaged supervisor runtime byte inventory", () => {
 
 
 describe("installed SDK import graph", () => {
-  it("verifies the real installed dependency layout with native addon bytes substituted only", () => {
-    const modules = path.resolve("node_modules");
-    const target = path.join(modules, "@koromix/koffi-win32-x64");
+  it("verifies an isolated copy of the real installed layout without modifying shared dependencies", () => {
+    const installed = path.resolve("node_modules");
+    const directory = mkdtempSync(path.join(tmpdir(), "ave-sdk-real-tree-")); roots.push(directory);
+    const modules = path.join(directory, "node_modules");
     const pins = structuredClone(PINS);
-    const substituted = !existsSync(target);
-    try {
-      if (substituted) {
-        const files = {
-          "package.json": JSON.stringify({ name: "@koromix/koffi-win32-x64", main: "index.js" }),
-          "index.js": "throw new Error('Verification fixture must never execute');\n",
-          "win32_x64/koffi.node": "native bytes are not loaded by integrity verification",
-        };
-        for (const [relative, contents] of Object.entries(files)) {
-          mkdirSync(path.dirname(path.join(target, relative)), { recursive: true });
-          writeFileSync(path.join(target, relative), contents);
-          (pins.sdk.architectures.x64 as Record<string, string>)[`@koromix/koffi-win32-x64/${relative}`] = contentHash(contents);
-        }
-      }
-      expect(verifyMxcSdk(modules, "x64", pins, {}).sdkRoot).toBe(path.join(modules, "@microsoft/mxc-sdk"));
-      expect(pins.sdk.packages.semver).toBe("@microsoft/mxc-sdk/node_modules/semver");
-      expect(JSON.parse(readFileSync(path.join(modules, pins.sdk.packages.semver, "package.json"), "utf8")).version).toBe(pins.sdk.versions.semver);
-      expect(readFileSync("bun.lock", "utf8")).toContain(`"@microsoft/mxc-sdk/semver": ["semver@${pins.sdk.versions.semver}"`);
-    } finally {
-      if (substituted) rmSync(target, { recursive: true, force: true });
+    const entries = { ...pins.sdk.files, ...pins.sdk.architectures.x64 };
+    const addonPrefix = "@koromix/koffi-win32-x64/";
+    const substituted = !existsSync(path.join(installed, addonPrefix));
+    // Copy actual installed JS and its nested dependency layout. Only absent
+    // target-addon bytes are substituted, exclusively beneath this temp root.
+    for (const relative of Object.keys(entries)) {
+      if (substituted && relative.startsWith(addonPrefix)) continue;
+      const file = path.join(modules, relative);
+      mkdirSync(path.dirname(file), { recursive: true });
+      copyFileSync(path.join(installed, relative), file);
     }
+    if (substituted) {
+      const files = {
+        "package.json": JSON.stringify({ name: "@koromix/koffi-win32-x64", main: "index.js" }),
+        "index.js": "throw new Error('Verification fixture must never execute');\n",
+        "win32_x64/koffi.node": "native bytes are not loaded by integrity verification",
+      };
+      for (const [relative, contents] of Object.entries(files)) {
+        const file = path.join(modules, addonPrefix, relative);
+        mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, contents);
+        (pins.sdk.architectures.x64 as Record<string, string>)[addonPrefix + relative] = contentHash(contents);
+      }
+    }
+    expect(verifyMxcSdk(modules, "x64", pins, {}).sdkRoot).toBe(path.join(modules, "@microsoft/mxc-sdk"));
+    expect(pins.sdk.packages.semver).toBe("@microsoft/mxc-sdk/node_modules/semver");
+    expect(JSON.parse(readFileSync(path.join(modules, pins.sdk.packages.semver, "package.json"), "utf8")).version).toBe(pins.sdk.versions.semver);
+    expect(readFileSync("bun.lock", "utf8")).toContain(`"@microsoft/mxc-sdk/semver": ["semver@${pins.sdk.versions.semver}"`);
+    writeFileSync(path.join(modules, pins.sdk.packages.semver, "index.js"), "tampered isolated entry");
+    expect(() => verifyMxcSdk(modules, "x64", pins, {})).toThrow(/hash mismatch/);
+    expect(contentHash(readFileSync(path.join(installed, pins.sdk.packages.semver, "index.js")))).toBe(pins.sdk.files["@microsoft/mxc-sdk/node_modules/semver/index.js"]);
   });
 
   it("records the actual spawn and probe import-condition graph without executing native code", async () => {
@@ -246,5 +256,52 @@ describe("packaged PTY native footprint", () => {
     mkdirSync(directory, { recursive: true });
     writeFileSync(path.join(directory, "conpty.dll"), "unexpected foreign source-build bytes");
     expect(() => assertPackagedMxcSdk(root, "x64")).toThrow("Unexpected packaged PTY source-build payload");
+  });
+});
+
+
+describe("runtime fuse defaults and signing order", () => {
+  it("preserves every other installed runtime fuse default when enabling node mode", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ave-fuse-wire-")); roots.push(root);
+    const previousCache = process.env.JITI_FS_CACHE;
+    process.env.JITI_FS_CACHE = "false";
+    try {
+      const require = createRequire(import.meta.url);
+      const builderRequire = createRequire(require.resolve("electron-builder/package.json"));
+      const { PlatformPackager } = builderRequire("app-builder-lib");
+      const { getCurrentFuseWire, flipFuses } = builderRequire("@electron/fuses");
+      const fuseRequire = createRequire(builderRequire.resolve("@electron/fuses"));
+      const { SENTINEL, FuseState } = fuseRequire("./constants.js");
+      const config = JSON.parse(readFileSync("package.json", "utf8")).build;
+      expect(config.electronFuses).toEqual({ runAsNode: true });
+      const defaults = await getCurrentFuseWire(require("electron"));
+      const indices = Object.keys(defaults).filter((key) => /^\d+$/.test(key)).map(Number).sort((a, b) => a - b);
+      expect(indices.length).toBeGreaterThanOrEqual(8);
+      expect(defaults[0]).toBe(FuseState.ENABLE);
+      const file = path.join(root, "runtime-wire.exe");
+      // Exercise the installed fuse writer on a wire fixture initialized from the
+      // real pristine runtime. No executable is launched or dependency modified.
+      writeFileSync(file, Buffer.concat([Buffer.from(SENTINEL), Buffer.from([1, indices.length, ...indices.map((index) => defaults[index])])]));
+      const generated = await PlatformPackager.prototype.generateFuseConfig.call({}, config.electronFuses);
+      await flipFuses(file, generated);
+      expect(await getCurrentFuseWire(file)).toEqual(defaults);
+    } finally {
+      if (previousCache === undefined) delete process.env.JITI_FS_CACHE;
+      else process.env.JITI_FS_CACHE = previousCache;
+    }
+  });
+
+  it("retains the installed builder's fuse, signing and notarization order", () => {
+    const require = createRequire(import.meta.url);
+    const builderRequire = createRequire(require.resolve("electron-builder/package.json"));
+    const platform = readFileSync(builderRequire.resolve("app-builder-lib/out/platformPackager.js"), "utf8");
+    const mac = readFileSync(builderRequire.resolve("app-builder-lib/out/macPackager.js"), "utf8");
+    const fuses = platform.indexOf("await this.doAddElectronFuses(packContext)");
+    const sign = platform.indexOf("await this.doSignAfterPack(", fuses);
+    expect(fuses).toBeGreaterThan(0); expect(sign).toBeGreaterThan(fuses);
+    const macSign = mac.indexOf("await this.doSign(signOptions,");
+    expect(macSign).toBeGreaterThan(0);
+    expect(mac.indexOf("await this.helper.notarizeIfProvided(appPath)", macSign)).toBeGreaterThan(macSign);
+    expect(platform).toContain("this.generateFuseConfig(this.config.electronFuses)");
   });
 });

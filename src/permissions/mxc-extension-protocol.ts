@@ -7,12 +7,13 @@ export const MXC_FRAME_MAX_BYTES = 64 * 1024;
 export const MXC_STREAM_CHUNK_BYTES = 32 * 1024;
 
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
-type ControlFrame = { type: "stdin-end" | "stop" | "stopped" | "creating" };
+type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" };
+type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type StartFrame = { type: "start"; request: ContainerRequest };
-type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[] };
+type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; ownerHandle: string };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
 type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string };
-export type MxcStreamFrame = (StreamFrame | ControlFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
+export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
   sequence: number;
@@ -31,13 +32,19 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
         || Buffer.byteLength(frame.data, "base64") > MXC_STREAM_CHUNK_BYTES) fail();
       fields = ["data"];
       break;
-    case "stdin-end": case "stop": case "stopped": case "creating": fields = []; break;
+    case "stdin-end": case "stop": case "creating": case "spawning": fields = []; break;
+    case "stopped":
+      if (typeof frame.spawnPendingAtCancellation !== "boolean") fail();
+      fields = ["spawnPendingAtCancellation"];
+      break;
     case "start": assertMxcExtensionRequest(frame.request); fields = ["request"]; break;
     case "ready":
       if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || typeof frame.nodeVersion !== "string" || frame.nodeVersion.length > 64
-        || !Array.isArray(frame.nativeModules) || frame.nativeModules.length > 16
-        || frame.nativeModules.some((entry) => typeof entry !== "string" || entry.length > 32768)) fail();
-      fields = ["id", "nodeVersion", "nativeModules"];
+        || !Array.isArray(frame.nativeModules) || frame.nativeModules.length > 256
+        || frame.nativeModules.some((entry) => typeof entry !== "string" || entry.length > 32768)
+        || typeof frame.ownerHandle !== "string" || !/^[1-9][0-9]{0,19}$/.test(frame.ownerHandle)
+        || BigInt(frame.ownerHandle) > 18446744073709551615n) fail();
+      fields = ["id", "nodeVersion", "nativeModules", "ownerHandle"];
       break;
     case "exit":
       if (!Number.isInteger(frame.exitCode) || typeof frame.timedOut !== "boolean") fail();

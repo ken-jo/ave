@@ -23,7 +23,8 @@
   },
   "include": [
     "src",
-    "scripts"
+    "scripts",
+    "tools/mxc-probes/packaged-main.ts"
   ],
   "exclude": [
     "src/**/__tests__/**",

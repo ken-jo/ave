@@ -4,7 +4,7 @@ import type { ChildProcess } from "node:child_process";
 import type { MxcProcess, ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { describe, expect, it, vi } from "vitest";
 import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
-import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "../mxc-extension-process.js";
+import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
 import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
 import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
@@ -18,7 +18,7 @@ function transportFixture() {
   const fixture = createMxcNativeProcess();
   const probe = vi.fn(() => ({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: true } } as ProbeOutput));
   const spawn = vi.fn(async () => fixture.native as unknown as MxcProcess);
-  const runtime: MxcSupervisorRuntime = { sdk: { probe, spawn }, auditModules: vi.fn(() => ["verified-unit-path"]) };
+  const runtime: MxcSupervisorRuntime = { ownerHandle: "271828", sdk: { probe, spawn }, auditModules: vi.fn(() => ["verified-unit-path"]) };
   const bootstrap = vi.fn(async () => runtime);
   let child!: ChildProcess;
   let liveness!: PassThrough;
@@ -29,7 +29,7 @@ function transportFixture() {
     const controls = new PassThrough(); events = new PassThrough(); liveness = new PassThrough();
     const diagnostics = new PassThrough();
     child = Object.assign(new EventEmitter(), {
-      stdin: controls, stdout: events, stderr: diagnostics, stdio: [controls, events, diagnostics, liveness],
+      pid: 314159, stdin: controls, stdout: events, stderr: diagnostics, stdio: [controls, events, diagnostics, liveness],
       kill: vi.fn(() => { liveness.end(); events.destroy(); child.emit("close", 1, null); return true; }),
     }) as unknown as ChildProcess;
     service = new Promise<Buffer>((resolve) => liveness.once("data", resolve))
@@ -37,7 +37,7 @@ function transportFixture() {
     void service.then(() => child.emit("close", 0, null), () => child.emit("close", 1, null));
     return child;
   });
-  const launch = (signal?: AbortSignal) => _spawnMxcExtensionProcessForTest(createMxcExtensionRequest(), "unit-modules", "unit-entry", spawnSupervisor, signal);
+  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void) => _spawnMxcExtensionProcessForTest(createMxcExtensionRequest(), "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle);
   return { fixture, probe, spawn, bootstrap, runtime, launch, fatal, get child() { return child; }, get liveness() { return liveness; }, get service() { return service; } };
 }
 
@@ -67,6 +67,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     expect(await output).toEqual(bytes);
     expect(await errors).toEqual(Buffer.from([0, 255, 128]));
     expect(owned.id).toBe(42);
+    expect(owned.diagnostics.ownerHandle).toBe("271828");
     expect(f.spawn.mock.calls[0]).toHaveLength(1);
     expect(f.fixture.accesses).toEqual(["stdin", "stdout", "stderr", "wait"]);
     await owned.dispose();
@@ -110,13 +111,15 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     let resolve!: (runtime: MxcSupervisorRuntime) => void;
     f.bootstrap.mockImplementation(() => new Promise((yes) => { resolve = yes; }));
     const controller = new AbortController();
-    const launched = f.launch(controller.signal).catch((error: unknown) => error);
+    const events: MxcProcessLifecycleEvent[] = [];
+    const launched = f.launch(controller.signal, (event) => events.push(event)).catch((error: unknown) => error);
     await vi.waitFor(() => expect(f.bootstrap).toHaveBeenCalledOnce());
     controller.abort();
     await new Promise<void>((yes) => setImmediate(yes));
     resolve(f.runtime);
     expect(await launched).toBeInstanceOf(MxcProcessContractError);
     expect(f.spawn).not.toHaveBeenCalled();
+    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "stopped", spawnPendingAtCancellation: false }]);
     await f.service;
   });
 
@@ -140,7 +143,8 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     let arrive!: (native: MxcProcess) => void;
     f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
     const controller = new AbortController();
-    const launched = f.launch(controller.signal).catch((error: unknown) => error);
+    const events: MxcProcessLifecycleEvent[] = [];
+    const launched = f.launch(controller.signal, (event) => events.push(event)).catch((error: unknown) => error);
     await vi.waitFor(() => expect(f.spawn).toHaveBeenCalledOnce());
     controller.abort();
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -148,6 +152,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     expect(await launched).toBeInstanceOf(MxcProcessContractError);
     expect(f.fixture.native.kill).toHaveBeenCalledOnce();
     expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }, { type: "stopped", spawnPendingAtCancellation: true }]);
     await f.service;
   });
 
@@ -235,6 +240,107 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
       expect(f.child.kill).not.toHaveBeenCalled();
       expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
     } finally { sending.mockRestore(); }
+  });
+
+  it("observes the authenticated creation boundary without changing native admission", async () => {
+    const f = transportFixture();
+    const events: MxcProcessLifecycleEvent[] = [];
+    const owned = await f.launch(undefined, (event) => events.push(event));
+    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }]);
+    expect(f.probe).toHaveBeenCalledOnce();
+    expect(f.spawn.mock.calls[0]).toHaveLength(1);
+    await owned.dispose();
+  });
+
+  it.each(["supervisor-started", "creating", "spawning", "stopped"] as const)("cleans up when the %s lifecycle observer throws", async (type) => {
+    const f = transportFixture();
+    const controller = new AbortController();
+    const cause = new Error("Observer refused event");
+    let observed = false;
+    const failure: unknown = await f.launch(controller.signal, (event) => {
+      if (event.type === type) { observed = true; throw cause; }
+      if (type === "stopped" && event.type === "supervisor-started") controller.abort();
+    }).catch((error: unknown) => error);
+    expect(observed).toBe(true);
+    expect(failure).toBeInstanceOf(MxcProcessContractError);
+    expect((failure as Error).message).toBe("Extension lifecycle observer failed");
+    expect((failure as Error).cause).toBe(cause);
+    await f.service;
+    expect(f.child.kill).not.toHaveBeenCalled();
+    if (f.spawn.mock.calls.length) {
+      expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+      expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("cancels from the authenticated spawning event while native creation remains pending", async () => {
+    const f = transportFixture();
+    let arrive!: (native: MxcProcess) => void;
+    f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
+    const controller = new AbortController();
+    const events: MxcProcessLifecycleEvent[] = [];
+    const launched = f.launch(controller.signal, (event) => {
+      events.push(event);
+      if (event.type === "spawning") controller.abort();
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(controller.signal.aborted).toBe(true));
+    expect(f.spawn).toHaveBeenCalledOnce();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    arrive(f.fixture.native as unknown as MxcProcess);
+    expect(await launched).toBeInstanceOf(MxcProcessContractError);
+    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }, { type: "stopped", spawnPendingAtCancellation: true }]);
+    expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+    expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+    await f.service;
+  });
+
+  it("adopts and disposes a late native handle when the spawning notification fails", async () => {
+    const f = transportFixture();
+    let arrive!: (native: MxcProcess) => void;
+    f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
+    const send = MxcExtensionChannel.prototype.send;
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+      if (frame.type === "spawning") return Promise.reject(new Error("Spawning notification failed"));
+      return send.call(this, frame);
+    });
+    try {
+      const launched = f.launch().catch((error: unknown) => error);
+      await vi.waitFor(() => expect(f.spawn).toHaveBeenCalledOnce());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      arrive(f.fixture.native as unknown as MxcProcess);
+      expect(await launched).toBeInstanceOf(MxcProcessContractError);
+      expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+      expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+      await expect(f.service).rejects.toThrow("Spawning notification failed");
+    } finally { sending.mockRestore(); }
+  });
+
+  it.each([
+    { types: ["spawning"], message: "Unexpected supervisor spawning receipt" },
+    { types: ["creating", "spawning", "spawning"], message: "Unexpected supervisor spawning receipt" },
+    { types: ["creating", "ready"], message: "Supervisor readiness preceded native invocation" },
+  ])("rejects an invalid authenticated creation sequence: $types", async ({ types, message }) => {
+    const launch = (_entry: string, _modules: string, generation: string): ChildProcess => {
+      const controls = new PassThrough(), events = new PassThrough(), diagnostics = new PassThrough(), liveness = new PassThrough();
+      const child = Object.assign(new EventEmitter(), { pid: 314159, stdin: controls, stdout: events, stderr: diagnostics,
+        stdio: [controls, events, diagnostics, liveness], kill: vi.fn(() => true) }) as unknown as ChildProcess;
+      liveness.once("data", (key: Buffer) => {
+        const channel = new MxcExtensionChannel(controls, events, generation, key, "supervisor");
+        controls.once("data", () => {
+          void (async () => {
+            for (const type of types) {
+              if (type === "ready") await channel.send({ type, id: 42, nodeVersion: process.versions.node, nativeModules: [], ownerHandle: "271828" });
+              else await channel.send({ type: type as "creating" | "spawning" });
+            }
+            await channel.end();
+          })().catch(() => {}).finally(() => { events.destroy(); child.emit("close", 1, null); });
+        });
+      });
+      return child;
+    };
+    const error: unknown = await _spawnMxcExtensionProcessForTest(createMxcExtensionRequest(), "unit-modules", "unit-entry", launch).catch((error: unknown) => error);
+    const causes = error instanceof MxcProcessCleanupError && error.cause instanceof AggregateError ? error.cause.errors : [error];
+    expect(causes).toContainEqual(expect.objectContaining({ name: "MxcProcessContractError", message }));
   });
 
 });

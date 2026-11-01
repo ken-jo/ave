@@ -2485,7 +2485,14 @@ BaseContainer where the host offers one. The shell path uses the MIT-licensed
 npm tarball's sha512, each launcher's sha256). The extension process primitive
 runs SDK operations in a dedicated supervisor under the packaged executable's
 Node mode with `ELECTRON_RUN_AS_NODE=1`; the Electron RunAsNode fuse must remain
-explicitly enabled in packaging configuration. Existing holders
+explicitly enabled in packaging configuration. The pinned packager reads this fuse
+configuration globally. Only `runAsNode: true` is set, matching the runtime default;
+every other fuse remains inherited, including newer unnamed fuse slots. The
+packager applies fuse changes immediately before signing; the macOS path still
+signs before notarization. A regression applies the installed fuse writer to a
+copy of the pristine runtime fuse wire and requires every fuse value to remain
+equal to its default. This global setting changes neither signing nor notarization
+order on other platforms. Existing holders
 are not routed to this primitive yet. SDK JS,
 FFI addon and architecture-specific DLLs live under `app.asar.unpacked`.
 Installed-byte pins cover SDK `dist` JavaScript, the FFI ESM entry chain and CJS

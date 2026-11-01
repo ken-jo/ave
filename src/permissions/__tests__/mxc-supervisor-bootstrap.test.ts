@@ -119,7 +119,7 @@ describe("canonical module admission with injected native calls", () => {
     ]);
     f.deps.resolvePath = (file: string) => canonical.get(file) ?? file;
     const runtime = await _bootstrapMxcSupervisorForTest(f.modules, "x64", {}, f.deps);
-    expect(runtime.auditModules()).toContain(f.loaded[1]);
+    expect(runtime.auditModules()).toEqual(f.loaded.map(f.deps.resolvePath));
   });
 
   it("refuses modules outside the actual system directory including side-by-side and injected modules", async () => {

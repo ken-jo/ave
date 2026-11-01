@@ -9,6 +9,7 @@ import PINS from "./mxc-launcher-pins.json" with { type: "json" };
 import { MxcCapabilityUnavailableError } from "./mxc-extension-errors.js";
 
 export interface MxcSupervisorRuntime {
+  readonly ownerHandle: string;
   readonly sdk: Pick<typeof Sdk, "spawn" | "probe">;
   auditModules(): string[];
 }
@@ -73,12 +74,14 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
   }
   // Resolve fd 3 through the already running runtime's descriptor table, not
   // another CRT's table. Looking up this export loads no additional library.
+  let ownerHandle: string;
   try {
-    const ownerHandle = ffi.load(null).func("uintptr_t uv_get_osfhandle(int)")(3);
-    const value = BigInt(ownerHandle);
-    if (value === 0n || value === 0xffffffffffffffffn || !protectHandle(ownerHandle, 1, 0)) {
+    const handle = ffi.load(null).func("uintptr_t uv_get_osfhandle(int)")(3);
+    const value = BigInt(handle);
+    if (value === 0n || value === 0xffffffffffffffffn || !protectHandle(handle, 1, 0)) {
       throw new MxcCapabilityUnavailableError("Cannot protect supervisor owner handle");
     }
+    ownerHandle = value.toString();
   } catch (error) {
     throw new MxcCapabilityUnavailableError("Cannot protect supervisor owner handle", { cause: error });
   }
@@ -127,13 +130,13 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
         throw new MxcIntegrityError("Unexpected supervisor native module");
       }
     }
-    return loaded.filter((file) => pinned.has(key(file)));
+    return loaded.map((file) => deps.resolvePath(file));
   };
   assertModules();
   createLifetimeJob(ffi, kernel);
   const sdk = await deps.importSdk(winPath.join(installed.sdkRoot, "dist", "v1", "index.js"));
   assertModules();
-  return { sdk, auditModules: assertModules };
+  return { sdk, ownerHandle, auditModules: assertModules };
 }
 
 export async function bootstrapMxcSupervisor(nodeModules: string): Promise<MxcSupervisorRuntime> {
