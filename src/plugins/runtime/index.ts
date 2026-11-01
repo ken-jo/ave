@@ -58,6 +58,7 @@ import {
   HOST_PROTOCOL_VERSIONS_SERVED,
   IncompatibleHostProtocolError,
   isServedHostProtocolVersion,
+  type ServedHostProtocolVersion,
 } from "../isolation/host-api-wire.js";
 import { createPluginStorage, createPluginStorageAuditSink } from "../storage.js";
 import { resolvePluginHostStorageDir } from "../plugin-storage-layout.js";
@@ -113,6 +114,8 @@ export interface PluginCard {
   lastAttemptRefusal?: PluginAttemptRefusal;
   /** Registry hints, manifest ids, and deployment aliases address one canonical catalog card. */
   installAliases?: string[];
+  /** The declared, served host protocol; "3" is legacy and runs without authRedirect. */
+  hostProtocol?: ServedHostProtocolVersion;
 }
 
 export interface PluginPreparationStatus {
@@ -340,6 +343,7 @@ export function buildPluginCard(
     if (t.description) toolDescriptions[t.name] = t.description;
   }
   const uiExtensions = manifest.ui?.filter((extension) => extension.slot === "sidebar");
+  const hostProtocol = manifest.requires?.hostProtocol;
   return {
     id: pluginId,
     name: manifest.name ?? manifest.id,
@@ -361,6 +365,7 @@ export function buildPluginCard(
     networkAccess: manifest.networkAccess,
     onboarding: manifest.onboarding,
     installAliases: extras.installAliases,
+    ...(isServedHostProtocolVersion(hostProtocol) ? { hostProtocol } : {}),
   };
 }
 

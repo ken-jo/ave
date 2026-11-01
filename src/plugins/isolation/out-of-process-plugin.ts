@@ -61,7 +61,7 @@ import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import {
   IncompatibleHostProtocolError,
   isServedHostProtocolVersion,
-  type HostProtocolVersion,
+  type ServedHostProtocolVersion,
 } from "./host-api-wire.js";
 import type { ChildLink } from "./plugin-child-transport.js";
 import {
@@ -740,7 +740,7 @@ export interface OutOfProcessPluginSpec {
 
 /** The host protocol version this plugin's connection speaks (§3.2). Its declared, served `requires.hostProtocol`. Omission and unserved
  * versions fail before activation on the runtime loader's two paths; this check also protects a direct connection from bypassing that gate. */
-export function connectionHostProtocol(manifest: PluginManifest): HostProtocolVersion {
+export function connectionHostProtocol(manifest: PluginManifest): ServedHostProtocolVersion {
   const declared = manifest.requires?.hostProtocol;
   if (!isServedHostProtocolVersion(declared)) {
     throw new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null });

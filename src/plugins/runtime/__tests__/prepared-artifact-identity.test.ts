@@ -19,6 +19,7 @@ import type { EntryPluginManifest, PluginManifest } from "../../types.js";
 import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 import {
+  HOST_PROTOCOL_CURRENT_VERSION,
   HOST_PROTOCOL_VERSIONS_SERVED,
   IncompatibleHostProtocolError,
 } from "../../isolation/host-api-wire.js";
@@ -268,7 +269,7 @@ async function writePreparedPlugin(
     version: "1.0.0",
     entry: "entry.mjs",
     description: "Prepared identity fixture.",
-    requires: { hostProtocol: HOST_PROTOCOL_VERSIONS_SERVED[0] },
+    requires: { hostProtocol: HOST_PROTOCOL_CURRENT_VERSION },
     tools: [{
       name: toolName,
       description: "Return a ping reply.",

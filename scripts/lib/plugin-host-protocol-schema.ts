@@ -16,7 +16,7 @@ import {
   HOSTAPI_PATH_CONTRACTS,
   HOST_API_WIRE_ERROR_CODES,
   HOST_PROTOCOL_NOTIFICATIONS,
-  HOST_PROTOCOL_VERSIONS_SERVED,
+  HOST_PROTOCOL_CURRENT_VERSION,
   UNIVERSAL_WIRE_ERROR_CODES,
   hostApiMethodOf,
   type HostApiPath,
@@ -281,13 +281,8 @@ function errorSchema(
 }
 
 export function generateHostProtocolSchema(): { path: string; text: string } {
-  if (HOST_PROTOCOL_VERSIONS_SERVED.length !== 1) {
-    fail(
-      `the host serves ${HOST_PROTOCOL_VERSIONS_SERVED.join(", ")}; one schema per version `
-        + "needs the sources of each, which this generator does not yet read",
-    );
-  }
-  const version = HOST_PROTOCOL_VERSIONS_SERVED[0]!;
+  // Legacy protocols keep their frozen copies; only the current one is generated from the sources.
+  const version = HOST_PROTOCOL_CURRENT_VERSION;
   const appVersion = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8")) as { version: string })
     .version;
 

@@ -16,13 +16,14 @@
         "code": "protocol-version-mismatch",
         "detail": {
           "served": [
+            "3",
             "4"
           ],
           "version": "999"
         },
         "name": "HostApiBoundaryError"
       },
-      "message": "[plugin-child] host protocol 999 is not one this runtime serves (4)"
+      "message": "[plugin-child] host protocol 999 is not one this runtime serves (3, 4)"
     },
     "id": "construct-1",
     "jsonrpc": "2.0"

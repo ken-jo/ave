@@ -9,9 +9,10 @@ The code packages described here are called extensions in user-facing copy.
 0.14.0 on the `ave/*` wire. Published plugins continue to declare
 `requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`.
 
-**Unreleased contract.** This development build serves protocol `"4"` only
-(`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts`).
-It requires host-generated state on plugin loopback OAuth callbacks (§3.3.1).
+**Unreleased contract.** This development build serves protocol `"4"` as current
+(`HOST_PROTOCOL_CURRENT_VERSION`) and `"3"` as legacy without `authRedirect`
+(`HOST_PROTOCOL_VERSIONS_SERVED = ["3", "4"]`, `src/plugins/isolation/host-api-wire.ts`).
+Protocol 4 requires host-generated state on plugin loopback OAuth callbacks (§3.3.1).
 The app release version is selected by release preparation, independently of the
 protocol major. No first published app version is recorded for protocol 4;
 `requires.hostProtocol` negotiation determines support, and released protocol-3
@@ -614,6 +615,18 @@ Rules:
   the same plugin-status UI. The version is never negotiated on the wire: the manifest is
   the one declaration, and the construct reply carries no second copy that could
   disagree with it.
+- **Legacy protocol 3 (owner decision, 2026-11-02; amends decision 9 below for this
+  boundary only).** This build serves `"3"` beside the current `"4"`. A connection
+  speaks exactly its manifest's declared version; `openPluginProtocolSession`
+  records it and serves `hostApiTableForProtocol(table, version)`
+  (`bound-host-api-table.ts`). For `"3"` the three `ave/host/authRedirect/*`
+  methods are withheld: they are not advertised in `capabilities`, and a call
+  is refused with `path-not-implemented`, detail
+  `{ path, hostProtocol: "3", requiredHostProtocol: "4" }`, without reaching the
+  host (§3.3.1). Every other member is the same implementation that serves `"4"`;
+  no second runtime, codec or child stub exists. The protocol-3 schema stays the
+  frozen copy under `schemas/plugin-host-protocol/3/`; only the current protocol
+  is generated. Its app floor is `0.14.0`.
 - **Served set and breaking changes (decision 9, replaces the earlier retention
   promise).** An app release serves exactly one host protocol version
   (`HOST_PROTOCOL_VERSIONS_SERVED`, `host-api-wire.ts:60`, is `["1"]` at `f1a8d191e`;
@@ -756,7 +769,11 @@ This changes an existing method's required behavior: a plugin-generated state
 that protocol 3 accepted now fails. Under §3.2 and §3.3 this is **protocol 4**,
 not an optional capability on 3. A capability list names methods and does not
 select different state semantics for the same method. No state-free branch or
-compatibility shim is served. An unreleased protocol has no numeric app-version
+compatibility shim is served. A legacy protocol-3 connection is never given a
+plugin-checked fallback either: its `authRedirect.open`, `wait` and `close` fail
+with `path-not-implemented` and a message telling the author to migrate to
+protocol 4 (§3.2), so a v3 extension that needs loopback OAuth must move to 4.
+An unreleased protocol has no numeric app-version
 floor; negotiation of `requires.hostProtocol` is authoritative. Candidate schema
 version segments do not imply released support. Release preparation records the
 first published app version when the protocol ships.
