@@ -22,7 +22,7 @@ import { entryRenderRevision } from "../utils/chat-entry-revision.js";
 import { TerminalObservationCommands, useTerminalObservation } from "./TerminalObservationContent.js";
 import { AssistantCard } from "./AssistantCard.js";
 import { UserMessageEditor } from "./UserMessageEditor.js";
-import { ToolGroupCard } from "./ToolGroupCard.js";
+import { ToolGroupCard, type ToolSandboxMode } from "./ToolGroupCard.js";
 import type { ViewModeState } from "./ViewModeBanner.js";
 import { WorkGroup } from "./WorkGroup.js";
 import { PermissionReviewStatusCard } from "./PermissionReviewStatusCard.js";
@@ -200,6 +200,11 @@ export function TranscriptRenderer({
       for (const tool of candidate.tools) toolUseIdsWithRow.add(tool.toolUseId);
     }
   }
+  // A tool that ran several commands shows the least confined one.
+  const sandboxModesByToolUseId = new Map<string, ToolSandboxMode>();
+  for (const command of terminalObservation.commands) {
+    if (sandboxModesByToolUseId.get(command.toolUseId) !== "unconfined") sandboxModesByToolUseId.set(command.toolUseId, command.sandbox.mode);
+  }
   const rendersOnToolRow = (candidate: PermissionReviewEntry): boolean =>
     toolUseIdsWithRow.has(candidate.toolUseId);
 
@@ -257,6 +262,7 @@ export function TranscriptRenderer({
           group={entry}
           sessionId={currentSessionId}
           permissionReviews={permissionReviewsByToolUseId}
+          sandboxModes={sandboxModesByToolUseId}
         />,
       );
       pushTerminalCommands([entry], `terminal-${entry.groupId}`);
@@ -587,6 +593,7 @@ export function TranscriptRenderer({
                   group={e}
                   sessionId={currentSessionId}
                   permissionReviews={permissionReviewsByToolUseId}
+                  sandboxModes={sandboxModesByToolUseId}
                 />
               ),
             });
