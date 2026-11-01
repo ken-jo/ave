@@ -273,6 +273,7 @@ public static class HomeDirectoryDacl {
               if ((Attributes(source) & 0x410) != 0) { diagnostics.Add("Legacy configuration is a link or non-regular file: " + oldPath); continue; }
               string hash;
               using (var input = new System.IO.FileStream(source, System.IO.FileAccess.Read)) {
+                if (input.Length == 0) continue;
                 using (var digest = System.Security.Cryptography.SHA256.Create()) hash = Convert.ToBase64String(digest.ComputeHash(input));
                 string quote = ((char)34).ToString();
                 var recorded = System.Text.RegularExpressions.Regex.Match(manifest, quote + System.Text.RegularExpressions.Regex.Escape(name) + quote + "\\\\s*:\\\\s*" + quote + "([A-Za-z0-9+/=]+)" + quote);
@@ -324,6 +325,7 @@ public static class HomeDirectoryDacl {
             retained.Add(input);
             byte[] contents;
             using (var bytes = new System.IO.MemoryStream()) { input.CopyTo(bytes); contents = bytes.ToArray(); }
+            if (contents.Length == 0 && String.IsNullOrEmpty(expectedHashes[index])) continue;
             string hash;
             using (var digest = System.Security.Cryptography.SHA256.Create()) { hash = Convert.ToBase64String(digest.ComputeHash(contents)); }
             if (hash != expectedHashes[index]) { diagnostics.Add("Configuration source changed after validation: " + oldPath); refused = true; continue; }

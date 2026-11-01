@@ -3,7 +3,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -232,6 +232,45 @@ describe("protected home configuration", () => {
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
     expect(existsSync(join(dir, "settings.json"))).toBe(true);
     expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
+  });
+
+  it("treats zero-byte root placeholders as absent and leaves them in place", () => {
+    const dir = fixture();
+    for (const name of ["settings.json", "policy.json", "ave-secrets.json"]) writeFileSync(join(dir, name), "");
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe("{}\n");
+    expect(JSON.parse(readFileSync(join(dir, "config", "ave-secrets.json"), "utf8"))).toEqual({ version: 1, entries: {} });
+    for (const name of ["settings.json", "policy.json", "ave-secrets.json"]) expect(statSync(join(dir, name)).size).toBe(0);
+  });
+
+  it("migrates real sources beside a zero-byte placeholder", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "settings.json"), "");
+    writeFileSync(join(dir, "policy.json"), '{"version":1,"requireExplicitApproval":false}');
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe("{}\n");
+    expect(readFileSync(join(dir, "config", "policy.json"), "utf8")).toBe('{"version":1,"requireExplicitApproval":false}');
+    expect(existsSync(join(dir, "policy.json"))).toBe(false);
+    expect(statSync(join(dir, "settings.json")).size).toBe(0);
+  });
+
+  it("leaves a zero-byte placeholder untouched after commit", () => {
+    const dir = fixture();
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    writeFileSync(join(dir, "policy.json"), "");
+    _resetAveHomePrivacyForTest();
+    expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir))).toEqual([]);
+    expect(statSync(join(dir, "policy.json")).size).toBe(0);
+    expect(readdirSync(dir).filter((name) => name.includes("post-migration"))).toEqual([]);
+  });
+
+  it("still rejects a non-empty invalid root source", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "policy.json"), "\n");
+    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("policy.json");
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+    expect(readFileSync(join(dir, "policy.json"), "utf8")).toBe("\n");
   });
 
   it("rejects an empty marker outside boot with a named trust error", () => {
