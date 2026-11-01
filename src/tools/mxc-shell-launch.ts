@@ -2,6 +2,7 @@
 // This prevents surviving processes from reaching a port reused by another invocation.
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
@@ -15,6 +16,7 @@ import {
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
+  type MxcDirectoryEntry,
   type ShellFilesystemPolicy,
 } from "../permissions/mxc-windows.js";
 
@@ -39,6 +41,12 @@ export interface PrepareMxcShellLaunchInput {
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly exists: (path: string) => boolean;
+  /** Lists a directory without following links; defaults to the real filesystem. */
+  readonly list?: (directory: string) => readonly MxcDirectoryEntry[];
+}
+
+function listDirectory(directory: string): MxcDirectoryEntry[] {
+  return readdirSync(directory, { withFileTypes: true }).map((entry) => ({ name: entry.name, directory: entry.isDirectory() }));
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -49,7 +57,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
   if (!input.exists(wxcExec)) {
     throw new Error(`Microsoft Execution Containers launcher is missing: ${wxcExec}`);
   }
-  const grants = rankMxcFilesystem({ ...input.filesystem, protectedFloor: getProtectedReadDenyFloor() }, input.exists);
+  const grants = rankMxcFilesystem({ ...input.filesystem, protectedFloor: getProtectedReadDenyFloor() }, input.exists, input.list ?? listDirectory);
   let listener: InvocationProxyListener | undefined;
   const relay = await openHostEgressListener(input.egressToken);
   try {
