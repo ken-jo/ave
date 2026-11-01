@@ -14,6 +14,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   let owned: MxcNativeProcess | undefined;
   let processPin: ReturnType<MxcSupervisorRuntime["pinProcess"]> | undefined;
   let nativeObservation: { id: number; resolve(): void } | undefined;
+  let controlsEnded = false;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
   let creationStarted = false;
   let spawnPending = false;
@@ -27,6 +28,9 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     resolveTerminal = resolve; rejectTerminal = reject;
   });
   const stop = (): void => {
+    // Owner loss must release an outstanding observation even when an earlier
+    // cancellation already requested teardown. A late acknowledgement is valid.
+    nativeObservation?.resolve();
     if (stopping) return;
     spawnPendingAtCancellation = spawnPending;
     stopping = true;
@@ -82,10 +86,15 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             owned = new MxcNativeProcess(native);
             processPin = runtime.pinProcess(owned.id);
             await spawning;
-            const observed = new Promise<void>((resolve) => { nativeObservation = { id: owned!.id, resolve }; });
+            const observed = new Promise<void>((resolve) => {
+              nativeObservation = { id: owned!.id, resolve };
+              // A connected cancelling parent still needs the process pin;
+              // only an ended control channel bypasses a later observation.
+              if (controlsEnded) resolve();
+            });
             await channel.send({ type: "native-created", id: owned.id, processHandle: processPin.value });
             // The parent duplicates the retained process object synchronously
-            // before acknowledging. Even cancellation cannot close it too soon.
+            // before acknowledging. Owner loss releases the wait for teardown.
             await observed;
             processPin.close(); processPin = undefined;
             const nativeModules = runtime.auditModules();
@@ -135,8 +144,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
         default: throw new MxcProcessContractError("Unexpected supervisor control frame");
       }
     }
-    stop();
-  })();
+  })().finally(() => { controlsEnded = true; stop(); });
   void controls.catch(fail);
   try {
     const result = await terminal;

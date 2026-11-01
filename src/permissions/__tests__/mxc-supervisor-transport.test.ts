@@ -10,6 +10,7 @@ import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
 import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "../mxc-supervisor-bootstrap.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: "unit-resources", isPackaged: false }) }));
 vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
@@ -96,6 +97,47 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     expect(f.fixture.native.kill).toHaveBeenCalledOnce();
     expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
   });
+
+  it.each(["owner-eof", "channel-eof", "stop-then-channel-eof", "channel-eof-before-native"] as const)("releases an unacknowledged native process on %s without the watchdog", async (action) => {
+    const f = transportFixture();
+    const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
+    const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
+    const closePin = vi.fn();
+    f.runtime.pinProcess = vi.fn(() => ({ value: "161803", close: closePin }));
+    let arrive!: (native: MxcProcess) => void;
+    if (action === "channel-eof-before-native") f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    void service.catch(() => {});
+    const frames = host.frames();
+    try {
+      await host.send({ type: "start", request: createMxcExtensionRequest() });
+      for (const type of ["creating", "spawning"]) expect((await frames.next()).value?.type).toBe(type);
+      if (action === "channel-eof-before-native") {
+        await host.end();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        arrive(f.fixture.native as unknown as MxcProcess);
+      }
+      expect((await frames.next()).value?.type).toBe("native-created");
+      if (action !== "channel-eof-before-native") expect(closePin).not.toHaveBeenCalled();
+      // Deliberately never send native-observed: loss of the host must settle
+      // the native owner, rather than waiting for the process-exit watchdog.
+      if (action === "owner-eof") liveness.end();
+      else if (action !== "channel-eof-before-native") {
+        if (action === "stop-then-channel-eof") await host.send({ type: "stop" });
+        await host.end();
+      }
+      expect((await frames.next()).value).toMatchObject({ type: "stopped", spawnPendingAtCancellation: action === "channel-eof-before-native" });
+      await expect(service).resolves.toBeUndefined();
+      expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+      expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+      expect(closePin).toHaveBeenCalledOnce();
+      expect(f.fatal).not.toHaveBeenCalled();
+    } finally {
+      controls.destroy(); events.destroy(); liveness.destroy();
+      await frames.return(undefined);
+    }
+  }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs / 2);
 
   it("fails the handle on supervisor death without claiming native cleanup proof", async () => {
     const f = transportFixture();
