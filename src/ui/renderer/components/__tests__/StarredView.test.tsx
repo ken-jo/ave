@@ -259,52 +259,59 @@ describe("StarredView", () => {
   });
 
   it("disables calendar dates that have no activity signal", async () => {
-    const now = new Date();
-    const inactive = new Date(now);
-    inactive.setDate(inactive.getDate() - 1);
-    const activeKey = hostDateKey(now);
-    const inactiveKey = hostDateKey(inactive);
-    const api = {
-      starredRemove: vi.fn(async () => ({ ok: true })),
-    } as unknown as Parameters<typeof StarredView>[0]["api"];
-    const { container } = render(
-      <StarredView
-        api={api}
-        starred={[{
-          id: "active-day-star",
-          sessionId: "active-day-session",
-          messageIndex: 0,
-          role: "assistant",
-          text: "activity",
-          starredAt: now.toISOString(),
-        }]}
-        sessions={[]}
-        currentSessionId="active-day-session"
-        refreshStarred={vi.fn()}
-        onJumpToSession={vi.fn()}
-        onActivateHome={vi.fn()}
-      />,
-    );
+    // Pin mid-month: on the 1st, "yesterday" falls outside the rendered month and has no day button.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 15, 12));
+    try {
+      const now = new Date();
+      const inactive = new Date(now);
+      inactive.setDate(inactive.getDate() - 1);
+      const activeKey = hostDateKey(now);
+      const inactiveKey = hostDateKey(inactive);
+      const api = {
+        starredRemove: vi.fn(async () => ({ ok: true })),
+      } as unknown as Parameters<typeof StarredView>[0]["api"];
+      const { container } = render(
+        <StarredView
+          api={api}
+          starred={[{
+            id: "active-day-star",
+            sessionId: "active-day-session",
+            messageIndex: 0,
+            role: "assistant",
+            text: "activity",
+            starredAt: now.toISOString(),
+          }]}
+          sessions={[]}
+          currentSessionId="active-day-session"
+          refreshStarred={vi.fn()}
+          onJumpToSession={vi.fn()}
+          onActivateHome={vi.fn()}
+        />,
+      );
 
-    const dayButton = (dateKey: string) => container.querySelector<HTMLButtonElement>(
-      `button[data-day="${dateKey}"], [data-day="${dateKey}"] button`,
-    );
-    await waitFor(() => {
-      expect(dayButton(activeKey)).toBeTruthy();
-    }, { timeout: 5_000 });
-    const activeButton = dayButton(activeKey);
-    const inactiveButton = dayButton(inactiveKey);
-    const activeCell = activeButton?.closest("[data-day]");
-    const inactiveCell = inactiveButton?.closest("[data-day]");
-    expect(activeButton?.disabled).toBe(false);
-    expect(inactiveButton?.disabled).toBe(true);
-    expect(activeCell?.getAttribute("aria-selected")).toBe("true");
+      const dayButton = (dateKey: string) => container.querySelector<HTMLButtonElement>(
+        `button[data-day="${dateKey}"], [data-day="${dateKey}"] button`,
+      );
+      await waitFor(() => {
+        expect(dayButton(activeKey)).toBeTruthy();
+      }, { timeout: 5_000 });
+      const activeButton = dayButton(activeKey);
+      const inactiveButton = dayButton(inactiveKey);
+      const activeCell = activeButton?.closest("[data-day]");
+      const inactiveCell = inactiveButton?.closest("[data-day]");
+      expect(activeButton?.disabled).toBe(false);
+      expect(inactiveButton?.disabled).toBe(true);
+      expect(activeCell?.getAttribute("aria-selected")).toBe("true");
 
-    fireEvent.click(inactiveButton!);
+      fireEvent.click(inactiveButton!);
 
-    expect(activeCell?.getAttribute("aria-selected")).toBe("true");
-    expect(inactiveCell?.getAttribute("aria-selected")).not.toBe("true");
-    expect(container.querySelector<HTMLButtonElement>(`button[aria-label^="${inactiveKey}:"]`)?.disabled).toBe(true);
+      expect(activeCell?.getAttribute("aria-selected")).toBe("true");
+      expect(inactiveCell?.getAttribute("aria-selected")).not.toBe("true");
+      expect(container.querySelector<HTMLButtonElement>(`button[aria-label^="${inactiveKey}:"]`)?.disabled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("removes a starred item and refreshes the list", async () => {
