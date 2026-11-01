@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Admission denials and forced approvals must precede tool execution.
 import { afterEach, describe, it, expect, vi } from "vitest";
@@ -4712,470 +4713,184 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
   });
 });
 
-describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
-  const authority = Object.freeze({
-    kind: "tailnet-controller" as const,
-    actorId: "tailnet:controller-digest" as `tailnet:${string}`,
-  });
+describe("ToolExecutor remote controller session authority", () => {
+  const authority = Object.freeze({ kind: "tailnet-controller" as const, actorId: "tailnet:controller-digest" as const });
+  const pairedShare = Object.freeze({ pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" });
 
-  function buildReadExecutor(choice: import("../../permissions/approval-gate.js").ApprovalChoice) {
-    const executed = vi.fn(async () => "ran");
-    const registry = new ToolRegistry();
-    registry.register(createDynamicTool({
-      name: "tailnet_read_probe",
-      description: "Tailnet local approval regression probe.",
-      source: "builtin",
-      category: "read",
-      isReadOnly: () => true,
-      jsonSchema: { type: "object" },
-      execute: async () => ({ output: await executed(), isError: false }),
-    }));
-    const permissions = new PermissionManager("/tmp/nonexistent-tailnet-executor-permissions.json");
-    permissions.setMode("allow");
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({
-      requestId: request.id,
-      choice,
-    }));
-    return {
-      executed,
-      requestAndWait,
-      executor: new ToolExecutor(
-        registry,
-        undefined,
-        permissions,
-        undefined,
-        { requestAndWait } as never,
-      ),
-    };
+  function remoteContext(sessionId: string, overrides: Partial<import("../../shared/chat-origin.js").TailnetControllerAuthority> = {}) {
+    return userPermissionContext({ trustOrigin: "tailnet-surface", remoteControllerAuthority: bindRemoteControllerToSession({ ...authority, pairedShare, pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true }, ...overrides }, sessionId) });
   }
 
-  const tailnetContext = () => userPermissionContext({
-    trustOrigin: "tailnet-surface",
-    remoteControllerAuthority: authority,
-  });
-
-  const platformBridgeContext = () => userPermissionContext({
-    trustOrigin: "platform-bridge",
-    remoteControllerAuthority: Object.freeze({
-      kind: "platform-bridge" as const,
-      actorId: "bridge-actor-digest",
-      bridgeBinding: Object.freeze({
-        bridgeId: "44444444-4444-4444-8444-444444444444",
-        bridgeEpoch: 1,
-        routeId: "55555555-5555-4555-8555-555555555555",
-        routeEpoch: 1,
-        scope: "66666666-6666-4666-8666-666666666666",
-      }),
-      bridgeGuard: { isCurrent: () => true },
-    }),
-  });
-
-  const pairedShare = Object.freeze({
-    pairingId: "11111111-1111-4111-8111-111111111111",
-    pairingEpoch: 1,
-    shareId: "22222222-2222-4222-8222-222222222222",
-    shareEpoch: 1,
-    scope: "33333333-3333-4333-8333-333333333333",
-  });
-
-  const pairedTailnetContext = (pairedShareGuard: { isCurrent: () => boolean }) => userPermissionContext({
-    trustOrigin: "tailnet-surface",
-    remoteControllerAuthority: Object.freeze({
-      ...authority,
-      pairedShare,
-      pairedShareGuard,
-    }),
-  });
-  it("does not let allow mode or a forged durable approval response execute a declared read", async () => {
-    const { executor, executed, requestAndWait } = buildReadExecutor("allow-session");
-
-    const result = await executor.executeAll(
-      [{ id: "tailnet-read-durable-response", name: "tailnet_read_probe", input: {} }],
-      { sessionId: "tailnet-read-durable-response", permissionContext: tailnetContext() },
-    );
-
-    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-      allowedChoices: ["allow-once", "deny-once"],
-      durableApprovalRecordAllowed: false,
-      forceExplicit: true,
-      trustOrigin: "tailnet-surface",
-    }));
-    expect(executed).not.toHaveBeenCalled();
-    expect(result[0]).toMatchObject({ is_error: true });
-  });
-
-  // A remote principal cannot convert a fenced read denial into a grant request.
-  it("denies a remote uncovered read at admission before the forced human card", async () => {
-    const executeSpy = vi.fn(async () => "ok");
+  function buildExecutor(mode: "strict" | "default" | "auto" | "allow" = "allow", category: "read" | "network" = "read") {
+    const executed = vi.fn(async () => "ran");
     const registry = new ToolRegistry();
-    registry.register(makeReadFileTool(executeSpy));
-    const permissions = new PermissionManager(
-      "/tmp/nonexistent-tailnet-directory-permissions.json",
-    );
-    permissions.setMode("allow");
-    // The configured read boundary must deny before either local or remote approval.
-    permissions.setBlockReadsOutsideWorkingDirectories(true);
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({
-      requestId: request.id,
-      choice: "deny-once" as const,
+    registry.register(createDynamicTool({
+      name: "controller_probe", description: "Session authority probe.", source: "builtin", category,
+      isReadOnly: () => category === "read", jsonSchema: { type: "object" },
+      execute: async () => ({ output: await executed(), isError: false }),
     }));
-    const executor = new ToolExecutor(
-      registry,
-      undefined,
-      permissions,
-      undefined,
-      { requestAndWait } as never,
-    );
+    const permissions = new PermissionManager("/tmp/nonexistent-controller-executor-permissions.json");
+    permissions.setMode(mode);
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as never);
+    return { executed, requestAndWait, executor, permissions };
+  }
 
-    const result = await executor.executeAll(
-      [{
-        id: "tailnet-dir-readonly",
-        name: "read_file",
-        input: { path: "/var/tmp/some-random-area/file.txt" },
-      }],
-      {
-        sessionId: "tailnet-dir-readonly",
-        permissionContext: tailnetContext(),
-      },
-    );
-
-    expect(requestAndWait).not.toHaveBeenCalled();
-    expect(executeSpy).not.toHaveBeenCalled();
-    expect(result[0].is_error).toBe(true);
-    expect(result[0].content).toBe("This read is outside the configured allowed directories.");
-  });
-
-  // A local turn obeys the same explicit read boundary.
-  it("denies a local uncovered read at admission without a grant card", async () => {
-    const executeSpy = vi.fn(async () => "ok");
-    const registry = new ToolRegistry();
-    registry.register(makeReadFileTool(executeSpy));
-    const permissions = new PermissionManager(
-      "/tmp/nonexistent-local-directory-permissions.json",
-    );
-    permissions.setMode("allow");
-    // The configured read boundary must deny before either local or remote approval.
-    permissions.setBlockReadsOutsideWorkingDirectories(true);
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({
-      requestId: request.id,
-      choice: "deny-once" as const,
-    }));
-    const executor = new ToolExecutor(
-      registry,
-      undefined,
-      permissions,
-      undefined,
-      { requestAndWait } as never,
-    );
-
-    const result = await executor.executeAll(
-      [{
-        id: "local-dir-readonly",
-        name: "read_file",
-        input: { path: "/var/tmp/some-random-area/file.txt" },
-      }],
-      { sessionId: "local-dir-readonly", permissionContext: userPermissionContext() },
-    );
-
-    expect(requestAndWait).not.toHaveBeenCalled();
-    expect(executeSpy).not.toHaveBeenCalled();
-    expect(result[0].is_error).toBe(true);
-    expect(result[0].content).toBe("This read is outside the configured allowed directories.");
-  });
-
-  // Derive controller attribution only from host-held authority, never the display reason.
-  it("marks the approval with the controller the host admitted", async () => {
-    const { executor, requestAndWait } = buildReadExecutor("allow-once");
-
-    await executor.executeAll(
-      [{ id: "tailnet-origin-marker", name: "tailnet_read_probe", input: {} }],
-      { sessionId: "tailnet-origin-marker", permissionContext: tailnetContext() },
-    );
-
-    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-      remoteControllerOrigin: "tailnet-controller",
-    }));
-  });
-
-  it("hands the gate a live authority, not only the marker naming it", async () => {
-    const { executor, requestAndWait } = buildReadExecutor("allow-once");
-
-    await executor.executeAll(
-      [{ id: "bridge-authority", name: "tailnet_read_probe", input: {} }],
-      { sessionId: "bridge-authority", permissionContext: platformBridgeContext() },
-    );
-
-    const [request] = requestAndWait.mock.calls[0] as unknown as [{
-      remoteControllerOrigin?: string;
-      remoteControllerAuthority?: { kind: string };
-    }];
-    // Pair the controller marker with current authority so stale or mismatched controllers cannot answer.
-    expect(request.remoteControllerOrigin).toBe("platform-bridge");
-    expect(request.remoteControllerAuthority?.kind).toBe("platform-bridge");
-  });
-
-  it("marks a bridged turn as the bridge rather than as remote-in-general", async () => {
-    const { executor, requestAndWait } = buildReadExecutor("allow-once");
-
-    await executor.executeAll(
-      [{ id: "bridge-origin-marker", name: "tailnet_read_probe", input: {} }],
-      {
-        sessionId: "bridge-origin-marker",
-        permissionContext: platformBridgeContext(),
-      },
-    );
-
-    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-      remoteControllerOrigin: "platform-bridge",
-    }));
-  });
-
-  it("marks the directory-confirm modal a remote turn triggers", async () => {
-    // Directory approval must carry controller attribution just like tool approval.
-    const executeSpy = vi.fn(async () => "ok");
-    const registry = new ToolRegistry();
-    registry.register(makeWriteFileTool(executeSpy));
-    const wc = makeMockWebContents();
-    const auditLogger = { log: vi.fn() };
-    const gate = new ApprovalGate(
-      wc as never,
-      undefined,
-      5_000,
-      auditLogger as never,
-    );
-    const executor = new ToolExecutor(
-      registry,
-      undefined,
-      fixtureManager(),
-      undefined,
-      gate,
-    );
-
-    const callPromise = executor.executeAll(
-      [{
-        id: "tu-remote-dir",
-        name: "write_file",
-        input: { path: "/var/tmp/some-random-area/file.txt" },
-      }],
-      { sessionId: "sess-remote-dir", permissionContext: tailnetContext() },
-    );
-    const sent = await waitForApprovalPayload<{
-      id: string;
-      nonce: string;
-      hmac: string;
-      kind?: string;
-    }>(wc);
-    // Denial ends at directory approval, before any tool ask.
-    expect(sent.kind).toBe("out-of-allowed-dir");
-    gate.resolve(sent.id, {
-      requestId: sent.id,
-      choice: "deny-once",
-      nonce: sent.nonce,
-      hmac: sent.hmac,
-    });
-    await callPromise;
-
-    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      input: expect.stringContaining(
-        "remoteControllerOrigin=tailnet-controller",
-      ),
-    }));
-  });
-
-  it("leaves a local turn unmarked even when its reason names a controller", async () => {
-    const { executor, requestAndWait } = buildReadExecutor("allow-once");
-
-    await executor.executeAll(
-      [{ id: "subagent-origin-marker", name: "tailnet_read_probe", input: {} }],
-      {
-        sessionId: "subagent-origin-marker",
-        approvalReasonPrefix: "[Sub-Agent: tailnet-controller]",
-        permissionContext: userPermissionContext(),
-      },
-    );
-
-    const request = requestAndWait.mock.calls[0]?.[0] as unknown as {
-      reason: string;
-    };
-    // A controller-like display reason must not become authority evidence.
-    expect(request.reason).toContain("[Sub-Agent: tailnet-controller]");
-    expect(request).not.toHaveProperty("remoteControllerOrigin");
-  });
-
-  it("tells the remote surface it is waiting, instead of going silent for the whole timeout", async () => {
-    const { executor, requestAndWait } = buildReadExecutor("allow-once");
-    const permissionReviewEvents: { status: string }[] = [];
-
-    await executor.executeAll(
-      [{ id: "tailnet-read-waiting", name: "tailnet_read_probe", input: {} }],
-      {
-        sessionId: "tailnet-read-waiting",
-        permissionContext: tailnetContext(),
-        callbacks: {
-          onPermissionReview: (event: { status: string }) => permissionReviewEvents.push(event),
-        },
-      } as never,
-    );
-
-    // Remote layer-2 asks need an explicit needs_approval event to project approval.waiting-local.
-    expect(permissionReviewEvents.map((event) => event.status)).toContain("needs_approval");
-    expect(requestAndWait).toHaveBeenCalledOnce();
-  });
-
-  it("accepts only allow-once and asks again for the next remote tool invocation", async () => {
-    const { executor, executed, requestAndWait } = buildReadExecutor("allow-once");
-
-    for (const id of ["tailnet-read-once-1", "tailnet-read-once-2"]) {
-      const result = await executor.executeAll(
-        [{ id, name: "tailnet_read_probe", input: {} }],
-        { sessionId: id, permissionContext: tailnetContext() },
-      );
+  it.each(["strict", "default", "auto", "allow"] as const)("runs bound remote reads like local reads in %s", async mode => {
+    const { executor, executed, requestAndWait } = buildExecutor(mode);
+    for (const remote of [false, true]) {
+      const sessionId = `controller-read-${mode}-${remote}`;
+      const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], {
+        sessionId, permissionContext: remote ? remoteContext(sessionId) : userPermissionContext(),
+      });
       expect(result[0].is_error).toBeUndefined();
     }
-
     expect(executed).toHaveBeenCalledTimes(2);
-    expect(requestAndWait).toHaveBeenCalledTimes(2);
-  });
-
-  it("fails closed before a local approval when a paired share is already revoked", async () => {
-    const { executor, executed, requestAndWait } = buildReadExecutor("allow-once");
-    const pairedShareGuard = { isCurrent: vi.fn(() => false) };
-
-    const result = await executor.executeAll(
-      [{ id: "paired-revoked-start", name: "tailnet_read_probe", input: {} }],
-      {
-        sessionId: "paired-revoked-start",
-        permissionContext: pairedTailnetContext(pairedShareGuard),
-      },
-    );
-
     expect(requestAndWait).not.toHaveBeenCalled();
-    expect(executed).not.toHaveBeenCalled();
-    expect(pairedShareGuard.isCurrent).toHaveBeenCalledTimes(1);
-    expect(result[0]).toMatchObject({ is_error: true });
   });
 
-  it("rechecks a paired share immediately after the local approval returns", async () => {
-    const { executor, executed, requestAndWait } = buildReadExecutor("allow-once");
-    let current = true;
-    const pairedShareGuard = { isCurrent: vi.fn(() => current) };
-    requestAndWait.mockImplementation(async (request: { id: string }) => {
-      current = false;
-      return { requestId: request.id, choice: "allow-once" as const };
-    });
-
-    const result = await executor.executeAll(
-      [{ id: "paired-revoked-after-approval", name: "tailnet_read_probe", input: {} }],
-      {
-        sessionId: "paired-revoked-after-approval",
-        permissionContext: pairedTailnetContext(pairedShareGuard),
-      },
-    );
-
-    expect(requestAndWait).toHaveBeenCalledOnce();
-    expect(executed).not.toHaveBeenCalled();
-    expect(pairedShareGuard.isCurrent).toHaveBeenCalledTimes(2);
-    expect(result[0]).toMatchObject({ is_error: true });
-  });
-
-  it("rechecks a paired share at the final no-await tool boundary", async () => {
-    const { executor, executed, requestAndWait } = buildReadExecutor("allow-once");
-    let checks = 0;
-    const pairedShareGuard = {
-      isCurrent: vi.fn(() => {
-        checks += 1;
-        return checks < 3;
-      }),
-    };
-
-    const result = await executor.executeAll(
-      [{ id: "paired-revoked-final-boundary", name: "tailnet_read_probe", input: {} }],
-      {
-        sessionId: "paired-revoked-final-boundary",
-        permissionContext: pairedTailnetContext(pairedShareGuard),
-      },
-    );
-
-    expect(requestAndWait).toHaveBeenCalledOnce();
-    expect(executed).not.toHaveBeenCalled();
-    expect(pairedShareGuard.isCurrent).toHaveBeenCalledTimes(3);
-    expect(result[0]).toMatchObject({
-      content: "remote-controller-revoked",
-      is_error: true,
-    });
-  });
-  it("keeps P1-blocked tools closed when a test-only executor omits PermissionManager", async () => {
-    const executed = vi.fn(async () => "ran");
-    const registry = new ToolRegistry();
-    registry.register(createDynamicTool({
-      name: "routine_schedule",
-      description: "Tailnet P1 fallback regression probe.",
-      source: "builtin",
-      category: "write",
-      jsonSchema: { type: "object" },
-      execute: async () => ({ output: await executed(), isError: false }),
-    }));
-    const requestAndWait = vi.fn();
-    const executor = new ToolExecutor(
-      registry,
-      undefined,
-      undefined,
-      undefined,
-      { requestAndWait } as never,
-    );
-
-    const result = await executor.executeAll(
-      [{ id: "tailnet-unwired-routine", name: "routine_schedule", input: {} }],
-      { sessionId: "tailnet-unwired-routine", permissionContext: tailnetContext() },
-    );
-
-    expect(requestAndWait).not.toHaveBeenCalled();
-    expect(executed).not.toHaveBeenCalled();
-    expect(result[0]).toMatchObject({ is_error: true });
-  });
-
-  it("does not create a directory grant prompt for a P1-blocked remote tool", async () => {
-    const executed = vi.fn(async () => "ran");
-    const registry = new ToolRegistry();
-    registry.register(createDynamicTool({
-      name: "routine_schedule",
-      description: "P1 path-policy ordering regression probe.",
-      source: "builtin",
-      category: "write",
-      pathFields: ["path"],
-      jsonSchema: {
-        type: "object",
-        properties: { path: { type: "string" } },
-        required: ["path"],
-      },
-      execute: async () => ({ output: await executed(), isError: false }),
-    }));
-    const dir = mkdtempSync(join(tmpdir(), "ave-tailnet-p1-path-"));
-    try {
-      const permissions = new PermissionManager(join(dir, "permissions.json"));
-      permissions.setMode("allow");
-      const requestAndWait = vi.fn(async (request: { id: string }) => ({
-        requestId: request.id,
-        choice: "allow-once" as const,
-      }));
-      const executor = new ToolExecutor(
-        registry,
-        undefined,
-        permissions,
-        undefined,
-        { requestAndWait } as never,
-      );
-      const result = await executor.executeAll(
-        [{ id: "tailnet-p1-dir", name: "routine_schedule", input: { path: join(dir, "outside.txt") } }],
-        { sessionId: "tailnet-p1-dir", permissionContext: tailnetContext() },
-      );
-
-      expect(requestAndWait).not.toHaveBeenCalled();
-      expect(executed).not.toHaveBeenCalled();
-      expect(result[0]).toMatchObject({ is_error: true });
-    } finally {
-      await cleanupTmpDir(dir);
+  it.each(["strict", "default", "allow"] as const)("applies the ordinary network mode to bound remote calls in %s", async mode => {
+    const { executor, executed, requestAndWait } = buildExecutor(mode, "network");
+    const sessionId = `controller-network-${mode}`;
+    const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: remoteContext(sessionId) });
+    expect(result[0].is_error).toBeUndefined();
+    expect(executed).toHaveBeenCalledOnce();
+    expect(requestAndWait).toHaveBeenCalledTimes(mode === "allow" ? 0 : 1);
+    if (mode !== "allow") {
+      const request = requestAndWait.mock.calls[0][0];
+      expect(request.remoteControllerOrigin).toBe("tailnet-controller");
+      expect(request.forceExplicit).not.toBe(true);
+      expect(request.durableApprovalRecordAllowed).not.toBe(false);
     }
+  });
+
+  it("keeps controller attribution and live bridge authority on ordinary human cards", async () => {
+    const { executor, requestAndWait } = buildExecutor("strict", "network");
+    const sessionId = "bridge-card";
+    const bridgeAuthority = bindRemoteControllerToSession({
+      kind: "platform-bridge", actorId: "bridge-actor-digest",
+      bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
+      bridgeGuard: { isCurrent: () => true },
+    }, sessionId);
+    await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], {
+      sessionId, permissionContext: userPermissionContext({ trustOrigin: "platform-bridge", remoteControllerAuthority: bridgeAuthority }),
+    });
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerOrigin: "platform-bridge", remoteControllerAuthority: bridgeAuthority }));
+  });
+
+  it.each(["missing", "unbound", "wrong-session", "copied"] as const)("denies %s remote authority before execution", async kind => {
+    const { executor, executed, requestAndWait } = buildExecutor();
+    const sessionId = "controller-invalid";
+    const bound = bindRemoteControllerToSession(authority, sessionId);
+    const remoteControllerAuthority = kind === "missing" ? undefined : kind === "unbound" ? authority : kind === "copied" ? { ...bound } : bindRemoteControllerToSession(authority, "another-session");
+    const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], {
+      sessionId, permissionContext: userPermissionContext({ trustOrigin: "tailnet-surface", remoteControllerAuthority }),
+    });
+    expect(executed).not.toHaveBeenCalled();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(result[0].is_error).toBe(true);
+  });
+
+  it("retains the other-principal question for genuine external guidance on a bound remote turn", async () => {
+    const { executor, executed, requestAndWait } = buildExecutor();
+    const sessionId = "controller-external-content";
+    await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], {
+      sessionId, permissionContext: { ...remoteContext(sessionId), otherPrincipal: true },
+    });
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }));
+    expect(executed).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an explicit outside-read boundary identical for local and bound remote turns", async () => {
+    const executeSpy = vi.fn(async () => "ok");
+    const registry = new ToolRegistry();
+    registry.register(makeReadFileTool(executeSpy));
+    const permissions = new PermissionManager("/tmp/nonexistent-controller-directory-permissions.json");
+    permissions.setMode("allow");
+    permissions.setBlockReadsOutsideWorkingDirectories(true);
+    const requestAndWait = vi.fn();
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as never);
+    for (const remote of [false, true]) {
+      const sessionId = `controller-read-boundary-${remote}`;
+      const result = await executor.executeAll([{ id: sessionId, name: "read_file", input: { path: "/var/tmp/some-random-area/file.txt" } }], {
+        sessionId, permissionContext: remote ? remoteContext(sessionId) : userPermissionContext(),
+      });
+      expect(result[0]).toMatchObject({ is_error: true, content: "This read is outside the configured allowed directories." });
+    }
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
+  it("emits needs approval while an ordinary bound remote request waits", async () => {
+    const { executor, requestAndWait } = buildExecutor("strict", "network");
+    const permissionReviewEvents: { status: string }[] = [];
+    const sessionId = "controller-waiting";
+    await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], {
+      sessionId, permissionContext: remoteContext(sessionId),
+      callbacks: { onPermissionReview: (event: { status: string }) => permissionReviewEvents.push(event) },
+    } as never);
+    expect(permissionReviewEvents.map(event => event.status)).toContain("needs_approval");
+    expect(requestAndWait).toHaveBeenCalledOnce();
+  });
+
+  it("denies a paired share revoked after session binding before any card", async () => {
+    const { executor, executed, requestAndWait } = buildExecutor();
+    let current = true;
+    const sessionId = "controller-revoked-start";
+    const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
+    current = false;
+    const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(executed).not.toHaveBeenCalled();
+    expect(result[0].is_error).toBe(true);
+  });
+
+  it("attributes an ordinary outside-directory card to the admitted controller", async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeWriteFileTool(vi.fn(async () => "ok")));
+    const wc = makeMockWebContents();
+    const auditLogger = { log: vi.fn() };
+    const gate = new ApprovalGate(wc as never, undefined, 5_000, auditLogger as never);
+    const executor = new ToolExecutor(registry, undefined, fixtureManager(), undefined, gate);
+    const sessionId = "controller-directory-card";
+    const pending = executor.executeAll([{ id: sessionId, name: "write_file", input: { path: "/var/tmp/some-random-area/file.txt" } }], {
+      sessionId, permissionContext: remoteContext(sessionId),
+    });
+    const card = await waitForApprovalPayload<{ id: string; nonce: string; hmac: string; kind?: string }>(wc);
+    expect(card.kind).toBe("out-of-allowed-dir");
+    await gate.resolveWithFreshIdentity(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
+    await pending;
+    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ input: expect.stringContaining("remoteControllerOrigin=tailnet-controller") }));
+  });
+
+  it("runs capability-changing tools through the same mode as local tools", async () => {
+    const executed = vi.fn(async () => "ran");
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "routine_schedule", description: "Scheduled action permission probe.", source: "builtin", category: "write",
+      jsonSchema: { type: "object" }, execute: async () => ({ output: await executed(), isError: false }),
+    }));
+    const permissions = new PermissionManager("/tmp/nonexistent-controller-capability-permissions.json");
+    permissions.setMode("allow");
+    const requestAndWait = vi.fn();
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as never);
+    const sessionId = "controller-capability";
+    const result = await executor.executeAll([{ id: sessionId, name: "routine_schedule", input: {} }], { sessionId, permissionContext: remoteContext(sessionId) });
+    expect(result[0].is_error).toBeUndefined();
+    expect(executed).toHaveBeenCalledOnce();
+    expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the paired share after ordinary human approval", async () => {
+    const { executor, executed, requestAndWait } = buildExecutor("strict", "network");
+    let current = true;
+    const sessionId = "controller-revoked-after-card";
+    const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
+    requestAndWait.mockImplementation(async request => { current = false; return { requestId: request.id, choice: "allow-once" }; });
+    const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
+    expect(requestAndWait).toHaveBeenCalledOnce();
+    expect(executed).not.toHaveBeenCalled();
+    expect(result[0].is_error).toBe(true);
   });
 });
 

@@ -6,7 +6,7 @@ import { resolveJudge, type JudgeChainStage, type JudgeEngineDeps, type JudgeGat
 import type { JudgeSettings, JudgeStageSettings } from "../judge-settings.js";
 import { collectingAudit, judgeRecords, judgeRequest, judgeSettings, scriptedStage, type CollectingAudit } from "./judge-request-fixture.js";
 
-const UNDECIDED: JudgeGate = { priorDecision: "undecided", strictMode: false, capabilityGrant: false, remoteController: false };
+const UNDECIDED: JudgeGate = { priorDecision: "undecided", strictMode: false, capabilityGrant: false };
 const PICKER_MODEL = llmVendorModelOptions("claude")[0]!;
 
 type Script = JudgeVerdict | Error;

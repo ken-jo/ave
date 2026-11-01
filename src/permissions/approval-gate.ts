@@ -1,3 +1,4 @@
+import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { WebContents } from "electron";
 import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
@@ -229,7 +230,7 @@ export type ApprovalRequestInput = Omit<
   readonly hostTerminal?: HostTerminalApprovalBinding;
   // Derive remote origin only from host-owned controller authority, never reason text or renderer input. Keep it off ApprovalRequest and all renderer payloads; absence means no host-observed remote controller.
   readonly remoteControllerOrigin?: RemoteControllerOrigin;
-  // Host-only live controller authority. Its presence requires a one-shot human answer and never reaches renderer or audit payloads.
+  // Host-only live controller authority. It stays session-bound and never reaches renderer or audit payloads.
   readonly remoteControllerAuthority?: RemoteControllerAuthority;
   // Observe turn abort while parked so Stop releases the execution lease immediately instead of waiting for approval timeout. Keep the live signal out of renderer, pending-entry and audit payloads; absent means no turn cancellation.
   readonly abortSignal?: AbortSignal;
@@ -451,6 +452,7 @@ interface PendingEntry {
   sessionId?: string;
   // Remote-controller origin captured with the prompt. Host-only, exactly as it is on ApprovalRequestInput — it is retained here and never sent anywhere, so the rows written long after the request object is gone (decided, timeout, cancelled) can still state where the blocked turn came from.
   remoteControllerOrigin?: RemoteControllerOrigin;
+  remoteControllerAuthority?: RemoteControllerAuthority;
   toolName: string;
   // Raw host-owned finalized input; never forwarded from this pending entry.
   args: unknown;
@@ -648,6 +650,15 @@ export type ApprovalSurfaceResolver = (
   // Set for a workspace terminal tab's ask: the window that owns the tab, or null.
   terminalTabId?: string,
 ) => WebContents | null;
+
+/** Thrown when a Tailnet-controller approval reaches a synchronous answer path; such answers must use the fresh-identity methods. */
+export class ApprovalFreshIdentityRequiredError extends Error {
+  readonly code = "approval-fresh-identity-required";
+  constructor(readonly requestId: string) {
+    super(`Approval ${requestId} belongs to a Tailnet controller and must be answered through a fresh-identity path`);
+    this.name = "ApprovalFreshIdentityRequiredError";
+  }
+}
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
@@ -937,8 +948,10 @@ export class ApprovalGate {
         rememberPattern: "Approval execution budget was not issued by the host",
       });
     }
-    const forceExplicit = requestedForceExplicit || childProvenance !== undefined ||
-      remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined;
+    if (!isRemoteControllerBoundToSession(remoteControllerAuthority, req.sessionId) || (remoteControllerOrigin !== undefined && remoteControllerOrigin !== remoteControllerAuthority?.kind)) {
+      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
+    }
+    const forceExplicit = requestedForceExplicit || childProvenance !== undefined;
     if ((requestedUserOwnedSurface !== undefined && (!isUserOwnedSurface(requestedUserOwnedSurface) || !req.sessionId)) ||
       (requestedSurfaceReviewFallback !== undefined && (requestedSurfaceReviewFallback !== true || requestedUserOwnedSurface === undefined))) {
       return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: "Invalid user-owned surface approval" });
@@ -1056,7 +1069,7 @@ export class ApprovalGate {
     }
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
     if (executionPlanAudit?.executionRequest === "host" &&
-      (oneShotPermitBinding === undefined || remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined ||
+      (oneShotPermitBinding === undefined ||
         this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
@@ -1079,7 +1092,6 @@ export class ApprovalGate {
     const canRememberRequest = durableApprovalRecordAllowed &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       !forceExplicit &&
-      remoteControllerOrigin === undefined && remoteControllerAuthority === undefined &&
       (requestedChoices === undefined || requestedChoices.includes("allow-always"));
     const assessmentUnavailable = reviewerOutcome === "unavailable" || reviewerOutcome === "error" ||
       reviewerOutcome === "timeout" || reviewerOutcome === "malformed";
@@ -1100,8 +1112,7 @@ export class ApprovalGate {
     const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
     const shellRuleCwd = req.evaluationContext?.executionCwd;
     // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
-    const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract &&
-      remoteControllerOrigin === undefined && remoteControllerAuthority === undefined;
+    const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract;
     const shellRuleDialect = req.toolName === "bash" || req.toolName === "powershell" ? req.toolName : undefined;
     if (hostTerminal !== undefined && rawShellArgs?.command !== hostTerminal.command) throw new Error("approval: host terminal command does not match the request");
     const shellRule = userOwnedSurface !== undefined || hostTerminal !== undefined ? undefined : req.source === "builtin" && shellRuleDialect !== undefined &&
@@ -1109,8 +1120,8 @@ export class ApprovalGate {
       typeof rawShellArgs?.command === "string" && shellRuleCwd
       ? buildShellRuleApproval(shellRuleDialect, rawShellArgs.command, shellRuleCwd, {
         allow: shellRuleSaveAllowed,
-        // A deny only narrows, so "Always deny" stays on one-shot cards too; never for a remote controller.
-        deny: !forceExplicit && remoteControllerOrigin === undefined && remoteControllerAuthority === undefined,
+        // A forced one-shot card cannot create remembered authority.
+        deny: !forceExplicit,
       }, req.sessionId, verifiedShellCommand)
       : undefined;
     const fullReq: ApprovalRequest = {
@@ -1327,6 +1338,7 @@ export class ApprovalGate {
         sessionId: fullReq.sessionId,
         // Carried from the request, not re-derived: the pending entry outlives the request object and is the only copy the decided/timeout/cancelled rows can read.
         remoteControllerOrigin,
+        remoteControllerAuthority,
         toolName: fullReq.toolName,
         args: fullReq.args,
         category: fullReq.category,
@@ -1482,6 +1494,43 @@ export class ApprovalGate {
     });
   }
 
+  capturePendingRequestIdentityGuard(requestId: string): { refresh: () => Promise<boolean>; isCurrent: () => boolean } | null {
+    const entry = this.pending.get(requestId);
+    if (!entry) return null;
+    const isCurrent = () => this.pending.get(requestId) === entry && isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
+    return { refresh: async () => await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) && isCurrent(), isCurrent };
+  }
+
+  async resolveWithFreshIdentity(requestId: string, decision: ApprovalDecision, answeredBy: ApprovalAnswerer = "desk"): Promise<ApprovalDecision | null> {
+    const entry = this.pending.get(requestId);
+    if (!entry) return null;
+    const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
+    if (this.pending.get(requestId) !== entry) return null;
+    if (!identityCurrent) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
+      entry.resolve(rejected);
+      return rejected;
+    }
+    return this.resolveDecision(requestId, decision, answeredBy, false, undefined, true);
+  }
+
+  async resolveFromDesktopRendererWithFreshIdentity(requestId: string, decision: ApprovalDecision, responder: WebContents): Promise<ApprovalDecision | null> {
+    const entry = this.pending.get(requestId);
+    if (!entry || !this.canAccessRendererRequest(requestId, responder, "desk")) return null;
+    const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
+    if (this.pending.get(requestId) !== entry) return null;
+    if (!identityCurrent) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
+      entry.resolve(rejected);
+      return rejected;
+    }
+    return this.resolveDecision(requestId, decision, "desk", true, responder, true);
+  }
+
   // Resolve responses from non-native host surfaces. Ignores unknown pending entries, making duplicate responses safe. `answeredBy` is host-derived AT THE CALL SITE, never read from the decision payload: the renderer's IPC route and the plugin host-API route use separate entry points; the paired chat-platform card handler is the one caller that passes `"platform-bridge"`. Every answerer passes the same integrity and allowed-choice checks below — there is deliberately no second integrity or choice-validation implementation.
   resolve(
     requestId: string,
@@ -1541,6 +1590,7 @@ export class ApprovalGate {
     answeredBy: ApprovalAnswerer,
     nativeRenderer: boolean,
     responder?: WebContents,
+    identityRefreshed = false,
   ): ApprovalDecision | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
@@ -1548,6 +1598,15 @@ export class ApprovalGate {
       // Reject before integrity checks: a foreign response cannot settle or
       // damage the owner's pending request, even with valid signed contents.
       return null;
+    }
+    // Tailnet answers need a fresh owner-identity probe; a synchronous answer path for them is a host contract violation, not a revoked controller.
+    if (entry.remoteControllerAuthority?.kind === "tailnet-controller" && !identityRefreshed) throw new ApprovalFreshIdentityRequiredError(requestId);
+    if (!isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
+      entry.resolve(rejected);
+      return rejected;
     }
     if ((entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.
@@ -1745,7 +1804,7 @@ export class ApprovalGate {
     verdictAtApproval: RiskVerdict["level"];
   } | null {
     const entry = this.pending.get(requestId);
-    if (!entry) return null;
+    if (!entry || !isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) return null;
     return {
       toolName: entry.toolName,
       args: entry.args,
@@ -1796,7 +1855,7 @@ export class ApprovalGate {
     allowedChoices: readonly ApprovalChoice[] | undefined;
   } | null {
     const entry = this.pending.get(requestId);
-    if (!entry || entry.kind !== "out-of-allowed-dir") return null;
+    if (!entry || !isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) || entry.kind !== "out-of-allowed-dir") return null;
     if (!entry.outOfAllowedDir) return null;
     return {
       toolName: entry.toolName,

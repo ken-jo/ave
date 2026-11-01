@@ -37,7 +37,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   cleanupAsrtSandboxAfterCommand: () => asrtCleanup(),
 }));
 
-type Spec = Record<string, unknown> & { onWrapped?: () => void; assertStillValid?: () => void };
+type Spec = Record<string, unknown> & { onWrapped?: () => void; assertStillValid?: () => void; refreshStillValid?: () => Promise<void> };
 const confinedSpawn = vi.fn<(spec: Spec) => Promise<unknown>>();
 vi.mock("../../permissions/confined-child.js", () => ({
   spawnConfinedChild: (spec: Spec) => confinedSpawn(spec),
@@ -169,6 +169,29 @@ describe("spawnWindowsBundledProcess", () => {
     expect(actualSpawn).not.toHaveBeenCalled();
     expect(grantRelease).toHaveBeenCalledTimes(1);
     expect(homeCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries fresh owner validation through preparation to the actual spawn boundary", async () => {
+    let ownerCurrent = true;
+    const actualSpawn = vi.fn();
+    confinedSpawn.mockImplementationOnce(async (spec) => {
+      spec.onWrapped?.();
+      await Promise.resolve();
+      ownerCurrent = false;
+      await spec.refreshStillValid?.();
+      spec.assertStillValid?.();
+      actualSpawn();
+      return { child: brokerChild(), confinement: "windows-srt" };
+    });
+    const refreshStillValid = vi.fn(async () => {
+      if (!ownerCurrent) throw new Error("owner identity unavailable");
+    });
+    await expect(spawnWindowsBundledProcess({ ...input, refreshStillValid })).rejects.toThrow("owner identity unavailable");
+    expect(refreshStillValid).toHaveBeenCalledOnce();
+    expect(actualSpawn).not.toHaveBeenCalled();
+    expect(grantRelease).toHaveBeenCalledTimes(1);
+    expect(homeCleanup).toHaveBeenCalledTimes(1);
+    expect(asrtCleanup).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a process that came back unconfined, and ends it", async () => {

@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import "../../__tests__/support/trusted-powershell.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
@@ -358,11 +359,11 @@ describe("PermissionManager (B1 persistence)", () => {
   });
 });
 
-describe("PermissionManager — Tailnet controller P1 policy", () => {
-  const authority = Object.freeze({
+describe("PermissionManager — authenticated controller policy", () => {
+  const authority = bindRemoteControllerToSession({
     kind: "tailnet-controller" as const,
     actorId: "tailnet:controller-digest" as `tailnet:${string}`,
-  });
+  }, "controller-session");
   let pm: PermissionManager;
 
   beforeEach(() => {
@@ -376,21 +377,19 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
     vi.clearAllMocks();
   });
 
-  it("forces even a declared read through a local one-shot modal despite allow mode and a remembered grant", async () => {
+  it("uses the same read grants and allow mode as the local user", async () => {
     pm.setMode("allow");
     pm.setRules([{ pattern: "read_file", action: "allow" }]);
     await pm.addAlwaysAllowedPersist("read_file", "read");
 
     expect(pm.checkDetailed("read_file", "builtin", "read", null, {
-      remoteControllerAuthority: authority,
+      remoteControllerAuthority: authority, sessionId: "controller-session",
     })).toMatchObject({
-      decision: "ask",
-      forceModal: true,
-      reasonCode: "other-principal",
+      decision: "allow",
     });
   });
 
-  it("keeps the P1 deferred and capability-expansion deny list closed even in strict mode", () => {
+  it("uses ordinary tool categories for deferred and capability operations", () => {
     pm.setMode("strict");
 
     for (const [toolName, category] of [
@@ -403,16 +402,15 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
       ["skill_load", "read"],
     ] as const) {
       expect(pm.checkDetailed(toolName, "builtin", category, null, {
-        remoteControllerAuthority: authority,
-      })).toMatchObject({ decision: "deny" });
+        remoteControllerAuthority: authority, sessionId: "controller-session",
+      })).not.toHaveProperty("reasonCode", "controller-capability");
     }
 
     expect(pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
       decisionOverride: "ask",
-      remoteControllerAuthority: authority,
+      remoteControllerAuthority: authority, sessionId: "controller-session",
     })).toMatchObject({
-      decision: "deny",
-      reasonCode: "controller-capability",
+      decision: "ask",
     });
   });
 
@@ -420,7 +418,7 @@ describe("PermissionManager — Tailnet controller P1 policy", () => {
     pm.setRules([{ pattern: "read_file", action: "deny" }]);
 
     expect(pm.checkDetailed("read_file", "builtin", "read", null, {
-      remoteControllerAuthority: authority,
+      remoteControllerAuthority: authority, sessionId: "controller-session",
     })).toMatchObject({ decision: "deny" });
   });
 });
@@ -433,12 +431,12 @@ describe("PermissionManager — platform bridge remote policy", () => {
     scope: "33333333-3333-4333-8333-333333333333",
   });
   const bridgeGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
-  const authority = Object.freeze({
+  const authority = bindRemoteControllerToSession({
     kind: "platform-bridge" as const,
     actorId: `bridge:${"a".repeat(64)}`,
     bridgeBinding,
     bridgeGuard,
-  });
+  }, "controller-session");
   let pm: PermissionManager;
 
   beforeEach(() => {
@@ -452,17 +450,15 @@ describe("PermissionManager — platform bridge remote policy", () => {
     vi.clearAllMocks();
   });
 
-  it("forces a verified external-platform read through local allow-once even in allow mode", async () => {
+  it("allows a session-bound external-platform read with the same grants", async () => {
     pm.setMode("allow");
     pm.setRules([{ pattern: "read_file", action: "allow" }]);
     await pm.addAlwaysAllowedPersist("read_file", "read");
 
     expect(pm.checkDetailed("read_file", "builtin", "read", null, {
-      remoteControllerAuthority: authority,
+      remoteControllerAuthority: authority, sessionId: "controller-session",
     })).toMatchObject({
-      decision: "ask",
-      forceModal: true,
-      reasonCode: "other-principal",
+      decision: "allow",
     });
   });
 });

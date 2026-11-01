@@ -113,7 +113,7 @@ function makeApi(options: { observerUnavailable?: boolean; sharingDisabled?: boo
     },
   } as unknown as AveApi;
 
-  return { api, createInvitation, createCurrentConversationShare };
+  return { api, snapshot, createInvitation, createCurrentConversationShare };
 }
 
 let localeBeforeTest = getLocale();
@@ -213,7 +213,7 @@ describe("TailnetAccessContent", () => {
     fireEvent.click(screen.getByTestId("tailnet-access-create-share"));
 
     expect(await screen.findByTestId("tailnet-access-control-confirm")).toHaveTextContent(
-      "Allow this paired account to send messages",
+      t("tailnetAccessTab.controlConfirm"),
     );
     expect(createCurrentConversationShare).not.toHaveBeenCalled();
 
@@ -222,6 +222,39 @@ describe("TailnetAccessContent", () => {
     await waitFor(() => {
       expect(createCurrentConversationShare).toHaveBeenCalledWith(PAIRING_ID, "control", "8h");
     });
+  });
+
+  it.each(["en", "ko"] as const)("states owner-only account access in %s", async locale => {
+    setLocale(locale);
+    const { api } = makeApi();
+    render(<TailnetAccessContent api={api} />);
+    await screen.findByTestId("tailnet-access-create-invitation");
+    expect(screen.getByText(t("tailnetAccessTab.pageDescription"))).toBeVisible();
+    expect(screen.getByText(t("tailnetAccessTab.pairingIsNotAccess"))).toBeVisible();
+  });
+
+  it.each([
+    ["tailnet-owner-identity-unavailable", "tailnetAccessTab.errorOwnerIdentityUnavailable"],
+    ["tailnet-owner-identity-mismatch", "tailnetAccessTab.errorOwnerIdentityMismatch"],
+  ] as const)("surfaces existing binding suspension or revocation: %s", async (error, messageKey) => {
+    const { api, snapshot } = makeApi();
+    snapshot.mockResolvedValue({ ok: true, snapshot: { ...SAFE_SNAPSHOT, ownerIdentityError: error } });
+    render(<TailnetAccessContent api={api} />);
+    const warning = await screen.findByTestId("tailnet-access-identity-warning");
+    expect(warning).toHaveAttribute("role", "alert");
+    expect(warning).toHaveTextContent(t(messageKey));
+  });
+
+  it.each([
+    ["tailnet-owner-identity-unavailable", "tailnetAccessTab.errorOwnerIdentityUnavailable"],
+    ["tailnet-owner-identity-mismatch", "tailnetAccessTab.errorOwnerIdentityMismatch"],
+  ] as const)("explains the owner identity rejection on mutation: %s", async (error, messageKey) => {
+    const { api } = makeApi();
+    vi.spyOn(api.tailnetSharing, "createInvitation").mockResolvedValueOnce({ ok: false, error });
+    render(<TailnetAccessContent api={api} />);
+    fireEvent.click(await screen.findByTestId("tailnet-access-create-invitation"));
+    expect(await screen.findByTestId("tailnet-access-feedback")).toHaveTextContent(t(messageKey));
+    expect(screen.queryByTestId("tailnet-access-issued-invitation")).toBeNull();
   });
 
   it("cancelling the control question grants nothing", async () => {

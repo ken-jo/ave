@@ -606,6 +606,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:telegram-connection:resume",
         "ave:telegram-connection:revoke-approval",
         "ave:telegram-connection:revoke-pairing",
+        "ave:telegram-connection:set-owner-user-id",
         "ave:telegram-connection:snapshot",
         "ave:telemetry:allowed-hosts",
         "ave:telemetry:consent-answer",

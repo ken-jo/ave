@@ -47,6 +47,7 @@ async function makeStore(nowRef: { value: number }) {
   const directory = mkdtempSync(join(tmpdir(), "ave-tailnet-sharing-"));
   directories.push(directory);
   const store = createTailnetPairingShareStore({
+    getOwnerActorId: () => ACTOR,
     namespace: namespace(directory),
     now: () => nowRef.value,
   });
@@ -87,6 +88,7 @@ describe("TailnetPairingShareStore", () => {
     });
     expect(share).toMatchObject({
       actorId: ACTOR,
+      expiresAt: expect.any(Number),
       permission: "observe",
       pairing: {
         pairingId: claim!.pairingId,
@@ -97,6 +99,7 @@ describe("TailnetPairingShareStore", () => {
     });
     expect(store.resolveActiveShare(ACTOR, CONVERSATION, "observe")).toMatchObject({
       pairing: share!.pairing,
+      expiresAt: share!.expiresAt,
     });
     expect(store.resolveActiveShare(ACTOR, CONVERSATION, "control")).toBeNull();
     expect(store.resolveActiveShare(ACTOR, OTHER_CONVERSATION, "observe")).toBeNull();
@@ -115,7 +118,7 @@ describe("TailnetPairingShareStore", () => {
     const first = await store.claimInvitation(invitation.code, ACTOR);
 
     expect(first).not.toBeNull();
-    expect(await store.claimInvitation(invitation.code, OTHER_ACTOR)).toBeNull();
+    await expect(store.claimInvitation(invitation.code, OTHER_ACTOR)).rejects.toThrow("tailnet-owner-identity-mismatch");
     expect(await store.claimInvitation(invitation.code, ACTOR)).toBeNull();
 
     const secondInvitation = await store.createInvitation(100);
@@ -124,7 +127,7 @@ describe("TailnetPairingShareStore", () => {
     now.value += 101;
     const expiredInvitation = await store.createInvitation(100);
     now.value += 101;
-    expect(await store.claimInvitation(expiredInvitation.code, OTHER_ACTOR)).toBeNull();
+    await expect(store.claimInvitation(expiredInvitation.code, OTHER_ACTOR)).rejects.toThrow("tailnet-owner-identity-mismatch");
   });
 
   it("reports the pairing an account already holds so a re-entry mints no second invitation", async () => {
@@ -196,6 +199,7 @@ describe("TailnetPairingShareStore", () => {
     const directory = mkdtempSync(join(tmpdir(), "ave-tailnet-sharing-persist-"));
     directories.push(directory);
     const first = createTailnetPairingShareStore({
+    getOwnerActorId: () => ACTOR,
       namespace: namespace(directory),
       now: () => now.value,
     });
@@ -205,6 +209,7 @@ describe("TailnetPairingShareStore", () => {
     expect(authority).not.toBeNull();
 
     const restored = createTailnetPairingShareStore({
+    getOwnerActorId: () => ACTOR,
       namespace: namespace(directory),
       now: () => now.value,
     });
@@ -213,9 +218,21 @@ describe("TailnetPairingShareStore", () => {
 
     writeFileSync(join(directory, "pairing-share.json"), "{not-json", "utf8");
     const corrupt = createTailnetPairingShareStore({
+    getOwnerActorId: () => ACTOR,
       namespace: namespace(directory),
       now: () => now.value,
     });
     await expect(corrupt.open()).rejects.toThrow("tailnet-pairing-share-store-invalid");
   });
+});
+
+it("does not report an archived revoked pairing as a current owner mismatch", async () => {
+  const now = { value: 300_000 };
+  const { store, directory } = await makeStore(now);
+  const pairingId = await activePairing(store);
+  await store.revokePairing(pairingId);
+  const restored = createTailnetPairingShareStore({ getOwnerActorId: () => OTHER_ACTOR, namespace: namespace(directory), now: () => now.value });
+  await restored.open();
+  expect(restored.ownerSnapshot()).toMatchObject({ pairings: [], shares: [] });
+  expect(restored.ownerSnapshot().ownerIdentityError).toBeUndefined();
 });

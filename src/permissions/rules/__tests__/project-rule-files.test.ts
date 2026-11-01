@@ -206,3 +206,18 @@ describe("project rule root boundaries", () => {
     }
   });
 });
+
+
+it("preserves project rules when identity changes during asynchronous commit preparation", async () => {
+  const cwd = join(home, "project");
+  mkdirSync(cwd);
+  const location = projectRulesLocation(root, cwd);
+  await updateProjectRulesFile(location, file => { file.rules.push({ pattern: "Bash(printf before)", action: "allow" }); });
+  const before = readFileSync(location.filePath, "utf8");
+  let current = true;
+  await expect(updateProjectRulesFile(location, file => {
+    file.rules.push({ pattern: "Bash(printf after)", action: "allow" });
+    current = false;
+  }, { refresh: async () => current, isCurrent: () => current })).rejects.toThrow("Approval authority is unavailable");
+  expect(readFileSync(location.filePath, "utf8")).toBe(before);
+});

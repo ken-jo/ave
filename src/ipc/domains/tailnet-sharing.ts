@@ -1,3 +1,4 @@
+import { TailnetOwnerIdentityError } from "../../main/tailnet-owner-identity.js";
 // Pairing and sharing mutations require live local keyboard intent and a main-owned active conversation.
 import { ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -39,14 +40,14 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
     });
   }
 
-  ipcMain.handle(CHANNELS.tailnetSharing.snapshot, (event) => {
+  ipcMain.handle(CHANNELS.tailnetSharing.snapshot, async (event) => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.snapshot, event);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;
     try {
-      const snapshot = parseTailnetSharingSnapshot(owner.snapshot());
+      const snapshot = parseTailnetSharingSnapshot(await owner.snapshot());
       return snapshot === null
         ? UNAVAILABLE : { ok: true as const, snapshot };
     } catch {
@@ -68,7 +69,8 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
       );
       return invitation === null
         ? OPERATION_REJECTED : { ok: true as const, invitation };
-    } catch {
+    } catch (error) {
+      if (error instanceof TailnetOwnerIdentityError) return { ok: false as const, error: error.code };
       return OPERATION_REJECTED;
     }
   });
@@ -85,7 +87,8 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
       return await owner.activatePairing(payload.id)
         ? { ok: true as const }
         : OPERATION_REJECTED;
-    } catch {
+    } catch (error) {
+      if (error instanceof TailnetOwnerIdentityError) return { ok: false as const, error: error.code };
       return OPERATION_REJECTED;
     }
   });
@@ -106,7 +109,8 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
       )
         ? { ok: true as const }
         : OPERATION_REJECTED;
-    } catch {
+    } catch (error) {
+      if (error instanceof TailnetOwnerIdentityError) return { ok: false as const, error: error.code };
       return OPERATION_REJECTED;
     }
   });
@@ -123,7 +127,8 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
       return await owner.revokeShare(payload.id)
         ? { ok: true as const }
         : OPERATION_REJECTED;
-    } catch {
+    } catch (error) {
+      if (error instanceof TailnetOwnerIdentityError) return { ok: false as const, error: error.code };
       return OPERATION_REJECTED;
     }
   });
@@ -140,7 +145,8 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
       return await owner.revokePairing(payload.id)
         ? { ok: true as const }
         : OPERATION_REJECTED;
-    } catch {
+    } catch (error) {
+      if (error instanceof TailnetOwnerIdentityError) return { ok: false as const, error: error.code };
       return OPERATION_REJECTED;
     }
   });

@@ -3,7 +3,7 @@
 import { resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
-import { adoptLegacyRootFileSync, readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
+import { adoptLegacyRootFileSync, readJsonFileOrEmpty, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "./storage/feature-namespace.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
 interface SkillApprovalRecord {
@@ -93,7 +93,7 @@ export class SkillApprovalsStore {
   }
 
   // Bind current material to the same caller-derived key used by isApproved; mismatched derivation would re-prompt forever.
-  async approve(recordKey: string, currentMaterial: string): Promise<void> {
+  async approve(recordKey: string, currentMaterial: string, canCommit?: () => boolean): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       const newHash = hashSkillMaterial(currentMaterial);
@@ -108,7 +108,13 @@ export class SkillApprovalsStore {
           approvedAt: new Date().toISOString(),
         });
       }
-      await writeAtomic(this.filePath, file);
+      if (canCommit) {
+        if (!await writeFileAtomicAtPathIf(this.filePath, `${JSON.stringify(file, null, 2)}\n`, canCommit)) {
+          throw new Error("Skill approval authority is unavailable");
+        }
+      } else {
+        await writeAtomic(this.filePath, file);
+      }
       this.cache = new Map(file.approvedSkills.map((r) => [r.name, r.sha256]));
     });
   }

@@ -5,6 +5,7 @@ import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shar
 import {
   isTelegramApproveCurrentConversationInput,
   isTelegramConnectInput,
+  isTelegramSetOwnerUserIdInput,
   isTelegramIntentOnlyInput,
   isTelegramRevokeInput,
   parseTelegramConnectionMutationResult,
@@ -73,6 +74,21 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
     try {
       return parseTelegramConnectionMutationResult(await service.connect(payload.botToken))
         ?? OPERATION_REJECTED;
+    } catch {
+      return OPERATION_REJECTED;
+    }
+  });
+
+  ipcMain.handle(CHANNELS.telegramConnection.setOwnerUserId, async (event, payload: unknown) => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.setOwnerUserId, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!service) return DISABLED;
+    if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;
+    if (!isTelegramSetOwnerUserIdInput(payload)) return INPUT_INVALID;
+    try {
+      return parseTelegramConnectionMutationResult(await service.setOwnerUserId(payload.ownerUserId)) ?? OPERATION_REJECTED;
     } catch {
       return OPERATION_REJECTED;
     }

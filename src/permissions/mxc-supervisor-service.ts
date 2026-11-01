@@ -13,6 +13,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   bootstrap: () => Promise<MxcSupervisorRuntime>, onFatal: () => void): Promise<void> {
   let owned: MxcNativeProcess | undefined;
   let processPin: ReturnType<MxcSupervisorRuntime["pinProcess"]> | undefined;
+  let admissionAuthorization: { resolve(authorized: boolean): void } | undefined;
   let nativeObservation: { id: number; resolve(): void } | undefined;
   let ownerLost = false;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
@@ -31,6 +32,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     if (stopping) return;
     spawnPendingAtCancellation = spawnPending;
     stopping = true;
+    admissionAuthorization?.resolve(false); admissionAuthorization = undefined;
     watchdog = setTimeout(onFatal, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
     if (owned) void owned.dispose({ drainOutput: !forwarding }).catch(rejectTerminal);
     else if (!starting) resolveTerminal(null);
@@ -77,9 +79,15 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             }
             runtime.auditModules();
             if (stopping) return null;
+            const authorized = new Promise<boolean>((resolve) => { admissionAuthorization = { resolve }; });
             await channel.send({ type: "creating" });
+            // No native creation until the owner revalidates admitted roots after
+            // bootstrap/probing and acknowledges over the authenticated channel.
+            if (!await authorized) return null;
             if (stopping) return null;
             creationStarted = true;
+            // The SDK still opens string paths: authorization cannot make its
+            // later native file opens atomic with the owner's identity check.
             // A single argument is deliberate: telemetry options are never passed.
             spawnPending = true;
             const nativePending = runtime.sdk.spawn(frame.request).finally(() => { spawnPending = false; });
@@ -127,6 +135,13 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             throw error;
           });
           void starting.then(resolveTerminal, fail);
+          break;
+        }
+        case "spawn-authorized": {
+          if (stopping) break;
+          if (!admissionAuthorization) throw new MxcProcessContractError("Unexpected spawn authorization");
+          const authorization = admissionAuthorization; admissionAuthorization = undefined;
+          authorization.resolve(true);
           break;
         }
         case "stdin":

@@ -21,7 +21,7 @@ environment variables. The single resolver is `resolveTailnetObserverConfig`
 | `AVE_TAILNET_OBSERVER` | enable (`"1"`) | anything else → observer OFF |
 | `AVE_TAILNET_OBSERVER_CAP` | expected app-capability key (required when ON) | `isCapabilityKey` (length ≤ 512, no control chars, no proto-pollution keys); missing/invalid → throw `tailnet-observer-capability-missing-or-invalid` |
 | `AVE_TAILNET_OBSERVER_PORT` | listener port | `parseFixedPort`; default `DEFAULT_TAILNET_OBSERVER_PORT` = 46173 |
-| `AVE_TAILNET_CONTROLLER` | enable controller commands | must be `"1"` if set, else throw |
+| `AVE_TAILNET_CONTROLLER` | enable controller commands | must be `"1"` if set; requires `AVE_TAILNET_PAIRED_SHARING=1`, else throw |
 | `AVE_TAILNET_PAIRED_SHARING` | enable P2 paired sharing | must be `"1"` if set, else throw |
 | `AVE_TAILNET_WEB` | enable web surface | requires paired sharing; else throw |
 | `AVE_TAILNET_WEB_ORIGIN` | web origin | `isTailnetWebOrigin`; missing/invalid → throw |

@@ -1,4 +1,4 @@
-/** Pairing grants no access without a separate owner share. Snapshots and events expose only coarse state and opaque fingerprints, never secrets, raw IDs, message text, or pairing codes. */
+/** Pairing grants no access without a separate owner share. Snapshots and events expose only coarse state and opaque fingerprints, never secrets, remote chat IDs, message text, or pairing codes. The local owner may read their explicitly registered numeric user ID. */
 import { hasUserKeyboardIntent, type UserKeyboardIntent } from "./chat-origin.js";
 import { UUID_PATTERN } from "./uuid.js";
 import { hasExactKeys, isRecord } from "./is-record.js";
@@ -37,6 +37,7 @@ const TELEGRAM_CONNECTION_ERROR_CODES = [
   "telegram-connection-disabled",
   "telegram-connection-unavailable",
   "telegram-connection-input-invalid",
+  "telegram-owner-id-required",
   "telegram-connection-operation-rejected",
   "user-keyboard-required",
   "telegram-encryption-unavailable",
@@ -71,6 +72,8 @@ interface TelegramPendingCodeSummary {
 }
 
 export interface TelegramConnectionSnapshot {
+  /** Explicitly registered by the local owner; never inferred from whoever redeems a code. */
+  readonly ownerUserId: string | null;
   readonly state: TelegramConnectionState;
   /** Resolved in-memory from getMe; absent until the bot is verified. */
   readonly botUsername: string | null;
@@ -91,6 +94,11 @@ export interface TelegramCreatedPairingCode {
 export interface TelegramConnectInput {
   readonly intent: UserKeyboardIntent;
   readonly botToken: string;
+}
+
+export interface TelegramSetOwnerUserIdInput {
+  readonly intent: UserKeyboardIntent;
+  readonly ownerUserId: string;
 }
 
 export interface TelegramIntentOnlyInput {
@@ -128,6 +136,7 @@ export type TelegramCreatePairingCodeResult =
 export interface TelegramConnectionOwnerApi {
   snapshot(): Promise<TelegramConnectionSnapshotResult>;
   connect(botToken: string): Promise<TelegramConnectionMutationResult>;
+  setOwnerUserId(ownerUserId: string): Promise<TelegramConnectionMutationResult>;
   disconnect(): Promise<TelegramConnectionMutationResult>;
   pause(): Promise<TelegramConnectionMutationResult>;
   resume(): Promise<TelegramConnectionMutationResult>;
@@ -151,6 +160,12 @@ const BOT_TOKEN = /^[0-9]{5,20}:[A-Za-z0-9_-]{20,220}$/;
 export const TELEGRAM_BOT_TOKEN_PATH_GRAMMAR = /^[A-Za-z0-9:_-]{1,256}$/;
 const MAX_CONVERSATION_CHARS = 4_096;
 const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+/** Canonical positive numeric user identity within the provider integer range. */
+export function isTelegramOwnerUserId(value: unknown): value is string {
+  return typeof value === "string" && /^[1-9][0-9]{0,15}$/.test(value)
+    && Number.isSafeInteger(Number(value)) && Number(value) <= 2 ** 52 - 1;
+}
 
 export function isTelegramConnectionId(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
@@ -203,6 +218,11 @@ function hasIntent(value: Record<string, unknown>): boolean {
 export function isTelegramConnectInput(value: unknown): value is TelegramConnectInput {
   return isRecord(value) && hasExactKeys(value, ["botToken", "intent"])
     && hasIntent(value) && isTelegramBotToken(value.botToken);
+}
+
+export function isTelegramSetOwnerUserIdInput(value: unknown): value is TelegramSetOwnerUserIdInput {
+  return isRecord(value) && hasExactKeys(value, ["intent", "ownerUserId"])
+    && hasIntent(value) && isTelegramOwnerUserId(value.ownerUserId);
 }
 
 export function isTelegramIntentOnlyInput(value: unknown): value is TelegramIntentOnlyInput {
@@ -266,7 +286,8 @@ export function parseTelegramConnectionSnapshot(
   value: unknown,
 ): TelegramConnectionSnapshot | null {
   if (!isRecord(value)
-    || !hasExactKeys(value, ["approval", "botUsername", "lastErrorCode", "pairing", "pendingCode", "state"])
+    || !hasExactKeys(value, ["approval", "botUsername", "lastErrorCode", "ownerUserId", "pairing", "pendingCode", "state"])
+    || (value.ownerUserId !== null && !isTelegramOwnerUserId(value.ownerUserId))
     || !isTelegramConnectionState(value.state)
     || (value.botUsername !== null && !isTelegramBotUsername(value.botUsername))
     || (value.lastErrorCode !== null && !isTelegramConnectionErrorCode(value.lastErrorCode))) {
@@ -282,6 +303,7 @@ export function parseTelegramConnectionSnapshot(
   }
   return Object.freeze({
     state: value.state,
+    ownerUserId: value.ownerUserId as string | null,
     botUsername: value.botUsername as string | null,
     pairing,
     approval,

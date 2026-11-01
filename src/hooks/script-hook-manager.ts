@@ -40,7 +40,7 @@ const log = createLogger("script-hook-manager");
 function externalHooksSuppressed(): HookDispatchResult {
   return {
     decision: "allow",
-    reason: "external hooks disabled for remote-controller turn",
+    reason: "external hooks disabled for this turn",
     results: [],
   };
 }

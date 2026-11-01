@@ -30,6 +30,7 @@ import {
 import { errorMessage } from "../shared/error-message.js";
 import { interruptRunningTurnsForExit } from "../engine/turn/turn-journal.js";
 import { disposeBrowserUploads } from "./browser/browser-upload.js";
+import { drainMxcHolderLifetimes, sealMxcHolderLifetimeAdmission } from "../permissions/mxc-holder-lifetime.js";
 
 // How long a quit waits for running turns to record themselves as interrupted. Their rows are already on disk as they happen (the turn journal), so this
 // buys the clean interrupted record, not the data, and stays short.
@@ -122,6 +123,7 @@ let appShutdownCleanupPromise: Promise<AppShutdownCleanupOutcome> | null = null;
 export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShutdownCleanupOutcome> {
   const reason = "host bootstrap interrupted or failed";
   setAppShutdownStarted(true);
+  sealMxcHolderLifetimeAdmission(reason);
   sealManagedChildProcessAdmission(reason);
   runShutdownHooks();
   const result = await runCleanupWithHardTimeout(async (signal) => {
@@ -136,6 +138,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
       () => stopSubscriptionRuntimes(),
       () => disposeBrowserUploads(),
       () => forceKillAllTerminalsForShutdown(),
+      () => drainMxcHolderLifetimes(),
       () => forceKillAndDrainManagedChildProcesses(reason),
       () => host?.close(),
     ];
@@ -165,6 +168,7 @@ export async function runAppShutdownCleanup(options: {
   if (appShutdownCleanupPromise) return appShutdownCleanupPromise;
 
   setAppShutdownStarted(true);
+  sealMxcHolderLifetimeAdmission(options.reason);
   sealManagedChildProcessAdmission(options.reason);
   const svc = services;
   const cleanupTimeoutMs = resolveShutdownCleanupTimeoutMs(
@@ -174,6 +178,8 @@ export async function runAppShutdownCleanup(options: {
     const result = await runCleanupWithHardTimeout(async (signal) => {
       // Keep runtime children through normal plugin teardown, but stop them on earlier failure or timeout without masking the original error.
       let subscriptionRuntimesStopped = false;
+      let holderDrainAttempted = false;
+      let shutdownFailure: unknown;
       try {
       // Release global shortcuts before async shutdown steps can hang or throw.
       shutdownHost?.desktop?.beforeShutdown();
@@ -250,9 +256,14 @@ export async function runAppShutdownCleanup(options: {
       // Bounded by the same deadline as every other stage: plugin generations still retiring when it passes are named, and the backstop below ends them.
       await svc.pluginRuntime.stopAll({ signal });
       if (signal.aborted) return;
+      holderDrainAttempted = true;
+      await drainMxcHolderLifetimes();
       // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app alive for a bounded definitive-exit drain so ASRT/HOME finalizers run before
       // Electron completes an otherwise clean shutdown.
       await forceKillAndDrainManagedChildProcesses(`${options.reason} graceful shutdown`);
+      } catch (error) {
+        shutdownFailure = error;
+        throw error;
       } finally {
         if (!subscriptionRuntimesStopped) {
           try {
@@ -260,6 +271,14 @@ export async function runAppShutdownCleanup(options: {
           } catch {
             // Preserve the original shutdown-stage failure. The failed branch below performs a managed-child force-kill as the final fallback.
             log.warn("shutdown: subscription runtime fallback stop failed");
+          }
+        }
+        // An earlier stage may have failed before plugin teardown. Retain each
+        // native owner through its own cleanup before the generic kill backstop.
+        if (!holderDrainAttempted) {
+          try { await drainMxcHolderLifetimes(); } catch (error) {
+            if (shutdownFailure !== undefined) throw new AggregateError([shutdownFailure, error], "Application and container holder cleanup failed");
+            throw error;
           }
         }
       }

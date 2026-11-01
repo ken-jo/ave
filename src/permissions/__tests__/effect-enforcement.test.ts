@@ -1334,3 +1334,17 @@ describe("human fallback termination", () => {
     expect(log).toEqual([]);
   });
 });
+
+it.each(["allow", "strict"] as const)("refreshes controller identity at a nested host effect in %s", async mode => {
+  const { bindRemoteControllerToSession } = await import("../../shared/chat-origin.js");
+  let current = true;
+  let ownerAvailable = true;
+  const refresh = vi.fn(async () => { current = ownerAvailable; return current; });
+  const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:effect-owner", pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" }, pairedShareGuard: { isCurrent: () => current, refreshCurrent: refresh } }, "effect-session");
+  permissionManager.setMode(mode);
+  const { gate, requests } = makeGate("allow-once");
+  ownerAvailable = false;
+  await expect(runWithEffectGateContext({ headless: false, toolName: "outer", sessionId: "effect-session", permissionContext: { remoteControllerAuthority: authority } }, () => gateMutatingEffect({ pluginId: "p1", methodPath: "storage.write", effect: "write", target: "effect.txt", input: ["effect.txt", "body"], approvalGate: gate, permissionManager, resolveStoragePath: relativePath => join(tmpdir(), "effect-storage", relativePath) }))).rejects.toThrow("remote-controller-revoked");
+  expect(refresh).toHaveBeenCalledOnce();
+  if (mode === "strict") expect(requests[0]).toMatchObject({ remoteControllerAuthority: authority, remoteControllerOrigin: "tailnet-controller" });
+});

@@ -40,11 +40,11 @@ const CARD_TEXT = Object.freeze({
 // as the `"platform-bridge"` answerer.
 export interface TelegramRemoteApprovalGatePort {
   observePendingApprovals(observer: PendingApprovalObserver): () => void;
-  resolve(
+  resolveWithFreshIdentity(
     requestId: string,
     decision: ApprovalDecision,
     answeredBy: "platform-bridge",
-  ): ApprovalDecision | null;
+  ): Promise<ApprovalDecision | null> | ApprovalDecision | null;
 }
 
 export interface TelegramRemoteApprovalCoordinator {
@@ -130,7 +130,7 @@ export function createTelegramRemoteApprovalCoordinator(
     || typeof options.client?.editMessageText !== "function"
     || typeof options.client?.answerCallbackQuery !== "function"
     || typeof options.gate?.observePendingApprovals !== "function"
-    || typeof options.gate?.resolve !== "function"
+    || typeof options.gate?.resolveWithFreshIdentity !== "function"
     || typeof options.routeChatIdForConversation !== "function"
     || typeof options.isPairedOwner !== "function"
   ) {
@@ -262,7 +262,7 @@ export function createTelegramRemoteApprovalCoordinator(
       }
       // The SAME resolve chokepoint the desktop dock's IPC handler calls, with the gate's own echo material. Integrity, allowed-choice, and audit all happen
       // in the gate; settlement re-enters this module only through the observer above, which edits the card.
-      const decision = gate.resolve(
+      const decision = await gate.resolveWithFreshIdentity(
         binding.card.requestId,
         {
           requestId: binding.card.requestId,

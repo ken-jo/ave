@@ -35,6 +35,7 @@ function makeApi(
         snapshot: {
           state: telegramState,
           botUsername: "ave_desk_bot",
+          ownerUserId: null,
           pairing: null,
           approval: null,
           pendingCode: null,

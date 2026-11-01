@@ -47,6 +47,7 @@ function conversationDigestFor(conversationId: string): string {
 }
 
 interface Harness {
+  ownerUserId: string | null;
   readonly runtime: ReturnType<typeof createTelegramPairedPlatformRuntime>;
   readonly ownerActorDigest: string;
   current: string;
@@ -62,12 +63,14 @@ function harness(): Harness {
   const actorSecret = ensureTelegramPlatformActorSecret(secrets);
   const ownerActorDigest = actorDigestFor(actorSecret, OWNER_ID);
   const state = {
+    ownerUserId: OWNER_ID as string | null,
     current: CONVERSATION_A,
     paired: ownerActorDigest as string | null,
     approvals: new Map<string, string>(),
     bound: null as string | null,
   };
   const authority: TelegramPairedRouteAuthority = {
+    ownerUserId: () => state.ownerUserId,
     activePairingActorDigest: () => state.paired,
     resolveActiveApproval: (actorDigest, conversationDigest) => {
       if (state.paired === null || actorDigest !== state.paired) return null;
@@ -87,6 +90,8 @@ function harness(): Harness {
   });
   return {
     runtime,
+    get ownerUserId() { return state.ownerUserId; },
+    set ownerUserId(value: string | null) { state.ownerUserId = value; },
     ownerActorDigest,
     get current() { return state.current; },
     set current(value: string) { state.current = value; },
@@ -111,6 +116,20 @@ function revokeShare(h: Harness): void {
 }
 
 describe("createTelegramPairedPlatformRuntime", () => {
+  it.each([null, STRANGER_ID])("revokes already-bound authority when the registered owner changes to %s", async (ownerUserId) => {
+    const h = harness();
+    approve(h, CONVERSATION_A, "scope-a");
+    const authorization = await h.runtime.authorize(envelope());
+    expect(authorization).not.toBeNull();
+    const route = h.runtime.routeForEnvelope(envelope())!;
+    expect(authorization!.bridgeGuard.isCurrent(authorization!.bridgeBinding)).toBe(true);
+    h.ownerUserId = ownerUserId;
+    expect(h.runtime.routeForEnvelope(envelope())).toBeNull();
+    expect(h.runtime.authorize(envelope())).toBeNull();
+    expect(h.runtime.isRouteCurrent(route)).toBe(false);
+    expect(authorization!.bridgeGuard.isCurrent(authorization!.bridgeBinding)).toBe(false);
+  });
+
   it("admits nobody until an approval exists, and never a stranger", () => {
     const h = harness();
 
@@ -237,6 +256,7 @@ describe("createTelegramPairedPlatformRuntime", () => {
   it("fails closed when the authority throws or the conversation is unreadable", () => {
     const secrets = new MemorySecretStore();
     const throwing: TelegramPairedRouteAuthority = {
+    ownerUserId: () => OWNER_ID,
       activePairingActorDigest: () => { throw new Error("store unavailable"); },
       resolveActiveApproval: () => { throw new Error("store unavailable"); },
       resolveBoundConversation: () => { throw new Error("store unavailable"); },
@@ -255,6 +275,7 @@ describe("createTelegramPairedPlatformRuntime", () => {
 
   it("rejects an unusable configuration", () => {
     const authority: TelegramPairedRouteAuthority = {
+    ownerUserId: () => OWNER_ID,
       activePairingActorDigest: () => null,
       resolveActiveApproval: () => null,
       resolveBoundConversation: () => null,

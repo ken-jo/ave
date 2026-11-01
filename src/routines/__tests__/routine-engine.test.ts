@@ -4,6 +4,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
 import { RoutineEngine } from "../routine-engine.js";
+import { bindRemoteControllerToSession, isRemoteControllerAuthorityCurrent } from "../../shared/chat-origin.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
 function makeLoop(opts: { text?: string; throws?: boolean } = {}) {
   return {
@@ -19,6 +21,39 @@ function makeLoop(opts: { text?: string; throws?: boolean } = {}) {
 }
 
 describe("RoutineEngine.runRoutine", () => {
+  it.each([false, true])("isolates delegated routine work from controller revocation (remote=%s)", async (remote) => {
+    let current = true;
+    const authority = remote ? bindRemoteControllerToSession({
+      kind: "tailnet-controller", actorId: "tailnet:routine-test",
+      pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current },
+    }, "parent-session") : undefined;
+    const floor = { code: "other-principal" as const, reason: "External guidance" };
+    const policy = { allowExternalHooks: false, headless: true, ownerUnattended: true, floor, remoteControllerAuthority: authority };
+    const observe = () => {
+      const delegated = turnExtensionPolicyContext.getStore();
+      expect(delegated).toMatchObject({ allowExternalHooks: false, headless: true, ownerUnattended: true, floor });
+      expect(delegated?.remoteControllerAuthority).toBeUndefined();
+      expect(isRemoteControllerAuthorityCurrent(delegated?.remoteControllerAuthority)).toBe(true);
+    };
+    const loop = makeLoop();
+    loop.runTurn.mockImplementation(async () => {
+      observe();
+      current = false;
+      await Promise.resolve();
+      observe();
+      if (authority) expect(isRemoteControllerAuthorityCurrent(authority)).toBe(false);
+      return { text: "<summary>done</summary>", toolCalls: [], route: "llm" };
+    });
+    loop.cleanupSession.mockImplementation(async () => { observe(); });
+    const engine = new RoutineEngine({ createConversationLoop: () => { observe(); return loop as never; } });
+    await turnExtensionPolicyContext.run(policy, async () => {
+      expect(await engine.runRoutine({ id: "delegation", trigger: "schedule", prePrompt: "run" })).toMatchObject({ summary: "done" });
+      expect(turnExtensionPolicyContext.getStore()).toBe(policy);
+    });
+    expect(loop.runTurn).toHaveBeenCalledWith("run", undefined, undefined, { inputOrigin: "plugin-emitted" });
+  });
+
   it("returns RoutineResult with correct routineId, trigger, and generatedAt", async () => {
     const loop = makeLoop({ text: "완료" });
     const engine = new RoutineEngine({ createConversationLoop: () => loop as any });

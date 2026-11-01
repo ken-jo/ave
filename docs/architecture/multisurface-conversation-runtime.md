@@ -50,16 +50,16 @@ AVE_TAILNET_OBSERVER_AUTHORIZATION=tailnet-identity
 # ...or the advanced boundary:
 # AVE_TAILNET_OBSERVER_AUTHORIZATION=app-capability:<owned-domain>/cap/ave-conversation
 AVE_TAILNET_OBSERVER_PORT=46173   # optional; fixed nonzero port
-AVE_TAILNET_CONTROLLER=1          # optional; default OFF
+AVE_TAILNET_CONTROLLER=1          # optional; default OFF; requires paired sharing
 AVE_TAILNET_PAIRED_SHARING=1      # required for owner pairing/share and Web
 AVE_TAILNET_WEB=1                 # optional same-origin browser adapter
 AVE_TAILNET_WEB_ORIGIN=https://<machine>.<tailnet>.ts.net
 ~~~
 
+`AVE_TAILNET_CONTROLLER=1` requires `AVE_TAILNET_PAIRED_SHARING=1`; a controller configuration without paired sharing fails startup with `tailnet-controller-requires-paired-sharing`.
+
 The renderer cannot set these values. The authorization boundary is an explicit
-choice with no implicit default: `tailnet-identity` accepts any human identity
-Serve vouches for and leaves observe-versus-control to the Ave share
-permission, while `app-capability` additionally requires a capability key
+choice with no implicit default: `tailnet-identity` requires the authenticated peer login supplied by Serve to match the local node owner before observe-versus-control share permissions apply, while `app-capability` additionally requires a capability key
 matching an owned Tailscale grant and Serve's accepted app-capability key. The
 app never changes Tailscale ACLs or configures Serve automatically. The
 app-capability boundary requires Tailscale **1.92 or later**, which supports
@@ -114,26 +114,9 @@ rather than risk starting a second model turn. An unreadable or
 capacity-exhausted store returns `503`. Its result appears through the safe
 timeline.
 
-The controller is a request surface, not a reusable tool capability. **Every
-ToolExecutor invocation, including a declared read, requires an exact local
-`allow-once` decision.** The remote client cannot approve it, grant a session
-or durable permission, reuse local approval memory, or inherit global
-`allow`/reviewer auto-approval. P1 rejects meta operations and explicitly
-blocks shell/background access (`bash`, `powershell`, and shell-session reads),
-routine scheduling, and tool/instruction expansion (`request_plugin`,
-`tool_search`, `skill_load`). This keeps a remote turn bounded to the current
-local user-approved action rather than allowing it to create later work or
-expand its own capability surface.
+An authenticated controller must match the local node owner's current account and hold a live session-bound pairing/share. Only then does it enter the same tool rules, remembered grants, mode and reviewer as the local user. Missing, mismatched, tagged or unavailable local identity denies admission. Unverifiable local identity suspends stored bindings without persisting a revocation; only a confirmed local-owner change persistently revokes non-matching pairings. A foreign requester mismatch never revokes the owner's own pairing. Identity probes are asynchronous, rate-limited before execution and shared within one request; streaming deltas do not launch them. The [owner decision tree](permission-decision-tree.md) owns this sequence and the independent lifecycle of delegated work.
 
-The host mints the distinct `tailnet-surface` origin and carries its immutable
-controller authority separately; a staged-looking envelope in controller input
-remains plain text, never a provenance upgrade. Before a local tool decision,
-the controller turn dispatches no external extension hooks at all: lifecycle,
-prompt, permission, pre-tool, post-tool, and in-process hook callbacks are
-all suppressed by a turn-scoped host policy. Ordinary host-owned conversation
-persistence, audit, and cleanup still run; only owner-configured extension
-code is excluded. P1-excluded tools and all meta operations are denied before
-a path-policy prompt can create a directory grant.
+The host retains the distinct `tailnet-surface` transcript origin and carries controller authority separately. Local and remote intake reject the same mismatched staged envelopes. Ordinary controller input gains user-equivalent intent only after owner identity and session binding pass; attachments, explicit pasted content and genuine other-principal guidance retain their taint. Hooks use the ordinary policy, and controller revocation remains effective at approval and execution boundaries.
 
 Native `/tailnet/v1/*` and the pairing claim remain CLI/adapter contracts. They
 reject an `Origin` header or browser Fetch Metadata context (`Sec-Fetch-Site`,
@@ -151,7 +134,7 @@ page is the local-owner control plane. The owner can issue a one-time invitation
 activate a claimed pairing, create an observe/control share for only the current
 main conversation, and revoke either share or pairing. A claimed invitation is
 pending only: it grants no observer or controller access until the owner
-activates it and creates a scoped share.
+activates it and creates a scoped share. Claiming, activation and share creation require the peer actor to match the current locally verified owner; identity lookup failure refuses the operation.
 
 The durable pairing store retains only a code digest, opaque HMAC actor id,
 private conversation digest, opaque IDs, expiration, and revoke epochs. It never
@@ -221,7 +204,7 @@ the stream. A healthy Web stream reaching its normal transport lifetime emits
 `reconnect-required`, which causes a fresh snapshot and authorization check;
 the page serializes event-driven snapshot refreshes to at most one per second.
 Browser control therefore reuses the same `tailnet-surface` provenance, receipt
-store, turn lease, and local-only tool approval policy as native control.
+store, turn lease, and owner-identity permission policy as native control.
 
 ### P3 paired turn control and bounded image staging
 
@@ -736,10 +719,7 @@ and OS-account isolation as well.
 | `group:ave-controllers` | observer access plus narrow native `conversation.send` |
 | no Tailnet group alone | pairing, policy administration, secret read, plugin publish, unattended tool approval |
 
-Remote `conversation.send` never implies permission to run a tool. It retains
-an exact local-only `allow-once` ApprovalGate decision for every tool call,
-the audit trail, workspace restriction, and a distinct origin such as
-`tailnet-surface`; it must never masquerade as `user-keyboard` or `local-api`.
+Remote `conversation.send` never grants a tool capability by itself. The host requires a current owner-identity match and bound authority, then applies the [permission decision tree](permission-decision-tree.md), audit and workspace checks. Transcript attribution remains `tailnet-surface`; only the verified host-owned intent and permission evidence receive user-equivalent treatment.
 
 The remote projector defaults to excluding raw tool arguments/results, local
 paths, attachment bytes, memory source text, reasoning/private metadata,

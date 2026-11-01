@@ -21,6 +21,7 @@ vi.mock("electron", () => ({
 
 const MUTATION_CHANNELS = [
   CHANNELS.telegramConnection.connect,
+  CHANNELS.telegramConnection.setOwnerUserId,
   CHANNELS.telegramConnection.disconnect,
   CHANNELS.telegramConnection.pause,
   CHANNELS.telegramConnection.resume,
@@ -34,6 +35,7 @@ const ALL_CHANNELS = [CHANNELS.telegramConnection.snapshot, ...MUTATION_CHANNELS
 
 const VALID_PAYLOAD: Readonly<Record<string, Record<string, unknown>>> = Object.freeze({
   [CHANNELS.telegramConnection.connect]: { intent, botToken: BOT_TOKEN },
+  [CHANNELS.telegramConnection.setOwnerUserId]: { intent, ownerUserId: "123456789" },
   [CHANNELS.telegramConnection.disconnect]: { intent },
   [CHANNELS.telegramConnection.pause]: { intent },
   [CHANNELS.telegramConnection.resume]: { intent },
@@ -45,6 +47,7 @@ const VALID_PAYLOAD: Readonly<Record<string, Record<string, unknown>>> = Object.
 
 const INVALID_PAYLOAD: Readonly<Record<string, Record<string, unknown>>> = Object.freeze({
   [CHANNELS.telegramConnection.connect]: { intent, botToken: "not-a-bot-token" },
+  [CHANNELS.telegramConnection.setOwnerUserId]: { intent, ownerUserId: "@other_account" },
   [CHANNELS.telegramConnection.disconnect]: { intent, extra: true },
   [CHANNELS.telegramConnection.pause]: { intent, extra: true },
   [CHANNELS.telegramConnection.resume]: { intent, extra: true },
@@ -62,6 +65,7 @@ function serviceFixture() {
       snapshot: {
         state: "active",
         botUsername: "ave_owner_bot",
+        ownerUserId: "123456789",
         pairing: { id: PAIRING_ID, accountFingerprint: "abcdef123456" },
         approval: { id: APPROVAL_ID, expiresAt: 2_000, matchesCurrentConversation: true },
         pendingCode: null,
@@ -69,6 +73,7 @@ function serviceFixture() {
       },
     })),
     connect: vi.fn(async () => ({ ok: true })),
+    setOwnerUserId: vi.fn(async () => ({ ok: true })),
     disconnect: vi.fn(async () => ({ ok: true })),
     pause: vi.fn(async () => ({ ok: true })),
     resume: vi.fn(async () => ({ ok: true })),
@@ -220,6 +225,7 @@ describe("Telegram connection owner IPC boundary", () => {
     }
 
     expect(f.service.connect).toHaveBeenCalledWith(BOT_TOKEN);
+    expect(f.service.setOwnerUserId).toHaveBeenCalledWith("123456789");
     expect(f.service.revokePairing).toHaveBeenCalledWith(PAIRING_ID);
     expect(f.service.revokeApproval).toHaveBeenCalledWith(APPROVAL_ID);
     expect(f.service.approveCurrentConversation).toHaveBeenCalledWith("8h");
@@ -235,6 +241,7 @@ describe("Telegram connection owner IPC boundary", () => {
       snapshot: {
         state: "active",
         botUsername: "ave_owner_bot",
+        ownerUserId: "123456789",
         pairing: null,
         approval: null,
         pendingCode: null,

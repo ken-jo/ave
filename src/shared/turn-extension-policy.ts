@@ -33,8 +33,7 @@ export function resolveTurnExtensionPolicy(
     ...context,
     headless,
     remoteControllerAuthority: authority,
-    // Remote turns cannot implicitly execute owner scripts or extension hooks.
-    allowExternalHooks: authority === undefined,
+    allowExternalHooks: true,
   });
 }
 

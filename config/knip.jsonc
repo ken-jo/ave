@@ -74,6 +74,8 @@
         "tools/mxc-probes/stdio-lifetime.mjs",
         "tools/mxc-probes/kernel-objects.mjs",
         "tools/mxc-probes/shell-ui.mjs",
+        "tools/mxc-probes/ancestor-exposure.mjs",
+        "tools/mxc-probes/egress-policy.mjs",
         // Plugin modules the host-protocol golden harness hands the child runtime
         // BY PATH, which imports them through `importPluginFactory` as it imports
         // an installed plugin's entry — nothing names them in an import.

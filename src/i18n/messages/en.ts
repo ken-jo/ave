@@ -385,6 +385,7 @@ export const en = {
   "pluginConfigTab.confinementMacosSandbox": "macOS sandbox",
   "pluginConfigTab.confinementLinuxBubblewrap": "Linux sandbox (bubblewrap)",
   "pluginConfigTab.confinementWindowsSrt": "Windows sandbox",
+  "pluginConfigTab.confinementWindowsMxc": "Windows MXC container",
   "pluginConfigTab.confinementUnconfined": "no OS sandbox",
   "pluginConfigTab.confinementNotSpawned": "process not started",
   "pluginConfigTab.lastUpdateRefused": "Last update refused: {message}",

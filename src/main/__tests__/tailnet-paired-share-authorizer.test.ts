@@ -27,6 +27,7 @@ describe("TailnetPairedShareAuthorizer", () => {
     expect(secrets.read(TAILNET_PAIRED_SHARE_ACTOR_SECRET_NAME, 128)).toBe(first);
 
     const authorizer = createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store: inertStore(),
       actorSecret: first,
       getCurrentConversationId: () => "conversation-a",
@@ -38,7 +39,7 @@ describe("TailnetPairedShareAuthorizer", () => {
     expect(authorizer.actorIdFor("other@example.test")).not.toBe(actor);
   });
 
-  it("requires a current scoped grant and rechecks it at the final boundary", () => {
+  it("requires a current scoped grant and rechecks it at the final boundary", async () => {
     const current = { conversationId: "conversation-a" };
     let authoritative = true;
     let expectedActor = "";
@@ -48,7 +49,7 @@ describe("TailnetPairedShareAuthorizer", () => {
         if (actorId !== expectedActor || conversationId !== "conversation-a" || required !== "control") {
           return null;
         }
-        return { actorId, pairing: BINDING, permission: "control" };
+        return { actorId, pairing: BINDING, permission: "control", expiresAt: Date.now() + 60_000 };
       },
       isAuthorityCurrent(authority, conversationId, required): boolean {
         return authoritative
@@ -58,13 +59,14 @@ describe("TailnetPairedShareAuthorizer", () => {
       },
     };
     const authorizer = createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store,
       actorSecret: "a".repeat(43),
       getCurrentConversationId: () => current.conversationId,
     });
     expectedActor = authorizer.actorIdFor("owner@example.test")!;
 
-    const grant = authorizer.authorize("owner@example.test", "conversation-a", "control");
+    const grant = authorizer.authorize("owner@example.test", "conversation-a", "control", await authorizer.probeOwnerIdentity());
     expect(grant).not.toBeNull();
     expect(grant?.pairedShareGuard.isCurrent(grant.pairedShare!)).toBe(true);
 
@@ -76,21 +78,23 @@ describe("TailnetPairedShareAuthorizer", () => {
     expect(grant?.pairedShareGuard.isCurrent(grant.pairedShare!)).toBe(false);
   });
 
-  it("fails closed for malformed login, bad secret, and an unavailable grant", () => {
+  it("fails closed for malformed login, bad secret, and an unavailable grant", async () => {
     expect(() => createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store: inertStore(),
       actorSecret: "not-a-valid-secret",
       getCurrentConversationId: () => "conversation-a",
     })).toThrow("tailnet-paired-share-authorizer-invalid");
 
     const authorizer = createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store: inertStore(),
       actorSecret: "b".repeat(43),
       getCurrentConversationId: () => "conversation-a",
     });
     expect(authorizer.actorIdFor("")).toBeNull();
     expect(authorizer.actorIdFor("hello\nworld")).toBeNull();
-    expect(authorizer.authorize("owner@example.test", "conversation-a", "observe")).toBeNull();
+    expect(authorizer.authorize("owner@example.test", "conversation-a", "observe", await authorizer.probeOwnerIdentity())).toBeNull();
   });
 
   it("rejects a corrupted persisted actor secret rather than silently rotating it", () => {

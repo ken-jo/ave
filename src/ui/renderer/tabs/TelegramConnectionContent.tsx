@@ -8,6 +8,7 @@ import {
 } from "../../../components/ui/native-select.js";
 import {
   TELEGRAM_APPROVAL_DURATION_PRESETS,
+  isTelegramOwnerUserId,
   type TelegramApprovalDurationPreset,
   type TelegramConnectionMutationResult,
   type TelegramConnectionSnapshot,
@@ -87,6 +88,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [botToken, setBotToken] = useState("");
+  const [ownerUserId, setOwnerUserId] = useState("");
   const [duration, setDuration] = useState<TelegramApprovalDurationPreset>("8h");
   const [issuedCode, setIssuedCode] = useState<TelegramCreatedPairingCode | null>(null);
   const { copied, copy: copyToClipboard, reset: resetCopied } = useCopyFlash();
@@ -118,6 +120,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
 
   const run = useCallback(async (
     operation: () => Promise<TelegramConnectionMutationResult>,
+    complete = true,
   ) => {
     setBusy(true);
     setFeedback(null);
@@ -129,7 +132,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
       }
       setFeedback({ tone: "success", text: t("telegramConnection.operationSucceeded") });
       await refresh();
-      onCompleted?.();
+      if (complete) onCompleted?.();
       return true;
     } catch {
       setFeedback({ tone: "error", text: t("telegramConnection.operationFailed") });
@@ -170,6 +173,8 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
   const copyCode = useCallback(() => {
     if (issuedCode) copyToClipboard(issuedCode.code);
   }, [copyToClipboard, issuedCode]);
+
+  useEffect(() => { setOwnerUserId(snapshot?.ownerUserId ?? ""); }, [snapshot?.ownerUserId]);
 
   const state = snapshot?.state ?? null;
   const readOnly = state === "unsupported";
@@ -237,6 +242,23 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
               {stateLabel(snapshot, t)}
               {snapshot.botUsername === null ? "" : ` · ${t("telegramConnection.botLabel")} @${snapshot.botUsername}`}
             </p>
+
+            {!readOnly ? (
+              <div className="space-y-2 rounded-md border border-border p-3" data-testid="telegram-connection-owner-form">
+                <p className="text-xs text-muted-foreground">{t("telegramConnection.ownerOnlyBody")}</p>
+                {snapshot.ownerUserId === null ? <p role="status" className="text-xs text-destructive" data-testid="telegram-connection-owner-required">{t("telegramConnection.ownerRequiredBody")}</p> : null}
+                <label className="grid gap-1 text-xs font-medium">
+                  <span>{t("telegramConnection.ownerUserIdLabel")}</span>
+                  <Input value={ownerUserId} inputMode="numeric" autoComplete="off" spellCheck={false}
+                    disabled={busy} onChange={(event) => setOwnerUserId(event.target.value)} data-testid="telegram-connection-owner-user-id" />
+                </label>
+                <p className="text-[11px] text-muted-foreground">{t("telegramConnection.ownerUserIdHelp")}</p>
+                <Button size="sm" disabled={busy || !isTelegramOwnerUserId(ownerUserId) || ownerUserId === snapshot.ownerUserId}
+                  onClick={() => void run(() => api.telegramConnection.setOwnerUserId(ownerUserId), false)} data-testid="telegram-connection-save-owner">
+                  {t("telegramConnection.saveOwnerUserId")}
+                </Button>
+              </div>
+            ) : null}
 
             {snapshot.lastErrorCode !== null ? (
               <p className="text-xs text-destructive" data-testid="telegram-connection-last-error">
@@ -311,7 +333,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
               </div>
             ) : null}
 
-            {canPair && !readOnly ? (
+            {canPair && !readOnly && snapshot.ownerUserId !== null ? (
               <div className="space-y-2">
                 <p className="text-[11px] text-muted-foreground">{t("telegramConnection.pairingIsNotAccess")}</p>
                 <Button size="sm" disabled={busy} onClick={() => void createPairingCode()} data-testid="telegram-connection-create-pairing-code">
@@ -360,7 +382,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
               </p>
             ) : null}
 
-            {canApprove && !readOnly ? (
+            {canApprove && !readOnly && snapshot.ownerUserId !== null ? (
               <div className="flex flex-wrap items-end gap-3">
                 <label className="grid gap-1 text-xs font-medium">
                   <span>{t("telegramConnection.approvalDurationLabel")}</span>

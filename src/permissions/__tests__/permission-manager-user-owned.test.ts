@@ -73,7 +73,8 @@ it("requires live browser identity even after a prior allow choice", () => {
 
 it.each(["allow", "auto", "ask"] as const)("uses the same choice for a genuine host terminal: %s", async choice => {
   manager.setMode("allow");
-  manager.setUserOwnedSurfaceChoice("session", "host-terminal", choice);
+  manager.setUserOwnedSurfaceChoice("session", "browser", choice);
+  expect(manager.getUserOwnedSurfaceChoice("session", "host-terminal")).toBe(choice);
   await runWithHostTerminalTurn({ sessionId: "session", turnId: "turn" }, async () => {
     const result = manager.checkDetailed("terminal_run", "builtin", "shell", undefined, { sessionId: "session", trustOrigin: "llm-tool-arg", hostTerminalTurn: { kind: "terminal-command", lane: "manual", commandSha256: "a".repeat(64), tabId: "terminal", terminalSessionId: "pty", sessionId: "session", turnId: "turn", shell: "zsh", cwd: directory, physicalCwd: directory, cwdDevice: "1", cwdInode: "2", controlGeneration: 1, cwdForMatch: directory } });
     expect(result.decision).toBe(choice === "allow" ? "allow" : "ask");

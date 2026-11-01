@@ -11,6 +11,7 @@ import { createLogger } from "../lib/logger.js";
 import type { RoutineScope } from "../shared/routines-types.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { errorMessage } from "../shared/error-message.js";
+import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 const log = createLogger("routine-engine");
 
 export interface Routine {
@@ -218,6 +219,16 @@ export class RoutineEngine {
   }
 
   async runRoutine(input: Routine): Promise<RoutineResult> {
+    // A routine has its own session; controller binding and revocation belong only to the originating turn.
+    const inherited = turnExtensionPolicyContext.getStore();
+    return turnExtensionPolicyContext.run(Object.freeze({
+      ...inherited,
+      allowExternalHooks: inherited?.allowExternalHooks ?? true,
+      remoteControllerAuthority: undefined,
+    }), () => this.runRoutineSession(input));
+  }
+
+  private async runRoutineSession(input: Routine): Promise<RoutineResult> {
     const generatedAt = new Date().toISOString();
     // Permission policy Layer 4 — normalize scope BEFORE building the loop so the
     // loop never observes `inherit`. `inherit` snapshots the active

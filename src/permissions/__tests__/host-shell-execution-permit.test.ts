@@ -1,3 +1,4 @@
+import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -378,6 +379,51 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: pm, binding,
     })).toBeUndefined();
+  });
+
+  it("refreshes authority before joining the policy queue, so a slow probe never holds other policy writers", async () => {
+    const binding = hostBinding();
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding });
+    const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
+    let release!: () => void;
+    const waiting = withShellPolicyMutation(() => new Promise<void>(resolve => { release = resolve; }));
+    try {
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      const prepare = vi.fn(async () => { throw new Error("remote-controller-revoked"); });
+      const handoff = vi.fn(() => true);
+      // The refusal settles while the queue is still held: the probe ran outside it.
+      await expect(withHostShellExecutionHandoff(authority, handoff, prepare)).rejects.toThrow("remote-controller-revoked");
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(handoff).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await waiting;
+    }
+  });
+
+  it("runs the synchronous handoff fence after the queue wait that follows a successful refresh", async () => {
+    const binding = hostBinding();
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding });
+    const authority = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))!;
+    let release!: () => void;
+    const waiting = withShellPolicyMutation(() => new Promise<void>(resolve => { release = resolve; }));
+    let current = true;
+    const prepare = vi.fn(async () => undefined);
+    const handoff = vi.fn(() => { if (!current) throw new Error("remote-controller-revoked"); return true; });
+    let pending: Promise<boolean | undefined> | undefined;
+    try {
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      pending = withHostShellExecutionHandoff(authority, handoff, prepare);
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+      // Revocation observed by the host while the caller waits in the queue.
+      current = false;
+      expect(handoff).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await waiting;
+    }
+    await expect(pending).rejects.toThrow("remote-controller-revoked");
+    expect(handoff).toHaveBeenCalledOnce();
   });
 
   it("only grants a consumed spawn authority once and rejects a structural copy", async () => {

@@ -153,7 +153,7 @@ describe("packaged probe entry", () => {
   it("bundles an explicitly selected entry that invokes the public owned-process primitive", async () => {
     const source = readFileSync("tools/mxc-probes/packaged-main.ts", "utf8");
     expect(source).toContain('from "../../src/permissions/mxc-extension-process.js"');
-    expect(source).toContain("await spawnMxcExtensionProcess(request,");
+    expect(source).toContain("await spawnMxcExtensionProcessForDiagnostics(request,");
     expect(source).not.toContain("ForTest");
     expect(readFileSync("scripts/build-main-esbuild.mjs", "utf8")).toContain("...mxcVerificationEntries(repoRoot)");
     // @ts-expect-error standalone build utilities do not emit declarations

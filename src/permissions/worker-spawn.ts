@@ -160,7 +160,7 @@ function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> 
 
 // Spawn a long-lived plugin worker, host-mediated and (gate ON) ASRT-wrapped with a bind-mounted UDS control channel. See the module header for the model. @returns a SpawnedWorker. `socketPath` is non-null only on the wrapped mac/linux UDS path; null covers gate-OFF plain TCP and the Windows ASRT wrapped path, which keeps TCP control while filesystem/network effects run under srt-win.
 export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker> {
-  assertExtensionStartAllowed();
+  assertExtensionStartAllowed({ holder: "worker" });
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");
   const args = [...(spec.args ?? [])];

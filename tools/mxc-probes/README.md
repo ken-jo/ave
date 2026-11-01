@@ -120,7 +120,7 @@ The generator deterministically reads installed files, semantic manifest fields 
 
 This focused app checks SDK packaging and does not compile the unrelated native helpers, run the full application hook's other asset checks, create an installer or execute Windows code. The ordinary `dist:win` entry still requires a native Windows host for its helper build; cross-packaging here does not claim a complete application installer or native readiness.
 
-The verification build invokes the real public `spawnMxcExtensionProcess` entry and packaged supervisor. Diagnostic code is omitted from normal release builds; explicitly enable it only for this local verification build. Use a **non-elevated, standard-user Windows x64 interactive desktop session** in the checkout used to build the app. The driver rejects session 0 and elevated tokens; it does not install or prepare the host.
+The verification build invokes the real packaged supervisor through the named diagnostic-only entry `spawnMxcExtensionProcessForDiagnostics`, which measures the owned-process primitive below holder admission; production code must use `spawnMxcConfinedChild`, whose admission the production `spawnMxcExtensionProcess` requires. Diagnostic code is omitted from normal release builds; explicitly enable it only for this local verification build. Use a **non-elevated, standard-user Windows x64 interactive desktop session** in the checkout used to build the app. The driver rejects session 0 and elevated tokens; it does not install or prepare the host.
 
 The existing unsigned directory build selects x64 on an x64 host, builds native helpers, and assembles `release\win-unpacked\Ave.exe`. Neither `--dir` nor the probe installs the app.
 
@@ -144,7 +144,7 @@ try {
 $ProbeExit
 ```
 
-The app used as driver must be the same locally built payload being measured. Its Node mode runs the standalone controller, which verifies the packaged SDK and runtime bytes before loading the verified observer addon. The diagnostic main uses that untouched original package for its independent pin inspector, including in the planted-DLL case; the public primitive and its supervisor still verify only the mutable copied package. This keeps the negative control on the real public spawn path. The observer has **no outer lifetime job**, so it cannot mask the main-death EOF test. The controller copies the app into one fresh `ave-mxc-packaged-*` OS-temp directory and refuses redirected source files before copying. Source validation, copying, retained-size walks and recursive cleanup temporarily set `process.noAsar = true`, treating `app.asar` as one ordinary file; `finally` restores the prior setting before archive entry loading. All measured processes execute from that copy. The planted DLL is added only to the copy's unpacked SDK bin directory. The real package/install and repository dependencies are read-only inputs.
+The app used as driver must be the same locally built payload being measured. Its Node mode runs the standalone controller, which verifies the packaged SDK and runtime bytes before loading the verified observer addon. The diagnostic main uses that untouched original package for its independent pin inspector, including in the planted-DLL case; the public primitive and its supervisor still verify only the mutable copied package. This keeps the negative control on the real public spawn path. The observer has **no outer lifetime job**, so it cannot mask the main-death EOF test. The controller copies the app into one fresh `ave-mxc-packaged-*` OS-temp directory and refuses redirected source files before copying. Before its verified recursive removal it walks the run tree with `lstat` and refuses any link or junction there, retaining the tree as inconclusive evidence instead, so removal never traverses a redirect planted by a measured process. Source validation, copying, retained-size walks and recursive cleanup temporarily set `process.noAsar = true`, treating `app.asar` as one ordinary file; `finally` restores the prior setting before archive entry loading. All measured processes execute from that copy. The planted DLL is added only to the copy's unpacked SDK bin directory. The real package/install and repository dependencies are read-only inputs.
 
 The filesystem audit also covers the controller's exact executable/journal/DLL reads, observer module-path resolution, fixture journal writes, public spawn entry and supervisor bootstrap. Production integrity walks are confined to `app.asar.unpacked/node_modules`; runtime verification reads the exact `resources/mxc/<arch>/supervisor-runtime-pins.json` and enumerates only the executable's immediate directory. None recursively walks the resources archive. The supervisor and diagnostic main intentionally load their entry from `app.asar` with archive handling enabled. Archive handling is restored before either bundled entry loads.
 
@@ -176,4 +176,50 @@ $Evidence.spawned
 $Evidence.retainedTempRemovalSafe
 # Run only when nothing spawned, or after confirming all recorded processes are dead.
 Remove-Item -LiteralPath $Evidence.temp -Recurse
+```
+
+## Ancestor query and name-exposure acceptance
+
+Run this additional diagnostic from a standard-user Windows x64 interactive
+session after staging the pinned SDK and locked runtime. The runtime must meet
+native stdio requirements; no host installation or permission changes are made.
+From the checkout root in PowerShell:
+
+```powershell
+$Sdk = (Resolve-Path '.\node_modules\@microsoft\mxc-sdk').Path
+$Runtime = (Resolve-Path '.\node_modules\electron\dist\electron.exe').Path
+$Driver = (Resolve-Path '.\tools\mxc-probes\ancestor-exposure.mjs').Path
+$env:ELECTRON_RUN_AS_NODE = '1'
+try {
+  & $Runtime $Driver --sdk-root $Sdk --runtime $Runtime |
+    Tee-Object -FilePath '.\mxc-ancestor-exposure.jsonl'
+  if ($LASTEXITCODE -ne 0) { throw 'Ancestor exposure acceptance incomplete; retain observations' }
+} finally { $env:ELECTRON_RUN_AS_NODE = $null }
+```
+
+`measured` requires a positive host control, successful UI-enabled script entry,
+query-only ancestor grants on all involved volumes, identical read-only security
+descriptor snapshots, visible synthetic profile sibling names, and denied
+sibling/descendant file contents. The fixture records whether enumeration cascades
+into an ungranted sibling's nested directory; either visibility or an explicit
+refusal is an observation, never a promise that names are private. Root content
+grants are refused in policy; the fixture does not read arbitrary root files.
+The synthetic profile and markers are created only below this run's exact owned
+temp directory. Actual profile directories may still appear in the ancestor list
+when the OS temp tree is under the user profile. Descriptor snapshots cover the
+query list, not every object the OS manages. This diagnostic uses the pinned SDK
+request shape directly; it does not establish packaged holder activation.
+
+There are no ACL, registry, account, service or firewall mutations in the toolkit.
+SDK-managed container effects remain as described above. The probe starts one
+bounded host control and one bounded container, retains its exact temp tree for
+inspection, and never deletes it automatically. Use the existing exact-path
+cleanup procedure after process termination has been verified. A session-0,
+unsupported-enumeration, security-snapshot or baseline failure cannot pass.
+
+Portable harness checks:
+
+```sh
+node --test tools/mxc-probes/ancestor-exposure.test.mjs tools/mxc-probes/filesystem-policy.test.mjs tools/mxc-probes/probe-common.test.mjs
+node --check tools/mxc-probes/sdk-supervisor.mjs
 ```

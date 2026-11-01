@@ -484,7 +484,7 @@ describe("browser tools", () => {
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
     expect(cards).toHaveLength(1);
     expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "browser")).toBe("allow");
-    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "host-terminal")).toBe("ask");
+    expect(manager.getUserOwnedSurfaceChoice(HOST_SESSION, "host-terminal")).toBe("allow");
     expect(manager.getUserOwnedSurfaceChoice(OTHER_WINDOW_SESSION, "browser")).toBe("ask");
     expect(browserOrigin("https://A.example/x")).toBe("https://a.example:443");
   });

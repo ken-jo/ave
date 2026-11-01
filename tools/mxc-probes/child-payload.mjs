@@ -1,4 +1,5 @@
 import net from "node:net";
+import { readdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 const [mode, budgetText] = process.argv.slice(2);
@@ -6,7 +7,20 @@ const budget = Number(budgetText);
 const emit = (data) => process.stdout.write(JSON.stringify(data) + "\n");
 if (mode === "start") {
   emit({ marker: "runtime-started", pid: process.pid, node: process.versions.node, electron: process.versions.electron });
+} else if (mode === "ancestor-exposure") {
+  const fixture = JSON.parse(process.argv[4]);
+  const observations = {};
+  for (const [label, directory] of Object.entries(fixture.directories)) {
+    try { observations[label] = { names: await readdir(directory) }; }
+    catch (error) { observations[label] = { error: error.code }; }
+  }
+  for (const [label, file] of Object.entries(fixture.files)) {
+    try { observations[label] = { contents: await readFile(file, "utf8") }; }
+    catch (error) { observations[label] = { error: error.code }; }
+  }
+  emit({ marker: "ancestor-exposure", observations });
 } else if (mode === "loopback") {
+
   let client, timer, settled = false, data = "";
   const server = net.createServer((socket) => socket.end("probe-loopback"));
   const finish = (error) => {

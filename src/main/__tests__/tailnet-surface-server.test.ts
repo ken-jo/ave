@@ -1,3 +1,4 @@
+async function runGuardedOwnerOperation<T>(guard: () => void, operation: () => Promise<T>): Promise<T> { guard(); const result = await operation(); guard(); return result; }
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { createServer } from "node:net";
@@ -212,9 +213,9 @@ describe("Tailnet observer lifecycle", () => {
   it("uses one injected paired-sharing runtime for the listener and main lifecycle", async () => {
     const claimInvitation = vi.fn(async () => ({ expiresAt: 123_456 }));
     const pairedRuntime = {
-      store: { claimInvitation },
+      store: { claimInvitation, withOwnerIdentityGuard: runGuardedOwnerOperation },
       authorizer: {
-        actorIdFor: vi.fn(),
+        probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => "owner@example.test", ownerIdentityError: () => null, actorIdFor: vi.fn(),
         authorize: vi.fn(),
         subscribe: vi.fn(() => () => {}),
       },
@@ -236,7 +237,7 @@ describe("Tailnet observer lifecycle", () => {
     expect(getTailnetPairedSharingRuntime()).toBe(pairedRuntime);
     const serverOptions = f.startServer.mock.calls[0]?.[0] as {
       pairedSharing?: unknown;
-      pairing?: { claimInvitation?: (code: string, actorId: `tailnet:${string}`) => Promise<unknown> };
+      pairing?: { claimInvitation?: (code: string, actorId: `tailnet:${string}`, assertIdentity: () => void) => Promise<unknown> };
       web?: { origin?: string };
     };
     expect(serverOptions.pairedSharing).toBe(pairedRuntime.authorizer);
@@ -245,6 +246,7 @@ describe("Tailnet observer lifecycle", () => {
     await expect(serverOptions.pairing?.claimInvitation?.(
       "ave-pair-v1." + "a".repeat(43),
       ("tailnet:" + "b".repeat(64)) as `tailnet:${string}`,
+      () => {},
     )).resolves.toEqual({ expiresAt: 123_456 });
     expect(claimInvitation).toHaveBeenCalledOnce();
   });
@@ -263,8 +265,8 @@ describe("Tailnet observer lifecycle", () => {
       return { pairingId: pairing.id, expiresAt: 123_456 };
     });
     const pairedRuntime = {
-      store: { createInvitation, claimInvitation, currentPairing: () => pairing },
-      authorizer: { actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
+      store: { createInvitation, claimInvitation, currentPairing: () => pairing, withOwnerIdentityGuard: async <T>(guard: () => void, operation: () => Promise<T>): Promise<T> => { guard(); const result = await operation(); guard(); return result; } },
+      authorizer: { probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => "owner@example.test", ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
     } as unknown as TailnetPairedSharingRuntime;
     const f = options({
       AVE_TAILNET_OBSERVER: "1",
@@ -285,25 +287,25 @@ describe("Tailnet observer lifecycle", () => {
 
     const deviceStatus = (f.startServer.mock.calls[0]?.[0] as {
       pairing?: {
-        deviceStatus?: (login: string, actorId: `tailnet:${string}`) => Promise<unknown>;
+        deviceStatus?: (login: string, actorId: `tailnet:${string}`, assertIdentity: () => void) => Promise<unknown>;
       };
     }).pairing?.deviceStatus;
     expect(deviceStatus).toBeTypeOf("function");
 
     // The owner's own device pairs, but through the ordinary invitation: the pairing is pending and the desktop still has to activate it.
-    await expect(deviceStatus?.(OWNER_LOGIN, ACTOR))
+    await expect(deviceStatus?.(OWNER_LOGIN, ACTOR, () => {}))
       .resolves.toEqual({ pairing: "pending", ownDevice: true });
     expect(createInvitation).toHaveBeenCalledOnce();
     // The deadline stays on this side: what crossed the boundary is only that a pairing exists, and it is `pending` — the desktop still has to activate it.
     expect(pairing).toMatchObject({ state: "pending", expiresAt: 123_456 });
 
     // The waiting page reloads on a timer; re-entry must not spend a second invitation on a claim that the existing pairing would refuse.
-    await expect(deviceStatus?.(OWNER_LOGIN, ACTOR))
+    await expect(deviceStatus?.(OWNER_LOGIN, ACTOR, () => {}))
       .resolves.toEqual({ pairing: "pending", ownDevice: true });
     expect(createInvitation).toHaveBeenCalledOnce();
 
     // Another account on the same tailnet is not this desktop's device.
-    await expect(deviceStatus?.("guest@example.test", ACTOR))
+    await expect(deviceStatus?.("guest@example.test", ACTOR, () => {}))
       .resolves.toEqual({ pairing: "pending", ownDevice: false });
     expect(createInvitation).toHaveBeenCalledOnce();
   });
@@ -315,8 +317,9 @@ describe("Tailnet observer lifecycle", () => {
         createInvitation,
         claimInvitation: vi.fn(),
         currentPairing: () => null,
+        withOwnerIdentityGuard: runGuardedOwnerOperation,
       },
-      authorizer: { actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
+      authorizer: { probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => null, ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
     } as unknown as TailnetPairedSharingRuntime;
     const f = options({
       AVE_TAILNET_OBSERVER: "1",
@@ -335,12 +338,13 @@ describe("Tailnet observer lifecycle", () => {
 
     const deviceStatus = (f.startServer.mock.calls[0]?.[0] as {
       pairing?: {
-        deviceStatus?: (login: string, actorId: `tailnet:${string}`) => Promise<unknown>;
+        deviceStatus?: (login: string, actorId: `tailnet:${string}`, assertIdentity: () => void) => Promise<unknown>;
       };
     }).pairing?.deviceStatus;
     await expect(deviceStatus?.(
       "owner@example.test",
       ("tailnet:" + "b".repeat(64)) as `tailnet:${string}`,
+      () => {},
     )).resolves.toEqual({ pairing: "none", ownDevice: false });
     expect(createInvitation).not.toHaveBeenCalled();
   });
@@ -896,6 +900,7 @@ function fakeStore(initial: readonly FakePairing[] = []) {
   const pairings = initial.map((entry) => ({ ...entry }));
   const store = {
     pairings,
+    withOwnerIdentityGuard: async <T>(guard: () => void, operation: () => Promise<T>): Promise<T> => { guard(); const result = await operation(); guard(); return result; },
     createInvitation: vi.fn(async () => ({
       id: "11111111-1111-4111-8111-111111111111",
       code: "ave-pair-v1." + "c".repeat(43),
@@ -939,7 +944,7 @@ function fakeRuntime(store: ReturnType<typeof fakeStore>, logins: Record<string,
   return {
     store,
     authorizer: {
-      actorIdFor: (login: string) => logins[login] ?? null,
+      probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: Object.keys(logins)[0] ?? null }), currentOwnerLogin: () => Object.keys(logins)[0] ?? null, ownerIdentityError: (login: string) => Object.keys(logins)[0] === login ? null : "tailnet-owner-identity-unavailable", actorIdFor: (login: string) => logins[login] ?? null,
       authorize: vi.fn(),
       subscribe: vi.fn(() => () => {}),
     },
@@ -963,6 +968,7 @@ async function deviceStatusFor(input: {
   probeLogin: string | null;
   auditLogger?: AuditLogger;
 }) {
+  input.runtime = { ...input.runtime, authorizer: { ...input.runtime.authorizer, currentOwnerLogin: () => input.probeLogin } };
   const f = options({
     AVE_TAILNET_OBSERVER: "1",
     AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
@@ -980,11 +986,11 @@ async function deviceStatusFor(input: {
   });
   const deviceStatus = (f.startServer.mock.calls[0]?.[0] as {
     pairing?: {
-      deviceStatus?: (login: string, actorId: TailnetShareActorId) => Promise<TailnetPairingDeviceStatus>;
+      deviceStatus?: (login: string, actorId: TailnetShareActorId, assertIdentity: () => void) => Promise<TailnetPairingDeviceStatus>;
     };
   }).pairing?.deviceStatus;
   if (deviceStatus === undefined) throw new Error("device-status-missing");
-  return deviceStatus;
+  return (login: string, actorId: TailnetShareActorId) => deviceStatus(login, actorId, () => {});
 }
 
 describe("own-device admission", () => {
@@ -1085,7 +1091,6 @@ describe("own-device admission", () => {
     await setTailnetOwnDeviceAdmission(true, {
       runtime: fakeRuntime(store),
       namespace,
-      probeEnvironment: async () => tailscaleEnvironment(OWNER_LOGIN),
       auditLogger: audit.logger,
     });
 
@@ -1101,10 +1106,9 @@ describe("own-device admission", () => {
     const store = fakeStore();
 
     await expect(setTailnetOwnDeviceAdmission(true, {
-      runtime: fakeRuntime(store),
+      runtime: fakeRuntime(store, {}),
       namespace,
-      probeEnvironment: async () => tailscaleEnvironment(null),
-    })).rejects.toThrow("tailnet-own-device-admission-login-unreadable");
+    })).rejects.toThrow("tailnet-owner-identity-unavailable");
     expect(await namespace.readJson(ADMISSION_FILE, null)).toBeNull();
   });
 
@@ -1118,7 +1122,6 @@ describe("own-device admission", () => {
     await setTailnetOwnDeviceAdmission(false, {
       runtime: fakeRuntime(store),
       namespace,
-      probeEnvironment: async () => tailscaleEnvironment(OWNER_LOGIN),
       auditLogger: audit.logger,
     });
 
@@ -1182,7 +1185,6 @@ describe("own-device admission", () => {
     await expect(setTailnetOwnDeviceAdmission(true, {
       runtime: null,
       namespace: memoryNamespace(),
-      probeEnvironment: async () => tailscaleEnvironment(OWNER_LOGIN),
     })).rejects.toThrow("tailnet-own-device-admission-unavailable");
   });
 });

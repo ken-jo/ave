@@ -67,7 +67,7 @@ export interface ShellRuleApproval {
   exactRule: string | null;
   /** The exact rule "Always deny" stores unless edited: this command's literal argv, also for a floor or irreversible command (a deny only narrows). Null when the input is not one literal simple command; the person can still write one with Edit rule. */
   denyRule: string | null;
-  /** "Always deny" is offered (every shell card except a remote-controller request). */
+  /** "Always deny" is offered when the shell card permits remembered decisions. */
   denyAllowed: boolean;
   /** Execution directory the host matches and saves against. */
   projectCwd: string;

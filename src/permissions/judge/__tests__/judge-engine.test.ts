@@ -14,7 +14,7 @@ import {
   judgeSettings,
 } from "./judge-request-fixture.js";
 
-const UNDECIDED: JudgeGate = { priorDecision: "undecided", strictMode: false, capabilityGrant: false, remoteController: false };
+const UNDECIDED: JudgeGate = { priorDecision: "undecided", strictMode: false, capabilityGrant: false };
 
 function answering(verdict: JudgeVerdict | (() => Promise<JudgeVerdict>)): PermissionJudge & { calls: number } {
   const judge = {
@@ -67,7 +67,6 @@ describe("resolveJudge — placement", () => {
   it.each([
     ["strictMode", "strict-mode"],
     ["capabilityGrant", "capability-grant"],
-    ["remoteController", "remote-controller"],
   ] as const)("never decides %s", async (flag, skip) => {
     const judge = answering(ALLOW);
     const out = await resolveJudge({ ...UNDECIDED, [flag]: true }, judgeRequest(), deps(judge));

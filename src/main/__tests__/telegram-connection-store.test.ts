@@ -65,7 +65,9 @@ function openStore(
 
 async function freshStore() {
   const clock = { value: 1_700_000_000_000 };
-  return { clock, store: await openStore(tempDirectory(), clock) };
+  const store = await openStore(tempDirectory(), clock);
+  await store.setOwnerUserId(RAW_TELEGRAM_USER_ID);
+  return { clock, store };
 }
 
 // connect → mint → redeem → approve, the whole owner-driven happy path.
@@ -73,9 +75,10 @@ async function connectedAndApproved(
   store: TelegramConnectionStore,
   options: { readonly ttlMs?: number; readonly conversationId?: string } = {},
 ): Promise<void> {
+  await store.setOwnerUserId(RAW_TELEGRAM_USER_ID);
   await store.setConnected(BOT_FINGERPRINT);
   await store.createPendingCode({ codeDigest: CODE_DIGEST });
-  const pairing = await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest: ACTOR });
+  const pairing = await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR });
   expect(pairing).not.toBeNull();
   const conversationId = options.conversationId ?? RAW_CONVERSATION_ID;
   const approval = await store.createApproval({
@@ -107,7 +110,8 @@ const OWNER_ID = "44444444-4444-4444-b444-444444444444";
 // A hand-built document: the only way to express a stale-epoch approval.
 function documentWithApprovalEpoch(pairingEpoch: number): Record<string, unknown> {
   return {
-    version: 1,
+    version: 2,
+    ownerUserId: RAW_TELEGRAM_USER_ID,
     receiptOwnerId: OWNER_ID,
     activationEpoch: 3,
     desiredState: "connected",
@@ -116,6 +120,7 @@ function documentWithApprovalEpoch(pairingEpoch: number): Record<string, unknown
     pollOffset: 42,
     pendingCode: null,
     pairing: {
+      ownerUserId: RAW_TELEGRAM_USER_ID,
       id: PAIRING_ID,
       actorDigest: ACTOR,
       state: "active",
@@ -143,6 +148,57 @@ function writeDocument(directory: string, value: unknown): void {
 }
 
 describe("createTelegramConnectionStore", () => {
+  it("requires desktop owner registration and rejects a stolen pairing code from another sender", async () => {
+    const clock = { value: 1_700_000_000_000 };
+    const store = await openStore(tempDirectory(), clock);
+    await store.setConnected(BOT_FINGERPRINT);
+    expect(store.ownerUserId()).toBeNull();
+    await expect(store.createPendingCode({ codeDigest: CODE_DIGEST })).rejects.toThrow();
+    await store.setOwnerUserId(RAW_TELEGRAM_USER_ID);
+    await store.setConnected(BOT_FINGERPRINT);
+    await store.createPendingCode({ codeDigest: CODE_DIGEST });
+    expect(await store.completePairing({ senderId: "111222333444", codeDigest: CODE_DIGEST, actorDigest: OTHER_ACTOR })).toBeNull();
+    expect(store.ownerSnapshot().pendingCode?.attemptsRemaining).toBe(5);
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR })).not.toBeNull();
+    await store.createApproval({ conversationId: RAW_CONVERSATION_ID, conversationDigest: CONVERSATION });
+    const epoch = store.activationEpoch();
+    await store.setOwnerUserId("111222333444");
+    expect(store.activationEpoch()).toBeGreaterThan(epoch);
+    expect(store.ownerSnapshot()).toMatchObject({ pairing: null, pairingUnrecognized: true, pendingCode: null, approval: null, desiredState: "paused" });
+    expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
+  });
+
+  it("migrates an unanchored pairing without retaining its approvals", async () => {
+    const directory = tempDirectory();
+    const document = documentWithApprovalEpoch(2);
+    document.version = 1;
+    delete document.ownerUserId;
+    delete (document.pairing as Record<string, unknown>).ownerUserId;
+    writeFileSync(join(directory, FILE_NAME), JSON.stringify(document));
+    const store = await openStore(directory, { value: 1_000_000 });
+    expect(store.ownerSnapshot()).toMatchObject({ ownerUserId: null, pairing: null, pairingUnrecognized: true, approval: null, lastErrorCode: "telegram-owner-id-required" });
+    expect(store.activePairingActorDigest()).toBeNull();
+    expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
+    expect(readDocument(directory)).toMatchObject({ version: 2, ownerUserId: null, approvals: [] });
+  });
+
+  it("suspends an anchored record whose configured owner no longer matches", async () => {
+    const directory = tempDirectory();
+    writeFileSync(join(directory, FILE_NAME), JSON.stringify({ ...documentWithApprovalEpoch(2), ownerUserId: "123456789" }));
+    const store = await openStore(directory, { value: 1_000_000 });
+    expect(store.ownerSnapshot()).toMatchObject({ ownerUserId: "123456789", pairing: null, pairingUnrecognized: true, approval: null });
+    expect(store.resolveBoundConversation(ACTOR)).toBeNull();
+    expect(readDocument(directory)).toMatchObject({ approvals: [], pairing: { state: "unrecognized" } });
+  });
+
+  it.each([undefined, "@display_name", "0", -1])("requires owner registration again for an invalid stored owner %s", async (ownerUserId) => {
+    const directory = tempDirectory();
+    writeFileSync(join(directory, FILE_NAME), JSON.stringify({ ...documentWithApprovalEpoch(2), ownerUserId }));
+    const store = await openStore(directory, { value: 1_000_000 });
+    expect(store.ownerSnapshot()).toMatchObject({ desiredState: "disconnected", ownerUserId: null, pairing: null, approval: null });
+    expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
+  });
+
   it("round-trips durable state through a real file so a second instance sees it", async () => {
     const clock = { value: 1_700_000_000_000 };
     const directory = tempDirectory();
@@ -167,25 +223,26 @@ describe("createTelegramConnectionStore", () => {
     const clock = { value: 1_700_000_000_000 };
     const directory = tempDirectory();
     const store = await openStore(directory, clock);
+    await store.setOwnerUserId(RAW_TELEGRAM_USER_ID);
     await store.setConnected(BOT_FINGERPRINT);
     await store.createPendingCode({ codeDigest: CODE_DIGEST, maxAttempts: 2 });
 
-    expect(await store.completePairing({ codeDigest: WRONG_CODE_DIGEST, actorDigest: ACTOR }))
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: WRONG_CODE_DIGEST, actorDigest: ACTOR }))
       .toBeNull();
     expect(store.ownerSnapshot().pendingCode?.attemptsRemaining).toBe(1);
     expect(store.ownerSnapshot().pairing).toBeNull();
 
-    expect(await store.completePairing({ codeDigest: WRONG_CODE_DIGEST, actorDigest: ACTOR }))
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: WRONG_CODE_DIGEST, actorDigest: ACTOR }))
       .toBeNull();
     expect(store.ownerSnapshot().pendingCode).toBeNull();
 
     // The budget is spent, so even the correct digest is worthless now.
-    expect(await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest: ACTOR })).toBeNull();
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR })).toBeNull();
     expect(store.ownerSnapshot().pairing).toBeNull();
 
     // Positive control: a freshly minted code still pairs on the first try.
     await store.createPendingCode({ codeDigest: CODE_DIGEST, maxAttempts: 2 });
-    expect(await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest: ACTOR }))
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR }))
       .toMatchObject({ actorDigest: ACTOR, epoch: 1 });
     expect(store.ownerSnapshot().pendingCode).toBeNull();
   });
@@ -200,7 +257,7 @@ describe("createTelegramConnectionStore", () => {
     expect(await store.consumePendingCodeAttempt()).toBeNull();
     expect(store.ownerSnapshot().pendingCode).toBeNull();
     expect(await store.consumePendingCodeAttempt()).toBeNull();
-    expect(await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest: ACTOR })).toBeNull();
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR })).toBeNull();
   });
 
   it("does not redeem an expired pending code", async () => {
@@ -210,13 +267,13 @@ describe("createTelegramConnectionStore", () => {
 
     clock.value += 60_001;
     expect(store.ownerSnapshot().pendingCode).toBeNull();
-    expect(await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest: ACTOR })).toBeNull();
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR })).toBeNull();
     expect(store.ownerSnapshot().pairing).toBeNull();
 
     // Positive control: the same code inside its window does redeem.
     await store.createPendingCode({ codeDigest: CODE_DIGEST, ttlMs: 60_000 });
     clock.value += 59_999;
-    expect(await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest: ACTOR }))
+    expect(await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR }))
       .not.toBeNull();
   });
 
@@ -285,7 +342,7 @@ describe("createTelegramConnectionStore", () => {
 
     // Re-pairing the same account starts a later epoch, never the old one.
     await store.createPendingCode({ codeDigest: CODE_DIGEST });
-    const repaired = await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest: ACTOR });
+    const repaired = await store.completePairing({ senderId: RAW_TELEGRAM_USER_ID, codeDigest: CODE_DIGEST, actorDigest: ACTOR });
     expect(repaired?.epoch).toBe(3);
     expect(repaired?.id).not.toBe(pairingId);
     expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
@@ -380,7 +437,7 @@ describe("createTelegramConnectionStore", () => {
     expect(fromWidened.resolveActiveApproval(ACTOR, CONVERSATION)).toBeNull();
 
     const wrongVersion = tempDirectory();
-    writeDocument(wrongVersion, { ...documentWithApprovalEpoch(2), version: 2 });
+    writeDocument(wrongVersion, { ...documentWithApprovalEpoch(2), version: 3 });
     const fromWrongVersion = await openStore(wrongVersion, clock);
     expect(fromWrongVersion.desiredState()).toBe("disconnected");
 
@@ -440,7 +497,7 @@ describe("createTelegramConnectionStore", () => {
     expect(store.resolveActiveApproval(ACTOR, CONVERSATION)).not.toBeNull();
   });
 
-  it("persists no bot token, telegram ids or raw pairing code, and exactly one plaintext", async () => {
+  it("persists the registered owner identity and conversation without bot tokens or pairing codes", async () => {
     const clock = { value: 1_700_000_000_000 };
     const directory = tempDirectory();
     const store = await openStore(directory, clock);
@@ -449,10 +506,9 @@ describe("createTelegramConnectionStore", () => {
     await store.createPendingCode({ codeDigest: CODE_DIGEST });
 
     const persisted = readText(directory);
-    // Everything Telegram-side stays a digest. These are the values the bridge actually handles at runtime, and none of them may reach the file.
+    // Only the explicitly registered owner identity and local conversation are plaintext.
     for (const secret of [
       RAW_BOT_TOKEN,
-      RAW_TELEGRAM_USER_ID,
       RAW_CHAT_ID,
       RAW_PAIRING_CODE,
     ]) {
@@ -660,7 +716,7 @@ describe("createTelegramConnectionStore", () => {
       await store.open();
       await store.setConnected(BOT_FINGERPRINT);
       const persisted = readFileSync(join(home, "telegram-bridge", FILE_NAME), "utf8");
-      expect(JSON.parse(persisted)).toMatchObject({ version: 1, desiredState: "connected" });
+      expect(JSON.parse(persisted)).toMatchObject({ version: 2, desiredState: "connected" });
     } finally {
       if (previous === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previous;
