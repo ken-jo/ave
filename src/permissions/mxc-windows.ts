@@ -133,7 +133,7 @@ export function classifyMxcStartProbe(
   return { ok: false, reason: "powershell-start-failed", detail };
 }
 
-// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC 1.0.1 supports identity-less loopback on PSEC 1.0, but a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` must select `base-container`, `--dry-run` of the exact request shape Ave launches (proxy mode, DACL fallback refused) must validate on that tier, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape. Any failure leaves the shells on the approved-host route.
+// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC 1.0.1 no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` must select `base-container`, `--dry-run` of the exact request shape Ave launches (proxy mode, DACL fallback refused) must validate on that tier, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape. Any failure leaves the shells on the approved-host route.
 export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const prerequisites = await detectMxcPrerequisites(deps);
   if (prerequisites.state === "unavailable") return prerequisites;

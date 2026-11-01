@@ -2483,8 +2483,9 @@ BaseContainer where the host offers one. Ave ships only the MIT-licensed
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
 npm tarball's sha512, each launcher's sha256). Ave does not load the SDK's
-JavaScript; its Windows stdio path requires Node 24.21 or newer in the
-24.x line. SDK adoption for extension lifetimes is a separate change. Each
+JavaScript yet; loading it (its Windows stdio path needs Node 24.21+ or
+26.8+, which the bundled Electron Node now meets) is deferred to the change
+that runs extensions in MXC. Each
 command spawns `wxc-exec.exe --config-base64 <request>`
 from the launcher's own directory (`mxc-windows.ts`, `mxc-shell-launch.ts`);
 no administrator rights or UAC prompt are needed per run or at install.
@@ -2509,8 +2510,10 @@ in its directory.
   seconds). Until it settles, shells take the approved-host route and Settings
   says the check is running; when it passes the record switches to MXC, unless
   something re-recorded it meanwhile. Detection reads what the launcher does,
-  not the build number: MXC 1.0.1 supports identity-less loopback proxying on
-  PSEC 1.0, but the exact request must still validate and start. Any failure
+  not the build number: MXC 1.0.1 no longer requires PSEC 1.1 for an
+  identity-less loopback proxy (the launcher queries host support and the
+  directions depend on the Windows build), so the exact request must still
+  validate and start. Any failure
   leaves the shells on the approved-host route with its
   reason in Settings (a proxy-only boot keeps its proxy). A PowerShell start that
   fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
