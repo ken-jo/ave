@@ -2,7 +2,7 @@ import { nativeImage, type NativeImage, type WebContents } from "electron";
 import type { BrowserPreview, BrowserPreviewImage } from "../../shared/browser-workspace.js";
 import { encodeBrowserPreview } from "./browser-workspace-preview.js";
 
-const AGENT_PREVIEW_MAX_MS = 1500;
+const AGENT_PREVIEW_MAX_MS = 750;
 
 export interface AgentPreviewTab {
   readonly windowId: number;
