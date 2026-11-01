@@ -248,6 +248,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     const take = () => {
       const request = takeUpdateReview();
       if (!request) return;
+      if (request.kind === "install-direct") {
+        setAddOpen("direct");
+        return;
+      }
       if (request.kind === "updates") {
         showUpdates();
         return;
