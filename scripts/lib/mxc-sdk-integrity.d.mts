@@ -24,4 +24,12 @@ export function verifyMxcSdk(
 ): { sdkRoot: string; nativeDirectories: string[]; addonPath: string };
 export function verifyMxcSupervisorRuntime(executable: string, resources: string, arch: string): string[];
 
-export function assertMxcSdkInventory(nodeModules: string, pins: MxcSdkPins): void;
+export function assertMxcSdkInventory(nodeModules: string, pins: MxcSdkPins, arch?: string): void;
+
+export function verifyMxcSdkSource(nodeModules: string, arch: string, pins: MxcSdkPins, environment?: NodeJS.ProcessEnv): ReturnType<typeof verifyMxcSdk>;
+
+export const SDK_INSTALLATION_AUXILIARIES: ReadonlySet<string>;
+
+export const PACKAGE_RUNTIME_FIELDS: readonly string[];
+
+export const PTY_SOURCE_BUILD_DIRECTORIES: readonly string[];

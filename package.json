@@ -111,6 +111,8 @@
     "dist:headless": "node scripts/package-headless-runtime.mjs",
     "dist:win": "node scripts/build-installers.mjs --win",
     "check:mxc-packaging": "node scripts/check-mxc-packaging.mjs",
+    "update:mxc-pins": "node scripts/update-mxc-pins.mjs",
+    "check:mxc-pins": "node scripts/update-mxc-pins.mjs --check",
     "dist:fast": "node scripts/build-installers.mjs --current --fast",
     "dist:mac:fast": "node scripts/build-installers.mjs --mac --fast",
     "dist:linux:fast": "node scripts/build-installers.mjs --linux --fast",

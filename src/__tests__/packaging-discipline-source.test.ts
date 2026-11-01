@@ -97,6 +97,8 @@ const VERIFICATION_SCRIPT_SHAPE = /^(?:typecheck|build|test)(?::|$)/u;
  *  HYGIENE_GATES keeps both, and "keeps the verification list in step with
  *  package.json" below checks the pair against package.json. */
 const VERIFICATION_CHECKS: ReadonlyArray<{ script: string; file: string }> = [
+  { script: "check:mxc-packaging", file: "check-mxc-packaging" },
+  { script: "check:mxc-pins", file: "update-mxc-pins" },
   { script: "check:typecheck-tests", file: "check-test-typecheck-baseline" },
   {
     script: "check:typecheck-tests:self-test",
@@ -1525,6 +1527,27 @@ describe("installer smoke and packaging discipline", () => {
     }
   });
 
+  it("requires both Windows packaging targets in the cached required CI check", () => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
+      jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[]; "continue-on-error"?: boolean }>;
+    };
+    const job = workflow.jobs["build-and-test"]!;
+    expect(job["runs-on"]).toBe("ubuntu-24.04-arm");
+    expect(job["continue-on-error"]).not.toBe(true);
+    const command = "bun run check:mxc-pins && bun run check:mxc-packaging";
+    const step = job.steps.find((entry) => entry.run === command)!;
+    expect(step).toBeDefined();
+    expect(step["continue-on-error"]).not.toBe(true);
+    expect(step.if).toBe("needs.build.outputs.docs_only != 'true'");
+    expect(step["working-directory"]).toBe("ave");
+    expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron-win");
+    const cache = job.steps.find((entry) => entry.name === "Cache Windows runtime archives")!;
+    expect(cache).toBeDefined();
+    expect(cache.uses).toMatch(/^actions\/cache@/);
+    expect(cache.with).toMatchObject({ path: ".cache/electron-win", key: "ci-win-electron-${{ hashFiles('ave/bun.lock') }}" });
+    expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(step));
+  });
+
   it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
@@ -1552,7 +1575,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(results).toContain('if [ "$VITEST_RESULT" != "skipped" ]; then');
     expect(body).toContain("BUILD_RESULT: ${{ needs.build.result }}");
     expect(body).toContain("VITEST_RESULT: ${{ needs.vitest.result }}");
-    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
+    expect(matched(commands, VERIFIES_THE_CODE)).toEqual(["check:mxc-packaging", "check:mxc-pins"]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
     expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
     expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");

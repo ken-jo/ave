@@ -340,8 +340,8 @@ jobs:
   build-and-test:
     # The required check on main. It reports success only when the build job
     # and every Vitest shard succeeded (a docs-only change skips the shards
-    # and checks its documents in the build job), then runs the repository
-    # hygiene gates. `always()` keeps it running when a needed job failed
+    # and checks its documents in the build job), then verifies Windows SDK
+    # packaging and runs hygiene gates. `always()` keeps it running when a needed job failed
     # and when the run was cancelled, so a red or cancelled shard turns this
     # check red instead of skipping it: a skipped job reports success to
     # branch protection. Its first step is `always()` too, so a cancelled run
@@ -364,6 +364,7 @@ jobs:
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron-win
     steps:
       - name: Require the build and every Vitest shard
         if: always()
@@ -423,6 +424,17 @@ jobs:
       - run: bun install --frozen-lockfile
         if: needs.build.outputs.docs_only != 'true'
         working-directory: ave
+      - name: Cache Windows runtime archives
+        if: needs.build.outputs.docs_only != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/electron-win
+          key: ci-win-electron-${{ hashFiles('ave/bun.lock') }}
+      - name: Verify native SDK pins and Windows packaging
+        if: needs.build.outputs.docs_only != 'true'
+        timeout-minutes: 10
+        working-directory: ave
+        run: bun run check:mxc-pins && bun run check:mxc-packaging
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
       # the gates that read them. Nothing below compiles or runs the product; a
       # failure here means a bookkeeping file is stale, not that the code is

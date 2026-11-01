@@ -11,7 +11,10 @@ export class MxcIntegrityError extends Error {
   }
 }
 
-const PACKAGE_RUNTIME_FIELDS = ["name", "version", "main", "exports", "type", "imports"];
+// These source-build directories are removed wholesale from the PTY package.
+export const PTY_SOURCE_BUILD_DIRECTORIES = ["build", "deps", "src", "third_party"];
+
+export const PACKAGE_RUNTIME_FIELDS = ["name", "version", "main", "exports", "type", "imports"];
 
 function assertPackageMetadata(bytes, relative, metadata) {
   const expected = metadata && Object.hasOwn(metadata, relative) ? metadata[relative] : undefined;
@@ -65,7 +68,7 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== expected) throw new MxcIntegrityError(`Native payload hash mismatch: ${relative}`);
     }
-    assertMxcSdkInventory(root, pins);
+    assertMxcSdkInventory(root, pins, strictNativeDirectories ? arch : undefined);
     const sdkRoot = path.join(root, "@microsoft", "mxc-sdk");
     const require = createRequire(pathToFileURL(path.join(sdkRoot, "package.json")));
     for (const [name, version] of Object.entries(pins.sdk.versions)) {
@@ -148,14 +151,18 @@ export function verifyMxcSupervisorRuntime(executable, resources, arch) {
 
 // These upstream backends are present in the installed archive but are never
 // loaded by the extension path and are removed from the packaged native bin.
-const SDK_INSTALLATION_AUXILIARIES = new Set([
+export const SDK_INSTALLATION_AUXILIARIES = new Set([
   "libmxc_ffi.so", "libmxc_ffi.dylib", "lxc-exec", "mxc-exec-mac", "unix-test-proxy",
   "mxc-diagnostic-console.exe", "plm.exe", "winhttp-proxy-shim.exe", "wxc-exec.exe",
   "wxc-host-prep.exe", "wxc-test-proxy.exe", "wxc-windows-sandbox-daemon.exe",
   "wxc-windows-sandbox-guest.exe", "wxc-wslc-daemon.exe",
 ]);
 
-export function assertMxcSdkInventory(nodeModules, pins) {
+export function assertMxcSdkInventory(nodeModules, pins, arch) {
+  if (arch !== undefined) {
+    if (!Object.hasOwn(pins.sdk.architectures, arch)) throw new MxcIntegrityError("Unsupported SDK installation or architecture");
+    return assertPackagedInventory(nodeModules, arch, pins);
+  }
   const sdkRoot = path.join(nodeModules, "@microsoft", "mxc-sdk");
   const pinned = new Set([...Object.keys(pins.sdk.files), ...Object.values(pins.sdk.architectures).flatMap(Object.keys)]);
   const semverRoot = pins.sdk.packages.semver.replace(/^@microsoft\/mxc-sdk\//, "");
@@ -182,4 +189,50 @@ export function assertMxcSdkInventory(nodeModules, pins) {
     }
   };
   walk(sdkRoot);
+}
+
+// Source verification retains archive byte identity before packaging rewrites manifests.
+export function verifyMxcSdkSource(nodeModules, arch, pins, environment = process.env) {
+  const verified = verifyMxcSdk(nodeModules, arch, pins, environment);
+  for (const [relative, expected] of Object.entries({ ...pins.sdk.files, ...pins.sdk.architectures[arch] })) {
+    if (!relative.endsWith("/package.json")) continue;
+    const digest = createHash("sha256").update(readFileSync(path.join(nodeModules, relative))).digest("hex");
+    if (digest !== expected) throw new MxcIntegrityError(`Source package manifest hash mismatch: ${relative}`);
+  }
+  return verified;
+}
+
+function assertPackagedInventory(nodeModules, arch, pins) {
+  const pinned = new Set(Object.keys({ ...pins.sdk.files, ...pins.sdk.architectures[arch] }));
+  const roots = new Set([
+    ...Object.values(pins.sdk.packages),
+    `@koromix/koffi-win32-${arch}`,
+  ]);
+  const allowed = (relative) => {
+    if (pinned.has(relative)) return true;
+    if (["@microsoft/mxc-sdk/LICENSE.md", "@microsoft/mxc-sdk/README.md"].includes(relative)) return true;
+    // Non-runtime documentation, declarations and native build sources have
+    // scoped extension rules. Manifests, scripts and binaries always need pins.
+    if (/^(?:koffi|node-pty)\/(?:LICENSE(?:\.(?:md|txt))?|README\.md|CHANGELOG\.md)$/.test(relative)) return true;
+    if (/^koffi\/(?:src|lib|vendor)\/.+\.(?:cc|hh|h|inc|S|asm|def)$/.test(relative)) return true;
+    if (/^koffi\/src\/koffi\/CMakeLists\.txt$/.test(relative)) return true;
+    if (/^koffi\/vendor\/[^\/]+\/(?:LICENSE(?:\.(?:md|txt))?|README\.md)$/.test(relative)) return true;
+    if (/^(?:koffi\/index|node-pty\/typings\/node-pty)\.d\.ts$/.test(relative)) return true;
+    if (/^node-pty\/binding\.gyp$/.test(relative)) return true;
+    if (/^node-pty\/node_modules\/node-addon-api\/(?:[^\/]+\.(?:h|c|gyp|gypi)|LICENSE\.md|README\.md|tools\/README\.md)$/.test(relative)) return true;
+    const semver = pins.sdk.packages.semver;
+    return ["LICENSE", "README.md", "range.bnf"].some((name) => relative === semver + "/" + name)
+      || /^@microsoft\/mxc-sdk\/dist\/.+\.(?:d\.ts(?:\.map)?|js\.map)$/.test(relative);
+  };
+  const walk = (relative) => {
+    const file = path.join(nodeModules, relative);
+    const entry = lstatSync(file);
+    if (entry.isSymbolicLink() || realpathSync(file) !== file) throw new MxcIntegrityError(`Packaged inventory path redirected: ${relative}`);
+    if (entry.isDirectory()) {
+      for (const name of readdirSync(file)) walk(relative + "/" + name);
+    } else if (!entry.isFile() || !allowed(relative)) {
+      throw new MxcIntegrityError(`Unexpected packaged SDK file: ${relative}`);
+    }
+  };
+  for (const root of roots) walk(root);
 }

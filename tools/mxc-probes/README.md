@@ -94,7 +94,19 @@ bun run check:mxc-packaging
 bun run check:mxc-packaging -- --arch arm64
 ```
 
-This script runs the real locked packager with `--win --dir --x64` and `--win --dir --arm64`, unsigned, `npmRebuild:false` and `--publish=never`, on macOS/Linux or Windows. It downloads verified target runtime/addon archives, copies the actual installed dependency trees into an owned temporary app, and uses the production file/unpack rules and nested-semver extra-resource rule. Its after-pack hook calls the same `finalizePackagedMxcSdk` as the application hook. It requires rewritten manifests to pass their semantic pins, nested semver to resolve at the pinned path, executable bytes to match, debug symbols to be absent, and the recorded runtime inventory to verify. This is an explicit script outside default Vitest because it downloads and assembles both target runtimes. JSON names the retained result file's directory and package outputs, with per-target manifest hashes and semver version; `builder.log` records the actual collector/packaging run. Remove only the exact reported `work` directory when finished.
+This script runs the real locked packager with `--win --dir --x64` and `--win --dir --arm64`, unsigned, `npmRebuild:false` and `--publish=never`, on macOS/Linux or Windows. It downloads verified target runtime/addon archives, copies the actual installed dependency trees into an owned temporary app, and uses the production file/unpack rules and nested-semver extra-resource rule. Its after-pack hook calls the same `finalizePackagedMxcSdk` as the application hook. It requires rewritten manifests to pass their semantic pins, nested semver to resolve at the pinned path, executable bytes to match, debug symbols to be absent, and the recorded runtime inventory to verify. The required `build-and-test` job in `.github/workflows/ci.yml` runs this check for both targets after checking generated pins; any failure fails the job. It remains outside default Vitest because it downloads and assembles both target runtimes. CI caches the Windows runtime ZIPs through `ELECTRON_CACHE`; local runs can set that variable to an absolute cache directory too. JSON prints the exact `work` path, per-target manifest hashes and semver version. Successful runs remove only their owned work tree and report `workRemoved:true`; an external cache is preserved. Failed runs retain that tree, `result.json` and `builder.log`, report `workRemoved:false`, and exit nonzero. Remove only that exact reported path after reviewing a failed run.
+
+Regenerate payload pins after an intentional dependency or patch change:
+
+```powershell
+bun install --frozen-lockfile
+bun run update:mxc-pins
+bun run check:mxc-pins
+# Equivalent read-only drift check:
+node scripts/update-mxc-pins.mjs --check
+```
+
+The generator deterministically reads installed files, semantic manifest fields and both architectures. Missing optional target addons are fetched only from their separately pinned archives into an isolated temporary source directory, which is removed afterward; `--no-download` requires those sources to be installed already. It does not modify shared dependencies or silently skip an architecture. Review generated changes; archive, launcher and license trust anchors still require explicit review. Before packaging, original manifest byte hashes are verified as well. Packaged manifests use semantic pins after normalization. The strict unpacked inventory covers the SDK, nested semver, FFI and PTY trees, including known nested build-support manifests; unknown scripts, manifests, native files and redirects are rejected. Unused PTY build/source directories and foreign prebuilds are removed as declared non-runtime categories; retained build-source/declaration/license allowances are scoped by path and extension.
 
 This focused app checks SDK packaging and does not compile the unrelated native helpers, run the full application hook's other asset checks, create an installer or execute Windows code. The ordinary `dist:win` entry still requires a native Windows host for its helper build; cross-packaging here does not claim a complete application installer or native readiness.
 

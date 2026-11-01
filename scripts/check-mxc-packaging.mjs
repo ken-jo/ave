@@ -1,6 +1,6 @@
 // Explicit packaging integration check: actual collector, archive transforms,
 // Windows runtime download and the production SDK after-pack finalizer.
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { stageMxcSdkAddon } from "./fetch-mxc.mjs";
-import { verifyMxcSdk, verifyMxcSupervisorRuntime } from "./lib/mxc-sdk-integrity.mjs";
+import { verifyMxcSdkSource, verifyMxcSupervisorRuntime } from "./lib/mxc-sdk-integrity.mjs";
 import { assertPackagedMxcSdk } from "./lib/mxc-sdk-packaging.mjs";
 import PINS from "../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 
@@ -21,12 +21,32 @@ export function packagingCheckArchitectures(argv) {
   throw new Error("Expected --arch x64|arm64, or no arguments for both");
 }
 
+export function packagingCheckCache(work, environment = process.env) {
+  const configured = environment.ELECTRON_CACHE;
+  if (configured !== undefined && (!configured || !path.isAbsolute(configured))) throw new Error("ELECTRON_CACHE must be an absolute directory");
+  return configured ?? path.join(work, "cache", "electron");
+}
+
+export async function finishPackagingCheck(work, result) {
+  if (result.passed) {
+    try {
+      await rm(work, { recursive: true });
+      return { ...result, workRemoved: true };
+    } catch (error) { result = { ...result, passed: false, error: `Packaging cleanup failed: ${error.message}` }; }
+  }
+  const retained = { ...result, workRemoved: false, resultFile: path.join(work, "result.json") };
+  try { await writeFile(retained.resultFile, JSON.stringify(retained, null, 2) + "\n"); }
+  catch (error) { retained.retentionError = error.message; }
+  return retained;
+}
+
 async function main() {
   const architectures = packagingCheckArchitectures(process.argv.slice(2));
   const work = await realpath(await mkdtemp(path.join(tmpdir(), "ave-mxc-package-check-")));
-  const sourcePackage = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8"));
   const result = { check: "mxc-real-packaging", host: process.platform, work, nativeExecuted: false, passed: false, observations: [] };
   try {
+    const sourcePackage = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8"));
+    const electronCache = packagingCheckCache(work);
     for (const arch of architectures) {
       const project = path.join(work, arch), modules = path.join(project, "node_modules");
       await mkdir(modules, { recursive: true });
@@ -40,7 +60,7 @@ async function main() {
         await cp(directory, path.join(modules, name), { recursive: true, dereference: false, verbatimSymlinks: true });
       }
       await stageMxcSdkAddon({ arch, projectRoot: project });
-      verifyMxcSdk(modules, arch, PINS, {});
+      verifyMxcSdkSource(modules, arch, PINS, {});
       await cp(path.join(ROOT, "bun.lock"), path.join(project, "bun.lock"));
       await cp(path.join(ROOT, "resources/licenses/mxc"), path.join(project, "resources/licenses/mxc"), { recursive: true });
       await writeFile(path.join(project, "main.cjs"), "// Packaging entry only; this application is never executed.\n");
@@ -48,7 +68,7 @@ async function main() {
       const config = {
         appId: "test.ave.native-payload", productName: "Payload", extends: null,
         electronVersion: JSON.parse(await readFile(require.resolve("electron/package.json"), "utf8")).version,
-        electronDownload: { cache: path.join(work, "cache", "electron") },
+        electronDownload: { cache: electronCache },
         npmRebuild: false, nodeGypRebuild: false, asar: true,
         files: [...sourcePackage.build.files, "main.cjs"], asarUnpack: sourcePackage.build.asarUnpack,
         electronFuses: sourcePackage.build.electronFuses,
@@ -64,7 +84,7 @@ async function main() {
       const args = [builder, "--win", "--dir", `--${arch}`, "--publish=never", "--config", configFile, "--projectDir", project];
       const build = spawnSync(process.execPath, args, {
         cwd: project, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", CSC_IDENTITY_AUTO_DISCOVERY: "false",
-          ELECTRON_CACHE: path.join(work, "cache", "electron"), ELECTRON_BUILDER_CACHE: path.join(work, "cache", "builder") },
+          ELECTRON_CACHE: electronCache, ELECTRON_BUILDER_CACHE: process.env.ELECTRON_BUILDER_CACHE ?? path.join(work, "cache", "builder") },
         encoding: "utf8", maxBuffer: 32 * 1024 * 1024,
       });
       await writeFile(path.join(project, "builder.log"), (build.stdout ?? "") + (build.stderr ?? ""));
@@ -88,9 +108,10 @@ async function main() {
         nestedSemver: { path: PINS.sdk.packages.semver, version: semver.version }, debugSymbols, afterPackVerified: true });
     }
     result.passed = true;
-  } catch (error) { result.error = error.message; process.exitCode = 1; }
-  await writeFile(path.join(work, "result.json"), JSON.stringify(result, null, 2) + "\n");
-  process.stdout.write(JSON.stringify(result) + "\n");
+  } catch (error) { result.error = error.message; }
+  const observation = await finishPackagingCheck(work, result);
+  if (!observation.passed) process.exitCode = 1;
+  process.stdout.write(JSON.stringify(observation) + "\n");
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) await main();

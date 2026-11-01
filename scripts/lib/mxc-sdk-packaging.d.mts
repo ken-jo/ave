@@ -6,3 +6,5 @@ export function prunePackagedMxcSdk(resources: string, arch: string): void;
 export function recordMxcSupervisorRuntime(resources: string, arch: string, executable: string): void;
 export function pruneMxcSdkAddonArchitectures(modules: string, arch: string): void;
 export function assertMxcSupervisorFuse(config: { electronFuses?: { runAsNode?: boolean } }): void;
+
+export function pruneMxcPtyBuildPayloads(modules: string, arch: string): void;

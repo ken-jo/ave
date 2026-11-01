@@ -1,17 +1,21 @@
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { contentHash } from "../../__tests__/support/content-hash.js";
-import { assertMxcSdkInventory, MxcIntegrityError, verifyMxcSdk } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
+import { assertMxcSdkInventory, MxcIntegrityError, verifyMxcSdk, verifyMxcSdkSource } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import type { MxcSdkPins } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import PINS from "../mxc-launcher-pins.json" with { type: "json" };
 
 const roots: string[] = [];
 
+function createTemporaryDirectory(prefix: string) {
+  return realpathSync(mkdtempSync(prefix));
+}
+
 function installation() {
-  const directory = mkdtempSync(path.join(tmpdir(), "ave-sdk-integrity-")); roots.push(directory);
+  const directory = createTemporaryDirectory(path.join(tmpdir(), "ave-sdk-integrity-")); roots.push(directory);
   const root = path.join(directory, "node_modules");
   const files: Record<string, string> = {};
   const packageMetadata: MxcSdkPins["sdk"]["packageMetadata"] = {};
@@ -56,6 +60,17 @@ describe("installed SDK integrity", () => {
     expect(contentHash(readFileSync(path.join(root, file)))).not.toBe(rawPin);
     expect(() => verifyMxcSdk(root, "x64", pins, {})).not.toThrow();
     expect(pins.sdk.files[file]).toBe(rawPin);
+  });
+
+  it("rejects unused source manifest changes before packaging", () => {
+    const { root, pins } = installation();
+    expect(() => verifyMxcSdkSource(root, "x64", pins, {})).not.toThrow();
+    const file = path.join(root, "koffi/package.json");
+    const manifest = JSON.parse(readFileSync(file, "utf8"));
+    manifest.keywords = ["altered source metadata"];
+    writeFileSync(file, JSON.stringify(manifest));
+    expect(() => verifyMxcSdk(root, "x64", pins, {})).not.toThrow();
+    expect(() => verifyMxcSdkSource(root, "x64", pins, {})).toThrow(/Source package manifest hash mismatch/);
   });
 
   it.each(["name", "version", "main", "exports", "type", "imports"])("rejects runtime manifest changes to %s", (field) => {
@@ -162,7 +177,7 @@ describe("SDK packaging source assertions", () => {
     for (const rule of ["node_modules/@microsoft/mxc-sdk/**", "node_modules/koffi/**", "node_modules/@koromix/koffi-win32-*/**", "node_modules/node-pty/**"]) expect(pkg.build.asarUnpack).toContain(rule);
     expect(pkg.build.asarUnpack).not.toContain("node_modules/semver/**");
     expect(readFileSync("scripts/lib/main-bundle-externals.mjs", "utf8")).toContain('"@microsoft/mxc-sdk"');
-    expect(readFileSync("scripts/electron-before-pack.cjs", "utf8")).toContain("verifyMxcSdk(");
+    expect(readFileSync("scripts/electron-before-pack.cjs", "utf8")).toContain("verifyMxcSdkSource(");
     expect(readFileSync("scripts/electron-after-pack.cjs", "utf8")).toContain("finalizePackagedMxcSdk(");
     expect(readFileSync("scripts/smoke-packaged-app.mjs", "utf8")).toContain("assertPackagedMxcSdk(");
   });
@@ -182,7 +197,7 @@ describe("packaged supervisor runtime byte inventory", () => {
   it("records target runtime bytes and rejects altered or newly planted DLLs", async () => {
     const { recordMxcSupervisorRuntime } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
     const { verifyMxcSupervisorRuntime } = await import("../../../scripts/lib/mxc-sdk-integrity.mjs");
-    const root = mkdtempSync(path.join(tmpdir(), "ave-runtime-inventory-")); roots.push(root);
+    const root = createTemporaryDirectory(path.join(tmpdir(), "ave-runtime-inventory-")); roots.push(root);
     const resources = path.join(root, "resources"), executable = path.join(root, "Ave.exe");
     writeFileSync(executable, "unit-runtime-bytes");
     writeFileSync(path.join(root, "runtime.dll"), "unit-dll-bytes");
@@ -211,7 +226,7 @@ describe("installed SDK import graph", () => {
   it("verifies an isolated copy of the real installed layout without modifying shared dependencies", () => {
     const installed = path.resolve("node_modules");
     expect(() => assertMxcSdkInventory(installed, PINS)).not.toThrow();
-    const directory = mkdtempSync(path.join(tmpdir(), "ave-sdk-real-tree-")); roots.push(directory);
+    const directory = createTemporaryDirectory(path.join(tmpdir(), "ave-sdk-real-tree-")); roots.push(directory);
     const modules = path.join(directory, "node_modules");
     const pins = structuredClone(PINS);
     const entries = { ...pins.sdk.files, ...pins.sdk.architectures.x64 };
@@ -294,7 +309,7 @@ describe("native signing and supervisor prerequisites", () => {
 
   it("prunes a previous target addon from each subsequent architecture package idempotently", async () => {
     const { pruneMxcSdkAddonArchitectures } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
-    const root = mkdtempSync(path.join(tmpdir(), "ave-addon-architecture-")); roots.push(root);
+    const root = createTemporaryDirectory(path.join(tmpdir(), "ave-addon-architecture-")); roots.push(root);
     for (const arch of ["x64", "arm64"] as const) {
       for (const installed of ["x64", "arm64"]) mkdirSync(path.join(root, "@koromix", `koffi-win32-${installed}`), { recursive: true });
       pruneMxcSdkAddonArchitectures(root, arch);
@@ -328,7 +343,7 @@ describe("packaged PTY native footprint", () => {
 
   it("rejects leaked source-build payloads in the final unpacked tree", async () => {
     const { assertPackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
-    const root = mkdtempSync(path.join(tmpdir(), "ave-pty-package-")); roots.push(root);
+    const root = createTemporaryDirectory(path.join(tmpdir(), "ave-pty-package-")); roots.push(root);
     const directory = path.join(root, "app.asar.unpacked/node_modules/node-pty/third_party/conpty/win10-arm64");
     mkdirSync(directory, { recursive: true });
     writeFileSync(path.join(directory, "conpty.dll"), "unexpected foreign source-build bytes");
@@ -339,7 +354,7 @@ describe("packaged PTY native footprint", () => {
 
 describe("runtime fuse defaults and signing order", () => {
   it("preserves every other installed runtime fuse default when enabling node mode", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "ave-fuse-wire-")); roots.push(root);
+    const root = createTemporaryDirectory(path.join(tmpdir(), "ave-fuse-wire-")); roots.push(root);
     const previousCache = process.env.JITI_FS_CACHE;
     process.env.JITI_FS_CACHE = "false";
     try {
@@ -407,7 +422,7 @@ it("permits only named package-manager command shims and excludes them from pack
 
 describe("packaging payload failures", () => {
   function packageRoot() {
-    const root = mkdtempSync(path.join(tmpdir(), "ave-package-missing-"));
+    const root = createTemporaryDirectory(path.join(tmpdir(), "ave-package-missing-"));
     roots.push(root);
     return root;
   }
@@ -483,5 +498,173 @@ describe("packaging payload failures", () => {
     try { recordMxcSupervisorRuntime(path.join(root, "resources"), "x64", executable); } catch (error) { caught = error; }
     expect(caught).not.toBeInstanceOf(MxcIntegrityError);
     expect(caught).toMatchObject({ code: "EISDIR" });
+  });
+});
+
+describe("strict packaged dependency inventory", () => {
+  it.each(["@microsoft/mxc-sdk", "koffi", "node-pty", "semver", "@koromix/koffi-win32-x64"])("rejects planted runtime files in %s", (packageRoot) => {
+    for (const name of ["extra.js", "LICENSE.js", "LICENSE.json", "LICENSE.dll", "extra.cjs", "extra.mjs", "extra.json", "nested/package.json", "extra.node", "extra.dll", "extra.exe"]) {
+      const { root, pins } = installation();
+      const file = path.join(root, packageRoot, name);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "untrusted payload");
+      expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).toThrow(/Unexpected packaged SDK file/);
+    }
+  });
+
+  it.each(["koffi", "node-pty", "semver"])("rejects symlinked files and directories in %s", (packageRoot) => {
+    for (const directory of [false, true]) {
+      const { root, pins } = installation();
+      const target = path.join(root, packageRoot, directory ? "linked" : "README.md");
+      symlinkSync(path.join(root, "koffi", directory ? "" : "index.js"), target, directory ? "junction" : "file");
+      expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).toThrow(/inventory path redirected/);
+    }
+  });
+
+  it("rejects planted manifests and scripts in the nested dependency root", () => {
+    for (const name of ["extra.js", "extra.json", "nested/package.json"]) {
+      const { root, pins } = installation();
+      const nested = "@microsoft/mxc-sdk/node_modules/semver";
+      mkdirSync(path.dirname(path.join(root, nested)), { recursive: true });
+      renameSync(path.join(root, "semver"), path.join(root, nested));
+      pins.sdk.packages.semver = nested;
+      for (const relative of Object.keys(pins.sdk.files).filter((file) => file.startsWith("semver/"))) {
+        pins.sdk.files[relative.replace("semver", nested)] = pins.sdk.files[relative]!;
+        delete pins.sdk.files[relative];
+      }
+      pins.sdk.packageMetadata[nested + "/package.json"] = pins.sdk.packageMetadata["semver/package.json"]!;
+      delete pins.sdk.packageMetadata["semver/package.json"];
+      const file = path.join(root, nested, name);
+      mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, "unexpected nested dependency");
+      expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).toThrow(/Unexpected packaged SDK file/);
+    }
+  });
+
+  it("rejects foreign architecture pins in a selected package", () => {
+    const { root, pins } = installation();
+    const relative = "node-pty/prebuilds/win32-arm64/pty.node";
+    const file = path.join(root, relative);
+    mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, "foreign native bytes");
+    const foreignPins = { ...pins, sdk: { ...pins.sdk, architectures: { ...pins.sdk.architectures, arm64: { [relative]: contentHash("foreign native bytes") } } } };
+    expect(() => verifyMxcSdk(root, "x64", foreignPins, {}, true)).toThrow(/Unexpected packaged SDK file/);
+  });
+
+  it("prunes known local builds and foreign prebuilds while retaining unknown target payloads", async () => {
+    const { pruneMxcPtyBuildPayloads } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const { root } = installation();
+    const files = ["build/Release/pty.node", "src/tsconfig.json", "deps/winpty/package.json", "third_party/conpty.dll", "prebuilds/darwin-arm64/pty.node", "prebuilds/linux-x64/pty.node", "prebuilds/win32-arm64/pty.node", "prebuilds/win32-x64/pty.node", "prebuilds/win32-x64/pty.pdb", "prebuilds/win32-x64/planted.exe"];
+    for (const relative of files) {
+      const file = path.join(root, "node-pty", relative);
+      mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, relative);
+    }
+    pruneMxcPtyBuildPayloads(root, "x64");
+    pruneMxcPtyBuildPayloads(root, "x64");
+    for (const relative of files) expect(existsSync(path.join(root, "node-pty", relative)), relative).toBe(["prebuilds/win32-x64/pty.node", "prebuilds/win32-x64/planted.exe"].includes(relative));
+  });
+});
+
+describe("packaging mutation containment", () => {
+  it.each([
+    "node-pty", "node-pty/prebuilds", "node-pty/prebuilds/win32-x64",
+    "node-pty/prebuilds/win32-x64/nested", "node-pty/build",
+  ])("rejects a redirected %s before pruning any files", async (relative) => {
+    const { pruneMxcPtyBuildPayloads } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const { root } = installation();
+    const outside = createTemporaryDirectory(path.join(tmpdir(), "ave-prune-sentinel-")); roots.push(outside);
+    const sentinel = path.join(outside, "external.pdb");
+    writeFileSync(sentinel, "external bytes must remain");
+    const foreign = path.join(outside, "darwin-arm64"); mkdirSync(foreign);
+    writeFileSync(path.join(foreign, "external.pdb"), "foreign directory must remain");
+    const target = path.join(root, relative);
+    rmSync(target, { recursive: true, force: true });
+    mkdirSync(path.dirname(target), { recursive: true });
+    symlinkSync(outside, target, "junction");
+    expect(() => pruneMxcPtyBuildPayloads(root, "x64")).toThrow(/Packaging mutation path redirected/);
+    expect(readFileSync(sentinel, "utf8")).toBe("external bytes must remain");
+    expect(readFileSync(path.join(foreign, "external.pdb"), "utf8")).toBe("foreign directory must remain");
+    expect(readdirSync(outside).sort()).toEqual(["darwin-arm64", "external.pdb"]);
+  });
+
+  it("rejects a redirected modules root before deleting build artifacts", async () => {
+    const { pruneMxcPtyBuildPayloads } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const { root } = installation();
+    const sentinel = path.join(root, "node-pty/build/external.pdb");
+    mkdirSync(path.dirname(sentinel), { recursive: true }); writeFileSync(sentinel, "preserve build bytes");
+    const redirect = path.join(path.dirname(root), "redirected-modules");
+    symlinkSync(root, redirect, "junction");
+    expect(() => pruneMxcPtyBuildPayloads(redirect, "x64")).toThrow(/Packaging mutation path redirected/);
+    expect(readFileSync(sentinel, "utf8")).toBe("preserve build bytes");
+  });
+
+  it.each([
+    "app.asar.unpacked", "app.asar.unpacked/node_modules", "app.asar.unpacked/node_modules/@koromix",
+    "app.asar.unpacked/node_modules/@koromix/koffi-win32-x64/win32_x64",
+    "app.asar.unpacked/node_modules/@microsoft", "app.asar.unpacked/node_modules/@microsoft/mxc-sdk",
+    "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/bin", "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/bin/x64",
+  ])("rejects a redirected %s before the common finalizer mutates payloads", async (relative) => {
+    const { prunePackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const resources = createTemporaryDirectory(path.join(tmpdir(), "ave-prune-resources-")); roots.push(resources);
+    const outside = createTemporaryDirectory(path.join(tmpdir(), "ave-prune-external-")); roots.push(outside);
+    const sentinel = path.join(outside, "external.pdb"); writeFileSync(sentinel, "external bytes must remain");
+    const target = path.join(resources, relative);
+    mkdirSync(path.dirname(target), { recursive: true }); symlinkSync(outside, target, "junction");
+    expect(() => prunePackagedMxcSdk(resources, "x64")).toThrow(/Packaging mutation path redirected/);
+    expect(readFileSync(sentinel, "utf8")).toBe("external bytes must remain");
+    expect(readdirSync(outside)).toEqual(["external.pdb"]);
+  });
+});
+
+describe("whole source-build directory removal", () => {
+  it.each(["standalone", "common"])("unlinks a local build-tool symlink safely through the %s pruner", async (entryPoint) => {
+    const { pruneMxcPtyBuildPayloads, prunePackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const installationRoot = installation().root;
+    const resources = path.join(path.dirname(installationRoot), "resources");
+    const modules = entryPoint === "standalone" ? installationRoot : path.join(resources, "app.asar.unpacked", "node_modules");
+    if (entryPoint === "common") {
+      mkdirSync(path.dirname(modules), { recursive: true });
+      renameSync(installationRoot, modules);
+    }
+    const outside = createTemporaryDirectory(path.join(tmpdir(), "ave-build-tool-sentinel-")); roots.push(outside);
+    const sentinel = path.join(outside, "python3"); writeFileSync(sentinel, "external tool bytes must remain");
+    const build = path.join(modules, "node-pty", "build");
+    mkdirSync(path.join(build, "node_gyp_bins"), { recursive: true });
+    symlinkSync(sentinel, path.join(build, "node_gyp_bins", "python3"), "file");
+    mkdirSync(path.join(modules, "node-pty", "prebuilds", "win32-x64"), { recursive: true });
+    if (entryPoint === "standalone") {
+      expect(() => pruneMxcPtyBuildPayloads(modules, "x64")).not.toThrow();
+    } else {
+      // The small integrity fixture lacks the production pin inventory. Reaching
+      // its final verification proves the common pruning pass completed first.
+      expect(() => prunePackagedMxcSdk(resources, "x64")).toThrow(/Native SDK packaging payload missing/);
+    }
+    expect(existsSync(build)).toBe(false);
+    expect(readFileSync(sentinel, "utf8")).toBe("external tool bytes must remain");
+    expect(readdirSync(outside)).toEqual(["python3"]);
+  });
+});
+
+describe("packaging mutation base containment", () => {
+  it.each(["standalone", "common"])("rejects a redirected ancestor above the %s pruning base", async (entryPoint) => {
+    const { pruneMxcPtyBuildPayloads, prunePackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const installationRoot = installation().root;
+    const resources = path.join(path.dirname(installationRoot), "resources");
+    const modules = entryPoint === "standalone" ? installationRoot : path.join(resources, "app.asar.unpacked", "node_modules");
+    if (entryPoint === "common") {
+      mkdirSync(path.dirname(modules), { recursive: true }); renameSync(installationRoot, modules);
+    }
+    const build = path.join(modules, "node-pty", "build");
+    mkdirSync(build, { recursive: true });
+    const sentinel = path.join(build, "external.pdb"); writeFileSync(sentinel, "external build bytes must remain");
+    mkdirSync(path.join(modules, "node-pty", "prebuilds", "win32-x64"), { recursive: true });
+    const base = entryPoint === "standalone" ? modules : resources;
+    const owner = createTemporaryDirectory(path.join(tmpdir(), "ave-prune-base-owner-")); roots.push(owner);
+    const link = path.join(owner, "redirected-parent"); symlinkSync(path.dirname(base), link, "junction");
+    const redirectedBase = path.join(link, path.basename(base));
+    const operation = () => entryPoint === "standalone"
+      ? pruneMxcPtyBuildPayloads(redirectedBase, "x64") : prunePackagedMxcSdk(redirectedBase, "x64");
+    expect(operation).toThrow(MxcIntegrityError);
+    expect(operation).toThrow(`Packaging mutation path redirected: ${redirectedBase}`);
+    expect(readFileSync(sentinel, "utf8")).toBe("external build bytes must remain");
+    expect(readdirSync(build)).toEqual(["external.pdb"]);
   });
 });
