@@ -1336,7 +1336,21 @@ function ProjectSessionList({
     const session = sessions.find((entry) => entry.id === surface.sessionId);
     return namedProjects.find((project) => session?.projectRoot && projectRootEquals(project.projectRoot, session.projectRoot));
   };
-  const generalSurfaces = surfaces.filter((surface) => !projectOfSurface(surface));
+  // Archived conversations leave the default listing. They are not deleted, so the toggle below brings them straight back —
+  // the reason archive is worth having as something distinct from delete.
+  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
+  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
+  // A tab a listed chat owns sits under that chat's row, as its sub-item; only the rest list on their own.
+  // A project group lists only its first page until expanded; a tab whose chat is past it stays a row of its own.
+  const listedSessionIds = new Set([
+    ...visibleSessions(ungroupedSessions),
+    ...sessionsByProject.flatMap(({ project, projectSessions }) => {
+      const shown = visibleSessions(projectSessions);
+      return expandedProjects.has(project.projectRoot ?? project.projectName) ? shown : shown.slice(0, SESSION_PAGE_SIZE);
+    }),
+  ].map((session) => session.id));
+  const ownedByListedChat = (surface: SidebarSurface) => surface.sessionId !== undefined && listedSessionIds.has(surface.sessionId);
+  const generalSurfaces = surfaces.filter((surface) => !ownedByListedChat(surface) && !projectOfSurface(surface));
   const hasUngroupedSessions = ungroupedSessions.length > 0 || generalSurfaces.length > 0;
   const renderSurfaceRow = (surface: SidebarSurface) => {
     const children = visibleSessions(listableSessions.filter((session) => paneSurfaceOf(session)?.tabId === surface.tabId));
@@ -1440,6 +1454,20 @@ function ProjectSessionList({
   };
 
   const renderSessionRow = (listed: SessionSummary) => {
+    const row = renderConversationRow(listed);
+    const owned = surfaces.filter((surface) => surface.sessionId === listed.id);
+    if (owned.length === 0) return row;
+    return (
+      <div key={listed.id} data-testid={`sidebar-conversation-tree-${listed.id}`}>
+        {row}
+        <div className="ml-4 border-l border-border/(--opacity-half) pl-2" data-testid={`sidebar-conversation-surfaces-${listed.id}`}>
+          {owned.map(renderSurfaceRow)}
+        </div>
+      </div>
+    );
+  };
+
+  const renderConversationRow = (listed: SessionSummary) => {
     if (listed.family !== "main") return renderFamilyRow(listed);
     // The dedicated Suggestions conversation is named from the catalog by its
     // id, in the language in use now, and carries the number of suggestions
@@ -1473,10 +1501,6 @@ function ProjectSessionList({
     );
   };
 
-  // Archived conversations leave the default listing. They are not deleted, so the toggle below brings them straight back —
-  // the reason archive is worth having as something distinct from delete.
-  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
-  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
   const hasArchivedSessions = listableSessions.some(isSessionArchived);
 
   // The folder's own actions, built once. The row's right-click and its trailing button both call this, so the two can never
@@ -1568,7 +1592,7 @@ function ProjectSessionList({
         {hasNamedProjects ? visibleProjects.map(({ project, projectSessions }) => {
           // Archived rows leave the list BEFORE it is paged, so a page is a page of rows the reader can actually see.
           const groupSessions = visibleSessions(projectSessions);
-          const groupSurfaces = surfaces.filter((surface) => projectOfSurface(surface) === project);
+          const groupSurfaces = surfaces.filter((surface) => !ownedByListedChat(surface) && projectOfSurface(surface) === project);
           const groupKey = project.projectRoot ?? project.projectName;
           const groupExpanded = expandedProjects.has(groupKey);
           const shownGroupSessions = groupExpanded ? groupSessions : groupSessions.slice(0, SESSION_PAGE_SIZE);
@@ -1683,7 +1707,7 @@ function ProjectSessionList({
           </div>
         )}
       </section>
-      {/* Unassigned items remain flat under General. */}
+      {/* Unassigned items list under General; a tab a listed chat owns sits under that chat. */}
       {/* Right-click the LIST itself (not a row) → import. Importing always
           creates a brand-new conversation, so it acts on the list; putting it
           on a row would imply it acts on that row. Rows stop propagation once

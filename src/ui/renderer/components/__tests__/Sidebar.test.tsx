@@ -436,6 +436,12 @@ describe("Sidebar stacked sections", () => {
       expect(project.contains(getByTestId("sidebar-session-project-chat"))).toBe(true);
       expect(project.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(true);
       expect(project.contains(getByTestId("sidebar-surface-browser:child"))).toBe(true);
+      // Owned tabs are sub-items of their chat's row; unowned ones are not.
+      const projectChatTabs = getByTestId("sidebar-conversation-surfaces-project-chat");
+      for (const id of ["browser:project", "terminal:project", "browser:child"]) {
+        expect(projectChatTabs.contains(getByTestId(`sidebar-surface-${id}`))).toBe(true);
+      }
+      expect(getByTestId("sidebar-conversation-tree-project-chat").firstElementChild?.contains(getByTestId("sidebar-session-project-chat"))).toBe(true);
       expect(general.contains(getByTestId("sidebar-session-general-chat"))).toBe(true);
       for (const id of ["browser:general", "terminal:general", "terminal:unknown"]) {
         expect(general.contains(getByTestId(`sidebar-surface-${id}`))).toBe(true);
@@ -452,6 +458,8 @@ describe("Sidebar stacked sections", () => {
       act(() => receiveControl({ revision: 2, tabs: state.tabs.map((tab) => ({ ...tab, owner: { sessionId: "general-chat" } })) }));
       expect(general.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true);
       expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(false);
+      expect(getByTestId("sidebar-conversation-surfaces-general-chat").contains(getByTestId("sidebar-surface-browser:project"))).toBe(true);
+      expect(getByTestId("sidebar-surface-tree-terminal:unknown").parentElement).toBe(general);
       expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
       act(() => receiveBindings({ revision: 2, bindings: [{ sessionId: "general-chat", browserTabIds: [], terminalTabIds: ["terminal:project"] }] }));
       expect(general.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(true);
