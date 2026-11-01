@@ -233,7 +233,6 @@ export async function openPluginProtocolSession(
       } catch { /* audit sink failure cannot alter a dispatcher result */ }
       log.warn(entry, entry.type);
     },
-    // Serve and advertise the same bound table.
     table,
     link: spec.link,
   });
