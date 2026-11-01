@@ -12,7 +12,18 @@ export interface GitRepositoryInputs {
 
 const MAX_METADATA_ENTRIES = 4096;
 const MAX_METADATA_DEPTH = 32;
-const MAX_CONFIG_BYTES = 64 * 1024;
+// Large control files (including packed refs) decline the verified read-only
+// path; the aggregate cap prevents thousands of small refs from multiplying I/O.
+const MAX_CONTROL_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_CONTROL_TOTAL_BYTES = 16 * 1024 * 1024;
+const CONTROL_READ_BUFFER_BYTES = 64 * 1024;
+const CONTENT_METADATA_PATHS = new Set([
+  "config", "config.worktree", "head", "packed-refs", "shallow", "objects/info/packs",
+  "objects/info/commit-graphs/commit-graph-chain",
+  "auto_merge", "bisect_expected_rev", "notes_merge_partial", "notes_merge_ref", "merge_autostash",
+  // `git branch --list` describes a detached HEAD from the rebase and bisect state.
+  "bisect_start", "rebase-merge/head-name", "rebase-merge/onto", "rebase-apply/head-name", "rebase-apply/onto",
+]);
 const FORBIDDEN_METADATA_PATHS = new Set(["commondir", "worktrees", "objects/info/alternates", "objects/info/http-alternates"]);
 
 function hasSupportedConfig(contents: Buffer): boolean {
@@ -45,26 +56,44 @@ function metadataIdentity(stat: BigIntStats): string {
   return [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.size, stat.nlink, stat.mtimeNs, stat.ctimeNs].join(":");
 }
 
-function readConfigFingerprint(path: string, expectedIdentity: string): string | null {
+function readControlFingerprint(path: string, expectedIdentity: string, maxBytes: number, isConfig: boolean): { hash: string; bytes: number } | null {
   const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync(descriptor, { bigint: true });
-    if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(MAX_CONFIG_BYTES) || metadataIdentity(stat) !== expectedIdentity) return null;
-    const contents = Buffer.alloc(MAX_CONFIG_BYTES + 1);
+    if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes) || metadataIdentity(stat) !== expectedIdentity) return null;
+    const contents = Buffer.alloc(CONTROL_READ_BUFFER_BYTES);
+    const hash = createHash("sha256");
+    // Only configuration needs retained bytes for the existing syntax validator.
+    const configChunks: Buffer[] = [];
     let length = 0;
-    while (length < contents.length) {
-      const count = readSync(descriptor, contents, length, contents.length - length, null);
+    while (length <= maxBytes) {
+      const count = readSync(descriptor, contents, 0, Math.min(contents.length, maxBytes - length + 1), null);
       if (count === 0) break;
       length += count;
+      if (length > maxBytes) return null;
+      const bytes = contents.subarray(0, count);
+      hash.update(bytes);
+      if (isConfig) configChunks.push(Buffer.from(bytes));
     }
-    const bytes = contents.subarray(0, length);
-    if (length > MAX_CONFIG_BYTES || !hasSupportedConfig(bytes)
+    if ((isConfig && !hasSupportedConfig(Buffer.concat(configChunks, length)))
       || metadataIdentity(fstatSync(descriptor, { bigint: true })) !== expectedIdentity
       || metadataIdentity(lstatSync(path, { bigint: true })) !== expectedIdentity) return null;
-    return createHash("sha256").update(bytes).digest("hex");
+    return { hash: hash.digest("hex"), bytes: length };
   } finally {
     closeSync(descriptor);
   }
+}
+
+function needsContentEvidence(path: string): boolean {
+  // readOnlyGitArguments admits revision/history, branch listing and tree diffs.
+  // Their mutable inputs are root refs/config, refs, shallow and info controls.
+  // Root refs include the irregular names recognized by the files backend.
+  // Pack listings and the commit-graph chain are text; binary data stays identity-only.
+  // Alternate-store text selectors are already forbidden above.
+  // gitReadOnlyEnvironment redirects the index; argv disables submodule reads
+  // and reflog selectors. Nested repository, cache and editor data is not read.
+  return CONTENT_METADATA_PATHS.has(path) || /^[a-z_-]+_head$/.test(path)
+    || path.startsWith("refs/") || path.startsWith("info/");
 }
 
 // Keeps each helper command line well below the 32,767-character CreateProcess limit.
@@ -108,6 +137,7 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
     const evidence: [string, string, string][] = [];
     const gitDirectory = join(workTree, ".git");
     let entries = 0;
+    let controlBytes = 0;
     const inspect = (path: string, relative: string, depth: number): boolean => {
       const metadataPath = relative.toLowerCase();
       if (++entries > MAX_METADATA_ENTRIES || depth > MAX_METADATA_DEPTH
@@ -119,9 +149,15 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       if (relative === "" && !stat.isDirectory()) return false;
       const isConfig = metadataPath === "config" || metadataPath === "config.worktree";
       if (stat.isFile()) {
-        const configHash = isConfig ? readConfigFingerprint(path, identity) : "";
-        if (configHash === null) return false;
-        evidence.push([relative, identity, configHash]);
+        let contentHash = "";
+        if (needsContentEvidence(metadataPath)) {
+          const fingerprint = readControlFingerprint(path, identity,
+            Math.min(MAX_CONTROL_FILE_BYTES, MAX_CONTROL_TOTAL_BYTES - controlBytes), isConfig);
+          if (fingerprint === null) return false;
+          controlBytes += fingerprint.bytes;
+          contentHash = fingerprint.hash;
+        }
+        evidence.push([relative, identity, contentHash]);
         return true;
       }
       if (isConfig) return false;
