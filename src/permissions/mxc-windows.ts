@@ -8,6 +8,7 @@ import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommand
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
 
 import { errorMessage } from "../shared/error-message.js";
+import { compileGlobMatcher } from "../lib/glob-matcher.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 
@@ -275,8 +276,66 @@ function dedupe(paths: readonly string[]): string[] {
   return out;
 }
 
+export interface MxcDirectoryEntry {
+  readonly name: string;
+  readonly directory: boolean;
+}
+
+interface MxcRule {
+  readonly path: string;
+  readonly kind: "readwrite" | "readonly" | "deny";
+}
+
+const PATTERN_SEGMENT = /[*?]/;
+// Bounds the walk a pattern deny costs per spawn; past it the spawn fails closed.
+const MXC_PATTERN_WALK_LIMIT = 20_000;
+
+// Native rules are literal paths, so a pattern deny becomes the entries it matches now. That is complete only where the shell cannot create a new match:
+// the region the pattern covers must be read-only to it.
+function expandPatternDeny(
+  pattern: string,
+  rules: readonly MxcRule[],
+  exists: (path: string) => boolean,
+  list: ((directory: string) => readonly MxcDirectoryEntry[]) | undefined,
+): string[] {
+  const segments = winPath.normalize(pattern).split("\\");
+  const literal = segments.slice(0, segments.findIndex((segment) => PATTERN_SEGMENT.test(segment)));
+  const prefix = winPath.normalize(literal.join("\\") + (literal.length === 1 ? "\\" : ""));
+  const reached = rules.filter((rule) => rule.kind !== "deny" &&
+    (isWindowsPathAtOrUnder(rule.path, prefix) || isWindowsPathAtOrUnder(prefix, rule.path)));
+  if (reached.length === 0) return [];
+  // The most specific rule at or above the pattern's literal prefix decides what the shell may do there.
+  const nearest = rules.filter((rule) => isWindowsPathAtOrUnder(prefix, rule.path))
+    .sort((a, b) => foldPath(b.path).length - foldPath(a.path).length)[0];
+  if (list === undefined || nearest?.kind === "readwrite" ||
+      reached.some((rule) => rule.kind === "readwrite" && isWindowsPathAtOrUnder(rule.path, prefix))) {
+    throw new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern}`);
+  }
+  const match = compileGlobMatcher(pattern.replaceAll("\\", "/"), { caseInsensitive: true });
+  const matched = (path: string): boolean => match(path.replaceAll("\\", "/")) || match(`${path.replaceAll("\\", "/")}/`);
+  const roots = (nearest?.kind === "readonly" ? [prefix] : reached.filter((rule) => strictlyUnder(rule.path, prefix)).map((rule) => rule.path))
+    .filter(exists);
+  const out: string[] = [];
+  let visited = 0;
+  const pending = [...roots];
+  for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
+    if (matched(directory)) { out.push(directory); continue; }
+    for (const entry of list(directory)) {
+      if (++visited > MXC_PATTERN_WALK_LIMIT) throw new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern}`);
+      const path = winPath.join(directory, entry.name);
+      if (entry.directory) pending.push(path);
+      else if (matched(path)) out.push(path);
+    }
+  }
+  return out.sort();
+}
+
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
-export function rankMxcFilesystem(policy: ShellFilesystemPolicy, exists: (path: string) => boolean): MxcFilesystemGrants {
+export function rankMxcFilesystem(
+  policy: ShellFilesystemPolicy,
+  exists: (path: string) => boolean,
+  list?: (directory: string) => readonly MxcDirectoryEntry[],
+): MxcFilesystemGrants {
   // POSIX-rooted floor rows must not turn into current-drive paths.
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
   const protectedFloor = windowsPaths(policy.protectedFloor);
@@ -300,7 +359,25 @@ export function rankMxcFilesystem(policy: ShellFilesystemPolicy, exists: (path: 
     else denied.push(deny);
   }
   const allGrants = [...readwrite, ...readonlyOut];
-  for (const deny of dedupe([...windowsPaths(policy.denyRead), ...protectedFloor])) {
+  const readDenies = dedupe([...windowsPaths(policy.denyRead), ...protectedFloor]);
+  const literalDenies = readDenies.filter((deny) => !PATTERN_SEGMENT.test(deny));
+  const rules: MxcRule[] = [
+    ...readwrite.map((path) => ({ path, kind: "readwrite" as const })),
+    ...readonlyOut.map((path) => ({ path, kind: "readonly" as const })),
+    ...literalDenies.filter((deny) => allGrants.some((grant) => strictlyUnder(deny, grant))).map((path) => ({ path, kind: "deny" as const })),
+  ];
+  const listings = new Map<string, readonly MxcDirectoryEntry[]>();
+  const listOnce = list && ((directory: string): readonly MxcDirectoryEntry[] => {
+    const key = foldPath(directory);
+    const known = listings.get(key);
+    if (known !== undefined) return known;
+    const entries = list(directory);
+    listings.set(key, entries);
+    return entries;
+  });
+  const patternMatches = readDenies.filter((deny) => PATTERN_SEGMENT.test(deny))
+    .flatMap((pattern) => expandPatternDeny(pattern, rules, exists, listOnce));
+  for (const deny of [...literalDenies, ...patternMatches]) {
     if (allGrants.some((grant) => strictlyUnder(deny, grant))) denied.push(deny);
   }
   const raised = denied.map((deny) => {

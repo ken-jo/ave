@@ -51,6 +51,47 @@ describe("missing deny parents", () => {
   });
 });
 
+describe("pattern denies", () => {
+  const home = String.raw`C:\Users\alice`;
+  const work = win32.join(home, "work");
+  const sessions = win32.join(home, ".ave", "sessions");
+  const tree: Record<string, Array<{ name: string; directory: boolean }>> = {
+    [sessions]: [{ name: "one", directory: true }, { name: "one.jsonl", directory: false }],
+    [win32.join(sessions, "one")]: [{ name: ".SSH", directory: true }, { name: "notes", directory: true }],
+    [win32.join(sessions, "one", "notes")]: [{ name: "id_rsa", directory: false }],
+    [win32.join(sessions, "one", ".SSH")]: [],
+  };
+  const list = (directory: string) => {
+    const entries = tree[directory];
+    if (entries === undefined) throw new Error(`ENOENT: ${directory}`);
+    return entries;
+  };
+  const exists = (path: string) => path === home || path === win32.join(home, ".ave") || path === work || path in tree ||
+    Object.entries(tree).some(([directory, entries]) => entries.some((entry) => win32.join(directory, entry.name) === path));
+  const policy = (denyRead: string[]) => ({
+    allowWrite: [work], allowRead: [work, sessions], denyRead, denyWrite: [],
+    protectedFloor: [win32.join(home, ".ave")], floorPierces: [sessions],
+  });
+
+  it("denies each existing match of a pattern under a read-only grant", () => {
+    const grants = rankMxcFilesystem(policy([String.raw`${sessions}\**\.ssh`, `${sessions}/**/id_rsa`]), exists, list);
+    expect(grants.readonly).toEqual([sessions]);
+    expect(grants.denied).toEqual([win32.join(sessions, "one", ".SSH"), win32.join(sessions, "one", "notes", "id_rsa")]);
+  });
+
+  it("adds nothing for a pattern with no match", () => {
+    expect(rankMxcFilesystem(policy([String.raw`${sessions}\**\.aws`, `${sessions}/proc/*/environ`]), exists, list).denied).toEqual([]);
+  });
+
+  it("fails closed when the shell could create a match", () => {
+    expect(() => rankMxcFilesystem(policy([String.raw`${work}\**\.ssh`]), exists, list)).toThrow(/^Windows sandbox policy cannot hold pattern deny/);
+  });
+
+  it("fails closed when it cannot list the pattern's directory", () => {
+    expect(() => rankMxcFilesystem(policy([String.raw`${sessions}\**\.ssh`]), exists)).toThrow(/^Windows sandbox policy cannot hold pattern deny/);
+  });
+});
+
 describe.skipIf(process.platform !== "win32")("native missing deny parents", () => {
   it("starts with no denies, a missing leaf, nested denies and mandatory workspace denies", async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
