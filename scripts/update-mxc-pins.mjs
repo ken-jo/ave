@@ -55,17 +55,15 @@ export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowD
   const result = structuredClone(original);
   // Install the lockfile dependency tree first; nested dependency paths are intentional.
   const modules = path.join(projectRoot, "node_modules");
-  const paths = new Set(Object.keys(original.sdk.files));
+  // Header/build tooling is not loaded by prebuilt native addons. It may be
+  // hoisted or omitted by dependency collection and has no runtime pins.
+  const paths = new Set(Object.keys(original.sdk.files).filter((relative) => !relative.startsWith("node-pty/node_modules/node-addon-api/")));
   const sdkRoot = original.sdk.packages["@microsoft/mxc-sdk"];
   for (const relative of Object.values(original.sdk.packages)) paths.add(relative + "/package.json");
   if (sdkRoot) discoverCode(modules, sdkRoot + "/dist", paths);
   if (original.sdk.packages.semver) discoverCode(modules, original.sdk.packages.semver, paths);
   discoverCode(modules, "koffi", paths);
   discoverCode(modules, "node-pty", paths);
-  const nested = "node-pty/node_modules/node-addon-api";
-  discoverCode(modules, nested, paths);
-  paths.add(nested + "/package.json");
-  paths.add(nested + "/package-support.json");
   result.sdk.files = {};
   result.sdk.packageMetadata = {};
   const observe = (root, relative) => {

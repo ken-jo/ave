@@ -132,13 +132,6 @@
       "node-pty/lib/windowsPtyAgent.js": "b8354ed248df069dc412b679d2dd13e43a728a38c2fb3bd7253ac3b9aa9a66ba",
       "node-pty/lib/windowsTerminal.js": "c3a65716f53fed0135a8a633373d5f9c2ab092544d651f27ef0a67096dd3bcd9",
       "node-pty/lib/worker/conoutSocketWorker.js": "3e4bac095ac3870c3248a7302f5d10217de625f30c32b7000fe48a34788e47ac",
-      "node-pty/node_modules/node-addon-api/index.js": "be71328f325cf541f37704a644e53cd04af1b69bc119b39733d64589e64dffdb",
-      "node-pty/node_modules/node-addon-api/package-support.json": "b1cb7da23cca1681c7392a3c889eb0cc4916c53d2d7692d4b654ae751f3442f3",
-      "node-pty/node_modules/node-addon-api/package.json": "e4947cf10e432c42459e60a00947ccd1ad2501e16cf1a530b3d39f0c2de5c83f",
-      "node-pty/node_modules/node-addon-api/tools/check-napi.js": "9e1207808023cd998fe9e377aefbe77d6c59fa129f94e6acbf24907149d8c11e",
-      "node-pty/node_modules/node-addon-api/tools/clang-format.js": "3e0b5e6d6f1a0c5ed106115871d0fd48f37bac5554effdacaf8d2439f4ed0c65",
-      "node-pty/node_modules/node-addon-api/tools/conversion.js": "e089cbad94331ad07dfb103b5d5aafaaf99fba89e9674d64f4f35e9dfc432357",
-      "node-pty/node_modules/node-addon-api/tools/eslint-format.js": "befbda4868248093b1f5e4307d28f412d12fa16929cd0c07f5e2575e2635646d",
       "node-pty/package.json": "f8b6a14f7022c14f1cd5d109486f5dacd32bffb63a9a63e38eced37dacb47439",
       "node-pty/scripts/gen-compile-commands.js": "2c0f489628a5c0d0d182b35b88484a9c43158cdc54e3a48bd237c88b5c54dfcd",
       "node-pty/scripts/increment-version.js": "f3d8b2b3309ac639c89c00aac8316953c9cc3f191ceec3ba50b717dbe2ce5ad2",
@@ -254,11 +247,6 @@
         },
         "type": "module"
       },
-      "node-pty/node_modules/node-addon-api/package.json": {
-        "name": "node-addon-api",
-        "version": "7.1.1",
-        "main": "index.js"
-      },
       "node-pty/package.json": {
         "name": "node-pty",
         "version": "1.1.0",
@@ -270,6 +258,11 @@
         "category": "debug-symbols",
         "pattern": "node-pty/prebuilds/win32-*/**/*.pdb",
         "reason": "Debug symbols are not loaded by the runtime and are excluded from packaged native payloads."
+      },
+      {
+        "category": "build-only-headers",
+        "pattern": "{node-pty/node_modules/node-addon-api,node-addon-api}/**/*",
+        "reason": "Native build headers and build-tool scripts are not loaded by prebuilt addons and are excluded in nested and hoisted locations."
       }
     ]
   }

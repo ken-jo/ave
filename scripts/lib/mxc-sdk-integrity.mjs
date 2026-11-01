@@ -219,7 +219,6 @@ function assertPackagedInventory(nodeModules, arch, pins) {
     if (/^koffi\/vendor\/[^\/]+\/(?:LICENSE(?:\.(?:md|txt))?|README\.md)$/.test(relative)) return true;
     if (/^(?:koffi\/index|node-pty\/typings\/node-pty)\.d\.ts$/.test(relative)) return true;
     if (/^node-pty\/binding\.gyp$/.test(relative)) return true;
-    if (/^node-pty\/node_modules\/node-addon-api\/(?:[^\/]+\.(?:h|c|gyp|gypi)|LICENSE\.md|README\.md|tools\/README\.md)$/.test(relative)) return true;
     const semver = pins.sdk.packages.semver;
     return ["LICENSE", "README.md", "range.bnf"].some((name) => relative === semver + "/" + name)
       || /^@microsoft\/mxc-sdk\/dist\/.+\.(?:d\.ts(?:\.map)?|js\.map)$/.test(relative);

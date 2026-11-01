@@ -168,6 +168,9 @@ describe("SDK packaging source assertions", () => {
     expect(PINS.sdk.excludedPayloads).toEqual([{
       category: "debug-symbols", pattern: "node-pty/prebuilds/win32-*/**/*.pdb",
       reason: "Debug symbols are not loaded by the runtime and are excluded from packaged native payloads.",
+    }, {
+      category: "build-only-headers", pattern: "{node-pty/node_modules/node-addon-api,node-addon-api}/**/*",
+      reason: "Native build headers and build-tool scripts are not loaded by prebuilt addons and are excluded in nested and hoisted locations.",
     }]);
   });
 
@@ -502,6 +505,17 @@ describe("packaging payload failures", () => {
 });
 
 describe("strict packaged dependency inventory", () => {
+  it("accepts the runtime without nested build headers and rejects any leaked header payload", () => {
+    const { root, pins } = installation();
+    expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).not.toThrow();
+    const file = path.join(root, "node-pty/node_modules/node-addon-api/napi.h");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "build-only header");
+    expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).toThrow("Unexpected packaged SDK file: node-pty/node_modules/node-addon-api/napi.h");
+    rmSync(path.join(root, "node-pty/node_modules"), { recursive: true });
+    expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).not.toThrow();
+  });
+
   it.each(["@microsoft/mxc-sdk", "koffi", "node-pty", "semver", "@koromix/koffi-win32-x64"])("rejects planted runtime files in %s", (packageRoot) => {
     for (const name of ["extra.js", "LICENSE.js", "LICENSE.json", "LICENSE.dll", "extra.cjs", "extra.mjs", "extra.json", "nested/package.json", "extra.node", "extra.dll", "extra.exe"]) {
       const { root, pins } = installation();

@@ -75,7 +75,21 @@ describe("SDK pin generation", () => {
     expect(Object.keys(metadata.imports["#entry"])).toEqual(["default", "node"]);
     expect(Object.hasOwn(metadata, "type")).toBe(false);
     expect(Object.hasOwn(metadata, "main")).toBe(false);
-    expect(generated.sdk.packageMetadata["node-pty/node_modules/node-addon-api/package.json"].name).toBe("node-addon-api");
+    expect(generated.sdk.packageMetadata["node-pty/node_modules/node-addon-api/package.json"]).toBeUndefined();
+  });
+
+  it("drops old build-header pins and does not require their installed directory", async () => {
+    const options = fixture();
+    const target = path.join(options.projectRoot, pinPath);
+    const pins = JSON.parse(readFileSync(target, "utf8"));
+    pins.sdk.files["node-pty/node_modules/node-addon-api/index.js"] = "old";
+    pins.sdk.packageMetadata["node-pty/node_modules/node-addon-api/package.json"] = { name: "node-addon-api", version: "7.1.1" };
+    writeFileSync(target, serializeMxcPins(pins));
+    const installed = await generateMxcPins(options);
+    expect(Object.keys(installed.sdk.files).some((name) => name.includes("node-addon-api"))).toBe(false);
+    expect(installed.sdk.packageMetadata["node-pty/node_modules/node-addon-api/package.json"]).toBeUndefined();
+    rmSync(path.join(options.projectRoot, "node_modules/node-pty/node_modules"), { recursive: true });
+    expect(serializeMxcPins(await generateMxcPins(options))).toBe(serializeMxcPins(installed));
   });
 
   it("discovers shipped code and omits excluded test and build code", async () => {
@@ -112,7 +126,6 @@ describe("SDK pin generation", () => {
     delete incomplete.sdk.files["koffi/package.json"];
     delete incomplete.sdk.files["koffi/index.js"];
     delete incomplete.sdk.files["node-pty/lib/index.js"];
-    delete incomplete.sdk.files["node-pty/node_modules/node-addon-api/index.js"];
     delete incomplete.sdk.files["@microsoft/mxc-sdk/dist/index.js"];
     delete incomplete.sdk.files["@microsoft/mxc-sdk/node_modules/semver/functions/valid.js"];
     delete incomplete.sdk.architectures.x64["node-pty/prebuilds/win32-x64/pty.node"];

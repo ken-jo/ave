@@ -1,6 +1,7 @@
 // Explicit packaging integration check: actual collector, archive transforms,
 // Windows runtime download and the production SDK after-pack finalizer.
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -27,6 +28,52 @@ export function packagingCheckCache(work, environment = process.env) {
   return configured ?? path.join(work, "cache", "electron");
 }
 
+// Keep production collection/filtering configuration intact. Only application
+// assets, native-helper build hooks and signing are outside this payload check.
+export function packagingCheckConfiguration(sourcePackage, { project, electronCache, electronVersion }) {
+  const build = sourcePackage.build;
+  return {
+    ...build, extends: null, electronVersion,
+    electronDownload: { ...build.electronDownload, cache: electronCache },
+    npmRebuild: false, nodeGypRebuild: false,
+    directories: { ...build.directories, output: path.join(project, "output"), buildResources: path.join(ROOT, "build") },
+    beforePack: null, afterSign: null,
+    afterPack: require.resolve("./mxc-packaging-check-after-pack.cjs"),
+    extraResources: [],
+    win: { ...build.win, target: "dir", signAndEditExecutable: false, signExecutable: false,
+      extraResources: build.win.extraResources.filter((entry) => entry.to === "licenses/mxc" || entry.to.startsWith("app.asar.unpacked/node_modules/")) },
+  };
+}
+
+export function assertNoPackagedBuildHeaders(resources) {
+  const asar = require("@electron/asar");
+  const previousNoAsar = process.noAsar;
+  let names;
+  process.noAsar = true;
+  try { names = asar.listPackage(path.join(resources, "app.asar")); }
+  finally { process.noAsar = previousNoAsar; }
+  const unexpected = names.find((name) => /^[\\/]node_modules[\\/](?:node-pty[\\/]node_modules[\\/])?node-addon-api(?:[\\/]|$)/.test(name));
+  if (unexpected) throw new Error(`Unexpected packaged build-only headers: ${unexpected}`);
+  for (const relative of ["node-addon-api", "node-pty/node_modules/node-addon-api"]) {
+    const directory = path.join(resources, "app.asar.unpacked", "node_modules", relative);
+    if (existsSync(directory)) throw new Error(`Unexpected packaged build-only headers: ${directory}`);
+  }
+}
+
+export async function assertPackagingStagePaths(modules, arch) {
+  if (!["x64", "arm64"].includes(arch)) throw new Error("Unsupported SDK addon architecture");
+  const inspect = async (file, recursive = false) => {
+    let entry;
+    try { entry = await lstat(file); }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+    if (entry.isSymbolicLink() || await realpath(file) !== path.resolve(file)) throw new Error(`Packaging staging path redirected: ${file}`);
+    if (recursive && entry.isDirectory()) for (const name of await readdir(file)) await inspect(path.join(file, name), true);
+  };
+  await inspect(modules);
+  await inspect(path.join(modules, "@koromix"));
+  await inspect(path.join(modules, "@koromix", `koffi-win32-${arch}`), true);
+}
+
 export async function finishPackagingCheck(work, result) {
   if (result.passed) {
     try {
@@ -50,34 +97,23 @@ async function main() {
     for (const arch of architectures) {
       const project = path.join(work, arch), modules = path.join(project, "node_modules");
       await mkdir(modules, { recursive: true });
-      const dependencies = {};
-      // Copy real installed trees, including the competing top-level semver,
-      // so the collector sees the same nested resolution that production uses.
-      for (const name of ["@microsoft/mxc-sdk", "koffi", "node-pty", "semver", "node-addon-api"]) {
-        const directory = path.join(ROOT, "node_modules", name);
-        const pkg = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8"));
-        dependencies[name] = pkg.version;
-        await cp(directory, path.join(modules, name), { recursive: true, dereference: false, verbatimSymlinks: true });
-      }
+      // Preserve the complete installed graph and the production root manifest.
+      // Adding synthetic direct dependencies changes collector hoisting decisions.
+      await cp(path.join(ROOT, "node_modules"), modules, {
+        recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
+      });
+      const sourceHeaders = JSON.parse(await readFile(path.join(modules, "node-pty/node_modules/node-addon-api/package.json"), "utf8"));
+      if (sourceHeaders.name !== "node-addon-api") throw new Error("Expected installed nested PTY build headers");
+      await assertPackagingStagePaths(modules, arch);
       await stageMxcSdkAddon({ arch, projectRoot: project });
       verifyMxcSdkSource(modules, arch, PINS, {});
       await cp(path.join(ROOT, "bun.lock"), path.join(project, "bun.lock"));
       await cp(path.join(ROOT, "resources/licenses/mxc"), path.join(project, "resources/licenses/mxc"), { recursive: true });
-      await writeFile(path.join(project, "main.cjs"), "// Packaging entry only; this application is never executed.\n");
-      await writeFile(path.join(project, "package.json"), JSON.stringify({ name: "ave-native-payload-check", version: "1.0.0", main: "main.cjs", description: "Native payload packaging check", author: sourcePackage.author, dependencies }));
-      const config = {
-        appId: "test.ave.native-payload", productName: "Payload", extends: null,
-        electronVersion: JSON.parse(await readFile(require.resolve("electron/package.json"), "utf8")).version,
-        electronDownload: { cache: electronCache },
-        npmRebuild: false, nodeGypRebuild: false, asar: true,
-        files: [...sourcePackage.build.files, "main.cjs"], asarUnpack: sourcePackage.build.asarUnpack,
-        electronFuses: sourcePackage.build.electronFuses,
-        directories: { output: path.join(project, "output") },
-        win: { target: "dir", signAndEditExecutable: false, signExecutable: false,
-          signExts: sourcePackage.build.win.signExts,
-          extraResources: sourcePackage.build.win.extraResources.filter((entry) => entry.to === "licenses/mxc" || entry.to.startsWith("app.asar.unpacked/node_modules/")) },
-        afterPack: require.resolve("./mxc-packaging-check-after-pack.cjs"),
-      };
+      await mkdir(path.dirname(path.join(project, sourcePackage.main)), { recursive: true });
+      await writeFile(path.join(project, sourcePackage.main), "// Packaging entry only; this application is never executed.\n");
+      await writeFile(path.join(project, "package.json"), JSON.stringify(sourcePackage));
+      const config = packagingCheckConfiguration(sourcePackage, { project, electronCache,
+        electronVersion: JSON.parse(await readFile(require.resolve("electron/package.json"), "utf8")).version });
       const configFile = path.join(project, "builder.json");
       await writeFile(configFile, JSON.stringify(config));
       const builder = require.resolve("electron-builder/cli.js");
@@ -93,8 +129,9 @@ async function main() {
       const appOut = path.join(project, "output", arch === "x64" ? "win-unpacked" : "win-arm64-unpacked");
       const resources = path.join(appOut, "resources");
       assertPackagedMxcSdk(resources, arch);
-      verifyMxcSupervisorRuntime(path.join(appOut, "Payload.exe"), resources, arch);
+      verifyMxcSupervisorRuntime(path.join(appOut, `${sourcePackage.build.productName}.exe`), resources, arch);
       const unpacked = path.join(resources, "app.asar.unpacked/node_modules");
+      assertNoPackagedBuildHeaders(resources);
       const debugSymbols = (await readdir(path.join(unpacked, "node-pty/prebuilds", `win32-${arch}`), { recursive: true })).filter((file) => file.endsWith(".pdb"));
       if (debugSymbols.length) throw new Error("Unexpected packaged debug symbols");
       const manifests = {};
@@ -105,7 +142,8 @@ async function main() {
       }
       const semver = JSON.parse(await readFile(path.join(unpacked, PINS.sdk.packages.semver, "package.json"), "utf8"));
       result.observations.push({ arch, passed: true, appOut, builderArguments: args.slice(1), manifests,
-        nestedSemver: { path: PINS.sdk.packages.semver, version: semver.version }, debugSymbols, afterPackVerified: true });
+        nestedSemver: { path: PINS.sdk.packages.semver, version: semver.version },
+        buildHeaders: { sourcePresent: true, sourceVersion: sourceHeaders.version, packagedAbsent: true }, debugSymbols, afterPackVerified: true });
     }
     result.passed = true;
   } catch (error) { result.error = error.message; }

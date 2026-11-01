@@ -266,6 +266,8 @@
       "!node_modules/@*/*/{docs,doc,test,tests,__tests__,example,examples,benchmark,benchmarks,coverage}{,/**/*}",
       "!node_modules/**/{browser-test,system-test,*-test,test-*}{,/**/*}",
       "!node_modules/node-pty/third_party{,/**/*}",
+      "!node_modules/node-pty/node_modules/node-addon-api{,/**/*}",
+      "!node_modules/node-addon-api{,/**/*}",
       "!node_modules/node-pty/prebuilds/win32-*/**/*.pdb",
       "!node_modules/better-sqlite3/deps{,/**/*}",
       "!node_modules/better-sqlite3/src{,/**/*}",

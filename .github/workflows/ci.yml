@@ -599,6 +599,22 @@ jobs:
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      - name: Cache Windows packaging runtime archives
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/electron
+          key: windows-mxc-electron-${{ hashFiles('ave/bun.lock') }}
+      - name: Verify both Windows native payload packages
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          bun run check:mxc-pins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run check:mxc-packaging
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

@@ -1548,6 +1548,25 @@ describe("installer smoke and packaging discipline", () => {
     expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(step));
   });
 
+  it("also verifies both payload targets with the production collector on the native host", () => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
+      jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[] }>;
+    };
+    const job = workflow.jobs["windows-permission-tests"]!;
+    expect(job["runs-on"]).toBe("windows-2025");
+    const step = job.steps.find((entry) => entry.name === "Verify both Windows native payload packages")!;
+    expect(step).toBeDefined();
+    expect(step["continue-on-error"]).not.toBe(true);
+    expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
+    expect(step.shell).toBe("powershell");
+    expect(step["working-directory"]).toBe("ave");
+    expect(step.run).toBe("bun run check:mxc-pins\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\nbun run check:mxc-packaging\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n");
+    const cache = job.steps.find((entry) => entry.name === "Cache Windows packaging runtime archives")!;
+    expect(cache.with).toMatchObject({ path: ".cache/electron", key: "windows-mxc-electron-${{ hashFiles('ave/bun.lock') }}" });
+    expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron");
+    expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(step));
+  });
+
   it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
