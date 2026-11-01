@@ -14,8 +14,14 @@ import {
 } from "./persisted-hardware-acceleration.js";
 
 const log = createLogger("ave");
+const APP_USER_MODEL_ID = "ai.agent-connector.ave";
 const WINDOWS_TOAST_ACTIVATOR_CLSID =
   "{62FD3EFB-B3D2-4235-9402-6979F52C0286}";
+// An unpackaged run registers its bare electron.exe as the toast activator; under the product CLSID that hijacks clicks on the installed app's
+// notifications into Electron's default app.
+const DEV_APP_USER_MODEL_ID = "ai.agent-connector.ave.dev";
+const DEV_WINDOWS_TOAST_ACTIVATOR_CLSID =
+  "{3A31E029-A551-4866-84E0-3F814EE74B69}";
 
 export function applyRuntimeAppIcon() {
   const iconPath = resolveAppIconPath();
@@ -57,11 +63,11 @@ export function runEarlyBootEnv(): void {
   }
 
   // Windows notifications require an AppUserModelId to appear under the app identity; other platforms treat this as a no-op.
-  app.setAppUserModelId("ai.agent-connector.ave");
+  app.setAppUserModelId(app.isPackaged ? APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID);
   // Electron 43 otherwise creates a fresh random toast activator CLSID when the current-user notification shortcut is absent. Pin a product-owned ID
   // before any Notification presenter can initialize so reinstall/repair does not accumulate orphaned HKCU CLSID registrations.
   if (process.platform === "win32") {
-    app.setToastActivatorCLSID(WINDOWS_TOAST_ACTIVATOR_CLSID);
+    app.setToastActivatorCLSID(app.isPackaged ? WINDOWS_TOAST_ACTIVATOR_CLSID : DEV_WINDOWS_TOAST_ACTIVATOR_CLSID);
   }
 
   // Scrub development and test flags before packaged children inherit them so diagnostic signals reflect shipped behavior.
