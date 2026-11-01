@@ -1341,7 +1341,14 @@ function ProjectSessionList({
   const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
   const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
   // A tab a listed chat owns sits under that chat's row, as its sub-item; only the rest list on their own.
-  const listedSessionIds = new Set(visibleSessions(ordinarySessions).map((session) => session.id));
+  // A project group lists only its first page until expanded; a tab whose chat is past it stays a row of its own.
+  const listedSessionIds = new Set([
+    ...visibleSessions(ungroupedSessions),
+    ...sessionsByProject.flatMap(({ project, projectSessions }) => {
+      const shown = visibleSessions(projectSessions);
+      return expandedProjects.has(project.projectRoot ?? project.projectName) ? shown : shown.slice(0, SESSION_PAGE_SIZE);
+    }),
+  ].map((session) => session.id));
   const ownedByListedChat = (surface: SidebarSurface) => surface.sessionId !== undefined && listedSessionIds.has(surface.sessionId);
   const generalSurfaces = surfaces.filter((surface) => !ownedByListedChat(surface) && !projectOfSurface(surface));
   const hasUngroupedSessions = ungroupedSessions.length > 0 || generalSurfaces.length > 0;
