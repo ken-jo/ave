@@ -34,6 +34,13 @@ describe("plugin acceptance fixture over portable process pipes", () => {
         copyFileSync(new URL("../../../../tools/mxc-probes/plugin-stream-fixture.mjs", import.meta.url), join(directory, "plugin.mjs"));
         const result = await probePluginStreams(owned, directory, overflow);
         expect(result).toMatchObject({ passed: true, releases: 1, activeWatchers: 0 });
+        if (!overflow) {
+          // Each field is a measurement of this run, not a constant the probe asserts about itself.
+          expect(result).toMatchObject({ handshake: true, subscription: true, slowReadCycles: 8,
+            forgedTokenRefused: true, forgedFieldsReported: true, effects: 0 });
+          expect(result.forgedReply?.message).toContain("names an invocation this connection does not hold");
+          expect(result.results?.every((cycle) => cycle.pausedBacklogBytes > 0)).toBe(true);
+        }
         expect(getManagedChildProcessCount()).toBe(baseline);
       } finally { await owned.dispose(); rmSync(directory, { recursive: true, force: true }); }
     });

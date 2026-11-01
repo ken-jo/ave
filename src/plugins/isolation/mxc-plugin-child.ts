@@ -1,7 +1,9 @@
+import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
-import type { ChildLink } from "./plugin-child-transport.js";
+import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
+import { windowsCommandLine } from "../../shared/windows-command-line.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 
@@ -12,7 +14,7 @@ export interface MxcPluginChildLaunch {
   readonly request: ContainerRequest;
   readonly signal: AbortSignal;
   assertCurrent(): void;
-  /** Release the incarnation's policy/home/egress resources only after verified termination. */
+  /** Release the incarnation's policy, private home and egress lease only after verified termination. */
   release(): void | Promise<void>;
 }
 
@@ -83,17 +85,40 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
   };
 }
 
+/** The launch intent the host derived; the admitted request must run exactly this. */
+export interface MxcPluginChildIntent {
+  readonly pluginId: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+}
+
+/** The planner binds grants to the envelope (row 2); this slice pins only what it derived itself. */
+function assertLaunchMatchesIntent(request: MxcPluginChildLaunch["request"], intent: MxcPluginChildIntent): void {
+  if (request.command !== windowsCommandLine(intent.command, intent.args)) {
+    throw new MxcProcessContractError("Admitted plugin request does not run the derived command");
+  }
+  const fold = (path: string): string => winPath.normalize(path).replace(/\\+$/, "").toLowerCase();
+  const cwd = request.workingDirectory;
+  if (typeof cwd !== "string" || fold(cwd) !== fold(intent.cwd)) {
+    throw new MxcProcessContractError("Admitted plugin request does not use the derived working directory");
+  }
+}
+
 /** No retries or fallback after admission. The common primitive already tracks its supervisor for shutdown. */
-export async function spawnMxcPluginChild(launch: MxcPluginChildLaunch): Promise<MxcPluginChild> {
+export async function spawnMxcPluginChild(launch: MxcPluginChildLaunch, intent: MxcPluginChildIntent): Promise<MxcPluginChild> {
   let owned: OwnedMxcExtensionProcess;
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
     // Snapshot the request before yielding so policy cannot change during startup.
     const request = structuredClone(launch.request);
+    assertLaunchMatchesIntent(request, intent);
     owned = await spawnMxcExtensionProcess(request, { signal: launch.signal });
   } catch (error) {
-    if (!(error instanceof MxcProcessCleanupError)) await launch.release();
+    // Unverified startup cleanup keeps the lease: the process may still exist.
+    if (error instanceof MxcProcessCleanupError) throw new PluginChildTerminationUnverifiedError(intent.pluginId, { cause: error });
+    await launch.release();
     throw error;
   }
   const child = attachMxcPluginChild(owned, launch);
@@ -103,7 +128,11 @@ export async function spawnMxcPluginChild(launch: MxcPluginChildLaunch): Promise
     return child;
   } catch (error) {
     child.link.terminate("admission changed during spawn");
-    await child.waitForExit();
+    try {
+      await child.waitForExit();
+    } catch (cleanupError) {
+      throw terminationUnverified(intent.pluginId, error, cleanupError);
+    }
     throw error;
   }
 }

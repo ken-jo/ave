@@ -42,6 +42,10 @@ class WithdrawalRuntime extends PluginRuntime {
   running(pluginId = PLUGIN_ID): boolean {
     return this.plugins.has(pluginId);
   }
+
+  lifecycleAvailable(pluginId = PLUGIN_ID): void {
+    this.assertPluginLifecycleAvailable(pluginId);
+  }
 }
 
 function runtime(): WithdrawalRuntime {
@@ -216,6 +220,43 @@ describe("approved-directory withdrawal", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(subject.running()).toBe(false);
     expect(subject.failureKind()).toBe("sandbox-grant-outside-ceiling");
+  });
+
+  it("reports a quarantined incarnation without waiting for it and keeps retiring the others", async () => {
+    const approved = join(root, "approved");
+    mkdirSync(approved, { recursive: true });
+    setApproved([approved]);
+    const subject = runtime();
+    const grants = new Map<string, ReturnType<WithdrawalRuntime["register"]>>();
+    for (const pluginId of ["unverified-plugin", "verified-plugin"]) {
+      const pluginRoot = join(root, "home", "plugins", pluginId);
+      const dataDir = join(pluginRoot, "data");
+      mkdirSync(dataDir, { recursive: true });
+      const grant = subject.register(approved, pluginRoot, dataDir, pluginId);
+      grants.set(pluginId, grant);
+      subject.attach(async () => {
+        if (pluginId === "verified-plugin") { grant.dispose(); return; }
+        // The owner could not establish termination: the grant stays, and stop reports it.
+        grant.quarantine("Plugin child termination is unverified: unverified-plugin");
+        throw new Error("Plugin child termination is unverified: unverified-plugin");
+      }, () => [], pluginId);
+    }
+    setApproved([]);
+    const failure = await subject.retireSandboxGrantsOutsideCeiling().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(String(((failure as AggregateError).errors as AggregateError[]).flatMap((error) => error.errors.map(String))))
+      .toContain("sandbox grant incarnation is quarantined; its grants stay in place: unverified-plugin");
+    expect(subject.running("verified-plugin")).toBe(false);
+    expect(subject.failureKind("verified-plugin")).toBe("sandbox-grant-outside-ceiling");
+    // Fail closed: the quarantined grant stays registered and refuses every later check and replacement.
+    expect(grants.get("unverified-plugin")!.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+    expect(() => subject.lifecycleAvailable("unverified-plugin")).toThrow(/quarantined until host restart/);
+    // A later withdrawal settles at once and reports the same quarantine again rather than hanging.
+    await expect(subject.retireSandboxGrantsOutsideCeiling()).rejects.toThrow(/sandbox grant retirement failed/);
+    // Restoring the ceiling does not reopen the quarantined grant.
+    setApproved([approved]);
+    expect(grants.get("unverified-plugin")!.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
+    expect(await subject.retireSandboxGrantsOutsideCeiling()).toEqual([]);
   });
 
   it("retires every affected plugin even when an earlier cleanup fails", async () => {

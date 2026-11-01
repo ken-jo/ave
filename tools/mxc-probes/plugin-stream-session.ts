@@ -15,6 +15,7 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
   let releases = 0, effects = 0, activeWatchers = 0;
   const watchers = new Map<string, Set<(value: unknown) => void>>();
   const refusalAudit: Array<{ pluginId?: unknown; method?: unknown; code?: unknown }> = [];
+  const unknownFields: Array<{ pluginId: string; method?: string; field?: string }> = [];
   const hostApi = {
     getInstalledPluginIds: () => ["stream-probe"],
     onPluginsChanged: () => () => {},
@@ -43,7 +44,13 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
     auditLog: (_level, _message, data) => {
       if (data && typeof data === "object") refusalAudit.push(data);
     },
+    onUnknownField: (report) => {
+      unknownFields.push(report.kind === "field" ? { pluginId: report.pluginId, method: report.method, field: report.field } : { pluginId: report.pluginId });
+    },
     onClosed: () => child.waitForExit(), signal: controller.signal });
+  // Measured from the construct reply that crossed these streams: the child named every fixture tool it implements.
+  const implementedToolNames = [...session.construction.implementedToolNames].sort();
+  const handshake = JSON.stringify(implementedToolNames) === JSON.stringify(manifest.tools.map((tool) => tool.name).sort());
   const call = (name: string) => session.channel.requestMcp("tools/call", { name, arguments: {} }, TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs);
   try {
     if (overflow) {
@@ -59,29 +66,44 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
     const until = Date.now() + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs;
     while (!watchers.get("value")?.size && Date.now() < until) await pause(TOOL_TIMEOUT_POLICY.processGroupPollMs);
     if (!watchers.get("value")?.size) throw new Error("Native subscription did not register");
+    const subscribedWatchers = watchers.get("value")!.size;
     for (const callback of watchers.get("value")!) callback("subscription-arrived");
     const expected = "한".repeat(256 * 1024), expectedSha256 = createHash("sha256").update(expected).digest("hex");
     let largeOutputVerified = true;
-    const results: Array<{ bytes: number; sha256: string; subscriptionValue: string }> = [];
+    const results: Array<{ bytes: number; sha256: string; subscriptionValue: string; pausedBacklogBytes: number }> = [];
+    let slowReadCycles = 0;
     for (let index = 0; index < 8; index++) {
       const reading = call("read");
       owned.stdout.pause();
       await pause(TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      // Counted only when output actually waited in the paused reader; a pause that saw no bytes proves nothing.
+      const pausedBacklogBytes = owned.stdout.readableLength;
+      if (pausedBacklogBytes > 0) slowReadCycles++;
       owned.stdout.resume();
       const frame = await reading as { content: { text: string }[] };
       const value = JSON.parse(frame.content[0]!.text) as { seen: string; bytes: string };
       const sha256 = createHash("sha256").update(value.bytes).digest("hex");
-      results.push({ bytes: Buffer.byteLength(value.bytes), sha256, subscriptionValue: value.seen });
+      results.push({ bytes: Buffer.byteLength(value.bytes), sha256, subscriptionValue: value.seen, pausedBacklogBytes });
       largeOutputVerified &&= value.seen === "subscription-arrived" && sha256 === expectedSha256;
     }
     const forged = await call("forge") as { content: { text: string }[] };
-    const forgedIdentityRejected = forged.content[0]?.text.includes("argument-marshalling-rejected") === true && effects === 0
+    const forgedReply = JSON.parse(forged.content[0]?.text ?? "null") as { code?: unknown; message?: unknown } | null;
+    // The shape check and the token check share a code; only the message shows the unissued token refused.
+    const forgedTokenRefused = forgedReply?.code === "argument-marshalling-rejected"
+      && typeof forgedReply.message === "string" && forgedReply.message.includes("names an invocation this connection does not hold");
+    // The forged owner fields are ignored and reported against the real connection, never adopted.
+    const forgedFieldsReported = ["pluginId", "generationId"].every((field) => unknownFields.some((entry) =>
+      entry.pluginId === manifest.id && entry.method === "ave/host/raiseAlert" && entry.field === field));
+    const forgedIdentityRejected = forgedTokenRefused && forgedFieldsReported && effects === 0
       && refusalAudit.some((entry) => entry.pluginId === manifest.id && entry.method === "raiseAlert" && entry.code === "argument-marshalling-rejected");
     controller.abort();
     await session.teardown("native revocation");
     const terminal = await owned.completion;
-    return { passed: largeOutputVerified && forgedIdentityRejected && !terminal.timedOut && releases === 1 && activeWatchers === 0,
-      handshake: true, subscription: true, largeOutputVerified, slowReadCycles: 8,
-      results, expectedSha256, forgedIdentityRejected, refusalAudit, effects, terminal, releases, activeWatchers };
+    const subscription = subscribedWatchers > 0 && results.every((result) => result.subscriptionValue === "subscription-arrived");
+    return { passed: handshake && subscription && largeOutputVerified && slowReadCycles === results.length && forgedIdentityRejected
+        && !terminal.timedOut && releases === 1 && activeWatchers === 0,
+      handshake, implementedToolNames, subscription, subscribedWatchers, largeOutputVerified, slowReadCycles,
+      results, expectedSha256, forgedIdentityRejected, forgedTokenRefused, forgedFieldsReported, forgedReply, unknownFields,
+      refusalAudit, effects, terminal, releases, activeWatchers };
   } finally { owned.stdout.resume(); await session.teardown("probe finished"); }
 }

@@ -16,7 +16,7 @@ export const createPlugin = async (context) => {
           while (pending.includes("\n")) {
             const end = pending.indexOf("\n"), line = pending.slice(0, end); pending = pending.slice(end + 1);
             const frame = JSON.parse(line);
-            if (frame.id === "forged-native-owner") { process.stdin.off("data", receive); resolve(frame.error?.data?.code); }
+            if (frame.id === "forged-native-owner") { process.stdin.off("data", receive); resolve({ code: frame.error?.data?.code, message: frame.error?.message }); }
           }
         };
         process.stdin.on("data", receive);

@@ -2,7 +2,8 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
 import type { OwnedMxcExtensionProcess } from "../../../permissions/mxc-extension-process.js";
-import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
+import { MxcProcessCleanupError, MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
+import { PluginChildTerminationUnverifiedError } from "../plugin-child-transport.js";
 import { attachMxcPluginChild, spawnMxcPluginChild } from "../mxc-plugin-child.js";
 
 const spawn = vi.hoisted(() => vi.fn());
@@ -19,7 +20,9 @@ function fixture() {
   };
   const controller = new AbortController();
   const launch = { request: createMxcExtensionRequest(), signal: controller.signal, assertCurrent: vi.fn(), release: vi.fn() };
-  return { owned, launch, controller, resolve, reject };
+  const intent = { pluginId: "native-probe", command: "C:\\Ave\\runtime.exe", args: ["C:\\Ave\\staging\\entry.js"], cwd: "c:\\ave\\staging\\" };
+  launch.request.command = "C:\\Ave\\runtime.exe C:\\Ave\\staging\\entry.js";
+  return { owned, launch, intent, controller, resolve, reject };
 }
 
 describe("native plugin stream ownership", () => {
@@ -38,8 +41,8 @@ describe("native plugin stream ownership", () => {
 
   it("revokes the channel before disposal and releases only after confirmed death", async () => {
     const { owned, launch, controller, resolve } = fixture();
-    let confirm!: () => void;
-    vi.mocked(owned.dispose).mockImplementation(() => new Promise<void>((yes) => { confirm = yes; }));
+    let settleDisposal!: () => void;
+    vi.mocked(owned.dispose).mockImplementation(() => new Promise<void>((yes) => { settleDisposal = yes; }));
     const child = attachMxcPluginChild(owned, launch);
     const fault = vi.fn(); const gone = vi.fn();
     child.link.onFault(fault); child.link.onGone(gone);
@@ -50,7 +53,7 @@ describe("native plugin stream ownership", () => {
     expect(launch.release).not.toHaveBeenCalled(); expect(gone).not.toHaveBeenCalled();
     child.link.terminate("again");
     expect(owned.dispose).toHaveBeenCalledOnce();
-    resolve({ exitCode: 1, timedOut: false }); confirm();
+    resolve({ exitCode: 1, timedOut: false }); settleDisposal();
     await child.waitForExit();
     expect(launch.release).toHaveBeenCalledOnce();
   });
@@ -87,10 +90,10 @@ describe("native plugin stream ownership", () => {
   });
 
   it("rechecks admission after spawn and never retries a revoked holder", async () => {
-    const { owned, launch } = fixture();
+    const { owned, launch, intent } = fixture();
     spawn.mockReset().mockResolvedValue(owned);
     launch.assertCurrent.mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error("Grant changed"); });
-    await expect(spawnMxcPluginChild(launch)).rejects.toThrow("Grant changed");
+    await expect(spawnMxcPluginChild(launch, intent)).rejects.toThrow("Grant changed");
     expect(spawn).toHaveBeenCalledOnce(); expect(owned.dispose).toHaveBeenCalledOnce();
     expect(launch.release).toHaveBeenCalledOnce();
     expect(spawn.mock.calls[0]![0]).not.toBe(launch.request);
@@ -98,16 +101,43 @@ describe("native plugin stream ownership", () => {
   });
 
   it("refuses revoked admission before spawn", async () => {
-    const { launch, controller } = fixture();
+    const { launch, intent, controller } = fixture();
     spawn.mockReset(); controller.abort();
-    await expect(spawnMxcPluginChild(launch)).rejects.toThrow("revoked");
+    await expect(spawnMxcPluginChild(launch, intent)).rejects.toThrow("revoked");
     expect(spawn).not.toHaveBeenCalled(); expect(launch.release).toHaveBeenCalledOnce();
   });
 
   it("keeps startup cleanup failures quarantined without a fallback start", async () => {
-    const { launch } = fixture();
-    spawn.mockReset().mockRejectedValue(new MxcProcessCleanupError("Cleanup unverified"));
-    await expect(spawnMxcPluginChild(launch)).rejects.toThrow("Cleanup unverified");
+    const { launch, intent } = fixture();
+    const cleanup = new MxcProcessCleanupError("Cleanup unverified");
+    spawn.mockReset().mockRejectedValue(cleanup);
+    const failure = await spawnMxcPluginChild(launch, intent).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
+    expect((failure as Error).cause).toBe(cleanup);
     expect(spawn).toHaveBeenCalledOnce(); expect(launch.release).not.toHaveBeenCalled();
+  });
+
+  it("keeps both the recheck failure and the cleanup failure when the post-spawn teardown is unverified", async () => {
+    const { owned, launch, intent } = fixture();
+    const cleanup = new MxcProcessCleanupError("Termination unverified");
+    vi.mocked(owned.dispose).mockRejectedValue(cleanup);
+    spawn.mockReset().mockResolvedValue(owned);
+    const changed = new Error("Grant changed");
+    launch.assertCurrent.mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw changed; });
+    const failure = await spawnMxcPluginChild(launch, intent).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
+    expect(((failure as Error).cause as AggregateError).errors).toEqual([changed, cleanup]);
+    expect(launch.release).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["command", (request: { command: string }) => { request.command = "C:\\Other\\runtime.exe C:\\Ave\\staging\\entry.js"; }],
+    ["working directory", (request: { workingDirectory?: string }) => { request.workingDirectory = "C:\\Ave"; }],
+  ])("refuses an admitted request whose %s differs from the derived intent", async (_label, mutate) => {
+    const { launch, intent } = fixture();
+    mutate(launch.request as never);
+    spawn.mockReset();
+    await expect(spawnMxcPluginChild(launch, intent)).rejects.toBeInstanceOf(MxcProcessContractError);
+    expect(spawn).not.toHaveBeenCalled(); expect(launch.release).toHaveBeenCalledOnce();
   });
 });

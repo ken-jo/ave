@@ -112,7 +112,8 @@ import {
   parseChildLaunchArgs,
 } from "../child-loopback-link.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
-import type { ChildLink } from "../plugin-child-transport.js";
+import { PluginChildTerminationUnverifiedError, type ChildLink } from "../plugin-child-transport.js";
+import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import {
   FRAME_BYTES_MAX,
   HOSTAPI_PATH_CONTRACTS,
@@ -913,6 +914,58 @@ function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () 
   };
 }
 
+/** The planner binds the request to the derived command and cwd; the adapter refuses anything else. */
+function admittedRequest(intent: { command: string; args: readonly string[]; cwd: string }) {
+  return { ...createMxcExtensionRequest(), command: windowsCommandLine(intent.command, intent.args), workingDirectory: intent.cwd };
+}
+
+describe("native factory failures with unverified termination", () => {
+  const cleanups: Array<() => void> = [];
+  function nativeSpec(registration: { assertCurrent(): void; dispose(): void; quarantine(reason: string): void }) {
+    const { dir, entryPath } = writePluginModule();
+    const release = vi.fn();
+    const prepare = vi.fn(async (intent: { command: string; args: readonly string[]; cwd: string }) => ({
+      request: admittedRequest(intent), signal: new AbortController().signal, assertCurrent() {}, release }));
+    return { dir, release, spec: { manifest: MANIFEST, launch: { kind: "entry" as const, entryPath }, prepareMxcChild: prepare,
+      registerSandboxEnvelope: () => registration } };
+  }
+
+  it("quarantines the registration when startup cleanup is unverified", async () => {
+    const roots = spawnableRoots();
+    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn() };
+    const cleanup = new MxcProcessCleanupError("Startup cleanup unverified");
+    spawnNativeChild.mockReset().mockRejectedValue(cleanup);
+    try {
+      const { spec, release, dir } = nativeSpec(registration);
+      cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+      const failure = await Promise.resolve().then(() => createOutOfProcessPluginFactory(spec)(hostContext(fakeHostApi(), roots.context))).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
+      expect((failure as Error).cause).toBe(cleanup);
+      expect(registration.dispose).not.toHaveBeenCalled(); expect(registration.quarantine).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled(); expect(spawnNativeChild).toHaveBeenCalledOnce();
+    } finally { roots.remove(); for (const cleanup of cleanups.splice(0)) cleanup(); }
+  });
+
+  it("keeps the grant failure and the cleanup failure when the post-spawn recheck teardown is unverified", async () => {
+    const roots = spawnableRoots();
+    const changed = new Error("sandbox-grant-outside-ceiling");
+    const registration = { assertCurrent: vi.fn(() => { throw changed; }), dispose: vi.fn(), quarantine: vi.fn() };
+    const cleanup = new MxcProcessCleanupError("Termination unverified");
+    const completion = new Promise<never>(() => {});
+    spawnNativeChild.mockReset().mockResolvedValue({ id: 42, stdin: new PassThrough(), stdout: new PassThrough(),
+      stderr: new PassThrough(), completion, dispose: vi.fn(async () => { throw cleanup; }) });
+    try {
+      const { spec, release, dir } = nativeSpec(registration);
+      cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+      const failure = await Promise.resolve().then(() => createOutOfProcessPluginFactory(spec)(hostContext(fakeHostApi(), roots.context))).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
+      expect(((failure as Error).cause as AggregateError).errors).toEqual([changed, cleanup]);
+      expect(registration.dispose).not.toHaveBeenCalled(); expect(registration.quarantine).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+    } finally { roots.remove(); for (const cleanup of cleanups.splice(0)) cleanup(); }
+  });
+});
+
 describe("construct negotiates the host protocol", () => {
   it.each([false, true])("keeps the native envelope and quarantines uncertain termination: %s", async (cleanupFailure) => {
     const roots = spawnableRoots();
@@ -928,15 +981,16 @@ describe("construct negotiates the host protocol", () => {
     });
     const release = vi.fn();
     const unregister = vi.fn();
-    const prepare = vi.fn(async () => ({ request: createMxcExtensionRequest(), signal: new AbortController().signal,
-      assertCurrent() {}, release }));
+    const quarantine = vi.fn();
+    const prepare = vi.fn(async (intent: { command: string; args: readonly string[]; cwd: string }) => ({
+      request: admittedRequest(intent), signal: new AbortController().signal, assertCurrent() {}, release }));
     const legacyMarker = vi.fn();
     spawnNativeChild.mockReset().mockResolvedValue({ id: 42, stdin: input, stdout: output, stderr, completion, dispose });
     spawnConfinedChild.mockClear();
     try {
       const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath },
         prepareMxcChild: prepare, onChildSpawned: legacyMarker,
-        registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose: unregister }) });
+        registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose: unregister, quarantine }) });
       const instance = await factory(hostContext(fakeHostApi(), roots.context));
       expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ pluginId: PLUGIN_ID, command: process.execPath,
         cwd: roots.context.pluginRoot, envelope: expect.objectContaining({ write: expect.arrayContaining([roots.context.pluginDataDir]) }) }));
@@ -944,11 +998,15 @@ describe("construct negotiates the host protocol", () => {
       expect(legacyMarker).not.toHaveBeenCalled();
       await expect(instance.handlers.pilot_echo!({ text: "native" })).resolves.toMatchObject({ payload: { text: "native" } });
       if (cleanupFailure) {
-        await expect(instance.stop!()).rejects.toThrow("Termination unverified");
+        const failure = await Promise.resolve().then(() => instance.stop!()).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
+        expect(String((failure as Error).cause)).toContain("Termination unverified");
         expect(release).not.toHaveBeenCalled(); expect(unregister).not.toHaveBeenCalled();
+        expect(quarantine).toHaveBeenCalledOnce();
       } else {
         await instance.stop?.();
         expect(release).toHaveBeenCalledOnce(); expect(unregister).toHaveBeenCalledOnce();
+        expect(quarantine).not.toHaveBeenCalled();
       }
       expect(dispose).toHaveBeenCalledOnce();
     } finally { service.hostGone(); finish({ exitCode: 0, timedOut: false }); roots.remove(); rmSync(dir, { recursive: true, force: true }); }

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { PassThrough, Writable } from "node:stream";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
 import { RAW_RESULT_META } from "../../../mcp/protocol-constants.js";
-import { FramedMessageStream } from "../child-stream-multiplex.js";
+import { FramedMessageStream, OUTBOUND_QUEUE_BYTES_MAX } from "../child-stream-multiplex.js";
 import { FRAME_BYTES_MAX, WIRE_BYTES_MAX } from "../host-api-wire.js";
 import { PluginChildTransport, type ChildLink } from "../plugin-child-transport.js";
 import { servePluginChild } from "../plugin-child-main.js";
@@ -26,12 +26,33 @@ describe("the frame bound", () => {
     const message = { jsonrpc: "2.0", id: "large", result: "x".repeat(FRAME_BYTES_MAX - 100) };
     for (let index = 0; index < 10; index++) stream.send(message);
     const queued = output.writableLength;
-    expect(queued).toBeLessThanOrEqual(4 * (FRAME_BYTES_MAX + 1));
+    expect(queued).toBeLessThanOrEqual(OUTBOUND_QUEUE_BYTES_MAX);
     expect(violations).toEqual(["Plugin output queue exceeds limit"]);
     stream.forward(frameMessage({ id: 1, result: null }));
     expect(output.writableLength).toBe(queued);
     input.write(frameMessage({ id: 2, method: "ave/host/logEvent", params: {} }));
     expect(received).toEqual([]);
+    input.destroy(); output.destroy();
+  });
+
+  it("queues two maximal frames plus the headroom exactly, and refuses one byte more", () => {
+    const input = new PassThrough();
+    const output = new Writable({ write() { /* never drains */ } });
+    const violations: string[] = [];
+    const stream = new FramedMessageStream(input, output, () => {}, (reason) => violations.push(reason), () => {});
+    stream.start();
+    const maximal = lineOf(FRAME_BYTES_MAX);
+    expect(maximal.length).toBe(FRAME_BYTES_MAX + 1);
+    stream.forward(maximal); stream.forward(maximal);
+    const headroom = OUTBOUND_QUEUE_BYTES_MAX - 2 * (FRAME_BYTES_MAX + 1);
+    expect(headroom).toBe(8 * 1024 * 1024);
+    stream.forward(lineOf(headroom - 1));
+    expect(output.writableLength).toBe(OUTBOUND_QUEUE_BYTES_MAX);
+    expect(violations).toEqual([]);
+    stream.forward(Buffer.from("{}\n"));
+    expect(violations).toEqual(["Plugin output queue exceeds limit"]);
+    expect(output.writableLength).toBe(OUTBOUND_QUEUE_BYTES_MAX);
+    expect(OUTBOUND_QUEUE_BYTES_MAX).toBeLessThan(4 * (FRAME_BYTES_MAX + 1));
     input.destroy(); output.destroy();
   });
 

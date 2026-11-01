@@ -98,6 +98,24 @@ export interface ChildLink {
   onFault(handler: (reason: string) => void): void;
 }
 
+/** A child whose termination could not be established. Its owner keeps the launch lease and envelope
+ * registration, quarantines the lifecycle and refuses replacement; this is never a revocation claim. */
+export class PluginChildTerminationUnverifiedError extends Error {
+  readonly code = "plugin-child-termination-unverified";
+
+  constructor(pluginId: string, options: ErrorOptions) {
+    super(`Plugin child termination is unverified: ${pluginId}`, options);
+    this.name = "PluginChildTerminationUnverifiedError";
+  }
+}
+
+/** Keep both the failure that started teardown and the cleanup failure that followed it. */
+export function terminationUnverified(pluginId: string, original: unknown, cleanupError: unknown): PluginChildTerminationUnverifiedError {
+  return new PluginChildTerminationUnverifiedError(pluginId, {
+    cause: new AggregateError([original, cleanupError], "Teardown after a failure could not verify termination"),
+  });
+}
+
 export interface PluginChildTransportOptions
   extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild" | "invocations"> {
   readonly link: ChildLink;

@@ -63,7 +63,7 @@ import {
   isServedHostProtocolVersion,
   type HostProtocolVersion,
 } from "./host-api-wire.js";
-import type { ChildLink } from "./plugin-child-transport.js";
+import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
 import {
   CHILD_LOOPBACK_TRANSPORT_ARG,
   connectToAnnouncedChild,
@@ -735,7 +735,10 @@ export interface OutOfProcessPluginSpec {
   }) => Promise<MxcPluginChildLaunch>;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
     assertCurrent(): void;
+    /** Verified termination: the grants leave with the incarnation. */
     dispose(): void;
+    /** Unverified termination: keep the grants in place, fail closed, and refuse replacement. */
+    quarantine(reason: string): void;
   };
   readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   /**
@@ -799,11 +802,9 @@ export function createOutOfProcessPluginFactory(
     let child: ConfinedPluginChild | MxcPluginChild | undefined;
     try {
       if (spec.prepareMxcChild) {
-        const launch = await spec.prepareMxcChild({
-          pluginId, command: process.execPath, args: [childEntryPath],
-          cwd: context.pluginRoot, envelope,
-        });
-        child = await spawnMxcPluginChild(launch);
+        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot };
+        const launch = await spec.prepareMxcChild({ ...intent, envelope });
+        child = await spawnMxcPluginChild(launch, intent);
       } else child = await spawnConfinedPluginChild({
         pluginId,
         envelope,
@@ -817,10 +818,19 @@ export function createOutOfProcessPluginFactory(
       if ("confinement" in child) spec.onChildSpawned?.(child.confinement);
       registration?.assertCurrent();
     } catch (error) {
-      child?.link.terminate("sandbox grant changed during spawn");
-      await child?.waitForExit?.();
-      registration?.dispose();
-      throw error;
+      let failure = error;
+      if (child) {
+        child.link.terminate("sandbox grant changed during spawn");
+        try {
+          await child.waitForExit?.();
+        } catch (cleanupError) {
+          failure = terminationUnverified(pluginId, error, cleanupError);
+        }
+      }
+      // Unverified termination keeps the registration with its launch lease; the runtime quarantines the lifecycle.
+      if (failure instanceof PluginChildTerminationUnverifiedError) registration?.quarantine(failure.message);
+      else registration?.dispose();
+      throw failure;
     }
     const spawned = child;
 
@@ -856,8 +866,14 @@ export function createOutOfProcessPluginFactory(
       table,
       ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
       onClosed: async () => {
-        await spawned.waitForExit?.();
-        // Unverified termination keeps the registration quarantined with its launch lease.
+        try {
+          await spawned.waitForExit?.();
+        } catch (cleanupError) {
+          // Unverified termination keeps the registration quarantined with its launch lease.
+          const failure = new PluginChildTerminationUnverifiedError(pluginId, { cause: cleanupError });
+          registration?.quarantine(failure.message);
+          throw failure;
+        }
         registration?.dispose();
       },
     });

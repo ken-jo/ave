@@ -54,6 +54,7 @@ import { buildImportUrl, buildMethodMap, declaredAppVisibleToolMethods } from ".
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError } from "../isolation/out-of-process-plugin.js";
+import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import {
   HOST_PROTOCOL_VERSIONS_SERVED,
   IncompatibleHostProtocolError,
@@ -917,6 +918,14 @@ class PluginFactoryTimeoutError extends Error {
   }
 }
 
+/** A factory that may have left a live child behind: neither retry nor replacement may start. */
+function factoryFailureRequiresQuarantine(error: unknown): error is Error {
+  return error instanceof PluginFactoryTimeoutError || error instanceof PluginChildTerminationUnverifiedError;
+}
+
+/** How one envelope registration ended: with its incarnation, or kept because termination is unverified. */
+type SandboxEnvelopeSettlement = "released" | "quarantined";
+
 /** Which plugins had not finished retiring when the shutdown deadline ended `stopAll()`. */
 type PluginRuntimeShutdownReport = Readonly<{ unfinished: readonly string[] }>;
 
@@ -1384,17 +1393,19 @@ abstract class PluginRuntimeState {
     pluginRoot: string;
     pluginDataDir: string;
     active: boolean;
-    settled: Promise<void>;
-    resolveSettled: () => void;
+    quarantined: boolean;
+    settled: Promise<SandboxEnvelopeSettlement>;
+    resolveSettled: (settlement: SandboxEnvelopeSettlement) => void;
   }>>();
 
   protected registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): {
     assertCurrent(): void;
     dispose(): void;
+    quarantine(reason: string): void;
   } {
-    let resolveSettled!: () => void;
-    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
-    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, settled, resolveSettled };
+    let resolveSettled!: (settlement: SandboxEnvelopeSettlement) => void;
+    const settled = new Promise<SandboxEnvelopeSettlement>((resolve) => { resolveSettled = resolve; });
+    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, settled, resolveSettled };
     const entries = this.sandboxEnvelopes.get(pluginId) ?? new Set<typeof record>();
     entries.add(record);
     this.sandboxEnvelopes.set(pluginId, entries);
@@ -1407,15 +1418,24 @@ abstract class PluginRuntimeState {
       dispose: () => {
         entries.delete(record);
         if (entries.size === 0) this.sandboxEnvelopes.delete(pluginId);
-        record.resolveSettled();
+        record.resolveSettled("released");
+      },
+      // The record and its grants stay registered, inactive, so every later check fails closed and
+      // withdrawal reports it instead of waiting for a release that verified termination alone can give.
+      quarantine: (reason) => {
+        record.active = false;
+        record.quarantined = true;
+        this.quarantinePluginLifecycle(pluginId, reason);
+        record.resolveSettled("quarantined");
       },
     };
   }
 
-  protected sandboxGrantWithdrawals(): Array<{ pluginId: string; settled: Promise<void[]> }> {
-    const affected: Array<{ pluginId: string; settled: Promise<void[]> }> = [];
+  protected sandboxGrantWithdrawals(): Array<{ pluginId: string; settled: Promise<SandboxEnvelopeSettlement[]> }> {
+    const affected: Array<{ pluginId: string; settled: Promise<SandboxEnvelopeSettlement[]> }> = [];
     for (const [pluginId, entries] of this.sandboxEnvelopes) {
-      if (![...entries].some((entry) => !entry.active || entry.grants.some((grant) =>
+      // A quarantined record is already inactive; only its grants leaving the ceiling select it again.
+      if (![...entries].some((entry) => (!entry.active && !entry.quarantined) || entry.grants.some((grant) =>
         !isPluginSandboxGrantCovered(grant, entry.pluginRoot, entry.pluginDataDir)))) continue;
       for (const entry of entries) entry.active = false;
       affected.push({ pluginId, settled: Promise.all([...entries].map((entry) => entry.settled)) });
@@ -3915,7 +3935,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         },
       );
     } catch (err) {
-      if (err instanceof PluginFactoryTimeoutError) {
+      if (factoryFailureRequiresQuarantine(err)) {
         this.quarantinePluginLifecycle(manifest.id, err.message);
       }
       await this.releaseAttempt(attempt, "failed add factory");
@@ -4782,7 +4802,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       });
     } catch (error) {
       if (
-        error instanceof PluginFactoryTimeoutError
+        factoryFailureRequiresQuarantine(error)
         || error instanceof PluginStartupTimeoutError
       ) {
         this.quarantinePluginLifecycle(manifest.id, error.message);
@@ -5210,7 +5230,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         },
       );
     } catch (err) {
-      if (err instanceof PluginFactoryTimeoutError) {
+      if (factoryFailureRequiresQuarantine(err)) {
         this.quarantinePluginLifecycle(manifest.id, err.message);
       }
       await this.releaseAttempt(resources, "failed load factory");
@@ -6059,7 +6079,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         },
       );
     } catch (err) {
-      if (err instanceof PluginFactoryTimeoutError) {
+      if (factoryFailureRequiresQuarantine(err)) {
         this.quarantinePluginLifecycle(pluginId, err.message);
       }
       await this.releaseAttempt(replacementAttempt, "failed restart factory");
@@ -6305,7 +6325,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return affected.map(({ pluginId }) => pluginId);
   }
 
-  private async retireSandboxGrantIncarnation(pluginId: string, settled: Promise<void[]>): Promise<void> {
+  private async retireSandboxGrantIncarnation(pluginId: string, settled: Promise<SandboxEnvelopeSettlement[]>): Promise<void> {
     this.cancelPendingRestart(pluginId);
     this.beginPluginLifecycleOperation(pluginId);
     const plugin = this.plugins.get(pluginId);
@@ -6329,7 +6349,10 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     } catch (error) {
       errors.push(error);
     }
-    await settled;
+    // A quarantined record settles at once, so one unverified child never holds back another plugin's retirement.
+    if ((await settled).includes("quarantined")) {
+      errors.push(new Error(`sandbox grant incarnation is quarantined; its grants stay in place: ${pluginId}`));
+    }
     this.markLoadRefused(pluginId, {
       summary: "Plugin filesystem grant is outside approved directories.",
       reason: "sandbox-grant-outside-ceiling",

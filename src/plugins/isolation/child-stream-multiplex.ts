@@ -119,7 +119,7 @@ export class FramedMessageStream {
   /** Synchronous protocol producers cannot await drain. Refuse a stalled peer
    * before its writable queue grows without bound; never drop a request silently. */
   private write(frame: Buffer): void {
-    if (this.output.writableLength + frame.length > 4 * (FRAME_BYTES_MAX + 1)) {
+    if (this.output.writableLength + frame.length > OUTBOUND_QUEUE_BYTES_MAX) {
       this.violated = true;
       this.onViolation("Plugin output queue exceeds limit");
       return;
@@ -127,6 +127,22 @@ export class FramedMessageStream {
     this.output.write(frame);
   }
 }
+
+/** Headroom beside queued maximal frames for the small replies, notifications and cancellations that keep flowing. */
+const OUTBOUND_QUEUE_HEADROOM_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Bytes one direction may queue for a peer that has not yet read them, per connection.
+ *
+ * Two maximal frames (each `FRAME_BYTES_MAX` plus its newline) so two concurrent largest
+ * replies still pass a slow-but-draining peer, plus fixed headroom for control traffic.
+ * About 100 MB with the current frame limit, against roughly 183 MB for the earlier four-frame
+ * bound. A queue past it means the peer has stopped reading for longer than any permitted
+ * burst, so the channel ends as a violation instead of buffering without limit. This is
+ * enforced on every plugin connection, confined or native, and is stricter than the
+ * unbounded queue before it.
+ */
+export const OUTBOUND_QUEUE_BYTES_MAX = 2 * (FRAME_BYTES_MAX + 1) + OUTBOUND_QUEUE_HEADROOM_BYTES;
 
 /** Report oversized notifications to their owner. */
 export interface DroppedNotification {

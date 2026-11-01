@@ -14,7 +14,7 @@ import type {
   PluginToolHandler,
   RuntimePlugin,
 } from "../types.js";
-import { hostProtocolCapabilities } from "./host-api-dispatcher.js";
+import { hostProtocolCapabilities, type UnknownFieldReport } from "./host-api-dispatcher.js";
 import {
   HOST_PROTOCOL_NOTIFICATIONS,
   IncompatibleHostProtocolError,
@@ -52,6 +52,8 @@ export interface PluginProtocolSessionSpec {
   /** The bound table is the whole authority; derive advertised methods from it without defaults. */
   readonly table: BoundHostApiDispatchTable;
   readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  /** Observe each undeclared params field after it is logged; it cannot alter the dispatcher's result. */
+  readonly onUnknownField?: (report: UnknownFieldReport & { readonly pluginId: string }) => void;
   /** Run owner cleanup once after either teardown or natural child exit. */
   readonly onClosed: (reason: string) => Promise<void>;
   /** Observe abort from the first setup step through release, including construct. */
@@ -200,6 +202,9 @@ export async function openPluginProtocolSession(
     },
     // Report undeclared params once per method and field to reveal protocol skew.
     reportUnknownField: (report) => {
+      try {
+        spec.onUnknownField?.({ ...report, pluginId });
+      } catch { /* an observer failure cannot alter a dispatcher result */ }
       if (report.kind === "suppressed") {
         log.warn(
           { pluginId, limit: report.limit },
