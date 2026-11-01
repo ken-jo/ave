@@ -60,11 +60,16 @@ function claimProtocolStdout(): Writable {
   process.stdout.write = divert as typeof process.stdout.write;
   // Rebuild console on stderr because it captured the original stdout reference.
   globalThis.console = new Console(process.stderr, process.stderr);
-  return new Writable({
+  const protocol = new Writable({
     write(chunk: Buffer, _encoding, callback) {
       rawWrite(chunk, callback);
     },
   });
+  // A host that has gone (EPIPE) ends the protocol; stdin closure then drives the normal exit path.
+  protocol.on("error", (error: Error) => {
+    process.stderr.write(`[plugin-child] protocol stdout failed: ${error.message}\n`);
+  });
+  return protocol;
 }
 
 function describeLifecycleHooks(instance: PluginChildRuntime["instance"]): PluginLifecycleHookName[] {
@@ -85,11 +90,12 @@ export function servePluginChild(
   const hostApiReplies = new PendingCallTable<HostApiReply>();
   // Each direction owns its request-ID space; match replies only within that direction.
   let nextRequestId = 0;
-  // Forward whole MCP frames through the shared size guard without decoding them again.
+  // Forward whole MCP frames through the shared size guard without decoding them again. Tool results wait
+  // for the protocol output to drain before the next one is taken, so concurrent large results queue in the
+  // MCP layer rather than tripping the outbound queue bound.
   const mcpOut = new Writable({
     write(chunk: Buffer, _encoding, callback) {
-      stream.forward(chunk);
-      callback();
+      stream.forwardPaced(chunk, () => callback());
     },
   });
   // Forward only MCP requests to the server; lifecycle and reverse-host traffic use separate handlers.

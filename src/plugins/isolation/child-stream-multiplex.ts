@@ -116,6 +116,24 @@ export class FramedMessageStream {
     this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 
+  /** Forward a prebuilt frame, then call `ready` only once the output has drained (or closed). A caller that
+   * awaits `ready` before its next frame keeps at most one of its frames queued, so a burst of large results
+   * waits upstream instead of reaching {@link OUTBOUND_QUEUE_BYTES_MAX}; the bound itself is unchanged. */
+  forwardPaced(frame: Buffer, ready: () => void): void {
+    this.forward(frame);
+    if (this.violated || !this.output.writableNeedDrain || this.output.destroyed) {
+      ready();
+      return;
+    }
+    const resume = (): void => {
+      this.output.off("drain", resume);
+      this.output.off("close", resume);
+      ready();
+    };
+    this.output.on("drain", resume);
+    this.output.on("close", resume);
+  }
+
   /** Synchronous protocol producers cannot await drain. Refuse a stalled peer
    * before its writable queue grows without bound; never drop a request silently. */
   private write(frame: Buffer): void {

@@ -46,6 +46,19 @@ class WithdrawalRuntime extends PluginRuntime {
   lifecycleAvailable(pluginId = PLUGIN_ID): void {
     this.assertPluginLifecycleAvailable(pluginId);
   }
+
+  quarantine(reason: string, pluginId = PLUGIN_ID): void {
+    this.quarantinePluginLifecycle(pluginId, reason);
+  }
+
+  releaseWithPayload(runtimeRoot: string, pluginId = PLUGIN_ID): Promise<unknown[]> {
+    return this.releaseAttempt({ pluginId, runtimeRoot } as never, "test attempt");
+  }
+
+  payloadRemover() {
+    return vi.spyOn(this as unknown as { removeUnpublishedRuntimeRoot(pluginId: string, root: string): Promise<void> },
+      "removeUnpublishedRuntimeRoot").mockResolvedValue(undefined);
+  }
 }
 
 function runtime(): WithdrawalRuntime {
@@ -71,6 +84,21 @@ afterEach(() => {
   if (previousHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousHome;
   rmSync(root, { recursive: true, force: true });
+});
+
+describe("attempt release after unverified termination", () => {
+  it("keeps the generation payload of a quarantined attempt and removes it otherwise", async () => {
+    const subject = runtime();
+    const remover = subject.payloadRemover();
+    const payload = join(root, "generations", "a".repeat(64), "payload");
+    await subject.releaseWithPayload(payload);
+    expect(remover).toHaveBeenCalledWith(PLUGIN_ID, payload);
+    remover.mockClear();
+    // A possibly-alive child runs from this payload: its cwd and entry code stay with the retained lease.
+    subject.quarantine("Plugin child termination is unverified");
+    await subject.releaseWithPayload(payload);
+    expect(remover).not.toHaveBeenCalled();
+  });
 });
 
 describe("approved-directory withdrawal", () => {

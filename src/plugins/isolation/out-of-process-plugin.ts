@@ -739,6 +739,8 @@ export interface OutOfProcessPluginSpec {
     dispose(): void;
     /** Unverified termination: keep the grants in place, fail closed, and refuse replacement. */
     quarantine(reason: string): void;
+    /** Termination began; until it is verified or quarantined, no replacement may spawn beside this child. */
+    terminating(): void;
   };
   readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   /**
@@ -804,7 +806,15 @@ export function createOutOfProcessPluginFactory(
       if (spec.prepareMxcChild) {
         const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot };
         const launch = await spec.prepareMxcChild({ ...intent, envelope });
-        child = await spawnMxcPluginChild(launch, intent);
+        const native = await spawnMxcPluginChild(launch, intent);
+        child = native;
+        // Whoever starts termination (teardown, a transport fault, revocation or the child's own exit), the
+        // registration learns at once, and an unverified result quarantines it without waiting for onClosed,
+        // which a fault-driven termination never reaches.
+        native.onTerminating(() => registration?.terminating());
+        native.waitForExit().catch((cleanupError: unknown) => {
+          registration?.quarantine(new PluginChildTerminationUnverifiedError(pluginId, { cause: cleanupError }).message);
+        });
       } else child = await spawnConfinedPluginChild({
         pluginId,
         envelope,
@@ -856,27 +866,46 @@ export function createOutOfProcessPluginFactory(
         ? () => spec.onMalformedCredentialSelector?.(pluginId)
         : undefined,
     );
-    const session = await openPluginProtocolSession({
-      pluginId,
-      manifest: spec.manifest,
-      hostProtocolVersion,
-      link: spawned.link,
-      context,
-      entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
-      table,
-      ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
-      onClosed: async () => {
-        try {
-          await spawned.waitForExit?.();
-        } catch (cleanupError) {
-          // Unverified termination keeps the registration quarantined with its launch lease.
-          const failure = new PluginChildTerminationUnverifiedError(pluginId, { cause: cleanupError });
-          registration?.quarantine(failure.message);
-          throw failure;
-        }
-        registration?.dispose();
-      },
-    });
+    let session: Awaited<ReturnType<typeof openPluginProtocolSession>>;
+    try {
+      session = await openPluginProtocolSession({
+        pluginId,
+        manifest: spec.manifest,
+        hostProtocolVersion,
+        link: spawned.link,
+        context,
+        entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
+        table,
+        ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
+        onClosed: async () => {
+          try {
+            await spawned.waitForExit?.();
+          } catch (cleanupError) {
+            // Unverified termination keeps the registration quarantined with its launch lease.
+            const failure = new PluginChildTerminationUnverifiedError(pluginId, { cause: cleanupError });
+            registration?.quarantine(failure.message);
+            throw failure;
+          }
+          registration?.dispose();
+        },
+      });
+    } catch (error) {
+      // The session starts teardown on a bring-up failure but does not wait for it. A native child's exit
+      // settles within the primitive's own disposal deadline, and this whole factory is bounded by the
+      // runtime's factory deadline, so the refusal is reported only once termination is known: an
+      // unverified one quarantines before the runtime releases the lifecycle lock.
+      if (!spec.prepareMxcChild) throw error;
+      try {
+        await spawned.waitForExit?.();
+      } catch (cleanupError) {
+        const failure = terminationUnverified(pluginId, error, cleanupError);
+        registration?.quarantine(failure.message);
+        throw failure;
+      }
+      // Verified: release now rather than racing the session's own release, so a retry is not refused.
+      registration?.dispose();
+      throw error;
+    }
     // The channel and `teardown` stay here: the lifecycle gets the instance, whose `stop` is its one hand on the child's lifetime.
     return session.instance;
   };

@@ -56,6 +56,33 @@ describe("the frame bound", () => {
     input.destroy(); output.destroy();
   });
 
+  it("paces a burst of maximal frames so the queue holds one at a time and the bound is never reached", async () => {
+    const input = new PassThrough();
+    const held: Array<() => void> = [];
+    const delivered: number[] = [];
+    const output = new Writable({ write(chunk: Buffer, _encoding, callback) {
+      held.push(() => { delivered.push(chunk.length); callback(); });
+    } });
+    const violations: string[] = [];
+    const stream = new FramedMessageStream(input, output, () => {}, (reason) => violations.push(reason), () => {});
+    stream.start();
+    // The child's MCP sink: three results finishing together exceed the bound unless they are paced.
+    const sink = new Writable({ write(chunk: Buffer, _encoding, callback) { stream.forwardPaced(chunk, () => callback()); } });
+    const maximal = lineOf(FRAME_BYTES_MAX);
+    expect(3 * maximal.length).toBeGreaterThan(OUTBOUND_QUEUE_BYTES_MAX);
+    for (let index = 0; index < 3; index++) sink.write(maximal);
+    let peak = 0;
+    while (delivered.length < 3) {
+      await settle();
+      peak = Math.max(peak, output.writableLength);
+      held.shift()?.();
+    }
+    expect(delivered).toEqual([maximal.length, maximal.length, maximal.length]);
+    expect(peak).toBeLessThanOrEqual(maximal.length);
+    expect(violations).toEqual([]);
+    input.destroy(); output.destroy(); sink.destroy();
+  });
+
   it("delivers large frames across a slow writable in order", async () => {
     const messages: unknown[] = [];
     const input = new PassThrough();

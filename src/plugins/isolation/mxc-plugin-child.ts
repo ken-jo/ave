@@ -1,4 +1,3 @@
-import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
@@ -23,6 +22,8 @@ export interface MxcPluginChild {
   readonly pid: number;
   /** Rejecting means termination is unverified; the owner must refuse replacement. */
   waitForExit(): Promise<void>;
+  /** Told synchronously, once, when termination begins for any reason; replayed to late listeners. */
+  onTerminating(handler: () => void): void;
 }
 
 /** Adapt owned streams directly; neither the supervisor PID nor stream payloads select the recipient. */
@@ -30,6 +31,8 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
   // Always take diagnostics, even when protocol construction has not begun.
   owned.stderr.on("data", (chunk: Buffer) => log.debug(chunk.toString("utf8").trimEnd()));
   let cleanup: Promise<void> | undefined;
+  let terminating = false;
+  const terminatingHandlers = new Set<() => void>();
   let fault: string | undefined;
   let resolveExit!: (reason: string) => void;
   let rejectExit!: (error: unknown) => void;
@@ -41,6 +44,10 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
     for (const handler of faults) handler(fault);
   };
   const stop = (reason: string): Promise<void> => {
+    if (!terminating) {
+      terminating = true;
+      for (const handler of terminatingHandlers) handler();
+    }
     // Publish cleanup before invoking disposal: a synchronous fault callback
     // may reenter termination. Disposal, rather than signal delivery, proves death.
     cleanup ??= Promise.resolve().then(() => owned.dispose()).then(async () => {
@@ -72,6 +79,10 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
   return {
     pid: owned.id,
     waitForExit: async () => { await exited; },
+    onTerminating: (handler) => {
+      terminatingHandlers.add(handler);
+      if (terminating) handler();
+    },
     link: {
       input: owned.stdout,
       output: owned.stdin,
@@ -93,14 +104,15 @@ export interface MxcPluginChildIntent {
   readonly cwd: string;
 }
 
-/** The planner binds grants to the envelope (row 2); this slice pins only what it derived itself. */
-function assertLaunchMatchesIntent(request: MxcPluginChildLaunch["request"], intent: MxcPluginChildIntent): void {
+/** The planner binds grants to the envelope (row 2); this slice pins only what it derived itself.
+ * Both values are compared exactly. The trusted planner receives them from this intent and must pass them
+ * through unchanged, so any rewriting (case folding, normalization, realpath) is a contract violation. A
+ * JavaScript case fold would also disagree with the NTFS upcase table and could equate distinct directories. */
+export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Omit<MxcPluginChildIntent, "pluginId">): void {
   if (request.command !== windowsCommandLine(intent.command, intent.args)) {
     throw new MxcProcessContractError("Admitted plugin request does not run the derived command");
   }
-  const fold = (path: string): string => winPath.normalize(path).replace(/\\+$/, "").toLowerCase();
-  const cwd = request.workingDirectory;
-  if (typeof cwd !== "string" || fold(cwd) !== fold(intent.cwd)) {
+  if (request.workingDirectory !== intent.cwd) {
     throw new MxcProcessContractError("Admitted plugin request does not use the derived working directory");
   }
 }

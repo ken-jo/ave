@@ -20,7 +20,7 @@ function fixture() {
   };
   const controller = new AbortController();
   const launch = { request: createMxcExtensionRequest(), signal: controller.signal, assertCurrent: vi.fn(), release: vi.fn() };
-  const intent = { pluginId: "native-probe", command: "C:\\Ave\\runtime.exe", args: ["C:\\Ave\\staging\\entry.js"], cwd: "c:\\ave\\staging\\" };
+  const intent = { pluginId: "native-probe", command: "C:\\Ave\\runtime.exe", args: ["C:\\Ave\\staging\\entry.js"], cwd: "C:\\Ave\\staging" };
   launch.request.command = "C:\\Ave\\runtime.exe C:\\Ave\\staging\\entry.js";
   return { owned, launch, intent, controller, resolve, reject };
 }
@@ -80,6 +80,28 @@ describe("native plugin stream ownership", () => {
     expect(launch.release).not.toHaveBeenCalled(); expect(gone).not.toHaveBeenCalled();
   });
 
+  it("does not equate a Kelvin sign with K in the working directory", async () => {
+    const { launch, intent } = fixture();
+    const kit = { ...intent, cwd: "C:\\Ave\\Kit" };
+    launch.request.workingDirectory = "C:\\Ave\\\u212Ait";
+    expect(launch.request.workingDirectory.toLowerCase()).toBe(kit.cwd.toLowerCase());
+    spawn.mockReset();
+    await expect(spawnMxcPluginChild(launch, kit)).rejects.toBeInstanceOf(MxcProcessContractError);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("reports the start of termination once, synchronously, and replays it to late listeners", async () => {
+    const { owned, launch } = fixture();
+    const child = attachMxcPluginChild(owned, launch);
+    const early = vi.fn();
+    child.onTerminating(early);
+    child.link.terminate("first"); child.link.terminate("second");
+    expect(early).toHaveBeenCalledOnce();
+    const late = vi.fn(); child.onTerminating(late);
+    expect(late).toHaveBeenCalledOnce();
+    await child.waitForExit();
+  });
+
   it("remembers faults for listeners attached after process failure", async () => {
     const { owned, launch, reject } = fixture();
     const child = attachMxcPluginChild(owned, launch);
@@ -133,6 +155,8 @@ describe("native plugin stream ownership", () => {
   it.each([
     ["command", (request: { command: string }) => { request.command = "C:\\Other\\runtime.exe C:\\Ave\\staging\\entry.js"; }],
     ["working directory", (request: { workingDirectory?: string }) => { request.workingDirectory = "C:\\Ave"; }],
+    // Exact, not case-folded: a JavaScript fold disagrees with the NTFS upcase table (U+212A KELVIN SIGN).
+    ["case-folded working directory", (request: { workingDirectory?: string }) => { request.workingDirectory = "c:\\ave\\staging"; }],
   ])("refuses an admitted request whose %s differs from the derived intent", async (_label, mutate) => {
     const { launch, intent } = fixture();
     mutate(launch.request as never);

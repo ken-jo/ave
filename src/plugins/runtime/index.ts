@@ -1394,6 +1394,7 @@ abstract class PluginRuntimeState {
     pluginDataDir: string;
     active: boolean;
     quarantined: boolean;
+    terminating: boolean;
     settled: Promise<SandboxEnvelopeSettlement>;
     resolveSettled: (settlement: SandboxEnvelopeSettlement) => void;
   }>>();
@@ -1402,10 +1403,21 @@ abstract class PluginRuntimeState {
     assertCurrent(): void;
     dispose(): void;
     quarantine(reason: string): void;
+    terminating(): void;
   } {
+    // Make-before-break may start a replacement beside a live incumbent, never beside one whose
+    // termination has begun but is not yet verified, nor beside a quarantined one.
+    for (const existing of this.sandboxEnvelopes.get(pluginId) ?? []) {
+      if (existing.quarantined) this.assertPluginLifecycleAvailable(pluginId);
+      if (existing.quarantined || existing.terminating) {
+        throw Object.assign(new Error(
+          `Plugin child termination is not yet verified; refusing a replacement beside it: ${pluginId}`,
+        ), { code: existing.quarantined ? "plugin-lifecycle-quarantined" : "plugin-child-termination-pending" });
+      }
+    }
     let resolveSettled!: (settlement: SandboxEnvelopeSettlement) => void;
     const settled = new Promise<SandboxEnvelopeSettlement>((resolve) => { resolveSettled = resolve; });
-    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, settled, resolveSettled };
+    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, terminating: false, settled, resolveSettled };
     const entries = this.sandboxEnvelopes.get(pluginId) ?? new Set<typeof record>();
     entries.add(record);
     this.sandboxEnvelopes.set(pluginId, entries);
@@ -1415,18 +1427,23 @@ abstract class PluginRuntimeState {
           throw new Error("sandbox-grant-outside-ceiling");
         }
       },
+      // Idempotent: a second release must not drop a later incarnation's entry set.
       dispose: () => {
-        entries.delete(record);
-        if (entries.size === 0) this.sandboxEnvelopes.delete(pluginId);
+        if (record.quarantined || !entries.delete(record)) return;
+        if (entries.size === 0 && this.sandboxEnvelopes.get(pluginId) === entries) this.sandboxEnvelopes.delete(pluginId);
         record.resolveSettled("released");
       },
       // The record and its grants stay registered, inactive, so every later check fails closed and
       // withdrawal reports it instead of waiting for a release that verified termination alone can give.
       quarantine: (reason) => {
+        if (record.quarantined || !entries.has(record)) return;
         record.active = false;
         record.quarantined = true;
         this.quarantinePluginLifecycle(pluginId, reason);
         record.resolveSettled("quarantined");
+      },
+      terminating: () => {
+        record.terminating = true;
       },
     };
   }
@@ -2290,6 +2307,11 @@ abstract class PluginRuntimeState {
     ) as Error & { code?: string };
     error.code = "plugin-lifecycle-quarantined";
     throw error;
+  }
+
+  protected isPluginLifecycleQuarantined(pluginId: string): boolean {
+    return this.quarantinedPluginLifecycles.has(this.resolveKnownPluginId(pluginId))
+      || this.quarantinedPluginLifecycles.has(pluginId);
   }
 
   protected quarantinePluginLifecycle(pluginId: string, reason: string): void {
@@ -3717,7 +3739,9 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         drainHostApiOperations: incarnation.drainOperations,
       }));
     }
-    if (runtimeRoot) {
+    // A quarantined attempt may still have a live child whose cwd and entry code are this payload.
+    // Keep it with the rest of the lease for as long as the lifecycle stays quarantined (until host restart).
+    if (runtimeRoot && !this.isPluginLifecycleQuarantined(pluginId)) {
       await step(() => this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot));
     }
     attempt.cleanupFailures?.push(...failures);
@@ -4583,11 +4607,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         }
       };
       if (hostEffects) await step(() => hostEffects.discard());
-      await step(() => removeRetainedPluginGeneration(
-        this.installReceiptCacheRoot!,
-        manifest.id,
-        generationId,
-      ));
+      // A quarantined candidate may still have a live child running from this payload.
+      if (!this.isPluginLifecycleQuarantined(manifest.id)) {
+        await step(() => removeRetainedPluginGeneration(
+          this.installReceiptCacheRoot!,
+          manifest.id,
+          generationId,
+        ));
+      }
     };
     let routed: RoutedPluginFactory;
     try {
@@ -4656,11 +4683,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         await step(() => this.drainPluginHostApiOperations(manifest.id, {
           drainHostApiOperations: drainOperations,
         }));
-        await step(() => removeRetainedPluginGeneration(
-          this.installReceiptCacheRoot!,
-          manifest.id,
-          generationId,
-        ));
+        // A quarantined candidate may still have a live child running from this payload.
+        if (!this.isPluginLifecycleQuarantined(manifest.id)) {
+          await step(() => removeRetainedPluginGeneration(
+            this.installReceiptCacheRoot!,
+            manifest.id,
+            generationId,
+          ));
+        }
         construction.cleanupFailures.push(...failures);
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {

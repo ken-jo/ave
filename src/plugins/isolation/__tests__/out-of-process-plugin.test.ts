@@ -921,7 +921,7 @@ function admittedRequest(intent: { command: string; args: readonly string[]; cwd
 
 describe("native factory failures with unverified termination", () => {
   const cleanups: Array<() => void> = [];
-  function nativeSpec(registration: { assertCurrent(): void; dispose(): void; quarantine(reason: string): void }) {
+  function nativeSpec(registration: { assertCurrent(): void; dispose(): void; quarantine(reason: string): void; terminating(): void }) {
     const { dir, entryPath } = writePluginModule();
     const release = vi.fn();
     const prepare = vi.fn(async (intent: { command: string; args: readonly string[]; cwd: string }) => ({
@@ -932,7 +932,7 @@ describe("native factory failures with unverified termination", () => {
 
   it("quarantines the registration when startup cleanup is unverified", async () => {
     const roots = spawnableRoots();
-    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn() };
+    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
     const cleanup = new MxcProcessCleanupError("Startup cleanup unverified");
     spawnNativeChild.mockReset().mockRejectedValue(cleanup);
     try {
@@ -949,7 +949,7 @@ describe("native factory failures with unverified termination", () => {
   it("keeps the grant failure and the cleanup failure when the post-spawn recheck teardown is unverified", async () => {
     const roots = spawnableRoots();
     const changed = new Error("sandbox-grant-outside-ceiling");
-    const registration = { assertCurrent: vi.fn(() => { throw changed; }), dispose: vi.fn(), quarantine: vi.fn() };
+    const registration = { assertCurrent: vi.fn(() => { throw changed; }), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
     const cleanup = new MxcProcessCleanupError("Termination unverified");
     const completion = new Promise<never>(() => {});
     spawnNativeChild.mockReset().mockResolvedValue({ id: 42, stdin: new PassThrough(), stdout: new PassThrough(),
@@ -960,7 +960,8 @@ describe("native factory failures with unverified termination", () => {
       const failure = await Promise.resolve().then(() => createOutOfProcessPluginFactory(spec)(hostContext(fakeHostApi(), roots.context))).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
       expect(((failure as Error).cause as AggregateError).errors).toEqual([changed, cleanup]);
-      expect(registration.dispose).not.toHaveBeenCalled(); expect(registration.quarantine).toHaveBeenCalledOnce();
+      expect(registration.dispose).not.toHaveBeenCalled(); expect(registration.quarantine).toHaveBeenCalled();
+      expect(registration.terminating).toHaveBeenCalledOnce();
       expect(release).not.toHaveBeenCalled();
     } finally { roots.remove(); for (const cleanup of cleanups.splice(0)) cleanup(); }
   });
@@ -990,7 +991,7 @@ describe("construct negotiates the host protocol", () => {
     try {
       const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath },
         prepareMxcChild: prepare, onChildSpawned: legacyMarker,
-        registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose: unregister, quarantine }) });
+        registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose: unregister, quarantine, terminating() {} }) });
       const instance = await factory(hostContext(fakeHostApi(), roots.context));
       expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ pluginId: PLUGIN_ID, command: process.execPath,
         cwd: roots.context.pluginRoot, envelope: expect.objectContaining({ write: expect.arrayContaining([roots.context.pluginDataDir]) }) }));
@@ -1002,7 +1003,7 @@ describe("construct negotiates the host protocol", () => {
         expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
         expect(String((failure as Error).cause)).toContain("Termination unverified");
         expect(release).not.toHaveBeenCalled(); expect(unregister).not.toHaveBeenCalled();
-        expect(quarantine).toHaveBeenCalledOnce();
+        expect(quarantine).toHaveBeenCalled();
       } else {
         await instance.stop?.();
         expect(release).toHaveBeenCalledOnce(); expect(unregister).toHaveBeenCalledOnce();
