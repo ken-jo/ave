@@ -31,11 +31,34 @@ export function cancellationObservation(frame, accounting) {
       : frame.pending === true ? {} : { inconclusive: "Cancellation did not overlap the native spawn await" }) };
 }
 
-export function pinnedProcessIdentity(native, handle, expectedPid) {
+export class PackagedImageQueryError extends Error {
+  constructor(createdAt, win32Error) {
+    super(`Cannot query measured process identity: QueryFullProcessImageNameW failed (${win32Error})`);
+    this.name = "PackagedImageQueryError";
+    this.createdAt = createdAt;
+    this.win32Error = win32Error;
+  }
+}
+
+export function pinnedProcessIdentity(native, handle, expectedPid, pinTime) {
   const actualPid = native.pid(handle);
-  if (actualPid === 0) throw new Error(`GetProcessId returned zero for expected PID ${expectedPid}; possible handle-lifetime race`);
   if (actualPid !== expectedPid) throw new Error(`Measured process PID mismatch; possible handle-lifetime race: expected ${expectedPid}, got ${actualPid}`);
-  return native.identity(handle);
+  try { return native.identity(handle); }
+  catch (error) {
+    // Only an image-query failure after a successful native time query can use
+    // live pin-time image evidence. A running or unidentifiable object fails.
+    if (!(error instanceof PackagedImageQueryError) || !pinTime || native.wait(handle, 0) !== 0) throw error;
+    if (pinTime.pid !== expectedPid || typeof error.createdAt !== "bigint" || error.createdAt <= 0n
+      || error.createdAt.toString() !== pinTime.createdAt) throw new Error("Duplicated container creation time mismatch", { cause: error });
+    if (pinTime.aliveAtPinTime !== true || typeof pinTime.imagePath !== "string"
+      || !path.win32.isAbsolute(pinTime.imagePath) || typeof pinTime.expectedImagePath !== "string"
+      || !path.win32.isAbsolute(pinTime.expectedImagePath)) throw new Error("Missing live pin-time image evidence", { cause: error });
+    if (path.win32.normalize(pinTime.imagePath).toLowerCase() !== path.win32.normalize(pinTime.expectedImagePath).toLowerCase()) {
+      throw new Error("Duplicated container pin-time image mismatch", { cause: error });
+    }
+    return { createdAt: error.createdAt, imagePath: pinTime.imagePath,
+      identityEvidence: "exited-before-duplication: pid+createdAt+pin-time image", imageQueryErrorCode: error.win32Error };
+  }
 }
 
 // Observation pins deliberately lack mutation rights. Emergency cleanup opens

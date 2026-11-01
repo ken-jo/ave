@@ -80,8 +80,10 @@ async function run(): Promise<void> {
       const handle = inspector.duplicateProcessHandle(source, event.processHandle);
       containerHandles.push(handle);
       if (inspector.pid(handle) !== event.id) throw new Error("Transferred container PID mismatch");
+      const aliveBeforeIdentity = inspector.wait(handle, 0) === 258;
       const identity = inspector.identity(handle);
-      emit({ event: "container-pinned", pid: event.id, handle: inspector.handleValue(handle), createdAt: identity.createdAt.toString(), imagePath: identity.imagePath });
+      const aliveAtPinTime = aliveBeforeIdentity && inspector.wait(handle, 0) === 258;
+      emit({ event: "container-pinned", pid: event.id, handle: inspector.handleValue(handle), createdAt: identity.createdAt.toString(), imagePath: identity.imagePath, aliveAtPinTime });
     }
     if (mode === "cancel" && event.type === "spawning") controller.abort();
   };

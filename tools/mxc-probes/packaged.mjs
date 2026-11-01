@@ -77,10 +77,11 @@ async function main(result) {
     await copyPackagedTree(path.dirname(original), copyRoot);
     const copiedExecutable = await realpath(path.join(copyRoot, path.basename(original)));
     const entry = path.join(copyRoot, "resources/app.asar/dist/src/main/mxc-packaged-probe.js");
-    const addRecord = (run, role, pid, handle) => {
-      const identity = pinnedProcessIdentity(native, handle, pid);
+    const addRecord = (run, role, pid, handle, pinTime) => {
+      const identity = pinnedProcessIdentity(native, handle, pid, pinTime && { ...pinTime, expectedImagePath: copiedExecutable });
       if (imageKey(identity.imagePath) !== imageKey(copiedExecutable) || identity.createdAt < run.launchedAfter) throw new Error("Measured process identity mismatch");
-      const record = { role, pid, handle, createdAt: identity.createdAt.toString(), imagePath: identity.imagePath };
+      const record = { role, pid, handle, createdAt: identity.createdAt.toString(), imagePath: identity.imagePath,
+        ...(identity.identityEvidence ? { identityEvidence: identity.identityEvidence, imageQueryErrorCode: identity.imageQueryErrorCode } : {}) };
       run.records.push(record); return record;
     };
     const launch = async (name, mode) => {
@@ -210,7 +211,7 @@ async function main(result) {
       const source = run.records.find((record) => record.role === "main");
       const handle = native.duplicateProcessHandle(source.handle, pinned.handle);
       try {
-        const record = addRecord(run, "container", pinned.pid, handle);
+        const record = addRecord(run, "container", pinned.pid, handle, pinned);
         if (record.createdAt !== pinned.createdAt || imageKey(record.imagePath) !== imageKey(pinned.imagePath)) throw new Error("Duplicated container identity mismatch");
       } catch (error) {
         if (run.records.at(-1)?.handle === handle) run.records.pop();

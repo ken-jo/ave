@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { handleSnapshot, inspectOwnerHandleCandidates } from "./packaged-protocol.mjs";
+import { handleSnapshot, inspectOwnerHandleCandidates, PackagedImageQueryError } from "./packaged-protocol.mjs";
 import { verifyMxcSdk, verifyMxcSupervisorRuntime } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 
 // This observer has no lifetime job: otherwise killing the measured main could
@@ -46,7 +46,7 @@ export function openPackagedObserver(executable, suppliedPins) {
       const created = [0n], exit = [0n], kernelTime = [0n], userTime = [0n];
       const image = Buffer.alloc(65536), length = [32768];
       if (!getTimes(handle, created, exit, kernelTime, userTime)) throw new Error(`Cannot query measured process identity: GetProcessTimes failed (${lastError()})`);
-      if (!getImage(handle, 0, image, length)) throw new Error(`Cannot query measured process identity: QueryFullProcessImageNameW failed (${lastError()})`);
+      if (!getImage(handle, 0, image, length)) throw new PackagedImageQueryError(BigInt(created[0]), lastError());
       return { createdAt: BigInt(created[0]), imagePath: realpathSync(image.toString("utf16le", 0, length[0] * 2)) };
     },
     open: (rights, inherit, pid) => open(rights | 0x450, inherit, pid),
