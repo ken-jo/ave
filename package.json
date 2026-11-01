@@ -129,7 +129,7 @@
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@napi-rs/canvas": "1.0.10",
+    "@napi-rs/canvas": "1.0.13",
     "@nodable/entities": "3.1.0",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/context-async-hooks": "^3.0.0",
