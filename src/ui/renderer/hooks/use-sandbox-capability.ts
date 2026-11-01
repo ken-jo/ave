@@ -4,6 +4,9 @@ import type { AveApi } from "../types.js";
 
 const CAPABILITY_QUERY_ATTEMPTS = 3;
 const CAPABILITY_QUERY_RETRY_MS = 1_000;
+// Main pushes nothing when the Windows MXC start probe settles, so a snapshot taken while it is checking is re-read.
+const MXC_SETTLE_POLL_MS = 1_000;
+const MXC_SETTLE_POLL_LIMIT = 60;
 
 /** Read the host snapshot; a failed query is uncertainty, never an execution plan. */
 export function useSandboxCapability(
@@ -20,6 +23,7 @@ export function useSandboxCapability(
     const current = ++generation.current;
     clearTimeout(retryTimer.current);
     let attempts = 0;
+    let settlePolls = 0;
     const query = async (): Promise<SandboxCapabilityInfo | null> => {
       attempts += 1;
       try {
@@ -28,6 +32,11 @@ export function useSandboxCapability(
         if (mounted.current && current === generation.current) {
           setCapability(next);
           setStatusQueryFailed(false);
+          if (next.windowsSubstrate?.mxc.state === "checking" && settlePolls < MXC_SETTLE_POLL_LIMIT) {
+            settlePolls += 1;
+            attempts = 0;
+            retryTimer.current = setTimeout(() => { void query(); }, MXC_SETTLE_POLL_MS);
+          }
         }
         return next;
       } catch {
