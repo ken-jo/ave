@@ -42,6 +42,7 @@ describe("shared user-owned surface approval card", () => {
       const decide = vi.fn();
       const shown = renderApproval(request(surface), decide);
       expect(screen.getByTestId("user-owned-surface-ask")).toBeChecked();
+      expect(screen.getByText(t("toolApprovalDialog.surfaceScope"))).toBeInTheDocument();
       fireEvent.click(screen.getByTestId(`user-owned-surface-${choice}`));
       expect(decide).not.toHaveBeenCalled();
       expect(screen.queryByTestId("approval-decision-bar")).toBeNull();

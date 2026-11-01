@@ -1,4 +1,4 @@
-// Persist only opaque identities except the local conversation routing hint; its unkeyed digest detects inconsistency, not malicious rewriting. Actor
+// Persist the desktop-registered owner ID and local conversation routing hint; the latter's unkeyed digest detects inconsistency, not malicious rewriting. Actor
 // HMAC and the current-conversation check enforce authority; pairing alone grants nothing and shares bind to its epoch.
 import { randomUUID as nodeRandomUuid } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -9,6 +9,7 @@ import {
   isTelegramConnectionErrorCode,
   isTelegramConnectionId,
   isTelegramConversationId,
+  isTelegramOwnerUserId,
   type TelegramConnectionErrorCode,
 } from "../shared/telegram-connection.js";
 import {
@@ -19,7 +20,7 @@ import { hasExactKeys, isRecord } from "../shared/is-record.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "../shared/safe-integer.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 
-const STORE_VERSION = 1;
+const STORE_VERSION = 2;
 // Feature namespace shared by the connection store and the bridge server (`command-receipts.json`).
 export const TELEGRAM_BRIDGE_FEATURE = "telegram-bridge";
 const DEFAULT_FILE_NAME = "connection.json";
@@ -77,6 +78,7 @@ export interface TelegramOwnerApprovalSummary {
 // Durable projection the owner surface builds its renderer snapshot from. It reports only what survived the lazy prune, so an expired approval or code
 // is never visible here.
 export interface TelegramOwnerConnectionSnapshot {
+  readonly ownerUserId: string | null;
   readonly desiredState: TelegramDesiredState;
   readonly activationEpoch: number;
   readonly botFingerprint: string | null;
@@ -106,6 +108,7 @@ interface CreateTelegramPendingCodeInput {
 }
 
 interface CompleteTelegramPairingInput {
+  readonly senderId: string;
   readonly codeDigest: string;
   readonly actorDigest: string;
 }
@@ -120,6 +123,8 @@ interface CreateTelegramApprovalInput {
 }
 
 export interface TelegramConnectionStore {
+  ownerUserId(): string | null;
+  setOwnerUserId(ownerUserId: string): Promise<void>;
   // Load durable state. A corrupt file fails closed to a disconnected store.
   open(): Promise<void>;
   subscribe(listener: () => void): () => void;
@@ -170,6 +175,7 @@ interface StoredPendingCode {
 
 // Unrecognized and revoked both deny access; the distinct state explains machine key loss without implying owner distrust.
 interface StoredPairing {
+  readonly ownerUserId: string | null;
   readonly id: string;
   readonly actorDigest: string;
   readonly state: "active" | "revoked" | "unrecognized";
@@ -192,6 +198,7 @@ interface StoredApproval {
 }
 
 interface StoreDocument {
+  readonly ownerUserId: string | null;
   readonly version: typeof STORE_VERSION;
   readonly receiptOwnerId: string;
   readonly activationEpoch: number;
@@ -262,7 +269,8 @@ function validPendingCode(value: unknown): value is StoredPendingCode {
 
 function validPairing(value: unknown): value is StoredPairing {
   return isRecord(value)
-    && hasExactKeys(value, ["id", "actorDigest", "state", "epoch", "createdAt"])
+    && hasExactKeys(value, ["id", "actorDigest", "state", "epoch", "createdAt", "ownerUserId"])
+    && (value.ownerUserId === null || isTelegramOwnerUserId(value.ownerUserId))
     && isTelegramConnectionId(value.id)
     && digest(value.actorDigest)
     && (value.state === "active" || value.state === "revoked" || value.state === "unrecognized")
@@ -297,9 +305,10 @@ function validDocument(value: unknown): value is StoreDocument {
     !isRecord(value)
     || !hasExactKeys(value, [
       "version", "receiptOwnerId", "activationEpoch", "desiredState", "botFingerprint",
-      "actorKeyDigest", "pollOffset", "pendingCode", "pairing", "approvals", "lastErrorCode",
+      "actorKeyDigest", "pollOffset", "pendingCode", "pairing", "approvals", "lastErrorCode", "ownerUserId",
     ])
     || value.version !== STORE_VERSION
+    || !(value.ownerUserId === null || isTelegramOwnerUserId(value.ownerUserId))
     || !isTelegramConnectionId(value.receiptOwnerId)
     || !epochValue(value.activationEpoch)
     || !desiredState(value.desiredState)
@@ -329,6 +338,7 @@ function validDocument(value: unknown): value is StoreDocument {
 function initialDocument(receiptOwnerId: string): StoreDocument {
   return {
     version: STORE_VERSION,
+    ownerUserId: null,
     receiptOwnerId,
     activationEpoch: 1,
     desiredState: "disconnected",
@@ -356,7 +366,13 @@ function prune(
     : null;
   if (pendingCode !== document.pendingCode) changed = true;
 
-  const pairing = document.pairing;
+  const originalPairing = document.pairing;
+  const ownerMismatch = originalPairing !== null && originalPairing.state === "active"
+    && (document.ownerUserId === null || originalPairing.ownerUserId !== document.ownerUserId);
+  const pairing = ownerMismatch
+    ? { ...originalPairing, state: "unrecognized" as const, epoch: nextEpoch(originalPairing.epoch) }
+    : originalPairing;
+  if (ownerMismatch) changed = true;
   const approvals: StoredApproval[] = [];
   for (const approval of document.approvals) {
     if (pairing === null || approval.pairingId !== pairing.id) {
@@ -378,7 +394,7 @@ function prune(
     approvals.push(entry);
   }
   return {
-    document: changed ? { ...document, pendingCode, approvals } : document,
+    document: changed ? { ...document, pairing, pendingCode, approvals } : document,
     changed,
   };
 }
@@ -530,13 +546,22 @@ export function createTelegramConnectionStore(
       document = initialDocument(nextUuid());
       return;
     }
+    // Records from before owner registration never carry authority into the new identity contract.
+    const legacy = isRecord(parsed) && parsed.version === 1;
+    if (legacy && isRecord(parsed)) {
+      parsed = {
+        ...parsed, version: STORE_VERSION, ownerUserId: null, pendingCode: null,
+        pairing: isRecord(parsed.pairing) ? { ...parsed.pairing, ownerUserId: null } : parsed.pairing,
+        lastErrorCode: "telegram-owner-id-required",
+      };
+    }
     if (!validDocument(parsed)) {
       document = initialDocument(nextUuid());
       return;
     }
     const pruned = prune(parsed, checkedNow());
     document = pruned.document;
-    if (pruned.changed) await persist(pruned.document);
+    if (pruned.changed || legacy) await persist(pruned.document);
   });
 
   // Adopt key identity only when nothing is paired; active pairing with changed or absent identity becomes unrecognized and loses its approvals.
@@ -583,6 +608,24 @@ export function createTelegramConnectionStore(
         },
         value: undefined,
         changed: true,
+      };
+    });
+  };
+
+  const setOwnerUserId = async (ownerUserId: string): Promise<void> => {
+    if (!isTelegramOwnerUserId(ownerUserId)) throw inputInvalid();
+    await mutate((current, now) => {
+      if (current.ownerUserId === ownerUserId) return { document: current, value: undefined, changed: false };
+      return {
+        document: prune({
+          ...current, ownerUserId, activationEpoch: nextEpoch(current.activationEpoch), pendingCode: null,
+          desiredState: current.desiredState === "connected" ? "paused" : current.desiredState,
+          pairing: current.pairing === null ? null : {
+            ...current.pairing, state: "unrecognized", epoch: nextEpoch(current.pairing.epoch),
+          },
+          lastErrorCode: null,
+        }, now).document,
+        value: undefined, changed: true,
       };
     });
   };
@@ -644,6 +687,7 @@ export function createTelegramConnectionStore(
       throw inputInvalid();
     }
     return await mutate((current, now) => {
+      if (current.ownerUserId === null) throw inputInvalid();
       const pendingCode: StoredPendingCode = {
         id: nextUuid(),
         codeDigest: input.codeDigest,
@@ -685,10 +729,13 @@ export function createTelegramConnectionStore(
   const completePairing = async (
     input: CompleteTelegramPairingInput,
   ): Promise<TelegramPairingRecord | null> => {
-    if (!isRecord(input) || !digest(input.codeDigest) || !digest(input.actorDigest)) {
+    if (!isRecord(input) || !isTelegramOwnerUserId(input.senderId) || !digest(input.codeDigest) || !digest(input.actorDigest)) {
       throw inputInvalid();
     }
     return await mutate((current, now) => {
+      if (current.ownerUserId === null || current.ownerUserId !== input.senderId) {
+        return { document: current, value: null, changed: false };
+      }
       if (current.pendingCode === null) {
         return { document: current, value: null, changed: false };
       }
@@ -698,6 +745,7 @@ export function createTelegramConnectionStore(
       }
       const previous = current.pairing;
       const pairing: StoredPairing = {
+        ownerUserId: current.ownerUserId,
         // A fresh id, so a stale owner surface cannot revoke the pairing that replaced the one it is still displaying.
         id: nextUuid(),
         actorDigest: input.actorDigest,
@@ -811,6 +859,8 @@ export function createTelegramConnectionStore(
     const pairing = current.pairing;
     return current.desiredState !== "connected"
       || pairing === null
+      || current.ownerUserId === null
+      || pairing.ownerUserId !== current.ownerUserId
       || pairing.state !== "active"
       || !timingSafeEqualHexDigest(pairing.actorDigest, actorDigest)
       ? null
@@ -856,6 +906,7 @@ export function createTelegramConnectionStore(
     const pairing = current.pairing;
     const approval = newestApproval(liveApprovals(current));
     return Object.freeze({
+      ownerUserId: current.ownerUserId,
       desiredState: current.desiredState,
       activationEpoch: current.activationEpoch,
       botFingerprint: current.botFingerprint,
@@ -883,12 +934,14 @@ export function createTelegramConnectionStore(
       return () => listeners.delete(listener);
     },
     ownerSnapshot,
+    ownerUserId: () => requireDocument().ownerUserId,
+    setOwnerUserId,
     receiptOwnerId: () => requireDocument().receiptOwnerId,
     activationEpoch: () => requireDocument().activationEpoch,
     desiredState: () => requireDocument().desiredState,
     botFingerprint: () => requireDocument().botFingerprint,
     activePairingActorDigest: () => {
-      const pairing = requireDocument().pairing;
+      const pairing = currentView().pairing;
       return pairing !== null && pairing.state === "active" ? pairing.actorDigest : null;
     },
     pollOffset: () => requireDocument().pollOffset,

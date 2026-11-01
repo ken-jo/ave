@@ -126,7 +126,7 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
           const settings = judgeSettings({ timeoutMs: 10_000, chain: [{ provider: "builtin-llm", id: "builtin-llm" }] });
           const { logger } = collectingAudit();
           const judged = await resolveJudge(
-            { priorDecision: "undecided", strictMode: false, capabilityGrant: false, remoteController: false },
+            { priorDecision: "undecided", strictMode: false, capabilityGrant: false },
             judgeRequest({
               lane,
               invocation: judgeInvocation({

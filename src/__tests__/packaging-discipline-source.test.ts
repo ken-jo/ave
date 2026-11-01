@@ -2196,7 +2196,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("AbortController");
     expect(agents).toContain("plus `Tool Governance` and `Security And Audit`");
     expect(agents).not.toContain("architecture section 6.3");
-    expect(agents).toContain("OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows");
+    expect(agents).toContain("OS tool sandbox defaults on for macOS/Linux/Windows");
     expect(agents).toContain("per `osToolSandbox`");
     expect(agents).toContain("src/data/settings-defaults.ts");
     expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` or\n  `AVE_PLUGIN_WORKER_CONFINEMENT=1` activation failure");

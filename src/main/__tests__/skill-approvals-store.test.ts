@@ -130,6 +130,15 @@ describe("SkillApprovalsStore — atomic-write convergence (feature-namespace au
 });
 
 describe("SkillApprovalsStore — corrupt file recovery", () => {
+  it("preserves existing grants when a final commit guard rejects a new approval", async () => {
+    const file = tmpFile();
+    const store = new SkillApprovalsStore(file);
+    await store.approve("previous", "body");
+    await expect(store.approve("new-skill", "body", () => false)).rejects.toThrow("Skill approval authority is unavailable");
+    const reloaded = new SkillApprovalsStore(file);
+    expect(await reloaded.isApproved("previous", "body")).toBe(true);
+    expect(await reloaded.isApproved("new-skill", "body")).toBe(false);
+  });
   it("backs up corrupt JSON as .corrupt-<ts>-<random>.bak and starts empty", async () => {
     const file = tmpFile();
     writeFileSync(file, "{ this is not json", "utf-8");

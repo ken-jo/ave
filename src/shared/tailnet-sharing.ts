@@ -13,7 +13,11 @@ export type TailnetShareDurationPreset = (typeof TAILNET_SHARE_DURATION_PRESETS)
 const TAILNET_SHARE_PERMISSIONS = ["observe", "control"] as const;
 export type TailnetSharePermission = (typeof TAILNET_SHARE_PERMISSIONS)[number];
 
+export type TailnetOwnerIdentityErrorCode = "tailnet-owner-identity-unavailable" | "tailnet-owner-identity-mismatch";
+
 const TAILNET_SHARING_ERROR_CODES = [
+  "tailnet-owner-identity-unavailable",
+  "tailnet-owner-identity-mismatch",
   "unauthorized",
   "unauthorized-frame",
   "tailnet-sharing-disabled",
@@ -48,6 +52,7 @@ interface TailnetSharingShareSummary {
 
 /** Owner projections are not grants; main resolves the active conversation and revocation epochs internally. */
 export interface TailnetSharingSnapshot {
+  readonly ownerIdentityError?: TailnetOwnerIdentityErrorCode;
   readonly invitations: readonly TailnetSharingInvitationSummary[];
   readonly pairings: readonly TailnetSharingPairingSummary[];
   readonly shares: readonly TailnetSharingShareSummary[];
@@ -223,7 +228,8 @@ function parseShareSummary(value: unknown): TailnetSharingShareSummary | null {
 
 /** Rebuild the safe projection so future producer fields cannot leak raw codes or logins. */
 export function parseTailnetSharingSnapshot(value: unknown): TailnetSharingSnapshot | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["invitations", "pairings", "shares"])
+  if (!isRecord(value) || !hasExactKeys(value, value.ownerIdentityError === undefined ? ["invitations", "pairings", "shares"] : ["invitations", "pairings", "shares", "ownerIdentityError"])
+    || value.ownerIdentityError !== undefined && value.ownerIdentityError !== "tailnet-owner-identity-unavailable" && value.ownerIdentityError !== "tailnet-owner-identity-mismatch"
     || !Array.isArray(value.invitations)
     || !Array.isArray(value.pairings)
     || !Array.isArray(value.shares)) {
@@ -238,6 +244,7 @@ export function parseTailnetSharingSnapshot(value: unknown): TailnetSharingSnaps
     return null;
   }
   return Object.freeze({
+    ...(value.ownerIdentityError === undefined ? {} : { ownerIdentityError: value.ownerIdentityError as TailnetOwnerIdentityErrorCode }),
     invitations: Object.freeze(invitations as TailnetSharingInvitationSummary[]),
     pairings: Object.freeze(pairings as TailnetSharingPairingSummary[]),
     shares: Object.freeze(shares as TailnetSharingShareSummary[]),

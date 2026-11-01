@@ -1,5 +1,11 @@
 // Owner-facing Telegram private-DM connection controls.
 export const en = {
+  "formatIpcError.telegramOwnerIdRequired": "Register your own numeric Telegram user ID on this desktop before connecting your account.",
+  "telegramConnection.ownerUserIdLabel": "My Telegram user ID",
+  "telegramConnection.ownerUserIdHelp": "Enter your own numeric user ID, not your username or bot ID. Changing it removes the current pairing and conversation shares.",
+  "telegramConnection.ownerOnlyBody": "Only your own account with this registered user ID can pair and send messages to this desktop.",
+  "telegramConnection.ownerRequiredBody": "Remote access is suspended until you register your own Telegram user ID and pair that account again.",
+  "telegramConnection.saveOwnerUserId": "Register my user ID",
   "formatIpcError.telegramConnectionDisabled": "Telegram is not available on this desktop.",
   "formatIpcError.telegramConnectionUnavailable": "Telegram is currently unavailable.",
   "formatIpcError.telegramConnectionOperationRejected": "Telegram rejected that change.",
@@ -39,7 +45,7 @@ export const en = {
   "telegramConnection.pairingIsNotAccess": "Pairing identifies your Telegram account. It does not share this conversation on its own.",
 
   "telegramConnection.statePairingUnrecognized": "Connected · pair your account again",
-  "telegramConnection.pairingUnrecognizedBody": "This machine can no longer recognize the Telegram account you paired, so it has been unpaired and nothing is shared. That happens when this machine's encrypted credential store is reset, or when this app's data is restored onto a different machine. Your bot is unaffected — pair your account again to carry on.",
+  "telegramConnection.pairingUnrecognizedBody": "Remote access is suspended because the previous pairing does not match your registered user ID or can no longer be verified. Check your own user ID above and pair that account again. A credential-store reset or restored app data can also require pairing again.",
 
   "telegramConnection.statePairingPending": "Waiting for your code",
   "telegramConnection.pairingCodeTitle": "Send this code to your bot",
@@ -80,6 +86,12 @@ export const en = {
 } as const;
 
 export const ko = {
+  "formatIpcError.telegramOwnerIdRequired": "계정을 연결하기 전에 이 데스크톱에서 본인의 숫자 Telegram 사용자 ID를 등록하세요.",
+  "telegramConnection.ownerUserIdLabel": "내 Telegram 사용자 ID",
+  "telegramConnection.ownerUserIdHelp": "사용자 이름이나 봇 ID가 아닌 본인의 숫자 사용자 ID를 입력하세요. ID를 변경하면 현재 페어링과 대화 공유가 해제됩니다.",
+  "telegramConnection.ownerOnlyBody": "등록한 사용자 ID에 해당하는 본인 계정만 이 데스크톱에 페어링하고 메시지를 보낼 수 있습니다.",
+  "telegramConnection.ownerRequiredBody": "본인의 Telegram 사용자 ID를 등록하고 해당 계정을 다시 페어링할 때까지 원격 접근이 중지됩니다.",
+  "telegramConnection.saveOwnerUserId": "내 사용자 ID 등록",
   "formatIpcError.telegramConnectionDisabled": "이 데스크톱에서는 Telegram을 사용할 수 없습니다.",
   "formatIpcError.telegramConnectionUnavailable": "Telegram을 현재 사용할 수 없습니다.",
   "formatIpcError.telegramConnectionOperationRejected": "Telegram이 해당 변경을 거부했습니다.",
@@ -119,7 +131,7 @@ export const ko = {
   "telegramConnection.pairingIsNotAccess": "페어링은 내 Telegram 계정을 식별할 뿐입니다. 그것만으로 이 대화가 공유되지는 않습니다.",
 
   "telegramConnection.statePairingUnrecognized": "연결됨 · 계정을 다시 페어링하세요",
-  "telegramConnection.pairingUnrecognizedBody": "이 기기가 페어링했던 Telegram 계정을 더 이상 식별할 수 없어 페어링이 해제되었고, 공유 중인 대화도 없습니다. 이 기기의 암호화 자격증명 저장소가 초기화되었거나, 이 앱의 데이터를 다른 기기로 옮겨 복원한 경우에 발생합니다. 봇은 그대로이니 계정을 다시 페어링하면 계속 사용할 수 있습니다.",
+  "telegramConnection.pairingUnrecognizedBody": "이전 페어링이 등록한 사용자 ID와 일치하지 않거나 더 이상 확인할 수 없어 원격 접근이 중지되었습니다. 위에서 본인의 사용자 ID를 확인하고 해당 계정을 다시 페어링하세요. 자격증명 저장소가 초기화되었거나 앱 데이터를 복원한 경우에도 다시 페어링해야 할 수 있습니다.",
 
   "telegramConnection.statePairingPending": "코드를 기다리는 중",
   "telegramConnection.pairingCodeTitle": "이 코드를 봇에게 보내세요",

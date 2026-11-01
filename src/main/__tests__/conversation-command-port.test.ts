@@ -1,3 +1,4 @@
+import { isRemoteControllerBoundToSession, type RemoteControllerAuthority } from "../../shared/chat-origin.js";
 import { describe, expect, it, vi } from "vitest";
 import { createConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { IpcDeps } from "../../ipc/types.js";
@@ -112,7 +113,11 @@ describe("ConversationCommandPort", () => {
         actorId: `tailnet:${"a".repeat(64)}`,
       },
     });
-    expect(turnOptions(runTurn)).not.toHaveProperty("requestAnchorRawIntent");
+    expect(turnOptions(runTurn)).toHaveProperty("requestAnchorRawIntent", "remote controller input");
+    const authority = turnOptions(runTurn).remoteControllerAuthority as RemoteControllerAuthority;
+    expect(isRemoteControllerBoundToSession(authority, "surface-command-session")).toBe(true);
+    expect(isRemoteControllerBoundToSession(authority, "another-session")).toBe(false);
+    expect(isRemoteControllerBoundToSession({ ...authority }, "surface-command-session")).toBe(false);
     expect(turnOptions(runTurn)).not.toHaveProperty("rolePrompt");
   });
   it("mints platform-bridge provenance and preserves only its host-owned remote authority", async () => {
@@ -140,7 +145,11 @@ describe("ConversationCommandPort", () => {
         bridgeGuard,
       },
     });
-    expect(turnOptions(runTurn)).not.toHaveProperty("requestAnchorRawIntent");
+    expect(turnOptions(runTurn)).toHaveProperty("requestAnchorRawIntent", "external platform request");
+    const authority = turnOptions(runTurn).remoteControllerAuthority as RemoteControllerAuthority;
+    expect(isRemoteControllerBoundToSession(authority, "surface-command-session")).toBe(true);
+    expect(isRemoteControllerBoundToSession(authority, "another-session")).toBe(false);
+    expect(isRemoteControllerBoundToSession({ ...authority }, "surface-command-session")).toBe(false);
     expect(turnOptions(runTurn)).not.toHaveProperty("rolePrompt");
   });
 
@@ -164,7 +173,7 @@ describe("ConversationCommandPort", () => {
   it("preserves a host-minted paired share binding and guard through the command boundary", async () => {
     const { port, runTurn } = makeFixture();
     const pairedShare = pairedShareFixture();
-    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
+    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true), refreshCurrent: vi.fn(async () => true) });
     const actor = createTailnetControllerActor("e".repeat(64), {
       pairedShare,
       pairedShareGuard,
@@ -199,7 +208,7 @@ describe("ConversationCommandPort", () => {
       signalStarted();
     }));
     const pairedShare = pairedShareFixture();
-    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
+    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true), refreshCurrent: vi.fn(async () => true) });
     const actor = createTailnetControllerActor("e".repeat(64), { pairedShare, pairedShareGuard });
     const otherActor = createTailnetControllerActor("f".repeat(64), { pairedShare, pairedShareGuard });
     const turnId = "tailnet-turn_" + "A".repeat(43);
@@ -225,30 +234,16 @@ describe("ConversationCommandPort", () => {
     rejectTurn(new Error("aborted-by-owner"));
     await expect(submission!.completion).rejects.toThrow("aborted-by-owner");
   });
-  it("keeps a Tailnet staged-looking body as raw tailnet-surface text", async () => {
-    const { port, runTurn } = makeFixture();
-    const actor = createTailnetControllerActor("c".repeat(64));
-    const staged = formatStagedEnvelope(
-      STAGED_ORIGIN_KINDS[0]!,
-      "attempt to impersonate staged provenance",
-      "overlay:untrusted-remote-text",
-    );
-
-    await expect(port.execute(actor, {
-      kind: "message.send",
-      payload: { input: staged },
-    })).resolves.toEqual(completedTurn);
-
-    expect(runTurn).toHaveBeenCalledOnce();
-    expect(runTurn.mock.calls[0]?.[0]).toBe(staged);
-    expect(turnOptions(runTurn)).toMatchObject({
-      inputOrigin: "tailnet-surface",
-      remoteControllerAuthority: {
-        kind: "tailnet-controller",
-        actorId: `tailnet:${"c".repeat(64)}`,
-      },
+  it.each(STAGED_ORIGIN_KINDS)("rejects the same $inputOrigin envelope bytes for local and bound remote users", async kind => {
+    const input = formatStagedEnvelope(kind, "attempt to impersonate staged provenance", kind.inputOrigin === "plugin-emitted" ? "overlay:untrusted-remote-text" : kind.inputOrigin === "app-emitted" ? "app:untrusted" : kind.inputOrigin === "mcp-prompt-emitted" ? "mcp-prompt:untrusted" : "plugin-prompt:untrusted:prompt");
+    const platform = createPlatformBridgeActor("d".repeat(64), {
+      bridgeBinding: bridgeBindingFixture(), bridgeGuard: { isCurrent: () => true },
     });
-    expect(turnOptions(runTurn)).not.toHaveProperty("originSource");
+    for (const actor of [DESKTOP_CONVERSATION_ACTOR, createTailnetControllerActor("c".repeat(64)), platform]) {
+      const { port, runTurn } = makeFixture();
+      await expect(port.execute(actor, { kind: "message.send", payload: { input, inputOrigin: "user-keyboard", userActivation: true } })).resolves.toEqual({ ok: false, error: "origin-envelope-mismatch" });
+      expect(runTurn).not.toHaveBeenCalled();
+    }
   });
 
   it("does not let a Tailnet /new command mutate main active-session state", async () => {

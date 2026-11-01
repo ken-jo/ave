@@ -7,6 +7,8 @@ import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { isShellRuleSaveScope, type ShellRuleSaveScope } from "../shared/permissions-events.js";
 import { errorMessage } from "../shared/error-message.js";
 
+import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
+
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
 
 // The card warns before saving an edited wildcard allow; the host repeats it in the result so the warning is never only a renderer claim.
@@ -93,6 +95,7 @@ export async function saveApprovalCardRule(
   rule: Record<string, unknown>,
   answer: { readonly decision: unknown; readonly scope: unknown; readonly displayedVerdictAtApproval: unknown },
   permissionManager: PermissionManager | undefined,
+  authority?: ApprovalPersistenceGuard,
 ): Promise<ApprovalRuleSaveResult> {
   const { action, scope, pattern: edited } = rule;
   if (Object.keys(rule).some((key) => key !== "action" && key !== "scope" && key !== "pattern")) {
@@ -140,13 +143,14 @@ export async function saveApprovalCardRule(
   try {
     if (scope === "session") {
       if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
+      await refreshApprovalPersistence(authority);
       permissionManager.addSessionRule(snapshot.sessionId, pattern);
     } else if (scope === "project") {
       const projectCwd = target.context.projectCwd;
       if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
-      await permissionManager.addRulePersist({ pattern, action }, { kind: "project", projectCwd });
+      await permissionManager.addRulePersist({ pattern, action }, { kind: "project", projectCwd }, ...(authority ? [authority] as const : []));
     } else {
-      await permissionManager.addRulePersist({ pattern, action }, { kind: "user" });
+      await permissionManager.addRulePersist({ pattern, action }, { kind: "user" }, ...(authority ? [authority] as const : []));
     }
   } catch (error) {
     // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.

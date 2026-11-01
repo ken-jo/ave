@@ -170,3 +170,12 @@ describe("Tailnet sharing owner IPC boundary", () => {
       .resolves.toEqual({ ok: false, error: "tailnet-sharing-operation-rejected" });
   });
 });
+
+it.each(["tailnet-owner-identity-unavailable", "tailnet-owner-identity-mismatch"] as const)("returns the named local owner failure %s for activation and sharing", async code => {
+  const { TailnetOwnerIdentityError } = await import("../../../main/tailnet-owner-identity.js");
+  const f = await setup();
+  f.owner.activatePairing.mockRejectedValueOnce(new TailnetOwnerIdentityError(code));
+  f.owner.createCurrentConversationShare.mockRejectedValueOnce(new TailnetOwnerIdentityError(code));
+  await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetSharing.activatePairing, { intent, id: PAIRING_ID })).resolves.toEqual({ ok: false, error: code });
+  await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetSharing.createCurrentConversationShare, { intent, pairingId: PAIRING_ID, permission: "control" })).resolves.toEqual({ ok: false, error: code });
+});

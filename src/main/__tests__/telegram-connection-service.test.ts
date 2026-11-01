@@ -155,6 +155,7 @@ interface Harness {
 
 async function harness(
   options: {
+    readonly ownerUserId?: string | null;
     readonly encrypted?: boolean;
     readonly existingConversations?: readonly string[];
     readonly serviceOptions?: Partial<Parameters<typeof createTelegramConnectionService>[0]>;
@@ -167,6 +168,7 @@ async function harness(
     conversationDigestFor,
   });
   await real.open();
+  if (options.ownerUserId !== null) await real.setOwnerUserId(options.ownerUserId ?? RAW_TELEGRAM_USER_ID);
   // Mirrors main composition: the service resolves the bot from the store, so before a bot is verified there is no digest and no approval is possible.
   const digestOf = (conversationId: string): string => {
     const botFingerprint = real.botFingerprint();
@@ -222,7 +224,7 @@ async function pairedHarness(): Promise<Harness & { readonly code: string }> {
   const minted = await h.service.createPairingCode();
   expect(minted.ok).toBe(true);
   if (!minted.ok) throw new Error("unreachable");
-  const paired = await h.store.completePairing({
+  const paired = await h.store.completePairing({ senderId: RAW_TELEGRAM_USER_ID,
     codeDigest: redeemableDigest(minted.pairingCode.code),
     actorDigest: ACTOR_DIGEST,
   });
@@ -231,6 +233,30 @@ async function pairedHarness(): Promise<Harness & { readonly code: string }> {
 }
 
 describe("createTelegramConnectionService", () => {
+  it("requires an explicitly registered desktop owner before activation or pairing", async () => {
+    const h = await harness({ ownerUserId: null });
+    expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: false, error: "telegram-owner-id-required" });
+    expect(h.bridge.start).not.toHaveBeenCalled();
+    expect(await h.service.createPairingCode()).toEqual({ ok: false, error: "telegram-owner-id-required" });
+    expect(await h.service.setOwnerUserId("@display_name")).toEqual({ ok: false, error: "telegram-connection-input-invalid" });
+    expect(await h.service.setOwnerUserId(RAW_TELEGRAM_USER_ID)).toEqual({ ok: true });
+    expect(snapshotOf(h.service).ownerUserId).toBe(RAW_TELEGRAM_USER_ID);
+    expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
+    expect(h.bridge.start).toHaveBeenCalledOnce();
+  });
+
+  it("invalidates the old account before stopping transport and visibly requires pairing again", async () => {
+    const h = await pairedHarness();
+    await h.service.approveCurrentConversation();
+    h.bridge.stop.mockImplementationOnce(async () => {
+      expect(h.store.resolveActiveApproval(ACTOR_DIGEST, h.digestOf(CONVERSATION_ID))).toBeNull();
+      throw new Error("transport stop failed");
+    });
+    expect(await h.service.setOwnerUserId("123456789")).toEqual({ ok: false, error: "telegram-connection-unavailable" });
+    expect(snapshotOf(h.service)).toMatchObject({ ownerUserId: "123456789", state: "paused-by-owner", pairing: null, approval: null });
+    expect(h.store.ownerSnapshot().pairingUnrecognized).toBe(true);
+  });
+
   it("reports unsupported and writes no secret when storage is not encrypted", async () => {
     const h = await harness({ encrypted: false });
 
@@ -347,7 +373,7 @@ describe("createTelegramConnectionService", () => {
     expect(snapshotOf(h.service).state).toBe("pairing-pending");
     if (!minted.ok) throw new Error("unreachable");
 
-    expect(await h.store.completePairing({
+    expect(await h.store.completePairing({ senderId: RAW_TELEGRAM_USER_ID,
       codeDigest: redeemableDigest(minted.pairingCode.code),
       actorDigest: ACTOR_DIGEST,
     })).not.toBeNull();
@@ -573,6 +599,7 @@ describe("createTelegramConnectionService", () => {
 
   it("cannot report a conversation-inactive state the contract no longer has", () => {
     const base = {
+      ownerUserId: null,
       botUsername: null,
       pairing: null,
       approval: null,
@@ -610,7 +637,7 @@ describe("createTelegramConnectionService", () => {
     expect(minted.pairingCode.botUsername).toBe(BOT_USERNAME);
     expect(JSON.stringify(snapshotOf(h.service))).not.toContain(minted.pairingCode.code);
 
-    await h.store.completePairing({
+    await h.store.completePairing({ senderId: RAW_TELEGRAM_USER_ID,
       codeDigest: redeemableDigest(minted.pairingCode.code),
       actorDigest: ACTOR_DIGEST,
     });
@@ -647,7 +674,7 @@ describe("createTelegramConnectionService", () => {
     expect(h.calls).not.toContain("createPendingCode");
   });
 
-  it("projects a snapshot the shared parser accepts and no sentinel value", async () => {
+  it("projects the registered owner ID without secrets or conversation identity", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("24h")).toEqual({ ok: true });
 
@@ -657,7 +684,6 @@ describe("createTelegramConnectionService", () => {
     for (const secret of [
       BOT_TOKEN,
       RAW_CHAT_ID,
-      RAW_TELEGRAM_USER_ID,
       CONVERSATION_ID,
       h.code,
     ]) {

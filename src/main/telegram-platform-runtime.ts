@@ -9,7 +9,7 @@ import type {
   PlatformBridgeVerifiedEnvelope,
 } from "./platform-bridge-inbound.js";
 import type { PlatformBridgeBinding, PlatformBridgeGuard } from "../shared/chat-origin.js";
-import { isTelegramConversationId } from "../shared/telegram-connection.js";
+import { isTelegramConversationId, isTelegramOwnerUserId } from "../shared/telegram-connection.js";
 import { hasNonWhitespaceControlChars } from "../shared/display-safe-text.js";
 import { isPositiveSafeInteger } from "../shared/safe-integer.js";
 import { ACTOR_SECRET_BYTES, ACTOR_SECRET_PATTERN } from "./tailnet-paired-share-authorizer.js";
@@ -17,7 +17,6 @@ import { ACTOR_SECRET_BYTES, ACTOR_SECRET_PATTERN } from "./tailnet-paired-share
 export const TELEGRAM_PLATFORM_ACTOR_SECRET_NAME = "telegram-platform-bridge-actor-v1.key";
 
 const BOT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
-const TELEGRAM_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
 
 const MAX_DELIVERY_ID_CHARS = 256;
 const MAX_TEXT_CHARS = 24_000;
@@ -77,6 +76,8 @@ export function ensureTelegramPlatformActorSecret(secretStore: SecretStore): str
 
 // resolveActiveApproval must stay synchronous: awaiting between authorization and delivery bind permits a conversation-switch race.
 export interface TelegramPairedRouteAuthority {
+  // Explicit identity registered on the desktop; pairing never chooses the owner.
+  ownerUserId(): string | null;
   // Opaque digest of the currently paired Telegram account, if any.
   activePairingActorDigest(): string | null;
   // Non-null only while a live approval binds this actor to this conversation.
@@ -126,7 +127,7 @@ export function createTelegramActorDigester(options: {
   return Object.freeze({
     actorKeyDigest: actorKeyDigestFor(actorSecret),
     digestFor: (senderId: string): string | null =>
-      isCanonicalTelegramId(senderId)
+      isTelegramOwnerUserId(senderId)
         ? actorDigestFor(actorSecret, options.botFingerprint, senderId)
         : null,
   });
@@ -204,6 +205,9 @@ export function createTelegramPairedPlatformRuntime(
   // The screen check is the execution limit even for foreign documents with multiple grants; durable sharing never authorizes background execution.
   const isRouteCurrent = (route: TelegramPlatformRoute): boolean => {
     if (disposed || routesByChatId.get(route.chatId) !== route) return false;
+    try {
+      if (authority.ownerUserId() !== route.chatId) return false;
+    } catch { return false; }
     const approval = approvalFor(route.actorDigest, route.conversationId);
     if (approval === null) return false;
     if (scopeUuid(route.chatId, approval.scope) !== route.binding.scope) return false;
@@ -244,6 +248,9 @@ export function createTelegramPairedPlatformRuntime(
     const verified = normalizeTelegramEnvelope(envelope);
     if (verified === null || disposed) return null;
     if (verified.channelId !== verified.senderId) return null;
+    try {
+      if (authority.ownerUserId() !== verified.senderId) return null;
+    } catch { return null; }
 
     const actorDigest = actorDigestFor(actorSecret, botFingerprint, verified.senderId);
     let pairedDigest: string | null;
@@ -306,6 +313,7 @@ export function createTelegramPairedPlatformRuntime(
 function isRouteAuthority(value: unknown): value is TelegramPairedRouteAuthority {
   return typeof value === "object"
     && value !== null
+    && typeof (value as TelegramPairedRouteAuthority).ownerUserId === "function"
     && typeof (value as TelegramPairedRouteAuthority).activePairingActorDigest === "function"
     && typeof (value as TelegramPairedRouteAuthority).resolveActiveApproval === "function"
     && typeof (value as TelegramPairedRouteAuthority).resolveBoundConversation === "function";
@@ -316,8 +324,8 @@ function normalizeTelegramEnvelope(value: unknown): PlatformBridgeVerifiedEnvelo
   if (record === null
     || record.provider !== "telegram"
     || !isOpaqueIdentifier(record.deliveryId)
-    || !isCanonicalTelegramId(record.channelId)
-    || !isCanonicalTelegramId(record.senderId)
+    || !isTelegramOwnerUserId(record.channelId)
+    || !isTelegramOwnerUserId(record.senderId)
     || !isSafeText(record.text)) {
     return null;
   }
@@ -355,12 +363,6 @@ function exactDataRecord(
   } catch {
     return null;
   }
-}
-
-function isCanonicalTelegramId(value: unknown): value is string {
-  if (typeof value !== "string" || !TELEGRAM_ID_PATTERN.test(value)) return false;
-  const numeric = Number(value);
-  return Number.isSafeInteger(numeric) && numeric > 0 && String(numeric) === value;
 }
 
 function isOpaqueIdentifier(value: unknown): value is string {

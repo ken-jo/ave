@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
@@ -38,7 +39,7 @@ async function cardSnapshot(input: ApprovalRequestInput) {
   const snapshot = gate.getRequestSnapshot(input.id);
   expect(card).not.toHaveProperty("approvalRuleBasis");
   expect(card).not.toHaveProperty("reviewerApprovalBasis");
-  gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, surface as never);
+  await gate.resolveFromDesktopRendererWithFreshIdentity(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, surface as never);
   await pending;
   return snapshot;
 }
@@ -66,13 +67,23 @@ describe("host-issued rules-only approval ceiling", () => {
   it.each([
     { forceExplicit: true as const },
     { durableApprovalRecordAllowed: false },
-    { remoteControllerOrigin: "platform-bridge" as const },
     { childProvenance: { childSessionId: "child", childTitle: "Child", originSessionId: "owner", spawnTaskSummary: "Request action" } },
   ])("keeps one-shot memory restrictions despite issued evidence %j", async (restriction) => {
     const input = request();
     const basis = issueApprovalRuleBasis(invocation(), { level: "medium", reason: "Rules-only assessment" }, input.approvalCacheKey);
     expect(await cardSnapshot({ ...input, ...restriction, approvalRuleBasis: basis })).toMatchObject({
       riskCeilingAtApproval: undefined, persistentAllowAllowed: false, durableApprovalRecordAllowed: false,
+    });
+  });
+
+  it("retains the ordinary memory ceiling for an authenticated session-bound remote user", async () => {
+    const input = request();
+    const basis = issueApprovalRuleBasis(invocation(), { level: "medium", reason: "Rules-only assessment" }, input.approvalCacheKey);
+    const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner",
+      pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true } }, "session");
+    expect(await cardSnapshot({ ...input, sessionId: "session", remoteControllerOrigin: "tailnet-controller", remoteControllerAuthority, approvalRuleBasis: basis })).toMatchObject({
+      riskCeilingAtApproval: "medium", persistentAllowAllowed: true,
     });
   });
 

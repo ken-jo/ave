@@ -12,7 +12,7 @@ import {
   type ChatSendContext,
 } from "../ipc/handlers/chat.js";
 import type { IpcDeps } from "../ipc/types.js";
-import { isRemoteControllerAuthorityCurrent } from "../shared/chat-origin.js";
+import { bindRemoteControllerToSession, isRemoteControllerAuthorityCurrent } from "../shared/chat-origin.js";
 import type {
   PlatformBridgeBinding,
   PlatformBridgeGuard,
@@ -226,7 +226,7 @@ export function createConversationCommandPort(
           bindMessageSendPayload(actor, command.payload),
           remoteControllerAuthority === undefined
             ? abortableContext
-            : { ...abortableContext, remoteControllerAuthority },
+            : { ...abortableContext, remoteControllerAuthority: bindRemoteControllerToSession(remoteControllerAuthority, deps.conversationLoop.getSessionId()) },
         );
       }
       case "turn.cancel-own": {

@@ -1,3 +1,4 @@
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { attachSandboxBlock, sandboxBlockForResult, issueFilesystemSandboxBlock } from "../shared/sandbox-block.js";
 import { captureToolApprovalWait } from "./executor-ceiling.js";
 import type {
@@ -1849,6 +1850,8 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       !holdsOutput &&
       (!hostShellPlan.requiresExplicitUserApproval || disposableExecution)
     ) {
+      await refreshShellRemoteAuthority();
+      assertShellRemoteAuthority();
       const result = spawnBackground(input.command, resolvedCwd, sessionIdFromContext(ctx), prepared, shellObservationSandbox(hostShellPlan, disposableExecution));
       return disposableExecution ? withDisposableExecutionMetadata(result) : result;
     }
@@ -2022,6 +2025,8 @@ async function runBrokeredBash(
     sandbox: { mode: "disposable", detail: "disposable-container" }, outputAvailability: "on-completion" });
   let completed = false;
   try {
+  await refreshShellRemoteAuthority();
+  assertShellRemoteAuthority();
   const result = await authority.runtime.executeBrokeredWorkloadRequest(
     authority.capability,
     "shell.run",
@@ -2295,6 +2300,16 @@ async function checkedShellResult<T extends ToolExecutionResult>(
  *
  * @internal — only exported for testing.
  */
+async function refreshShellRemoteAuthority(): Promise<void> {
+  const gate = currentEffectGateContext();
+  if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
+}
+
+function assertShellRemoteAuthority(): void {
+  const gate = currentEffectGateContext();
+  if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
+}
+
 function ambientShellEgressContext(): ShellEgressContext {
   const gate = currentEffectGateContext();
   return {
@@ -2449,6 +2464,11 @@ export async function spawnWithSandbox(
   // safe whitelist baseline + ONLY the allow-listed proxy/CA/SANDBOX_RUNTIME
   // keys ASRT set/changed. So the Windows proxy set is propagated (the "spread")
   // while mac/linux gains nothing extra, and host secrets stay stripped on both.
+  const gate = currentEffectGateContext();
+  if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) {
+    await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
+    throw new Error("remote-controller-revoked");
+  }
   const childEnv = preparedSandboxEnvironment(prepared, wrapped.env);
   let observation: AgentTerminalObservationLease | undefined;
   try { observation = startShellObservation(command, resolvedCwd,
@@ -2460,6 +2480,7 @@ export async function spawnWithSandbox(
     // shell here would re-parse and break quoting / inject a second shell.
     let child: PipedChild;
     try {
+      if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:bash:asrt");
       assertSrtWinSpawnIntegrity(cmd);
       child = spawn(cmd, args, {
@@ -2595,6 +2616,7 @@ async function spawnWithTimeout(
   const { argv, probe } = preparedShellCwdProbe(prepared, prelude);
   const launch = (): Promise<SpawnResult> => new Promise((resolve) => {
     signal?.throwIfAborted();
+    assertShellRemoteAuthority();
     assertManagedChildProcessAdmissionOpen("tool:bash");
     const observation = startShellObservation(command, cwd, sandbox);
     let child: PipedChild;
@@ -2729,10 +2751,11 @@ async function spawnWithTimeout(
   if (spawnAuthorization !== undefined && prelude === undefined) {
     // Keep listener registration in the synchronous handoff, without holding
     // the policy queue for the lifetime of the command's result promise.
-    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }));
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }), refreshShellRemoteAuthority);
     return handoff === undefined
       ? { output: `spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true, metadata: {} } : await handoff.result;
   }
+  await refreshShellRemoteAuthority();
   return await launch();
   } finally { releaseClaim(); }
 }
@@ -3732,6 +3755,11 @@ async function spawnPowerShellWithSandbox(
   // allow-listed proxy/CA/SANDBOX_RUNTIME keys ASRT set/changed — so on win32
   // the proxy set is propagated (the "spread") and on mac/linux nothing extra
   // leaks (ASRT changed nothing in process.env). Secrets stay stripped on both.
+  const gate = currentEffectGateContext();
+  if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) {
+    await releaseSandboxResources();
+    throw new Error("remote-controller-revoked");
+  }
   const childEnv = powerShellExecutionEnvironment(verified, buildSandboxedChildEnv(wrapped.env, { ...sandboxHome.env,
     XDG_CONFIG_HOME: powerShellLaunch.env.XDG_CONFIG_HOME!, PSModulePath: powerShellLaunch.env.PSModulePath!,
   }));
@@ -3743,6 +3771,7 @@ async function spawnPowerShellWithSandbox(
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
     try {
+      if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:powershell:asrt");
       assertSrtWinSpawnIntegrity(cmd);
       child = spawn(cmd, args, {
@@ -3944,6 +3973,11 @@ async function spawnPowerShellInMxc(
     return withReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } },
       await releaseContainerResources());
   }
+  const gate = currentEffectGateContext();
+  if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) {
+    await releaseContainerResources();
+    throw new Error("remote-controller-revoked");
+  }
   let observation: AgentTerminalObservationLease | undefined;
   try { observation = parserResponse === undefined ? startShellObservation(command, cwd,
     { mode: "isolated", detail: "filesystem/process confinement" }, egress.token) : undefined; }
@@ -3952,6 +3986,7 @@ async function spawnPowerShellInMxc(
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
     try {
+      if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:powershell:mxc");
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
@@ -4074,6 +4109,7 @@ async function spawnPowerShell(
   const prelude = spawnAuthorization === undefined ? undefined : hostShellWorkingDirectoryPrelude(spawnAuthorization.cwdIdentity, "powershell", process.platform);
   const launch = (): Promise<ToolExecutionResult> => new Promise((resolve) => {
     signal?.throwIfAborted();
+    assertShellRemoteAuthority();
     assertManagedChildProcessAdmissionOpen("tool:powershell");
     const observation = startShellObservation(command, cwd, sandbox);
     let child: PipedChild;
@@ -4146,10 +4182,11 @@ async function spawnPowerShell(
     });
   });
   if (spawnAuthorization !== undefined && prelude === undefined) {
-    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }));
+    const handoff = await withHostShellExecutionHandoff(spawnAuthorization, () => ({ result: launch() }), refreshShellRemoteAuthority);
     return handoff === undefined
       ? { output: `PowerShell spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR}`, isError: true } : handoff.result;
   }
+  await refreshShellRemoteAuthority();
   return launch();
 }
 

@@ -1,7 +1,7 @@
 /** Match the bot username contract; overly strict validation misreports valid bots as network failures. */
 import { describe, expect, it } from "vitest";
 
-import { isTelegramBotUsername, isTelegramBotToken, TELEGRAM_BOT_TOKEN_PATH_GRAMMAR } from "../telegram-connection.js";
+import { isTelegramBotUsername, isTelegramBotToken, isTelegramOwnerUserId, isTelegramSetOwnerUserIdInput, parseTelegramConnectionSnapshot, TELEGRAM_BOT_TOKEN_PATH_GRAMMAR } from "../telegram-connection.js";
 
 describe("isTelegramBotUsername", () => {
   it("accepts the 5-char minimum handle (regression: 5-6 char handles were rejected)", () => {
@@ -58,5 +58,30 @@ describe("TELEGRAM_BOT_TOKEN_PATH_GRAMMAR", () => {
     expect(TELEGRAM_BOT_TOKEN_PATH_GRAMMAR.test("abc/../def")).toBe(false);
     expect(TELEGRAM_BOT_TOKEN_PATH_GRAMMAR.test("a?b=c")).toBe(false);
     expect(TELEGRAM_BOT_TOKEN_PATH_GRAMMAR.test("x".repeat(257))).toBe(false);
+  });
+});
+
+
+describe("registered owner identity", () => {
+  it.each(["1", "123456789", "4503599627370495"])("accepts a canonical numeric identity %s", value => {
+    expect(isTelegramOwnerUserId(value)).toBe(true);
+  });
+  it.each(["", "0", "-1", "01", " 123", "123 ", "@account", "1.5", "1e5", "4503599627370496", 123, null])("rejects malformed identity %j", value => {
+    expect(isTelegramOwnerUserId(value)).toBe(false);
+  });
+  it("requires the owner field in snapshots and rejects malformed registered identities", () => {
+    const snapshot = { state: "disconnected", ownerUserId: null, botUsername: null, pairing: null, approval: null, pendingCode: null, lastErrorCode: null };
+    expect(parseTelegramConnectionSnapshot(snapshot)).toEqual(snapshot);
+    expect(parseTelegramConnectionSnapshot({ ...snapshot, ownerUserId: "123456789" })).toMatchObject({ ownerUserId: "123456789" });
+    const { ownerUserId: _dropped, ...missingOwner } = snapshot;
+    expect(parseTelegramConnectionSnapshot(missingOwner)).toBeNull();
+    expect(parseTelegramConnectionSnapshot({ ...snapshot, ownerUserId: "@account" })).toBeNull();
+  });
+  it("requires exact owner mutation fields and live keyboard intent", () => {
+    const input = { ownerUserId: "123456789", intent: { inputOrigin: "user-keyboard", userActivation: true } };
+    expect(isTelegramSetOwnerUserIdInput(input)).toBe(true);
+    expect(isTelegramSetOwnerUserIdInput({ ownerUserId: input.ownerUserId })).toBe(false);
+    expect(isTelegramSetOwnerUserIdInput({ ...input, extra: true })).toBe(false);
+    expect(isTelegramSetOwnerUserIdInput({ ...input, intent: { inputOrigin: "platform-bridge", userActivation: true } })).toBe(false);
   });
 });

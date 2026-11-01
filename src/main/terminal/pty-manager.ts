@@ -1,3 +1,5 @@
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../../shared/chat-origin.js";
+import { currentEffectGateContext } from "../../permissions/effect-enforcement.js";
 /** Host terminals belong to visible tabs; confined terminals belong to conversations. */
 import { killPty } from "./pty-kill.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -1570,6 +1572,14 @@ export async function typeLineAtPrompt(
   line: string,
   onTyped: () => void = () => {},
 ): Promise<TypeTerminalCommandResult> {
+  const gate = currentEffectGateContext();
+  const authority = gate?.permissionContext?.remoteControllerAuthority;
+  const sessionId = gate?.sessionId;
+  const originalTarget = target;
+  target = { ...originalTarget, write(data) {
+    if (!isRemoteControllerBoundToSession(authority, sessionId)) throw new Error("remote-controller-revoked");
+    originalTarget.write(data);
+  } };
   if (!hasOnlyTypeableCharacters(line) || line.length > MAX_TERMINAL_COMMAND_CHARS) {
     throw new Error("typeAgentTerminalCommand: the line holds characters that cannot be typed as one command");
   }
@@ -1590,6 +1600,7 @@ export async function typeLineAtPrompt(
     if (before) return before;
     const verified = await target.verify(options);
     if (!verified.ok) return notTyped(verified.reason, verified.message);
+    if (!await refreshRemoteControllerBoundToSession(authority, sessionId) || !isRemoteControllerBoundToSession(authority, sessionId)) return notTyped("effect-refused", "remote-controller-revoked");
     return interrupted() ?? (!target.isLive() ? notTyped("no-terminal", target.missing) : null);
   };
   const before = check();
@@ -1601,6 +1612,7 @@ export async function typeLineAtPrompt(
   // 1. The operating system agrees: the shell holds the terminal, in the approved directory.
   const verified = await target.verify();
   if (!verified.ok) return notTyped(verified.reason, verified.message);
+  if (!await refreshRemoteControllerBoundToSession(authority, sessionId) || !isRemoteControllerBoundToSession(authority, sessionId)) return notTyped("effect-refused", "remote-controller-revoked");
   const afterCheck = interrupted() ?? check();
   if (afterCheck) return afterCheck;
 

@@ -31,7 +31,7 @@ import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import {
-  isRemoteControllerAuthorityCurrent,
+  isRemoteControllerBoundToSession,
   remoteControllerOriginOf,
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
@@ -41,8 +41,7 @@ import { createLogger } from "../lib/logger.js";
 import {
   hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import {
-  emitPermissionReview,
-  emitToolStart } from "./pipeline/display-mask.js";
+  emitPermissionReview, emitToolStart } from "./pipeline/display-mask.js";
 import { maybeMaterializeRationaleControl } from "./pipeline/rationale-orchestrator.js";
 import {
   authorizeRationaleResume,
@@ -307,8 +306,6 @@ export async function authorizeToolInvocation(
   const metaOverride = source === "builtin" && tool.category === "meta"
     ? tool.decisionOverride
     : undefined;
-  const requiresRemoteLocalOneShot =
-    invocationPermissionContext.remoteControllerAuthority !== undefined;
   const remoteControllerOrigin = remoteControllerOriginOf(
     invocationPermissionContext.remoteControllerAuthority,
   );
@@ -316,8 +313,7 @@ export async function authorizeToolInvocation(
     ? terminalCommandScopeOf(invocationPermissionContext.approvalMemory)
     : undefined;
   const hostTerminalScope: HostTerminalCommandScope | undefined = terminalScope?.lane === "manual" ? terminalScope : undefined;
-  const otherPrincipal = invocationPermissionContext.otherPrincipal === true || approvalReasonPrefix !== undefined ||
-    requiresRemoteLocalOneShot;
+  const otherPrincipal = invocationPermissionContext.otherPrincipal === true || approvalReasonPrefix !== undefined;
   const floor = context.floor ?? (otherPrincipal ? {
     code: "other-principal" as const,
     reason: "another principal's request requires local allow-once approval",
@@ -1054,24 +1050,8 @@ export async function authorizeToolInvocation(
           });
         }
 
-        // A remote-controller turn blocks here for up to the approval timeout,
-        // and its layer-2 verdict carries no `reviewer`, so the reviewer-dispatch
-        // path that normally emits this never runs. Without it the paired
-        // surface sees `working` and then, minutes later, a failure — silence
-        // that reads as a dead bridge rather than as waiting for the desk.
-        //
-        // The platform projector maps `needs_approval` to
-        // `approval.waiting-local` carrying only a coarse grammar-checked tool
-        // identifier and discards every other field, so this adds no egress
-        // beyond that one status plus the tool name.
-        if (requiresRemoteLocalOneShot) {
-          emitPermissionReview(callbacks, {
-            status: "needs_approval",
-            toolName: toolUse.name,
-            toolCategory: invocationCategory,
-            source: source as ToolSource,
-            ...meta,
-          });
+        if (!permissionResult.reviewer) {
+          emitPermissionReview(callbacks, { status: "needs_approval", toolName: toolUse.name, toolCategory: invocationCategory, source: source as ToolSource, ...meta });
         }
 
         // §F3: requestAndWait 실패 시 감사 로그 보장 후 deny-once 처리
@@ -1168,7 +1148,7 @@ export async function authorizeToolInvocation(
             approvalPolicyEpoch !== services.permissionManager.getPolicyEpoch() &&
             !services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, services.permissionManager.getPolicyEpoch())
           ? "Permission policy changed while approval was pending"
-          : !isRemoteControllerAuthorityCurrent(invocationPermissionContext.remoteControllerAuthority)
+          : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked" : undefined;
         if (approvalInvalidationReason !== undefined) {
           const reason = approvalInvalidationReason;
@@ -1204,12 +1184,9 @@ export async function authorizeToolInvocation(
         const manuallyApproved = decision.choice.startsWith("allow") &&
           !isHostApprovalRejectedDecision(decision);
 
-        const remoteOneShotRejected =
-          requiresRemoteLocalOneShot && decision.choice !== "allow-once";
-        if (decision.choice.startsWith("deny") || remoteOneShotRejected) {
+        if (decision.choice.startsWith("deny")) {
           // deny-always: 영구 거부 규칙 추가
           if (
-            !requiresRemoteLocalOneShot &&
             decision.choice === "deny-always" &&
             services.permissionManager
           ) {

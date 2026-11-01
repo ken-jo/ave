@@ -4,8 +4,14 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createSkillLoadTool, type SkillLoadToolDeps } from "../skill-load.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { ApprovalGate } from "../../permissions/approval-gate.js";
-import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import { makeMockWebContents, useTempPaths } from "../../__tests__/test-helpers.js";
+import { SkillApprovalsStore } from "../../main/skill-approvals-store.js";
+import { withInProcessFileQueue } from "../../lib/with-file-lock.js";
+
+const approvalPath = useTempPaths("skill-controller-persistence-", "approvals.json");
 
 const IN_SCOPE = "in-scope-plugin";
 const OUT_OF_SCOPE = "out-of-scope-plugin";
@@ -128,5 +134,85 @@ describe("skill_load — plugin skills obey the turn's plugin scope", () => {
 
     expect(result.is_error).toBe(true);
     expect(harness.acquirePluginGeneration).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("skill body approval controller authority", () => {
+  it("records no grant when the host observes revocation while approval persistence waits in the write queue", async () => {
+    const sessionId = "skill-persistence-owner";
+    let current = true;
+    let ownerAvailable = true;
+    const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:skill-owner",
+      pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = ownerAvailable; return current; } },
+    }, sessionId);
+    const file = approvalPath();
+    const approvals = new SkillApprovalsStore(file);
+    const approve = vi.spyOn(approvals, "approve");
+    let release!: () => void;
+    const held = withInProcessFileQueue(file, () => new Promise<void>(resolve => { release = resolve; }));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const register = vi.fn();
+    const emit = vi.fn();
+    const tool = createSkillLoadTool({ store: { load: async () => skillFixture("user-skill") } as unknown as SkillLoadToolDeps["store"],
+      approvals, approvalGate: gate, overlay: { register } as unknown as SkillLoadToolDeps["overlay"], emit });
+    const pending = turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(authority), () => tool.execute({ skillName: "user-skill" }, {
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId },
+    }));
+    try {
+      await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      await vi.waitFor(() => expect(approve).toHaveBeenCalledOnce());
+      // The fresh probe ran before the queue; the synchronous commit fence sees a revocation recorded during the wait.
+      current = false;
+      ownerAvailable = false;
+    } finally { release(); await held; }
+    expect((await pending).isError).toBe(true);
+    expect(await new SkillApprovalsStore(file).isApproved("user-skill", "body")).toBe(false);
+    expect(register).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+  it.each(["local", "current", "revoked", "fresh-unavailable"] as const)("checks %s authority after an actual pending content card", async state => {
+    const sessionId = "skill-controller-card";
+    let current = true;
+    let freshAvailable = true;
+    const authority = state === "fresh-unavailable" ? bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:skill-controller", pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" }, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = freshAvailable; return current; } } }, sessionId) : state === "local" ? undefined : bindRemoteControllerToSession({
+      kind: "platform-bridge", actorId: "skill-controller",
+      bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
+      bridgeGuard: { isCurrent: () => current },
+    }, sessionId);
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const requestAndWait = vi.spyOn(gate, "requestAndWait");
+    const approve = vi.fn(async () => undefined);
+    const register = vi.fn();
+    const emit = vi.fn();
+    const tool = createSkillLoadTool({
+      store: { load: async () => skillFixture("user-skill") } as unknown as SkillLoadToolDeps["store"],
+      overlay: { register } as unknown as SkillLoadToolDeps["overlay"],
+      approvals: { isApproved: async () => false, approve } as unknown as SkillLoadToolDeps["approvals"],
+      approvalGate: gate, emit,
+    });
+    const pending = turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(authority), () => tool.execute({ skillName: "user-skill" }, {
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId },
+    }));
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    expect(request.sessionId).toBe(sessionId);
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerAuthority: authority, remoteControllerOrigin: authority?.kind }));
+    expect(gate.pendingCount).toBe(1);
+    if (state === "revoked") current = false;
+    if (state === "fresh-unavailable") freshAvailable = false;
+    await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    const result = await pending;
+    expect(result.isError).toBe(state === "revoked" || state === "fresh-unavailable");
+    expect(approve).toHaveBeenCalledTimes((state === "revoked" || state === "fresh-unavailable") ? 0 : 1);
+    expect(register).toHaveBeenCalledTimes((state === "revoked" || state === "fresh-unavailable") ? 0 : 1);
+    expect(emit).toHaveBeenCalledTimes((state === "revoked" || state === "fresh-unavailable") ? 0 : 1);
+    expect(gate.pendingCount).toBe(0);
   });
 });

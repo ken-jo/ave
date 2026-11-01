@@ -60,6 +60,10 @@ export function buildTelegramConnectionApiSurface(): TelegramConnectionOwnerApi 
       });
     },
 
+    setOwnerUserId(ownerUserId: string): Promise<TelegramConnectionMutationResult> {
+      return invokeMutation(CHANNELS.telegramConnection.setOwnerUserId, { ownerUserId, intent: ipcUserKeyboardIntent() });
+    },
+
     disconnect(): Promise<TelegramConnectionMutationResult> {
       return intentOnly(CHANNELS.telegramConnection.disconnect);
     },

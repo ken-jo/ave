@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../../shared/chat-origin.js";
 import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { ApprovalGate, type ApprovalRequest } from "../../approval-gate.js";
@@ -260,18 +261,13 @@ describe("judge approval-path placement", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
-  it("reviews ordinary host operations and keeps remote-controller requests outside the chain", async () => {
+  it("reviews session-bound controller operations like local operations", async () => {
     const subject = makeSubject();
     const provider = external(subject, { decision: "allow", rationale: "permitted" });
     expect((await checkAndDispatch(subject, { decisionOverride: "ask" }, "meta")).decision).toBe("allow");
-    const remoteControllerAuthority = { kind: "tailnet-controller", actorId: "tailnet:controller" } as const;
-    // Remote-controller shell capability expansion is an admission refusal.
-    expect(await checkAndDispatch(subject, { remoteControllerAuthority })).toMatchObject({ decision: "deny", reasonCode: "controller-capability" });
-    // A permitted remote write keeps its local allow-once modal; no judge route.
-    const remoteWrite = subject.manager.checkDetailed("write_file", "builtin", "write", null, { remoteControllerAuthority });
-    expect(remoteWrite).toMatchObject({ decision: "ask", forceModal: true });
-    expect(remoteWrite.reviewer).toBeUndefined();
-    expect(provider.requests).toHaveLength(1);
+    const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:controller" }, "remote-session");
+    expect((await checkAndDispatch(subject, { remoteControllerAuthority, sessionId: "remote-session" })).decision).toBe("allow");
+    expect(provider.requests).toHaveLength(2);
   });
 
   it.each(["default", "auto"] as const)("routes ordinary external tools through %s mode", (mode) => {

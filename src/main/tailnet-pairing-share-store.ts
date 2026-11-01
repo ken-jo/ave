@@ -1,3 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createLogger } from "../lib/logger.js";
+import { TailnetOwnerIdentityError } from "./tailnet-owner-identity.js";
+import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
 // Pairing identifies an account without granting transcript or control access; an exact current conversation needs a separate bounded share. Never
 // persist raw logins, invite codes, or conversation IDs.
 import { randomBytes as nodeRandomBytes, randomUUID as nodeRandomUuid } from "node:crypto";
@@ -14,6 +18,7 @@ import { isMissingPathError } from "../lib/atomic-file.js";
 import { hasExactKeys, isRecord } from "../shared/is-record.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "../shared/safe-integer.js";
 
+const log = createLogger("tailnet-pairing-share-store");
 const STORE_VERSION = 1;
 const DEFAULT_FILE_NAME = "pairing-share.json";
 const DEFAULT_INVITE_TTL_MS = 10 * 60 * 1_000;
@@ -45,6 +50,7 @@ export interface TailnetPairingClaim {
 }
 
 export interface TailnetPairingShareAuthority {
+  readonly expiresAt: number;
   readonly actorId: TailnetShareActorId;
   readonly pairing: TailnetPairingShareBinding;
   readonly permission: TailnetSharePermission;
@@ -67,12 +73,14 @@ interface TailnetOwnerShareSummary {
 }
 
 export interface TailnetOwnerSharingSnapshot {
+  readonly ownerIdentityError?: TailnetOwnerIdentityErrorCode;
   readonly invitations: readonly { readonly id: string; readonly expiresAt: number }[];
   readonly pairings: readonly TailnetOwnerPairingSummary[];
   readonly shares: readonly TailnetOwnerShareSummary[];
 }
 
 export interface CreateTailnetPairingShareStoreOptions {
+  readonly getOwnerActorId?: () => TailnetShareActorId | null;
   readonly namespace?: FeatureNamespaceHandle;
   readonly fileName?: string;
   readonly now?: () => number;
@@ -433,6 +441,16 @@ class AsyncMutex {
   }
 }
 
+function revokePairingIds(state: StoreState, ids: ReadonlySet<string>, now: number): StoreState {
+  return {
+    ...state,
+    pairings: state.pairings.map(pairing => ids.has(pairing.id) && (pairing.state === "active" || pairing.state === "pending")
+      ? { ...pairing, state: "revoked", epoch: nextEpoch(pairing.epoch), expiresAt: null, activatedAt: null, terminalAt: now } : pairing),
+    shares: state.shares.map(share => ids.has(share.pairingId) && share.state === "active"
+      ? { ...share, state: "revoked", epoch: nextEpoch(share.epoch), terminalAt: now } : share),
+  };
+}
+
 // Call open() before use. Corrupt state fails closed rather than becoming an empty permission database.
 export class TailnetPairingShareStore {
   private readonly namespace: FeatureNamespaceHandle;
@@ -443,10 +461,15 @@ export class TailnetPairingShareStore {
   private readonly invitationTtlMs: number;
   private readonly shareTtlMs: number;
   private readonly mutex = new AsyncMutex();
+  private readonly ownerGuards = new AsyncLocalStorage<() => void>();
   private readonly listeners = new Set<ChangeListener>();
   private state: StoreState | undefined;
+  private readonly getOwnerActorId: () => TailnetShareActorId | null;
+  private readonly invalidatedPairings = new Set<string>();
+  private ownerReconciliationQueued = false;
 
   constructor(options: CreateTailnetPairingShareStoreOptions = {}) {
+    this.getOwnerActorId = options.getOwnerActorId ?? (() => null);
     this.namespace = options.namespace ?? openFeatureNamespace(TAILNET_SHARING_FEATURE);
     this.fileName = options.fileName ?? DEFAULT_FILE_NAME;
     this.now = options.now ?? Date.now;
@@ -483,10 +506,27 @@ export class TailnetPairingShareStore {
         throw fail();
       }
       if (!validState(parsed)) throw fail();
-      const pruned = prune(parsed, this.checkedNow());
+      let pruned = { ...prune(parsed, this.checkedNow()) };
+      const owner = this.ownerActorId();
+      const invalid = owner === null ? [] : pruned.state.pairings.filter(pairing => (pairing.state === "pending" || pairing.state === "active") && pairing.actorId !== owner);
+      if (invalid.length > 0) {
+        const invalidIds = new Set(invalid.map(pairing => pairing.id));
+        const now = this.checkedNow();
+        pruned.state = revokePairingIds(pruned.state, invalidIds, now);
+        pruned.changed = true;
+      }
       this.state = pruned.state;
       if (pruned.changed) await this.persist(pruned.state);
     });
+  }
+
+  withOwnerIdentityGuard<T>(guard: () => void, operation: () => Promise<T>): Promise<T> {
+    return this.ownerGuards.run(guard, operation);
+  }
+
+  notifyOwnerIdentityChanged(): void {
+    this.ownerActorId();
+    this.emitChange();
   }
 
   subscribe(listener: ChangeListener): () => void {
@@ -497,6 +537,7 @@ export class TailnetPairingShareStore {
   async createInvitation(ttlMs = this.invitationTtlMs): Promise<TailnetPairingInvitation> {
     if (!validDuration(ttlMs, MAX_INVITE_TTL_MS)) throw fail();
     return await this.mutate((state, now) => {
+      if (this.ownerActorId() === null) throw new TailnetOwnerIdentityError("tailnet-owner-identity-unavailable");
       if (state.invitations.filter((entry) => entry.state === "open").length >= MAX_INVITATIONS) {
         throw capacity();
       }
@@ -525,6 +566,7 @@ export class TailnetPairingShareStore {
   ): Promise<TailnetPairingClaim | null> {
     if (!invitationCode(code) || !isTailnetShareActorId(claimedActorId)) return null;
     return await this.mutate((state, now) => {
+      this.assertOwnerActor(claimedActorId);
       const codeDigest = inviteDigest(code);
       const invitationIndex = state.invitations.findIndex((entry) => (
         entry.state === "open"
@@ -601,6 +643,8 @@ export class TailnetPairingShareStore {
       ) {
         return { state, value: false, changed: false };
       }
+      this.assertOwnerActor(pairing.actorId);
+      if (this.invalidatedPairings.has(pairing.id)) throw new TailnetOwnerIdentityError("tailnet-owner-identity-mismatch");
       const pairings = [...state.pairings];
       pairings[index] = {
         ...pairing,
@@ -630,9 +674,10 @@ export class TailnetPairingShareStore {
     }
     return await this.mutate((state, now) => {
       const pairing = state.pairings.find((entry) => (
-        entry.id === input.pairingId && entry.state === "active"
+        entry.id === input.pairingId && entry.state === "active" && !this.invalidatedPairings.has(entry.id)
       ));
       if (!pairing) return { state, value: null, changed: false };
+      this.assertOwnerActor(pairing.actorId);
       const targetDigest = conversationDigest(input.conversationId);
       const shares = state.shares.map((entry): StoredShare => (
         entry.state === "active"
@@ -666,6 +711,7 @@ export class TailnetPairingShareStore {
         value: Object.freeze({
           actorId: pairing.actorId,
           pairing: binding(pairing, share),
+          expiresAt: share.expiresAt,
           permission,
         }),
         changed: true,
@@ -726,11 +772,11 @@ export class TailnetPairingShareStore {
     currentConversationId: string,
     required: TailnetSharePermission,
   ): TailnetPairingShareAuthority | null {
-    if (!isTailnetShareActorId(resolvedActorId) || !conversationId(currentConversationId)) return null;
+    if (!isTailnetShareActorId(resolvedActorId) || !conversationId(currentConversationId) || resolvedActorId !== this.ownerActorId()) return null;
     const state = this.requireState();
     const now = this.checkedNow();
     const pairing = state.pairings.find((entry) => (
-      entry.actorId === resolvedActorId && entry.state === "active"
+      entry.actorId === resolvedActorId && entry.state === "active" && !this.invalidatedPairings.has(entry.id)
     ));
     if (!pairing) return null;
     const targetDigest = conversationDigest(currentConversationId);
@@ -748,6 +794,7 @@ export class TailnetPairingShareStore {
           actorId: resolvedActorId,
           pairing: binding(pairing, share),
           permission: share.permission,
+          expiresAt: share.expiresAt,
         })
       : null;
   }
@@ -765,9 +812,13 @@ export class TailnetPairingShareStore {
   }
 
   ownerSnapshot(): TailnetOwnerSharingSnapshot {
-    const state = this.requireState();
+    const stored = this.requireState();
+    const owner = this.ownerActorId();
+    const ownerIdentityError: TailnetOwnerIdentityErrorCode | undefined = owner === null ? "tailnet-owner-identity-unavailable" : stored.pairings.some(pairing => (pairing.state === "active" || pairing.state === "pending" && pairing.expiresAt !== null && pairing.expiresAt > this.checkedNow()) && pairing.actorId !== owner) ? "tailnet-owner-identity-mismatch" : undefined;
+    const state = { ...stored, pairings: stored.pairings.filter(pairing => pairing.actorId === owner && !this.invalidatedPairings.has(pairing.id)), shares: stored.shares.filter(share => share.actorId === owner && !this.invalidatedPairings.has(share.pairingId)) };
     const now = this.checkedNow();
     return Object.freeze({
+      ...(ownerIdentityError === undefined ? {} : { ownerIdentityError }),
       invitations: state.invitations
         .filter((entry) => entry.state === "open" && entry.expiresAt > now)
         .map((entry) => Object.freeze({ id: entry.id, expiresAt: entry.expiresAt })),
@@ -801,17 +852,51 @@ export class TailnetPairingShareStore {
       readonly changed: boolean;
     },
   ): Promise<T> {
+    const guard = this.ownerGuards.getStore();
     return await this.mutex.run(async () => {
+      guard?.();
       const pruned = prune(this.requireState(), this.checkedNow());
       const outcome = operation(pruned.state, this.checkedNow());
       if (pruned.changed || outcome.changed) {
         if (!validState(outcome.state)) throw fail();
+        guard?.();
         await this.persist(outcome.state);
+        try { guard?.(); } catch (error) {
+          try { await this.persist(pruned.state); } catch { this.state = undefined; log.error("tailnet-owner-mutation-rollback-failed"); throw fail(); }
+          throw error;
+        }
         this.state = outcome.state;
         this.emitChange();
       }
       return outcome.value;
     });
+  }
+
+  private ownerActorId(): TailnetShareActorId | null {
+    let owner: TailnetShareActorId | null = null;
+    try { const value = this.getOwnerActorId(); owner = isTailnetShareActorId(value) ? value : null; } catch { /* Unreadable host identity suspends existing access. */ }
+    const invalid = owner === null ? [] : this.state?.pairings.filter(pairing => (pairing.state === "pending" || pairing.state === "active") && pairing.actorId !== owner) ?? [];
+    for (const pairing of invalid) this.invalidatedPairings.add(pairing.id);
+    if (invalid.length > 0 && !this.ownerReconciliationQueued) {
+      this.ownerReconciliationQueued = true;
+      void this.mutex.run(async () => {
+        try {
+          const state = this.requireState();
+          const now = this.checkedNow();
+          const next = revokePairingIds(state, this.invalidatedPairings, now);
+          await this.persist(next);
+          this.state = next;
+          this.emitChange();
+        } finally { this.ownerReconciliationQueued = false; }
+      }).catch(() => { log.error("tailnet-owner-identity-revocation-persist-failed"); });
+    }
+    return owner;
+  }
+
+  private assertOwnerActor(actor: TailnetShareActorId): void {
+    const owner = this.ownerActorId();
+    if (owner === null) throw new TailnetOwnerIdentityError("tailnet-owner-identity-unavailable");
+    if (actor !== owner) throw new TailnetOwnerIdentityError("tailnet-owner-identity-mismatch");
   }
 
   private requireState(): StoreState {

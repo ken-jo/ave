@@ -139,7 +139,7 @@ describe("judge boot wiring", () => {
       providerForModel: () => null, networkFetch, audit: audit.logger, resolveRootSessionId,
     };
     const engine = wireJudgeAgent(deps);
-    const gate = { priorDecision: "undecided" as const, strictMode: false, capabilityGrant: false, remoteController: false };
+    const gate = { priorDecision: "undecided" as const, strictMode: false, capabilityGrant: false };
     await resolveJudge(gate, judgeRequest({ sessionId: resolveRootSessionId(first) }), engine);
     const rewired = wireJudgeAgent(deps);
     expect(rewired.breaker).toBe(engine.breaker);

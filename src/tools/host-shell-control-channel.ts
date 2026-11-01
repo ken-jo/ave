@@ -1,3 +1,5 @@
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
+import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
 import type { ChildProcess } from "node:child_process";
 import type { Duplex } from "node:stream";
 import { withHostShellExecutionHandoff, type HostShellSpawnAuthorization } from "../permissions/host-shell-execution-permit.js";
@@ -7,6 +9,9 @@ export function attachHostShellControlChannel(
   child: ChildProcess,
   authorization: HostShellSpawnAuthorization,
 ): { readonly rejected: boolean; dispose(): void } {
+  const gate = currentEffectGateContext();
+  const authority = gate?.permissionContext?.remoteControllerAuthority;
+  const sessionId = gate?.sessionId;
   const channel = child.stdio[3] as Duplex | null | undefined;
   let state: "waiting" | "validating" | "granted" | "rejected" = "waiting";
   const reject = (): void => {
@@ -24,11 +29,12 @@ export function attachHostShellControlChannel(
       }
       state = "validating";
       void withHostShellExecutionHandoff(authorization, () => {
+        if (!isRemoteControllerBoundToSession(authority, sessionId)) return false;
         if (state !== "validating" || channel.destroyed || !channel.writable || child.exitCode !== null) return false;
         channel.end("G");
         state = "granted";
         return true;
-      }).then((granted) => { if (granted !== true) reject(); }, reject);
+      }, async () => { if (!await refreshRemoteControllerBoundToSession(authority, sessionId)) throw new Error("remote-controller-revoked"); }).then((granted) => { if (granted !== true) reject(); }, reject);
     });
     channel.on("end", reject);
     channel.on("error", () => { state = "rejected"; });

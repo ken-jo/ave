@@ -170,7 +170,8 @@ function makeDeps(options: {
         choice: options.approvalChoice ?? "allow-once",
       })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
-      resolveFromDesktopRenderer: vi.fn((_requestId: string, decision: unknown) => decision),
+      resolveFromDesktopRendererWithFreshIdentity: vi.fn((_requestId: string, decision: unknown) => decision),
+      capturePendingRequestIdentityGuard: vi.fn(() => ({ refresh: vi.fn(async () => true), isCurrent: vi.fn(() => true) })),
       mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
       beginApprovalRuleSave: vi.fn(() => Object.freeze({})),
       beginExactApprovalSave: vi.fn(() => Object.freeze({})),
@@ -359,12 +360,12 @@ describe("permissions IPC handlers", () => {
     Object.assign(sender, { mainFrame: frame });
     const decision = { requestId: "host-approval", choice: "allow-once" };
     await fn({ sender, senderFrame: frame }, decision);
-    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("host-approval", decision, sender);
+    expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).toHaveBeenCalledWith("host-approval", decision, sender);
     expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
-    deps.approvalGate.resolveFromDesktopRenderer.mockClear();
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockClear();
     expect(await fn({ sender, senderFrame: { url: frame.url } }, decision)).toEqual(UNAUTHORIZED_FRAME);
     expect(await fn({ sender: { ...sender, mainFrame: frame }, senderFrame: frame }, decision)).toEqual(UNAUTHORIZED_FRAME);
-    expect(deps.approvalGate.resolveFromDesktopRenderer).not.toHaveBeenCalled();
+    expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).not.toHaveBeenCalled();
     expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
     expect(deps.auditLogger.log.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
   });
@@ -373,7 +374,7 @@ describe("permissions IPC handlers", () => {
     const { deps, appWindows } = await setup();
     const answer = { requestId: "surface-card", choice: "allow-once", userOwnedSurfaceChoice, nonce: "signed-nonce", hmac: "signed-hmac" };
     expect(await invoke(PERMISSIONS.approvalRespond, answer)).toEqual({ ok: true });
-    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("surface-card", answer, appWindows[0].webContents);
+    expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).toHaveBeenCalledWith("surface-card", answer, appWindows[0].webContents);
   });
 
   it.each([null, {}, { requestId: "surface-card", choice: "invalid" },
@@ -383,7 +384,7 @@ describe("permissions IPC handlers", () => {
   ])("rejects malformed or host-only surface response fields %j", async (answer) => {
     const { deps } = await setup();
     expect(await invoke(PERMISSIONS.approvalRespond, answer)).toMatchObject({ ok: false, error: "invalid-payload" });
-    expect(deps.approvalGate.resolveFromDesktopRenderer).not.toHaveBeenCalled();
+    expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).not.toHaveBeenCalled();
   });
 
   it("passes a registered main-frame recipient to pending-card filtering", async () => {
@@ -423,7 +424,7 @@ describe("permissions IPC handlers", () => {
       mode: "default",
       hasReviewer: false,
     });
-    deps.approvalGate.resolveFromDesktopRenderer.mockReturnValueOnce({
+    deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity.mockReturnValueOnce({
       requestId: "approval-forced-deny",
       choice: "deny-once",
       rememberPattern: "approval integrity check failed",
@@ -690,6 +691,15 @@ describe("policyGet exposes host-derived editability", () => {
 // HIGH verdict IPC enforcement: explicit one-shot only
 
 describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => {
+  it("refuses remembered answers when fresh controller authority is unavailable", async () => {
+    const { deps } = await setup();
+    deps.approvalGate.capturePendingRequestIdentityGuard.mockReturnValueOnce({ refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, { requestId: "owner-changed", args: '{}', scope: "persistent", verdictAtApproval: "medium", nlJustification: null });
+    expect(result).toMatchObject({ ok: false, error: "no-such-request" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+  });
+
   it("records a conservative HIGH display only when the live host snapshot permits persistence", async () => {
     await setup({ snapshotVerdict: "high", persistentAllowAllowed: true });
     const result = await invoke(PERMISSIONS.userApprovalRecord, {
@@ -701,7 +711,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     });
     expect(result).toMatchObject({ ok: true });
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
-      expect.objectContaining({ scope: "persistent", verdictAtApproval: "high" }));
+      expect.objectContaining({ scope: "persistent", verdictAtApproval: "high" }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("records under the host-captured cache-key identity, never a renderer-supplied one", async () => {
@@ -725,7 +735,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
       expect.objectContaining({
         approvalCacheKey: { key: "web_fetch:web_fetch:host:a.example", memoryKey: "web_fetch:origin-a" },
-      }));
+      }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it.each(["session", "persistent", "global"] as const)("records a server tool approval at %s scope using only the host identity", async (scope) => {
@@ -738,7 +748,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
       approvalCacheKey: "forged", approvalMemory: { kind: "key", key: "forged", scope: { kind: "mcp-tool", serverId: "other", toolName: "delete" } },
     });
     expect(result).toMatchObject({ ok: true });
-    expect(recordApprovalMock).toHaveBeenCalledWith("mcp_catalog_update", '{"command":"ls"}', "mcp", expect.objectContaining({ scope, approvalCacheKey: { key, memoryKey, scopeKind: "mcp-tool" } }));
+    expect(recordApprovalMock).toHaveBeenCalledWith("mcp_catalog_update", '{"command":"ls"}', "mcp", expect.objectContaining({ scope, approvalCacheKey: { key, memoryKey, scopeKind: "mcp-tool" } }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("keeps a stored exact denial of a server tool limited to its arguments", async () => {
@@ -748,7 +758,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     });
     const result = await invoke(PERMISSIONS.userApprovalRecord, { requestId: "req-tool-deny", args: '{"forged":true}', decision: "deny", scope: "persistent", verdictAtApproval: "medium", nlJustification: null });
     expect(result).toMatchObject({ ok: true });
-    expect(recordApprovalMock).toHaveBeenCalledWith("mcp_catalog_update", '{"command":"ls"}', "mcp", expect.objectContaining({ decision: "deny", approvalCacheKey: { key } }));
+    expect(recordApprovalMock).toHaveBeenCalledWith("mcp_catalog_update", '{"command":"ls"}', "mcp", expect.objectContaining({ decision: "deny", approvalCacheKey: { key } }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("refuses a persistent allow for a session-only browser scope and records it for the session", async () => {
@@ -777,10 +787,10 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     });
     expect(session).toMatchObject({ ok: true });
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
-      expect.objectContaining({ scope: "session" }));
+      expect.objectContaining({ scope: "session" }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     // A browser session allow belongs to the root conversation, like a shell one.
     expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", '{"command":"ls"}', "user-keyboard",
-      expect.objectContaining({ sessionId: "conversation-1" }));
+      expect.objectContaining({ sessionId: "conversation-1" }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("refuses a non-shell session approval whose request names no conversation", async () => {
@@ -937,8 +947,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
       "bash_run",
       '{"command":"rm build.tmp"}',
       "user-keyboard",
-      expect.objectContaining({ decision: "deny", scope: "persistent" }),
-    );
+      expect.objectContaining({ decision: "deny", scope: "persistent" }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("rejects a non-persistent exact deny", async () => {
@@ -994,8 +1003,7 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
       "bash_run",
       '{"command":"ls"}',
       "user-keyboard",
-      expect.objectContaining({ decision: "allow" }),
-    );
+      expect.objectContaining({ decision: "allow" }), expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("rejects a renderer attempt to downgrade the host verdict", async () => {
@@ -1113,7 +1121,7 @@ describe("rules recorded from live approval cards", () => {
     const { deps } = await setup(live);
     const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, projectCwd: "/different/project" });
     expect(result).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(recordApprovalMock).not.toHaveBeenCalled();
     expect(deps.auditLogger.log).toHaveBeenCalledWith({
       timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
@@ -1124,7 +1132,7 @@ describe("rules recorded from live approval cards", () => {
   it("writes the exact rule to the user-global rules for Always allow everywhere", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always" } })).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("holds the rule for Allow for session in the conversation, never on disk", async () => {
@@ -1138,14 +1146,14 @@ describe("rules recorded from live approval cards", () => {
   it("stores an edited exact rule in canonical spelling without a warning", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always", pattern: "  Bash(printf  %s ready) " } })).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("stores an edited wildcard allow and warns that it applies only to sandboxed runs", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
       .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });
 
@@ -1165,14 +1173,14 @@ describe("rules recorded from live approval cards", () => {
   it("saves Always deny as the host's exact deny rule, user-global", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: { action: "deny", scope: "always" } })).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "deny" }, { kind: "user" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "deny" }, { kind: "user" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
   it("saves an edited wildcard deny with no warning", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: { action: "deny", scope: "always", pattern: "Bash(printf *)" } })).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf *)", action: "deny" }, { kind: "user" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf *)", action: "deny" }, { kind: "user" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("keeps a narrowing Git deny saveable when the command has no allow proof", async () => {
@@ -1182,7 +1190,7 @@ describe("rules recorded from live approval cards", () => {
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny", rule: {
       action: "deny", scope: "always", pattern: "Bash(git *)",
     } })).toEqual({ ok: true });
-    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(git *)", action: "deny" }, { kind: "user" });
+    expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(git *)", action: "deny" }, { kind: "user" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
   it("asks for an edited rule when Always deny has no derived one", async () => {
@@ -1261,14 +1269,14 @@ describe("rules recorded from live approval cards", () => {
     it("saves Always deny as the host's exact host rule", async () => {
       const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
       expect(await invoke(PERMISSIONS.userApprovalRecord, networkBody)).toEqual({ ok: true });
-      expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(api.example.com:443)", action: "deny" }, { kind: "user" });
+      expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(api.example.com:443)", action: "deny" }, { kind: "user" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     });
 
     // A host rule decides only a sandboxed command's connections, so a wildcard one carries the same warning as a wildcard shell allow.
     it("saves an edited wildcard host allow for the project, with the sandboxed-only warning", async () => {
       const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
       expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Network(*.example.com)" } })).toEqual({ ok: true, warning: "wildcard-allow-sandboxed-only" });
-      expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(*.example.com)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+      expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(*.example.com)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     });
 
     it.each([
@@ -1385,7 +1393,7 @@ describe("shell egress grants in Settings", () => {
     const decision = { requestId: "egress-1", choice: "allow-once", egressScope: "workspace", nonce: "n", hmac: "h" };
     await handlers.get(PERMISSIONS.approvalRespond)!({ sender, senderFrame: frame }, decision);
     // The answering window goes to the gate: a terminal tab's ask is answered only from the window that owns the tab.
-    expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("egress-1", decision, sender);
+    expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).toHaveBeenCalledWith("egress-1", decision, sender);
   });
 
   it("lists persistent grants, and reports an unreadable store as an error", async () => {

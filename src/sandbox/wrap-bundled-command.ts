@@ -126,6 +126,8 @@ export async function spawnWindowsBundledProcess(input: {
   readonly egressOwner: WorkerEgressOwner;
   /** Recheck caller-owned admission after preparation, at the actual spawn boundary. */
   readonly assertStillValid?: () => void;
+  /** Refresh caller-owned authority after asynchronous launch preparation. */
+  readonly refreshStillValid?: () => Promise<void>;
 }): Promise<WindowsBundledSpawn> {
   if (process.platform !== "win32") {
     throw new Error(`[wrap-bundled-command] ${input.label}: spawnWindowsBundledProcess is the Windows path`);
@@ -156,6 +158,7 @@ export async function spawnWindowsBundledProcess(input: {
       stdio: ["pipe", "pipe", "pipe"],
       windowsStdio: "relay",
       ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+      refreshStillValid: input.refreshStillValid,
       assertStillValid: () => {
         held.assertAlive();
         input.assertStillValid?.();

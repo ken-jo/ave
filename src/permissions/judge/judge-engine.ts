@@ -1,4 +1,4 @@
-// Judges cannot decide strict mode, capability grants or remote-controller calls and cannot override earlier floors/rules/matrix decisions. Run stages in order; ask, missing/low confidence and failures escalate.
+// Judges cannot decide strict mode or capability grants and cannot override earlier floors/rules/matrix decisions. Run stages in order; ask, missing/low confidence and failures escalate.
 // Only a confident final allow/deny applies; unresolved or failed chains ask foreground and deny headless, never allow by fallback. Count final denials only; shadow mode audits without changing permission or writing rules.
 import { randomUUID } from "node:crypto";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
@@ -34,8 +34,6 @@ export interface JudgeGate {
   strictMode: boolean;
   // Plugin or agent capability grant — never judge-decidable.
   capabilityGrant: boolean;
-  // Request raised by a remote controller — never judge-decidable.
-  remoteController: boolean;
 }
 
 type BeforeJudgeResult =
@@ -88,7 +86,6 @@ type JudgeSkipReason =
   | "rule-decided"
   | "strict-mode"
   | "capability-grant"
-  | "remote-controller"
   | "category-not-judged"
   | "category-disabled"
   | "breaker-open";
@@ -168,7 +165,6 @@ function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDep
   if (gate.priorDecision !== "undecided") return "rule-decided";
   if (gate.strictMode) return "strict-mode";
   if (gate.capabilityGrant) return "capability-grant";
-  if (gate.remoteController) return "remote-controller";
   const category = request.invocation.category;
   if (!gate.reviewerBaseline && !isJudgeCategory(category)) return "category-not-judged";
   if (!gate.reviewerBaseline && isJudgeCategory(category) && !deps.settingsUnreadable && !deps.settings.categories[category]) return "category-disabled";

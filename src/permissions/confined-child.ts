@@ -92,6 +92,8 @@ export interface ConfinedChildSpec {
   readonly extraEnv?: Record<string, string>;
   // Checked before and after the wrap. Throw to abort. Windows uses this for holder-process liveness: the ACL grant is only real while the holder is alive, so a holder that died between the grant and the spawn would otherwise produce a child believed to be confined by a grant that no longer exists.
   readonly assertStillValid?: () => void;
+  // Refresh asynchronous authority after launch preparation; the synchronous fence below still runs immediately before spawn.
+  readonly refreshStillValid?: () => Promise<void>;
   // Called the instant the wrap succeeds, BEFORE the spawn. The wrap increments ASRT per-command state (the Linux active-sandbox count and proxy refcount). From that moment a later failure must decrement it, and only the caller knows how its own cleanup is arranged — so this is where the caller records that the wrap happened.
   readonly onWrapped?: () => void;
   // The child's standard streams. Defaults to `["ignore", "pipe", "pipe"]`, so a caller with no use for stdin does not hand an idle descriptor into a confined process. Both callers pipe stdin today, for different reasons: the JS plugin child is a JSON-RPC server whose pipes the host owns, and the plugin worker's stdin is the host's liveness pipe (see `worker-spawn.ts`) — it carries no bytes and closes only when the host process is gone.
@@ -127,6 +129,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   const { executable, args, wrappedEnv, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
   let child: ChildProcess;
   try {
+    if (spec.refreshStillValid) await spec.refreshStillValid();
     spec.assertStillValid?.();
     assertManagedChildProcessAdmissionOpen(spec.label);
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);

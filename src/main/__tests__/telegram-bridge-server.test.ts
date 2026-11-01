@@ -266,7 +266,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
         observers.push(observer);
         return () => {};
       },
-      resolve: vi.fn((_requestId, decision) => decision),
+      resolveWithFreshIdentity: vi.fn((_requestId, decision) => decision),
     };
     const f = connectionFixture({
       receiptStore: {
@@ -310,7 +310,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
 
     // The owner presses approve; the poller relays it into the SAME gate resolve chokepoint with the gate's own echo material, as the bridge.
     f.queue({ ok: true, value: [callbackUpdate(102, approveToken)] });
-    await vi.waitFor(() => expect(gate.resolve).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(gate.resolveWithFreshIdentity).toHaveBeenCalledWith(
       "req-9",
       { requestId: "req-9", choice: "allow-once", nonce: "nonce-9", hmac: "hmac-9" },
       "platform-bridge",

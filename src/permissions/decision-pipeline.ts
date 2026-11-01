@@ -85,7 +85,7 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
   if (request.userOwnedSurface && request.exfiltration) return askHuman(request, "exfiltration-guardrail", request.exfiltration.reason);
   if (request.userOwnedSurface) {
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
-    if (request.userOwnedSurface.choice === "allow") return { outcome: "allow", reasonCode: "user-owned-surface-allow", reason: "The user allowed this surface for the session." };
+    if (request.userOwnedSurface.choice === "allow") return { outcome: "allow", reasonCode: "user-owned-surface-allow", reason: "The user allowed browser and host terminal actions for the session." };
     if (request.userOwnedSurface.choice === "auto") {
       if (request.automationPause) return askHuman(request, "automation-paused", request.automationPause.reason);
       if (!request.reviewer) return { outcome: "ask", reasonCode: "user-owned-surface-review", reason: "Logical consistency review is required.", reviewRequired: true };

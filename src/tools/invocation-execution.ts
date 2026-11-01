@@ -28,7 +28,7 @@ import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-
 import { mintHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
 import { resolveEffectiveCeilingMs, runWithCeiling, type ToolCeilingOutcome } from "./executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { isRemoteControllerAuthorityCurrent } from "../shared/chat-origin.js";
+import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import {
   A2A_CAUSAL_CONTEXT_METADATA_KEY,
   isA2AAgentCausalContext,
@@ -878,7 +878,7 @@ export async function executeAuthorizedToolInvocation(
       }
       pluginAuthLifecycle.beforeHandler(pluginOperationPrincipal, operationExecutionDomain);
     }
-    if (!isRemoteControllerAuthorityCurrent(invocationPermissionContext.remoteControllerAuthority)) {
+    if (!isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) {
       throw new Error("remote-controller-revoked");
     }
     signal.throwIfAborted();
@@ -1037,6 +1037,7 @@ export async function executeAuthorizedToolInvocation(
       ...(finalExecutionRouteGrant === undefined ? {} : { executionRouteGrant: finalExecutionRouteGrant }),
       abortSignal: signal,
     };
+    if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
     let execution: ReturnType<Tool["execute"]>;
     try {
       execution = runWithToolExecutionCwd(executionCwd, () =>

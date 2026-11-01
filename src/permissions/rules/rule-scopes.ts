@@ -15,6 +15,8 @@ import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type
 import { type ShellCommandInput } from "./shell-prefix-policy.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 
+import type { ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
+
 export type ProjectRuleState =
   | { ok: true; projectRoot: string; rules: readonly PermissionRule[] }
   | { ok: false; projectRoot: string; error: PermissionRulesFileCorruptError };
@@ -104,7 +106,7 @@ export class ProjectRuleScopes {
     return state;
   }
 
-  async addRule(projectCwd: string, rule: PermissionRule): Promise<void> {
+  async addRule(projectCwd: string, rule: PermissionRule, authority?: ApprovalPersistenceGuard): Promise<void> {
     const validated = validatePermissionRule(withCurrentShellRuleVersion(rule));
     const location = projectRulesLocation(this.baseDir, projectCwd);
     const file = await updateProjectRulesFile(location, (current) => {
@@ -115,7 +117,7 @@ export class ProjectRuleScopes {
         if (validated.action === "allow") current.rules.push(validated);
         else current.rules.unshift(validated);
       }
-    });
+    }, authority);
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
     this.policyVersions.set(location.identity, persistedPolicyVersionForContent(location.filePath, `${JSON.stringify(file, null, 2)}\n`));
     this.revision += 1;

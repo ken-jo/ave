@@ -23,6 +23,8 @@ for (const surface of ["browser", "host-terminal"] as const) {
     }, { surface, sessionId, channel: CHANNELS.approval.request });
     const card = mainWindow.getByTestId("user-owned-surface-card");
     await expect(card).toBeVisible();
+    await card.getByTestId("user-owned-surface-review-details").locator("summary").click();
+    await expect(card.getByTestId("user-owned-surface-details-content")).toContainText(/browser and host terminal|브라우저와 호스트 터미널/);
     await expect(card.getByTestId("user-owned-surface-ask")).toBeChecked();
     await card.getByTestId("user-owned-surface-allow").check();
     await expect(card.getByTestId("user-owned-surface-allow")).toBeChecked();

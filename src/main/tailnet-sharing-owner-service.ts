@@ -1,3 +1,4 @@
+import { probeTailnetOwnerIdentityGuard } from "./tailnet-owner-policy.js";
 // Choose the active conversation in main at share creation; renderers receive only safe summaries and no durable store.
 import {
   isTailnetInvitationDurationPreset,
@@ -27,7 +28,7 @@ const SHARE_DURATION_MS: Readonly<Record<TailnetShareDurationPreset, number>> = 
 });
 
 export interface TailnetSharingOwnerService {
-  snapshot(): TailnetSharingSnapshot;
+  snapshot(): Promise<TailnetSharingSnapshot>;
   createInvitation(
     duration?: TailnetInvitationDurationPreset,
   ): Promise<TailnetSharingCreatedInvitation>;
@@ -71,8 +72,11 @@ export function createTailnetSharingOwnerService(
     }
   };
 
+  const ownerGuard = async (): Promise<() => void> => (await probeTailnetOwnerIdentityGuard(options.runtime.authorizer)).assertCurrent;
+
   return Object.freeze({
-    snapshot(): TailnetSharingSnapshot {
+    async snapshot(): Promise<TailnetSharingSnapshot> {
+      await options.runtime.authorizer.probeOwnerIdentity();
       const snapshot = parseTailnetSharingSnapshot(options.runtime.store.ownerSnapshot());
       if (snapshot === null) throw new Error("tailnet-sharing-owner-snapshot-invalid");
       return snapshot;
@@ -84,18 +88,21 @@ export function createTailnetSharingOwnerService(
       if (duration !== undefined && !isTailnetInvitationDurationPreset(duration)) {
         throw new Error("tailnet-sharing-owner-input-invalid");
       }
-      const invitation = await options.runtime.store.createInvitation(
+      const guard = await ownerGuard();
+      const invitation = await options.runtime.store.withOwnerIdentityGuard(guard, () => options.runtime.store.createInvitation(
         duration === undefined ? undefined : INVITATION_DURATION_MS[duration],
-      );
+      ));
+      guard();
       const projection = parseTailnetSharingCreatedInvitation(invitation);
       if (projection === null) throw new Error("tailnet-sharing-owner-invitation-invalid");
       return projection;
     },
 
-    activatePairing(id: string): Promise<boolean> {
-      return isTailnetSharingId(id)
-        ? options.runtime.store.activatePairing(id)
-        : Promise.resolve(false);
+    async activatePairing(id: string): Promise<boolean> {
+      const guard = await ownerGuard();
+      const result = isTailnetSharingId(id) ? await options.runtime.store.withOwnerIdentityGuard(guard, () => options.runtime.store.activatePairing(id)) : false;
+      guard();
+      return result;
     },
 
     async createCurrentConversationShare(
@@ -110,14 +117,16 @@ export function createTailnetSharingOwnerService(
       ) {
         return false;
       }
+      const guard = await ownerGuard();
       const conversationId = currentConversationId();
       if (conversationId === null) return false;
-      const authority = await options.runtime.store.createShare({
+      const authority = await options.runtime.store.withOwnerIdentityGuard(guard, () => options.runtime.store.createShare({
         pairingId,
         conversationId,
         permission,
         ...(duration === undefined ? {} : { ttlMs: SHARE_DURATION_MS[duration] }),
-      });
+      }));
+      guard();
       return authority !== null;
     },
 

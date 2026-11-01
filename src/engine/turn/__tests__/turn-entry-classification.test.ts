@@ -223,8 +223,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "marks a drained guidance batch as the user's only when every entry came through queueUserGuidance",
   },
   "engine/turn/run-turn.ts": {
-    sites: { runTurn: 1, userKeyboardLiteral: 1 },
-    classification: "runTurn spends the verified intent, refuses an unsigned keyboard origin, and records original user text only after that verification",
+    sites: { runTurn: 1, userKeyboardLiteral: 2 },
+    classification: "runTurn spends the verified intent, refuses an unsigned keyboard origin, and records original user text only after that verification. An admitted, session-bound remote controller turn is the user's (owner decision 2026-11-02): its permission, tool-trust and request-anchor origin is user-keyboard, while the verified-keyboard-intent checks still read the transport origin, so a remote turn never spends or forges a keyboard intent",
   },
   "ipc/domains/chat.ts": {
     sites: { mintUserKeyboardIntent: 5, runStreamedTurn: 4, userKeyboardLiteral: 3, runTurn: 1, queueUserGuidance: 1, queueGuidance: 1 },

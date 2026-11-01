@@ -8,6 +8,11 @@ const { atomicWriteMock, readFileMock } = vi.hoisted(() => ({
 vi.mock("../../lib/atomic-file.js", async () => ({
   isMissingPathError: (await vi.importActual<typeof import("../../lib/atomic-file.js")>("../../lib/atomic-file.js")).isMissingPathError,
   writeUtf8FileAtomicSync: atomicWriteMock,
+  replaceUtf8FileAtomicSyncIf: (filePath: string, body: string, canCommit: () => boolean) => {
+    if (!canCommit()) return false;
+    atomicWriteMock(filePath, body, 0o600);
+    return true;
+  },
 }));
 
 vi.mock("../../lib/with-file-lock.js", async (importOriginal) => ({
@@ -112,4 +117,27 @@ describe("readPermissionsFile", () => {
     expect(mode).toBe(0o600);
     expect(JSON.parse(raw)).toMatchObject({ version: 1, mode: "trusted", rules: [] });
   });
+});
+
+
+it("refuses a failed fresh approval refresh before entering the policy lock", async () => {
+  atomicWriteMock.mockClear();
+  readFileMock.mockClear();
+  readFileMock.mockResolvedValue("");
+  const mutator = vi.fn();
+  await expect(updatePermissionsFile("/tmp/permissions.json", mutator, { refresh: async () => false, isCurrent: () => true })).rejects.toThrow("Approval authority is unavailable");
+  expect(mutator).not.toHaveBeenCalled();
+  expect(readFileMock).not.toHaveBeenCalled();
+  expect(atomicWriteMock).not.toHaveBeenCalled();
+});
+
+it("does not write rules when approval authority is lost after the fresh refresh, at the synchronous commit fence", async () => {
+  atomicWriteMock.mockClear();
+  readFileMock.mockResolvedValue("");
+  let current = true;
+  await expect(updatePermissionsFile("/tmp/permissions.json", file => {
+    file.rules.push({ pattern: "Bash(printf after)", action: "allow" });
+    current = false;
+  }, { refresh: async () => current, isCurrent: () => current })).rejects.toThrow("Approval authority is unavailable");
+  expect(atomicWriteMock).not.toHaveBeenCalled();
 });

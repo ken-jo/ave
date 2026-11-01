@@ -691,7 +691,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   });
 
   // ave:approval:request direction is main→renderer (webContents.send); no ipcMain.handle needed
-  ipcMain.handle(PERMISSIONS.approvalRespond, (e, payload: unknown) => {
+  ipcMain.handle(PERMISSIONS.approvalRespond, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     if (typeof body.requestId !== "string" ||
@@ -702,7 +702,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
     const decision = body as unknown as ApprovalDecision;
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
-    const honoredDecision = approvalGate?.resolveFromDesktopRenderer(decision.requestId, decision, e.sender);
+    const honoredDecision = await approvalGate?.resolveFromDesktopRendererWithFreshIdentity(decision.requestId, decision, e.sender);
     if (honoredDecision) reviewSuggestionTracker.record(deps, honoredDecision, snapshot);
     return { ok: true };
   });
@@ -1034,7 +1034,16 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (!approvalGate || !snapshot) {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
-    if (!approvalGate!.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
+    if (!approvalGate.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
+    const capturedAuthority = approvalGate.capturePendingRequestIdentityGuard(requestId);
+    if (!capturedAuthority) return { ok: false, error: "no-such-request", message: "Approval authority is unavailable" };
+    const authority = {
+      refresh: capturedAuthority.refresh,
+      isCurrent: () => capturedAuthority.isCurrent() && approvalGate.canAccessRendererRequest(requestId, e.sender, "desk"),
+    };
+    if (!await authority.refresh() || !authority.isCurrent()) {
+      return { ok: false, error: "no-such-request", message: "Approval authority is unavailable" };
+    }
     if (body.rule !== undefined) {
       // A card's rule save (owner 2026-10-25, unified approval card): the renderer names the choice's action and scope and, only when the person edited it, the rule text. The host checks an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself.
       if (!approvalGate?.mayRecordFrom(requestId, e.sender)) {
@@ -1042,7 +1051,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       const manager = conversationLoop.permissionManager;
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
-      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager);
+      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority);
       if (manager !== undefined) {
         approvalGate.completeApprovalRuleSave(saveToken, manager.getPolicyEpoch(), saved.ok && saved.action === "allow" ? saved.scope : undefined);
       }
@@ -1119,7 +1128,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
         } : {}),
-      });
+      }, authority);
       if (decision === "allow") approvalGate.completeExactApprovalSave(exactSaveToken, getUserApprovalGeneration(), scope);
       auditLogger.log({
         timestamp: new Date().toISOString(),

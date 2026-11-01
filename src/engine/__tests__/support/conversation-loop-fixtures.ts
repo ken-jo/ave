@@ -29,7 +29,7 @@ export function makeConversationPermissionDeps(choice: "allow-once" | "deny-once
     isDestroyed: () => false,
     send: (channel: string, card: ApprovalRequest) => {
       if (channel === IPC_APPROVAL_REQUEST) queueMicrotask(() => {
-        approvalGate.resolveFromDesktopRenderer(card.id, { ...allowOnceCardAnswer(card), choice }, contents as never);
+        void approvalGate.resolveFromDesktopRendererWithFreshIdentity(card.id, { ...allowOnceCardAnswer(card), choice }, contents as never);
       });
     },
   };

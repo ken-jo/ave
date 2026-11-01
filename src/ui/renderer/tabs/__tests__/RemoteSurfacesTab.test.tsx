@@ -129,6 +129,7 @@ function makeApi(options: {
         snapshot: {
           state: options.telegramState ?? "disconnected",
           botUsername: null,
+          ownerUserId: null,
           pairing: null,
           approval: null,
           pendingCode: null,

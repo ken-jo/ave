@@ -1,6 +1,6 @@
 # Ave permission decision tree (v4)
 
-Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30.
+Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02.
 Source design and reference comparison: artifact "에이전트 권한 결정 트리 비교", section 4.
 This file is the single source of truth for permission-decision work. Implementers and reviewers of any change
 to permission classification, approval cards, the reviewer, hooks or headless behaviour must read it and
@@ -14,11 +14,24 @@ Modes: 기본 / Default (former 모두 확인 = strict; default for new installs
 
 ```mermaid
 flowchart TD
-  S["도구 호출"] --> H{"입장 검사 · 훅 · deny 규칙"}
+  S["로컬 또는 본인 계정·인증·세션 연결된 원격 사용자의 도구 호출"] --> T{"입력 출처·봉투 검증 (로컬·원격 동일)"}
+  T -->|"위조 출처·봉투 불일치"| DENY
+  T -->|통과| H{"입장 검사 · 본인 계정 일치·인증·세션 연결 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
   H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴"}
   F -->|예| ASKF["질문† (이번 한 번)"]
-  F -->|아니오| R{"ask / allow 규칙 · 기억된 승인"}
+  F -->|아니오| U{"사용자 소유 브라우저 · 호스트 터미널?"}
+  U -->|아니오| R{"ask / allow 규칙 · 기억된 승인"}
+  U -->|예| UH{"사람 있음?"}
+  UH -->|아니오| DENY
+  UH -->|예| UX{"명시 ask 규칙 · 유출 신호?"}
+  UX -->|예| ASK
+  UX -->|아니오| UC{"세션 공통 선택 1개 (owner decision 2026-11-02)"}
+  UC -->|모두 허용| ALLOW
+  UC -->|"모두 질문 (기본값)"| ASK
+  UC -->|오토| UL{"논리적 일관성 검토"}
+  UL -->|low| ALLOW
+  UL -->|"불확실 · 오류 · 중단"| ASK
   R -->|allow| ALLOW["허용"]
   R -->|ask| Q
   R -->|없음| K{"도구 종류"}
@@ -27,7 +40,7 @@ flowchart TD
   K -->|"파일 쓰기 (비밀 파일 포함)"| W{"프로젝트 안 + 되돌리기 가능?"}
   W -->|예| ALLOW
   W -->|"아니오 (밖이면 카드 1장)"| Q
-  K -->|셸| SB{"샌드박스 안 + 미검증·파괴 신호 없음?"}
+  K -->|셸| SB{"활성 샌드박스 안 + 미검증·파괴 신호 없음? (3 OS 기본 켜짐)"}
   SB -->|예| AUTO["샌드박스 자동"]
   SB -->|"아니오 (호스트 셸 포함)"| Q
   Q{"모드 · 사람"}
@@ -42,10 +55,14 @@ flowchart TD
   RR -->|재심사| RV
   MC -->|"사용자에게 카드 요청"| ASK
   RV -->|"재요청 뒤 high · 오류 · 3연속 / 턴 20회 거부 뒤"| ASK
-  ASK -->|"승인 (한 번 · 세션 · 항상 · 폴더 · 접두사)"| ALLOW
+  ASK -->|"승인 (내부 스킬·훅 카드 포함)"| LIVE{"응답·실행 직전 본인 계정·세션·권한 유효?"}
+  LIVE -->|예| ALLOW
+  LIVE -->|아니오| DENY
   ASK -->|"거절 · 부재 중 자동 스킵(옵션)"| DENY
-  ASKF -->|승인| ALLOW
+  ASKF -->|승인| LIVE
   ASKF -->|"거절 · 사람 없음"| DENY
+  ALLOW -.->|"허용된 위임·루틴 생성"| CHILD["독립 세션: 부모 원격 권한 미상속"]
+  CHILD --> H
   classDef allow fill:#d4f7d4,stroke:#2a2,color:#123
   classDef sbx fill:#e3f4f4,stroke:#2a8a8a,color:#123
   classDef ask fill:#fff3c4,stroke:#c90,color:#321
@@ -54,11 +71,23 @@ flowchart TD
   class ALLOW allow
   class AUTO sbx
   class ASK,ASKF ask
-  class RV,RR,MC rev
+  class RV,RR,MC,UL rev
   class DENY deny
 ```
 
 Notes that are part of the contract:
+- **Shared surfaces (owner decision 2026-11-02):** one conversation-local choice covers both logged-in browser tabs and host terminal tabs. One shared card selects Allow all, Auto or Ask (default); there is no separate choice per surface, persistence across sessions or child inheritance. Explicit ask rules and the human-only exfiltration guardrail precede this choice; generic allows and remembered grants do not replace it.
+- **Remote user (owner decision 2026-11-02):** an authenticated controller whose account matches the host-owned owner-identity anchor and is bound to the current session enters the same tree as the local user, including rules, remembered grants, mode, reviewer and 질문†. Missing/mismatched owner identity, authentication, session binding or live transport authority is admission-denied, including after asynchronous approval. Remote provenance alone never creates an other-principal floor; genuine external-content guidance still does.
+- **Remote intake and paste parity (owner decision 2026-11-02):** remote input cannot turn a staged, app-message or plugin envelope into raw user intent. The same origin/envelope mismatch is rejected before a turn, request anchor, native quote or terminal eligibility is created. Explicit attachments and recognized pasted-text wrappers retain file-content taint. The paired browser transport supplies image attachments; the provider bridge accepts text only. Neither carries a distinct pasted-text flag, so unmarked remote text is treated like typed text, without a size-based paste heuristic.
+- **Delegated work (owner decision 2026-11-02):** admitted children, resumed children and routine executions use the same independent sessions and provenance as local delegation. They do not inherit the originating controller's session-bound authority. After the parent creation/scheduling action passes its permission checks, the child spawn/resume execution or routine fire enters an independent scope. Revocation denies subsequent controller-bound admissions, pending card answers and pre-effect rechecks; it does not itself revoke the delegated session or promise interruption of an already running effect. Ordinary parent/child cancellation, routine signals, unattended/headless policy and genuine other-principal floors remain effective; a child's own tool calls still pass its own permission tree. A shared browser/terminal choice is never inherited.
+- **Internal approval lifetime (owner decision 2026-11-02):** skill-load and hook-command cards bind the originating controller authority to the same session as ordinary tool cards. Revocation while waiting denies the answer and subsequent skill registration or hook spawn; internal cards cannot outlive authenticated authority. Skill-grant persistence also rechecks authority after queued/asynchronous preparation and immediately before its atomic commit; revocation during that wait records no grant.
+- **Owner identity (owner decision 2026-11-02, 본인 계정만 연결 허용):** only the owner's own account may pair, activate a share or enter a bound turn. For the tailnet transport, the canonical owner is the local node's untagged authenticated user: status `Self.UserID` selects `User[id].LoginName`. The peer's authenticated WhoIs-derived login must match it; peer input cannot supply the owner anchor. Missing local identity, tagged nodes, lookup failure and mismatches deny with named visible errors. Each HTTP admission and owner activation/refresh takes one fresh asynchronous local-status observation, after the applicable request rate limit. Request evidence passes through the HTTP identity gate and authorization without duplicate probes. How LIVE and the admission check H are realized for a bound controller: before each controller-bound tool effect and approval response, including internal skill and hook cards, await a fresh asynchronous local-status probe and compare the owner with the binding. A check is satisfied only by a probe that started at or after the check asked: a check arriving while a probe is already running waits for, and shares, the next probe, and a completed result is never reused for a later check. No TTL owner cache grants admission or effects. A transition to unavailable advances the revocation generation, so recovery never rehabilitates old evidence. At each asynchronous pre-effect boundary, await the fresh probe after permission and preparation waits. Check the current binding, session and revocation state before the handler, nested host effect, process spawn or atomic grant commit; any later asynchronous wait must be followed by another revocation-state check before use. Pending card persistence uses the same check as the answer itself; it cannot record a remembered allow before detecting an invalid owner. These live checks apply equally to mode, rule and remembered allows and do not depend on an open event stream. Lookup failure refuses the current action. Compare canonical logins exactly, without aliases or peer-supplied normalization. A confirmed changed local login invalidates and persistently revokes old non-matching bindings. An unavailable observation only suspends access in memory and surfaces an unavailable snapshot; it never persists an identity revocation. A requesting peer mismatch cannot revoke the owner's pairings.
+- **Streaming identity checks:** assistant text deltas and replay events do not probe identity. Each event checks the active share’s expiresAt with a clock comparison. Store-change subscriptions invalidate affected streams synchronously; the existing 15-second scope-check interval performs asynchronous identity refresh and rechecks revocation before retaining the stream. A native account change without a store notification may therefore be detected on the next interval plus probe completion, rather than on the next delta; this is periodic detection, not a real-time guarantee. This keeps native process startup and waits off the main thread and per-delta path.
+- **Command acceptance:** validate owner and share authority before submitting a command. Once accepted, the HTTP response remains an accepted result. If the authority is already lost when that response is built, its `turn` carries `denied: true` with `remote-controller-authority-suspended` (identity unavailable, or recovered to the same owner) or `remote-controller-authority-revoked` (a confirmed different owner, or a share or pairing that is no longer current). There is no separate turn-denial event. A denial before the turn starts records `{ok:false}` only in the host-side command completion, which settles the idempotency receipt; the bound UI receives no shared event for it. A denial at a later effect boundary of a running turn ends that tool call as an error result, which the shared projection carries only as `tool.state: failed`, without a reason or code. When the host observes the revocation or suspension, the bound event stream ends with `reauthorize-required`, so a client may miss events after that. Revocation prevents subsequent effects and cannot retroactively make an accepted command appear unsubmitted.
+- **Identity residual risk:** identical `LoginName` strings can exist across distinct tailnets, while forwarded Serve identity headers carry no `UserID`. Login equality therefore does not prove a globally unique cross-tailnet account identity; this remains a limit of the current matching evidence.
+- **Explicit account registration (owner decision 2026-11-02):** the messaging connection's Settings page requires the desktop owner's own numeric user ID before pairing. Registration/change uses the sender-validated desktop IPC and a verified local keyboard gesture; remote messages cannot set this anchor. Verified private-message `sender.id` must match that registered ID to complete pairing and send. This explicit desktop registration is the owner assertion; the provider cannot prove that a remote human is the desktop owner. Missing registration denies. Changing the anchor revokes prior codes, pairings and conversation approvals; a code alone grants nothing.
+- **Existing bindings (owner decision 2026-11-02):** revalidate saved tailnet pairings/shares against the current host owner identity, and saved messaging bindings against the registered owner ID. For tailnet bindings, unverifiable local identity means nonpersisted suspension; a confirmed different local owner means persistent revocation. Recovery with the same owner permits a new freshly observed request to use the preserved pairing, while old request evidence stays invalid. Only a revoked/unrecognized binding needs pairing and conversation approval again. Messaging bindings still require explicit registered-owner revalidation. Show suspension in Settings, and do not count retained terminal/revoked rows as a current mismatch. The same owner match remains part of live guards after an asynchronous approval.
+- **Shell default (owner decision 2026-11-02):** shell sandboxing defaults on for all supported desktop platforms, including win32. A missing stored setting uses this default; an explicit stored false remains false. For shell tool calls outside the user-owned surface lane, only active isolation supplies sandbox evidence: proven read-only commands inside it auto-allow in Default, while host and escalated commands ask. Agent typing into the user's terminal instead follows the shared surface choice above. Settings activation without an available backend visibly warns and degrades without claiming confinement. On win32, MXC confines shells; the existing srt-win-only plan requires explicit host approval for shells and confines extensions. Missing both backends retains the visible unavailable path.
 - 질문† triggers only: protected paths (Claude Code list: .git .vscode .idea .husky .cargo .devcontainer .yarn
   .mvn .claude .config/git .bashrc .zshrc .zprofile .profile .envrc .gitconfig .npmrc .mcp.json .claude.json,
   plus Ave config/home dirs), critical delete, project escape, other-principal turn.
@@ -132,7 +161,7 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
    - **오토 / Auto**: each action goes to the reviewer, which performs only a LOGICAL check. Does this action follow from the user's request and the current task step? Is the target the tab and page the task is about? Is it free of steps the user did not ask for? The reviewer does not judge general risk. Fail or uncertain means a normal card.
    - **모두 질문 / Ask every time**: every action asks. This is the default, and it is the behaviour when the card is dismissed.
    An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), including Allow all and Auto; it uses a normal card, skips logical review, and denies headless.
-   deny rules, admission, credential entry and payment/irreversible-submit protections still apply in every choice. Headless means deny. The choice is per session and is never remembered across sessions.
+   deny rules, admission, credential entry and payment/irreversible-submit protections still apply in every choice. Headless means deny. The shared choice covers browser and host terminal actions in this session and is never remembered across sessions (owner decision 2026-11-02).
 3. Plugin effects are evaluated per actual effect through this same pipeline. An approval binds to that exact effect; a tool-level reviewer allow never opens every effect. Headless effects follow the headless rule.
 4. A user-configured read boundary (an outside-path read restriction) is an explicit rule. It is evaluated in stage 1/3 before modes, and it is preserved.
 5. When a command is both "known-safe read-only" and "host/escalation" (e.g. `git status` with the sandbox off), the host/escalation row wins.
@@ -141,5 +170,5 @@ auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer 
    - 이 세션 모두 허용: agent commands run in that tab without asking.
    - 오토: the reviewer does a logical consistency check only. Does the command follow from the user's request and task step, in the tab the task is about?
    - 모두 질문: every command asks. This is the default, and it is the behaviour when the card is dismissed.
-   Together, the browser tab and the host terminal tab are the "user-owned surfaces". The choice is per session and is never persisted. An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), in every session choice, using a normal card and skipping logical review. These surfaces have no sandbox egress boundary. Deny rules and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
+   Together, the browser tab and the host terminal tab are the "user-owned surfaces". One shared choice covers both surfaces per session, is never persisted and has no child inheritance (owner decision 2026-11-02). An exfil signal on a user-owned surface always asks the human (owner 2026-10-31), in every session choice, using a normal card and skipping logical review. These surfaces have no sandbox egress boundary. Deny rules and credential protections still apply. Headless means deny. Commands the user types in the tab are user actions and are never gated.
 8. "Checkpoint available" (the row-114 gate) is decided on each write target's realpath-native filesystem identity — `canonicalPath(resolve(path))`, the spelling the checkpoint recorder keys a mutation on — not the permission matching form, which lowercases the win32 drive letter and so made the pre-check disagree with the recorder on every Windows write. Win32 now matches POSIX: a leaf symlink or a dangling link cannot be snapshotted, so it asks; a write through an in-project directory junction/symlink is followed and auto-allows because the real target stays undoable; a junction/symlink that escapes the project roots is denied by the project-membership test (which uses the realpath'd form), not by the checkpoint gate. (win32 native-path parity, 2026-10-31.)

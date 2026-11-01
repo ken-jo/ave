@@ -209,7 +209,7 @@ Keep task-specific inventories in issues rather than in this instruction file.
 - Tool and MCP timeouts come from `src/shared/tool-timeout-policy.ts` and
   `TOOL_TIMEOUT_POLICY`; never hardcode them. Wire `runWithCeiling` cancellation
   through its `AbortController`.
-- The OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows,
+- The OS tool sandbox defaults on for macOS/Linux/Windows,
   per `osToolSandbox` in [settings-defaults.ts](src/data/settings-defaults.ts).
   It has two scopes: `osToolSandbox` confines host shells only (bash, PowerShell,
   the workspace terminal); `pluginWorkerConfinement` confines plugin workers,

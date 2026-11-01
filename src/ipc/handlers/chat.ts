@@ -243,9 +243,6 @@ export function validateUserContentParts(
 
 export function parseChatSendPayload(
   payload: unknown,
-  options: Readonly<{
-    allowStagedEnvelopeAsRawText?: boolean;
-  }> = {},
 ): { ok: true; payload: ChatSendPayload } | { ok: false; error: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { ok: false, error: "invalid-payload" };
@@ -275,7 +272,7 @@ export function parseChatSendPayload(
     }
   } else {
     // Reject staged envelopes claiming keyboard origin or their force-ask and untrusted framing would disappear.
-    if (!options.allowStagedEnvelopeAsRawText && parseStagedEnvelope(candidate.input)) {
+    if (parseStagedEnvelope(candidate.input)) {
       // Use a distinct unexpected-envelope code; user-pasted provenance headers are not missing envelopes.
       return { ok: false, error: "origin-envelope-mismatch" };
     }
@@ -419,9 +416,7 @@ export async function handleChatSend(
     return { ok: false, error: "remote-controller-revoked" };
   }
   const expectedSessionId = conversationLoop.getSessionId();
-  const parsed = parseChatSendPayload(payload, {
-    allowStagedEnvelopeAsRawText: ctx.remoteControllerAuthority !== undefined,
-  });
+  const parsed = parseChatSendPayload(payload);
   if (!parsed.ok) return { ok: false, error: parsed.error };
   const { input, attachments, inputOrigin, userActivation, personaPromptId } = parsed.payload;
   const validated = validateUserContentParts(attachments);
@@ -490,7 +485,7 @@ export async function handleChatSend(
           // user-keyboard payload without it); main mints the turn's one verified intent from it.
           ...(inputOrigin === "user-keyboard" ? { userKeyboardIntent: mintUserKeyboardIntent({ inputOrigin, userActivation }) } : {}),
           ...(displayText === undefined ? {} : { displayText }),
-          ...(inputOrigin === "user-keyboard" && userActivation === true
+          ...((inputOrigin === "user-keyboard" && userActivation === true || ctx.remoteControllerAuthority !== undefined)
             ? { requestAnchorRawIntent: input }
             : {}),
           ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),

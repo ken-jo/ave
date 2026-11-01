@@ -1,4 +1,4 @@
-// Renderers receive safe connection summaries, never tokens, raw actor IDs, or conversation IDs. Only stable error codes leave this module because fetch
+// Renderers receive connection summaries and the locally registered owner ID, never tokens or conversation IDs. Only stable error codes leave this module because fetch
 // errors can embed tokens in URLs.
 import { createHash } from "node:crypto";
 import { SecretEncryptionUnavailableError } from "../data/secret-document-store.js";
@@ -10,6 +10,7 @@ import {
   isTelegramBotUsername,
   isTelegramConnectionId,
   isTelegramConversationId,
+  isTelegramOwnerUserId,
   parseTelegramConnectionSnapshot,
   parseTelegramCreatedPairingCode,
   type TelegramApprovalDurationPreset,
@@ -144,6 +145,7 @@ export interface CreateTelegramConnectionServiceOptions {
 }
 
 export interface TelegramConnectionService {
+  setOwnerUserId(ownerUserId: string): Promise<TelegramConnectionMutationResult>;
   snapshot(): TelegramConnectionSnapshotResult;
   connect(botToken: string): Promise<TelegramConnectionMutationResult>;
   disconnect(): Promise<TelegramConnectionMutationResult>;
@@ -455,6 +457,7 @@ export function createTelegramConnectionService(
 
   const inertSnapshot = (state: TelegramConnectionState): TelegramConnectionSnapshotResult => {
     const snapshot = parseTelegramConnectionSnapshot({
+      ownerUserId: null,
       state,
       botUsername: null,
       pairing: null,
@@ -559,6 +562,7 @@ export function createTelegramConnectionService(
     botToken: string,
     username: string,
   ): Promise<TelegramConnectionMutationResult> => {
+    if (store.ownerUserId() === null) return failure("telegram-owner-id-required");
     try {
       await store.setConnected(telegramBotFingerprint(botToken));
     } catch {
@@ -583,6 +587,7 @@ export function createTelegramConnectionService(
       const owner = store.ownerSnapshot();
       const approval = projectApproval(owner.approval, currentConversation()?.digest ?? null);
       const projected = parseTelegramConnectionSnapshot({
+        ownerUserId: owner.ownerUserId,
         state: deriveState(owner, boundConversation(), reconnecting()),
         botUsername,
         pairing: owner.pairing === null
@@ -643,6 +648,22 @@ export function createTelegramConnectionService(
         await noteError(activated.error);
       }
       return activated;
+    });
+  };
+
+  const setOwnerUserId = async (ownerUserId: string): Promise<TelegramConnectionMutationResult> => {
+    if (!isTelegramOwnerUserId(ownerUserId)) return INPUT_INVALID;
+    return runExclusive(async () => {
+      try {
+        if (store.ownerUserId() === ownerUserId) return OK;
+        // Persist revocation before teardown so already-bound turns lose authority even if shutdown fails.
+        await store.setOwnerUserId(ownerUserId);
+        cancelResumeRetry();
+        await bridgeControl.stop("user");
+        botUsername = null;
+        emitChange();
+        return OK;
+      } catch { return UNAVAILABLE; }
     });
   };
 
@@ -772,6 +793,7 @@ export function createTelegramConnectionService(
 
   const createPairingCode = async (): Promise<TelegramCreatePairingCodeResult> => {
     return await runExclusive(async () => {
+      if (store.ownerUserId() === null) return failure("telegram-owner-id-required");
       // The bot handle is in-memory only, so a code cannot be minted before this activation verified the bot it would point the owner at.
       if (botUsername === null) return UNAVAILABLE;
       const handle = botUsername;
@@ -858,6 +880,7 @@ export function createTelegramConnectionService(
 
   return Object.freeze({
     snapshot,
+    setOwnerUserId,
     connect,
     disconnect,
     pause,

@@ -240,7 +240,7 @@ describe("live native approval ownership", () => {
       } else {
         invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
         release();
-        expect(await saving).toMatchObject({ ok: true });
+        expect(await saving).toMatchObject({ ok: false });
       }
       const answer = await result;
       expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
@@ -517,7 +517,7 @@ describe("live native approval ownership", () => {
     if (source === "destroyed window") f.windowA.isDestroyed.mockReturnValue(true);
     if (source === "destroyed contents") f.windowA.webContents.isDestroyed.mockReturnValue(true);
     expect(invoke(PERMISSIONS.approvalPending, event)).toEqual(UNAUTHORIZED_FRAME);
-    expect(invoke(PERMISSIONS.approvalRespond, event, allowOnceCardAnswer(card))).toEqual(UNAUTHORIZED_FRAME);
+    expect(await invoke(PERMISSIONS.approvalRespond, event, allowOnceCardAnswer(card))).toEqual(UNAUTHORIZED_FRAME);
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);

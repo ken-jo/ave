@@ -144,7 +144,8 @@ describe("cached primary conversation adoption", () => {
     const [card] = replacement.cards;
     expect(card.sessionId).toBe(sessionId);
     expect(callNative(PERMISSIONS.approvalPending, replacement.event)).toHaveLength(1);
-    expect(callNative(PERMISSIONS.approvalRespond, replacement.event, allowOnceCardAnswer(card))).toEqual({ ok: true });
+    // The response handler awaits a fresh owner-identity check before answering, so it settles asynchronously like every ipcRenderer.invoke.
+    expect(await callNative(PERMISSIONS.approvalRespond, replacement.event, allowOnceCardAnswer(card))).toEqual({ ok: true });
     expect(await running).toMatchObject({
       route: "llm", stopReason: "end_turn", text: "The approved write completed.",
       toolCalls: [{ name: "write_probe", input: { path }, result: "write completed" }],

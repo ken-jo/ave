@@ -50,7 +50,7 @@ export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, inter
           <p className="font-medium">{t("toolApprovalDialog.showFullInput")}</p>
           <pre className="whitespace-pre-wrap break-words font-mono" data-testid="user-owned-surface-full-input">{JSON.stringify(request.args, null, 2)}</pre>
           <p className="text-muted-foreground">{t("toolApprovalDialog.surfaceSessionOnly")}</p>
-          <p className="text-muted-foreground">{request.userOwnedSurface === "browser" ? t("toolApprovalDialog.surfaceBrowserScope") : t("toolApprovalDialog.surfaceTerminalScope")}</p>
+          <p className="text-muted-foreground">{t("toolApprovalDialog.surfaceScope")}</p>
         </div>
       </details>
       <form className="flex shrink-0 flex-col gap-2" data-testid="user-owned-surface-choice-form" onSubmit={(event) => { event.preventDefault(); answer(true); }}>

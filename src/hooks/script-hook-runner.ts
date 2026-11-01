@@ -181,6 +181,7 @@ export async function runOneHookScript(
 
   const hookEnv = buildHookEnv(payload, runnable.matcher);
   let admittedPlan: HostShellExecutionPlan | undefined;
+  let refreshCommandAllowed: (() => Promise<void>) | undefined;
   let assertCommandAllowed: (() => void) | undefined;
   if (!confinement && options.authorizeCommand) {
     try {
@@ -191,6 +192,7 @@ export async function runOneHookScript(
       if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
       admittedPlan = admission.plan;
       assertCommandAllowed = admission.assertAllowed;
+      refreshCommandAllowed = admission.refreshAllowed;
       if (admittedPlan && (!isIssuedHostShellExecutionPlan(admittedPlan)
         || getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
         || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
@@ -261,6 +263,7 @@ export async function runOneHookScript(
   if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
     // Windows hooks use a stdio relay with read access to their generation and write access to their data.
     try {
+      await refreshCommandAllowed?.();
       windowsSpawn = await spawnWindowsBundledProcess({
         label: `hook:${confinement?.pluginId ?? "user"}`,
         command: spawnCmd,
@@ -270,6 +273,7 @@ export async function runOneHookScript(
         allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
         allowWrite: confinement ? [confinement.dataDir] : [cwd],
         egressOwner: hookEgressOwner,
+        refreshStillValid: refreshCommandAllowed,
         assertStillValid: () => {
           abortSignal?.throwIfAborted();
           if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
@@ -321,6 +325,13 @@ export async function runOneHookScript(
     }
   }
 
+  // The fresh authority probe is the last await before spawn. Everything after it, through spawn, runs in one synchronous turn.
+  let refreshError: unknown;
+  try {
+    await refreshCommandAllowed?.();
+  } catch (error) {
+    refreshError = error;
+  }
   if (abortSignal?.aborted) {
     if (windowsSpawn) await forceKillManagedChildProcess(windowsSpawn.child, "hook caller aborted");
     wrappedEgress?.release();
@@ -335,6 +346,7 @@ export async function runOneHookScript(
     return deny("hook shell execution policy changed before spawn");
   }
   try {
+    if (refreshError !== undefined) throw refreshError;
     assertCommandAllowed?.();
   } catch (error) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook command permission changed");

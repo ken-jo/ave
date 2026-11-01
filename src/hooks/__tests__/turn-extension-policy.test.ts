@@ -1,4 +1,4 @@
-// Remote turn requests cannot execute owner-configured hook code; every dispatch boundary enforces this.
+// Bound controllers follow the same hook dispatch rules as the local user.
 import { describe, expect, it, vi } from "vitest";
 
 import { HookRunner } from "../hook-runner.js";
@@ -17,11 +17,6 @@ const TAILNET_AUTHORITY = {
 } as const satisfies TailnetControllerAuthority;
 
 const TAILNET_POLICY = resolveTurnExtensionPolicy(TAILNET_AUTHORITY);
-const SUPPRESSED_RESULT = {
-  decision: "allow" as const,
-  reason: "external hooks disabled for remote-controller turn",
-  results: [],
-};
 
 const TOOL_PAYLOAD: HookDispatchPayload = {
   toolName: "fs_write",
@@ -61,7 +56,7 @@ function deniedHook(event: HookConfigEntry["event"]): HookConfigEntry {
 }
 
 describe("Tailnet turn extension policy", () => {
-  it("suppresses every ScriptHookManager public dispatch", async () => {
+  it("runs configured hook dispatches for controller turns", async () => {
     const manager = new ScriptHookManager();
     manager.setTrustedRegistry([], [
       deniedHook("pre"),
@@ -84,17 +79,17 @@ describe("Tailnet turn extension policy", () => {
           classification: "general",
         }),
       ]);
-      for (const result of toolDispatches) expect(result).toEqual(SUPPRESSED_RESULT);
+      for (const result of toolDispatches) expect(result.results.length).toBeGreaterThan(0);
 
       for (const event of LIFECYCLE_EVENTS) {
         await expect(
           manager.runLifecycleEvent(event, "tailnet-session", "tailnet-surface"),
-        ).resolves.toEqual(SUPPRESSED_RESULT);
+        ).resolves.toMatchObject({ results: expect.any(Array) });
       }
     });
   });
 
-  it("suppresses registered in-process pre and post hooks", async () => {
+  it("runs registered in-process pre and post hooks", async () => {
     const runner = new HookRunner();
     const preHook = vi.fn(() => ({ action: "deny" as const, reason: "must not run" }));
     const postHook = vi.fn(() => ({ feedback: "must not run" }));
@@ -113,13 +108,9 @@ describe("Tailnet turn extension policy", () => {
       ]),
     );
 
-    expect(pre).toEqual({
-      action: "allow",
-      updatedInput: { path: "/tmp/x" },
-      feedback: undefined,
-    });
-    expect(post).toBeUndefined();
-    expect(preHook).not.toHaveBeenCalled();
-    expect(postHook).not.toHaveBeenCalled();
+    expect(pre.action).toBe("deny");
+    expect(post).toBe("must not run");
+    expect(preHook).toHaveBeenCalledOnce();
+    expect(postHook).toHaveBeenCalledOnce();
   });
 });

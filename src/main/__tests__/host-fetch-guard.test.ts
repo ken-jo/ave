@@ -1,6 +1,6 @@
 // Stub DNS to exercise private-address rejection even for allow-listed names.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { REDIRECT_STATUSES } from "../host-fetch-guard.js";
+import { REDIRECT_STATUSES, type HostFetchTransport } from "../host-fetch-guard.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
@@ -1025,6 +1025,45 @@ describe("REDIRECT_STATUSES", () => {
 });
 
 describe("runHostFetchHops exact-hop authorization", () => {
+  it("finishes asynchronous cookie preparation before the final hop authorization", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([new Response("done")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/start"), {}, transport);
+    let ownerCurrent = true;
+    const authorizeHop = vi.fn(async () => {
+      if (!ownerCurrent) throw new Error("owner identity changed");
+    });
+    await expect(runHostFetchHops({ ...options, authorizeHop, injectSessionCookie: async () => {
+      await Promise.resolve();
+      ownerCurrent = false;
+      return "SESSION=private";
+    } })).rejects.toThrow("owner identity changed");
+    expect(authorizeHop).toHaveBeenCalledOnce();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses handoff when authority is revoked during deferred transport preparation", async () => {
+    publicDns();
+    let revoked = false;
+    const sent = vi.fn();
+    const transport = Object.assign(vi.fn(), {
+      sendWithHandoff: async (_input: string, _init: RequestInit, beforeSend: () => void) => {
+        await Promise.resolve();
+        revoked = true;
+        beforeSend();
+        sent();
+        return new Response("unused");
+      },
+    }) as unknown as HostFetchTransport;
+    const { options } = hopOptions(await firstAllow("https://api.example.com/start"), {}, transport);
+    const authorizeHop = vi.fn(async () => {});
+    const assertSendAllowed = vi.fn(() => { if (revoked) throw new Error("binding revoked"); });
+    await expect(runHostFetchHops({ ...options, authorizeHop, assertSendAllowed })).rejects.toThrow("binding revoked");
+    expect(authorizeHop).toHaveBeenCalledOnce();
+    expect(assertSendAllowed).toHaveBeenCalledTimes(2);
+    expect(sent).not.toHaveBeenCalled();
+  });
+
   it("authorizes each actual destination and rewritten verb before sending", async () => {
     publicDns();
     const { transport, calls } = scriptedTransport([redirect(303, "https://sso.example.com/next"), new Response("done")]);

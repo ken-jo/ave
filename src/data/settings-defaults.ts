@@ -178,9 +178,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // Permission policy host-classifies-risk migration gate. Ships ON; the host derives the effective category from host-owned signals (foreground plugin
     // read-relaxation included) instead of trusting the plugin-declared category. Shadow mode reconciliation completed before this flip; users can still opt out in Settings.
     hostClassifiesRisk: true,
-    // Request OS confinement by default where the host shell has a supported isolation backend. Windows remains explicitly gated off until its shell isolation is ready.
+    // Request OS confinement by default on supported desktop platforms; container-backed shell isolation is available on win32.
     // Stored user values override this default. Settings activation degrades visibly when unavailable; explicit AVE_SANDBOX_ENABLED=1 activation stays fail-closed on macOS/Linux.
-    osToolSandbox: process.platform === "darwin" || process.platform === "linux",
+    osToolSandbox: process.platform === "darwin" || process.platform === "linux" || process.platform === "win32",
     // Plugin-worker confinement: plugin workers, out-of-process plugin children, plugin script hooks and external MCP stdio servers run under ASRT exactly when this is on, whatever the shell sandbox above says. Its own setting (owner
     // 2026-10-16) so that the shell sandbox default can be on without confining workers whose manifests under-declare the domains they reach. OFF everywhere; `loadSettings` derives it from a stored `osToolSandbox: true` when a file predates the split.
     pluginWorkerConfinement: false,

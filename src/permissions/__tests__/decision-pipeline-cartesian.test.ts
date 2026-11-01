@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decidePermission, type PermissionDecisionRequest } from "../decision-pipeline.js";
+import { UserOwnedSurfaceStore } from "../user-owned-surface-store.js";
 import { MODES, QUESTION_MODE_CELLS as ASK_RULE_CELLS } from "./fixtures/mode-matrix.js";
 
 // Golden data transcribed from docs/architecture/permission-decision-tree.md,
@@ -150,4 +151,33 @@ describe("permission contract Cartesian matrix", () => {
       expect(decidePermission({ ...request, reviewer: { status: "success", level: "low" } }).outcome).toBe(expected);
     }
   });
+});
+
+// Owner decision 2026-11-02: the surface dimension consumes one session choice.
+// The golden outcomes are shared by both targets, independent of permission mode.
+describe("shared session surface contract matrix", () => {
+  for (const mode of MODES) for (const choice of ["allow", "auto", "ask"] as const) {
+    it(`${mode}/${choice} applies one choice to browser and terminal with human-only exfiltration`, () => {
+      const store = new UserOwnedSurfaceStore();
+      store.set("conversation", "browser", choice);
+      for (const kind of ["browser", "host-terminal"] as const) {
+        for (const headless of [false, true]) for (const exfiltration of [false, true]) {
+          const request: PermissionDecisionRequest = {
+            tool: { name: "surface_action", source: "builtin", kind: "read" }, mode, headless,
+            userOwnedSurface: { kind, choice: store.get("conversation", kind) },
+            rules: { remembered: "Generic approval" },
+            ...(exfiltration ? { exfiltration: { reason: "Upload signal" } } : {}),
+          };
+          const expected = headless ? "deny" : exfiltration ? "ask" : choice === "allow" ? "allow" : "ask";
+          expect(decidePermission(request).outcome).toBe(expected);
+          expect(decidePermission(request).reviewRequired === true).toBe(!headless && !exfiltration && choice === "auto");
+          expect(decidePermission({ ...request, floor: { code: "other-principal", reason: "External guidance" } }).outcome).toBe(headless ? "deny" : "ask-forced");
+        }
+      }
+      expect(store.get("child", "host-terminal")).toBe("ask");
+      store.clear("conversation");
+      expect(store.get("conversation", "browser")).toBe("ask");
+      expect(store.get("conversation", "host-terminal")).toBe("ask");
+    });
+  }
 });

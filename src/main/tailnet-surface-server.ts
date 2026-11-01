@@ -1,12 +1,13 @@
+import { runTailscaleCommand, tailscaleCliPath, type TailscaleCommandRunner } from "./tailnet-cli.js";
+export type { TailscaleCommandResult, TailscaleCommandRunner } from "./tailnet-cli.js";
+import { tailnetOwnerLoginFromStatus } from "./tailnet-owner-identity.js";
+import { createTailnetOwnerIdentityPolicy, probeTailnetOwnerIdentityGuard } from "./tailnet-owner-policy.js";
 import type { SecretEncryption } from "../data/secret-document-store.js";
 // The owner must enable the listener and approve the exact serve command; never retain admin credentials or mutate tailnet policy.
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer as createPortProbe } from "node:net";
 import { join } from "node:path";
 import { platform as hostPlatform } from "node:process";
-import { promisify } from "node:util";
 import {
   createTailnetControllerReceiptStore,
   type TailnetControllerReceiptStore,
@@ -448,6 +449,7 @@ async function applyOwnDeviceAdmission(input: {
   readonly audit: TailnetOwnDeviceAdmissionAudit;
   readonly previousActorId: TailnetShareActorId | null;
   readonly nextActorId: TailnetShareActorId | null;
+  readonly assertIdentity?: () => void;
 }): Promise<void> {
   const changed = input.previousActorId !== input.nextActorId;
   if (changed && input.previousActorId !== null) {
@@ -462,7 +464,12 @@ async function applyOwnDeviceAdmission(input: {
       version: 1,
       admittedActorId: input.nextActorId,
     };
+    input.assertIdentity?.();
     await input.namespace.writeJson(TAILNET_OWN_DEVICE_ADMISSION_FILE, record);
+    try { input.assertIdentity?.(); } catch (error) {
+      await input.namespace.writeJson(TAILNET_OWN_DEVICE_ADMISSION_FILE, { version: 1, admittedActorId: input.previousActorId });
+      throw error;
+    }
   }
   if (input.nextActorId === null) return;
   // Exactly what a human approving this device on the desktop does — the same store call the owner service makes — so the setting cannot grow a second,
@@ -479,13 +486,15 @@ async function resolveTailnetDeviceStatus(input: {
   readonly store: TailnetPairingShareStore;
   readonly namespace: FeatureNamespaceHandle;
   readonly audit: TailnetOwnDeviceAdmissionAudit;
-  readonly probeEnvironment: () => Promise<TailscaleEnvironment>;
+  readonly getOwnerLogin: () => string | null;
+  readonly assertIdentity: () => void;
   readonly login: string;
   readonly actorId: TailnetShareActorId;
 }): Promise<TailnetPairingDeviceStatus> {
-  const environment = await input.probeEnvironment();
+  input.assertIdentity();
+  const ownerLogin = input.getOwnerLogin();
   // Compare logins without logging or echoing them; an unreadable probe matches no identity and grants nothing.
-  if (environment.login !== input.login) {
+  if (ownerLogin !== input.login) {
     return pairingDeviceStatus(input.store.currentPairing(input.actorId), false);
   }
   // A pairing this actor already has is the answer; minting a second invitation on every five-second reload would spend the invitation budget and then be
@@ -506,6 +515,7 @@ async function resolveTailnetDeviceStatus(input: {
       audit: input.audit,
       previousActorId: admitted,
       nextActorId: input.actorId,
+      assertIdentity: input.assertIdentity,
     });
   }
   return pairingDeviceStatus(input.store.currentPairing(input.actorId), true);
@@ -528,7 +538,6 @@ export async function setTailnetOwnDeviceAdmission(
   overrides: {
     readonly runtime?: TailnetPairedSharingRuntime | null;
     readonly namespace?: FeatureNamespaceHandle;
-    readonly probeEnvironment?: () => Promise<TailscaleEnvironment>;
     readonly auditLogger?: AuditLogger;
   } = {},
 ): Promise<void> {
@@ -537,15 +546,13 @@ export async function setTailnetOwnDeviceAdmission(
   const namespace = overrides.namespace ?? openFeatureNamespace(TAILNET_FEATURE_NAMESPACE);
   const previousActorId = await readOwnDeviceAdmission(namespace);
   let nextActorId: TailnetShareActorId | null = null;
+  const proof = enabled ? await probeTailnetOwnerIdentityGuard(runtime.authorizer) : undefined;
   if (enabled) {
-    const probe = overrides.probeEnvironment ?? (() => probeTailscaleEnvironment());
-    const environment = await probe();
-    nextActorId = environment.login === null
-      ? null
-      : runtime.authorizer.actorIdFor(environment.login);
+    nextActorId = proof!.evidence.ownerLogin === null ? null : runtime.authorizer.actorIdFor(proof!.evidence.ownerLogin);
     if (nextActorId === null) throw new Error("tailnet-own-device-admission-login-unreadable");
   }
-  await applyOwnDeviceAdmission({
+  const apply = () => applyOwnDeviceAdmission({
+    ...(proof ? { assertIdentity: proof.assertCurrent } : {}),
     store: runtime.store,
     namespace,
     audit: ownDeviceAdmissionAudit(
@@ -554,6 +561,7 @@ export async function setTailnetOwnDeviceAdmission(
     previousActorId,
     nextActorId,
   });
+  if (proof) { await runtime.store.withOwnerIdentityGuard(proof.assertCurrent, apply); proof.assertCurrent(); } else await apply();
 }
 
 // Whether this desktop currently admits its own devices without approval.
@@ -606,10 +614,13 @@ async function startForBoot(
       })
     : undefined;
 
+  const identityPolicy = pairedSharingRuntime?.authorizer ?? createTailnetOwnerIdentityPolicy();
   const server = await resolved.startServer({
     host: "127.0.0.1",
     port: config.port,
     authorization: config.authorization,
+    probeOwnerIdentity: identityPolicy.probeOwnerIdentity,
+    ownerIdentityError: identityPolicy.ownerIdentityError,
     projectionStore: options.conversationSurfaceRuntime.sharedProjection,
     getCurrentConversationId: options.getCurrentConversationId,
     isConversationBusy: options.isConversationBusy,
@@ -618,15 +629,16 @@ async function startForBoot(
       ? {}
       : {
           pairing: {
-            claimInvitation: pairedSharingRuntime.store.claimInvitation.bind(pairedSharingRuntime.store),
-            deviceStatus: (login: string, actorId: TailnetShareActorId) => resolveTailnetDeviceStatus({
+            claimInvitation: (code, actorId, assertIdentity) => pairedSharingRuntime.store.withOwnerIdentityGuard(assertIdentity, () => pairedSharingRuntime.store.claimInvitation(code, actorId)),
+            deviceStatus: (login: string, actorId: TailnetShareActorId, assertIdentity: () => void) => pairedSharingRuntime.store.withOwnerIdentityGuard(assertIdentity, () => resolveTailnetDeviceStatus({
               store: pairedSharingRuntime.store,
               namespace: resolved.openTailnetNamespace(),
               audit: ownDeviceAdmissionAudit(options.auditLogger),
-              probeEnvironment: resolved.probeEnvironment,
+              assertIdentity,
+              getOwnerLogin: pairedSharingRuntime.authorizer.currentOwnerLogin,
               login,
               actorId,
-            }),
+            })),
           },
         }),
     ...(config.controllerEnabled
@@ -775,67 +787,12 @@ export function resetTailnetObserverServerForTests(): void {
   lifecycleChain = Promise.resolve();
 }
 
-// The macOS app keeps its CLI inside the bundle and does not put it on PATH, so a PATH-only lookup reports "not installed" on the platform where it is most often installed.
-const MACOS_TAILSCALE_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-const TAILSCALE_CLI_TIMEOUT_MS = 5_000;
-const TAILSCALE_CLI_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
-// How much CLI output is carried to the surface that shows it verbatim.
+// Bound verbatim setup diagnostics shown by the Settings surface.
 const TAILSCALE_DETAIL_MAX_CHARS = 2_000;
-
-const execFileAsync = promisify(execFile);
-
-// How a Tailscale CLI invocation is run. Injected by the tests so their matrix is a question about what the CLI says, not about whether the machine
-// running them happens to have Tailscale installed, logged in, and serving.
-export type TailscaleCommandResult =
-  | { readonly kind: "ran"; readonly code: number; readonly stdout: string; readonly stderr: string }
-  | { readonly kind: "not-found" }
-  | { readonly kind: "failed"; readonly detail: string };
-
-export type TailscaleCommandRunner = (
-  cliPath: string,
-  args: readonly string[],
-) => Promise<TailscaleCommandResult>;
 
 // The probe's own view plus the binary it spoke to, which never leaves main.
 export interface TailscaleEnvironment extends TailscaleEnvironmentView {
   readonly cliPath: string | null;
-}
-
-function tailscaleCliPath(platformName: NodeJS.Platform): string {
-  return platformName === "darwin" && existsSync(MACOS_TAILSCALE_CLI)
-    ? MACOS_TAILSCALE_CLI
-    : "tailscale";
-}
-
-async function runTailscaleCommand(
-  cliPath: string,
-  args: readonly string[],
-): Promise<TailscaleCommandResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(cliPath, [...args], {
-      encoding: "utf8",
-      timeout: TAILSCALE_CLI_TIMEOUT_MS,
-      maxBuffer: TAILSCALE_CLI_MAX_OUTPUT_BYTES,
-      windowsHide: true,
-    });
-    return { kind: "ran", code: 0, stdout, stderr };
-  } catch (err) {
-    const error = err as NodeJS.ErrnoException & {
-      code?: number | string;
-      stdout?: string;
-      stderr?: string;
-    };
-    if (error.code === "ENOENT") return { kind: "not-found" };
-    if (typeof error.code === "number") {
-      return {
-        kind: "ran",
-        code: error.code,
-        stdout: error.stdout ?? "",
-        stderr: error.stderr ?? "",
-      };
-    }
-    return { kind: "failed", detail: error.message };
-  }
 }
 
 // Trim CLI output to what a person can read, without rewording it.
@@ -869,18 +826,7 @@ function selfDnsName(status: Record<string, unknown>): string | null {
   return name.length === 0 ? null : name;
 }
 
-function selfLogin(status: Record<string, unknown>): string | null {
-  const self = status.Self;
-  const users = status.User;
-  if (!isRecord(self) || !isRecord(users)) return null;
-  const userId = self.UserID;
-  if (typeof userId !== "number" && typeof userId !== "string") return null;
-  const user = users[String(userId)];
-  if (!isRecord(user) || typeof user.LoginName !== "string" || user.LoginName.length === 0) {
-    return null;
-  }
-  return user.LoginName;
-}
+function selfLogin(status: Record<string, unknown>): string | null { return tailnetOwnerLoginFromStatus(status); }
 
 function currentTailnetName(status: Record<string, unknown>): string | null {
   const tailnet = status.CurrentTailnet;

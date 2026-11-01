@@ -487,7 +487,7 @@ describe("ConversationLoop queryLoop", () => {
         // Non-keyboard origins cannot route privileged slash commands.
         const { loop, provider } = makeProjectSlashLoop((name) => name === "email-polish");
         const result = await loop.runTurn("/email-polish tighten this", undefined, undefined, {
-          inputOrigin: "tailnet-surface",
+          inputOrigin: "file-content",
         });
         expect(result.route).toBe("llm");
         const sent = JSON.stringify(provider.messages[0]);

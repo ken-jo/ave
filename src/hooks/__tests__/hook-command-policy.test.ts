@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -291,6 +292,18 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed during approval" });
   });
 
+  it("rechecks the admitted sandbox generation after the final fresh authority refresh", async () => {
+    const assertAllowed = vi.fn();
+    const authorizeCommand = async () => ({
+      decision: "allow" as const, reason: "approved", plan: getHostShellExecutionPlan(), assertAllowed,
+      // The generation changes while the final pre-spawn probe is pending.
+      refreshAllowed: async () => { setShellSandboxRequestedAtBoot(true); },
+    });
+    expect(await runOneHookScript(hook, payload, { authorizeCommand }))
+      .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed before spawn" });
+    expect(assertAllowed).not.toHaveBeenCalled();
+  });
+
   it("denies an unattended unresolved hook command in the default mode without raising a card", async () => {
     const p = policy();
     p.permissionManager.setMode("default");
@@ -405,6 +418,34 @@ describe("hook command permission admission", () => {
     expect(shellRuleCoversCommand("bash", "Bash('printf' *)", "allow", "'printf' 'ready'", process.cwd())).toBe(true);
     gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
     expect((await pending).decision).toBe("allow");
+  });
+
+  it.each([{ revoked: false, transport: "bridge" }, { revoked: true, transport: "bridge" }, { revoked: false, transport: "tailnet" }, { revoked: true, transport: "tailnet" }])("rechecks a bound controller after an actual pending hook card: %j", async ({ revoked, transport }) => {
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const requestAndWait = vi.spyOn(gate, "requestAndWait");
+    const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    let current = true;
+    let ownerAvailable = true;
+    const authority = transport === "tailnet" ? bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:hook-controller", pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" }, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = ownerAvailable; return current; } } }, payload.sessionId) : bindRemoteControllerToSession({
+      kind: "platform-bridge", actorId: "hook-controller",
+      bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
+      bridgeGuard: { isCurrent: () => current },
+    }, payload.sessionId);
+    const pending = turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(authority),
+      () => runOneHookScript(hook, payload, { authorizeCommand }));
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerAuthority: authority, remoteControllerOrigin: transport === "tailnet" ? "tailnet-controller" : "platform-bridge" }));
+    expect(gate.pendingCount).toBe(1);
+    if (revoked) { if (transport === "tailnet") ownerAvailable = false; else current = false; }
+    await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    const result = await pending;
+    expect(result.decision).toBe(revoked ? "deny" : "allow");
+    if (revoked) expect(result.rawStdout).toBe("");
+    expect(gate.pendingCount).toBe(0);
   });
 
   it("rejects a newly protected symlink target after review", async () => {

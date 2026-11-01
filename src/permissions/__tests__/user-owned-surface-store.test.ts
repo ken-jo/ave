@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import { UserOwnedSurfaceStore } from "../user-owned-surface-store.js";
 import { issueUserOwnedBrowserScope, isIssuedUserOwnedBrowserScope, preserveUserOwnedBrowserScope } from "../user-owned-browser-scope.js";
 
-it("isolates session choices by surface and never persists or inherits them", () => {
+it("shares one session choice across surfaces without persistence or inheritance", () => {
   const store = new UserOwnedSurfaceStore();
   expect(store.get("parent", "browser")).toBe("ask");
   store.set("parent", "browser", "allow");
+  expect(store.get("parent", "host-terminal")).toBe("allow");
   store.set("parent", "host-terminal", "auto");
   store.set("other", "browser", "auto");
-  expect(store.get("parent", "browser")).toBe("allow");
+  expect(store.get("parent", "browser")).toBe("auto");
   expect(store.get("parent", "host-terminal")).toBe("auto");
   expect(store.get("child", "browser")).toBe("ask");
   expect(new UserOwnedSurfaceStore().get("parent", "browser")).toBe("ask");
