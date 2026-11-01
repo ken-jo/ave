@@ -11,6 +11,7 @@ import { MxcCapabilityUnavailableError } from "./mxc-extension-errors.js";
 export interface MxcSupervisorRuntime {
   readonly ownerHandle: string;
   readonly sdk: Pick<typeof Sdk, "spawn" | "probe">;
+  pinProcess(id: number): { value: string; close(): void };
   auditModules(): string[];
 }
 
@@ -136,7 +137,22 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
   createLifetimeJob(ffi, kernel);
   const sdk = await deps.importSdk(winPath.join(installed.sdkRoot, "dist", "v1", "index.js"));
   assertModules();
-  return { sdk, ownerHandle, auditModules: assertModules };
+  return { sdk, ownerHandle, auditModules: assertModules,
+    pinProcess(id) {
+      if (!Number.isSafeInteger(id) || id <= 0 || id > 0xffffffff) throw new MxcCapabilityUnavailableError("Native container PID is unavailable");
+      // Retain only query/synchronize rights; observing termination must not
+      // retain a lifetime job or grant another process mutation authority.
+      const handle = kernel.func("void * __stdcall OpenProcess(uint32_t, bool, uint32_t)")(0x101000, false, id);
+      if (!handle) throw new MxcCapabilityUnavailableError("Cannot retain native container process");
+      const close = kernel.func("bool __stdcall CloseHandle(void *)");
+      try {
+        if (!protectHandle(handle, 1, 0)) throw new MxcCapabilityUnavailableError("Cannot protect native container process handle");
+        const value = typeof handle === "bigint" || typeof handle === "number" ? BigInt(handle) : BigInt(ffi.address(handle));
+        if (value <= 0n || value >= 0xffffffffffffffffn) throw new MxcCapabilityUnavailableError("Invalid native container process handle");
+        return { value: value.toString(), close: () => { close(handle); } };
+      } catch (error) { close(handle); throw error; }
+    },
+  };
 }
 
 export async function bootstrapMxcSupervisor(nodeModules: string): Promise<MxcSupervisorRuntime> {

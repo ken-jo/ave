@@ -63,6 +63,30 @@ describe("probe identity journals", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("runs cancellation in a dedicated fixture without launching a grandchild", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "ave-cancel-fixture-"));
+    const token = randomBytes(16).toString("hex");
+    const fixture = path.join(root, "fixture.mjs");
+    await copyFile("tools/mxc-probes/packaged-fixture.mjs", fixture);
+    await copyFile("tools/mxc-probes/packaged-processes.mjs", path.join(root, "packaged-processes.mjs"));
+    const child = spawn(process.execPath, [fixture, "cancel", token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: "pipe",
+    });
+    const completion = once(child, "close");
+    try {
+      expect(await readObservation(path.join(root, "process.json"))).toEqual({ token, pid: child.pid, role: "cancel" });
+      const nonce = randomUUID();
+      await writeProbeJson(root, `challenge-${child.pid}.json`, { nonce });
+      expect(await readObservation(path.join(root, `ack-${child.pid}.json`))).toEqual({ token, nonce, pid: child.pid });
+      expect(await readdir(root)).not.toContain("grandchild.json");
+      const main = await readFile("tools/mxc-probes/packaged-main.ts", "utf8");
+      expect(main).toContain('path.join(runDirectory, "fixture.mjs"), mode, token');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill(); await completion; }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 

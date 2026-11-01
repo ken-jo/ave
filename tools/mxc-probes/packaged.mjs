@@ -8,7 +8,7 @@ import { openPackagedObserver } from "./packaged-observer.mjs";
 import { writeProbeJson } from "./packaged-processes.mjs";
 import { pinRuntimeProcesses } from "./process-lifecycle.mjs";
 import { loadBudgets, safeEnvironment } from "./probe-common.mjs";
-import { exactOwnedPath, finalizePackagedObservation, ownerHandleObservationPassed, packagedProbeOptions, plantedDllRejected, stdioObservation } from "./packaged-protocol.mjs";
+import { cancellationObservation, exactOwnedPath, finalizePackagedObservation, ownerHandleObservationPassed, packagedProbeOptions, plantedDllRejected, stdioObservation, terminatePinnedProcess } from "./packaged-protocol.mjs";
 
 async function assertOrdinaryTree(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -85,7 +85,7 @@ async function main() {
     const entry = path.join(copyRoot, "resources/app.asar/dist/src/main/mxc-packaged-probe.js");
     const addRecord = (run, role, pid, handle) => {
       const identity = native.identity(handle);
-      if (imageKey(identity.imagePath) !== imageKey(copiedExecutable) || identity.createdAt < run.launchedAfter) throw new Error("Measured process identity mismatch");
+      if (native.pid(handle) !== pid || imageKey(identity.imagePath) !== imageKey(copiedExecutable) || identity.createdAt < run.launchedAfter) throw new Error("Measured process identity mismatch");
       const record = { role, pid, handle, createdAt: identity.createdAt.toString(), imagePath: identity.imagePath };
       run.records.push(record); return record;
     };
@@ -210,14 +210,20 @@ async function main() {
     await observe("cancel-during-native-spawn", async () => {
       const run = await launch("cancel", "cancel");
       const observation = await run.waitFor((frame) => frame.event === "cancel");
-      // Cancellation may destroy the native child before its JavaScript entry
-      // journals its identity. Missing independent identity is not death proof.
-      const containerObservationComplete = await pinFixtures(run, true, false);
+      // The main retains a duplicate across cancellation; neither live-child
+      // JavaScript nor a post-disposal PID lookup is needed for death evidence.
+      const pinned = await run.waitFor((frame) => frame.event === "container-pinned", true);
+      const source = run.records.find((record) => record.role === "main");
+      const handle = native.duplicateProcessHandle(source.handle, pinned.handle);
+      try {
+        const record = addRecord(run, "container", pinned.pid, handle);
+        if (record.createdAt !== pinned.createdAt || imageKey(record.imagePath) !== imageKey(pinned.imagePath)) throw new Error("Duplicated container identity mismatch");
+      } catch (error) {
+        if (run.records.at(-1)?.handle === handle) run.records.pop();
+        native.close(handle); throw error;
+      }
       const accounting = await finishRun(run);
-      return { ...observation, ...accounting, containerObservationComplete,
-        passed: observation.pending === true && observation.name === "MxcProcessContractError" && accounting.exit.code === 0 && accounting.processDeathVerified && containerObservationComplete,
-        ...(!containerObservationComplete ? { inconclusive: "Native cleanup receipt received, but container identities were not independently pinned" }
-          : observation.pending === true ? {} : { inconclusive: "Cancellation did not overlap the native spawn await" }) };
+      return cancellationObservation(observation, accounting);
     });
     await observe("planted-dll-before-load", async () => {
       const relative = "@microsoft/mxc-sdk/bin/x64/planted.dll";
@@ -245,10 +251,14 @@ async function main() {
       result.unverifiedProcesses.push(...run.unverifiedProcesses.map((record) => ({ runDirectory: run.directory, ...record })));
       for (const record of run.records) {
         const survived = native.wait(record.handle, 0) !== 0;
-        if (survived) native.terminate(record.handle, 74);
+        let cleanupError;
+        if (survived) {
+          try { terminatePinnedProcess(native, record.handle, 74); }
+          catch (error) { cleanupError = error.message; }
+        }
         const dead = native.wait(record.handle, budgets.windowsAclHostStartupMs) === 0;
-        result.processCleanup.push({ role: record.role, pid: record.pid, createdAt: record.createdAt, imagePath: record.imagePath, survivorBeforeCleanup: survived, cleanupDeathVerified: dead });
-        cleanupVerified &&= dead;
+        result.processCleanup.push({ role: record.role, pid: record.pid, createdAt: record.createdAt, imagePath: record.imagePath, survivorBeforeCleanup: survived, cleanupDeathVerified: dead, ...(cleanupError ? { cleanupError } : {}) });
+        cleanupVerified &&= dead && !cleanupError;
         native.close(record.handle);
       }
       if (run.unverifiedProcesses.length) cleanupVerified = false;

@@ -29,6 +29,6 @@ if (mode === "echo") {
   const child = spawn(process.execPath, [process.argv[1], "grandchild", token, heartbeatText], { env: process.env, stdio: ["ignore", "ignore", "inherit"], windowsHide: true });
   child.on("error", (error) => { process.stderr.write(error.message + "\n"); process.exitCode = 2; });
   while (true) { await answerChallenge(); await pause(heartbeat); }
-} else if (mode === "grandchild") {
+} else if (mode === "grandchild" || mode === "cancel") {
   while (true) { await answerChallenge(); await pause(heartbeat); }
 } else throw new Error("Unknown packaged fixture mode");

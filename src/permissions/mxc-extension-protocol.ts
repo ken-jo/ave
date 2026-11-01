@@ -10,11 +10,13 @@ export const MXC_STREAM_CHUNK_BYTES = 32 * 1024;
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
 type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" };
 type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
+type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
+type NativeObservedFrame = { type: "native-observed"; id: number };
 type StartFrame = { type: "start"; request: ContainerRequest };
 type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
 type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string };
-export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
+export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
   sequence: number;
@@ -34,6 +36,17 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       fields = ["data"];
       break;
     case "stdin-end": case "stop": case "creating": case "spawning": fields = []; break;
+    case "native-created":
+      if (typeof frame.processHandle !== "string" || !/^[1-9][0-9]{0,19}$/.test(frame.processHandle)
+        || BigInt(frame.processHandle) >= 18446744073709551615n) fail();
+      // Both receipts carry the actual 32-bit native PID.
+      if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || (frame.id as number) > 0xffffffff) fail();
+      fields = ["id", "processHandle"];
+      break;
+    case "native-observed":
+      if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || (frame.id as number) > 0xffffffff) fail();
+      fields = ["id"];
+      break;
     case "stopped":
       if (typeof frame.spawnPendingAtCancellation !== "boolean") fail();
       fields = ["spawnPendingAtCancellation"];

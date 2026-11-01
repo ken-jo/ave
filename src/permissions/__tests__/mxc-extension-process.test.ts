@@ -117,6 +117,23 @@ describe("bounded supervisor frames", () => {
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
   });
 
+  it("authenticates the retained process handle and its acknowledgement", () => {
+    const created: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "native-created", id: 42, processHandle: "123456" };
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(created))]).toEqual([created]);
+    const observed: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "native-observed", id: 42 };
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "host").read(encodeMxcFrame(observed, KEY, "host"))]).toEqual([observed]);
+  });
+
+  it.each(["0", "-1", "01", "18446744073709551615", "18446744073709551616"])("rejects invalid retained process handle %s", (processHandle) => {
+    expect(() => encode({ version: 1, generation: GENERATION, sequence: 0, type: "native-created", id: 42, processHandle })).toThrow(MxcProcessContractError);
+  });
+
+  it.each([0, -1, 0x100000000, 1.5])("rejects invalid process receipt PID %s", (id) => {
+    for (const type of ["native-created", "native-observed"] as const) {
+      expect(() => encode({ version: 1, generation: GENERATION, sequence: 0, type, id, ...(type === "native-created" ? { processHandle: "123" } : {}) } as MxcStreamFrame)).toThrow(MxcProcessContractError);
+    }
+  });
+
   it.each([false, true])("authenticates the pending-spawn cancellation observation %s", (spawnPendingAtCancellation) => {
     const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "stopped", spawnPendingAtCancellation };
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);

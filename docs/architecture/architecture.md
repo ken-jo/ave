@@ -2535,7 +2535,7 @@ The supervisor explicitly clears inheritance on fd 3 as well as all three contro
 standard handles, resolving fd 3 through the running runtime’s `uv_get_osfhandle`
 export; unavailable protection is a capability error. The supervisor retains a
 non-inherited kill-on-close job without breakaway permission before SDK spawn.
-Terminal receipts follow stream drain, native wait and disposal. Missing receipts,
+Terminal receipts follow stream drain, native wait and disposal. After spawn resolves, the supervisor retains a non-inheritable query/synchronize process handle and sends its PID and handle in an authenticated `native-created` receipt. Main acknowledges only after its synchronous lifecycle observer can duplicate the process object; the supervisor retains its handle through that acknowledgement, including during cancellation. The packaged diagnostic main retains its duplicate until the external controller has checked the object and can independently observe terminal signaling. No lifetime job handle is duplicated. Missing acknowledgements remain bounded by owner-EOF teardown and its cleanup watchdog. Missing receipts,
 crashes or cleanup deadlines after possible native creation remain failures with
 unverified termination. Authenticated failures before native creation preserve
 integrity, capability-unavailable, contract or supervisor-lost error types.

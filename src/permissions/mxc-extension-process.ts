@@ -15,6 +15,7 @@ import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContra
 
 interface ProcessResult { exitCode: number; timedOut: boolean }
 export type MxcProcessLifecycleEvent = { type: "supervisor-started"; pid: number }
+  | { type: "native-created"; id: number; processHandle: string; supervisorPid: number }
   | { type: "creating" | "spawning" } | { type: "stopped"; spawnPendingAtCancellation: boolean };
 type LifecycleObserver = (event: MxcProcessLifecycleEvent) => void;
 
@@ -49,6 +50,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   private lifecycleFailure: Error | undefined;
   private creationStarted = false;
   private spawnInvoked = false;
+  private nativeId = 0;
   private failureReceipt = false;
   private stopping = false;
   private stopped = false;
@@ -125,8 +127,14 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         if (!this.creationStarted || this.spawnInvoked || this.id) throw new MxcProcessContractError("Unexpected supervisor spawning receipt");
         this.spawnInvoked = true;
         this.observe({ type: "spawning" });
+      } else if (frame.type === "native-created") {
+        if (!this.spawnInvoked || this.nativeId || this.id || this.child.pid === undefined) throw new MxcProcessContractError("Unexpected native process receipt");
+        this.nativeId = frame.id;
+        this.observe({ type: "native-created", id: frame.id, processHandle: frame.processHandle, supervisorPid: this.child.pid });
+        await this.channel.send({ type: "native-observed", id: frame.id });
       } else if (frame.type === "ready") {
         if (!this.spawnInvoked) throw new MxcProcessContractError("Supervisor readiness preceded native invocation");
+        if (frame.id !== this.nativeId) throw new MxcProcessContractError("Supervisor readiness lacks its native process receipt");
         if (this.id) throw new MxcProcessContractError("Duplicate supervisor readiness");
         this.id = frame.id;
         this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules, nativeModuleCount: frame.nativeModuleCount, nativeModulesTruncated: frame.nativeModulesTruncated, ownerHandle: frame.ownerHandle };

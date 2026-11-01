@@ -18,7 +18,7 @@ function transportFixture() {
   const fixture = createMxcNativeProcess();
   const probe = vi.fn(() => ({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: true } } as ProbeOutput));
   const spawn = vi.fn(async () => fixture.native as unknown as MxcProcess);
-  const runtime: MxcSupervisorRuntime = { ownerHandle: "271828", sdk: { probe, spawn }, auditModules: vi.fn(() => ["verified-unit-path"]) };
+  const runtime: MxcSupervisorRuntime = { ownerHandle: "271828", pinProcess: vi.fn(() => ({ value: "161803", close: vi.fn() })), sdk: { probe, spawn }, auditModules: vi.fn(() => ["verified-unit-path"]) };
   const bootstrap = vi.fn(async () => runtime);
   let child!: ChildProcess;
   let liveness!: PassThrough;
@@ -152,7 +152,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     expect(await launched).toBeInstanceOf(MxcProcessContractError);
     expect(f.fixture.native.kill).toHaveBeenCalledOnce();
     expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
-    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }, { type: "stopped", spawnPendingAtCancellation: true }]);
+    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }, { type: "native-created", id: 42, processHandle: "161803", supervisorPid: 314159 }, { type: "stopped", spawnPendingAtCancellation: true }]);
     await f.service;
   });
 
@@ -246,13 +246,13 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const f = transportFixture();
     const events: MxcProcessLifecycleEvent[] = [];
     const owned = await f.launch(undefined, (event) => events.push(event));
-    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }]);
+    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }, { type: "native-created", id: 42, processHandle: "161803", supervisorPid: 314159 }]);
     expect(f.probe).toHaveBeenCalledOnce();
     expect(f.spawn.mock.calls[0]).toHaveLength(1);
     await owned.dispose();
   });
 
-  it.each(["supervisor-started", "creating", "spawning", "stopped"] as const)("cleans up when the %s lifecycle observer throws", async (type) => {
+  it.each(["supervisor-started", "creating", "spawning", "native-created", "stopped"] as const)("cleans up when the %s lifecycle observer throws", async (type) => {
     const f = transportFixture();
     const controller = new AbortController();
     const cause = new Error("Observer refused event");
@@ -279,18 +279,31 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
     const controller = new AbortController();
     const events: MxcProcessLifecycleEvent[] = [];
+    const close = vi.fn();
+    f.runtime.pinProcess = vi.fn(() => ({ value: "161803", close }));
+    let duplicated = false;
     const launched = f.launch(controller.signal, (event) => {
       events.push(event);
       if (event.type === "spawning") controller.abort();
+      if (event.type === "native-created") {
+        expect(f.runtime.pinProcess).toHaveBeenCalledWith(42);
+        expect(close).not.toHaveBeenCalled();
+        expect(f.fixture.native.kill).not.toHaveBeenCalled();
+        // Unit model of the synchronous observer duplication. No Windows
+        // process-object or kernel death observation is claimed by this test.
+        duplicated = true;
+      }
     }).catch((error: unknown) => error);
     await vi.waitFor(() => expect(controller.signal.aborted).toBe(true));
     expect(f.spawn).toHaveBeenCalledOnce();
     await new Promise<void>((resolve) => setImmediate(resolve));
     arrive(f.fixture.native as unknown as MxcProcess);
     expect(await launched).toBeInstanceOf(MxcProcessContractError);
-    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }, { type: "stopped", spawnPendingAtCancellation: true }]);
+    expect(events).toEqual([{ type: "supervisor-started", pid: 314159 }, { type: "creating" }, { type: "spawning" }, { type: "native-created", id: 42, processHandle: "161803", supervisorPid: 314159 }, { type: "stopped", spawnPendingAtCancellation: true }]);
     expect(f.fixture.native.kill).toHaveBeenCalledOnce();
     expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+    expect(duplicated).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
     await f.service;
   });
 
@@ -319,6 +332,8 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     { types: ["spawning"], message: "Unexpected supervisor spawning receipt" },
     { types: ["creating", "spawning", "spawning"], message: "Unexpected supervisor spawning receipt" },
     { types: ["creating", "ready"], message: "Supervisor readiness preceded native invocation" },
+    { types: ["creating", "spawning", "ready"], message: "Supervisor readiness lacks its native process receipt" },
+    { types: ["native-created"], message: "Unexpected native process receipt" },
   ])("rejects an invalid authenticated creation sequence: $types", async ({ types, message }) => {
     const launch = (_entry: string, _modules: string, generation: string): ChildProcess => {
       const controls = new PassThrough(), events = new PassThrough(), diagnostics = new PassThrough(), liveness = new PassThrough();
@@ -330,6 +345,7 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
           void (async () => {
             for (const type of types) {
               if (type === "ready") await channel.send({ type, id: 42, nodeVersion: process.versions.node, nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "271828" });
+              else if (type === "native-created") await channel.send({ type, id: 42, processHandle: "161803" });
               else await channel.send({ type: type as "creating" | "spawning" });
             }
             await channel.end();

@@ -12,6 +12,8 @@ import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness: Readable,
   bootstrap: () => Promise<MxcSupervisorRuntime>, onFatal: () => void): Promise<void> {
   let owned: MxcNativeProcess | undefined;
+  let processPin: ReturnType<MxcSupervisorRuntime["pinProcess"]> | undefined;
+  let nativeObservation: { id: number; resolve(): void } | undefined;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
   let creationStarted = false;
   let spawnPending = false;
@@ -78,7 +80,14 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             void spawning.catch(fail);
             const native = await nativePending;
             owned = new MxcNativeProcess(native);
+            processPin = runtime.pinProcess(owned.id);
             await spawning;
+            const observed = new Promise<void>((resolve) => { nativeObservation = { id: owned!.id, resolve }; });
+            await channel.send({ type: "native-created", id: owned.id, processHandle: processPin.value });
+            // The parent duplicates the retained process object synchronously
+            // before acknowledging. Even cancellation cannot close it too soon.
+            await observed;
+            processPin.close(); processPin = undefined;
             const nativeModules = runtime.auditModules();
             if (stopping) {
               await owned.dispose();
@@ -118,6 +127,11 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
           owned.stdin.end();
           break;
         case "stop": stop(); break;
+        case "native-observed": {
+          if (!nativeObservation || frame.id !== nativeObservation.id) throw new MxcProcessContractError("Unexpected native process observation receipt");
+          const observation = nativeObservation; nativeObservation = undefined; observation.resolve();
+          break;
+        }
         default: throw new MxcProcessContractError("Unexpected supervisor control frame");
       }
     }
@@ -163,6 +177,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     } catch { /* The parent may already be gone; process exit closes the native job. */ }
     throw failure;
   } finally {
+    processPin?.close();
     clearTimeout(watchdog);
     liveness.off("end", stop); liveness.off("close", stop); liveness.off("error", fail); liveness.off("data", handleLivenessData);
     channel.input.destroy();

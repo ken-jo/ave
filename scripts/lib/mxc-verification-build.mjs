@@ -7,6 +7,12 @@ export function mxcVerificationBuild(environment = process.env) {
   return value === "1";
 }
 
+export function assertMxcVerificationPublish(publish, environment = process.env) {
+  if (mxcVerificationBuild(environment) && publish !== "never") {
+    throw new Error("Native verification builds require --publish=never");
+  }
+}
+
 export function mxcVerificationEntries(root, environment = process.env) {
   return mxcVerificationBuild(environment)
     ? { "mxc-packaged-probe": path.join(root, "tools", "mxc-probes", "packaged-main.ts") } : {};

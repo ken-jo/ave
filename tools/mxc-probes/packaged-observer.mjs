@@ -48,6 +48,8 @@ export function openPackagedObserver(executable, suppliedPins) {
     },
     open: (rights, inherit, pid) => open(rights | 0x450, inherit, pid),
     wait: kernel.func("uint32_t __stdcall WaitForSingleObject(void *, uint32_t)"),
+    pid: kernel.func("uint32_t __stdcall GetProcessId(void *)"),
+    sameProcess(first, second) { return compare(BigInt(api.handleValue(first)), BigInt(api.handleValue(second))) === 0; },
     terminate: kernel.func("bool __stdcall TerminateProcess(void *, uint32_t)"),
     close,
     elevated() {

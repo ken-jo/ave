@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error standalone build utilities have no declaration output
-import { assertMxcVerificationPayload, mxcVerificationBuild, mxcVerificationEntries } from "../../scripts/lib/mxc-verification-build.mjs";
+import { assertMxcVerificationPayload, assertMxcVerificationPublish, mxcVerificationBuild, mxcVerificationEntries } from "../../scripts/lib/mxc-verification-build.mjs";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -15,6 +16,45 @@ function output(enabled: boolean) {
 }
 
 describe("explicit native verification build", () => {
+  it("allows verification artifacts only when publishing is disabled", () => {
+    const environment = { AVE_MXC_VERIFICATION_BUILD: "1" };
+    expect(() => assertMxcVerificationPublish("never", environment)).not.toThrow();
+    for (const mode of ["always", "onTag", "onTagOrDraft", ""]) {
+      expect(() => assertMxcVerificationPublish(mode, environment)).toThrow("Native verification builds require --publish=never");
+    }
+    expect(() => assertMxcVerificationPublish("always", {})).not.toThrow();
+    expect(() => assertMxcVerificationPublish("always", { AVE_MXC_VERIFICATION_BUILD: "0" })).not.toThrow();
+  });
+
+  it.each([["--publish=always"], ["--publish", "onTag"]])("rejects publishing at the installer entry point before build or mutation: %s", (...publishArgs) => {
+    const root = mkdtempSync(path.join(tmpdir(), "ave-verification-cli-"));
+    roots.push(root);
+    const guard = path.join(root, "guard.mjs");
+    writeFileSync(guard, `
+      import { registerHooks } from "node:module";
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith("/scripts/hooks/spawn-command.mjs")) return {
+          format: "module", shortCircuit: true,
+          source: 'export function runCommand() { throw new Error("Unexpected build command"); }',
+        };
+        if (url.endsWith("/scripts/lib/document-consumer-guard.mjs")) return {
+          format: "module", shortCircuit: true,
+          source: 'export function assertPackagedDocumentInputs() { throw new Error("Unexpected packaging preflight"); }',
+        };
+        return nextLoad(url, context);
+      }});
+    `);
+    const result = spawnSync(process.execPath, ["--import", guard, path.resolve("scripts/build-installers.mjs"), ...publishArgs], {
+      cwd: root,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_MXC_VERIFICATION_BUILD: "1" },
+      encoding: "utf8",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("[installer] FAILED: Native verification builds require --publish=never\n");
+  });
+
   it("omits diagnostic entries by default and requires the exact explicit flag", () => {
     const root = path.resolve(".");
     expect(mxcVerificationEntries(root, {})).toEqual({});

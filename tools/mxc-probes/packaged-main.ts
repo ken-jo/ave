@@ -29,6 +29,7 @@ async function run(): Promise<void> {
   // public primitive below still launches and verifies the copied package.
   const inspector = openPackagedObserver(observerExecutable, PINS);
   const supervisorHandles: unknown[] = [];
+  const containerHandles: unknown[] = [];
   const controls = createInterface({ input: process.stdin });
   const queued: string[] = [];
   let controlsClosed = false;
@@ -55,7 +56,7 @@ async function run(): Promise<void> {
   if (!address || typeof address === "string") throw new Error("Missing fixture proxy address");
   const policy = buildProbeFilesystem(process.execPath, runDirectory, process.env.SYSTEMROOT);
   const request: ContainerRequest = {
-    command: [process.execPath, path.join(runDirectory, "fixture.mjs"), mode === "echo" ? "echo" : "lifetime", token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)].map(windowsQuote).join(" "),
+    command: [process.execPath, path.join(runDirectory, "fixture.mjs"), mode, token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)].map(windowsQuote).join(" "),
     containment: { type: "processcontainer", config: { filesystem: { enumeratePaths: policy.enumeratePaths } } },
     workingDirectory: runDirectory, environment: safeEnvironment(runDirectory), inheritDefaultEnvironment: false,
     filesystem: policy.filesystem,
@@ -72,6 +73,15 @@ async function run(): Promise<void> {
       supervisorHandles.push(handle);
       const identity = inspector.identity(handle);
       emit({ event: "supervisor-pinned", pid: event.pid, handle: inspector.handleValue(handle), createdAt: identity.createdAt.toString(), imagePath: identity.imagePath });
+    }
+    if (event.type === "native-created") {
+      const source = supervisorHandles[0];
+      if (!source) throw new Error("Cannot transfer container without a pinned supervisor");
+      const handle = inspector.duplicateProcessHandle(source, event.processHandle);
+      containerHandles.push(handle);
+      if (inspector.pid(handle) !== event.id) throw new Error("Transferred container PID mismatch");
+      const identity = inspector.identity(handle);
+      emit({ event: "container-pinned", pid: event.id, handle: inspector.handleValue(handle), createdAt: identity.createdAt.toString(), imagePath: identity.imagePath });
     }
     if (mode === "cancel" && event.type === "spawning") controller.abort();
   };
@@ -125,6 +135,7 @@ async function run(): Promise<void> {
     try { if (!controlsClosed) await command("release"); }
     catch { process.exitCode = 2; }
     for (const handle of supervisorHandles) inspector.close(handle);
+    for (const handle of containerHandles) inspector.close(handle);
     controls.close(); process.stdin.destroy();
     proxy.closeAllConnections(); await new Promise<void>((resolve) => proxy.close(() => resolve()));
   }

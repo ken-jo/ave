@@ -34,11 +34,20 @@ describe("Windows helper integrity", () => {
 
   it("excludes the pinned helper from signing while preserving application signing", () => {
     const { build } = require("../../../package.json");
-    expect(build.win.signExts).toContain("!srt-win.exe");
+    expect(build.win.signExts).toEqual([
+      "!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node",
+      "!OpenConsole.exe", "!winpty-agent.exe", "!conpty.dll", "!winpty.dll",
+    ]);
     expect(build.win.signExecutable).not.toBe(false);
     expect(build.win.signAndEditExecutable).not.toBe(false);
+    const cache = mkdtempSync(join(tmpdir(), "ave-packager-cache-test-"));
+    directories.push(cache);
+    // The cache flag is boolean; its directory comes from the process temp root.
+    vi.stubEnv("JITI_FS_CACHE", "true");
+    for (const name of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(name, cache);
     // Exercise the installed packager's filter, without a signing identity.
     require("app-builder-lib");
+    expect(existsSync(join(cache, "jiti"))).toBe(true);
     const { WinPackager } = require("app-builder-lib/out/winPackager.js");
     const shouldSign = (file: string) => WinPackager.prototype.shouldSignFile.call({ platformSpecificBuildOptions: build.win }, file);
     expect(shouldSign(join("app.asar.unpacked", "vendor", "srt-win", "x64", "srt-win.exe"))).toBe(false);

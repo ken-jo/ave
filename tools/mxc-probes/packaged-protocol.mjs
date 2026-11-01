@@ -19,6 +19,32 @@ export function stdioObservation(frame) {
     && frame.stderr === "fixture-input-eof\n" && frame.result?.exitCode === 0 && frame.result?.timedOut === false };
 }
 
+export function cancellationObservation(frame, accounting) {
+  const container = accounting.processObservations.find((record) => record.role === "container");
+  const containerObservationComplete = !!container;
+  return { ...frame, ...accounting, containerObservationComplete,
+    passed: frame.pending === true && frame.name === "MxcProcessContractError"
+      && accounting.exit.code === 0 && !accounting.exit.signal && accounting.processDeathVerified === true
+      && containerObservationComplete && container.signaled === true,
+    ...(!containerObservationComplete ? { inconclusive: "Native container process object was not independently duplicated" }
+      : frame.pending === true ? {} : { inconclusive: "Cancellation did not overlap the native spawn await" }) };
+}
+
+// Observation pins deliberately lack mutation rights. Emergency cleanup opens
+// separate authority and compares the actual objects before terminating one.
+export function terminatePinnedProcess(native, pin, exitCode) {
+  if (native.wait(pin, 0) === 0) return;
+  const handle = native.open(0x101001, false, native.pid(pin));
+  if (!handle) {
+    if (native.wait(pin, 0) === 0) return;
+    throw new Error("Cannot open pinned process for cleanup");
+  }
+  try {
+    if (!native.sameProcess(pin, handle)) throw new Error("Cleanup process object mismatch");
+    if (!native.terminate(handle, exitCode) && native.wait(pin, 0) !== 0) throw new Error("Pinned process cleanup termination failed");
+  } finally { native.close(handle); }
+}
+
 // Only handles of the owner's object type are candidates for inheritance. Some
 // unrelated object types cannot be duplicated even by their owning process.
 export function inspectOwnerHandleCandidates(owner, candidates, native) {

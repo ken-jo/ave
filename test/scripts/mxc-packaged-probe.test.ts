@@ -3,9 +3,65 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error standalone probe utilities do not emit declarations
-import { exactOwnedPath, finalizePackagedObservation, handleSnapshot, inspectOwnerHandleCandidates, ownerHandleObservationPassed, packagedProbeOptions, plantedDllRejected, retainedTreeSize, stdioObservation } from "../../tools/mxc-probes/packaged-protocol.mjs";
+import { cancellationObservation, exactOwnedPath, finalizePackagedObservation, handleSnapshot, inspectOwnerHandleCandidates, ownerHandleObservationPassed, packagedProbeOptions, plantedDllRejected, retainedTreeSize, stdioObservation, terminatePinnedProcess } from "../../tools/mxc-probes/packaged-protocol.mjs";
 
 const executable = path.resolve(tmpdir(), "packaged-probe", "Ave.exe");
+
+describe("separate exact-object cleanup authority (unit only)", () => {
+  function native() {
+    return { wait: vi.fn(() => 258), pid: vi.fn(() => 42), open: vi.fn((): bigint | null => 456n),
+      sameProcess: vi.fn(() => true), terminate: vi.fn(() => true), close: vi.fn() };
+  }
+  it("obtains cleanup rights and compares objects before terminating, then closes them", () => {
+    const api = native();
+    terminatePinnedProcess(api, 123n, 74);
+    expect(api.open).toHaveBeenCalledWith(0x101001, false, 42);
+    expect(api.sameProcess).toHaveBeenCalledWith(123n, 456n);
+    expect(api.terminate).toHaveBeenCalledWith(456n, 74);
+    expect(api.close).toHaveBeenCalledWith(456n);
+    expect(api.sameProcess.mock.invocationCallOrder[0]).toBeLessThan(api.terminate.mock.invocationCallOrder[0]);
+  });
+  it("refuses PID reuse and closes a mismatched candidate without mutation", () => {
+    const api = native(); api.sameProcess.mockReturnValue(false);
+    expect(() => terminatePinnedProcess(api, 123n, 74)).toThrow("Cleanup process object mismatch");
+    expect(api.terminate).not.toHaveBeenCalled();
+    expect(api.close).toHaveBeenCalledWith(456n);
+  });
+  it("reports termination failure and never requests authority for an already signaled pin", () => {
+    const api = native(); api.terminate.mockReturnValue(false);
+    expect(() => terminatePinnedProcess(api, 123n, 74)).toThrow("cleanup termination failed");
+    expect(api.close).toHaveBeenCalledOnce();
+    api.wait.mockReturnValue(0); api.open.mockClear();
+    terminatePinnedProcess(api, 123n, 74);
+    expect(api.open).not.toHaveBeenCalled();
+  });
+  it("reports denied cleanup authority unless the original object has now signaled", () => {
+    const api = native(); api.open.mockReturnValue(null);
+    expect(() => terminatePinnedProcess(api, 123n, 74)).toThrow("Cannot open pinned process for cleanup");
+    api.wait.mockReturnValueOnce(258).mockReturnValueOnce(0);
+    terminatePinnedProcess(api, 123n, 74);
+    expect(api.terminate).not.toHaveBeenCalled();
+  });
+});
+
+describe("pending native cancellation evidence", () => {
+  const frame = { pending: true, name: "MxcProcessContractError" };
+  const accounting = { exit: { code: 0, signal: null }, processDeathVerified: true,
+    processObservations: [{ role: "main", signaled: true }, { role: "supervisor", signaled: true }, { role: "container", signaled: true }] };
+  it("can pass from a retained signaled container object without live fixture journals", () => {
+    expect(cancellationObservation(frame, accounting).passed).toBe(true);
+    expect(cancellationObservation(frame, accounting).containerObservationComplete).toBe(true);
+  });
+  it("fails when the retained container survives even with a native cleanup receipt", () => {
+    expect(cancellationObservation(frame, { ...accounting, processObservations: [...accounting.processObservations.slice(0, 2), { role: "container", signaled: false }] }).passed).toBe(false);
+    expect(cancellationObservation(frame, { ...accounting, processDeathVerified: false }).passed).toBe(false);
+  });
+  it("refuses missing objects, timing misses and an unclean observer exit", () => {
+    expect(cancellationObservation(frame, { ...accounting, processObservations: [] }).passed).toBe(false);
+    expect(cancellationObservation({ ...frame, pending: false }, accounting).passed).toBe(false);
+    expect(cancellationObservation(frame, { ...accounting, exit: { code: 0, signal: "SIGTERM" } }).passed).toBe(false);
+  });
+});
 
 describe("packaged probe arguments", () => {
   it("accepts one absolute executable path without additional switches", () => {

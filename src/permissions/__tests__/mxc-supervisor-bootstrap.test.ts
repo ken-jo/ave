@@ -18,6 +18,7 @@ function bootstrapFixture() {
     if (signature.includes("GetStdHandle")) return 4n;
     if (signature.includes("uv_get_osfhandle")) { expect(args).toEqual([3]); events.push("owner-resolved"); return 5n; }
     if (signature.includes("GetCurrentProcess(")) return 1n;
+    if (signature.includes("OpenProcess(")) { expect(args).toEqual([0x101000, false, 42]); return 6n; }
     if (signature.includes("GetSystemDirectoryW")) {
       const directory = String.raw`C:\Windows\System32`;
       (args[0] as Buffer).write(directory, "utf16le"); return directory.length;
@@ -62,6 +63,26 @@ describe("supervisor bootstrap ordering with injected native calls", () => {
     await expect(_bootstrapMxcSupervisorForTest(f.modules, "x64", { MXC_FFI_DIR: "planted" }, f.deps)).rejects.toThrow("pin mismatch");
     expect(f.deps.loadAddon).not.toHaveBeenCalled();
     expect(f.deps.importSdk).not.toHaveBeenCalled();
+  });
+
+  it("retains a non-inheritable query and synchronize process handle without retaining the job", async () => {
+    const f = bootstrapFixture();
+    const runtime = await _bootstrapMxcSupervisorForTest(f.modules, "x64", {}, f.deps);
+    const pin = runtime.pinProcess(42);
+    expect(pin.value).toBe("6");
+    expect(f.calls).toHaveBeenCalledWith("bool __stdcall SetHandleInformation(void *, uint32_t, uint32_t)", 6n, 1, 0);
+    pin.close();
+    expect(f.calls).toHaveBeenCalledWith("bool __stdcall CloseHandle(void *)", 6n);
+  });
+
+  it("refuses unavailable process pins and closes a handle whose protection fails", async () => {
+    for (const failing of ["OpenProcess", "SetHandleInformation"]) {
+      const f = bootstrapFixture(), original = f.calls.getMockImplementation()!;
+      const runtime = await _bootstrapMxcSupervisorForTest(f.modules, "x64", {}, f.deps);
+      f.calls.mockImplementation((signature, ...args) => signature.includes(failing) ? false : original(signature, ...args));
+      expect(() => runtime.pinProcess(42)).toThrow(MxcCapabilityUnavailableError);
+      if (failing === "SetHandleInformation") expect(f.calls).toHaveBeenCalledWith("bool __stdcall CloseHandle(void *)", 6n);
+    }
   });
 
   it("refuses search restriction and job assignment failure before SDK import", async () => {
