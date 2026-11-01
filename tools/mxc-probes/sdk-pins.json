@@ -1,0 +1,7 @@
+{
+  "version": "1.0.1",
+  "native": {
+    "x64": "bd45522f06dc9cc8001dcd5d7320bc2bf303fb08a39bf10f3404bd9a8001812c",
+    "arm64": "1becaf695ad9ab6f6fe21ca4ad2e838d9218996a5d42cb82e609df1eb4d3db6b"
+  }
+}

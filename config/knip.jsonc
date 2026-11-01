@@ -62,6 +62,12 @@
         "resources/shell-parser/wasm_exec.cjs",
         // Explicit parser rebuild entry documented in tools/shell-parser/README.md.
         "tools/shell-parser/build.mjs",
+        // Standalone native probes invoked by path in tools/mxc-probes/README.md.
+        "tools/mxc-probes/node-ui.mjs",
+        "tools/mxc-probes/loopback.mjs",
+        "tools/mxc-probes/stdio-lifetime.mjs",
+        "tools/mxc-probes/kernel-objects.mjs",
+        "tools/mxc-probes/shell-ui.mjs",
         // Plugin modules the host-protocol golden harness hands the child runtime
         // BY PATH, which imports them through `importPluginFactory` as it imports
         // an installed plugin's entry — nothing names them in an import.
@@ -133,6 +139,9 @@
     "better-sqlite3",
     "electron-builder",
     "electron-updater",
+    // Resolved at runtime from the staged @microsoft/mxc-sdk package root by
+    // createRequire in tools/mxc-probes/sdk-supervisor.mjs, not an Ave dependency.
+    "koffi",
     "pino-pretty",
     "shadcn"
   ],
