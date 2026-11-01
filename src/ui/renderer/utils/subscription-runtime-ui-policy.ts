@@ -44,6 +44,8 @@ export interface SubscriptionRuntimeUiPolicyInput {
   /** Null while the active runtime's safe status request is in flight. A failed or malformed response is represented by the
    * all-false shared default. */
   readonly capabilities: SubscriptionRuntimeCapabilities | null;
+  /** Connected and ready but not proven since this launch: main proves it on the first turn and refuses the turn if that fails. */
+  readonly provableOnUse?: boolean;
 }
 
 /** IPC responses are still an external boundary from the renderer's perspective. Do not turn a truthy object, float, or
@@ -103,6 +105,7 @@ export function selectSubscriptionRuntimeUiPolicy({
   activeSubscriptionRuntime,
   settingsLoaded,
   capabilities,
+  provableOnUse = false,
 }: SubscriptionRuntimeUiPolicyInput): SubscriptionRuntimeUiPolicy {
   const subscriptionSelected = activeSubscriptionRuntime !== null;
   const provider = activeSubscriptionRuntime?.provider;
@@ -110,7 +113,7 @@ export function selectSubscriptionRuntimeUiPolicy({
   const chatReady = subscriptionSelected
     ? statusPending
       ? null
-      : capabilities?.chat === true
+      : capabilities?.chat === true || provableOnUse
     : false;
   // A runtime whose image input depends on the model (ChatGPT plan usage) offers images only for a model that accepts them.
   const imageModelVendor = provider ? subscriptionRuntimeDescriptor(provider).imageInputFollowsModelOf : undefined;

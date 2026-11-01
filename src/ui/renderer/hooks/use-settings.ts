@@ -179,6 +179,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     useState<SubscriptionChatRuntimeSelection | null>(null);
   const [subscriptionRuntimeCapabilities, setSubscriptionRuntimeCapabilities] =
     useState<SubscriptionRuntimeCapabilities | null>(null);
+  const [subscriptionRuntimeProvableOnUse, setSubscriptionRuntimeProvableOnUse] = useState(false);
   const [subscriptionStatusRevision, setSubscriptionStatusRevision] = useState(0);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [activeChatModel, setActiveChatModel] = useState<ActiveChatModel | null>(null);
@@ -258,6 +259,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       if (runtimeChanged) {
         subscriptionStatusRequestRef.current += 1;
         setSubscriptionRuntimeCapabilities(null);
+        setSubscriptionRuntimeProvableOnUse(false);
       }
       setSettingsLoaded(true);
     },
@@ -305,6 +307,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       // stale capabilities back after logout, login, verification, or a runtime reconfiguration.
       subscriptionStatusRequestRef.current += 1;
       setSubscriptionRuntimeCapabilities(null);
+      setSubscriptionRuntimeProvableOnUse(false);
       setSubscriptionStatusRevision(event.revision);
     });
   }, [api]);
@@ -313,11 +316,13 @@ export function useSettings(api: AveApi): UseSettingsResult {
     if (!activeSubscriptionRuntime) {
       subscriptionStatusRequestRef.current += 1;
       setSubscriptionRuntimeCapabilities(null);
+      setSubscriptionRuntimeProvableOnUse(false);
       return;
     }
 
     const requestId = ++subscriptionStatusRequestRef.current;
     setSubscriptionRuntimeCapabilities(null);
+    setSubscriptionRuntimeProvableOnUse(false);
     void api.subscriptionRuntimeStatus(activeSubscriptionRuntime.provider)
       .then((result) => {
         if (!isMountedRef.current || requestId !== subscriptionStatusRequestRef.current) return;
@@ -328,6 +333,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
           setSubscriptionRuntimeCapabilities(DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES);
           return;
         }
+        setSubscriptionRuntimeProvableOnUse(result.status.runtime === "ready" && result.status.connection === "connected");
         setSubscriptionRuntimeCapabilities(
           result.status.capabilities ?? DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
         );
@@ -380,8 +386,9 @@ export function useSettings(api: AveApi): UseSettingsResult {
       activeSubscriptionRuntime,
       settingsLoaded,
       capabilities: subscriptionRuntimeCapabilities,
+      provableOnUse: subscriptionRuntimeProvableOnUse,
     }),
-    [activeSubscriptionRuntime, settingsLoaded, subscriptionRuntimeCapabilities],
+    [activeSubscriptionRuntime, settingsLoaded, subscriptionRuntimeCapabilities, subscriptionRuntimeProvableOnUse],
   );
 
   return {
