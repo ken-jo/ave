@@ -8,7 +8,7 @@ import { release } from "node:os";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { captureChild, safeEnvironment, spawnWithoutTelemetry, windowsQuote } from "./probe-common.mjs";
 
-import { buildProbeFilesystem, filesystemObservation } from "./filesystem-policy.mjs";
+import { assertEnumerationSupport, buildProbeFilesystem, filesystemObservation, recordFilesystemObservation } from "./filesystem-policy.mjs";
 import { finishProcess, pinRuntimeProcesses, ProcessIdentityError } from "./process-lifecycle.mjs";
 
 const { name, options, budgets, temp } = JSON.parse(process.env.MXC_PROBE_INPUT);
@@ -66,7 +66,7 @@ async function initialize() {
   await new Promise((resolve, reject) => { proxy.once("error", reject); proxy.listen(0, "127.0.0.1", resolve); });
   observation = { node: process.versions.node, arch: process.arch, sessionId: session[0], windowsRelease: release(), sdk: pkg.version, dllSha256: digest,
     telemetryOmitted: true, proxyMode: "identity-less-endpoint-scoped", dllBootstrap: "trusted-addon-before-search-restriction",
-    filesystemPolicy: filesystemObservation(buildProbeFilesystem(options.runtime, temp, process.env.SYSTEMROOT), "script-file") };
+    filesystemPolicy: null, filesystemPolicies: [] };
   await copyFile(new URL("./child-payload.mjs", import.meta.url), path.join(temp, "child-payload.mjs"));
 }
 
@@ -84,20 +84,18 @@ function request(executable, args, uiDisabled, extraReads = [], longLived = fals
   };
 }
 
-async function launch(config) {
+async function launch(config, entryVariant) {
+  const filesystemPolicy = recordFilesystemObservation(observation, config.containment.config.filesystem.enumeratePaths, entryVariant);
   const probed = sdk.probe(config);
+  assertEnumerationSupport(config.containment.config.filesystem.enumeratePaths, probed);
   if (probed.tier !== "base-container" || probed.needsDaclAugmentation) throw new Error(`BaseContainer unavailable: ${JSON.stringify(probed)}`);
-  if (config.containment.config.filesystem.enumeratePaths.length
-    && probed.probes?.baseContainerSupportsEnumeratePaths !== true) {
-    throw new Error("Ancestor query/enumeration requires native PSEC 1.1 support; no drive-root read fallback");
-  }
   // Intentionally one argument: telemetry must stay absent, including undefined opt-in objects.
   const processHandle = await spawnWithoutTelemetry(sdk, config);
   const stdin = processHandle.standardInput;
   const stdout = processHandle.standardOutput;
   const stderr = processHandle.standardError;
   if (!stdin || !stdout || !stderr) { processHandle.dispose(); throw new Error("Native streams unavailable"); }
-  const record = { processHandle, stdin, stdout: "", stderr: "", disposed: false, closed: false };
+  const record = { filesystemPolicy, processHandle, stdin, stdout: "", stderr: "", disposed: false, closed: false };
   stdout.on("data", (chunk) => { record.stdout = (record.stdout + chunk).slice(-1024 * 1024); });
   stderr.on("data", (chunk) => { record.stderr = (record.stderr + chunk).slice(-1024 * 1024); });
   stdout.on("error", () => {}); stderr.on("error", () => {}); stdin.on("error", () => {});
@@ -134,7 +132,7 @@ async function one(executable, args, uiDisabled, extraReads = []) {
     const config = request(executable, args, uiDisabled, extraReads);
     filesystemPolicy = filesystemObservation({ enumeratePaths: config.containment.config.filesystem.enumeratePaths },
       executable === options.runtime ? "script-file" : "native-command");
-    const child = await launch(config);
+    const child = await launch(config, filesystemPolicy.entryVariant);
     const result = await finish(child);
     return { uiDisabled, filesystemPolicy, exitHex: `0x${(result.exitCode >>> 0).toString(16).padStart(8, "0")}`, ...result };
   } catch (error) { return { uiDisabled, filesystemPolicy, error: error.message }; }
@@ -144,7 +142,7 @@ const payloadArgs = (mode) => [path.join(temp, "child-payload.mjs"), mode, Strin
 async function lifetime() {
   const runtimePath = await realpath(options.runtime);
   const launchedAfter = native.now();
-  const child = await launch(request(options.runtime, payloadArgs("lifetime"), false, [], true));
+  const child = await launch(request(options.runtime, payloadArgs("lifetime"), false, [], true), "script-file");
   const ready = await firstJson(child);
   if (!Number.isInteger(ready.pid) || !Number.isInteger(ready.grandchildPid)) throw new Error("Missing child PIDs");
   const handles = await pinRuntimeProcesses(native, [ready.pid, ready.grandchildPid], launchedAfter, runtimePath, async () => {
@@ -167,7 +165,7 @@ async function lifetime() {
     const until = Date.now() + budgets.pluginShutdownHandlerMs;
     while (Date.now() < until && handles.some((handle) => native.wait(handle, 0) === 258)) await pause(pollMs);
     const signals = handles.map((handle) => native.wait(handle, 0));
-    const result = { ...ready, processDead: signals[0] === 0, grandchildDead: signals[1] === 0,
+    const result = { filesystemPolicy: child.filesystemPolicy, ...ready, processDead: signals[0] === 0, grandchildDead: signals[1] === 0,
       waitAfterDispose: await bounded(child.completion, ioBudget) };
     child.closed = signals.every((signal) => signal === 0);
     return result;
@@ -203,12 +201,12 @@ async function kernelObjects() {
     }), deadline);
     const baseline = await captureChild(spawnHost(executable, args("read", hostName), { cwd: temp, env: safeEnvironment(temp), stdio: ["ignore", "pipe", "pipe"] }), deadline);
     const containerToHost = await one(executable, args("read", hostName), false);
-    const peer = await launch(request(executable, args("serve", peerName), false, [], true));
+    const peer = await launch(request(executable, args("serve", peerName), false, [], true), "native-command");
     const peerReady = await firstJson(peer);
     const containerToPeer = await one(executable, args("read", peerName), false);
     const hostToContainer = await captureChild(spawnHost(executable, args("read", peerName), { cwd: temp, env: safeEnvironment(temp), stdio: ["ignore", "pipe", "pipe"] }), deadline);
     await finish(peer);
-    return { hostReady: JSON.parse(hostOutput.trim()), peerReady, baseline, containerToHost, containerToPeer, hostToContainer,
+    return { filesystemPolicy: peer.filesystemPolicy, hostReady: JSON.parse(hostOutput.trim()), peerReady, baseline, containerToHost, containerToPeer, hostToContainer,
       limits: ["Unique fixture names only; never existing Ave pipes", "Registry query only; write isolation remains unknown", "DACL/namespace-specific observations are not universal object isolation proof"] };
   } finally { host.stdin.end(); await bounded(hostDone); }
 }
@@ -237,7 +235,7 @@ try {
     verdict = "inconclusive";
   } else throw new Error("Unknown probe");
   if (details.some((detail) => detail.error || detail.unavailable)) verdict = "inconclusive";
-} catch (error) { verdict = error instanceof ProcessIdentityError ? "inconclusive" : error.message.startsWith("session-0:") ? "unavailable" : "error"; details.push({ error: error.message }); }
+} catch (error) { verdict = error instanceof ProcessIdentityError ? "inconclusive" : error.message.startsWith("session-0:") ? "unavailable" : "error"; details.push({ filesystemPolicy: observation?.filesystemPolicy ?? null, error: error.message }); }
 finally {
   for (const resource of resources) {
     try {

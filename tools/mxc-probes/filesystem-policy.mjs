@@ -44,3 +44,20 @@ export function filesystemObservation(policy, entryVariant) {
   return { ancestorAccess: "query-enumerate-only", enumeratePaths: [...policy.enumeratePaths],
     driveRootRead: false, entryVariant };
 }
+
+export function assertEnumerationSupport(enumeratePaths, probed) {
+  if (enumeratePaths.length && probed.probes?.baseContainerSupportsEnumeratePaths !== true) {
+    throw new Error("Ancestor query/enumeration requires native PSEC 1.1 support; no drive-root read fallback");
+  }
+}
+
+export function recordFilesystemObservation(observation, enumeratePaths, entryVariant) {
+  const policy = filesystemObservation({ enumeratePaths }, entryVariant);
+  observation.filesystemPolicies ??= [];
+  if (!observation.filesystemPolicies.some((existing) => JSON.stringify(existing) === JSON.stringify(policy))) {
+    observation.filesystemPolicies.push(policy);
+  }
+  // A mixed request set has no single representative policy; keep each exact variant.
+  observation.filesystemPolicy = observation.filesystemPolicies.length === 1 ? policy : null;
+  return policy;
+}

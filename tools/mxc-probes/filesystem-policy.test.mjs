@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildProbeFilesystem, filesystemObservation } from "./filesystem-policy.mjs";
+import { assertEnumerationSupport, buildProbeFilesystem, filesystemObservation, recordFilesystemObservation } from "./filesystem-policy.mjs";
 
 const TEMP = "D:\\cc-verify\\mxc\\mxc-run-tmp\\ave-mxc-probes-fixture";
 const RUNTIME = "C:\\staged-app\\electron.exe";
@@ -26,4 +26,25 @@ test("runtime/data/system-root inputs cannot silently turn into broad root grant
   assert.throws(() => buildProbeFilesystem(RUNTIME, "D:\\", "C:\\Windows"), /drive-root/);
   assert.throws(() => buildProbeFilesystem(RUNTIME, TEMP, "C:\\Windows", ["D:\\"]), /drive-root/);
   assert.throws(() => buildProbeFilesystem(RUNTIME, TEMP, "relative"), /absolute drive/);
+});
+
+test("missing enumeration support reports its prerequisite even when base-container is unavailable", () => {
+  assert.throws(() => assertEnumerationSupport(["D:\\"], { tier: "unavailable", probes: {} }), /PSEC 1.1/);
+  assert.throws(() => assertEnumerationSupport(["D:\\"], { tier: "base-container", probes: { baseContainerSupportsEnumeratePaths: false } }), /PSEC 1.1/);
+  assert.doesNotThrow(() => assertEnumerationSupport(["D:\\"], { probes: { baseContainerSupportsEnumeratePaths: true } }));
+  assert.doesNotThrow(() => assertEnumerationSupport([], {}));
+});
+
+test("observations describe actual script and native launches without a misleading mixed summary", () => {
+  const observation = { filesystemPolicy: null, filesystemPolicies: [] };
+  const script = recordFilesystemObservation(observation, ["D:\\"], "script-file");
+  assert.deepEqual(observation.filesystemPolicy, script);
+  recordFilesystemObservation(observation, ["D:\\"], "script-file");
+  assert.equal(observation.filesystemPolicies.length, 1);
+  const native = recordFilesystemObservation(observation, ["C:\\", "D:\\"], "native-command");
+  assert.equal(observation.filesystemPolicy, null);
+  assert.deepEqual(observation.filesystemPolicies, [script, native]);
+  const kernel = {};
+  recordFilesystemObservation(kernel, ["C:\\"], "native-command");
+  assert.equal(kernel.filesystemPolicy.entryVariant, "native-command");
 });
