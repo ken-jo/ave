@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InstanceViewKey } from "../../../shared/view-key.js";
-import { mintTabId } from "./workspace-tabs.js";
+import { parseTabId } from "../../../shared/tab-id.js";
+import { mintTabId, reserveTabIds } from "./workspace-tabs.js";
 import { terminalOrdinal } from "./terminal-ordinal.js";
 import { publishLiveWebTabs, webSurfaceLocation, withdrawLiveWebTabs } from "./web-surfaces.js";
 
@@ -50,6 +51,9 @@ export interface MainSurfacesStore {
   create: (kind: MainSurfaceKind, url?: string | null, cwd?: string | null) => MainSurface;
   /** Take in a surface that moved here from a side panel. */
   adopt: (surface: MainSurface) => void;
+  /** Bring back a first-class tab no window holds any more under its own id, so the conversation recorded against it rebinds
+   * to it; undefined when the id is not a terminal or page tab. */
+  revive: (tabId: string) => MainSurface | undefined;
   /** Hand a surface out (moving to a side panel) — it is not destroyed. */
   release: (tabId: string) => MainSurface | undefined;
   /** Close a surface: forget it and remember it for "reopen closed". */
@@ -96,6 +100,17 @@ export function useMainSurfaces(): MainSurfacesStore {
     commit([...surfacesRef.current, surface.kind === "terminal" ? { ...surface, ordinal: terminalOrdinal(surface.tabId, surface.ordinal) } : surface]);
   }, [commit]);
 
+  const revive = useCallback((tabId: string) => {
+    const existing = surfacesRef.current.find((each) => each.tabId === tabId);
+    if (existing) return existing;
+    const kind = parseTabId(tabId)?.kind;
+    if (kind !== "terminal" && kind !== "browser") return undefined;
+    reserveTabIds([tabId]);
+    const surface: MainSurface = { tabId, kind, ordinal: kind === "terminal" ? terminalOrdinal(tabId) : nextMainBrowserOrdinal++, url: null, cwd: null };
+    commit([...surfacesRef.current, surface]);
+    return surface;
+  }, [commit]);
+
   const release = useCallback((tabId: string) => {
     const surface = surfacesRef.current.find((each) => each.tabId === tabId);
     if (!surface) return undefined;
@@ -132,7 +147,7 @@ export function useMainSurfaces(): MainSurfacesStore {
   }, [commit]);
 
   return useMemo(
-    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd }),
-    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd],
+    () => ({ surfaces, get, create, adopt, revive, release, close, takeLastClosed, setUrl, setCwd }),
+    [surfaces, get, create, adopt, revive, release, close, takeLastClosed, setUrl, setCwd],
   );
 }

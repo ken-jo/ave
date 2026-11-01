@@ -135,6 +135,19 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const paneTabId = holder.windowId === windowId && parseTabId(holder.tabId) !== null ? holder.tabId : undefined;
     return { ok: false, error: "session-open-in-pane", ...(paneTabId === undefined ? {} : { paneTabId }) };
   };
+  // An unarchived pane conversation stays its tab's even with no pane holding it (the tab was lost or is not restored yet);
+  // the rail would otherwise take it in beside whatever conversation is open. A closed tab's archived chat may open there.
+  const recordedPaneRefusal = (sessionId: string): SideChatOperationFailure | undefined => {
+    let row: { paneTabId?: unknown; archivedAt?: unknown } | null | undefined;
+    try {
+      row = store?.loadSessionMetadata(sessionId);
+    } catch {
+      return undefined;
+    }
+    const paneTabId = row?.paneTabId;
+    if (typeof paneTabId !== "string" || row?.archivedAt !== undefined) return undefined;
+    return { ok: false, error: "session-open-in-pane", ...(parseTabId(paneTabId) === null ? {} : { paneTabId }) };
+  };
   const approvalOwnerWindow = (event: IpcMainInvokeEvent) => {
     const owner = mainWindowForContents(event.sender);
     return owner && !owner.isDestroyed() && !event.sender.isDestroyed()
@@ -262,7 +275,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
     const pane = surface === null ? null : { windowId: senderWindow!.id, tabId: surface.tabId };
     if (pane === null && typeof p.sessionId === "string") {
-      const refusal = paneOwnershipRefusal(p.sessionId, senderWindow.id);
+      const refusal = paneOwnershipRefusal(p.sessionId, senderWindow.id) ?? recordedPaneRefusal(p.sessionId);
       if (refusal) return refusal;
     }
     const loop = pane === null ? railLoop : panes.resolve(pane.windowId, pane.tabId);
@@ -484,7 +497,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       return { ok: false as const, error: "invalid-session-id", messages: [] };
     }
     if (railLoop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active", messages: [] };
-    const refusal = paneOwnershipRefusal(sessionId, senderWindow.id);
+    const refusal = paneOwnershipRefusal(sessionId, senderWindow.id) ?? recordedPaneRefusal(sessionId);
     if (refusal) return { ...refusal, messages: [] };
     return railLoop.runSessionTransition("sidechat-load", async (lease) => {
       await abortTurnOf(railLoop);

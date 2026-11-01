@@ -13,7 +13,7 @@ export interface SavedSurface {
   /** Keep tab ids stable across launches so terminal identity survives restore. */
   tabId: string;
   ordinal: number;
-  /** A terminal's last directory (absolute), or null. Always null for a page. */
+  /** A terminal's last directory (absolute, POSIX or Windows drive), or null. Always null for a page. */
   cwd: string | null;
   /** A page's last http(s) address, or null. Always null for a terminal. */
   url: string | null;
@@ -35,6 +35,9 @@ export interface MainLayoutSnapshot {
   /** Panes whose session thumbnails were open. Older layouts restore them closed. */
   thumbnailOpenIds: string[];
   sideTabs: Record<string, SavedSurface[]>;
+  /** Every first-class terminal and page in sidebar order, shown in a pane or not. Absent in older layouts, which kept only
+   * the shown ones. */
+  openSurfaces?: SavedSurface[];
 }
 
 export type MainLayoutParse = { ok: true; layout: MainLayoutSnapshot } | { ok: false; reason: string };
@@ -46,6 +49,11 @@ export interface MainLayoutLimits {
 }
 
 const GROUP_ID = /^(main|group-[1-9]\d*)$/;
+
+/** A directory a restored shell can start in: POSIX absolute or a Windows drive path. */
+export function isAbsoluteTerminalCwd(cwd: string): boolean {
+  return cwd.startsWith("/") || /^[A-Za-z]:[\\/]/.test(cwd);
+}
 
 class Refused extends Error {}
 
@@ -84,7 +92,7 @@ function parseSurface(raw: unknown, path: string): SavedSurface {
   if (kind !== "terminal" && kind !== "browser") refuse(`${path}.kind ${JSON.stringify(kind)} is not terminal or browser`);
   if (typeof tabId !== "string" || parseTabId(tabId)?.kind !== kind) refuse(`${path}.tabId ${JSON.stringify(tabId)} is not a ${kind} tab id`);
   if (typeof ordinal !== "number" || !Number.isInteger(ordinal) || ordinal < 1) refuse(`${path}.ordinal must be a positive integer`);
-  if (cwd !== null && (kind !== "terminal" || typeof cwd !== "string" || !cwd.startsWith("/"))) refuse(`${path}.cwd must be null or a terminal's absolute path`);
+  if (cwd !== null && (kind !== "terminal" || typeof cwd !== "string" || !isAbsoluteTerminalCwd(cwd))) refuse(`${path}.cwd must be null or a terminal's absolute path`);
   if (url !== null) {
     if (kind !== "browser" || typeof url !== "string") refuse(`${path}.url must be null or a page's address`);
     let protocol: string;
@@ -107,7 +115,8 @@ function parseSurface(raw: unknown, path: string): SavedSurface {
   return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null, ...(binding === undefined ? {} : { binding }) };
 }
 
-/** Without limits validate shape only; any failed rule rejects the whole layout. */
+/** Without limits validate shape only; any failed rule rejects the whole layout, except a bad `openSurfaces` entry, which is
+ * dropped so one stale tab cannot cost every other tab. */
 export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLayoutParse {
   try {
     if (!isRecord(raw)) refuse("the layout is not an object");
@@ -151,6 +160,26 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
         return surface;
       });
     }
+    let openSurfaces: SavedSurface[] | undefined;
+    if (raw.openSurfaces !== undefined) {
+      if (!Array.isArray(raw.openSurfaces)) refuse("openSurfaces is not a list");
+      openSurfaces = [];
+      const shown = new Map(Object.values(surfaces).map((surface) => [surface.tabId, surface]));
+      for (const [index, each] of raw.openSurfaces.entries()) {
+        let surface: SavedSurface;
+        try {
+          surface = parseSurface(each, `openSurfaces[${index}]`);
+        } catch (err) {
+          if (err instanceof Refused) continue;
+          throw err;
+        }
+        // A shown surface is listed here too; it must be the same tab, and no tab is listed twice or also a side tab.
+        const pane = shown.get(surface.tabId);
+        if (pane ? pane.kind !== surface.kind : tabIds.has(surface.tabId)) continue;
+        if (openSurfaces.some((listed) => listed.tabId === surface.tabId)) continue;
+        openSurfaces.push(surface);
+      }
+    }
     return {
       ok: true,
       layout: {
@@ -161,6 +190,7 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
         panelOpenIds: [...new Set(raw.panelOpenIds as string[])],
         thumbnailOpenIds: [...new Set(thumbnailOpenIds as string[])],
         sideTabs,
+        ...(openSurfaces === undefined ? {} : { openSurfaces }),
       },
     };
   } catch (err) {

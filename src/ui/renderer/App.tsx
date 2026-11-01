@@ -559,7 +559,10 @@ export function App() {
     }
     const source = groups.groups.find((group) => getSideTabsSink(group.id)?.snapshot().some((tab) => tab.tabId === tabId));
     if (!source) {
-      statusPushToast({ severity: "error", message: t("app.paneChatUnavailable"), ttlMs: 10_000 });
+      // The tab is gone (an earlier launch's layout lost it): bring it back under its id rather than letting the conversation
+      // open as a side chat of whatever is focused.
+      if (surfaces.revive(tabId) && openWorkspaceSurface(tabId)) setPaneChatOpen(tabId, true);
+      else statusPushToast({ severity: "error", message: t("app.paneChatUnavailable"), ttlMs: 10_000 });
       return;
     }
     surfaceMoves.tabToMain(source.id, tabId, { paneId: groups.focusedId, target: "center" });

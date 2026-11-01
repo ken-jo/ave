@@ -74,6 +74,35 @@ describe("parseMainLayout", () => {
     expect(refused((raw) => { raw.surfaces = { "group-8": raw.surfaces["group-3"] }; })).toMatch(/surfaces names pane "group-8"/);
   });
 
+  it("keeps first-class tabs no pane shows, dropping only the entries it cannot restore", () => {
+    const hidden = { kind: "browser", tabId: "browser:0000000a-6", ordinal: 2, cwd: null, url: "https://example.com/b" } as const;
+    const windows = { kind: "terminal", tabId: "terminal:0000000a-7", ordinal: 3, cwd: "C:\\work\\repo", url: null } as const;
+    const shown = layout().surfaces["group-3"]!;
+    const saved = { ...layout(), openSurfaces: [shown, hidden, windows] };
+    expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
+    const raw = {
+      ...layout(),
+      openSurfaces: [
+        hidden,
+        { ...hidden, ordinal: 9 },
+        { ...windows, cwd: "relative\\dir" },
+        { ...shown, kind: "browser", tabId: "browser:0000000a-4" },
+        layout().sideTabs.main![0],
+        "junk",
+        windows,
+      ],
+    };
+    expect(parseMainLayout(raw, LIMITS)).toEqual({ ok: true, layout: { ...layout(), openSurfaces: [hidden, windows] } });
+    expect(refused((each) => { each.openSurfaces = {}; })).toBe("openSurfaces is not a list");
+  });
+
+  it("accepts a Windows drive path as a terminal's directory", () => {
+    const saved = layout();
+    saved.surfaces["group-3"]!.cwd = "D:/work/repo";
+    expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
+    expect(refused((raw) => { raw.surfaces["group-3"].cwd = "C:relative"; })).toMatch(/cwd must be null or a terminal's absolute path/);
+  });
+
   it("checks only the shape without the window's limits", () => {
     const raw = structuredClone(layout()) as unknown as Record<string, any>;
     raw.tree.children[0].chatGroupId = "group-2";

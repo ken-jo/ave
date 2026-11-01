@@ -1008,6 +1008,20 @@ describe("pane chats are their own conversations", () => {
     expect(rail.loadSession).not.toHaveBeenCalled();
   });
 
+  it("keeps an unarchived pane conversation out of the rail when no pane holds it", async () => {
+    const { rail, store } = setup({ [STORED_PANE_SESSION]: [] }, { [STORED_PANE_SESSION]: PANE_A.tabId });
+    await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), STORED_PANE_SESSION))
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId, messages: [] });
+    await expect(sendFrom({ input: "rail", sessionId: STORED_PANE_SESSION, originSessionId: RAIL_SESSION }))
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId });
+    expect(rail.loadSession).not.toHaveBeenCalled();
+    expect(rail.runTurn).not.toHaveBeenCalled();
+    expect(store.metadata.get(STORED_PANE_SESSION)).toEqual({ paneTabId: PANE_A.tabId });
+    // A closed tab's archived chat still opens in the rail.
+    store.metadata.set(STORED_PANE_SESSION, { paneTabId: PANE_A.tabId, archivedAt: "2026-11-02T00:00:00Z" });
+    await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), STORED_PANE_SESSION)).resolves.toMatchObject({ ok: true });
+  });
+
   it("does not offer another window's pane as a refusal navigation target", async () => {
     const { pane } = setup();
     await sendFrom({ input: "page", surface: PANE_A });

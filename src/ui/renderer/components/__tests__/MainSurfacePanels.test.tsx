@@ -107,6 +107,21 @@ describe("useMainSurfaces", () => {
     unmount();
   });
 
+  it("brings a lost first-class tab back under its own id, and only a terminal or page tab", () => {
+    const { result, unmount } = renderHook(() => useMainSurfaces());
+    let revived: MainSurface | undefined;
+    act(() => { revived = result.current.revive("browser:0badc0de-41"); });
+    expect(revived).toMatchObject({ tabId: "browser:0badc0de-41", kind: "browser", url: null, cwd: null });
+    expect(result.current.get("browser:0badc0de-41")).toEqual(revived);
+    // Asking again finds the same tab instead of adding a second.
+    act(() => { expect(result.current.revive("browser:0badc0de-41")).toEqual(revived); });
+    expect(result.current.surfaces).toHaveLength(1);
+    act(() => { expect(result.current.revive("files:0badc0de-42")).toBeUndefined(); });
+    act(() => { expect(result.current.revive("not a tab")).toBeUndefined(); });
+    expect(result.current.surfaces).toHaveLength(1);
+    unmount();
+  });
+
   it("keeps a main browser surface's guest alive while the store lists it", async () => {
     const { result, unmount } = renderHook(() => useMainSurfaces());
     let page!: MainSurface;
