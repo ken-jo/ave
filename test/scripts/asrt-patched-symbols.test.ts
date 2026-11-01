@@ -202,7 +202,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     const byName = functionBody(manager, /\nasync function decideByName\(/u);
     // The same `encodedCommand` the deny path hands recordOutboundDeny.
     expect(byName).toMatch(/recordOutboundDeny\(host, port, reason, encodedCommand\)/u);
-    // Decoded once; the per-command lists (0.0.80) are looked up by the same key.
+    // Decoded once; the per-command lists are looked up by the same key.
     expect(byName).toMatch(
       /const attributionKey = encodedCommand\s+\? decodeSandboxedCommand\(encodedCommand\)\s+: undefined;/u,
     );
@@ -217,7 +217,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     const resolved = functionBody(manager, /\nasync function confirmResolvedDestination\(/u);
     expect(resolved).toMatch(/phase: 'resolved',\s+addresses: plan\.addresses\.map\(a => a\.address\),\s+resolution: plan\.viaUpstream \? 'upstream' : 'pinned',/u);
     const ask = functionBody(manager, /\nasync function askSandboxCallback\(/u);
-    // 0.0.80 allows only on a literal `true` ; the patch must not loosen it.
+    // The runtime allows only on a literal `true`; the patch must not loosen it.
     expect(ask).toMatch(/if \(answer === true\)/u);
     // When it throws, the request is refused.
     expect(ask).toMatch(/catch \(error\) \{\n[\s\S]{0,200}?return denied\('permission prompt failed'\);\n\s+\}\n\}/u);

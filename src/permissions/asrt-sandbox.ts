@@ -1,4 +1,4 @@
-import { assertWindowsProfileReadAbsent, WindowsProfileReadError } from "./windows-profile-read.js";
+import { assertWindowsProfileReadAbsent, WindowsProfileReadError, WindowsProfileIsolationVerificationError } from "./windows-profile-read.js";
 
 
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -1876,15 +1876,27 @@ export async function initializeAsrtSandbox(
       assertWindowsProfileReadAbsent(SandboxManager.getWindowsProfileRead());
       // The snapshot precedes session registration. Once initialize returns,
       // the holder is registered and blocks a new grant while we check live state.
+      let profileState: string;
       try {
         const runtime = await import("@anthropic-ai/sandbox-runtime");
         const profile = await runtime.getWindowsProfileReadStatusAsync({
           srtWin: runtime.resolveSrtWin(config.windows?.srtWin),
         });
-        if (profile.state !== "none") throw new WindowsProfileReadError();
+        profileState = profile.state;
       } catch (cause) {
-        if (cause instanceof WindowsProfileReadError) throw cause;
-        throw new WindowsProfileReadError({ cause });
+        throw new WindowsProfileIsolationVerificationError({ cause });
+      }
+      switch (profileState) {
+        case "none": break;
+        case "current":
+        case "unknown":
+        case "outdated":
+        case "incomplete":
+          throw new WindowsProfileReadError();
+        default:
+          throw new WindowsProfileIsolationVerificationError({
+            cause: new Error("The sandbox runtime reported an unexpected profile read status."),
+          });
       }
     }
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.

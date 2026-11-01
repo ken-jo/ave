@@ -36,6 +36,7 @@ import { win32SystemBinary } from "../../shared/ave-home.js";
 import * as windowsStampTargets from "../windows-stamp-targets.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
+import { WindowsProfileReadError, WindowsProfileReadContractError, WindowsProfileIsolationVerificationError } from "../windows-profile-read.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async original => {
   const actual = await original<typeof import("@anthropic-ai/sandbox-runtime")>();
@@ -2262,6 +2263,7 @@ describe("Windows inherited profile read grant", () => {
     { snapshot: "absent", live: "outdated" },
     { snapshot: "absent", live: "incomplete" },
     { snapshot: "absent", live: "read-error" },
+    { snapshot: "absent", live: "unexpected" },
   ] as const)("checks snapshot $snapshot and live $live before publishing confinement", async ({ snapshot, live }) => {
     await resetAsrtSandbox();
     const original = process.platform;
@@ -2329,8 +2331,19 @@ describe("Windows inherited profile read grant", () => {
         expect(isAsrtSandboxActive()).toBe(true);
         expect(reset).not.toHaveBeenCalled();
       } else {
-        await expect(result).rejects.toMatchObject({ name: "WindowsProfileReadError", code: "srt-win-profile-read-granted",
-          ...(live === "read-error" ? { cause: readError } : {}) });
+        if (snapshot === undefined) {
+          await expect(result).rejects.toBeInstanceOf(WindowsProfileReadContractError);
+          await expect(result).rejects.toMatchObject({ code: "srt-win-profile-read-state-missing",
+            message: "The sandbox runtime did not report its profile read state." });
+        } else if (live === "read-error" || live === "unexpected") {
+          await expect(result).rejects.toBeInstanceOf(WindowsProfileIsolationVerificationError);
+          await expect(result).rejects.toMatchObject({ code: "srt-win-profile-isolation-unverified",
+            message: "Could not verify profile isolation.",
+            cause: live === "read-error" ? readError : expect.any(Error) });
+        } else {
+          await expect(result).rejects.toBeInstanceOf(WindowsProfileReadError);
+          await expect(result).rejects.toMatchObject({ code: "srt-win-profile-read-granted" });
+        }
         expect(isAsrtSandboxActive()).toBe(false);
         await expect(wrapToolCommand("echo blocked", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/);
         expect(wrap).not.toHaveBeenCalled();

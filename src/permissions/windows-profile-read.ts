@@ -8,6 +8,25 @@ export class WindowsProfileReadError extends Error {
   }
 }
 
+export class WindowsProfileReadContractError extends Error {
+  readonly code = "srt-win-profile-read-state-missing";
+
+  constructor() {
+    super("The sandbox runtime did not report its profile read state.");
+    this.name = "WindowsProfileReadContractError";
+  }
+}
+
+export class WindowsProfileIsolationVerificationError extends Error {
+  readonly code = "srt-win-profile-isolation-unverified";
+
+  constructor(options: ErrorOptions) {
+    super("Could not verify profile isolation.", options);
+    this.name = "WindowsProfileIsolationVerificationError";
+  }
+}
+
 export function assertWindowsProfileReadAbsent(state: "granted" | "absent" | undefined): void {
+  if (state === undefined) throw new WindowsProfileReadContractError();
   if (state !== "absent") throw new WindowsProfileReadError();
 }
