@@ -13,10 +13,10 @@ beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isP
 
 const spawnConfinedChild = vi.hoisted(() => vi.fn());
 const spawnNativeChild = vi.hoisted(() => vi.fn());
-vi.mock("../../../permissions/mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: spawnNativeChild }));
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/confined-child.js")>()),
   spawnConfinedChild,
+  spawnMxcConfinedChild: spawnNativeChild,
 }));
 
 /** Sandbox liveness is controlled here; shared-config registration is inert because spawns are recorded. */
@@ -113,7 +113,6 @@ import {
 } from "../child-loopback-link.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import { PluginChildTerminationUnverifiedError, type ChildLink } from "../plugin-child-transport.js";
-import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import {
   FRAME_BYTES_MAX,
   HOSTAPI_PATH_CONTRACTS,
@@ -127,7 +126,7 @@ import { createSandboxProcessHome } from "../../../permissions/sandbox-process-h
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
-import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
+import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 
 const PLUGIN_ID = "sampleassistant";
@@ -914,18 +913,13 @@ function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () 
   };
 }
 
-/** The planner binds the request to the derived command and cwd; the adapter refuses anything else. */
-function admittedRequest(intent: { command: string; args: readonly string[]; cwd: string }) {
-  return { ...createMxcExtensionRequest(), command: windowsCommandLine(intent.command, intent.args), workingDirectory: intent.cwd };
-}
 
 describe("native factory failures with unverified termination", () => {
   const cleanups: Array<() => void> = [];
   function nativeSpec(registration: { assertCurrent(): void; dispose(): void; quarantine(reason: string): void; terminating(): void }) {
     const { dir, entryPath } = writePluginModule();
     const release = vi.fn();
-    const prepare = vi.fn(async (intent: { command: string; args: readonly string[]; cwd: string }) => ({
-      request: admittedRequest(intent), signal: new AbortController().signal, assertCurrent() {}, release }));
+    const prepare = vi.fn(async () => nativePluginLaunch({ release }));
     return { dir, release, spec: { manifest: MANIFEST, launch: { kind: "entry" as const, entryPath }, prepareMxcChild: prepare,
       registerSandboxEnvelope: () => registration } };
   }
@@ -954,8 +948,8 @@ describe("native factory failures with unverified termination", () => {
       dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
     const cleanup = new MxcProcessCleanupError("Termination unverified");
     const completion = new Promise<never>(() => {});
-    spawnNativeChild.mockReset().mockResolvedValue({ id: 42, stdin: new PassThrough(), stdout: new PassThrough(),
-      stderr: new PassThrough(), completion, dispose: vi.fn(async () => { throw cleanup; }) });
+    spawnNativeChild.mockReset().mockResolvedValue(admittedMxcChild({ id: 42, stdin: new PassThrough(), stdout: new PassThrough(),
+      stderr: new PassThrough(), completion, dispose: vi.fn(async () => { throw cleanup; }) } as never));
     try {
       const { spec, release, dir } = nativeSpec(registration);
       cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -985,20 +979,21 @@ describe("construct negotiates the host protocol", () => {
     const release = vi.fn();
     const unregister = vi.fn();
     const quarantine = vi.fn();
-    const prepare = vi.fn(async (intent: { command: string; args: readonly string[]; cwd: string }) => ({
-      request: admittedRequest(intent), signal: new AbortController().signal, assertCurrent() {}, release }));
-    const legacyMarker = vi.fn();
-    spawnNativeChild.mockReset().mockResolvedValue({ id: 42, stdin: input, stdout: output, stderr, completion, dispose });
+    const prepare = vi.fn(async () => nativePluginLaunch({ release }));
+    const withdraw = vi.fn();
+    const marker = vi.fn((_confinement: string) => withdraw);
+    spawnNativeChild.mockReset().mockResolvedValue(admittedMxcChild({ id: 42, stdin: input, stdout: output, stderr, completion, dispose } as never));
     spawnConfinedChild.mockClear();
     try {
       const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath },
-        prepareMxcChild: prepare, onChildSpawned: legacyMarker,
+        prepareMxcChild: prepare, onChildSpawned: marker,
         registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose: unregister, quarantine, terminating() {} }) });
       const instance = await factory(hostContext(fakeHostApi(), roots.context));
       expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ pluginId: PLUGIN_ID, command: process.execPath,
         cwd: roots.context.pluginRoot, envelope: expect.objectContaining({ write: expect.arrayContaining([roots.context.pluginDataDir]) }) }));
       expect(spawnNativeChild).toHaveBeenCalledOnce(); expect(spawnConfinedChild).not.toHaveBeenCalled();
-      expect(legacyMarker).not.toHaveBeenCalled();
+      // Published once, after the handshake; withdrawn when termination begins.
+      expect(marker.mock.calls).toEqual([["windows-mxc"]]); expect(withdraw).not.toHaveBeenCalled();
       await expect(instance.handlers.pilot_echo!({ text: "native" })).resolves.toMatchObject({ payload: { text: "native" } });
       if (cleanupFailure) {
         const failure = await Promise.resolve().then(() => instance.stop!()).catch((error: unknown) => error);
@@ -1012,7 +1007,30 @@ describe("construct negotiates the host protocol", () => {
         expect(quarantine).not.toHaveBeenCalled();
       }
       expect(dispose).toHaveBeenCalledOnce();
+      expect(withdraw).toHaveBeenCalledOnce();
     } finally { service.hostGone(); finish({ exitCode: 0, timedOut: false }); roots.remove(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("never publishes windows-mxc for a native child that began terminating before its handshake finished", async () => {
+    const roots = spawnableRoots();
+    const { dir, entryPath } = writePluginModule();
+    const input = new PassThrough(), output = new PassThrough();
+    const service = servePluginChild(input, output);
+    // The supervisor already reported exit, so termination begins at attach; disposal stays pending, which keeps
+    // the streams up and lets the handshake complete regardless.
+    const dispose = vi.fn(() => new Promise<void>(() => {}));
+    spawnNativeChild.mockReset().mockResolvedValue(admittedMxcChild({ id: 42, stdin: input, stdout: output, stderr: new PassThrough(),
+      completion: Promise.resolve({ exitCode: 0, timedOut: false }), dispose } as never));
+    const marker = vi.fn(() => () => {});
+    const terminating = vi.fn();
+    try {
+      const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath },
+        prepareMxcChild: async () => nativePluginLaunch(), onChildSpawned: marker,
+        registerSandboxEnvelope: () => ({ assertCurrent() {}, dispose() {}, quarantine() {}, terminating }) });
+      await factory(hostContext(fakeHostApi(), roots.context));
+      expect(dispose).toHaveBeenCalledOnce(); expect(terminating).toHaveBeenCalledOnce();
+      expect(marker).not.toHaveBeenCalled();
+    } finally { service.hostGone(); roots.remove(); rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("refuses a factory start before home privacy approval and reaches the child spawn after approval", async () => {
@@ -1802,7 +1820,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
       manifest,
       childEntryPath: pluginChildEntryPath(),
       launch: { kind: "entry", entryPath },
-      onChildSpawned: (confinement) => confinements.push(confinement),
+      onChildSpawned: (confinement) => { confinements.push(confinement); },
     });
     const hostApi = fakeHostApi();
     // Keep host config and child construction snapshots aligned for the same incarnation.

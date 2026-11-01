@@ -70,3 +70,17 @@ export function assertMxcHolderPrivateDirectories(input: {
     }
   }
 }
+
+/** Holder adapters (rows 3–5) place HOME and temp in `<AVE_HOME>\mxc-staging\<opaque-id>`: two distinct direct children
+ * of one per-holder staging directory whose name is 32 lowercase hex digits (no plugin ID or other name). Compared
+ * exactly, with no case folding or normalization: the planner forms these paths with `win32.join` and passes them on
+ * unchanged. Returns the staging directory, which the adapter grants as the holder's private write root. */
+export function assertMxcHolderStaging(input: { readonly aveHome: string; readonly home: string; readonly temp: string }): string {
+  const staging = winPath.dirname(input.home);
+  const id = winPath.basename(staging);
+  if (input.home === input.temp || winPath.dirname(input.temp) !== staging || !/^[0-9a-f]{32}$/u.test(id)
+      || staging !== winPath.join(input.aveHome, "mxc-staging", id)) {
+    throw new MxcProcessContractError("Container HOME and temp must be distinct children of <AVE_HOME>\\mxc-staging\\<opaque-id>");
+  }
+  return staging;
+}

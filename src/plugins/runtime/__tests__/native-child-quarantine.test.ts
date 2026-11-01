@@ -7,19 +7,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { makeTestPluginRuntime, servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
-import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
+import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 import { createOutOfProcessPluginFactory } from "../../isolation/out-of-process-plugin.js";
 import { servePluginChild } from "../../isolation/plugin-child-main.js";
-import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import type { PluginManifest } from "../../types.js";
 import { MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
 import { pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../../isolation/out-of-process-plugin.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import type { PluginRuntime } from "../../runtime.js";
 
+/** Produces the owned process row-2 admission would return; the mock below wraps it as the admitted holder. */
 const spawnNativeChild = vi.hoisted(() => vi.fn());
-vi.mock("../../../permissions/mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: spawnNativeChild }));
+vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
+  spawnMxcConfinedChild: async (spec: unknown) => admittedMxcChild(await spawnNativeChild(spec)),
+}));
 
 const PLUGIN_ID = "nativequarantine";
 
@@ -51,24 +54,22 @@ function routeNative(runtime: PluginRuntime, release: () => void, admitted: () =
   const routing = runtime as unknown as {
     importPluginFactoryForLifecycle(...args: unknown[]): Promise<{ createPlugin: unknown; arm: string }>;
     registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): never;
+    recordChildSpawnConfinement(createPlugin: unknown, confinement: string): () => void;
   };
   const original = routing.importPluginFactoryForLifecycle.bind(routing);
   vi.spyOn(routing, "importPluginFactoryForLifecycle").mockImplementation(async (...args: unknown[]) => {
     await original(...args);
     const [, source, manifest] = args as [string, { resolvedEntryPath: string }, PluginManifest];
-    return {
-      arm: "child",
-      createPlugin: createOutOfProcessPluginFactory({
+    const createPlugin = createOutOfProcessPluginFactory({
         manifest,
+        // The runtime's own Doctor record, keyed by this routed factory as the real wiring keys it.
+        onChildSpawned: (confinement) => routing.recordChildSpawnConfinement(createPlugin, confinement),
         launch: { kind: "entry", entryPath: source.resolvedEntryPath },
         registerSandboxEnvelope: (paths, pluginRoot, pluginDataDir) =>
           routing.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
-        prepareMxcChild: async (intent) => (await admitted(), {
-          request: { ...createMxcExtensionRequest(), command: windowsCommandLine(intent.command, intent.args), workingDirectory: intent.cwd },
-          signal: new AbortController().signal, assertCurrent() {}, release,
-        }),
-      }),
-    };
+        prepareMxcChild: async () => (await admitted(), nativePluginLaunch({ release })),
+      });
+    return { arm: "child", createPlugin };
   });
 }
 
@@ -171,6 +172,35 @@ describe("native plugin child quarantine through the runtime", () => {
     expect(spawnNativeChild).toHaveBeenCalledTimes(3);
     await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2));
     await expect(runtime.call("native_quarantine_ping")).resolves.toBe("pong");
+  });
+
+  it("reports windows-mxc only after the handshake and withdraws it when the child begins terminating", async () => {
+    await installPlugin(PONG);
+    const children = [ownedChild(0), ownedChild(0)];
+    spawnNativeChild.mockReset().mockImplementation(async () => children[spawnNativeChild.mock.calls.length - 1]!.owned);
+    const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+    const confinement = () => runtime.listPluginCards().find((card) => card.id === PLUGIN_ID)?.confinement;
+    routeNative(runtime, vi.fn());
+    await runtime.startAll();
+    expect(confinement()).toBe("windows-mxc");
+    // The child's own exit is a revocation of its authority: the marker leaves at once, before disposal settles.
+    children[0]!.finish({ exitCode: 0, timedOut: false });
+    await vi.waitFor(() => expect(children[0]!.dispose).toHaveBeenCalled());
+    expect(confinement()).toBe("not-spawned");
+    // A replacement's handshake publishes its own marker; the old withdrawal cannot clear it.
+    await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
+    expect(confinement()).toBe("windows-mxc");
+  });
+
+  it("never reports a native child whose bring-up failed", async () => {
+    await installPlugin(`export default async function createPlugin() { throw new Error("construct refused"); }`);
+    const child = ownedChild(0);
+    spawnNativeChild.mockReset().mockResolvedValue(child.owned);
+    const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+    routeNative(runtime, vi.fn());
+    await runtime.startAll();
+    expect(spawnNativeChild).toHaveBeenCalledOnce();
+    expect(runtime.listPluginCards().find((card) => card.id === PLUGIN_ID)?.confinement).toBe("not-spawned");
   });
 
   it("does not quarantine a native stop whose disposal takes five seconds", async () => {

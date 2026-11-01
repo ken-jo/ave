@@ -725,11 +725,13 @@ export interface OutOfProcessPluginSpec {
   readonly childEntryPath?: string;
   /** Internal backend-plan integration. Absent until the policy owner admits this holder;
    * the existing path stays authoritative otherwise. Never infer readiness from the OS or a PID.
-   * The planner must bind the exact command, cwd and captured envelope, and own revocation.
-   * `request.command` must be `windowsCommandLine(intent.command, intent.args)` and `request.workingDirectory`
-   * must be `intent.cwd` verbatim: no trailing separator, case change, forward slashes or realpath. The
-   * adapter compares both exactly and refuses anything else. Capability publication remains with that
-   * planner, after native spawn and protocol setup. Requires `registerSandboxEnvelope`. */
+   * The planner supplies the holder's staging HOME/temp (`<AVE_HOME>\mxc-staging\<opaque-id>`), the captured
+   * filesystem ownership, the readiness probe and revocation. The command, arguments, cwd, environment and
+   * grants are the host's, from this intent and the envelope; the spawn goes through row 2's admitted
+   * `spawnMxcConfinedChild`, whose request forms `command` with `windowsCommandLine(intent.command, intent.args)`
+   * and passes `intent.cwd` verbatim. The adapter compares the measured request with the intent exactly and
+   * refuses anything else. `windows-mxc` is published through `onChildSpawned` after native spawn and the
+   * protocol handshake, and withdrawn when termination begins. Requires `registerSandboxEnvelope`. */
   readonly prepareMxcChild?: (intent: {
     readonly pluginId: string;
     readonly command: string;
@@ -755,9 +757,11 @@ export interface OutOfProcessPluginSpec {
    * cannot replace, re-spawn or terminate it.
    */
   readonly observeChild?: (child: ObservedPluginChild) => void;
-  /** Told the wrap a child was spawned under, once, the moment the spawn returns; before the grant re-check, so a construction that fails after a child existed still reports
-   * that child's confinement. Not called when no child was spawned. The runtime records it for the Doctor (`PluginConfinementReport`); it can read a value and nothing more. */
-  readonly onChildSpawned?: (confinement: SpawnConfinement) => void;
+  /** Told the confinement a child runs under, once. The existing path reports the wrap the moment the spawn returns, before the grant re-check, so a construction
+   * that fails after a child existed still reports that child's confinement. A native child reports `windows-mxc` only after the native spawn AND the protocol
+   * handshake succeed (never for a child that died first), and calls the returned function when it begins terminating, which withdraws the marker. Not
+   * called when no child was spawned. The runtime records it for the Doctor (`PluginConfinementReport`); it can read a value and nothing more. */
+  readonly onChildSpawned?: (confinement: SpawnConfinement) => (() => void) | void;
 }
 
 /** The host protocol version this plugin's connection speaks (§3.2). Its declared, served `requires.hostProtocol`. Omission and unserved
@@ -811,6 +815,9 @@ export function createOutOfProcessPluginFactory(
     const registration = spec.registerSandboxEnvelope?.(chosenPaths, context.pluginRoot, context.pluginDataDir);
     // Both launch paths receive the same captured envelope used by the effect boundary.
     let child: ConfinedPluginChild | MxcPluginChild | undefined;
+    // A native child's `windows-mxc` marker is published only after the handshake and withdrawn when it begins terminating.
+    let nativeRevoked = false;
+    let withdrawConfinement: (() => void) | undefined;
     try {
       if (spec.prepareMxcChild) {
         const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot };
@@ -818,14 +825,21 @@ export function createOutOfProcessPluginFactory(
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.
         const native = await spawnMxcPluginChild({
-          request: launch.request,
-          signal: launch.signal,
-          release: () => launch.release(),
+          ...launch,
           assertCurrent: () => {
             registration?.assertCurrent();
             launch.assertCurrent();
           },
-        }, intent, () => registration?.terminating());
+        }, {
+          ...intent,
+          envelope,
+          floorPierces: envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
+          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+        }, () => {
+          nativeRevoked = true;
+          withdrawConfinement?.();
+          registration?.terminating();
+        });
         child = native;
         // Whoever starts termination (teardown, a transport fault, revocation or the child's own exit), the
         // registration learns at once, and an unverified result quarantines it without waiting for onClosed,
@@ -924,8 +938,12 @@ export function createOutOfProcessPluginFactory(
       registration?.dispose();
       throw error;
     }
-    // The channel and `teardown` stay here: the lifecycle gets the instance, whose `stop` is its one hand on the child's lifetime.
-    if (spec.prepareMxcChild) nativeInstances.add(session.instance);
+    if (spec.prepareMxcChild) {
+      // Native spawn and transport setup have both succeeded; a child that began terminating meanwhile is never reported.
+      if (!nativeRevoked) withdrawConfinement = spec.onChildSpawned?.("windows-mxc") ?? undefined;
+      // The channel and `teardown` stay here: the lifecycle gets the instance, whose `stop` is its one hand on the child's lifetime.
+      nativeInstances.add(session.instance);
+    }
     return session.instance;
   };
   if (spec.prepareMxcChild) nativeFactories.add(factory);

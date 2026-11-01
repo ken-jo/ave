@@ -1491,14 +1491,32 @@ abstract class PluginRuntimeState {
   /** A refused replacement records attempt diagnostics while the loaded incumbent keeps serving. */
   protected readonly lastAttemptRefusal = new Map<string, PluginAttemptRefusal>();
   /** Confinement belongs to one routed factory attempt; an unspawned factory has no child confinement. */
-  private readonly childSpawnConfinements = new WeakMap<RuntimePluginFactory, SpawnConfinement>();
+  private readonly childSpawnConfinements = new WeakMap<RuntimePluginFactory, { readonly confinement: SpawnConfinement }>();
 
-  protected recordChildSpawnConfinement(createPlugin: RuntimePluginFactory, confinement: SpawnConfinement): void {
-    this.childSpawnConfinements.set(createPlugin, confinement);
+  /** Returns the withdrawal for this record only, so a stale child's revocation cannot clear a later child's marker. */
+  protected recordChildSpawnConfinement(createPlugin: RuntimePluginFactory, confinement: SpawnConfinement): () => void {
+    const record = Object.freeze({ confinement });
+    this.childSpawnConfinements.set(createPlugin, record);
+    return () => {
+      if (this.childSpawnConfinements.get(createPlugin) === record) this.childSpawnConfinements.delete(createPlugin);
+    };
   }
 
   protected confinementReport(createPlugin: RuntimePluginFactory): PluginConfinementReport {
-    return this.childSpawnConfinements.get(createPlugin) ?? "not-spawned";
+    return this.childSpawnConfinements.get(createPlugin)?.confinement ?? "not-spawned";
+  }
+
+  /** Which routed attempt produced a loaded instance, so its card reads the live marker: a withdrawn one reports `"not-spawned"`. */
+  private readonly instanceConfinementSources = new WeakMap<RuntimePlugin, RuntimePluginFactory>();
+
+  protected loadedConfinement(instance: RuntimePlugin, createPlugin: RuntimePluginFactory): PluginConfinementReport {
+    this.instanceConfinementSources.set(instance, createPlugin);
+    return this.confinementReport(createPlugin);
+  }
+
+  protected liveConfinement(loaded: LoadedPlugin): PluginConfinementReport {
+    const source = this.instanceConfinementSources.get(loaded.instance);
+    return source ? this.confinementReport(source) : loaded.confinement;
   }
   protected readonly disabledPluginIds = new Set<string>();
   /** Inactive means model exposure is off; absence from this set defaults to active. */
@@ -4069,7 +4087,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       drainHostApiOperations: drainOperations,
       lifecycleHookScope,
       arm: routed.arm,
-      confinement: this.confinementReport(createPlugin),
+      confinement: this.loadedConfinement(instance, createPlugin),
     });
     // Ownership transfers at coordinator commit; the lifecycle await can still reject before or after runtime publication.
     let rejectedAfterCommit: { error: unknown } | undefined;
@@ -4762,7 +4780,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         drainHostApiOperations: drainOperations,
         lifecycleHookScope,
         arm: routed.arm,
-        confinement: this.confinementReport(createPlugin),
+        confinement: this.loadedConfinement(instance, createPlugin),
       });
       // Shutdown may release a constructed candidate while its durable commit is pending; closed admission prevents publication.
       if (this.isShuttingDown()) {
@@ -5327,7 +5345,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       drainHostApiOperations: drainOperations,
       lifecycleHookScope,
       arm: routed.arm,
-      confinement: this.confinementReport(createPlugin),
+      confinement: this.loadedConfinement(instance, createPlugin),
     });
     // Registration transfers root, incarnation, and instance ownership to the loaded plugin.
     this.handOverAttempt(resources);
@@ -6200,7 +6218,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       drainHostApiOperations: drainReplacementHostApiOperations,
       lifecycleHookScope: replacementLifecycleHookScope,
       arm: routed.arm,
-      confinement: this.confinementReport(createPlugin),
+      confinement: this.loadedConfinement(instance, createPlugin),
     });
     // Coordinator commit transfers ownership of this exact candidate.
     let committed = false;
@@ -7083,7 +7101,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       const loaded = this.plugins.get(pluginId);
       if (loaded) {
         card.arm = loaded.arm;
-        card.confinement = loaded.confinement;
+        card.confinement = this.liveConfinement(loaded);
       }
       // A refused replacement is attempt state; the incumbent stays loaded.
       const refusal = this.lastAttemptRefusal.get(pluginId);

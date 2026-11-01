@@ -108,11 +108,15 @@ MCP stdio, hooks) is refused with the holder-neutral `native-entry-required`
 (`MxcNativeEntryRequiredError`). The native entry opts in with
 `{ backend: "mxc" }` and rechecks readiness.
 
-The plugin-child adapter (row 3) checks that `request.command` equals the shared
-Windows command-line helper's output for its command and arguments, and that the
-folded cwd matches. The request builder therefore forms `command` with exactly
-that per-argument quoting (`quoteWindowsArgument` joined by spaces, the same
-algorithm as the helper); it never uses a probe's quoting.
+The plugin-child adapter (row 3) spawns only through `spawnMxcConfinedChild`. It
+supplies the host-derived command, arguments, cwd, environment and envelope
+grants itself, and takes only the staging HOME/temp, the captured ownership, the
+probe and revocation from the planner. On the request that admission measures,
+it checks that `request.command` equals `windowsCommandLine(command, args)` and
+that `request.workingDirectory` equals the derived cwd. Both comparisons are
+exact, with no case folding or normalization. The request builder therefore
+forms `command` with that helper (`quoteWindowsArgument` joined by spaces) and
+passes the cwd through verbatim; it never uses a probe's quoting.
 
 The confinement a holder reports is `windows-mxc` (`SpawnConfinement`, and so
 `PluginConfinementReport`). The holder adapter reports it only after the native

@@ -1,19 +1,31 @@
+import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
-import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
+import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
+import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../../permissions/confined-child.js";
+import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
+import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import { windowsCommandLine } from "../../shared/windows-command-line.js";
+import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 
 const log = createLogger("mxc-plugin-child");
 
-/** Host-owned admission, never supplied by a manifest or a child message. Policy construction belongs to the backend planner. */
+/** The backend planner's part of one incarnation's admission, never supplied by a manifest or a child message. The command,
+ * arguments, cwd, environment and grants are not here: the adapter derives them from the host's intent and envelope. */
 export interface MxcPluginChildLaunch {
-  readonly request: ContainerRequest;
+  /** `<AVE_HOME>\mxc-staging\<opaque-id>\…`, see `assertMxcHolderStaging`. */
+  readonly home: string;
+  readonly temp: string;
+  /** Captured by the host from the owning incarnation. Its write roots must contain the staging directory and every
+   * envelope write root, or row-2 admission refuses the spawn. */
+  readonly filesystemOwnership: MxcExtensionFilesystemOwnership;
+  readonly probe: MxcConfinedChildSpec["probe"];
   readonly signal: AbortSignal;
   assertCurrent(): void;
-  /** Release the incarnation's policy, private home and egress lease only after verified termination. */
+  /** Release the planner's own state (staging tree, ownership capture) only after verified termination. */
   release(): void | Promise<void>;
 }
 
@@ -102,13 +114,16 @@ export interface MxcPluginChildIntent {
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
+  /** The SAME envelope the dispatch table checks delegated workers against. */
+  readonly envelope: DelegatedWorkerConfinement;
+  readonly floorPierces: readonly string[];
+  readonly baseEnv: NodeJS.ProcessEnv;
 }
 
-/** The planner binds grants to the envelope (row 2); this slice pins only what it derived itself.
- * Both values are compared exactly. The trusted planner receives them from this intent and must pass them
- * through unchanged, so any rewriting (case folding, normalization, realpath) is a contract violation. A
- * JavaScript case fold would also disagree with the NTFS upcase table and could equate distinct directories. */
-export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Omit<MxcPluginChildIntent, "pluginId">): void {
+/** Both values are compared exactly against the request admission measured. The request builder forms `command` with
+ * `windowsCommandLine` and passes the cwd through, so any rewriting (case folding, normalization, realpath) is a contract
+ * violation. A JavaScript case fold would also disagree with the NTFS upcase table and could equate distinct directories. */
+export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Pick<MxcPluginChildIntent, "command" | "args" | "cwd">): void {
   if (request.command !== windowsCommandLine(intent.command, intent.args)) {
     throw new MxcProcessContractError("Admitted plugin request does not run the derived command");
   }
@@ -117,28 +132,71 @@ export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Omi
   }
 }
 
-/** No retries or fallback after admission. The common primitive already tracks its supervisor for shutdown. */
+/** Admission is row 2's (`spawnMxcConfinedChild`): start guard, plan readiness, filesystem ranking, sibling-root and
+ * executable nesting checks, HOME/temp placement, the single-use receipt and the executable re-measure in `beforeSpawn`.
+ * This adds the plugin rules on top: the staging layout, the intent check on the measured request, the registration
+ * recheck (through `assertStillValid`, so it also runs inside `beforeSpawn`), and quarantine on unverified termination.
+ * No retries or fallback after admission. */
 export async function spawnMxcPluginChild(
   launch: MxcPluginChildLaunch,
   intent: MxcPluginChildIntent,
   /** Attached before the post-spawn recheck, so even a child terminated inside this call is reported. */
   onTerminating?: () => void,
 ): Promise<MxcPluginChild> {
-  let owned: OwnedMxcExtensionProcess;
+  let admitted: MxcConfinedChildSpawn;
+  let mismatch: unknown;
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
-    // Snapshot the request before yielding so policy cannot change during startup.
-    const request = structuredClone(launch.request);
-    assertLaunchMatchesIntent(request, intent);
-    owned = await spawnMxcExtensionProcess(request, { signal: launch.signal });
+    const staging = assertMxcHolderStaging({ aveHome: aveHome(), home: launch.home, temp: launch.temp });
+    const args = Object.freeze([...intent.args]);
+    const runtimeReads = [winPath.dirname(intent.command), ...args.slice(0, 1).map((entry) => winPath.dirname(entry))];
+    admitted = await spawnMxcConfinedChild({
+      command: intent.command,
+      args,
+      cwd: intent.cwd,
+      home: launch.home,
+      temp: launch.temp,
+      filesystemOwnership: launch.filesystemOwnership,
+      // One holder per incarnation: row 2 refuses a holder it already admitted.
+      holder: {},
+      label: `plugin-child:${intent.pluginId}`,
+      egressOwner: { kind: "worker", role: "plugin-child", pluginId: intent.pluginId },
+      allowRead: [...new Set([...intent.envelope.read, ...runtimeReads])],
+      allowWrite: [...intent.envelope.write, staging],
+      floorPierces: intent.floorPierces,
+      baseEnv: intent.baseEnv,
+      signal: launch.signal,
+      assertStillValid: () => {
+        launch.assertCurrent();
+        if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
+      },
+      // Readiness is probed on a snapshot of the exact request admission later consumes, so this is the
+      // request that runs. Readiness settlement reports a probe failure as not-ready; the mismatch is rethrown below.
+      probe: async (request, signal) => {
+        try {
+          assertLaunchMatchesIntent(request, intent);
+        } catch (error) {
+          mismatch = error;
+          throw error;
+        }
+        return launch.probe(request, signal);
+      },
+    });
   } catch (error) {
-    // Unverified startup cleanup keeps the lease: the process may still exist.
+    // Unverified startup cleanup keeps the planner's state: the process may still exist.
     if (error instanceof MxcProcessCleanupError) throw new PluginChildTerminationUnverifiedError(intent.pluginId, { cause: error });
     await launch.release();
-    throw error;
+    throw mismatch ?? error;
   }
-  const child = attachMxcPluginChild(owned, launch);
+  const child = attachMxcPluginChild(admitted.process, {
+    signal: launch.signal,
+    // Row 2's release is idempotent and retained on failure; the planner's state goes only after it.
+    release: async () => {
+      await admitted.release();
+      await launch.release();
+    },
+  });
   if (onTerminating) child.onTerminating(onTerminating);
   try {
     launch.assertCurrent();
