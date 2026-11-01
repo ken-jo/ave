@@ -22,6 +22,7 @@ let cwd: string;
 beforeEach(() => {
   vi.mocked(fs.openSync).mockImplementation(nativeFs.openSync);
   vi.mocked(fs.readSync).mockImplementation(nativeFs.readSync);
+  vi.mocked(fs.fstatSync).mockImplementation(nativeFs.fstatSync);
   vi.mocked(fs.lstatSync).mockImplementation(nativeFs.lstatSync);
   root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "git-inputs-")));
   stabilizeFixtureAncestorStats(root);
@@ -50,6 +51,17 @@ afterEach(() => {
 
 function configure(text: string): void {
   fs.writeFileSync(join(cwd, ".git", "config"), text);
+}
+
+function freezeFileMetadata(path: string): void {
+  const fixedStat = nativeFs.lstatSync(path, { bigint: true });
+  const readStat = vi.mocked(fs.lstatSync).getMockImplementation()!;
+  vi.mocked(fs.lstatSync).mockImplementation(((candidate, options) =>
+    candidate === path && options?.bigint === true ? fixedStat : readStat(candidate, options)) as typeof fs.lstatSync);
+  vi.mocked(fs.fstatSync).mockImplementation(((descriptor, options) => {
+    const stat = nativeFs.fstatSync(descriptor, options);
+    return options?.bigint === true && stat.ino === fixedStat.ino && stat.dev === fixedStat.dev ? fixedStat : stat;
+  }) as typeof fs.fstatSync);
 }
 
 describe("checked repository metadata inputs", () => {
@@ -117,7 +129,13 @@ describe("checked repository metadata inputs", () => {
 
   it("changes evidence for an observed metadata mode change", () => {
     const readStat = vi.mocked(fs.lstatSync).getMockImplementation()!;
+    const head = nativeFs.lstatSync(join(cwd, ".git", "HEAD"), { bigint: true });
     let mode = 0o100644n;
+    vi.mocked(fs.fstatSync).mockImplementation(((descriptor, options) => {
+      const stat = nativeFs.fstatSync(descriptor, options);
+      return options?.bigint === true && stat.ino === head.ino && stat.dev === head.dev
+        ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode }) : stat;
+    }) as typeof fs.fstatSync);
     vi.mocked(fs.lstatSync).mockImplementation(((path, options) => {
       const stat = readStat(path, options);
       if (path === join(cwd, ".git", "HEAD") && options?.bigint === true) {
@@ -131,6 +149,125 @@ describe("checked repository metadata inputs", () => {
     const second = inspectGitRepository(cwd);
     expect(second).not.toBeNull();
     expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it.each([
+    ["HEAD", "ref: refs/heads/main\n", "ref: refs/heads/next\n"],
+    ["ORIG_HEAD", "a".repeat(40) + "\n", "b".repeat(40) + "\n"],
+    ...["AUTO_MERGE", "BISECT_EXPECTED_REV", "NOTES_MERGE_PARTIAL", "NOTES_MERGE_REF", "MERGE_AUTOSTASH",
+      "info/attributes", "info/exclude", "info/sparse-checkout", "objects/info/packs",
+      "objects/info/commit-graphs/commit-graph-chain", "BISECT_START", "rebase-merge/head-name",
+      "rebase-merge/onto", "rebase-apply/head-name", "rebase-apply/onto"].map(path =>
+      [path, "a".repeat(40) + "\n", "b".repeat(40) + "\n"]),
+    ["refs/heads/main", "a".repeat(40) + "\n", "b".repeat(40) + "\n"],
+    ["packed-refs", "a".repeat(40) + " refs/heads/main\n", "b".repeat(40) + " refs/heads/main\n"],
+    ["shallow", "a".repeat(40) + "\n", "b".repeat(40) + "\n"],
+    ["info/grafts", "a".repeat(40) + "\n", "b".repeat(40) + "\n"],
+    ["config", "[core]\nbare = false\n", "[core]\nbare = true \n"],
+    ["config.worktree", "[core]\nbare = false\n", "[core]\nbare = true \n"],
+  ])("changes content evidence for %s with identical metadata", (relative, before, after) => {
+    const path = join(cwd, ".git", relative);
+    fs.mkdirSync(dirname(path), { recursive: true });
+    fs.writeFileSync(path, before);
+    freezeFileMetadata(path);
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    expect(Buffer.byteLength(after)).toBe(Buffer.byteLength(before));
+    fs.writeFileSync(path, after);
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("streams large packed refs and detects same-size changes with identical metadata", () => {
+    const path = join(cwd, ".git", "packed-refs");
+    const contents = Buffer.from(Array.from({ length: 36000 }, (_, index) =>
+      `${"a".repeat(40)} refs/tags/tag-${String(index).padStart(6, "0")}\n`).join(""));
+    expect(contents.length).toBeGreaterThan(2 * 1024 * 1024);
+    fs.writeFileSync(path, contents);
+    freezeFileMetadata(path);
+    vi.mocked(fs.readSync).mockClear();
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    contents[0] = "b".charCodeAt(0);
+    fs.writeFileSync(path, contents);
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+    const reads = vi.mocked(fs.readSync).mock.calls;
+    expect(reads.length).toBeGreaterThan(2);
+    for (const [, buffer] of reads) expect(buffer.byteLength).toBe(64 * 1024);
+  });
+
+  it("bounds each control file without reading oversized contents", () => {
+    const path = join(cwd, ".git", "packed-refs");
+    fs.writeFileSync(path, "#".repeat(8 * 1024 * 1024));
+    expect(inspectGitRepository(cwd)).not.toBeNull();
+    fs.appendFileSync(path, "#");
+    const oversizedStat = nativeFs.lstatSync(path, { bigint: true });
+    let readOversized = false;
+    vi.mocked(fs.readSync).mockImplementation((...args: Parameters<typeof fs.readSync>) => {
+      const stat = nativeFs.fstatSync(args[0], { bigint: true });
+      if (stat.dev === oversizedStat.dev && stat.ino === oversizedStat.ino) readOversized = true;
+      return nativeFs.readSync(...args);
+    });
+    expect(inspectGitRepository(cwd)).toBeNull();
+    expect(readOversized).toBe(false);
+  });
+
+  it("bounds aggregate control bytes including configuration", () => {
+    const used = Buffer.byteLength(ORDINARY_CONFIG) + Buffer.byteLength("ref: refs/heads/main\n");
+    fs.writeFileSync(join(cwd, ".git", "refs", "heads", "first"), Buffer.alloc(8 * 1024 * 1024));
+    const last = join(cwd, ".git", "refs", "heads", "last");
+    fs.writeFileSync(last, Buffer.alloc(8 * 1024 * 1024 - used));
+    expect(inspectGitRepository(cwd)).not.toBeNull();
+    fs.appendFileSync(last, "x");
+    expect(inspectGitRepository(cwd)).toBeNull();
+  });
+
+  it("keeps large unconsumed metadata identity-only without opening it", () => {
+    const paths = ["index", "sharedindex.abc", "objects/pack/data.pack", "logs/HEAD",
+      "rr-cache/conflict/preimage", "rr-cache/conflict/postimage", "editor/cache/index.bin",
+      "modules/x/objects/pack/data.pack", "modules/x/index", "objects/info/commit-graph"];
+    for (const relative of paths) {
+      const path = join(cwd, ".git", relative);
+      fs.mkdirSync(dirname(path), { recursive: true });
+      // Every unconsumed file exceeds the content cap without building large buffers.
+      fs.writeFileSync(path, "");
+      fs.truncateSync(path, 8 * 1024 * 1024 + 1);
+    }
+    vi.mocked(fs.openSync).mockClear();
+    expect(inspectGitRepository(cwd)).not.toBeNull();
+    const opened = vi.mocked(fs.openSync).mock.calls.map(([path]) => path);
+    for (const relative of paths) {
+      expect(opened).not.toContain(join(cwd, ".git", relative));
+    }
+  });
+
+  it("uses only identity evidence for nested repository configuration", () => {
+    const path = join(cwd, ".git", "modules", "x", "config");
+    fs.mkdirSync(dirname(path), { recursive: true });
+    // Nested config is neither parsed nor hashed by the parent command.
+    fs.writeFileSync(path, "[include]\npath = /outside\n");
+    const fixedStat = nativeFs.lstatSync(path, { bigint: true });
+    const readStat = vi.mocked(fs.lstatSync).getMockImplementation()!;
+    let mode = fixedStat.mode;
+    vi.mocked(fs.lstatSync).mockImplementation(((candidate, options) =>
+      candidate === path && options?.bigint === true
+        ? Object.assign(Object.create(Object.getPrototypeOf(fixedStat)), fixedStat, { mode })
+        : readStat(candidate, options)) as typeof fs.lstatSync);
+    vi.mocked(fs.openSync).mockClear();
+    const first = inspectGitRepository(cwd);
+    expect(first).not.toBeNull();
+    expect(vi.mocked(fs.openSync).mock.calls.map(([opened]) => opened)).not.toContain(path);
+    fs.writeFileSync(path, "[include]\npath = /changed\n");
+    vi.mocked(fs.openSync).mockClear();
+    expect(inspectGitRepository(cwd)).toEqual(first);
+    mode ^= 0o100n;
+    const second = inspectGitRepository(cwd);
+    expect(second).not.toBeNull();
+    expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+    expect(vi.mocked(fs.openSync).mock.calls.map(([opened]) => opened)).not.toContain(path);
   });
 
   it("changes evidence when packed refs change type", () => {
@@ -343,9 +480,9 @@ describe("checked repository metadata inputs", () => {
   });
 
   it("bounds configuration bytes", () => {
-    configure("#".repeat(65536));
+    configure("#".repeat(8 * 1024 * 1024));
     expect(inspectGitRepository(cwd)).not.toBeNull();
-    configure("#".repeat(65537));
+    configure("#".repeat(8 * 1024 * 1024 + 1));
     expect(inspectGitRepository(cwd)).toBeNull();
   });
 
