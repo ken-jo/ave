@@ -2479,12 +2479,13 @@ terminate the wrapped worker.
 By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
 BaseContainer where the host offers one. Ave ships only the MIT-licensed
-`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.0 at
+`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.1 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
 npm tarball's sha512, each launcher's sha256). Ave does not load the SDK's
-JavaScript: its Windows stdio path needs Node 24.21, newer than the Node
-Electron bundles. Each command spawns `wxc-exec.exe --config-base64 <request>`
+JavaScript; its Windows stdio path requires Node 24.21 or newer in the
+24.x line. SDK adoption for extension lifetimes is a separate change. Each
+command spawns `wxc-exec.exe --config-base64 <request>`
 from the launcher's own directory (`mxc-windows.ts`, `mxc-shell-launch.ts`);
 no administrator rights or UAC prompt are needed per run or at install.
 
@@ -2508,8 +2509,9 @@ in its directory.
   seconds). Until it settles, shells take the approved-host route and Settings
   says the check is running; when it passes the record switches to MXC, unless
   something re-recorded it meanwhile. Detection reads what the launcher does,
-  not the build number: identity-less loopback proxying needs PSEC 1.1 in MXC
-  1.0.0. Any failure leaves the shells on the approved-host route with its
+  not the build number: MXC 1.0.1 supports identity-less loopback proxying on
+  PSEC 1.0, but the exact request must still validate and start. Any failure
+  leaves the shells on the approved-host route with its
   reason in Settings (a proxy-only boot keeps its proxy). A PowerShell start that
   fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
   session such as SSH causes, is reported as `unverified-session`, not as MXC.
