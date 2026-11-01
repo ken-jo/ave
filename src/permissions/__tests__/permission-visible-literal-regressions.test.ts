@@ -8,9 +8,9 @@ import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { canonicalRuleSpecifier } from "../rules/rule-specifier.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
+import { calibratePermissionDecisionBudget } from "../../__tests__/support/permission-decision-cost.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
-const DECISION_COST_TARGET_MS = 40;
 // #223 executable-bound startup admission: win32 literal text cannot offer or replay exact rules.
 const UNPROVEN_STARTUP = process.platform === "win32";
 let cwd: string;
@@ -35,7 +35,12 @@ function check(command: string, dialect: ShellRuleDialect, sandboxed = false, he
   });
 }
 
+// Bounded work, not latency: the budget is calibrated against a trivial decision in the same
+// dialect, lane and mode (see permission-decision-cost.ts), so slower hosts do not flake.
 function measured(command: string, dialect: ShellRuleDialect, sandboxed: boolean) {
+  const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) => {
+    check(`printf %s ./p${iteration.toString(36)}`, dialect, sandboxed);
+  });
   const samples: number[] = [];
   const results = [];
   for (let observation = 0; observation < 3; observation += 1) {
@@ -44,7 +49,7 @@ function measured(command: string, dialect: ShellRuleDialect, sandboxed: boolean
     samples.push(performance.now() - start);
     results.push(result);
   }
-  return { samples, median: [...samples].sort((a, b) => a - b)[1]!, results };
+  return { samples, median: [...samples].sort((a, b) => a - b)[1]!, results, referenceMs, budgetMs };
 }
 
 describe("visible literal decision regressions", () => {
@@ -56,8 +61,8 @@ describe("visible literal decision regressions", () => {
       return { repetitions, chars: command.length, ...timing };
     });
     process.stdout.write(`literal path timing ${JSON.stringify(observations)}\n`);
-    for (const { median, results } of observations) {
-      expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
+    for (const { median, budgetMs, results } of observations) {
+      expect(median).toBeLessThan(budgetMs);
       for (const result of results) expect(result).toMatchObject({ decision: "allow" });
     }
   });
@@ -117,6 +122,6 @@ describe("visible literal decision regressions", () => {
     for (const result of timing.results) expect(result).toMatchObject(UNPROVEN_STARTUP
       ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
     expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", reasonCode: "no-approver" } : { decision: "allow" });
-    expect(timing.median).toBeLessThan(DECISION_COST_TARGET_MS);
+    expect(timing.median).toBeLessThan(timing.budgetMs);
   });
 });
