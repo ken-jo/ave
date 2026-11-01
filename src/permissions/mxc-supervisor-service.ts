@@ -14,7 +14,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   let owned: MxcNativeProcess | undefined;
   let processPin: ReturnType<MxcSupervisorRuntime["pinProcess"]> | undefined;
   let nativeObservation: { id: number; resolve(): void } | undefined;
-  let controlsEnded = false;
+  let ownerLost = false;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
   let creationStarted = false;
   let spawnPending = false;
@@ -28,9 +28,6 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     resolveTerminal = resolve; rejectTerminal = reject;
   });
   const stop = (): void => {
-    // Owner loss must release an outstanding observation even when an earlier
-    // cancellation already requested teardown. A late acknowledgement is valid.
-    nativeObservation?.resolve();
     if (stopping) return;
     spawnPendingAtCancellation = spawnPending;
     stopping = true;
@@ -38,13 +35,21 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     if (owned) void owned.dispose({ drainOutput: !forwarding }).catch(rejectTerminal);
     else if (!starting) resolveTerminal(null);
   };
+  const handleOwnerLoss = (): void => {
+    ownerLost = true;
+    // Loss releases an outstanding observation even after connected cancellation
+    // requested teardown. A matching acknowledgement in flight remains valid.
+    nativeObservation?.resolve();
+    stop();
+  };
   const fail = (error: unknown): void => { stop(); rejectTerminal(error); };
+  const handleLivenessError = (error: Error): void => { handleOwnerLoss(); fail(error); };
   const handleLivenessData = (): void => fail(new MxcProcessContractError("Unexpected supervisor liveness data"));
-  liveness.once("end", stop); liveness.once("close", stop);
-  liveness.once("error", fail);
+  liveness.once("end", handleOwnerLoss); liveness.once("close", handleOwnerLoss);
+  liveness.once("error", handleLivenessError);
   liveness.on("data", handleLivenessData);
   liveness.resume();
-  if (liveness.readableEnded || liveness.destroyed) stop();
+  if (liveness.readableEnded || liveness.destroyed) handleOwnerLoss();
 
   const forward = async (stream: Readable, type: "stdout" | "stderr"): Promise<void> => {
     for await (const chunk of stream) {
@@ -89,8 +94,8 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             const observed = new Promise<void>((resolve) => {
               nativeObservation = { id: owned!.id, resolve };
               // A connected cancelling parent still needs the process pin;
-              // only an ended control channel bypasses a later observation.
-              if (controlsEnded) resolve();
+              // only owner loss bypasses a later observation.
+              if (ownerLost) resolve();
             });
             await channel.send({ type: "native-created", id: owned.id, processHandle: processPin.value });
             // The parent duplicates the retained process object synchronously
@@ -144,7 +149,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
         default: throw new MxcProcessContractError("Unexpected supervisor control frame");
       }
     }
-  })().finally(() => { controlsEnded = true; stop(); });
+  })().finally(handleOwnerLoss);
   void controls.catch(fail);
   try {
     const result = await terminal;
@@ -187,7 +192,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   } finally {
     processPin?.close();
     clearTimeout(watchdog);
-    liveness.off("end", stop); liveness.off("close", stop); liveness.off("error", fail); liveness.off("data", handleLivenessData);
+    liveness.off("end", handleOwnerLoss); liveness.off("close", handleOwnerLoss); liveness.off("error", handleLivenessError); liveness.off("data", handleLivenessData);
     channel.input.destroy();
   }
 }
