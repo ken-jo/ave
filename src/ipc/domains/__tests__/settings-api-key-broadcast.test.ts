@@ -357,6 +357,15 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     expect(hasStoredSecret).toHaveBeenCalledWith("llm.apiKey.openai");
     expect(deps.settingsService.getSecret).not.toHaveBeenCalled();
   });
+  it("reports saved credential presence without decrypting the credential", async () => {
+    const deps = makeDeps([]);
+    deps.settingsService.hasStoredSecret.mockReturnValue(true);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await invoke("ave:settings:has-api-key", "openai")).toBe(true);
+    expect(deps.settingsService.hasStoredSecret).toHaveBeenCalledWith("llm.apiKey.openai");
+    expect(deps.settingsService.getSecret).not.toHaveBeenCalled();
+  });
   it("rewires the reviewer when the retirement marker clears without changing provider or model", async () => {
     const rewire = vi.fn();
     const baseDeps = makeDeps([]);
