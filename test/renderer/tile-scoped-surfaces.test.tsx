@@ -1562,7 +1562,8 @@ describe("opening a conversation while another is mid-turn", () => {
     });
   });
 
-  it("a wide canvas opens the adopted conversation in a second tile", async () => {
+  // Picking a conversation never asked for a split, so even a wide canvas shows the adopted tile alone.
+  it("a wide canvas opens the adopted conversation on its own, not as a split", async () => {
     const pendingSend = deferred<{ ok: true }>();
     const { container, api } = await renderApp(withOtherSession);
     api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
@@ -1572,9 +1573,9 @@ describe("opening a conversation while another is mid-turn", () => {
 
     await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
 
-    await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
-    const ids = collectTiles(container).map((tile) => tile.chatGroupId);
-    expect(ids).toContain(MAIN_CHAT_GROUP_ID);
+    await waitFor(() => expect(collectTiles(container).map((tile) => tile.chatGroupId)).not.toContain(MAIN_CHAT_GROUP_ID));
+    expect(collectTiles(container)).toHaveLength(1);
+    expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
     // Assert the adopted tile holds the requested conversation, not merely that a tile appeared.
     await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(OTHER_SESSION));
     await waitFor(() => expect(api.chatSessionHistory).toHaveBeenCalledWith(OTHER_SESSION));
@@ -1654,7 +1655,7 @@ describe("opening a conversation while another is mid-turn", () => {
     });
   });
 
-  it("New Chat while a turn runs starts the conversation beside the busy tile (#2348)", async () => {
+  it("New Chat while a turn runs starts the conversation in its own tile, the busy one kept out of view (#2348)", async () => {
     const pendingSend = deferred<{ ok: true }>();
     const { container, api, releasedGroupIds } = await renderApp(withOtherSession);
     api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
@@ -1667,9 +1668,9 @@ describe("opening a conversation while another is mid-turn", () => {
     expect(newChat.disabled).toBe(false);
     await act(async () => { fireEvent.click(newChat); });
 
-    // Create a separate group without releasing the busy conversation.
-    await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
-    expect(collectTiles(container).map((tile) => tile.chatGroupId)).toContain(MAIN_CHAT_GROUP_ID);
+    // Create a separate group without releasing the busy conversation or splitting the canvas.
+    await waitFor(() => expect(collectTiles(container).map((tile) => tile.chatGroupId)).not.toContain(MAIN_CHAT_GROUP_ID));
+    expect(collectTiles(container)).toHaveLength(1);
     expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
     expect(releasedGroupIds()).toEqual([]);
 
@@ -1758,7 +1759,7 @@ describe("opening a conversation while another is mid-turn", () => {
       rendered: Awaited<ReturnType<typeof busyInProjectA>>,
       expected: string,
     ) {
-      await waitFor(() => expect(collectTiles(rendered.container)).toHaveLength(2));
+      await waitFor(() => expect(collectTiles(rendered.container).map((tile) => tile.chatGroupId)).not.toContain(MAIN_CHAT_GROUP_ID));
       await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe(expected));
       await act(async () => {
         rendered.pendingSend.resolve({ ok: true });

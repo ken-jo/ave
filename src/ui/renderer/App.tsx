@@ -337,13 +337,13 @@ export function App() {
 
   /** Adopt beside a busy group, or return null at the busy-group ceiling. Deliver the session after the new tile publishes
    * its handle. */
-  const adoptGroupBeside = useCallback((targetGroupId: string): string | null => {
+  const adoptGroupBeside = useCallback((targetGroupId: string, reveal: "beside" | "alone" = "beside"): string | null => {
     const adopted = chatGroupsRef.current.adopt(targetGroupId, (chatGroupId) => {
       const each = tileSessions.find((candidate) => candidate.chatGroupId === chatGroupId);
       // Treat a group with no published tile as busy; releasing it could abort an unseen turn.
       if (each === undefined) return false;
       return !each.streaming;
-    }, measuredCanvasSize(chatGroupCanvasRef.current));
+    }, measuredCanvasSize(chatGroupCanvasRef.current), reveal);
     if (!adopted) {
       statusPushToast({
         severity: "warning",
@@ -368,12 +368,13 @@ export function App() {
   const reachSession = useCallback(async (
     sessionId: string,
     targetGroupId: string,
+    reveal: "beside" | "alone" = "beside",
   ): Promise<boolean> => {
     if (focusTileHolding(sessionId)) return true;
     const target = tileSessions.find((tile) => tile.chatGroupId === targetGroupId);
     const tile = chatGroupSessions.read(targetGroupId);
     if (target !== undefined && !target.streaming && tile) return tile.loadSession(sessionId);
-    const adoptedGroupId = adoptGroupBeside(targetGroupId);
+    const adoptedGroupId = adoptGroupBeside(targetGroupId, reveal);
     if (adoptedGroupId === null) return false;
     // Deliver the adopted session when its tile publishes a handle.
     setPendingSessionDrop({ chatGroupId: adoptedGroupId, sessionId });
@@ -381,7 +382,8 @@ export function App() {
   }, [adoptGroupBeside, chatGroupSessions, focusTileHolding, tileSessions]);
 
   const handleLoadSessionAndRefresh = useCallback(
-    (sessionId: string) => reachSession(sessionId, chatGroupsRef.current.focusedId),
+    // Picking a conversation never asks for a split; only a drop onto the canvas does.
+    (sessionId: string) => reachSession(sessionId, chatGroupsRef.current.focusedId, "alone"),
     [reachSession],
   );
 
@@ -1336,7 +1338,7 @@ export function App() {
     const nextProject = resolveKnownProject(projectIdentityFromPayload(project)) ?? activeProject ?? defaultWorkspaceProject;
     if (streaming) {
       // New Chat beside a busy tile adopts another group; at the ceiling it refuses without changing the current conversation.
-      const adopted = adoptGroupBeside(chatGroupsRef.current.focusedId);
+      const adopted = adoptGroupBeside(chatGroupsRef.current.focusedId, "alone");
       if (adopted === null) return;
       // Hydrate the tile under its requested project; update the window project only after chatNew succeeds.
       if (nextProject) {
