@@ -1,7 +1,7 @@
 /** Load installed content before resolving persisted theme/language ids so valid installed selections do not fall back to
  * defaults. */
 import { useSyncExternalStore } from "react";
-import { registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
+import { DEFAULT_LOCALE, getLocale, isLocaleMessagesLoaded, registerInstalledLocales, setInstalledCatalogLoader, tryLoadLocaleMessages } from "../../i18n/index.js";
 import {
   fontAlias,
   isContentAssetUrl,
@@ -73,7 +73,12 @@ export function applyInstalledContent(view: InstalledContentView, api: Installed
   });
   applyFonts(view.fonts);
   current = view;
-  for (const listener of listeners) listener();
+  const notify = () => { for (const listener of listeners) listener(); };
+  // A new loader drops the package-backed catalog of the language on screen; nothing else reloads it, so the window would
+  // fall back to English on the next render.
+  const active = getLocale();
+  if (active !== DEFAULT_LOCALE && !isLocaleMessagesLoaded(active)) void tryLoadLocaleMessages(active).finally(notify);
+  else notify();
 }
 
 /** Load the installed content once for this window. Later calls return the same promise; a bridge that is absent or answers

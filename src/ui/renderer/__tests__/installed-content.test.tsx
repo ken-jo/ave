@@ -6,7 +6,7 @@ import { AppearanceTab } from "../tabs/AppearanceTab.js";
 import { DEFAULT_BUNDLE_ID } from "../theme/index.js";
 import { moonstoneBundle } from "../theme/bundles/moonstone.js";
 import { applyBundleToDocument } from "../theme/resolve-theme.js";
-import { applyInstalledContent, ensureInstalledContent, fontFaceCss, resetInstalledContentForTests } from "../installed-content.js";
+import { applyInstalledContent, ensureInstalledContent, fontFaceCss, resetInstalledContentForTests, useInstalledContent } from "../installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
 import { isLocale, loadLocaleMessages, localeInfo, setLocale, translate } from "../../../i18n/index.js";
 import type { InstalledContentApi, InstalledContentView, InstalledThemeView } from "../../../shared/installed-content.js";
@@ -131,6 +131,25 @@ describe("installed languages", () => {
     applyInstalledContent(view({ languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }] }), api);
     applyInstalledContent(view(), api);
     expect(isLocale("fr")).toBe(false);
+  });
+
+  it("keeps the language on screen translated when the installed content is read again", async () => {
+    const french = { name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" };
+    const api = bridge(view({ languages: [french] }), { fr: { "appearanceTab.pageTitle": "Apparence" } });
+    applyInstalledContent(view({ languages: [french] }), api);
+    await loadLocaleMessages("fr");
+    setLocale("fr");
+    function Title() {
+      useInstalledContent();
+      return <span data-testid="title">{translate("fr", "appearanceTab.pageTitle")}</span>;
+    }
+    const { getByTestId } = render(<Title />);
+    expect(getByTestId("title")).toHaveTextContent("Apparence");
+
+    // A marketplace sync re-reads the same content after boot.
+    act(() => applyInstalledContent(view({ languages: [french] }), api));
+    await waitFor(() => expect(api.languageMessages).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getByTestId("title")).toHaveTextContent("Apparence"));
   });
 });
 
