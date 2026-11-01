@@ -9,7 +9,7 @@ import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
 import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import { isHostApprovalRejectedDecision, type ApprovalGate } from "../permissions/approval-gate.js";
-import { isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -87,7 +87,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       const sessionId = typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
       const controllerCurrent = () => isRemoteControllerBoundToSession(remoteControllerAuthority, sessionId);
       const revoked = () => ({ output: JSON.stringify({ error: "Remote controller authority was revoked or is not bound to this session" }), isError: true });
-      if (!controllerCurrent()) return revoked();
+      if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
       const a = (rawInput ?? {}) as Record<string, unknown>;
       const skillName = typeof a.skillName === "string" ? a.skillName.trim() : "";
       if (!skillName) {
@@ -155,7 +155,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           source: "builtin",
           createdAt: Date.now(),
         });
-        if (!controllerCurrent()) return revoked();
+        if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
         const rejected = Boolean(isHostApprovalRejectedDecision(decision));
         if (rejected || decision.choice.startsWith("deny")) {
           return {
@@ -168,7 +168,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       }
 
       // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.
-      if (!controllerCurrent()) return revoked();
+      if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
       if (!sessionId) {
         return {
           output: JSON.stringify({
@@ -180,10 +180,12 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       }
       if (!alreadyApproved) {
         // Bind persistence to the final authority check, including time spent queued or preparing the write.
-        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), controllerCurrent).catch((err) => {
+        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), controllerCurrent, async () => {
+          if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
+        }).catch((err) => {
           log.warn("skill_load: approval persistence failed (non-fatal): %s", (err as Error).message);
         });
-        if (!controllerCurrent()) return revoked();
+        if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
       }
       // Record approved identity in this conversation's overlay; skill_read reacquires and compares generation rather than retaining the lease.
       deps.overlay.register(sessionId, skill);

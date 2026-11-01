@@ -223,6 +223,7 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
 export function withHostShellExecutionHandoff<T>(
   authorization: HostShellSpawnAuthorization,
   handoff: ShellPolicyHandoff<T>,
+  prepare?: () => Promise<void>,
 ): Promise<T | undefined> {
   const record = pendingHandoffs.get(authorization);
   pendingHandoffs.delete(authorization);
@@ -232,7 +233,7 @@ export function withHostShellExecutionHandoff<T>(
       !matchesShellWorkingDirectoryIdentity(record.cwdIdentity.realpath, record.cwdIdentity)) return undefined;
     // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.
     return handoff();
-  });
+  }, prepare);
 }
 
 export function consumeHostShellExecutionPermit(

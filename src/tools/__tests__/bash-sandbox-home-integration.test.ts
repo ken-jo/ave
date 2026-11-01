@@ -1,3 +1,5 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { runWithEffectGateContext } from "../../permissions/effect-enforcement.js";
 import { existsSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
@@ -43,6 +45,20 @@ describe.skipIf(process.platform === "win32")("spawnWithSandbox isolated HOME", 
     expect(isolatedHome).not.toBe("");
     expect(existsSync(isolatedHome)).toBe(false);
     expect(vi.mocked(cleanupAsrtSandboxAfterCommand).mock.calls.length).toBe(cleanupCalls + 1);
+  });
+
+  it("refuses a remote shell when identity changes during asynchronous sandbox preparation", async () => {
+    let current = true;
+    const binding = { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" };
+    const refreshCurrent = vi.fn(async () => current);
+    const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare: binding, pairedShareGuard: { isCurrent: () => true, refreshCurrent } }, "main");
+    const command = "printf must-not-run", cwd = process.cwd();
+    const prepared = prepareSandboxFixture(command, cwd);
+    const home = preparedShellCommand(prepared).homePath!;
+    vi.mocked(wrapToolCommand).mockImplementationOnce(async () => { current = false; return { argv: ["/bin/bash", "-c", command], env: {} }; });
+    await expect(runWithEffectGateContext({ headless: false, toolName: "bash", sessionId: "main", permissionContext: { remoteControllerAuthority: authority } }, () => spawnWithSandbox(command, cwd, [cwd], 15, prepared))).rejects.toThrow("remote-controller-revoked");
+    expect(refreshCurrent).toHaveBeenCalledOnce();
+    expect(existsSync(home)).toBe(false);
   });
 
   it("runs git without reading the real global config and removes the profile", async () => {

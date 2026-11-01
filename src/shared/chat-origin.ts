@@ -37,6 +37,8 @@ export interface TailnetPairingShareBinding {
 /** Pairing-store guards stay host-private and unserialized. */
 export interface TailnetPairedShareGuard {
   isCurrent(binding: TailnetPairingShareBinding): boolean;
+  /** Fresh host identity observation; completed observations cannot admit a later effect. */
+  refreshCurrent?(binding: TailnetPairingShareBinding): Promise<boolean>;
 }
 
 export interface TailnetControllerAuthority {
@@ -120,6 +122,18 @@ export function bindRemoteControllerToSession(authority: RemoteControllerAuthori
 /** Missing, copied, revoked and cross-session authority cannot enter the user's tree. */
 export function isRemoteControllerBoundToSession(authority: RemoteControllerAuthority | undefined, sessionId: string | undefined): boolean {
   return authority === undefined || !!sessionId && remoteControllerSessions.get(authority) === sessionId && isRemoteControllerAuthorityCurrent(authority);
+}
+
+/** Async effect and approval boundary; synchronous callers retain separate revocation fences. */
+export async function refreshRemoteControllerBoundToSession(authority: RemoteControllerAuthority | undefined, sessionId: string | undefined): Promise<boolean> {
+  if (!isRemoteControllerBoundToSession(authority, sessionId)) return false;
+  if (authority?.kind === "tailnet-controller") {
+    if (!authority.pairedShare || !authority.pairedShareGuard?.refreshCurrent) return false;
+    try {
+      if (!await authority.pairedShareGuard.refreshCurrent(authority.pairedShare)) return false;
+    } catch { return false; }
+  }
+  return isRemoteControllerBoundToSession(authority, sessionId);
 }
 
 /** Derive record markers from the authority union so every controller kind has a marker. */

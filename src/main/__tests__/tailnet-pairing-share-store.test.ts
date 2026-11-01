@@ -88,6 +88,7 @@ describe("TailnetPairingShareStore", () => {
     });
     expect(share).toMatchObject({
       actorId: ACTOR,
+      expiresAt: expect.any(Number),
       permission: "observe",
       pairing: {
         pairingId: claim!.pairingId,
@@ -98,6 +99,7 @@ describe("TailnetPairingShareStore", () => {
     });
     expect(store.resolveActiveShare(ACTOR, CONVERSATION, "observe")).toMatchObject({
       pairing: share!.pairing,
+      expiresAt: share!.expiresAt,
     });
     expect(store.resolveActiveShare(ACTOR, CONVERSATION, "control")).toBeNull();
     expect(store.resolveActiveShare(ACTOR, OTHER_CONVERSATION, "observe")).toBeNull();

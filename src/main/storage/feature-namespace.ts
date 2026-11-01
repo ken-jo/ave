@@ -189,8 +189,9 @@ export async function writeJsonAtomic<T>(dir: string, name: string, value: T): P
 }
 
 /** Finish asynchronous preparation before checking authority and committing without yielding. */
-export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
+export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, prepareCommit?: () => Promise<void>): Promise<boolean> {
   await ensureDir(dirname(filePath));
+  await prepareCommit?.();
   return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
 }
 

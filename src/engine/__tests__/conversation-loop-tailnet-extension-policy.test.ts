@@ -117,7 +117,7 @@ async function observeUserToolTurn(remote: boolean, input: string, attachments?:
     [{ type: "tool_call", id: "observe-1", name: "observe_user_turn", input: {} }, { type: "message_complete", stopReason: "tool_use" }],
     [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
   ]);
-  const options = remote ? { inputOrigin: "tailnet-surface" as const, remoteControllerAuthority: bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:tool-owner" }, loop.getSessionId()) } : userKeyboardTurn();
+  const options = remote ? { inputOrigin: "tailnet-surface" as const, remoteControllerAuthority: bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:tool-owner", pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" }, pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true } }, loop.getSessionId()) } : userKeyboardTurn();
   await loop.runTurn(input, undefined, undefined, { ...options, attachments });
   return { loop, seen };
 }

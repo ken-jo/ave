@@ -142,9 +142,10 @@ describe("skill body approval controller authority", () => {
   it("records no grant when authority is revoked while approval persistence waits", async () => {
     const sessionId = "skill-persistence-owner";
     let current = true;
-    const authority = bindRemoteControllerToSession({ kind: "platform-bridge", actorId: "skill-owner",
-      bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
-      bridgeGuard: { isCurrent: () => current },
+    let ownerAvailable = true;
+    const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:skill-owner",
+      pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = ownerAvailable; return current; } },
     }, sessionId);
     const file = approvalPath();
     const approvals = new SkillApprovalsStore(file);
@@ -164,19 +165,20 @@ describe("skill body approval controller authority", () => {
     try {
       await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
       const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
-      gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
       await vi.waitFor(() => expect(approve).toHaveBeenCalledOnce());
-      current = false;
+      ownerAvailable = false;
     } finally { release(); await held; }
     expect((await pending).isError).toBe(true);
     expect(await new SkillApprovalsStore(file).isApproved("user-skill", "body")).toBe(false);
     expect(register).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
   });
-  it.each(["local", "current", "revoked"] as const)("checks %s authority after an actual pending content card", async state => {
+  it.each(["local", "current", "revoked", "fresh-unavailable"] as const)("checks %s authority after an actual pending content card", async state => {
     const sessionId = "skill-controller-card";
     let current = true;
-    const authority = state === "local" ? undefined : bindRemoteControllerToSession({
+    let freshAvailable = true;
+    const authority = state === "fresh-unavailable" ? bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:skill-controller", pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" }, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = freshAvailable; return current; } } }, sessionId) : state === "local" ? undefined : bindRemoteControllerToSession({
       kind: "platform-bridge", actorId: "skill-controller",
       bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
       bridgeGuard: { isCurrent: () => current },
@@ -202,12 +204,13 @@ describe("skill body approval controller authority", () => {
     expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerAuthority: authority, remoteControllerOrigin: authority?.kind }));
     expect(gate.pendingCount).toBe(1);
     if (state === "revoked") current = false;
-    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    if (state === "fresh-unavailable") freshAvailable = false;
+    await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
     const result = await pending;
-    expect(result.isError).toBe(state === "revoked");
-    expect(approve).toHaveBeenCalledTimes(state === "revoked" ? 0 : 1);
-    expect(register).toHaveBeenCalledTimes(state === "revoked" ? 0 : 1);
-    expect(emit).toHaveBeenCalledTimes(state === "revoked" ? 0 : 1);
+    expect(result.isError).toBe(state === "revoked" || state === "fresh-unavailable");
+    expect(approve).toHaveBeenCalledTimes((state === "revoked" || state === "fresh-unavailable") ? 0 : 1);
+    expect(register).toHaveBeenCalledTimes((state === "revoked" || state === "fresh-unavailable") ? 0 : 1);
+    expect(emit).toHaveBeenCalledTimes((state === "revoked" || state === "fresh-unavailable") ? 0 : 1);
     expect(gate.pendingCount).toBe(0);
   });
 });

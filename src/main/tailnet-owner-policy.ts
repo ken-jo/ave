@@ -5,7 +5,7 @@ export interface TailnetOwnerIdentityEvidence { readonly revision: number; reado
 interface TailnetOwnerIdentityPolicy {
   probeOwnerIdentity(): Promise<TailnetOwnerIdentityEvidence>;
   currentOwnerLogin(): string | null;
-  ownerIdentityError(login: string, evidence?: TailnetOwnerIdentityEvidence): TailnetOwnerIdentityErrorCode | null;
+  ownerIdentityError(login: string, evidence: TailnetOwnerIdentityEvidence): TailnetOwnerIdentityErrorCode | null;
 }
 
 /** Evidence is request-bound host state; newer observations invalidate earlier identity revisions without a TTL. */
@@ -15,13 +15,14 @@ export function createTailnetOwnerIdentityPolicy(options: { getOwnerLogin?: () =
   let revision = 0;
   let ownerLogin: string | null = null;
   const issuedEvidence = new WeakSet<object>();
-  const probeOwnerIdentity = async (): Promise<TailnetOwnerIdentityEvidence> => {
+  let inFlight: Promise<TailnetOwnerIdentityEvidence> | undefined;
+  const observeOwnerIdentity = async (): Promise<TailnetOwnerIdentityEvidence> => {
     const sequence = ++issuedProbe;
     let value: string | null = null;
     try { const result = await (options.getOwnerLogin ?? readTailnetOwnerLogin)(); value = typeof result === "string" && result.trim().length > 0 && result.length <= 512 && !/[\u0000-\u001f\u007f]/.test(result) ? result : null; } catch { /* Unavailable identity suspends admission without deleting durable grants. */ }
-    const accepted = sequence > settledProbe;
+    const accepted = sequence > settledProbe || value === ownerLogin;
     if (accepted) {
-      settledProbe = sequence;
+      settledProbe = Math.max(settledProbe, sequence);
       if (revision === 0 || value !== ownerLogin) {
         ownerLogin = value;
         revision += 1;
@@ -32,7 +33,15 @@ export function createTailnetOwnerIdentityPolicy(options: { getOwnerLogin?: () =
     issuedEvidence.add(evidence);
     return evidence;
   };
-  const ownerIdentityError = (login: string, evidence?: TailnetOwnerIdentityEvidence): TailnetOwnerIdentityErrorCode | null => {
+  const probeOwnerIdentity = (): Promise<TailnetOwnerIdentityEvidence> => {
+    if (inFlight) return inFlight;
+    const pending = observeOwnerIdentity();
+    inFlight = pending;
+    const clearPending = () => { if (inFlight === pending) inFlight = undefined; };
+    void pending.then(clearPending, clearPending);
+    return pending;
+  };
+  const ownerIdentityError = (login: string, evidence: TailnetOwnerIdentityEvidence): TailnetOwnerIdentityErrorCode | null => {
     if (!evidence || !issuedEvidence.has(evidence) || !evidence.accepted || evidence.revision !== revision || ownerLogin === null) return "tailnet-owner-identity-unavailable";
     return ownerLogin !== login ? "tailnet-owner-identity-mismatch" : null;
   };

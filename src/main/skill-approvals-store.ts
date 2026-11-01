@@ -93,7 +93,7 @@ export class SkillApprovalsStore {
   }
 
   // Bind current material to the same caller-derived key used by isApproved; mismatched derivation would re-prompt forever.
-  async approve(recordKey: string, currentMaterial: string, canCommit?: () => boolean): Promise<void> {
+  async approve(recordKey: string, currentMaterial: string, canCommit?: () => boolean, prepareCommit?: () => Promise<void>): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       const newHash = hashSkillMaterial(currentMaterial);
@@ -109,7 +109,7 @@ export class SkillApprovalsStore {
         });
       }
       if (canCommit) {
-        if (!await writeFileAtomicAtPathIf(this.filePath, `${JSON.stringify(file, null, 2)}\n`, canCommit)) {
+        if (!await writeFileAtomicAtPathIf(this.filePath, `${JSON.stringify(file, null, 2)}\n`, canCommit, prepareCommit)) {
           throw new Error("Skill approval authority is unavailable");
         }
       } else {

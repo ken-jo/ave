@@ -22,7 +22,8 @@ import {
 import type { AuditLogger } from "../../../audit/audit-logger.js";
 import type { PluginRuntime } from "../../../plugins/runtime.js";
 import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-recorder.js";
-import { enforceMutatingEffects, gateMutatingEffect, snapshotEffectArguments, assertSnapshotableRequestBody } from "../../../permissions/effect-enforcement.js";
+import { enforceMutatingEffects, gateMutatingEffect, snapshotEffectArguments, assertSnapshotableRequestBody, currentEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { isRemoteControllerBoundToSession } from "../../../shared/chat-origin.js";
 import { recordEffect } from "../../../permissions/effect-ledger.js";
 import { methodEffect } from "../../../permissions/effect-kind.js";
 import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
@@ -836,6 +837,7 @@ export function createHostApiFactory(
       },
       hostFetch: async (input, init) => {
         try {
+        const fetchEffectContext = currentEffectGateContext();
         // Use the host’s OS proxy and trust-store transport for declared network access.
         // The shared evaluator owns scheme, HTTPS, allow-list, and DNS-aware SSRF checks; audit stays here.
         // Sanitize denial buckets before telemetry so untrusted reasons cannot grow the counter map.
@@ -939,6 +941,13 @@ export function createHostApiFactory(
         return await runHostFetchHops({
           pluginId,
           first: decision,
+          assertSendAllowed: () => {
+            fetchEffectContext?.abortSignal?.throwIfAborted();
+            if (!isRemoteControllerBoundToSession(fetchEffectContext?.permissionContext?.remoteControllerAuthority, fetchEffectContext?.sessionId)) {
+              throw new Error("remote-controller-revoked");
+            }
+            assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
+          },
           authorizeHop: async (hop) => {
             const reviewHeaders = new Headers(hop.headers);
             let capabilityBound = Boolean(auth || injectSessionCookie);
@@ -1412,7 +1421,7 @@ export function createHostApiFactory(
           } catch (err) {
             auditApprovalViolation(err, bootAuditLogger, pluginId, requestId);
           }
-          approvalGate.resolve(requestId, { requestId, choice, nonce, hmac });
+          await approvalGate.resolveWithFreshIdentity(requestId, { requestId, choice, nonce, hmac });
         },
       },
 

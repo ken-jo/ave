@@ -22,6 +22,7 @@ import { DEFAULT_JUDGE_SETTINGS, type JudgeBreakerSettings } from "./judge/judge
 import { dirname, resolve } from "node:path";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
+import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { permissionsFilePath as defaultPermissionsFilePath, readPermissionsFile, updatePermissionsFile, type PermissionsFile } from "./permissions-store.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
@@ -854,13 +855,14 @@ export class PermissionManager {
   async addRulePersist(
     rule: { pattern: string; action: PermissionRule["action"] },
     scope: { kind: "user" } | { kind: "project"; projectCwd: string },
+    authority?: ApprovalPersistenceGuard,
   ): Promise<void> {
     const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern: rule.pattern, action: rule.action }));
     if (!isRuleSpecifier(validated.pattern)) {
       throw new Error(`addRulePersist takes rules-language specifiers; got legacy pattern ${validated.pattern}`);
     }
     if (scope.kind === "project") {
-      await this.projectRuleScopes.addRule(scope.projectCwd, validated);
+      await this.projectRuleScopes.addRule(scope.projectCwd, validated, authority);
     } else {
       await this.updateRulesFile((file) => {
         if (!file.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source && isCurrentShellRule(r))) {
@@ -868,7 +870,7 @@ export class PermissionManager {
           if (validated.action === "allow") file.rules.push(validated);
           else file.rules.unshift(validated);
         }
-      });
+      }, authority);
       if (!this.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source && isCurrentShellRule(r))) {
         this.rules = this.rules.filter((r) => !(r.pattern === validated.pattern && r.action === validated.action && !r.source));
         if (validated.action === "allow") this.rules.push(validated);
@@ -1228,7 +1230,7 @@ export class PermissionManager {
   }
 
   // Retain the version actually written, never adopt another writer's unseen rules.
-  private async updateRulesFile(mutator: Parameters<typeof updatePermissionsFile>[1]): Promise<void> {
+  private async updateRulesFile(mutator: Parameters<typeof updatePermissionsFile>[1], authority?: ApprovalPersistenceGuard): Promise<void> {
     const previous = this.userRulesVersion;
     let written: PermissionsFile | undefined;
     let knownPolicy = false;
@@ -1239,7 +1241,7 @@ export class PermissionManager {
       );
       await mutator(file);
       written = file;
-    });
+    }, authority);
     this.userRulesVersion = knownPolicy && written !== undefined
       ? persistedPolicyVersionForContent(this.permissionsFilePath, `${JSON.stringify(written, null, 2)}\n`)
       : undefined;

@@ -2,7 +2,7 @@
 // The live gate controls persistence: completed HIGH and mandatory one-shot allows cannot persist, exact denies may. Session decisions stay in memory, persistent decisions use private namespace files and atomic exclusive staging/fsync/rename writes; legacy session rows retain process lifetime.
 import { mkdir, readFile, stat, chmod } from "node:fs/promises";
 import { resolve, dirname, isAbsolute } from "node:path";
-import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
+import { writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "../main/storage/feature-namespace.js";
 import { aveHome } from "../shared/ave-home.js";
 import { matchesMcpToolApprovalMemory, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -16,6 +16,8 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+
+import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 let persistentWrites = createSerialQueue();
 
@@ -249,7 +251,7 @@ async function readApprovalsFile(): Promise<ApprovalsFile> {
   return parsed as ApprovalsFile;
 }
 
-async function atomicWrite(data: ApprovalsFile): Promise<void> {
+async function atomicWrite(data: ApprovalsFile, authority?: ApprovalPersistenceGuard): Promise<void> {
   const path = userApprovalFilePath();
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -261,16 +263,21 @@ async function atomicWrite(data: ApprovalsFile): Promise<void> {
   }
 
 // The shared namespace writer owns exclusive random staging, file/directory fsync and rename to prevent symlink redirection.
-  await writeFileAtomicAtPath(path, `${JSON.stringify(data, null, 2)}\n`);
+  if (authority) {
+    if (!await writeFileAtomicAtPathIf(path, `${JSON.stringify(data, null, 2)}\n`, authority.isCurrent, () => refreshApprovalPersistence(authority))) throw new Error("Approval authority is unavailable");
+  } else {
+    await writeFileAtomicAtPath(path, `${JSON.stringify(data, null, 2)}\n`);
+  }
 }
 
 async function mutatePersistentApprovals(
   mutator: (file: ApprovalsFile) => Promise<void> | void,
+  authority?: ApprovalPersistenceGuard,
 ): Promise<void> {
   return persistentWrites(async () => {
     const file = await readApprovalsFile();
     await mutator(file);
-    await atomicWrite(file);
+    await atomicWrite(file, authority);
   });
 }
 
@@ -292,6 +299,7 @@ export async function recordApproval(
     sessionId?: string;
     projectCwd?: string;
   },
+  authority?: ApprovalPersistenceGuard,
 ): Promise<void> {
   if (!isApprovalVerdict(entry.verdictAtApproval) ||
       (entry.riskCeilingAtApproval !== undefined && !isApprovalVerdict(entry.riskCeilingAtApproval))) {
@@ -328,6 +336,7 @@ export async function recordApproval(
   };
 
   if (entry.scope === "session") {
+    await refreshApprovalPersistence(authority);
     sessionStore.set(key, full);
     approvalGeneration += 1;
     return;
@@ -336,7 +345,7 @@ export async function recordApproval(
   // persistent or global — write to disk
   await mutatePersistentApprovals((file) => {
     file.approvals[key] = full;
-  });
+  }, authority);
   // Mirror into session cache for fast lookups.
   sessionStore.set(key, full);
   approvalGeneration += 1;

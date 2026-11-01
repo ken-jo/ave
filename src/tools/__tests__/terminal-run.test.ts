@@ -1,3 +1,6 @@
+import { typeLineAtPrompt } from "../../main/terminal/pty-manager.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { runWithEffectGateContext } from "../../permissions/effect-enforcement.js";
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
 /** terminal_run: type one approved command into the invoking conversation's isolated terminal. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -504,6 +507,23 @@ describe("terminal_run", () => {
   });
 
   describe("execute", () => {
+    it("refuses remote typing when identity changes while ensuring the terminal", async () => {
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+      let current = true, executing = false;
+      const binding = { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" };
+      const refreshCurrent = vi.fn(async () => current);
+      const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare: binding, pairedShareGuard: { isCurrent: () => true, refreshCurrent } }, "main");
+      const deps = depsWith({ ensureConversationTerminal: async () => { if (executing) current = false; return terminalSessionFixture("terminal:aaaaaaaa-1"); } });
+      const tool = createTerminalRunTool(deps);
+      const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
+      executing = true;
+      const result = await runWithEffectGateContext({ headless: false, toolName: "terminal_run", sessionId: "main", permissionContext: { remoteControllerAuthority: authority } }, () => tool.execute({ command: "ls" }, ctxFor(scope)));
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("remote-controller-revoked");
+      expect(refreshCurrent).toHaveBeenCalledOnce();
+      expect(deps.typed).toEqual([]);
+    });
+
     it("includes the full Linux window when changed Git protection refuses typing", async () => {
       const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
       Object.defineProperty(process, "platform", { value: "linux", configurable: true });
@@ -979,4 +999,19 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     await expect(tool.execute({ command: "npm test" }, withoutRoute as ToolExecutionContext)).rejects.toThrow(/without its sealed execution route/);
     expect(hostTyped).toEqual([]);
   });
+});
+
+
+it("refuses a remote terminal write when identity changes during the native shell check", async () => {
+  const tracker = readyTracker();
+  vi.spyOn(tracker, "supportsEditLineQuery").mockReturnValue(true);
+  let current = true;
+  const binding = { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" };
+  const refreshCurrent = vi.fn(async () => current);
+  const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare: binding, pairedShareGuard: { isCurrent: () => true, refreshCurrent } }, "main");
+  const write = vi.fn();
+  const result = await runWithEffectGateContext({ headless: false, toolName: "terminal_run", sessionId: "main", permissionContext: { remoteControllerAuthority: authority } }, () => typeLineAtPrompt({ blocks: tracker, isLive: () => true, write, verify: async () => { current = false; return { ok: true, cwd: "/repo" }; }, missing: "no terminal" }, "ls"));
+  expect(result).toMatchObject({ ok: false, reason: "effect-refused", message: "remote-controller-revoked" });
+  expect(refreshCurrent).toHaveBeenCalledOnce();
+  expect(write).not.toHaveBeenCalled();
 });

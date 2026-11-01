@@ -44,7 +44,7 @@ afterEach(async () => {
 
 interface FixtureOptions {
   readonly probeOwnerIdentity?: () => Promise<import("../../main/tailnet-owner-policy.js").TailnetOwnerIdentityEvidence>;
-  readonly ownerIdentityError?: (login: string) => import("../../shared/tailnet-sharing.js").TailnetOwnerIdentityErrorCode | null;
+  readonly ownerIdentityError?: (login: string, evidence: import("../../main/tailnet-owner-policy.js").TailnetOwnerIdentityEvidence) => import("../../shared/tailnet-sharing.js").TailnetOwnerIdentityErrorCode | null;
   readonly authorization?: TailnetAuthorization;
   readonly conversationId?: () => string;
   readonly replayLimitPerConversation?: number;
@@ -136,7 +136,7 @@ const PAIRED_SHARE = Object.freeze({
   scope: "33333333-3333-4333-8333-333333333333",
 });
 
-function pairedSharing(options: Readonly<{ observe: boolean; control: boolean }>) {
+function pairedSharing(options: Readonly<{ observe: boolean; control: boolean; expiresAt?: number }>) {
   let active = true;
   const listeners = new Set<() => void>();
   const pairedShareGuard = {
@@ -166,6 +166,7 @@ function pairedSharing(options: Readonly<{ observe: boolean; control: boolean }>
         pairedShare: PAIRED_SHARE,
         pairedShareGuard,
         permission: options.control ? "control" : "observe",
+        expiresAt: options.expiresAt ?? Number.MAX_SAFE_INTEGER,
       };
     },
     subscribe(listener) {
@@ -1830,7 +1831,7 @@ describe("request-scoped asynchronous owner identity", () => {
 
   it("streams assistant deltas without probing or rechecking paired authority per event, and closes on subscription revocation", async () => {
     const sharing = pairedSharing({ observe: true, control: true });
-    const guard = sharing.authorizer.authorize("owner@example.com", CONVERSATION_ID, "observe")!.pairedShareGuard;
+    const guard = sharing.authorizer.authorize("owner@example.com", CONVERSATION_ID, "observe", await sharing.authorizer.probeOwnerIdentity())!.pairedShareGuard;
     const isCurrent = vi.spyOn(guard, "isCurrent");
     const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
     const { server, timeline } = await fixture({ probeOwnerIdentity, pairedSharing: sharing.authorizer });
@@ -1899,4 +1900,80 @@ it("rejects a pairing body whose request evidence was suspended and replaced dur
   expect(response.status).toBe(403);
   expect(JSON.parse(response.body)).toMatchObject({ error: "tailnet-owner-identity-unavailable" });
   expect(claimInvitation).not.toHaveBeenCalled();
+});
+
+
+it.each(["native", "web"] as const)("preserves an accepted %s command result when authority is revoked during submission", async (transport) => {
+  const sharing = pairedSharing({ observe: true, control: true });
+  const submit = vi.fn(() => {
+    sharing.revoke();
+    return { completion: Promise.resolve({ text: "", toolCalls: [], route: "default", stopReason: "end_turn" }) };
+  });
+  const { server } = await fixture({ pairedSharing: sharing.authorizer, controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort, ...(transport === "web" ? { web: { origin: WEB_ORIGIN } } : {}) });
+  const session = transport === "web" ? await openWebSession(server, tailnetRoleHeaders(["observer", "controller"])) : undefined;
+  const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
+  const scope = (await snapshot.json() as { conversation: { scope: string } }).conversation.scope;
+  const path = transport === "web" ? "/tailnet/v2/web/commands" : "/tailnet/v1/commands";
+  const headers = { ...(session ? webSessionHeaders(session.cookieToken, session.csrfToken, ["controller"]) : controllerHeaders()), "content-type": "application/json" };
+  const body = JSON.stringify({ id: "accepted-before-revocation-0001", type: "conversation.send", input: "perform work", scope });
+  const response = await fetch(url(server, path), { method: "POST", headers, body });
+  expect(response.status).toBe(202);
+  expect(await response.json()).toMatchObject({ accepted: true, turn: { denied: true, error: "remote-controller-authority-revoked" } });
+  expect((await fetch(url(server, path), { method: "POST", headers, body })).status).toBe(transport === "web" ? 401 : 403);
+  expect(submit).toHaveBeenCalledOnce();
+});
+
+it("closes an expired share before delivering the next delta without an identity probe or interval", async () => {
+  const expiresAt = Date.now() + 60_000;
+  const sharing = pairedSharing({ observe: true, control: true, expiresAt });
+  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+  const { server, timeline } = await fixture({ pairedSharing: sharing.authorizer, probeOwnerIdentity });
+  const response = await fetch(url(server, "/tailnet/v1/conversation/events"), { headers: observerHeaders() });
+  const reader = response.body!.getReader();
+  await readUntil(reader, ": connected");
+  const now = vi.spyOn(Date, "now").mockReturnValue(expiresAt);
+  try {
+    timeline.publish({ conversationId: CONVERSATION_ID, event: { kind: "assistant.text.delta", text: "expired-private-delta" } });
+    const stream = await readUntil(reader, "reauthorize-required");
+    expect(stream).not.toContain("expired-private-delta");
+    expect(probeOwnerIdentity).toHaveBeenCalledOnce();
+  } finally { now.mockRestore(); await reader.cancel(); }
+});
+
+it("checks owner identity for controller-only web attachment uploads", async () => {
+  const sharing = pairedSharing({ observe: true, control: true });
+  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+  const { server } = await fixture({ pairedSharing: sharing.authorizer, probeOwnerIdentity, controllerCommandPort: { submit: vi.fn(), execute: vi.fn() } as unknown as ConversationCommandPort, web: { origin: WEB_ORIGIN } });
+  const session = await openWebSession(server, tailnetRoleHeaders(["observer", "controller"]));
+  const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
+  const scope = (await snapshot.json() as { conversation: { scope: string } }).conversation.scope;
+  probeOwnerIdentity.mockClear();
+  const uploaded = await fetch(url(server, "/tailnet/v3/web/attachments"), { method: "POST", headers: { ...webSessionHeaders(session.cookieToken, session.csrfToken, ["controller"]), "content-type": "image/png", "x-ave-tailnet-scope": scope }, body: PNG });
+  expect(uploaded.status).toBe(202);
+  expect(probeOwnerIdentity).toHaveBeenCalledOnce();
+});
+
+it("checks request identity before submitting a command after asynchronous body reading", async () => {
+  let unavailable = false;
+  const submit = vi.fn();
+  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+  const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError: () => unavailable ? "tailnet-owner-identity-unavailable" : null, controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort });
+  const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
+  const scope = (await snapshot.json() as { conversation: { scope: string } }).conversation.scope;
+  probeOwnerIdentity.mockClear();
+  let finish!: () => void;
+  const completed = new Promise<number>((resolve, reject) => {
+    const req = httpRequest({ hostname: "127.0.0.1", port: server.port, path: "/tailnet/v1/commands", method: "POST", headers: { ...controllerHeaders(), "content-type": "application/json" } }, response => {
+      response.resume();
+      response.on("end", () => resolve(response.statusCode!));
+    });
+    req.on("error", reject);
+    req.flushHeaders();
+    finish = () => req.end(JSON.stringify({ id: "denied-before-submission-0001", type: "conversation.send", input: "must not submit", scope }));
+  });
+  await vi.waitFor(() => expect(probeOwnerIdentity).toHaveBeenCalledOnce());
+  unavailable = true;
+  finish();
+  expect(await completed).toBe(403);
+  expect(submit).not.toHaveBeenCalled();
 });

@@ -113,3 +113,15 @@ describe("readPermissionsFile", () => {
     expect(JSON.parse(raw)).toMatchObject({ version: 1, mode: "trusted", rules: [] });
   });
 });
+
+
+it("does not write rules when fresh approval authority fails after preparation", async () => {
+  atomicWriteMock.mockClear();
+  readFileMock.mockResolvedValue("");
+  let current = true;
+  await expect(updatePermissionsFile("/tmp/permissions.json", file => {
+    file.rules.push({ pattern: "Bash(printf after)", action: "allow" });
+    current = false;
+  }, { refresh: async () => current, isCurrent: () => current })).rejects.toThrow("Approval authority is unavailable");
+  expect(atomicWriteMock).not.toHaveBeenCalled();
+});

@@ -49,7 +49,7 @@ describe("TailnetPairedShareAuthorizer", () => {
         if (actorId !== expectedActor || conversationId !== "conversation-a" || required !== "control") {
           return null;
         }
-        return { actorId, pairing: BINDING, permission: "control" };
+        return { actorId, pairing: BINDING, permission: "control", expiresAt: Date.now() + 60_000 };
       },
       isAuthorityCurrent(authority, conversationId, required): boolean {
         return authoritative
@@ -78,7 +78,7 @@ describe("TailnetPairedShareAuthorizer", () => {
     expect(grant?.pairedShareGuard.isCurrent(grant.pairedShare!)).toBe(false);
   });
 
-  it("fails closed for malformed login, bad secret, and an unavailable grant", () => {
+  it("fails closed for malformed login, bad secret, and an unavailable grant", async () => {
     expect(() => createTailnetPairedShareAuthorizer({
       getOwnerLogin: () => "owner@example.test",
       store: inertStore(),
@@ -94,7 +94,7 @@ describe("TailnetPairedShareAuthorizer", () => {
     });
     expect(authorizer.actorIdFor("")).toBeNull();
     expect(authorizer.actorIdFor("hello\nworld")).toBeNull();
-    expect(authorizer.authorize("owner@example.test", "conversation-a", "observe")).toBeNull();
+    expect(authorizer.authorize("owner@example.test", "conversation-a", "observe", await authorizer.probeOwnerIdentity())).toBeNull();
   });
 
   it("rejects a corrupted persisted actor secret rather than silently rotating it", () => {

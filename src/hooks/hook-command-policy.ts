@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult, PermissionManager } from "../permissions/permission-manager.js";
 import { isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
-import { isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
@@ -19,7 +19,7 @@ export type HookCommandAuthorizer = (
   hook: RunnableHook,
   payload: ScriptHookStdin,
   cwd: string,
-) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void }>;
+) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void; refreshAllowed?: () => Promise<void> }>;
 
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
 export function createHookCommandAuthorizer(deps: {
@@ -32,7 +32,7 @@ export function createHookCommandAuthorizer(deps: {
     const abortSignal = turnPolicy?.abortSignal;
     const remoteControllerAuthority = turnPolicy?.remoteControllerAuthority;
     const controllerCurrent = () => isRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId);
-    if (!controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
+    if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
     if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
     if (turnPolicy?.allowExternalHooks === false) return { decision: "deny", reason: "External hooks are disabled for this turn" };
     const cwdIdentity = captureShellWorkingDirectoryIdentity(cwd);
@@ -100,12 +100,13 @@ export function createHookCommandAuthorizer(deps: {
         ...(binding ? { hostShellExecutionPermitBinding: binding } : {}),
       });
       if (abortSignal?.aborted) return { decision: "deny", reason: "Hook command was cancelled" };
-      if (!controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
+      if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
       const rejected = Boolean(isHostApprovalRejectedDecision(approval));
       if (rejected || approval.choice !== "allow-once" && approval.choice !== "allow-session" && approval.choice !== "allow-always") {
         return { decision: "deny", reason: approval.rememberPattern === NO_APPROVER_MESSAGE ? NO_APPROVER_MESSAGE : "user denied hook command" };
       }
     }
+    if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId) || !controllerCurrent()) return { decision: "deny", reason: "Remote controller authority was revoked or is not bound to this session" };
     const current = check();
     if (current.decision === "deny") return { decision: "deny", reason: current.reason };
     if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
@@ -124,6 +125,10 @@ export function createHookCommandAuthorizer(deps: {
         throw new Error(`Hook command permission changed: ${current.reason}`);
       }
     };
-    return { decision: "allow", reason: humanApproved ? "user approved hook command" : result.reason, plan, assertAllowed };
+    const refreshAllowed = async (): Promise<void> => {
+      if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, payload.sessionId)) throw new Error("remote-controller-revoked");
+      assertAllowed();
+    };
+    return { decision: "allow", reason: humanApproved ? "user approved hook command" : result.reason, plan, assertAllowed, refreshAllowed };
   };
 }

@@ -4718,7 +4718,7 @@ describe("ToolExecutor remote controller session authority", () => {
   const pairedShare = Object.freeze({ pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" });
 
   function remoteContext(sessionId: string, overrides: Partial<import("../../shared/chat-origin.js").TailnetControllerAuthority> = {}) {
-    return userPermissionContext({ trustOrigin: "tailnet-surface", remoteControllerAuthority: bindRemoteControllerToSession({ ...authority, ...overrides }, sessionId) });
+    return userPermissionContext({ trustOrigin: "tailnet-surface", remoteControllerAuthority: bindRemoteControllerToSession({ ...authority, pairedShare, pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true }, ...overrides }, sessionId) });
   }
 
   function buildExecutor(mode: "strict" | "default" | "auto" | "allow" = "allow", category: "read" | "network" = "read") {
@@ -4837,7 +4837,7 @@ describe("ToolExecutor remote controller session authority", () => {
     const { executor, executed, requestAndWait } = buildExecutor();
     let current = true;
     const sessionId = "controller-revoked-start";
-    const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current } });
+    const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
     current = false;
     const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
     expect(requestAndWait).not.toHaveBeenCalled();
@@ -4885,7 +4885,7 @@ describe("ToolExecutor remote controller session authority", () => {
     const { executor, executed, requestAndWait } = buildExecutor("strict", "network");
     let current = true;
     const sessionId = "controller-revoked-after-card";
-    const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current } });
+    const context = remoteContext(sessionId, { pairedShare, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } });
     requestAndWait.mockImplementation(async request => { current = false; return { requestId: request.id, choice: "allow-once" }; });
     const result = await executor.executeAll([{ id: sessionId, name: "controller_probe", input: {} }], { sessionId, permissionContext: context });
     expect(requestAndWait).toHaveBeenCalledOnce();

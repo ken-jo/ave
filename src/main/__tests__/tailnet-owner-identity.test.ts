@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import * as ts from "typescript/unstable/ast";
+import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
 import { readTailnetOwnerLogin, tailnetOwnerLoginFromStatus } from "../tailnet-owner-identity.js";
 
 const native = vi.hoisted(() => ({ read: vi.fn(), path: vi.fn(() => "host-cli"), warn: vi.fn() }));
@@ -38,12 +41,28 @@ describe("local node owner identity", () => {
     expect(native.warn).toHaveBeenCalledWith("Owner identity probe unavailable: %s", category);
     expect(JSON.stringify(native.warn.mock.calls)).not.toMatch(/private|owner@example/);
   });
-  it("does not block the event loop while a probe is pending", async () => {
-    let complete!: (value: unknown) => void;
-    native.read.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
-    const pending = readTailnetOwnerLogin();
-    await new Promise<void>(resolve => setImmediate(resolve));
-    complete({ kind: "ran", code: 0, stdout: JSON.stringify(status), stderr: "" });
-    await expect(pending).resolves.toBe("owner@example.test");
+  it("permits only asynchronous process imports throughout the identity probe path", () => {
+    const processImports: string[] = [];
+    for (const file of ["tailnet-owner-identity.ts", "tailnet-cli.ts"]) {
+      const source = readFileSync(new URL("../" + file, import.meta.url), "utf8");
+      const syntax = parseSourceTexts(new Map([[file, source]])).get(file) as ts.SourceFile;
+      expect(syntax).toBeDefined();
+      const visit = (node: ts.Node): void => {
+        if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && /^(?:node:)?child_process$/.test(node.moduleSpecifier.text)) {
+          const bindings = node.importClause?.namedBindings;
+          expect(bindings && ts.isNamedImports(bindings)).toBe(true);
+          if (bindings && ts.isNamedImports(bindings)) {
+            processImports.push(...bindings.elements.map(element => (element.propertyName ?? element.name).text));
+          }
+        }
+        if (ts.isCallExpression(node) && node.arguments.some(argument => ts.isStringLiteral(argument) && /^(?:node:)?child_process$/.test(argument.text))) {
+          throw new Error("Process execution must use reviewed static imports");
+        }
+        if (ts.isIdentifier(node)) expect(node.text).not.toMatch(/^(?:execFileSync|execSync|spawnSync)$/);
+        node.forEachChild(visit);
+      };
+      visit(syntax);
+    }
+    expect(processImports).toEqual(["execFile"]);
   });
 });

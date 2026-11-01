@@ -1,4 +1,4 @@
-import { isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
+import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { WebContents } from "electron";
 import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
@@ -1485,6 +1485,43 @@ export class ApprovalGate {
     });
   }
 
+  capturePendingRequestIdentityGuard(requestId: string): { refresh: () => Promise<boolean>; isCurrent: () => boolean } | null {
+    const entry = this.pending.get(requestId);
+    if (!entry) return null;
+    const isCurrent = () => this.pending.get(requestId) === entry && isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
+    return { refresh: async () => await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) && isCurrent(), isCurrent };
+  }
+
+  async resolveWithFreshIdentity(requestId: string, decision: ApprovalDecision, answeredBy: ApprovalAnswerer = "desk"): Promise<ApprovalDecision | null> {
+    const entry = this.pending.get(requestId);
+    if (!entry) return null;
+    const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
+    if (this.pending.get(requestId) !== entry) return null;
+    if (!identityCurrent) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
+      entry.resolve(rejected);
+      return rejected;
+    }
+    return this.resolveDecision(requestId, decision, answeredBy, false, undefined, true);
+  }
+
+  async resolveFromDesktopRendererWithFreshIdentity(requestId: string, decision: ApprovalDecision, responder: WebContents): Promise<ApprovalDecision | null> {
+    const entry = this.pending.get(requestId);
+    if (!entry || !this.canAccessRendererRequest(requestId, responder, "desk")) return null;
+    const identityCurrent = await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
+    if (this.pending.get(requestId) !== entry) return null;
+    if (!identityCurrent) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
+      entry.resolve(rejected);
+      return rejected;
+    }
+    return this.resolveDecision(requestId, decision, "desk", true, responder, true);
+  }
+
   // Resolve responses from non-native host surfaces. Ignores unknown pending entries, making duplicate responses safe. `answeredBy` is host-derived AT THE CALL SITE, never read from the decision payload: the renderer's IPC route and the plugin host-API route use separate entry points; the paired chat-platform card handler is the one caller that passes `"platform-bridge"`. Every answerer passes the same integrity and allowed-choice checks below — there is deliberately no second integrity or choice-validation implementation.
   resolve(
     requestId: string,
@@ -1544,6 +1581,7 @@ export class ApprovalGate {
     answeredBy: ApprovalAnswerer,
     nativeRenderer: boolean,
     responder?: WebContents,
+    identityRefreshed = false,
   ): ApprovalDecision | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
@@ -1552,6 +1590,7 @@ export class ApprovalGate {
       // damage the owner's pending request, even with valid signed contents.
       return null;
     }
+    if (entry.remoteControllerAuthority?.kind === "tailnet-controller" && !identityRefreshed) return null;
     if (!isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) {
       clearTimeout(entry.timer);
       this.pending.delete(requestId);

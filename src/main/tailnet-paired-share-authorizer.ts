@@ -42,12 +42,13 @@ export interface TailnetPairedShareAuthorization {
   readonly pairedShare: TailnetPairingShareBinding;
   readonly pairedShareGuard: TailnetPairedShareGuard;
   readonly permission: TailnetSharePermission;
+  readonly expiresAt: number;
 }
 
 export interface TailnetPairedShareAuthorizer {
   probeOwnerIdentity(): Promise<TailnetOwnerIdentityEvidence>;
   currentOwnerLogin(): string | null;
-  ownerIdentityError(login: string, evidence?: TailnetOwnerIdentityEvidence): TailnetOwnerIdentityErrorCode | null;
+  ownerIdentityError(login: string, evidence: TailnetOwnerIdentityEvidence): TailnetOwnerIdentityErrorCode | null;
   // Host-only, opaque actor derivation; returns no raw login value.
   actorIdFor(login: string): TailnetShareActorId | null;
   // Resolve the current owner-approved share for the current conversation.
@@ -55,7 +56,7 @@ export interface TailnetPairedShareAuthorizer {
     login: string,
     currentConversationId: string,
     required: TailnetSharePermission,
-    evidence?: TailnetOwnerIdentityEvidence,
+    evidence: TailnetOwnerIdentityEvidence,
   ): TailnetPairedShareAuthorization | null;
   subscribe(listener: () => void): () => void;
 }
@@ -123,12 +124,20 @@ export function createTailnetPairedShareAuthorizer(
     if (authority === null || !sameActor(actorId, authority.actorId) || !validBinding(authority.pairing)) {
       return null;
     }
+    let liveEvidence = evidence;
     const pairedShare = Object.freeze({ ...authority.pairing });
     let revoked = false;
     const pairedShareGuard: TailnetPairedShareGuard = Object.freeze({
+      async refreshCurrent(candidate: TailnetPairingShareBinding): Promise<boolean> {
+        if (revoked || !sameBinding(candidate, pairedShare)) return false;
+        const fresh = await probeOwnerIdentity();
+        if (revoked || ownerIdentityError(login, fresh) !== null) { revoked = true; return false; }
+        liveEvidence = fresh;
+        return pairedShareGuard.isCurrent(candidate);
+      },
       isCurrent(candidate: TailnetPairingShareBinding): boolean {
         if (revoked || !sameBinding(candidate, pairedShare)) return false;
-        if (ownerIdentityError(login, evidence) !== null) { revoked = true; return false; }
+        if (ownerIdentityError(login, liveEvidence) !== null) { revoked = true; return false; }
         const latestConversationId = currentConversationId(options.getCurrentConversationId);
         if (latestConversationId === null) return false;
         try {
@@ -143,6 +152,7 @@ export function createTailnetPairedShareAuthorizer(
       pairedShare,
       pairedShareGuard,
       permission: authority.permission,
+      expiresAt: authority.expiresAt,
     });
   };
 

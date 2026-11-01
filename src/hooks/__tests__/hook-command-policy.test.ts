@@ -408,7 +408,7 @@ describe("hook command permission admission", () => {
     expect((await pending).decision).toBe("allow");
   });
 
-  it.each([false, true])("rechecks a bound controller after an actual pending hook card: revoked=%s", async revoked => {
+  it.each([{ revoked: false, transport: "bridge" }, { revoked: true, transport: "bridge" }, { revoked: false, transport: "tailnet" }, { revoked: true, transport: "tailnet" }])("rechecks a bound controller after an actual pending hook card: %j", async ({ revoked, transport }) => {
     const p = policy();
     p.permissionManager.setMode("strict");
     const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
@@ -416,7 +416,8 @@ describe("hook command permission admission", () => {
     const requestAndWait = vi.spyOn(gate, "requestAndWait");
     const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
     let current = true;
-    const authority = bindRemoteControllerToSession({
+    let ownerAvailable = true;
+    const authority = transport === "tailnet" ? bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:hook-controller", pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" }, pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = ownerAvailable; return current; } } }, payload.sessionId) : bindRemoteControllerToSession({
       kind: "platform-bridge", actorId: "hook-controller",
       bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
       bridgeGuard: { isCurrent: () => current },
@@ -425,10 +426,10 @@ describe("hook command permission admission", () => {
       () => runOneHookScript(hook, payload, { authorizeCommand }));
     await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
     const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
-    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerAuthority: authority, remoteControllerOrigin: "platform-bridge" }));
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerAuthority: authority, remoteControllerOrigin: transport === "tailnet" ? "tailnet-controller" : "platform-bridge" }));
     expect(gate.pendingCount).toBe(1);
-    if (revoked) current = false;
-    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    if (revoked) { if (transport === "tailnet") ownerAvailable = false; else current = false; }
+    await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
     const result = await pending;
     expect(result.decision).toBe(revoked ? "deny" : "allow");
     if (revoked) expect(result.rawStdout).toBe("");

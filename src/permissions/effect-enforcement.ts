@@ -1,3 +1,4 @@
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
 import { createHash, randomUUID } from "node:crypto";
@@ -322,6 +323,7 @@ export async function gateMutatingEffect(params: {
   }
   ctx.abortSignal?.throwIfAborted();
   if (permission.decision === "allow") {
+    if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
     assertEffectPaths(paths);
     return;
   }
@@ -362,6 +364,8 @@ export async function gateMutatingEffect(params: {
     createdAt: Date.now(),
     ...(permission.forceModal ? { forceExplicit: true as const } : {}),
     ownerUnattended: ctx.permissionContext?.ownerUnattended,
+    remoteControllerAuthority: ctx.permissionContext?.remoteControllerAuthority,
+    remoteControllerOrigin: remoteControllerOriginOf(ctx.permissionContext?.remoteControllerAuthority),
     ...(!reusableGrant ? { allowedChoices: ["allow-once" as const, "deny-once" as const] } : {}),
     durableApprovalRecordAllowed: false,
     ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
@@ -369,6 +373,7 @@ export async function gateMutatingEffect(params: {
   });
 
   ctx.abortSignal?.throwIfAborted();
+  if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
   if (policyEpoch !== manager.getPolicyEpoch()) throw new Error("Permission policy changed during effect approval");
   assertEffectPaths(paths);
   if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
@@ -451,6 +456,8 @@ export function enforceMutatingEffects<T extends object>(
             resolveStoragePath: deps.resolveStoragePath,
           });
           deps.assertActive();
+          const effectContext = currentEffectGateContext();
+          if (!isRemoteControllerBoundToSession(effectContext?.permissionContext?.remoteControllerAuthority, effectContext?.sessionId)) throw new Error("remote-controller-revoked");
           assertEffectPaths(paths);
           return Reflect.apply(original, target, snapshot.args);
         })();

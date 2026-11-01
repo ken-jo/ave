@@ -35,42 +35,21 @@ describe("request-scoped device owner policy", () => {
     expect(policy.ownerIdentityError(OWNER, third)).toBe("tailnet-owner-identity-mismatch");
   });
 
-  it("does not let an older pending success re-enable an owner changed by a newer probe", async () => {
-    const older = pendingIdentity();
-    const newer = pendingIdentity();
-    const getOwnerLogin = vi.fn<() => Promise<string | null>>()
-      .mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
-    const onChanged = vi.fn();
-    const policy = createTailnetOwnerIdentityPolicy({ getOwnerLogin, onChanged });
-    const oldRequest = policy.probeOwnerIdentity();
-    const newRequest = policy.probeOwnerIdentity();
-    newer.resolve(NEXT_OWNER);
-    const fresh = await newRequest;
-    expect(policy.ownerIdentityError(NEXT_OWNER, fresh)).toBeNull();
-    older.resolve(OWNER);
-    const superseded = await oldRequest;
-    expect(superseded.accepted).toBe(false);
-    expect(policy.currentOwnerLogin()).toBe(NEXT_OWNER);
-    expect(policy.ownerIdentityError(OWNER, superseded)).toBe("tailnet-owner-identity-unavailable");
-    expect(policy.ownerIdentityError(NEXT_OWNER, fresh)).toBeNull();
-    expect(onChanged).toHaveBeenCalledOnce();
-  });
-
-  it("does not let an older pending success undo a newer unavailable observation", async () => {
-    const older = pendingIdentity();
-    const getOwnerLogin = vi.fn<() => Promise<string | null>>()
-      .mockResolvedValueOnce(OWNER).mockReturnValueOnce(older.promise).mockResolvedValueOnce(null);
+  it("coalesces simultaneous callers only while the observation is pending", async () => {
+    const pending = pendingIdentity();
+    const getOwnerLogin = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(OWNER);
     const policy = createTailnetOwnerIdentityPolicy({ getOwnerLogin });
-    const prior = await policy.probeOwnerIdentity();
-    const oldRequest = policy.probeOwnerIdentity();
-    const unavailable = await policy.probeOwnerIdentity();
-    older.resolve(OWNER);
-    const late = await oldRequest;
-    expect(policy.currentOwnerLogin()).toBeNull();
-    for (const evidence of [prior, unavailable, late]) {
-      expect(policy.ownerIdentityError(OWNER, evidence)).toBe("tailnet-owner-identity-unavailable");
-    }
-    expect(late.accepted).toBe(false);
+    const first = policy.probeOwnerIdentity();
+    const second = policy.probeOwnerIdentity();
+    expect(first).toBe(second);
+    expect(getOwnerLogin).toHaveBeenCalledOnce();
+    pending.resolve(OWNER);
+    const [left, right] = await Promise.all([first, second]);
+    expect(policy.ownerIdentityError(OWNER, left)).toBeNull();
+    expect(policy.ownerIdentityError(OWNER, right)).toBeNull();
+    const later = await policy.probeOwnerIdentity();
+    expect(getOwnerLogin).toHaveBeenCalledTimes(2);
+    expect(policy.ownerIdentityError(OWNER, later)).toBeNull();
   });
 
   it.each(["unavailable", "probe-error"] as const)("invalidates pre-failure evidence after %s and admits only fresh evidence on same-owner recovery", async failure => {
@@ -98,7 +77,7 @@ describe("request-scoped device owner policy", () => {
     const other = createTailnetOwnerIdentityPolicy({ getOwnerLogin: () => OWNER });
     const foreignEvidence = await other.probeOwnerIdentity();
     expect(Object.isFrozen(issued)).toBe(true);
-    for (const evidence of [undefined, { ...issued }, Object.freeze({ ...issued }), foreignEvidence, { revision: issued.revision, ownerLogin: OWNER, accepted: true }]) {
+    for (const evidence of [{ ...issued }, Object.freeze({ ...issued }), foreignEvidence, { revision: issued.revision, ownerLogin: OWNER, accepted: true }]) {
       expect(policy.ownerIdentityError(OWNER, evidence)).toBe("tailnet-owner-identity-unavailable");
     }
     expect(policy.ownerIdentityError(OWNER, issued)).toBeNull();

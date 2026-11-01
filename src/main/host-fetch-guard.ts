@@ -203,6 +203,8 @@ export interface HostFetchHopOptions {
   };
   // Authorize the exact actual hop after destination and credential checks, before any transport send.
   authorizeHop?: (hop: { url: URL; method: string; body: BodyInit | null | undefined; headers: Headers; index: number }) => Promise<void>;
+  // Recheck synchronous authority immediately before transport and again after any deferred body preparation at handoff.
+  assertSendAllowed?: () => void;
   // Audit sink for an allowed hop (hop >= 1; the caller logged hop 0).
   auditHop?: (line: string) => void;
   // Audit sink for a denied hop — same shape the caller uses for hop 0.
@@ -234,6 +236,7 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
     injectSessionCookie,
     credentialUse,
     authorizeHop,
+    assertSendAllowed,
   } = options;
   const requestedPolicy = init.redirect;
   const policy: "error" | "manual" | "follow" =
@@ -306,9 +309,11 @@ export async function runHostFetchHops(options: HostFetchHopOptions): Promise<Re
       };
       // A transport with a deferred body must recheck at the first write/end. Plain fetch-shaped test transports hand off at their synchronous call.
       const beforeSend = (): void => {
+        assertSendAllowed?.();
         credentialUse?.assertLive("before-send");
         handedOff = true;
       };
+      assertSendAllowed?.();
       response = handoffTransport
         ? await handoffTransport.sendWithHandoff(url.toString(), transportInit, beforeSend)
         : await transport(url.toString(), transportInit);

@@ -50,6 +50,7 @@ export interface TailnetPairingClaim {
 }
 
 export interface TailnetPairingShareAuthority {
+  readonly expiresAt: number;
   readonly actorId: TailnetShareActorId;
   readonly pairing: TailnetPairingShareBinding;
   readonly permission: TailnetSharePermission;
@@ -710,6 +711,7 @@ export class TailnetPairingShareStore {
         value: Object.freeze({
           actorId: pairing.actorId,
           pairing: binding(pairing, share),
+          expiresAt: share.expiresAt,
           permission,
         }),
         changed: true,
@@ -792,6 +794,7 @@ export class TailnetPairingShareStore {
           actorId: resolvedActorId,
           pairing: binding(pairing, share),
           permission: share.permission,
+          expiresAt: share.expiresAt,
         })
       : null;
   }

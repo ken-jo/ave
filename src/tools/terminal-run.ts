@@ -1,3 +1,5 @@
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
+import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
 /** Type into the calling conversation's confined shell, or, for a workspace terminal's own pane chat, into that bound host terminal.
  * Seal the target and cwd before approval and refuse changed targets at execution. A host terminal is never reached by fallback: an
  * unavailable bound host refuses. Host commands use the conversation's user-owned surface choice,
@@ -401,7 +403,12 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     if (before !== undefined || !tracker) return changed(before ?? `terminal ${scope.tabId} moved to another directory`);
     // The directory proof is the last step, after the route recheck's await: nothing asynchronous lies between it and the write it guards.
     const effectCheck = async (): Promise<{ ok: true } | { ok: false; message: string }> => {
-      try { await route.recheck(); }
+      try {
+        await route.recheck();
+        const gate = currentEffectGateContext();
+        if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)
+          || !isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) return { ok: false, message: "remote-controller-revoked" };
+      }
       catch (error) { return { ok: false, message: errorMessage(error) }; }
       const moved = directoryChanged();
       if (moved !== undefined) return { ok: false, message: `${moved} while the command was being prepared` };
@@ -464,6 +471,9 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
         `terminal ${scope.tabId} moved from ${scope.cwd} to ${tracker.currentCwd() ?? "an unreported directory"} after approval; nothing was typed. Call terminal_run again.`,
       );
     }
+    const gate = currentEffectGateContext();
+    if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)
+      || !isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) return fail("remote-controller-revoked");
     ctx.abortSignal?.throwIfAborted();
     const typed = await deps.typeCommand(scope, windowId, input.command, scope.cwd, ctx.abortSignal);
     if (!typed.ok) {

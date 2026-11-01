@@ -1625,7 +1625,7 @@ describe("ApprovalGate", () => {
       const sessionId = overrides.sessionId ?? "controller-session";
       const authority = overrides.remoteControllerOrigin === "platform-bridge"
         ? makePlatformBridgeAuthority()
-        : { kind: "tailnet-controller" as const, actorId: "tailnet:controller-digest" as const };
+        : { kind: "tailnet-controller" as const, actorId: "tailnet:controller-digest" as const, pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" }, pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true } };
       return makeRequest({ ...overrides, sessionId, remoteControllerAuthority: bindRemoteControllerToSession(authority, sessionId) });
     }
 
@@ -1650,7 +1650,7 @@ describe("ApprovalGate", () => {
         }),
       );
       const { nonce, hmac } = lastSentNonceHmac(wc);
-      gate.resolve("origin-tailnet", {
+      await gate.resolveWithFreshIdentity("origin-tailnet", {
         requestId: "origin-tailnet",
         choice: "allow-once",
         nonce,

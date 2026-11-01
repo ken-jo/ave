@@ -6,9 +6,11 @@ import { aveHome } from "../shared/ave-home.js";
 import type { PermissionRule } from "./permission-manager.js";
 import { DEFAULT_EXECUTION_MODE, type ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
-import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
+import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf, isMissingPathError } from "../lib/atomic-file.js";
 import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, validateRuleList } from "./rules/rule-files.js";
 import { withShellPolicyMutation } from "./shell-policy-handoff.js";
+
+import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 // Location shared by the rules writer and sandbox write protection.
 export function permissionsFilePath(): string {
@@ -70,6 +72,7 @@ export async function readPermissionsFile(filePath: string): Promise<Permissions
 export async function updatePermissionsFile(
   filePath: string,
   mutator: (file: PermissionsFile) => void | Promise<void>,
+  authority?: ApprovalPersistenceGuard,
 ): Promise<void> {
   await withShellPolicyMutation(() => withPermissionsLock(filePath, async () => {
     await withFileLock(filePath, async () => {
@@ -84,7 +87,12 @@ export async function updatePermissionsFile(
       await mutator(file);
       validateRuleList(filePath, file.rules, { keepInertWildcards: inert });
       file.updatedAt = new Date().toISOString();
-      writeUtf8FileAtomicSync(filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
+      await refreshApprovalPersistence(authority);
+      if (authority) {
+        if (!replaceUtf8FileAtomicSyncIf(filePath, `${JSON.stringify(file, null, 2)}\n`, authority.isCurrent)) throw new Error("Approval authority is unavailable");
+      } else {
+        writeUtf8FileAtomicSync(filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
+      }
     });
   }));
 }

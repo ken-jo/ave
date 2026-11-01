@@ -40,7 +40,7 @@ function namespace(directory: string): FeatureNamespaceHandle {
   };
 }
 
-async function fixture(getOwnerLogin = () => "remote-owner@example.test" as string | null) {
+async function fixture(getOwnerLogin: () => string | null | Promise<string | null> = () => "remote-owner@example.test") {
   const directory = mkdtempSync(join(tmpdir(), "ave-tailnet-owner-"));
   directories.push(directory);
   const now = { value: 1_000_000 };
@@ -165,7 +165,7 @@ describe("owner identity admission and migration", () => {
     const other = f.runtime.authorizer.actorIdFor("another-user@example.test")!;
     await expect(f.runtime.store.claimInvitation(invitation.code, other)).rejects.toThrow("tailnet-owner-identity-mismatch");
     expect(f.runtime.authorizer.ownerIdentityError("another-user@example.test", await f.runtime.authorizer.probeOwnerIdentity())).toBe("tailnet-owner-identity-mismatch");
-    expect(f.runtime.authorizer.authorize("another-user@example.test", f.current.id, "control")).toBeNull();
+    expect(f.runtime.authorizer.authorize("another-user@example.test", f.current.id, "control", await f.runtime.authorizer.probeOwnerIdentity())).toBeNull();
     const actor = f.runtime.authorizer.actorIdFor(login!)!;
     const pending = await f.runtime.store.claimInvitation(invitation.code, actor);
     login = null;
@@ -260,4 +260,83 @@ it("rolls back a mutation persisted while its own request evidence was suspended
   expect((await f.owner.snapshot()).invitations).toEqual([]);
   const persisted = JSON.parse(readFileSync(join(directories.at(-1)!, "pairing-share.json"), "utf8"));
   expect(persisted.invitations).toEqual([]);
+});
+
+it.each(["changed", "logged-out"] as const)("refuses the next tool in an idle controller turn when the owner is %s without an event stream", async state => {
+  let login: string | null = "remote-owner@example.test";
+  const f = await fixture(() => login);
+  const invitation = await f.owner.createInvitation();
+  const actor = f.runtime.authorizer.actorIdFor(login!)!;
+  const claim = await f.runtime.store.claimInvitation(invitation.code, actor);
+  await f.owner.activatePairing(claim!.pairingId);
+  await f.owner.createCurrentConversationShare(claim!.pairingId, "control");
+  const authorization = f.runtime.authorizer.authorize(login!, f.current.id, "control", await f.runtime.authorizer.probeOwnerIdentity())!;
+  const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: actor, pairedShare: authorization.pairedShare, pairedShareGuard: authorization.pairedShareGuard }, f.current.id);
+  const manager = new PermissionManager(join(directories.at(-1)!, "permissions.json"));
+  const { ToolExecutor } = await import("../../tools/executor.js");
+  const { ToolRegistry } = await import("../../tools/registry.js");
+  const { createDynamicTool } = await import("../../tools/base.js");
+  let effects = 0;
+  const registry = new ToolRegistry();
+  registry.register(createDynamicTool({ name: "owner_read", description: "Read session state.", source: "builtin", category: "read", isReadOnly: () => true, jsonSchema: { type: "object" }, execute: async () => { effects += 1; return { output: "read", isError: false }; } }));
+  const executor = new ToolExecutor(registry, undefined, manager);
+  const run = () => executor.executeAll([{ id: "next-read", name: "owner_read", input: {} }], { sessionId: f.current.id, executionCwd: directories.at(-1)!, permissionContext: { trustOrigin: "user-keyboard", remoteControllerAuthority } });
+  expect((await run())[0].is_error).toBeUndefined();
+  login = state === "changed" ? "different-owner@example.test" : null;
+  expect((await run())[0].is_error).toBe(true);
+  expect(effects).toBe(1);
+  const snapshot = f.runtime.store.ownerSnapshot();
+  expect(snapshot.pairings).toEqual([]);
+  expect(snapshot.shares).toEqual([]);
+  expect(snapshot.ownerIdentityError).toBe(state === "logged-out" ? "tailnet-owner-identity-unavailable" : undefined);
+  await f.owner.snapshot();
+  const persisted = JSON.parse(readFileSync(join(directories.at(-1)!, "pairing-share.json"), "utf8"));
+  expect(persisted.pairings[0].state).toBe(state === "changed" ? "revoked" : "active");
+});
+
+it("coalesces concurrent tool-call identity probes without reusing a completed result", async () => {
+  let calls = 0;
+  let release: (() => void) | undefined;
+  let pending: Promise<void> | undefined;
+  const f = await fixture(async () => { calls += 1; await pending; return "remote-owner@example.test"; });
+  const invitation = await f.owner.createInvitation();
+  const actor = f.runtime.authorizer.actorIdFor("remote-owner@example.test")!;
+  const claim = await f.runtime.store.claimInvitation(invitation.code, actor);
+  await f.owner.activatePairing(claim!.pairingId);
+  await f.owner.createCurrentConversationShare(claim!.pairingId, "control");
+  const authorization = f.runtime.authorizer.authorize("remote-owner@example.test", f.current.id, "control", await f.runtime.authorizer.probeOwnerIdentity())!;
+  let requested = 0;
+  let bothRequested!: () => void;
+  const bothEffectsWaiting = new Promise<void>(resolve => { bothRequested = resolve; });
+  const pairedShareGuard = {
+    isCurrent: authorization.pairedShareGuard.isCurrent,
+    refreshCurrent(binding: typeof authorization.pairedShare) {
+      const observation = authorization.pairedShareGuard.refreshCurrent!(binding);
+      requested += 1;
+      if (requested === 2) bothRequested();
+      return observation;
+    },
+  };
+  const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: actor, pairedShare: authorization.pairedShare, pairedShareGuard }, f.current.id);
+  const { ToolExecutor } = await import("../../tools/executor.js");
+  const { ToolRegistry } = await import("../../tools/registry.js");
+  const { createDynamicTool } = await import("../../tools/base.js");
+  const registry = new ToolRegistry();
+  registry.register(createDynamicTool({ name: "owner_read", description: "Read session state.", source: "builtin", category: "read", isReadOnly: () => true, jsonSchema: { type: "object" }, execute: async () => ({ output: "read", isError: false }) }));
+  const executor = new ToolExecutor(registry, undefined, new PermissionManager(join(directories.at(-1)!, "permissions.json")));
+  const run = () => executor.executeAll([{ id: "concurrent-read", name: "owner_read", input: {} }], { sessionId: f.current.id, executionCwd: directories.at(-1)!, permissionContext: { trustOrigin: "user-keyboard", remoteControllerAuthority: authority } });
+  const before = calls;
+  pending = new Promise<void>(resolve => { release = resolve; });
+  const simultaneous = [run(), run()];
+  try {
+    await bothEffectsWaiting;
+    expect(calls - before).toBe(1);
+  } finally {
+    release!();
+    await Promise.allSettled(simultaneous);
+  }
+  for (const result of await Promise.all(simultaneous)) expect(result[0].is_error).toBeUndefined();
+  pending = undefined;
+  expect((await run())[0].is_error).toBeUndefined();
+  expect(calls - before).toBe(2);
 });

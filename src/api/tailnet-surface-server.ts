@@ -111,9 +111,10 @@ const ownerAdmittedRequests = new WeakSet<IncomingMessage>();
 
 export interface TailnetSurfaceServerOptions {
   readonly probeOwnerIdentity: () => Promise<TailnetOwnerIdentityEvidence>;
-  readonly ownerIdentityError: (login: string, evidence?: TailnetOwnerIdentityEvidence) => TailnetOwnerIdentityErrorCode | null;
+  readonly ownerIdentityError: (login: string, evidence: TailnetOwnerIdentityEvidence) => TailnetOwnerIdentityErrorCode | null;
   readonly refreshOwnerIdentity?: () => Promise<boolean>;
   readonly assertOwnerIdentity?: () => void;
+  readonly requestOwnerEvidence?: TailnetOwnerIdentityEvidence;
   /** Must be the literal 127.0.0.1; a Tailnet IP is never a direct bind. */
   readonly host?: string;
   readonly port: number;
@@ -525,7 +526,7 @@ async function route(
     sendJson(res, 403, { ok: false, error: pairingRoute ? "browser-pairing-not-ready" : controllerRoute || attachmentRoute ? "browser-controller-not-ready" : "browser-observer-not-ready" });
     return;
   }
-  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, controllerRoute || attachmentRoute || webCommandRoute ? "controller" : pairingRoute || webPairingClaimRoute ? "pairing" : "observer") ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
+  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, controllerRoute || attachmentRoute || webCommandRoute || webAttachmentRoute ? "controller" : pairingRoute || webPairingClaimRoute ? "pairing" : "observer") ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
   if (authenticatedLogin !== undefined) {
     const admissionLimiter = webSnapshotRoute || webEventsRoute ? webReadRequestLimiter : requestLimiter;
     if (!admissionLimiter.accept(authenticatedLogin, req.socket)) {
@@ -545,7 +546,7 @@ async function route(
     const assertIdentity = (): void => { const error = policy.ownerIdentityError(authenticatedLogin, evidence); if (error !== null) throw new TailnetOwnerIdentityError(error); };
     const authorizer = options.pairedSharing;
     const pairing = options.pairing;
-    options = { ...options, assertOwnerIdentity: assertIdentity,
+    options = { ...options, assertOwnerIdentity: assertIdentity, requestOwnerEvidence: evidence,
       ...(authorizer === undefined ? {} : { pairedSharing: { ...authorizer, actorIdFor: login => { assertIdentity(); return authorizer.actorIdFor(login); }, authorize: (login, conversationId, required) => authorizer.authorize(login, conversationId, required, evidence) } }),
       ...(pairing === undefined ? {} : { pairing: { ...pairing,
         claimInvitation: async (code, actorId) => { assertIdentity(); const result = await pairing.claimInvitation(code, actorId, assertIdentity); assertIdentity(); return result; },
@@ -624,7 +625,7 @@ async function route(
 
   const scope = currentScope();
   const conversationId = scope.conversationId;
-  const pairedShare = resolvePairedShare(options.pairedSharing, login, conversationId, "observe");
+  const pairedShare = resolvePairedShare(options, login, conversationId, "observe");
   if (pairedShare === null) {
     sendJson(res, 403, { ok: false, error: "pairing-share-required" });
     return;
@@ -817,7 +818,7 @@ async function routeTailnetWebDocument(
     return;
   }
   const pairedShare = resolvePairedShare(
-    options.pairedSharing,
+    options,
     login,
     scope.conversationId,
     "observe",
@@ -1119,20 +1120,20 @@ async function routeTailnetWebCommand(
     );
     return;
   }
+  requestOwnerGuard(options)();
   const submitted = await broker.submit(
     reauthorized.login,
     decoded.command,
     reauthorized.scope.conversationId,
     reauthorized.pairedShare,
   );
-  requestOwnerGuard(options)();
   switch (submitted) {
     case "accepted":
       sendTailnetWebJson(res, web, 202, {
         ok: true,
         accepted: true,
         command: { id: decoded.command.id, scope: reauthorized.scope.value },
-        ...publicTurnResponse(decoded.command, reauthorized.pairedShare),
+        ...publicTurnResponse(decoded.command, reauthorized.pairedShare, options),
       });
       return;
     case "duplicate":
@@ -1141,7 +1142,7 @@ async function routeTailnetWebCommand(
         accepted: true,
         duplicate: true,
         command: { id: decoded.command.id, scope: reauthorized.scope.value },
-        ...publicTurnResponse(decoded.command, reauthorized.pairedShare),
+        ...publicTurnResponse(decoded.command, reauthorized.pairedShare, options),
       });
       return;
     case "idempotency-conflict":
@@ -1258,7 +1259,7 @@ function authorizeTailnetWebRequest(
     sendTailnetWebJson(res, web, 503, { ok: false, error: "conversation-unavailable" });
     return null;
   }
-  const pairedShare = resolvePairedShare(options.pairedSharing, login, scope.conversationId, required);
+  const pairedShare = resolvePairedShare(options, login, scope.conversationId, required);
   if (
     pairedShare === null
     || pairedShare === undefined
@@ -1832,7 +1833,7 @@ async function routeControllerCommand(
     return;
   }
   const scope = currentScope();
-  const pairedShare = resolvePairedShare(options.pairedSharing, login, scope.conversationId, "control");
+  const pairedShare = resolvePairedShare(options, login, scope.conversationId, "control");
   if (pairedShare === null) {
     sendJson(res, 403, { ok: false, error: "pairing-share-required" });
     return;
@@ -1846,12 +1847,12 @@ async function routeControllerCommand(
     );
     return;
   }
-  const submitted = await broker.submit(login, decoded.command, scope.conversationId, pairedShare);
   requestOwnerGuard(options)();
+  const submitted = await broker.submit(login, decoded.command, scope.conversationId, pairedShare);
   switch (submitted) {
     case "accepted":
       sendJson(res, 202, {
-        ...publicTurnResponse(decoded.command, pairedShare),
+        ...publicTurnResponse(decoded.command, pairedShare, options),
         ok: true,
         accepted: true,
         command: { id: decoded.command.id, scope: scope.value },
@@ -1860,7 +1861,7 @@ async function routeControllerCommand(
     case "duplicate":
       sendJson(res, 202, {
         ok: true,
-        ...publicTurnResponse(decoded.command, pairedShare),
+        ...publicTurnResponse(decoded.command, pairedShare, options),
         accepted: true,
         duplicate: true,
         command: { id: decoded.command.id, scope: scope.value },
@@ -1939,7 +1940,7 @@ async function routeTailnetAttachmentUpload(
     sendJson(res, 503, { ok: false, error: "conversation-unavailable" });
     return;
   }
-  const pairedShare = resolvePairedShare(options.pairedSharing, login, scope.conversationId, "control");
+  const pairedShare = resolvePairedShare(options, login, scope.conversationId, "control");
   if (pairedShare === null || pairedShare === undefined) {
     req.resume();
     sendJson(res, 403, { ok: false, error: "pairing-share-required" });
@@ -1973,7 +1974,7 @@ async function routeTailnetAttachmentUpload(
     return;
   }
   const latestPairedShare = resolvePairedShare(
-    options.pairedSharing,
+    options,
     login,
     latestScope.conversationId,
     "control",
@@ -2629,14 +2630,16 @@ function requestOwnerGuard(options: TailnetSurfaceServerOptions): () => void {
 }
 
 function resolvePairedShare(
-  authorizer: TailnetPairedShareAuthorizer | undefined,
+  options: TailnetSurfaceServerOptions,
   login: string,
   conversationId: string,
   required: "observe" | "control",
 ): TailnetPairedShareAuthorization | null | undefined {
+  const authorizer = options.pairedSharing;
   if (authorizer === undefined) return undefined;
+  if (options.requestOwnerEvidence === undefined) throw new Error("tailnet-owner-evidence-required");
   try {
-    const authority = authorizer.authorize(login, conversationId, required);
+    const authority = authorizer.authorize(login, conversationId, required, options.requestOwnerEvidence);
     return authority !== null && isPairedShareCurrent(authority) ? authority : null;
   } catch {
     return null;
@@ -2725,11 +2728,15 @@ function commandDigest(command: TailnetControllerCommand): string {
 function publicTurnResponse(
   command: TailnetControllerCommand,
   pairedShare: TailnetPairedShareAuthorization | undefined,
+  options: TailnetSurfaceServerOptions,
 ): Readonly<Record<string, unknown>> {
+  let denied = false;
+  try { requestOwnerGuard(options)(); denied = pairedShare !== undefined && !isPairedShareCurrent(pairedShare); } catch { denied = true; }
   return command.type === "conversation.send" && pairedShare !== undefined
     ? {
       turn: {
         id: tailnetPublicTurnId(pairedShare.actorId, command.id),
+        ...(denied ? { denied: true, error: "remote-controller-authority-revoked" } : {}),
       },
     }
     : {};
@@ -2874,6 +2881,13 @@ function handleEvents(
     return true;
   };
 
+  const reauthorizeIfPairingShareExpired = (): boolean => {
+    if (pairedShare === undefined || Date.now() < pairedShare.expiresAt) return false;
+    if (!writeOrClose(formatReauthorizeRequiredEvent(scope.value))) return true;
+    endStream();
+    return true;
+  };
+
   const reauthorizeIfSessionChanged = (): boolean => {
     if (sessionGuard === undefined) return false;
     let current = false;
@@ -2906,7 +2920,7 @@ function handleEvents(
   res.on("close", cleanup);
 
   const onEvent = (event: SharedConversationEventEnvelope) => {
-    if (reauthorizeIfSessionChanged()) return;
+    if (reauthorizeIfPairingShareExpired() || reauthorizeIfSessionChanged()) return;
     if (resyncIfScopeChanged()) return;
     writeOrClose(formatSseEvent(event, scope.value));
   };
@@ -2936,7 +2950,7 @@ function handleEvents(
     if (reauthorizeIfSessionChanged()) return;
     if (reauthorizeIfPairingShareChanged()) return;
     for (const event of subscription.replay.events) {
-      if (reauthorizeIfSessionChanged()) return;
+      if (reauthorizeIfPairingShareExpired() || reauthorizeIfSessionChanged()) return;
       if (resyncIfScopeChanged()) return;
       if (!writeOrClose(formatSseEvent(event, scope.value))) return;
     }

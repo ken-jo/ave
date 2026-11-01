@@ -681,3 +681,43 @@ describe("shared builtin file-write path memory", () => {
     else expect(hit).toBeNull();
   });
 });
+
+
+describe("approval persistence authority", () => {
+  it.each(["session", "persistent"] as const)("refuses %s grants when fresh authority fails", async scope => {
+    await expect(recordApproval("write_file", '{}', "builtin", {
+      scope, ...(scope === "session" ? { sessionId: SESSION } : {}), verdictAtApproval: "low", nlJustification: null,
+    }, { refresh: async () => false, isCurrent: () => true })).rejects.toThrow("Approval authority is unavailable");
+    expect(Object.keys((await readApprovals()).approvals)).toHaveLength(0);
+    expect(await lookupApproval("write_file", '{}', "builtin", undefined, undefined, undefined, scope === "session" ? SESSION : undefined)).toBeNull();
+  });
+
+  it("rechecks queued grants after preparation and preserves earlier approvals", async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const first = recordApproval("first", '{}', "builtin", { scope: "persistent", verdictAtApproval: "low", nlJustification: null }, {
+      refresh: async () => { entered(); await held; return true; }, isCurrent: () => true,
+    });
+    await waiting;
+    let current = true;
+    const second = recordApproval("second", '{}', "builtin", { scope: "persistent", verdictAtApproval: "low", nlJustification: null }, {
+      refresh: async () => current, isCurrent: () => current,
+    });
+    current = false;
+    const rejected = expect(second).rejects.toThrow("Approval authority is unavailable");
+    release();
+    await first;
+    await rejected;
+    expect(await lookupApproval("first", '{}', "builtin")).not.toBeNull();
+    expect(await lookupApproval("second", '{}', "builtin")).toBeNull();
+  });
+
+  it("refuses commit when revocation crosses the fresh probe completion", async () => {
+    await expect(recordApproval("write_file", '{}', "builtin", { scope: "persistent", verdictAtApproval: "low", nlJustification: null }, {
+      refresh: async () => true, isCurrent: () => false,
+    })).rejects.toThrow("Approval authority is unavailable");
+    expect(Object.keys((await readApprovals()).approvals)).toHaveLength(0);
+  });
+});

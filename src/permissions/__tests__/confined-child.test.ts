@@ -365,6 +365,38 @@ describe("spawnConfinedChild", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  it("refreshes authority after asynchronous wrap preparation before spawning", async () => {
+    const baseline = liveEgressInvocationCount();
+    let ownerCurrent = true;
+    wrapWorkerCommandMock.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      ownerCurrent = false;
+      return { argv: ["/bin/sandbox", "--", "sh", "-c", "x"], env: {} };
+    });
+    const refreshStillValid = vi.fn(async () => {
+      if (!ownerCurrent) throw new Error("owner identity changed");
+    });
+    await expect(spawnConfinedChild({
+      egressOwner: EGRESS_OWNER, command: "/usr/bin/python3", args: [], label: "hook:user",
+      grantMode: "allow-list", tempPrincipal: PRINCIPAL, baseEnv: {}, refreshStillValid,
+    })).rejects.toThrow("owner identity changed");
+    expect(refreshStillValid).toHaveBeenCalledOnce();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(baseline);
+  });
+
+  it("checks synchronous revocation again after the asynchronous authority refresh", async () => {
+    let revoked = false;
+    const refreshStillValid = vi.fn(async () => { await Promise.resolve(); revoked = true; });
+    await expect(spawnConfinedChild({
+      egressOwner: EGRESS_OWNER, command: "/usr/bin/python3", args: [], label: "hook:user",
+      grantMode: "allow-list", tempPrincipal: PRINCIPAL, baseEnv: {}, refreshStillValid,
+      assertStillValid: () => { if (revoked) throw new Error("binding revoked"); },
+    })).rejects.toThrow("binding revoked");
+    expect(refreshStillValid).toHaveBeenCalledOnce();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("refuses an empty argv rather than spawning something arbitrary", async () => {
     wrapWorkerCommandMock.mockResolvedValueOnce({ argv: [], env: {} });
     await expect(
