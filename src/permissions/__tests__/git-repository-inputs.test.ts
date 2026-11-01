@@ -156,7 +156,8 @@ describe("checked repository metadata inputs", () => {
     ["ORIG_HEAD", "a".repeat(40) + "\n", "b".repeat(40) + "\n"],
     ...["AUTO_MERGE", "BISECT_EXPECTED_REV", "NOTES_MERGE_PARTIAL", "NOTES_MERGE_REF", "MERGE_AUTOSTASH",
       "info/attributes", "info/exclude", "info/sparse-checkout", "objects/info/packs",
-      "objects/info/commit-graphs/commit-graph-chain"].map(path =>
+      "objects/info/commit-graphs/commit-graph-chain", "BISECT_START", "rebase-merge/head-name",
+      "rebase-merge/onto", "rebase-apply/head-name", "rebase-apply/onto"].map(path =>
       [path, "a".repeat(40) + "\n", "b".repeat(40) + "\n"]),
     ["refs/heads/main", "a".repeat(40) + "\n", "b".repeat(40) + "\n"],
     ["packed-refs", "a".repeat(40) + " refs/heads/main\n", "b".repeat(40) + " refs/heads/main\n"],

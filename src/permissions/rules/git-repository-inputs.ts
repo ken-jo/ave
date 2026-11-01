@@ -21,6 +21,8 @@ const CONTENT_METADATA_PATHS = new Set([
   "config", "config.worktree", "head", "packed-refs", "shallow", "objects/info/packs",
   "objects/info/commit-graphs/commit-graph-chain",
   "auto_merge", "bisect_expected_rev", "notes_merge_partial", "notes_merge_ref", "merge_autostash",
+  // `git branch --list` describes a detached HEAD from the rebase and bisect state.
+  "bisect_start", "rebase-merge/head-name", "rebase-merge/onto", "rebase-apply/head-name", "rebase-apply/onto",
 ]);
 const FORBIDDEN_METADATA_PATHS = new Set(["commondir", "worktrees", "objects/info/alternates", "objects/info/http-alternates"]);
 
