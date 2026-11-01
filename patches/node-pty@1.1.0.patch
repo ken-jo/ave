@@ -1,0 +1,100 @@
+diff --git a/lib/conpty_console_list_agent.js b/lib/conpty_console_list_agent.js
+index 8c4fca9022a6d6f015bca87f61625cde2278f428..4aead5a994e3e981b84091aeae9ce50f4729e8cc 100644
+--- a/lib/conpty_console_list_agent.js
++++ b/lib/conpty_console_list_agent.js
+@@ -10,7 +10,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
+ var utils_1 = require("./utils");
+ var getConsoleProcessList = utils_1.loadNativeModule('conpty_console_list').module.getConsoleProcessList;
+ var shellPid = parseInt(process.argv[2], 10);
+-var consoleProcessList = getConsoleProcessList(shellPid);
++var consoleProcessList = [];
++try {
++    consoleProcessList = getConsoleProcessList(shellPid);
++}
++catch (e) {
++    // The console may already be gone; never substitute an unobserved shell PID.
++}
+ process.send({ consoleProcessList: consoleProcessList });
+ process.exit(0);
+ //# sourceMappingURL=conpty_console_list_agent.js.map
+\ No newline at end of file
+diff --git a/lib/windowsPtyAgent.js b/lib/windowsPtyAgent.js
+index a358ffb177357e177661033c1b092f9c9d0e5f5a..c90669f6b3a769e156c120f2794598ec2279e9f0 100644
+--- a/lib/windowsPtyAgent.js
++++ b/lib/windowsPtyAgent.js
+@@ -132,12 +132,19 @@ var WindowsPtyAgent = /** @class */ (function () {
+     };
+     WindowsPtyAgent.prototype.kill = function () {
+         var _this = this;
++        // One request owns teardown, including the asynchronous console lookup.
++        if (this._killRequested) return;
++        this._killRequested = true;
+         // Tell the agent to kill the pty, this releases handles to the process
+         if (this._useConpty) {
+             if (!this._useConptyDll) {
+                 this._inSocket.readable = false;
+                 this._outSocket.readable = false;
++                // Remove this patch when an upstream release fixes node-pty#952.
++                // Observe console members before releasing the pseudoconsole handles.
+                 this._getConsoleProcessList().then(function (consoleProcessList) {
++                    _this._ptyNative.kill(_this._pty, _this._useConptyDll);
++                    _this._conoutSocketWorker.dispose();
+                     consoleProcessList.forEach(function (pid) {
+                         try {
+                             process.kill(pid);
+@@ -147,8 +154,7 @@ var WindowsPtyAgent = /** @class */ (function () {
+                         }
+                     });
+                 });
+-                this._ptyNative.kill(this._pty, this._useConptyDll);
+-                this._conoutSocketWorker.dispose();
++
+             }
+             else {
+                 // Close the input write handle to signal the end of session.
+@@ -181,16 +187,36 @@ var WindowsPtyAgent = /** @class */ (function () {
+     WindowsPtyAgent.prototype._getConsoleProcessList = function () {
+         var _this = this;
+         return new Promise(function (resolve) {
+-            var agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()]);
+-            agent.on('message', function (message) {
++            var agent;
++            var timeout;
++            var settled = false;
++            var finish = function (processList) {
++                if (settled) return;
++                settled = true;
+                 clearTimeout(timeout);
+-                resolve(message.consoleProcessList);
+-            });
+-            var timeout = setTimeout(function () {
+-                // Something went wrong, just send back the shell PID
+-                agent.kill();
+-                resolve([_this._innerPid]);
+-            }, 5000);
++                if (agent) {
++                    agent.removeListener('message', onMessage);
++                    agent.removeListener('exit', onExit);
++                    // Keep the error listener until the child is gone to absorb late spawn errors.
++                }
++                resolve(processList);
++            };
++            var onMessage = function (message) { finish(message.consoleProcessList); };
++            var onExit = function () { finish([]); };
++            try {
++                agent = child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()]);
++                agent.on('message', onMessage);
++                agent.once('exit', onExit);
++                agent.on('error', onExit);
++                timeout = setTimeout(function () {
++                    // A failed lookup provides no observed process IDs to terminate.
++                    finish([]);
++                    agent.kill();
++                }, 5000);
++            }
++            catch (e) {
++                finish([]);
++            }
+         });
+     };
+     Object.defineProperty(WindowsPtyAgent.prototype, "exitCode", {
