@@ -124,6 +124,11 @@ export function mintTabId(kind: WorkspaceTabKind): string {
   return `${kind}:${WINDOW_TAB_SCOPE}-${nextWindowTabId++}`;
 }
 
+/** Whether this window minted `id` in this launch (so its absence means it was closed or moved, not lost). */
+export function isTabIdOfThisLaunch(id: string): boolean {
+  return parseTabId(id)?.scope === WINDOW_TAB_SCOPE;
+}
+
 /** Tabs restored from a saved layout keep their ids. Ids from another scope (an earlier launch) cannot meet this one's; one
  * from this scope moves the counter past it, so a tab minted afterwards cannot take it. */
 export function reserveTabIds(ids: Iterable<string>): void {

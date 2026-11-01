@@ -118,6 +118,10 @@ describe("useMainSurfaces", () => {
     expect(result.current.surfaces).toHaveLength(1);
     act(() => { expect(result.current.revive("files:0badc0de-42")).toBeUndefined(); });
     act(() => { expect(result.current.revive("not a tab")).toBeUndefined(); });
+    // A tab this launch made and closed stays closed.
+    let closed!: MainSurface;
+    act(() => { closed = result.current.create("terminal"); result.current.close(closed.tabId); });
+    act(() => { expect(result.current.revive(closed.tabId)).toBeUndefined(); });
     expect(result.current.surfaces).toHaveLength(1);
     unmount();
   });
