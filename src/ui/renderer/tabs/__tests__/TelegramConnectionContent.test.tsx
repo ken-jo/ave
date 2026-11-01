@@ -18,6 +18,7 @@ function snapshotOf(
   return {
     state: "disconnected",
     botUsername: null,
+    ownerUserId: "123456789",
     pairing: null,
     approval: null,
     pendingCode: null,
@@ -30,6 +31,7 @@ function makeApi(initial: TelegramConnectionSnapshot) {
   let current = initial;
   const snapshot = vi.fn(async () => ({ ok: true as const, snapshot: current }));
   const connect = vi.fn(async () => ({ ok: true as const }));
+  const setOwnerUserId = vi.fn(async (ownerUserId: string) => { current = { ...current, ownerUserId }; return { ok: true as const }; });
   const createPairingCode = vi.fn(async () => ({
     ok: true as const,
     pairingCode: {
@@ -46,6 +48,7 @@ function makeApi(initial: TelegramConnectionSnapshot) {
     telegramConnection: {
       snapshot,
       connect,
+      setOwnerUserId,
       disconnect: vi.fn(async () => ({ ok: true as const })),
       pause,
       resume,
@@ -60,6 +63,7 @@ function makeApi(initial: TelegramConnectionSnapshot) {
   return {
     api,
     connect,
+    setOwnerUserId,
     createPairingCode,
     approveCurrentConversation,
     pause,
@@ -82,6 +86,33 @@ afterEach(() => {
 });
 
 describe("TelegramConnectionContent", () => {
+  it("requires the owner to explicitly register a numeric user ID before pairing", async () => {
+    const { api, setOwnerUserId, createPairingCode } = makeApi(snapshotOf({ state: "connected-unpaired", ownerUserId: null }));
+    const onCompleted = vi.fn();
+    render(<TelegramConnectionContent api={api} onCompleted={onCompleted} />);
+    expect(await screen.findByTestId("telegram-connection-owner-required")).toHaveTextContent("Remote access is suspended");
+    expect(screen.queryByTestId("telegram-connection-create-pairing-code")).toBeNull();
+    const input = screen.getByTestId("telegram-connection-owner-user-id");
+    fireEvent.change(input, { target: { value: "@someone" } });
+    expect(screen.getByTestId("telegram-connection-save-owner")).toBeDisabled();
+    fireEvent.change(input, { target: { value: "123456789" } });
+    expect(setOwnerUserId).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("telegram-connection-save-owner"));
+    await waitFor(() => expect(setOwnerUserId).toHaveBeenCalledWith("123456789"));
+    expect(await screen.findByTestId("telegram-connection-create-pairing-code")).toBeVisible();
+    expect(createPairingCode).not.toHaveBeenCalled();
+    expect(onCompleted).not.toHaveBeenCalled();
+    expect(screen.getByTestId("telegram-connection-owner-form")).toHaveTextContent("Only your own account");
+  });
+
+  it("shows the registered owner ID and explains that changing it removes old shares", async () => {
+    const { api } = makeApi(snapshotOf());
+    render(<TelegramConnectionContent api={api} />);
+    expect(await screen.findByTestId("telegram-connection-owner-user-id")).toHaveValue("123456789");
+    expect(screen.getByTestId("telegram-connection-owner-form")).toHaveTextContent("Changing it removes the current pairing and conversation shares");
+    expect(screen.getByTestId("telegram-connection-save-owner")).toBeDisabled();
+  });
+
   it("keeps remote sharing available without an automatic approval grant", async () => {
     const { api } = makeApi(snapshotOf({ state: "active", botUsername: "assistant_bot", pairing: { id: PAIRING_ID, accountFingerprint: "abc123def456" }, approval: { id: APPROVAL_ID, expiresAt: 1_800_000_000_000, matchesCurrentConversation: true } }));
     render(<TelegramConnectionContent api={api} />);

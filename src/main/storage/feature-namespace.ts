@@ -13,7 +13,7 @@ import {
   transientFsLockDelayMs,
 } from "../../lib/transient-fs-lock-retry.js";
 import { sleep } from "../../shared/abortable-deadline.js";
-import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../../lib/atomic-file.js";
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
 
@@ -186,6 +186,12 @@ export async function writeFileAtomicAtPath(
 /** Atomically write `value` (serialized as pretty JSON + trailing newline) to `<dir>/<name>`, under the contract {@link writeFileAtomicAtPath} states. */
 export async function writeJsonAtomic<T>(dir: string, name: string, value: T): Promise<void> {
   await writeFileAtomicAtPath(join(dir, name), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** Finish asynchronous preparation before checking authority and committing without yielding. */
+export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
+  await ensureDir(dirname(filePath));
+  return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
 }
 
 export interface FeatureNamespaceHandle {

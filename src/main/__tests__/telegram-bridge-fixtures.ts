@@ -60,6 +60,7 @@ export function ownerPairedAuthority(secretStore: SecretStore): {
   if (ownerDigest === null) throw new Error("fixture-owner-digest");
   const conversationDigest = telegramConversationDigest(BOT_FINGERPRINT, BOUND_CONVERSATION);
   const authority: TelegramPairedRouteAuthority = {
+    ownerUserId: () => OWNER_CHAT_ID,
     activePairingActorDigest: () => ownerDigest,
     resolveActiveApproval: (actorDigest, digest) =>
       actorDigest === ownerDigest && digest === conversationDigest

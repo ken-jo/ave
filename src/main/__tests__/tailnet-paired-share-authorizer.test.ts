@@ -27,6 +27,7 @@ describe("TailnetPairedShareAuthorizer", () => {
     expect(secrets.read(TAILNET_PAIRED_SHARE_ACTOR_SECRET_NAME, 128)).toBe(first);
 
     const authorizer = createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store: inertStore(),
       actorSecret: first,
       getCurrentConversationId: () => "conversation-a",
@@ -58,6 +59,7 @@ describe("TailnetPairedShareAuthorizer", () => {
       },
     };
     const authorizer = createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store,
       actorSecret: "a".repeat(43),
       getCurrentConversationId: () => current.conversationId,
@@ -78,12 +80,14 @@ describe("TailnetPairedShareAuthorizer", () => {
 
   it("fails closed for malformed login, bad secret, and an unavailable grant", () => {
     expect(() => createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store: inertStore(),
       actorSecret: "not-a-valid-secret",
       getCurrentConversationId: () => "conversation-a",
     })).toThrow("tailnet-paired-share-authorizer-invalid");
 
     const authorizer = createTailnetPairedShareAuthorizer({
+      getOwnerLogin: () => "owner@example.test",
       store: inertStore(),
       actorSecret: "b".repeat(43),
       getCurrentConversationId: () => "conversation-a",

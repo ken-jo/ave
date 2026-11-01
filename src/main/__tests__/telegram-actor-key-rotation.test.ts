@@ -23,6 +23,8 @@ import {
 import { namespaceAt } from "./telegram-connection-namespace.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 
 const OWNER_ID = "776655443322";
 const BOT_FINGERPRINT = "a".repeat(64);
@@ -58,13 +60,14 @@ async function openStore(directory: string): Promise<TelegramConnectionStore> {
     conversationDigestFor: telegramConversationDigest,
   });
   await store.open();
+  await store.setOwnerUserId(OWNER_ID);
   return store;
 }
 
 // Pair the owner and share the conversation they have open.
 async function pairAndShare(store: TelegramConnectionStore, actorDigest: string): Promise<void> {
   await store.createPendingCode({ codeDigest: CODE_DIGEST });
-  expect(await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest })).not.toBeNull();
+  expect(await store.completePairing({ senderId: OWNER_ID, codeDigest: CODE_DIGEST, actorDigest })).not.toBeNull();
   expect(await store.createApproval({
     conversationId: CONVERSATION_ID,
     conversationDigest: telegramConversationDigest(BOT_FINGERPRINT, CONVERSATION_ID),
@@ -88,6 +91,7 @@ function pairedRuntime(store: TelegramConnectionStore, secretStore: SecretStore)
   return createTelegramPairedPlatformRuntime({
     botFingerprint: BOT_FINGERPRINT,
     authority: {
+      ownerUserId: () => store.ownerUserId(),
       activePairingActorDigest: () => store.activePairingActorDigest(),
       resolveActiveApproval: (actorDigest, conversationDigest) =>
         store.resolveActiveApproval(actorDigest, conversationDigest),
@@ -144,6 +148,34 @@ function connectionService(store: TelegramConnectionStore, secretStore: SecretSt
 }
 
 describe("telegram actor key rotation", () => {
+  it.each(["strict", "default", "auto", "allow"] as const)("routes the registered owner through the local permission tree in %s", async (mode) => {
+    const store = await openStore(tempDirectory());
+    const secrets = encryptedSecrets();
+    await connectedAndPaired(store, secrets.store);
+    const runtime = pairedRuntime(store, secrets.store);
+    const authorization = await runtime.authorize({ provider: "telegram", deliveryId: "owner-tree", channelId: OWNER_ID, senderId: OWNER_ID, text: "inspect project" });
+    expect(authorization).not.toBeNull();
+    const authority = bindRemoteControllerToSession({
+      kind: "platform-bridge", actorId: authorization!.actorDigest,
+      bridgeBinding: authorization!.bridgeBinding, bridgeGuard: authorization!.bridgeGuard,
+    }, CONVERSATION_ID);
+    const manager = new PermissionManager(join(tempDirectory(), "permissions.json"));
+    manager.setMode(mode);
+    const local = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: CONVERSATION_ID });
+    const remote = manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: CONVERSATION_ID, remoteControllerAuthority: authority });
+    expect(remote.decision).toBe(local.decision);
+    expect(remote.reasonCode).toBe(local.reasonCode);
+    expect(remote.reviewer?.route).toBe(local.reviewer?.route);
+    manager.setRules([{ pattern: "network_probe", action: "allow" }]);
+    expect(manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: CONVERSATION_ID, remoteControllerAuthority: authority }).decision).toBe("allow");
+    expect(manager.checkDetailed("network_probe", "builtin", "network", undefined, {
+      sessionId: CONVERSATION_ID, remoteControllerAuthority: authority, floor: { code: "other-principal", reason: "External guidance" },
+    })).toMatchObject({ decision: "ask", forceModal: true });
+    await store.setOwnerUserId("123456789");
+    expect(manager.checkDetailed("network_probe", "builtin", "network", undefined, { sessionId: CONVERSATION_ID, remoteControllerAuthority: authority }).decision).toBe("deny");
+    runtime.dispose();
+  });
+
   it("keeps the paired owner authorized while the actor key is still readable", async () => {
     const secrets = encryptedSecrets();
     const store = await openStore(tempDirectory("ave-telegram-rotation-store-"));
@@ -209,7 +241,7 @@ describe("telegram actor key rotation", () => {
     const persisted = readFileSync(join(directory, FILE_NAME), "utf8");
     expect(JSON.parse(persisted).actorKeyDigest).toBe(digester.actorKeyDigest);
     expect(persisted).not.toContain(actorSecret);
-    expect(persisted).not.toContain(OWNER_ID);
+    expect(JSON.parse(persisted).ownerUserId).toBe(OWNER_ID);
 
     // Survives the restart it exists for: a reopened document reconciles clean against the same key rather than re-reporting a rotation.
     const reopened = await openStore(directory);

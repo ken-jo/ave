@@ -83,6 +83,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "telegram-connection-disabled": "formatIpcError.telegramConnectionDisabled",
   "telegram-connection-unavailable": "formatIpcError.telegramConnectionUnavailable",
   "telegram-connection-input-invalid": "formatIpcError.invalidInput",
+  "telegram-owner-id-required": "formatIpcError.telegramOwnerIdRequired",
   "telegram-connection-operation-rejected": "formatIpcError.telegramConnectionOperationRejected",
   "telegram-encryption-unavailable": "formatIpcError.telegramEncryptionUnavailable",
   "telegram-bot-token-rejected": "formatIpcError.telegramBotTokenRejected",

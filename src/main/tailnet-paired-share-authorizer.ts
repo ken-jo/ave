@@ -1,3 +1,5 @@
+import { readTailnetOwnerLogin } from "./tailnet-owner-identity.js";
+import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
 // Derive actor IDs with a domain-separated HMAC using an OS-encrypted secret; pairing still requires a separate scoped share.
 import { createHmac, randomBytes } from "node:crypto";
 import type { SecretStore } from "../audit/hmac-chain.js";
@@ -43,6 +45,7 @@ export interface TailnetPairedShareAuthorization {
 }
 
 export interface TailnetPairedShareAuthorizer {
+  ownerIdentityError(login: string): TailnetOwnerIdentityErrorCode | null;
   // Host-only, opaque actor derivation; returns no raw login value.
   actorIdFor(login: string): TailnetShareActorId | null;
   // Resolve the current owner-approved share for the current conversation.
@@ -55,6 +58,8 @@ export interface TailnetPairedShareAuthorizer {
 }
 
 export interface CreateTailnetPairedShareAuthorizerOptions {
+  readonly getOwnerLogin?: () => string | null;
+  readonly onOwnerIdentityFailure?: () => void;
   readonly store: TailnetPairedShareStore;
   // OS-encrypted, durable secret material supplied by main-process boot.
   readonly actorSecret: string;
@@ -98,12 +103,20 @@ export function createTailnetPairedShareAuthorizer(
     return ("tailnet:" + digest) as TailnetShareActorId;
   };
 
+  const ownerIdentityError = (login: string): TailnetOwnerIdentityErrorCode | null => {
+    let owner: string | null = null;
+    try { owner = (options.getOwnerLogin ?? readTailnetOwnerLogin)(); } catch { /* Unreadable local identity grants nothing. */ }
+    const error = !safeTailnetLogin(owner) ? "tailnet-owner-identity-unavailable" : owner !== login ? "tailnet-owner-identity-mismatch" : null;
+    if (error !== null) options.onOwnerIdentityFailure?.();
+    return error;
+  };
+
   const authorize = (
     login: string,
     currentConversation: string,
     required: TailnetSharePermission,
   ): TailnetPairedShareAuthorization | null => {
-    if (!permission(required)) return null;
+    if (!permission(required) || ownerIdentityError(login) !== null) return null;
     const actorId = actorIdFor(login);
     const conversationId = validConversationId(currentConversation);
     if (actorId === null || conversationId === null) return null;
@@ -112,9 +125,11 @@ export function createTailnetPairedShareAuthorizer(
       return null;
     }
     const pairedShare = Object.freeze({ ...authority.pairing });
+    let revoked = false;
     const pairedShareGuard: TailnetPairedShareGuard = Object.freeze({
       isCurrent(candidate: TailnetPairingShareBinding): boolean {
-        if (!sameBinding(candidate, pairedShare)) return false;
+        if (revoked || !sameBinding(candidate, pairedShare)) return false;
+        if (ownerIdentityError(login) !== null) { revoked = true; return false; }
         const latestConversationId = currentConversationId(options.getCurrentConversationId);
         if (latestConversationId === null) return false;
         try {
@@ -132,7 +147,7 @@ export function createTailnetPairedShareAuthorizer(
     });
   };
 
-  return Object.freeze({ actorIdFor, authorize, subscribe: (listener: () => void) => options.store.subscribe(listener) });
+  return Object.freeze({ actorIdFor, authorize, ownerIdentityError, subscribe: (listener: () => void) => options.store.subscribe(listener) });
 }
 
 function safeTailnetLogin(value: unknown): value is string {

@@ -61,6 +61,10 @@ function errorText(error: TailnetSharingErrorCode, t: (key: string) => string): 
       return t("tailnetAccessTab.errorUnauthorized");
     case "tailnet-sharing-input-invalid":
       return t("tailnetAccessTab.errorInputInvalid");
+    case "tailnet-owner-identity-unavailable":
+      return t("tailnetAccessTab.errorOwnerIdentityUnavailable");
+    case "tailnet-owner-identity-mismatch":
+      return t("tailnetAccessTab.errorOwnerIdentityMismatch");
     case "tailnet-sharing-operation-rejected":
       return t("tailnetAccessTab.errorOperationRejected");
   }
@@ -84,7 +88,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
   /**
    * Pairing whose control share is one confirmation away.
    *
-   * Handing someone control of the running conversation is the one action here
+   * Enabling another device to control the running conversation is the action here
    * that cannot be taken back by revoking it later — whatever they drove has
    * already run — so it is asked twice. The question is drawn in the row it
    * belongs to rather than in a window-modal dialog, which would freeze the
@@ -177,7 +181,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
   /**
    * Hand the reader to the invitation control rather than draw a second one.
    *
-   * Setup finishes with "now let someone in", and the one-use code that does
+   * Setup finishes at the account connection step, and the one-use code that does
    * that already has a home below. Minting it from two places would put the
    * same secret on screen twice, so the last wizard step moves focus here.
    */
@@ -260,6 +264,11 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
 
       {!loading && !disabled && snapshot ? (
         <>
+          {snapshot.ownerIdentityError ? (
+            <p role="alert" className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-xs text-destructive" data-testid="tailnet-access-identity-warning">
+              {errorText(snapshot.ownerIdentityError, t)}
+            </p>
+          ) : null}
           <p className="rounded-md border border-border bg-card/(--opacity-half) px-3 py-2 text-xs text-muted-foreground">
             {t("tailnetAccessTab.pairingIsNotAccess")}
           </p>

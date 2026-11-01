@@ -43,6 +43,7 @@ afterEach(async () => {
 });
 
 interface FixtureOptions {
+  readonly ownerIdentityError?: (login: string) => import("../../shared/tailnet-sharing.js").TailnetOwnerIdentityErrorCode | null;
   readonly authorization?: TailnetAuthorization;
   readonly conversationId?: () => string;
   readonly replayLimitPerConversation?: number;
@@ -70,6 +71,7 @@ async function fixture(options: FixtureOptions = {}) {
   });
   stores.push(store);
   const server = await startTailnetSurfaceServer({
+    ownerIdentityError: options.ownerIdentityError ?? (() => null),
     port: await reservePort(),
     authorization: options.authorization ?? APP_CAPABILITY,
     projectionStore: store,
@@ -85,7 +87,7 @@ async function fixture(options: FixtureOptions = {}) {
       ? {}
       : { maxRequestsPerWindow: options.maxRequestsPerWindow }),
     ...(options.requestWindowMs === undefined ? {} : { requestWindowMs: options.requestWindowMs }),
-    ...(options.pairedSharing === undefined ? {} : { pairedSharing: options.pairedSharing }),
+    ...((options.pairedSharing ?? (options.controllerCommandPort === undefined ? undefined : pairedSharing({ observe: true, control: true }).authorizer)) === undefined ? {} : { pairedSharing: options.pairedSharing ?? pairedSharing({ observe: true, control: true }).authorizer }),
     ...(options.pairing === undefined ? {} : { pairing: options.pairing }),
     ...(options.web === undefined ? {} : { web: options.web }),
     ...(options.controllerCommandPort === undefined
@@ -146,7 +148,7 @@ function pairedSharing(options: Readonly<{ observe: boolean; control: boolean }>
     },
   };
   const authorizer: TailnetPairedShareAuthorizer = {
-    actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : null,
+    ownerIdentityError: () => null, actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : null,
     authorize(login, conversationId, required) {
       if (
         !active
@@ -344,6 +346,7 @@ describe("Tailnet observer HTTP boundary", () => {
     const store = createSharedConversationProjectionStore(timeline);
     stores.push(store);
     const options = {
+      ownerIdentityError: () => null,
       port: await reservePort(),
       authorization: APP_CAPABILITY,
       projectionStore: store,
@@ -363,6 +366,7 @@ describe("Tailnet observer HTTP boundary", () => {
     })).rejects.toThrow("valid authorization boundary");
     await expect(startTailnetSurfaceServer({
       ...options,
+      pairedSharing: pairedSharing({ observe: true, control: true }).authorizer,
       controller: {
         commandPort: { execute: vi.fn() } as unknown as ConversationCommandPort,
         receiptStore: createReceiptStore(),
@@ -980,7 +984,7 @@ describe("Tailnet observer HTTP boundary", () => {
         kind: "tailnet-controller",
         actorId: expect.stringMatching(/^tailnet:[a-f0-9]{64}$/),
       }),
-      { kind: "message.send", payload: { input: command.input } },
+      expect.objectContaining({ kind: "message.send", payload: { input: command.input }, publicTurn: expect.objectContaining({ turnId: expect.stringMatching(/^tailnet-turn_/) }) }),
     );
 
     const duplicate = await fetch(url(server, "/tailnet/v1/commands"), {
@@ -1022,7 +1026,7 @@ describe("Tailnet observer HTTP boundary", () => {
     expect(submit).toHaveBeenCalledOnce();
   });
 
-  it("keeps a completed receipt across a new public scope and rejects reuse in another conversation", async () => {
+  it("keeps a completed receipt across a new public scope and requires another share after the conversation changes", async () => {
     let conversationId = CONVERSATION_ID;
     const receiptStore = createReceiptStore();
     const submit = vi.fn(() => ({ completion: Promise.resolve({
@@ -1072,14 +1076,15 @@ describe("Tailnet observer HTTP boundary", () => {
 
     conversationId = "new-private-conversation";
     const changedStatus = await fetch(url(restarted.server, "/tailnet/v1/status"), { headers: observerHeaders() });
-    const changedScope = (await changedStatus.json() as { conversation: { scope: string } }).conversation.scope;
+    expect(changedStatus.status).toBe(403);
+    expect(await changedStatus.json()).toMatchObject({ error: "pairing-share-required" });
     const conflict = await fetch(url(restarted.server, "/tailnet/v1/commands"), {
       method: "POST",
       headers: { ...controllerHeaders(), "content-type": "application/json" },
-      body: JSON.stringify({ ...command, scope: changedScope }),
+      body: JSON.stringify({ ...command, scope: restartedScope }),
     });
-    expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ error: "idempotency-conflict" });
+    expect(conflict.status).toBe(403);
+    expect(await conflict.json()).toMatchObject({ error: "pairing-share-required" });
     expect(submit).toHaveBeenCalledOnce();
   });
 
@@ -1090,7 +1095,7 @@ describe("Tailnet observer HTTP boundary", () => {
       type: "conversation.send" as const,
       input: "do not replay this command",
     };
-    const actorId = `tailnet:${sha256("owner@example.com")}`;
+    const actorId = PAIRED_ACTOR_ID;
     expect(receiptStore.reserve({
       keyDigest: sha256(`${actorId}\u0000${command.id}`),
       intentDigest: sha256(JSON.stringify({ type: command.type, input: command.input, attachmentIds: [] })),
@@ -1698,7 +1703,7 @@ describe("Tailnet Web root and browser pairing", () => {
       ["active", "대화를 공유하기를 기다리는 중"],
     ] as const) {
       const { server } = await fixture({
-        pairedSharing: { ...sharing.authorizer, actorIdFor: () => GUEST_ACTOR },
+        pairedSharing: { ...sharing.authorizer, ownerIdentityError: () => null, actorIdFor: () => GUEST_ACTOR },
         pairing: {
           claimInvitation: vi.fn(async () => null),
           deviceStatus: vi.fn(async () => ({ pairing: state, ownDevice: false })),
@@ -1729,7 +1734,7 @@ describe("Tailnet Web root and browser pairing", () => {
     const { server } = await fixture({
       pairedSharing: {
         ...sharing.authorizer,
-        actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : GUEST_ACTOR_ID,
+        ownerIdentityError: () => null, actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : GUEST_ACTOR_ID,
       },
       pairing: { claimInvitation: vi.fn(async () => null), deviceStatus },
       web: { origin: WEB_ORIGIN },
@@ -1776,5 +1781,37 @@ describe("Tailnet Web root and browser pairing", () => {
     });
     expect(page.status).toBe(403);
     expect(JSON.parse(page.body)).toMatchObject({ error: "pairing-share-required" });
+  });
+});
+
+describe("local owner identity boundary", () => {
+  it.each(["tailnet-owner-identity-unavailable", "tailnet-owner-identity-mismatch"] as const)("denies authenticated native and browser requests with %s", async error => {
+    const sharing = pairedSharing({ observe: true, control: true });
+    const ownerIdentityError = vi.fn(() => error);
+    const { server } = await fixture({ pairedSharing: sharing.authorizer, web: { origin: WEB_ORIGIN }, ownerIdentityError });
+    for (const path of ["/tailnet/v1/status", "/tailnet/v2/web"]) {
+      const response = await fetch(url(server, path), { headers: observerHeaders() });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ ok: false, error, message: expect.any(String) });
+    }
+    expect(ownerIdentityError).toHaveBeenCalledWith("owner@example.com");
+  });
+
+  it("validates peer authorization before consulting local owner identity", async () => {
+    const ownerIdentityError = vi.fn(() => null);
+    const { server } = await fixture({ ownerIdentityError });
+    const response = await fetch(url(server, "/tailnet/v1/status"), { headers: { "Tailscale-User-Login": "spoofed@example.test" } });
+    expect(response.status).toBe(401);
+    expect(ownerIdentityError).not.toHaveBeenCalled();
+  });
+
+  it("refuses a controller configuration without pairing or an absent owner identity policy", async () => {
+    const timeline = createPlatformConversationTimeline();
+    const store = createSharedConversationProjectionStore(timeline);
+    stores.push(store);
+    const options = { port: await reservePort(), authorization: APP_CAPABILITY, projectionStore: store, getCurrentConversationId: () => CONVERSATION_ID, isConversationBusy: () => false, ownerIdentityError: () => null };
+    await expect(startTailnetSurfaceServer({ ...options, controller: { commandPort: { submit: vi.fn(), execute: vi.fn() } as unknown as ConversationCommandPort, receiptStore: createReceiptStore() } })).rejects.toThrow("tailnet-controller-owner-pairing-required");
+    await expect(startTailnetSurfaceServer({ ...options, ownerIdentityError: undefined as never })).rejects.toThrow("tailnet-owner-identity-policy-unavailable");
+    await expect(startTailnetSurfaceServer({ ...options, pairedSharing: { ...pairedSharing({ observe: true, control: true }).authorizer, ownerIdentityError: undefined as never } })).rejects.toThrow("tailnet-owner-identity-policy-unavailable");
   });
 });

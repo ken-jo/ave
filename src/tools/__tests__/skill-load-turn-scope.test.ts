@@ -7,7 +7,11 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
-import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { makeMockWebContents, useTempPaths } from "../../__tests__/test-helpers.js";
+import { SkillApprovalsStore } from "../../main/skill-approvals-store.js";
+import { withInProcessFileQueue } from "../../lib/with-file-lock.js";
+
+const approvalPath = useTempPaths("skill-controller-persistence-", "approvals.json");
 
 const IN_SCOPE = "in-scope-plugin";
 const OUT_OF_SCOPE = "out-of-scope-plugin";
@@ -135,6 +139,40 @@ describe("skill_load — plugin skills obey the turn's plugin scope", () => {
 
 
 describe("skill body approval controller authority", () => {
+  it("records no grant when authority is revoked while approval persistence waits", async () => {
+    const sessionId = "skill-persistence-owner";
+    let current = true;
+    const authority = bindRemoteControllerToSession({ kind: "platform-bridge", actorId: "skill-owner",
+      bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
+      bridgeGuard: { isCurrent: () => current },
+    }, sessionId);
+    const file = approvalPath();
+    const approvals = new SkillApprovalsStore(file);
+    const approve = vi.spyOn(approvals, "approve");
+    let release!: () => void;
+    const held = withInProcessFileQueue(file, () => new Promise<void>(resolve => { release = resolve; }));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const register = vi.fn();
+    const emit = vi.fn();
+    const tool = createSkillLoadTool({ store: { load: async () => skillFixture("user-skill") } as unknown as SkillLoadToolDeps["store"],
+      approvals, approvalGate: gate, overlay: { register } as unknown as SkillLoadToolDeps["overlay"], emit });
+    const pending = turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(authority), () => tool.execute({ skillName: "user-skill" }, {
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId },
+    }));
+    try {
+      await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      await vi.waitFor(() => expect(approve).toHaveBeenCalledOnce());
+      current = false;
+    } finally { release(); await held; }
+    expect((await pending).isError).toBe(true);
+    expect(await new SkillApprovalsStore(file).isApproved("user-skill", "body")).toBe(false);
+    expect(register).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
   it.each(["local", "current", "revoked"] as const)("checks %s authority after an actual pending content card", async state => {
     const sessionId = "skill-controller-card";
     let current = true;

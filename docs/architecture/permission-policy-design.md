@@ -1521,7 +1521,7 @@ Without a matching allow rule, only a response from the verified local desktop
 renderer can authorize this explicit request. The approval displays the exact
 command, cwd and justification and states that the command runs once as the
 current user without the OS sandbox. Headless requests are
-denied before approval or rule evaluation. Authenticated, session-bound remote users follow the same rules and approval path as local users; missing or revoked authority is admission-denied. Automatic, remembered, allow-mode,
+denied before approval or rule evaluation. Authenticated, session-bound remote users whose account matches the host-owned owner-identity anchor follow the same rules and approval path as local users; missing, mismatched or revoked identity/authority is admission-denied. The [owner identity decision](permission-decision-tree.md) owns transport evidence and existing-binding revalidation. Automatic, remembered, allow-mode,
 plugin, platform and parent-agent decisions cannot authorize host mode. The
 opaque permit is minted from one of two host-issued, action-bound proofs — the
 signed approval receipt, or the PermissionManager's own layer-3 allow-rule

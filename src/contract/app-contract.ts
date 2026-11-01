@@ -278,6 +278,7 @@ export const CHANNELS = {
   telegramConnection: {
     snapshot: "ave:telegram-connection:snapshot",
     connect: "ave:telegram-connection:connect",
+    setOwnerUserId: "ave:telegram-connection:set-owner-user-id",
     disconnect: "ave:telegram-connection:disconnect",
     pause: "ave:telegram-connection:pause",
     resume: "ave:telegram-connection:resume",
@@ -952,6 +953,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // the outbound connection, minting a pairing code, and sharing the open
   // conversation are each an owner decision made at this keyboard.
   [CHANNELS.telegramConnection.connect]: "required",
+  [CHANNELS.telegramConnection.setOwnerUserId]: "required",
   [CHANNELS.telegramConnection.disconnect]: "required",
   [CHANNELS.telegramConnection.pause]: "required",
   [CHANNELS.telegramConnection.resume]: "required",

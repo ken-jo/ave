@@ -44,10 +44,12 @@ deployment it does not own.
 
 A bot cannot open a chat, so the paired owner always sends the first message.
 
-1. Create a bot with `@BotFather` and paste its token into the connect form.
-2. Choose **Pair my Telegram account**. Ave mints a single-use code of the
-   form `ave-tg-v1.<43 characters>`, shown once.
-3. Send that code to the bot as an ordinary message.
+1. Register your own numeric user ID in the desktop connection Settings. Use your account ID, not a username or bot ID. Only that ID can pair and send; an unknown or different sender cannot redeem a code.
+2. Create a bot with `@BotFather` and paste its token into the connect form.
+3. Choose **Pair my Telegram account**. Ave mints a single-use code of the form `ave-tg-v1.<43 characters>`, shown once.
+4. Send that code from your registered account to the bot as an ordinary message.
+
+Changing the registered owner ID removes the current pairing and conversation approvals and pauses a connected transport. Existing bindings without a matching registered owner are visibly suspended; register your ID, pair again and approve the conversation. See the [owner identity decision](../architecture/permission-decision-tree.md).
 
 The code is deliberately not a slash command. The shared ingress core rejects
 every leading-slash message unconditionally, and admitting a Telegram account
@@ -129,17 +131,7 @@ Tool approvals stay local. A Telegram message can start work that needs an
 approval, but the approval prompt appears only in the desktop app; Telegram
 cannot answer it.
 
-Shell is unavailable to a remote turn: `bash`, `bash_output`, `bash_kill`, and
-`powershell` are refused before any approval exists, along with the tools that
-would create work beyond the turn or widen the tool surface (`request_plugin`,
-`routine_schedule`, `skill_load`, `tool_search`).
-
-That refusal is a list of tool names, not a capability class. An MCP server or
-plugin tool that runs a command under some other name is not on the list, so it
-reaches the approval prompt instead of being refused outright. The owner is at
-the desk and sees the arguments before answering, which is why this is
-acceptable — but do not read it as "a remote turn cannot cause a command to
-run".
+An authenticated owner-matching account bound to the conversation uses the same tool rules, remembered grants, mode and reviewer as the local user. Genuine external-content floors still require a fresh human answer. Internal skill and hook approvals retain live identity checks, including while waiting and before a persistent skill grant commits. The [permission decision tree](../architecture/permission-decision-tree.md) owns the complete decision order.
 
 ### Pausing and disconnecting
 

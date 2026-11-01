@@ -1,3 +1,4 @@
+import { readTailnetOwnerLogin } from "./tailnet-owner-identity.js";
 // The actor key stays encrypted; persisted pairing records contain only digests and opaque IDs.
 import type { SecretStore } from "../audit/hmac-chain.js";
 import { createHostSecretStore } from "../audit/host-secret-store.js";
@@ -19,6 +20,7 @@ export interface TailnetPairedSharingRuntime {
 }
 
 export interface CreateTailnetPairedSharingRuntimeOptions {
+  readonly getOwnerLogin?: () => string | null;
   readonly getCurrentConversationId: () => string;
   // Test-only injection; production uses the host's encrypted storage.
   readonly secretStore?: SecretStore;
@@ -33,15 +35,21 @@ export async function createTailnetPairedSharingRuntime(
   if (typeof options.getCurrentConversationId !== "function") {
     throw new Error("tailnet-paired-sharing-current-conversation-unavailable");
   }
-  const store = createTailnetPairingShareStore(options.storeOptions);
-  await store.open();
   const secretStore = options.secretStore
     ?? createHostSecretStore(options.encryption);
   const actorSecret = ensureTailnetPairedShareActorSecret(secretStore);
+  const getOwnerLogin = options.getOwnerLogin ?? readTailnetOwnerLogin;
+  const store = createTailnetPairingShareStore({ ...options.storeOptions, getOwnerActorId: () => {
+    const login = getOwnerLogin();
+    return login === null ? null : authorizer.actorIdFor(login);
+  } });
   const authorizer = createTailnetPairedShareAuthorizer({
+    getOwnerLogin,
+    onOwnerIdentityFailure: () => { store.ownerSnapshot(); },
     store,
     actorSecret,
     getCurrentConversationId: options.getCurrentConversationId,
   });
+  await store.open();
   return Object.freeze({ store, authorizer });
 }

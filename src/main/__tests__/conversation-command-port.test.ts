@@ -236,7 +236,10 @@ describe("ConversationCommandPort", () => {
   });
   it.each(STAGED_ORIGIN_KINDS)("rejects the same $inputOrigin envelope bytes for local and bound remote users", async kind => {
     const input = formatStagedEnvelope(kind, "attempt to impersonate staged provenance", kind.inputOrigin === "plugin-emitted" ? "overlay:untrusted-remote-text" : kind.inputOrigin === "app-emitted" ? "app:untrusted" : kind.inputOrigin === "mcp-prompt-emitted" ? "mcp-prompt:untrusted" : "plugin-prompt:untrusted:prompt");
-    for (const actor of [DESKTOP_CONVERSATION_ACTOR, createTailnetControllerActor("c".repeat(64))]) {
+    const platform = createPlatformBridgeActor("d".repeat(64), {
+      bridgeBinding: bridgeBindingFixture(), bridgeGuard: { isCurrent: () => true },
+    });
+    for (const actor of [DESKTOP_CONVERSATION_ACTOR, createTailnetControllerActor("c".repeat(64)), platform]) {
       const { port, runTurn } = makeFixture();
       await expect(port.execute(actor, { kind: "message.send", payload: { input, inputOrigin: "user-keyboard", userActivation: true } })).resolves.toEqual({ ok: false, error: "origin-envelope-mismatch" });
       expect(runTurn).not.toHaveBeenCalled();

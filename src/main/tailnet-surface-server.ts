@@ -1,3 +1,4 @@
+import { tailnetOwnerIdentityError, tailnetOwnerLoginFromStatus } from "./tailnet-owner-identity.js";
 import type { SecretEncryption } from "../data/secret-document-store.js";
 // The owner must enable the listener and approve the exact serve command; never retain admin credentials or mutate tailnet policy.
 import { execFile } from "node:child_process";
@@ -610,6 +611,7 @@ async function startForBoot(
     host: "127.0.0.1",
     port: config.port,
     authorization: config.authorization,
+    ownerIdentityError: pairedSharingRuntime?.authorizer.ownerIdentityError ?? tailnetOwnerIdentityError,
     projectionStore: options.conversationSurfaceRuntime.sharedProjection,
     getCurrentConversationId: options.getCurrentConversationId,
     isConversationBusy: options.isConversationBusy,
@@ -869,18 +871,7 @@ function selfDnsName(status: Record<string, unknown>): string | null {
   return name.length === 0 ? null : name;
 }
 
-function selfLogin(status: Record<string, unknown>): string | null {
-  const self = status.Self;
-  const users = status.User;
-  if (!isRecord(self) || !isRecord(users)) return null;
-  const userId = self.UserID;
-  if (typeof userId !== "number" && typeof userId !== "string") return null;
-  const user = users[String(userId)];
-  if (!isRecord(user) || typeof user.LoginName !== "string" || user.LoginName.length === 0) {
-    return null;
-  }
-  return user.LoginName;
-}
+function selfLogin(status: Record<string, unknown>): string | null { return tailnetOwnerLoginFromStatus(status); }
 
 function currentTailnetName(status: Record<string, unknown>): string | null {
   const tailnet = status.CurrentTailnet;

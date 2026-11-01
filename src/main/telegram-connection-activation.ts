@@ -80,6 +80,10 @@ export async function startTelegramConnectionActivation(
   options: StartTelegramConnectionActivationOptions,
 ): Promise<void> {
   const { store, settingsService } = options;
+  if (store.ownerUserId() === null) {
+    await store.setLastError("telegram-owner-id-required");
+    return;
+  }
   const botFingerprint = store.botFingerprint();
   if (botFingerprint === null) return;
 
@@ -107,6 +111,7 @@ export async function startTelegramConnectionActivation(
     networkFetch: options.networkFetch,
     ...(options.secretStore ? { secretStore: options.secretStore } : {}),
     authority: {
+      ownerUserId: () => store.ownerUserId(),
       activePairingActorDigest: () => store.activePairingActorDigest(),
       resolveActiveApproval: (actorDigest, conversationDigest) =>
         store.resolveActiveApproval(actorDigest, conversationDigest),
@@ -116,11 +121,13 @@ export async function startTelegramConnectionActivation(
     recordPollOffset: (offset) => store.recordPollOffset(offset),
     hasPendingPairingCode: () => store.ownerSnapshot().pendingCode !== null,
     redeemPairingCode: async (codeDigest, senderId) => {
+      if (senderId !== store.ownerUserId()) return false;
       const actorDigest = digestActor.digestFor(senderId);
       if (actorDigest === null) return false;
-      return await store.completePairing({ codeDigest, actorDigest }) !== null;
+      return await store.completePairing({ codeDigest, actorDigest, senderId }) !== null;
     },
     isPairedOwner: (senderId) => {
+      if (senderId !== store.ownerUserId()) return false;
       const actorDigest = digestActor.digestFor(senderId);
       return actorDigest !== null && store.activePairingActorDigest() === actorDigest;
     },

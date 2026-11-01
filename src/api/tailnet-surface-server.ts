@@ -1,3 +1,4 @@
+import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
 // Loopback observer ingress trusts injected identity headers only at the configured authorization boundary.
 // Local processes can forge those headers; network isolation does not replace the local boundary.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -103,6 +104,7 @@ export interface TailnetWebOptions {
 }
 
 export interface TailnetSurfaceServerOptions {
+  readonly ownerIdentityError: (login: string) => TailnetOwnerIdentityErrorCode | null;
   /** Must be the literal 127.0.0.1; a Tailnet IP is never a direct bind. */
   readonly host?: string;
   readonly port: number;
@@ -298,8 +300,14 @@ export function startTailnetSurfaceServer(
   if (!Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65_535) {
     return Promise.reject(new Error("tailnet surface server port must be a nonzero TCP port"));
   }
+  if (typeof options.ownerIdentityError !== "function" || (options.pairedSharing !== undefined && typeof options.pairedSharing.ownerIdentityError !== "function")) {
+    return Promise.reject(new Error("tailnet-owner-identity-policy-unavailable"));
+  }
   if (!isValidTailnetAuthorization(options.authorization)) {
     return Promise.reject(new Error("tailnet surface server requires a valid authorization boundary"));
+  }
+  if (options.controller !== undefined && options.pairedSharing === undefined) {
+    return Promise.reject(new Error("tailnet-controller-owner-pairing-required"));
   }
   if (
     options.controller !== undefined &&
@@ -501,6 +509,15 @@ async function route(
     if (method !== "GET") req.resume();
     sendJson(res, 404, { ok: false, error: "not-found" });
     return;
+  }
+  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, controllerRoute || attachmentRoute || webCommandRoute ? "controller" : pairingRoute || webPairingClaimRoute ? "pairing" : "observer");
+  if (authenticatedLogin !== undefined) {
+    const error = options.ownerIdentityError(authenticatedLogin);
+    if (error !== null) {
+      if (method !== "GET") req.resume();
+      sendJson(res, 403, { ok: false, error, message: error === "tailnet-owner-identity-unavailable" ? "This desktop cannot verify its local account. Remote access is suspended." : "Remote access is limited to the account signed in on this desktop." });
+      return;
+    }
   }
   if (webRoute && web !== undefined) {
     await routeTailnetWeb(

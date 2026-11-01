@@ -214,7 +214,7 @@ describe("Tailnet observer lifecycle", () => {
     const pairedRuntime = {
       store: { claimInvitation },
       authorizer: {
-        actorIdFor: vi.fn(),
+        ownerIdentityError: () => null, actorIdFor: vi.fn(),
         authorize: vi.fn(),
         subscribe: vi.fn(() => () => {}),
       },
@@ -264,7 +264,7 @@ describe("Tailnet observer lifecycle", () => {
     });
     const pairedRuntime = {
       store: { createInvitation, claimInvitation, currentPairing: () => pairing },
-      authorizer: { actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
+      authorizer: { ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
     } as unknown as TailnetPairedSharingRuntime;
     const f = options({
       AVE_TAILNET_OBSERVER: "1",
@@ -316,7 +316,7 @@ describe("Tailnet observer lifecycle", () => {
         claimInvitation: vi.fn(),
         currentPairing: () => null,
       },
-      authorizer: { actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
+      authorizer: { ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
     } as unknown as TailnetPairedSharingRuntime;
     const f = options({
       AVE_TAILNET_OBSERVER: "1",
@@ -939,7 +939,7 @@ function fakeRuntime(store: ReturnType<typeof fakeStore>, logins: Record<string,
   return {
     store,
     authorizer: {
-      actorIdFor: (login: string) => logins[login] ?? null,
+      ownerIdentityError: () => null, actorIdFor: (login: string) => logins[login] ?? null,
       authorize: vi.fn(),
       subscribe: vi.fn(() => () => {}),
     },

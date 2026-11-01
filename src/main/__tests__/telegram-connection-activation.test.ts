@@ -42,6 +42,7 @@ async function connectedStore(): Promise<TelegramConnectionStore> {
     conversationDigestFor: telegramConversationDigest,
   });
   await store.open();
+  await store.setOwnerUserId(OWNER_CHAT_ID);
   await store.setConnected(BOT_FINGERPRINT);
   return store;
 }
@@ -125,6 +126,19 @@ function activationInput(
 }
 
 describe("telegram connection activation", () => {
+  it("does not read credentials or start transport without a registered owner", async () => {
+    const store = createTelegramConnectionStore({ namespace: namespaceAt(tempDirectory()), conversationDigestFor: telegramConversationDigest });
+    await store.open();
+    await store.setConnected(BOT_FINGERPRINT);
+    const provider = emptyProvider();
+    const input = activationInput(store, () => stopTelegramBridgeServer("user"), provider);
+    const getEncryptedSecret = vi.fn(() => BOT_TOKEN);
+    await startTelegramConnectionActivation({ ...input, settingsService: { getEncryptedSecret } });
+    expect(getEncryptedSecret).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+    expect(store.ownerSnapshot()).toMatchObject({ ownerUserId: null, lastErrorCode: "telegram-owner-id-required", pairing: null, approval: null });
+  });
+
   describe("the unroutable notifier", () => {
     it("forwards the notice the ingress chose, not a fixed one", async () => {
       const notify = vi.fn(async () => true);
@@ -150,12 +164,16 @@ describe("telegram connection activation", () => {
           return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
         }
         polls += 1;
-        // Seed, then the code, then park until the ingress aborts.
-        if (polls === 2) {
-          const update = JSON.parse(new TextDecoder().decode(textUpdate(1, code).rawBody)) as unknown;
+        // A copied code from another account is rejected before the registered owner redeems it.
+        if (polls === 2 || polls === 3) {
+          const update = JSON.parse(new TextDecoder().decode(textUpdate(polls, code).rawBody));
+          if (polls === 2) {
+            update.message.from.id = 987654321;
+            update.message.chat.id = 987654321;
+          }
           return new Response(JSON.stringify({ ok: true, result: [update] }), { status: 200 });
         }
-        if (polls > 2) {
+        if (polls > 3) {
           await new Promise((_resolve, reject) => {
             init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
           });

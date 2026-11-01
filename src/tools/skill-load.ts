@@ -165,13 +165,6 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
             isError: true,
           };
         }
-        // Persist body-and-manifest-bound approval so swaps and added/resized files invalidate it.
-        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill)).catch((err) => {
-          log.warn(
-            "skill_load: approval persistence failed (non-fatal): %s",
-            (err as Error).message,
-          );
-        });
       }
 
       // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.
@@ -184,6 +177,13 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           }),
           isError: true,
         };
+      }
+      if (!alreadyApproved) {
+        // Bind persistence to the final authority check, including time spent queued or preparing the write.
+        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), controllerCurrent).catch((err) => {
+          log.warn("skill_load: approval persistence failed (non-fatal): %s", (err as Error).message);
+        });
+        if (!controllerCurrent()) return revoked();
       }
       // Record approved identity in this conversation's overlay; skill_read reacquires and compares generation rather than retaining the lease.
       deps.overlay.register(sessionId, skill);
