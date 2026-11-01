@@ -89,6 +89,7 @@ import {
 import { errorMessage } from "../shared/error-message.js";
 import { createMaskedProgressRelay, TOOL_OUTPUT_PROGRESS_METADATA_KEY } from "./tool-output-progress.js";
 import { APPROVAL_MEMORY_SCOPE_METADATA_KEY } from "./approval-memory-context.js";
+import { parseBrowserPreviewImage } from "../shared/browser-workspace.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -1195,6 +1196,8 @@ export async function executeAuthorizedToolInvocation(
     if (result.image) {
       image = result.image;
     }
+    const browserPreview = source === "builtin" ? parseBrowserPreviewImage(result.browserPreview) : null;
+    if (browserPreview) meta.browserPreview = browserPreview;
     if (isError) terminationReason = "error";
   } else {
     if (

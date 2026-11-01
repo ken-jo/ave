@@ -8,6 +8,7 @@ import { extractFileEditDiff } from "../utils/file-diff.js";
 import type { FileEditDiffData } from "../utils/file-diff.js";
 import { getToolCallLabel, getToolDisplayName } from "../utils/tool-display.js";
 import { formatDuration } from "../../../lib/turn-summary-format.js";
+import { parseBrowserPreviewImage } from "../../../shared/browser-workspace.js";
 import type { RenderHtmlPayload } from "../types.js";
 import { HtmlPreview } from "./HtmlPreview.js";
 import { FileEditDiff, WriteFileSidecarDiff } from "./FileEditDiff.js";
@@ -61,6 +62,17 @@ function liveOutputTail(text: string, lines = LIVE_OUTPUT_VISIBLE_LINES): string
 
 /** Live output of a running shell tool, shown under its row without expanding it, so a long build visibly progresses. The
  * completed result replaces it. */
+// Page pixels are untrusted: only a validated JPEG data URL reaches an <img>.
+function ToolBrowserPreview({ tool, inset = "px-3" }: { tool: Extract<ChatEntry, { kind: "tool_group" }>["tools"][number]; inset?: string }) {
+  const image = tool.status === "done" ? parseBrowserPreviewImage(tool.browserPreview) : null;
+  if (!image) return null;
+  return (
+    <div className={`${inset} pb-1.5`}>
+      <img src={image.dataUrl} width={image.width} height={image.height} alt="" className="max-w-full rounded border" data-testid="tool-browser-preview" />
+    </div>
+  );
+}
+
 function LiveToolOutput({ tool }: { tool: Extract<ChatEntry, { kind: "tool_group" }>["tools"][number] }) {
   const tail = useMemo(() => liveOutputTail(tool.liveOutput ?? ""), [tool.liveOutput]);
   if (tool.status !== "running" || tail.length === 0) return null;
@@ -312,6 +324,7 @@ function SingleToolInline({
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
       </div>
       <LiveToolOutput tool={tool} />
+      <ToolBrowserPreview tool={tool} />
       <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={isError} />
       {open && (
         <div className="min-w-0 space-y-1 border-t px-3 py-1.5 font-mono text-[10px] ave-anim-fade-in">
@@ -425,6 +438,7 @@ export function ToolGroupCard({
     })
     .filter((entry): entry is { toolUseId: string; data: FileEditDiffData } => entry !== null);
 
+  const latestPreviewTool = [...tools].reverse().find((tool) => tool.status === "done" && tool.browserPreview !== undefined);
   // MCP Apps §3.2 — collect tools that carry a uiPayload
   const mcpAppPreviews = tools.filter(
     (t) => t.status === "done" && t.uiPayload != null,
@@ -468,6 +482,8 @@ export function ToolGroupCard({
       </button>
       {/* A collapsed group still shows what its running tools print. */}
       {!open && tools.map((tool) => <LiveToolOutput key={tool.toolUseId} tool={tool} />)}
+      {/* A collapsed group shows only its latest page thumbnail. */}
+      {!open && latestPreviewTool && <ToolBrowserPreview tool={latestPreviewTool} />}
       {open && (
         <div className="min-w-0 space-y-1 border-t px-3 py-1.5 ave-anim-fade-in">
           {tools.map((tool) => {
@@ -501,6 +517,7 @@ export function ToolGroupCard({
                     : <ToolDurationBadge durationMs={tool.durationMs} />}
                 </div>
                 <LiveToolOutput tool={tool} />
+                <ToolBrowserPreview tool={tool} inset="px-2" />
                 <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={tool.status === "error"} />
                 {isExpanded && (
                   <div className="min-w-0 space-y-1 border-t px-2 py-1 font-mono text-[10px] ave-anim-fade-in">

@@ -180,6 +180,7 @@ export async function runStreamedTurn(
               ? {}
               : { executionPlan: meta.executionPlan }),
             ...(uiPayload === undefined ? {} : { uiPayload }),
+            ...(meta.browserPreview === undefined ? {} : { browserPreview: meta.browserPreview }),
           },
         }),
       onError: (error, systemNotice, classifierCategory, operation) =>

@@ -8,6 +8,7 @@ import type {
 import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
 import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import type { McpUiPayload } from "../mcp/types.js";
+import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import {
   normalizeSubscriptionUsageTelemetry,
   type SubscriptionUsageTelemetry,
@@ -87,6 +88,7 @@ export type ChatStreamEvent = {
   to?: string;
   reason?: string;
   uiPayload?: McpUiPayload;
+  browserPreview?: BrowserPreviewImage;
   /** Emit tool duration on every terminal path, including denial and rate limiting. */
   durationMs?: number;
   /** Emit one aggregate footer after done; cumulative tool time may be zero on aborted turns. */
@@ -123,6 +125,8 @@ export type ToolEntryItem = {
   mcpServerId?: string;
   executionPlan?: HostShellExecutionPlanAuditProjection;
   uiPayload?: McpUiPayload;
+  /** Page thumbnail from a browser tool; validated again before rendering. */
+  browserPreview?: BrowserPreviewImage;
   /** Duration is absent while running and populated on completion. */
   durationMs?: number;
   /** Use start time for live elapsed display, then replace it with final duration. */
@@ -823,6 +827,7 @@ export function applyToolEnd(
     isError?: boolean;
     cancelled?: boolean;
     uiPayload?: ToolEntryItem["uiPayload"];
+    browserPreview?: ToolEntryItem["browserPreview"];
     durationMs?: number;
     source?: ToolSource;
     category?: ToolCategory;
@@ -861,6 +866,7 @@ export function applyToolEnd(
         ? { executionPlan: payload.executionPlan }
         : {}),
       ...(payload.uiPayload && { uiPayload: payload.uiPayload }),
+      ...(payload.browserPreview && { browserPreview: payload.browserPreview }),
       ...(typeof payload.durationMs === "number" && { durationMs: payload.durationMs }),
     };
   });
@@ -1154,7 +1160,7 @@ export function applyTranscriptFrame(entries: ChatEntry[], ev: ChatStreamEvent):
     }
     case "tool_end": {
       if (!ev.name || !ev.groupId || ev.toolUseId === undefined) return entries;
-      const { groupId, toolUseId, result, isError, cancelled, uiPayload, durationMs, source, toolCategory, pluginId, mcpServerId, executionPlan } = ev;
+      const { groupId, toolUseId, result, isError, cancelled, uiPayload, browserPreview, durationMs, source, toolCategory, pluginId, mcpServerId, executionPlan } = ev;
       return applyToolEnd(entries, {
         groupId,
         toolUseId,
@@ -1162,6 +1168,7 @@ export function applyTranscriptFrame(entries: ChatEntry[], ev: ChatStreamEvent):
         isError,
         ...(cancelled ? { cancelled: true } : {}),
         uiPayload,
+        ...(browserPreview ? { browserPreview } : {}),
         durationMs,
         ...(source ? { source } : {}),
         ...(toolCategory ? { category: toolCategory } : {}),

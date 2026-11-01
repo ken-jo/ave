@@ -226,16 +226,18 @@ describe("browser tools", () => {
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (name: string, input: Record<string, unknown>, sessionId: string | undefined = HOST_SESSION) => {
+      let browserPreview: unknown;
       const [result] = await executor.executeAll(
         [{ id: `call-${seq += 1}`, name, input }],
         {
+          callbacks: { onToolEnd: (_name, _result, _isError, meta) => { browserPreview = meta.browserPreview; } },
           ...(sessionId !== undefined ? { sessionId } : {}),
           executionCwd: dir,
           permissionContext: userPermissionContext({ additionalDirectories: [dir], userIntent: "Inspect the selected page for the current task.", currentTaskStep: "Read the selected page snapshot.", ...(options.headless ? { headless: true } : {}) }),
         },
       );
       await Promise.all(recordings);
-      return { output: result!.content, isError: result!.is_error === true };
+      return { output: result!.content, isError: result!.is_error === true, browserPreview };
     };
 
     let nextGuest = 100;
@@ -940,6 +942,26 @@ describe("browser tools", () => {
     expect(page.calls).toEqual([]);
     expect((await run(BROWSER_TOOL.screenshot, { tabId: user.handle })).isError).toBe(false);
     expect(page.calls.map((call) => call.action)).toEqual(["screenshot"]);
+  });
+
+  it("attaches a validated display thumbnail to snapshot and screenshot completions, never failing the tool", async () => {
+    const { run, page, userTab } = harness();
+    const user = userTab("https://a.example/");
+    const thumbnail = { dataUrl: "data:image/jpeg;base64,QUdFTlQ=", width: 320, height: 180 };
+    const pngs: Array<string | undefined> = [];
+    page.actions.capturePreview = async (_target, png) => { pngs.push(png); return thumbnail; };
+    const snapshot = await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
+    expect(snapshot.isError).toBe(false);
+    expect(snapshot.browserPreview).toEqual(thumbnail);
+    expect(snapshot.output).not.toContain("QUdFTlQ=");
+    expect((await run(BROWSER_TOOL.screenshot, { tabId: user.handle })).browserPreview).toEqual(thumbnail);
+    expect(pngs).toEqual([undefined, "iVBORw0KGgo="]);
+    page.actions.capturePreview = async () => { throw new Error("capture failed"); };
+    const failed = await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
+    expect(failed.isError).toBe(false);
+    expect(failed.browserPreview).toBeUndefined();
+    page.actions.capturePreview = async () => ({ ...thumbnail, dataUrl: "data:text/html;base64,PHNjcmlwdD4=" });
+    expect((await run(BROWSER_TOOL.snapshot, { tabId: user.handle })).browserPreview).toBeUndefined();
   });
 
   it("lists actual conversation ownership without granting access to unrelated creators", async () => {

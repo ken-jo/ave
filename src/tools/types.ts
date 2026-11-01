@@ -107,6 +107,8 @@ export interface ToolExecutionResult {
   metadata?: Record<string, unknown>;
   /** Optional image for the model to see; see {@link ToolResultImage}. */
   image?: ToolResultImage;
+  /** Display-only page thumbnail for the user; never sent to the model. Honored for builtin tools only. */
+  browserPreview?: import("../shared/browser-workspace.js").BrowserPreviewImage;
   /** Host-private terminal control emitted by a trusted builtin. The executor accepts only controls
    * minted by the host; structural values returned by a plugin, MCP server, or test double are ignored. */
   authorizationRequired?: import("../shared/authorization-required.js").AuthorizationRequiredControl;
