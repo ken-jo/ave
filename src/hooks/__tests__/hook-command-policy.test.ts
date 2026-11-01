@@ -1,3 +1,4 @@
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -405,6 +406,33 @@ describe("hook command permission admission", () => {
     expect(shellRuleCoversCommand("bash", "Bash('printf' *)", "allow", "'printf' 'ready'", process.cwd())).toBe(true);
     gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
     expect((await pending).decision).toBe("allow");
+  });
+
+  it.each([false, true])("rechecks a bound controller after an actual pending hook card: revoked=%s", async revoked => {
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+    const gate = new ApprovalGate(wc as never);
+    const requestAndWait = vi.spyOn(gate, "requestAndWait");
+    const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    let current = true;
+    const authority = bindRemoteControllerToSession({
+      kind: "platform-bridge", actorId: "hook-controller",
+      bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
+      bridgeGuard: { isCurrent: () => current },
+    }, payload.sessionId);
+    const pending = turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(authority),
+      () => runOneHookScript(hook, payload, { authorizeCommand }));
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerAuthority: authority, remoteControllerOrigin: "platform-bridge" }));
+    expect(gate.pendingCount).toBe(1);
+    if (revoked) current = false;
+    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    const result = await pending;
+    expect(result.decision).toBe(revoked ? "deny" : "allow");
+    if (revoked) expect(result.rawStdout).toBe("");
+    expect(gate.pendingCount).toBe(0);
   });
 
   it("rejects a newly protected symlink target after review", async () => {

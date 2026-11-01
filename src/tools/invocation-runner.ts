@@ -706,6 +706,7 @@ export async function runToolInvocation(
     // A P2 paired share is revocable independently of the active Tailnet
     // connection. Recheck before any pre-hook, path prompt, or approval can
     // retain authority after the owner has removed that specific share.
+    // Direct ToolExecutor.execute calls bypass runTurn normalization; a transport-origin label never authenticates its caller.
     if (!isRemoteControllerBoundToSession(permissionContext.remoteControllerAuthority, sessionId) || ((permissionContext.trustOrigin === "tailnet-surface" || permissionContext.trustOrigin === "platform-bridge") && permissionContext.remoteControllerAuthority === undefined)) {
       const reason = "remote-controller-revoked";
       const msg = t("be_executor.permBlockDeny", {

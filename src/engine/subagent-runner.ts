@@ -113,6 +113,7 @@ import type {
   SubAgentSuspension,
 } from "../shared/subagent-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 const log = createLogger("ave");
 
 function maskSubAgentText(text: string): string {
@@ -2431,7 +2432,13 @@ export class SubAgentRunner {
   ): Promise<SubAgentSpawnResult> {
     const checkpointChild: { release?: () => void } = {};
     try {
-      return await this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier);
+      // Delegated sessions retain content and attendance policy, never the parent's controller binding.
+      const inherited = turnExtensionPolicyContext.getStore();
+      return await turnExtensionPolicyContext.run(Object.freeze({
+        ...inherited,
+        allowExternalHooks: inherited?.allowExternalHooks ?? true,
+        remoteControllerAuthority: undefined,
+      }), () => this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier));
     } finally {
       checkpointChild.release?.();
     }
@@ -3269,7 +3276,12 @@ export class SubAgentRunner {
     }
 
     const attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void } = {};
-    const runPromise = this.runResume(
+    const inherited = turnExtensionPolicyContext.getStore();
+    const runPromise = turnExtensionPolicyContext.run(Object.freeze({
+      ...inherited,
+      allowExternalHooks: inherited?.allowExternalHooks ?? true,
+      remoteControllerAuthority: undefined,
+    }), () => this.runResume(
       resumeId,
       continuationInstructions,
       title,
@@ -3279,7 +3291,7 @@ export class SubAgentRunner {
       background,
       executionPolicy,
       attempt,
-    );
+    ));
     attempt.promise = runPromise;
     this.inFlight.set(resumeId, attempt);
     try {

@@ -3,11 +3,6 @@ import type { ConversationLoop as LoopContext } from "../../conversation-loop.js
 import { gateCrossAgentInterceptedMetaTools } from "../query-loop.js";
 import type { ToolUseBlock } from "../../../tools/executor.js";
 
-const tailnetAuthority = Object.freeze({
-  kind: "tailnet-controller" as const,
-  actorId: "tailnet:controller-digest" as `tailnet:${string}`,
-});
-
 function gateSelf(
   requestAndWait = vi.fn(),
   currentAbortController: AbortController | null = null,
@@ -19,8 +14,8 @@ function gateSelf(
   } as unknown as LoopContext;
 }
 
-describe("intercepted meta gate — Tailnet controller", () => {
-  it("uses the local meta route for controller operations", async () => {
+describe("intercepted meta gate — direct user", () => {
+  it("uses the ordinary meta route for direct user operations", async () => {
     const requestAndWait = vi.fn();
     const self = gateSelf(requestAndWait);
     const toolUses: ToolUseBlock[] = [
@@ -33,9 +28,8 @@ describe("intercepted meta gate — Tailnet controller", () => {
       self,
       toolUses,
       undefined,
-      "tailnet-surface",
-      "tailnet-session",
-      tailnetAuthority,
+      "llm-tool-arg",
+      "user-session",
     );
 
     expect(result.approved).toEqual(toolUses);

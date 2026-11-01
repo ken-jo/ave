@@ -4,7 +4,9 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createSkillLoadTool, type SkillLoadToolDeps } from "../skill-load.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { ApprovalGate } from "../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 
 const IN_SCOPE = "in-scope-plugin";
@@ -128,5 +130,46 @@ describe("skill_load — plugin skills obey the turn's plugin scope", () => {
 
     expect(result.is_error).toBe(true);
     expect(harness.acquirePluginGeneration).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("skill body approval controller authority", () => {
+  it.each(["local", "current", "revoked"] as const)("checks %s authority after an actual pending content card", async state => {
+    const sessionId = "skill-controller-card";
+    let current = true;
+    const authority = state === "local" ? undefined : bindRemoteControllerToSession({
+      kind: "platform-bridge", actorId: "skill-controller",
+      bridgeBinding: { bridgeId: "bridge", bridgeEpoch: 1, routeId: "route", routeEpoch: 1, scope: "scope" },
+      bridgeGuard: { isCurrent: () => current },
+    }, sessionId);
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const requestAndWait = vi.spyOn(gate, "requestAndWait");
+    const approve = vi.fn(async () => undefined);
+    const register = vi.fn();
+    const emit = vi.fn();
+    const tool = createSkillLoadTool({
+      store: { load: async () => skillFixture("user-skill") } as unknown as SkillLoadToolDeps["store"],
+      overlay: { register } as unknown as SkillLoadToolDeps["overlay"],
+      approvals: { isApproved: async () => false, approve } as unknown as SkillLoadToolDeps["approvals"],
+      approvalGate: gate, emit,
+    });
+    const pending = turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(authority), () => tool.execute({ skillName: "user-skill" }, {
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId },
+    }));
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+    expect(request.sessionId).toBe(sessionId);
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ remoteControllerAuthority: authority, remoteControllerOrigin: authority?.kind }));
+    expect(gate.pendingCount).toBe(1);
+    if (state === "revoked") current = false;
+    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    const result = await pending;
+    expect(result.isError).toBe(state === "revoked");
+    expect(approve).toHaveBeenCalledTimes(state === "revoked" ? 0 : 1);
+    expect(register).toHaveBeenCalledTimes(state === "revoked" ? 0 : 1);
+    expect(emit).toHaveBeenCalledTimes(state === "revoked" ? 0 : 1);
+    expect(gate.pendingCount).toBe(0);
   });
 });

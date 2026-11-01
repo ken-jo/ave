@@ -33,7 +33,7 @@ describe("host terminal admission before directory authorization", () => {
     const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner" }, "pane");
     manager.setUserOwnedSurfaceChoice("pane", "browser", "allow");
     await runWithHostTerminalTurn({ sessionId: "pane", turnId: "typed-turn" }, async () => {
-      expect(check({ remoteControllerAuthority, trustOrigin: "tailnet-surface" })).toMatchObject({ decision: "allow", reasonCode: "user-owned-surface-allow" });
+      expect(check({ remoteControllerAuthority, trustOrigin: "llm-tool-arg" })).toMatchObject({ decision: "allow", reasonCode: "user-owned-surface-allow" });
       noteToolResultsReturnedToModel();
       expect(check({ remoteControllerAuthority, trustOrigin: "file-content" })).toMatchObject({ decision: "ask", forceModal: true, reasonCode: "other-principal" });
     });

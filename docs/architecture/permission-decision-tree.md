@@ -14,7 +14,9 @@ Modes: 기본 / Default (former 모두 확인 = strict; default for new installs
 
 ```mermaid
 flowchart TD
-  S["로컬 또는 인증·세션 연결된 원격 사용자의 도구 호출"] --> H{"입장 검사 · 인증·세션 연결 · 훅 · deny 규칙"}
+  S["로컬 또는 인증·세션 연결된 원격 사용자의 도구 호출"] --> T{"입력 출처·봉투 검증 (로컬·원격 동일)"}
+  T -->|"위조 출처·봉투 불일치"| DENY
+  T -->|통과| H{"입장 검사 · 인증·세션 연결 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
   H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴"}
   F -->|예| ASKF["질문† (이번 한 번)"]
@@ -53,10 +55,14 @@ flowchart TD
   RR -->|재심사| RV
   MC -->|"사용자에게 카드 요청"| ASK
   RV -->|"재요청 뒤 high · 오류 · 3연속 / 턴 20회 거부 뒤"| ASK
-  ASK -->|"승인 (한 번 · 세션 · 항상 · 폴더 · 접두사)"| ALLOW
+  ASK -->|"승인 (내부 스킬·훅 카드 포함)"| LIVE{"응답·실행 직전 세션·권한 유효?"}
+  LIVE -->|예| ALLOW
+  LIVE -->|아니오| DENY
   ASK -->|"거절 · 부재 중 자동 스킵(옵션)"| DENY
-  ASKF -->|승인| ALLOW
+  ASKF -->|승인| LIVE
   ASKF -->|"거절 · 사람 없음"| DENY
+  ALLOW -.->|"허용된 위임·루틴 생성"| CHILD["독립 세션: 부모 원격 권한 미상속"]
+  CHILD --> H
   classDef allow fill:#d4f7d4,stroke:#2a2,color:#123
   classDef sbx fill:#e3f4f4,stroke:#2a8a8a,color:#123
   classDef ask fill:#fff3c4,stroke:#c90,color:#321
@@ -72,6 +78,10 @@ flowchart TD
 Notes that are part of the contract:
 - **Shared surfaces (owner decision 2026-11-02):** one conversation-local choice covers both logged-in browser tabs and host terminal tabs. One shared card selects Allow all, Auto or Ask (default); there is no separate choice per surface, persistence across sessions or child inheritance. Explicit ask rules and the human-only exfiltration guardrail precede this choice; generic allows and remembered grants do not replace it.
 - **Remote user (owner decision 2026-11-02):** an authenticated controller bound to the current session enters the same tree as the local user, including rules, remembered grants, mode, reviewer and 질문†. Missing authentication, session binding or live transport authority is admission-denied, including after asynchronous approval. Remote provenance alone never creates an other-principal floor; genuine external-content guidance still does.
+- **Remote intake and paste parity (owner decision 2026-11-02):** remote input cannot turn a staged, app-message or plugin envelope into raw user intent. The same origin/envelope mismatch is rejected before a turn, request anchor, native quote or terminal eligibility is created. Explicit attachments and recognized pasted-text wrappers retain file-content taint. The paired browser transport supplies image attachments; the provider bridge accepts text only. Neither carries a distinct pasted-text flag, so unmarked remote text is treated like typed text, without a size-based paste heuristic.
+- **Delegated work (owner decision 2026-11-02):** admitted children, resumed children and routine executions use the same independent sessions and provenance as local delegation. They do not inherit the originating controller's session-bound authority. After the parent creation/scheduling action passes its permission checks, the child spawn/resume execution or routine fire enters an independent scope. Revocation denies subsequent controller-bound admissions, pending card answers and pre-effect rechecks; it does not itself revoke the delegated session or promise interruption of an already running effect. Ordinary parent/child cancellation, routine signals, unattended/headless policy and genuine other-principal floors remain effective; a child's own tool calls still pass its own permission tree. A shared browser/terminal choice is never inherited.
+- **Internal approval lifetime (owner decision 2026-11-02):** skill-load and hook-command cards bind the originating controller authority to the same session as ordinary tool cards. Revocation while waiting denies the answer and subsequent skill registration or hook spawn; internal cards cannot outlive authenticated authority.
+- **Identity assumption:** this policy treats an admitted controller as the user. Pairing and conversation approval establish authority for a remote account, not proof that its human is the local owner. Pair only owner-controlled accounts when relying on the same-person assumption. Existing locally approved control shares/bindings can authorize another account, which then receives this same user-equivalent tree; there is no separate same-person identity check. Authentication, session scope and revocation still apply.
 - **Shell default (owner decision 2026-11-02):** shell sandboxing defaults on for all supported desktop platforms, including win32. A missing stored setting uses this default; an explicit stored false remains false. For shell tool calls outside the user-owned surface lane, only active isolation supplies sandbox evidence: proven read-only commands inside it auto-allow in Default, while host and escalated commands ask. Agent typing into the user's terminal instead follows the shared surface choice above. Settings activation without an available backend visibly warns and degrades without claiming confinement. On win32, MXC confines shells; the existing srt-win-only plan requires explicit host approval for shells and confines extensions. Missing both backends retains the visible unavailable path.
 - 질문† triggers only: protected paths (Claude Code list: .git .vscode .idea .husky .cargo .devcontainer .yarn
   .mvn .claude .config/git .bashrc .zshrc .zprofile .profile .envrc .gitconfig .npmrc .mcp.json .claude.json,

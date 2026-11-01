@@ -8,7 +8,9 @@ import { SKILL_SELECTOR_ALLOWLIST } from "../main/skill-store.js";
 import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
 import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
-import type { ApprovalGate } from "../permissions/approval-gate.js";
+import { isHostApprovalRejectedDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("ave");
@@ -80,6 +82,12 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       },
     },
     execute: async (rawInput, ctx) => {
+      const remoteControllerAuthority = turnExtensionPolicyContext.getStore()?.remoteControllerAuthority;
+      const remoteControllerOrigin = remoteControllerOriginOf(remoteControllerAuthority);
+      const sessionId = typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
+      const controllerCurrent = () => isRemoteControllerBoundToSession(remoteControllerAuthority, sessionId);
+      const revoked = () => ({ output: JSON.stringify({ error: "Remote controller authority was revoked or is not bound to this session" }), isError: true });
+      if (!controllerCurrent()) return revoked();
       const a = (rawInput ?? {}) as Record<string, unknown>;
       const skillName = typeof a.skillName === "string" ? a.skillName.trim() : "";
       if (!skillName) {
@@ -141,12 +149,15 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           ...(typeof ctx.metadata?.sessionId === "string" && ctx.metadata.sessionId
             ? { sessionId: ctx.metadata.sessionId }
             : {}),
+          remoteControllerAuthority, remoteControllerOrigin,
           args: { skillName: skill.name },
           reason: t("be_skillLoad.approvalReason", { name: skill.name }),
           source: "builtin",
           createdAt: Date.now(),
         });
-        if (decision.choice.startsWith("deny")) {
+        if (!controllerCurrent()) return revoked();
+        const rejected = Boolean(isHostApprovalRejectedDecision(decision));
+        if (rejected || decision.choice.startsWith("deny")) {
           return {
             output: JSON.stringify({
               error: `user denied skill load: ${skill.name}`,
@@ -164,10 +175,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       }
 
       // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.
-      const sessionId =
-        typeof ctx.metadata?.sessionId === "string" && ctx.metadata.sessionId
-          ? (ctx.metadata.sessionId as string)
-          : "";
+      if (!controllerCurrent()) return revoked();
       if (!sessionId) {
         return {
           output: JSON.stringify({

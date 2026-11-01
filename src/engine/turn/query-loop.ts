@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
 import type { GuidanceInjectionSource, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, ToolScope } from "./types.js";
 import type { GenericMessage, LLMProvider, LLMVendor, MessageMeta, TokenUsage, TokenUsageByModel, ToolCallBlock, ToolSchema } from "../llm/types.js";
-import type { ChatInputOrigin, RemoteControllerAuthority } from "../../shared/chat-origin.js";
+import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
 import type { ToolTrustOrigin } from "../../tools/types.js";
 import type { RequestAnchor } from "../../tools/pipeline/rationale-control.js";
@@ -1314,7 +1314,6 @@ export async function queryLoop(
         activeApprovalReasonPrefix,
         toolTrustOrigin,
         effectiveSessionId,
-        bounds.remoteControllerAuthority,
       );
       const interceptedAuthorizationRequired = interceptedMetaGate.denied
         .map((denied) => authorizationRequiredStateOf(denied.authorizationRequired))
@@ -1623,7 +1622,6 @@ export async function queryLoop(
                 activeApprovalReasonPrefix,
                 toolTrustOrigin,
                 effectiveSessionId,
-                bounds.remoteControllerAuthority,
               );
               const denied = gated.denied[0];
               if (denied) {
@@ -2583,7 +2581,6 @@ export async function gateCrossAgentInterceptedMetaTools(
   approvalReasonPrefix: string | undefined,
   trustOrigin: ToolTrustOrigin,
   sessionId: string,
-  _remoteControllerAuthority?: RemoteControllerAuthority,
 ): Promise<InterceptedMetaGateResult> {
   if (!approvalReasonPrefix) {
     return { approved: toolUses, denied: [] };

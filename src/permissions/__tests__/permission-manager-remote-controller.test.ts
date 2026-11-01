@@ -31,7 +31,8 @@ it.each([
   { sessionId: "session", remoteControllerAuthority: rawAuthority },
   { sessionId: "session", remoteControllerAuthority: { ...authority } },
   { sessionId: "session", trustOrigin: "tailnet-surface" as const },
-])("denies missing or mismatched authenticated binding: %j", context => {
+  { sessionId: "session", trustOrigin: "platform-bridge" as const },
+])("denies direct callers with missing or mismatched authenticated binding: %j", context => {
   manager.setMode("allow");
   expect(manager.checkDetailed("read_file", "builtin", "read", null, context)).toMatchObject({ decision: "deny", reasonCode: "remote-controller-unbound" });
 });

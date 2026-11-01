@@ -1259,7 +1259,7 @@ export class PermissionManager {
   }
 
   private hostTerminalEvidence(context: HostTerminalPermissionContext, admissionDenial: PermissionDecisionRequest["admissionDenial"], floor: PermissionDecisionRequest["floor"]): Pick<PermissionDecisionRequest, "admissionDenial" | "floor"> {
-    if (!isRemoteControllerBoundToSession(context.remoteControllerAuthority, context.sessionId) || ((context.trustOrigin === "tailnet-surface" || context.trustOrigin === "platform-bridge") && context.remoteControllerAuthority === undefined)) {
+    if (!isRemoteControllerBoundToSession(context.remoteControllerAuthority, context.sessionId)) {
       admissionDenial ??= { code: "remote-controller-unbound", reason: "Remote controller authentication or session binding is unavailable." };
     }
     if (context.hostTerminalTurn) {
@@ -1270,7 +1270,6 @@ export class PermissionManager {
         const hostTurn = currentHostTerminalTurn(scope.sessionId);
         const externalContent = hostTurn?.externalContentSeen() === true;
         const trusted = context.trustOrigin !== undefined && isUntaintedToolTrustOrigin(context.trustOrigin)
-          || context.remoteControllerAuthority !== undefined && isRemoteControllerBoundToSession(context.remoteControllerAuthority, context.sessionId) && (context.trustOrigin === "tailnet-surface" || context.trustOrigin === "platform-bridge")
           || context.trustOrigin === "file-content" && externalContent;
         if (!trusted || !hostTurn || hostTurn.turnId !== scope.turnId || context.sessionId !== scope.sessionId || hostTurn.otherPrincipalGuidance()) {
           admissionDenial ??= { code: "host-terminal-turn", reason: "Host terminal typing is available only to the user's own turn in its pane chat" };
@@ -1417,6 +1416,7 @@ export class PermissionManager {
     const projectRules = projectRuleState?.ok ? projectRuleState.rules : [];
     const policyError = this.rulesLoadError?.message ?? (projectRuleState?.ok === false ? projectRuleState.error.message : undefined) ?? context.permissionStoreError;
     if (policyError) admissionDenial ??= { code: "policy-unreadable", reason: policyError };
+    // Direct checkDetailed callers bypass runTurn normalization; a transport-origin label is never authentication.
     if (!isRemoteControllerBoundToSession(context.remoteControllerAuthority, context.sessionId) || ((context.trustOrigin === "tailnet-surface" || context.trustOrigin === "platform-bridge") && context.remoteControllerAuthority === undefined)) {
       admissionDenial ??= { code: "remote-controller-unbound", reason: "Remote controller authentication or session binding is unavailable." };
     }
