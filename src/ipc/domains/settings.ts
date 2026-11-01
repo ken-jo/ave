@@ -72,6 +72,7 @@ import {
 } from "../../shared/subscription-runtime.js";
 import {
   getSubscriptionRuntimeService,
+  onSubscriptionRuntimeAutoVerified,
   subscriptionRuntimeErrorCode,
   SubscriptionRuntimeServiceError,
   type SubscriptionRuntimeService,
@@ -519,6 +520,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     };
     broadcastToAppWindows(deps, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
   };
+  onSubscriptionRuntimeAutoVerified(publishSubscriptionRuntimeStatusUpdated);
 
   const auditSubscriptionMutation = (
     action: string,
