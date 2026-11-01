@@ -15,6 +15,10 @@ export interface MxcConfinedChildRequestInput {
   readonly temp: string;
   readonly grants: MxcFilesystemGrants;
   readonly baseEnv: Readonly<NodeJS.ProcessEnv>;
+  /** Host-owned variables this holder kind already receives on its non-container path (an MCP server's configured
+   * environment and API key, a hook's `AVE_HOOK_*` and plugin roots). They override forwarded values, as they do there;
+   * wrapper proxy/trust keys stay the wrapper's and the profile/temp/cwd keys below stay the container's. */
+  readonly holderEnv?: Readonly<Record<string, string>>;
   readonly proxyUrl: string;
 }
 
@@ -43,6 +47,15 @@ export function buildMxcConfinedChildRequest(input: MxcConfinedChildRequestInput
     environment[key] = value;
   }
   if (input.baseEnv.ELECTRON_RUN_AS_NODE === "1") environment.ELECTRON_RUN_AS_NODE = "1";
+  const holderKeys = new Set<string>();
+  for (const [name, value] of Object.entries(input.holderEnv ?? {})) {
+    const key = name.toUpperCase();
+    if (holderKeys.has(key)) throw new Error("Container holder environment contains duplicate keys");
+    holderKeys.add(key);
+    if (typeof value !== "string") throw new Error("Container holder environment values must be strings");
+    if (isSandboxWrapperEnvKey(name)) continue;
+    environment[key] = value;
+  }
   // Profile and working-directory hints must not point back into the host profile.
   Object.assign(environment, {
     HOME: input.home, USERPROFILE: input.home,

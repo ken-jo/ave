@@ -1,6 +1,6 @@
 # Windows extension containers
 
-Status: owned process primitive and packaging implemented, 2026-11-01; holder routing and native readiness remain outstanding. Product scope follows [the vision](../vision/README.md). The owner selected MXC for Windows extensions on capable hosts and the pinned `@anthropic-ai/sandbox-runtime` 0.0.80 backend elsewhere. This does not adopt 0.0.81. Recommendations and release requirements below describe future work, not general Windows guarantees; the peer measurements in §8 establish only the recorded runtime, policy and host cases.
+Status: owned process primitive and packaging implemented, 2026-11-01; MCP/hook holder adapters (row 5) implemented behind the native-validation gate, 2026-11-02; other holder routing and native readiness remain outstanding. Product scope follows [the vision](../vision/README.md). The owner selected MXC for Windows extensions on capable hosts and the pinned `@anthropic-ai/sandbox-runtime` 0.0.80 backend elsewhere. This does not adopt 0.0.81. Recommendations and release requirements below describe future work, not general Windows guarantees; the peer measurements in §8 establish only the recorded runtime, policy and host cases.
 
 ## Evidence and boundaries
 

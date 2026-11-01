@@ -106,7 +106,10 @@ the worker adapter declares `{ holder: "worker" }` and is refused with
 `worker-transport-unsupported` (D1); every other legacy holder (plugin child,
 MCP stdio, hooks) is refused with the holder-neutral `native-entry-required`
 (`MxcNativeEntryRequiredError`). The native entry opts in with
-`{ backend: "mxc" }` and rechecks readiness.
+`{ backend: "mxc" }` and rechecks readiness. MCP stdio and hook adapters now
+take the native entry when the plan selects MXC (see "Holder adapters (row 5)"),
+so they no longer reach that refusal. The one exemption is D4's user hook on its
+admitted srt-win shell plan: it is not an extension holder and keeps that route.
 
 The plugin-child adapter (row 3) checks that `request.command` equals the shared
 Windows command-line helper's output for its command and arguments, and that the
@@ -252,6 +255,89 @@ Hard requirements for holder adapters (rows 3–5):
   captured write roots.
 - Executables come from installation or generation roots, never from a workspace
   or any holder-writable root.
+
+## Holder adapters (row 5)
+
+MCP stdio servers and hooks become extension holders through
+`spawnMxcBundledHolder` (`src/sandbox/wrap-bundled-command.ts`), which calls
+`spawnMxcConfinedChild` and nothing else native. The adapter only lays out
+roots and raises named refusals before admission. Admission, the receipt,
+nesting and the lifetime registry stay row 2's.
+
+- **Selection.** An adapter uses the container route only when the sealed boot
+  plan is `mxc`/`ready` on Windows (`isMxcExtensionBackendSelected`). Plugin
+  hooks and MCP servers follow that plan. A user hook follows its admitted
+  host-shell plan (D4): it uses the container route only when that plan's shell
+  substrate is a container and the extension plan is selected. On an srt-win
+  shell plan it keeps the srt-win route. In every other case it keeps its
+  existing route.
+- **User-hook exemption.** The legacy guard in `spawnConfinedChild` exempts
+  exactly one case: an issued, current srt-win host-shell plan
+  (`isIssuedHostShellExecutionPlan`, live generation and identity) passed by a
+  hook whose egress owner names no plugin.
+  - The script-hook runner passes the plan only for a host-classified user
+    hook. The hook registry sets `confinement`/`pluginOwner` on every plugin
+    hook, and a hook carrying either is never classified as a user hook.
+  - A plugin owner carrying a plan is refused as a contract violation.
+  - A copied or stale plan is also refused as a contract violation.
+- **Layout.**
+  - Each start is a new holder incarnation with its own
+    `<AVE_HOME>\mxc-staging\<opaque-id>\{home,temp}`. That staging root is
+    added to the captured write roots.
+  - The caller's roots are passed as the holder's own explicit roots, never as
+    another holder's plan.
+  - The executable's directory is the only added read. A configured cwd must
+    already lie inside the admitted roots and is never added to them. The default
+    cwd is the private HOME.
+  - After verified termination the staging tree is removed without following
+    links. An unverified termination keeps it.
+- **Executable rule.**
+  - A configured command resolves through the caller's PATH, over absolute
+    directories only, to a canonical `.exe`.
+  - A relative path, a script shim or a missing program is refused with
+    `MxcExecutableNotAdmissibleError` (`executable-not-admissible`).
+  - So is an executable inside an authorized workspace, the caller-named
+    workspace (a user hook's cwd), this holder's own writable roots or any live
+    holder's writable root, compared in lexical and canonical spelling.
+  - System and user installs on PATH remain admissible. Their identity is
+    pinned and rechecked by row 2. This is an admission refusal, not a readiness
+    reason.
+- **Workspace concurrency.**
+  - A holder whose write roots overlap an authorized workspace, or the
+    caller-named workspace, is refused with `MxcHolderWorkspaceBusyError`
+    (`holder-workspace-busy`). The refusal applies only while another live
+    extension holder writes an overlapping root.
+  - Holders are never queued or serialized automatically. A user hook therefore
+    keeps its cwd write grant and runs whenever no other holder writes that
+    workspace.
+  - Overlaps outside workspaces stay with row 2's nesting check.
+- **Bash.** A bash-form command is refused before admission with
+  `MxcBashIncompatibleError`, whose plan carries reason `bash-incompatible`.
+  Bash-form means the executable basename is `bash`/`sh`, or the resolved shell
+  flavor is MSYS. Such a plan selects no fallback: a selected container boot
+  plan offers no account-backed admission for an extension holder.
+- **Environment.** `holderEnv` carries the host-owned variables the same holder
+  kind already receives on its legacy route, and nothing broader.
+  - MCP: `NODE_ENV`, the approved configured variables and the API key.
+  - Hooks: `AVE_HOOK_*`, configured hook variables and `PLUGIN_ROOT`/`PLUGIN_DATA`.
+  - These override forwarded values as they do on the legacy route. Wrapper
+    proxy/trust keys and the container's profile/temp/cwd keys stay the
+    wrapper's and the container's.
+  - The request validator still refuses loader overrides (`NODE_OPTIONS`,
+    `NODE_PATH`, SDK directory overrides) and a non-`1` `ELECTRON_RUN_AS_NODE`,
+    even where the legacy route would pass them.
+- **Readiness probe.** The exact-request probe is registered by the native
+  release gate through `registerMxcHolderReadinessProbe`. Until then every
+  holder start fails closed with `MxcCapabilityUnavailableError`.
+- **Lifetime.**
+  - MCP reports `windows-mxc` (the wrapped marker) only after a framed reply
+    crosses the native pipes, and withdraws it at close or exit.
+  - A reconnect waits for the previous incarnation's release.
+  - An unverified termination quarantines that server id. Its reconnect is
+    refused with `MxcHolderQuarantinedError` until the host restarts; row 6 must
+    disclose this.
+  - A hook's timeout or cancellation disposes the container. An unverified
+    termination denies the hook and keeps its lease.
 
 Confined child DLL search from cwd/PATH is not host-hardened; PSEC behavior is
 native-unverified. The request forwards `PATH` (`FORWARD_ENV_KEYS`), and a Node

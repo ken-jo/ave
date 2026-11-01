@@ -45,9 +45,14 @@ import {
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import type { EgressInvocation, WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
+  assertMxcHolderNotBashForm,
   bundledWrappedEnv,
+  isMxcExtensionBackendSelected,
+  MxcBashIncompatibleError,
+  spawnMxcBundledHolder,
   spawnWindowsBundledProcess,
   wrapBundledCommand,
+  type MxcBundledHolder,
   type WindowsBundledSpawn,
 } from "../sandbox/wrap-bundled-command.js";
 
@@ -204,13 +209,16 @@ export async function runOneHookScript(
     }
   }
 
-  const childEnvBase = buildSafeChildEnv({ ...runnable.env, ...hookEnv,
+  // The host-owned variables every route gives the hook on top of the forwarded runtime keys; a container receives the same.
+  const hookHostEnv: Record<string, string> = { ...runnable.env, ...hookEnv,
     ...(confinement ? { PLUGIN_ROOT: confinement.generationRoot, PLUGIN_DATA: confinement.dataDir } : {}),
-  });
+  };
+  const childEnvBase = buildSafeChildEnv(hookHostEnv);
 
   let spawnCmd: string;
   let spawnArgs: string[];
   let spawnEnv: NodeJS.ProcessEnv;
+  let shellFlavor: string | undefined;
   if (!confinement && isLegacyShellScript(runnable.command)) {
     let shell;
     try {
@@ -224,6 +232,7 @@ export async function runOneHookScript(
     // Preserve the script path as $0; inject hook env through inline assignments and the spawn allowlist.
     const hookCommand = `${shellEnvAssignments(hookEnv)} ${shellCommandForHookPath(shell, runnable.command[0])}`;
     spawnCmd = shell.cmd;
+    shellFlavor = shell.windowsFlavor;
     spawnArgs = shell.shellArgs(hookCommand);
     spawnEnv = shellEnvForChild(shell, childEnvBase);
   } else {
@@ -236,7 +245,24 @@ export async function runOneHookScript(
 
   if (abortSignal?.aborted) return deny("Hook execution cancelled");
   assertManagedChildProcessAdmissionOpen("hook:script");
-  if (confinement) {
+  // A plugin hook follows the extension backend. A user hook keeps the host-shell plan it was admitted under: the
+  // container route only when that plan's shell substrate is a container, otherwise its existing srt-win or plain route.
+  // The host classifies: the hook registry sets `confinement` and `pluginOwner` on every plugin hook.
+  const userHook = !confinement && runnable.pluginOwner === undefined;
+  const containedRoute = confinement
+    ? isMxcExtensionBackendSelected()
+    : userHook && process.platform === "win32" && admittedPlan?.mode === "asrt" && admittedPlan.substrate === "mxc"
+      && isMxcExtensionBackendSelected();
+  if (containedRoute) {
+    // Git Bash cannot start in a container; refuse before admission, never switch this hook to another backend.
+    try {
+      assertMxcHolderNotBashForm(spawnCmd, shellFlavor);
+    } catch (error) {
+      if (!(error instanceof MxcBashIncompatibleError)) throw error;
+      return deny(`sandbox unavailable (${error.plan.reason}): ${error.message}`);
+    }
+  }
+  if (confinement && !containedRoute) {
     try {
       assertExtensionStartAllowed();
     } catch (error) {
@@ -246,6 +272,7 @@ export async function runOneHookScript(
   let cleanupWrap: (() => void) | undefined;
   let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
+  let contained: MxcBundledHolder | undefined;
   // Bundled hooks require the worker-confinement gate; user hooks use the host-shell plan under which they were admitted, or its live plan.
   const sandboxEnabled = confinement
     ? isPluginWorkerConfinementActive()
@@ -260,7 +287,43 @@ export async function runOneHookScript(
   const hookEgressOwner: WorkerEgressOwner = confinement
     ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }
     : { kind: "worker", role: "hook", pluginId: undefined, instanceId: sha256Hex(runnable.id) };
-  if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
+  const assertHookStillAdmitted = (): void => {
+    abortSignal?.throwIfAborted();
+    if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
+      || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
+      throw new Error("Hook shell execution policy changed before spawn");
+    }
+    assertCommandAllowed?.();
+  };
+  if (containedRoute) {
+    // Its own holder: generation read and data write for a plugin hook, the admitted script read and cwd write for a user
+    // hook, each beside a private staging HOME/temp. The cwd is a workspace for the executable and concurrency rules.
+    try {
+      await refreshCommandAllowed?.();
+      contained = await spawnMxcBundledHolder({
+        label: `hook:${confinement?.pluginId ?? "user"}`,
+        command: spawnCmd,
+        args: spawnArgs,
+        baseEnv: spawnEnv,
+        holderEnv: hookHostEnv,
+        cwd,
+        allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
+        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        ownedReadRoots: confinement ? [confinement.generationRoot] : [],
+        egressOwner: hookEgressOwner,
+        workspaceRoots: confinement ? [] : [cwd],
+        assertStillValid: assertHookStillAdmitted,
+        ...(abortSignal ? { signal: abortSignal } : {}),
+      });
+    } catch (error) {
+      if (abortSignal?.aborted) return deny("Hook execution cancelled");
+      return deny(`sandbox unavailable${errorCode(error)}: ${(error as Error).message}`);
+    }
+    const holder = contained;
+    cleanupWrap = () => {
+      void holder.release().catch((error: unknown) => log.warn("hook holder termination unverified: %s (%s)", runnable.id, (error as Error).message));
+    };
+  } else if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
     // Windows hooks use a stdio relay with read access to their generation and write access to their data.
     try {
       await refreshCommandAllowed?.();
@@ -274,14 +337,9 @@ export async function runOneHookScript(
         allowWrite: confinement ? [confinement.dataDir] : [cwd],
         egressOwner: hookEgressOwner,
         refreshStillValid: refreshCommandAllowed,
-        assertStillValid: () => {
-          abortSignal?.throwIfAborted();
-          if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
-            || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
-            throw new Error("Hook shell execution policy changed before spawn");
-          }
-          assertCommandAllowed?.();
-        },
+        // A host-classified user hook on its admitted srt-win plan keeps that route under a container extension backend.
+        ...(userHook && admittedPlan?.substrate === "asrt" ? { userHookShellPlan: admittedPlan } : {}),
+        assertStillValid: assertHookStillAdmitted,
       });
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
@@ -334,6 +392,7 @@ export async function runOneHookScript(
   }
   if (abortSignal?.aborted) {
     if (windowsSpawn) await forceKillManagedChildProcess(windowsSpawn.child, "hook caller aborted");
+    // `cleanupWrap` releases a contained holder: disposal is its kill, and an unverified one keeps its lease.
     wrappedEgress?.release();
     cleanupWrap?.();
     return deny("Hook execution cancelled");
@@ -353,6 +412,12 @@ export async function runOneHookScript(
     wrappedEgress?.release();
     cleanupWrap?.();
     return deny(`hook command denied before spawn: ${(error as Error).message}`);
+  }
+
+  if (contained) {
+    return runContainedHook({ holder: contained, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
+      outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
+        hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
 
   return new Promise<ScriptHookInvocationResult>((resolve) => {
@@ -447,66 +512,8 @@ export async function runOneHookScript(
       abortSignal?.removeEventListener("abort", onAbort);
       const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
       const stderr = Buffer.concat(stderrChunks).toString("utf-8");
-      const durationMs = Date.now() - start;
-
-      if (cancelled) {
-        resolve(deny("Hook execution cancelled", { rawStdout: stdout, exitCode: code ?? undefined }));
-        return;
-      }
-
-      if (timedOut) {
-        log.warn("hook timeout: %s (%dms)", runnable.id, timeoutMs);
-        resolve({
-          ...forensics,
-          decision: "deny",
-          reason: `hook timed out after ${timeoutMs}ms`,
-          rawStdout: stdout,
-          exitCode: code ?? undefined,
-          timedOut: true,
-          durationMs,
-        });
-        return;
-      }
-
-      if (code !== 0) {
-        // Fail-safe: non-zero exit → deny. Stderr surfaces the cause.
-        const tail = stderr.trim() || (signal ? `terminated by ${signal}` : `exit ${code}`);
-        resolve({
-          ...forensics,
-          decision: "deny",
-          reason: code === 2 ? `hook blocked (exit 2): ${tail}` : `hook exited non-zero (${code}): ${tail}`,
-          rawStdout: stdout,
-          exitCode: code ?? undefined,
-          timedOut: false,
-          durationMs,
-          ...(code === 2 ? { blockFeedback: tail } : {}),
-        });
-        return;
-      }
-
-      const parsed = stdoutCapped ? null : parseHookStdout(stdout, runnable.hookType);
-      if (!parsed) {
-        resolve({
-          ...forensics,
-          decision: "deny",
-          reason: stdoutCapped ? "hook stdout exceeded capture limit" : "hook stdout not valid decision JSON",
-          rawStdout: stdout,
-          exitCode: code,
-          timedOut: false,
-          durationMs,
-        });
-        return;
-      }
-      resolve({
-        ...forensics,
-        decision: parsed.action,
-        reason: parsed.reason,
-        rawStdout: stdout,
-        exitCode: code,
-        timedOut: false,
-        durationMs,
-        ...(parsed.block ? { blockFeedback: parsed.reason } : {}),
-      });
+      resolve(hookOutcome(forensics, deny, { code, signal, stdout, stderr, stdoutCapped, timedOut, cancelled,
+        timeoutMs, hookId: runnable.id, hookType: runnable.hookType, durationMs: Date.now() - start }));
     };
 
     timer = setTimeout(() => {
@@ -568,6 +575,133 @@ export async function runOneHookScript(
       });
     }
   });
+}
+
+type HookResultForensics = Pick<ScriptHookInvocationResult, "hookPath" | "hookType" | "source" | "commandIdentity" | "pluginOwner">;
+type HookDeny = (reason: string, extra?: Partial<ScriptHookInvocationResult>) => ScriptHookInvocationResult;
+
+interface ObservedHookRun {
+  readonly code: number | null;
+  readonly signal?: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly stdoutCapped: boolean;
+  readonly timedOut: boolean;
+  readonly cancelled: boolean;
+}
+
+/** The verdict of a finished hook process, the same for every route: cancel, timeout, non-zero exit (exit 2 feeds stderr
+ * back as the block reason) and malformed output deny; valid decision JSON decides. */
+function hookOutcome(forensics: HookResultForensics, deny: HookDeny, run: ObservedHookRun & {
+  readonly timeoutMs: number; readonly hookId: string; readonly hookType: HookEvent; readonly durationMs: number;
+}): ScriptHookInvocationResult {
+  const { code, signal, stdout, stderr, durationMs } = run;
+  if (run.cancelled) return deny("Hook execution cancelled", { rawStdout: stdout, exitCode: code ?? undefined });
+  if (run.timedOut) {
+    log.warn("hook timeout: %s (%dms)", run.hookId, run.timeoutMs);
+    return { ...forensics, decision: "deny", reason: `hook timed out after ${run.timeoutMs}ms`, rawStdout: stdout,
+      exitCode: code ?? undefined, timedOut: true, durationMs };
+  }
+  if (code !== 0) {
+    // Fail-safe: non-zero exit → deny. Stderr surfaces the cause.
+    const tail = stderr.trim() || (signal ? `terminated by ${signal}` : `exit ${code}`);
+    return { ...forensics, decision: "deny",
+      reason: code === 2 ? `hook blocked (exit 2): ${tail}` : `hook exited non-zero (${code}): ${tail}`,
+      rawStdout: stdout, exitCode: code ?? undefined, timedOut: false, durationMs,
+      ...(code === 2 ? { blockFeedback: tail } : {}) };
+  }
+  const parsed = run.stdoutCapped ? null : parseHookStdout(stdout, run.hookType);
+  if (!parsed) {
+    return { ...forensics, decision: "deny",
+      reason: run.stdoutCapped ? "hook stdout exceeded capture limit" : "hook stdout not valid decision JSON",
+      rawStdout: stdout, exitCode: code, timedOut: false, durationMs };
+  }
+  return { ...forensics, decision: parsed.action, reason: parsed.reason, rawStdout: stdout, exitCode: code,
+    timedOut: false, durationMs, ...(parsed.block ? { blockFeedback: parsed.reason } : {}) };
+}
+
+/** A stable reason code, when the refusal has one, so the deny names it. */
+function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? ` (${code})` : "";
+}
+
+/** Bounded capture shared by both output streams. */
+function captureBounded(stream: NodeJS.ReadableStream): { text(): string; capped(): boolean } {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let capped = false;
+  stream.on("data", (chunk: Buffer) => {
+    const remaining = MAX_HOOK_STDOUT_BYTES - bytes;
+    if (chunk.byteLength > remaining) capped = true;
+    if (remaining <= 0) return;
+    const kept = chunk.subarray(0, remaining);
+    chunks.push(kept);
+    bytes += kept.byteLength;
+  });
+  return { text: () => Buffer.concat(chunks).toString("utf-8"), capped: () => capped };
+}
+
+/** A contained hook: JSON in on native stdin, bounded stdout/stderr, status from completion. Timeout and cancellation
+ * dispose the container; the verdict waits for verified termination, and an unverified one denies with the lease kept. */
+async function runContainedHook(input: {
+  readonly holder: MxcBundledHolder;
+  readonly stdinJson: string;
+  readonly timeoutMs: number;
+  readonly abortSignal?: AbortSignal;
+  readonly hookId: string;
+  readonly deny: HookDeny;
+  readonly outcome: (observed: ObservedHookRun) => ScriptHookInvocationResult;
+}): Promise<ScriptHookInvocationResult> {
+  const { holder, deny } = input;
+  const owned = holder.process;
+  // Attach every stream before awaiting completion.
+  const stdout = captureBounded(owned.stdout);
+  const stderr = captureBounded(owned.stderr);
+  const stdoutEnded = new Promise<void>((resolveEnded) => {
+    owned.stdout.once("end", resolveEnded);
+    owned.stdout.once("close", resolveEnded);
+  });
+  owned.stdin.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE") log.warn("hook stdin error: %s (%s)", input.hookId, err.message);
+  });
+  let timedOut = false;
+  let cancelled = false;
+  const stop = (): void => { void holder.release().catch(() => {}); };
+  const timer = setTimeout(() => { timedOut = true; stop(); }, input.timeoutMs);
+  const onAbort = (): void => { cancelled = true; stop(); };
+  input.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  if (input.abortSignal?.aborted) onAbort();
+  let writeError: Error | undefined;
+  try {
+    owned.stdin.write(input.stdinJson);
+    owned.stdin.end();
+  } catch (error) {
+    writeError = error as Error;
+    stop();
+  }
+  let code: number | null = null;
+  let fault: unknown;
+  try {
+    const result = await owned.completion;
+    code = result.exitCode;
+    if (result.timedOut) timedOut = true;
+  } catch (error) {
+    fault = error;
+  } finally {
+    clearTimeout(timer);
+    input.abortSignal?.removeEventListener("abort", onAbort);
+  }
+  await Promise.race([stdoutEnded, new Promise<void>((resolveLate) => setTimeout(resolveLate, 1_000).unref())]);
+  try {
+    await holder.release();
+  } catch (error) {
+    return deny(`hook process termination is unverified; its sandbox resources stay held: ${(error as Error).message}`,
+      { rawStdout: stdout.text(), timedOut });
+  }
+  if (writeError) return deny(`failed to serialise hook payload: ${writeError.message}`);
+  if (fault !== undefined && !timedOut && !cancelled) return deny(`hook process stream fault: ${(fault as Error).message}`);
+  return input.outcome({ code, stdout: stdout.text(), stderr: stderr.text(), stdoutCapped: stdout.capped(), timedOut, cancelled });
 }
 
 function normalizeRunnable(hook: DiscoveredHook | RunnableHook): RunnableHook {
