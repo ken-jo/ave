@@ -85,10 +85,24 @@ describe("runEarlyBootEnv", () => {
     expect(mockedElectron.protocol.registerSchemesAsPrivileged.mock.calls[0]![0].map((entry: { scheme: string }) => entry.scheme))
       .toEqual(["ave-plugin", "ave-mcp-app", "ave-content"]);
     expect(mockedElectron.app.setName).toHaveBeenCalledWith("Ave");
-    expect(mockedElectron.app.setAppUserModelId).toHaveBeenCalledWith("ai.agent-connector.ave");
+    expect(mockedElectron.app.setAppUserModelId).toHaveBeenCalledWith("ai.agent-connector.ave.dev");
     // net.request and hostFetch use the default session, which takes this fallback.
     expect(mockedElectron.app.userAgentFallback).toBe(buildPersistentBrowserUserAgent());
     expect(mockedElectron.app.userAgentFallback).toMatch(/Safari\/537\.36 Ave\/0\.14\.1$/);
+  });
+
+  it("keeps the installed app's notification identity out of unpackaged runs on Windows", () => {
+    setProcessPlatform("win32");
+    runEarlyBootEnv();
+    expect(mockedElectron.app.setAppUserModelId).toHaveBeenLastCalledWith("ai.agent-connector.ave.dev");
+    expect(mockedElectron.app.setToastActivatorCLSID).toHaveBeenLastCalledWith("{3A31E029-A551-4866-84E0-3F814EE74B69}");
+
+    mockedElectron.app.isPackaged = true;
+    try {
+      runEarlyBootEnv();
+    } finally { mockedElectron.app.isPackaged = false; }
+    expect(mockedElectron.app.setAppUserModelId).toHaveBeenLastCalledWith("ai.agent-connector.ave");
+    expect(mockedElectron.app.setToastActivatorCLSID).toHaveBeenLastCalledWith("{62FD3EFB-B3D2-4235-9402-6979F52C0286}");
   });
 
   it("honors a persisted hardware-acceleration ON over the Windows/Linux default", () => {
