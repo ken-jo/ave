@@ -4,6 +4,8 @@ const { pathToFileURL } = require("node:url");
 const { assertSrtWinVendor } = require("./lib/srt-win-integrity.cjs");
 module.exports = async function beforePack(context) {
   if (context.electronPlatformName !== "win32") return;
+  const { assertMxcSupervisorFuse } = await import("./lib/mxc-sdk-packaging.mjs");
+  assertMxcSupervisorFuse(context.packager.config);
   if (process.platform !== "win32") throw new Error("Windows job launcher requires a native Windows build");
   const { windowsPowerShellEnv } = await import("./lib/windows-powershell-env.mjs");
   const arch = { 1: "x64", 3: "arm64" }[context.arch];

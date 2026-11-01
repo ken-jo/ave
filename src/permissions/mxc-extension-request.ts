@@ -33,7 +33,7 @@ export function assertMxcExtensionRequest(value: unknown): asserts value is Cont
   const keys = new Set<string>();
   for (const [key, entry] of Object.entries(environment!)) {
     const normalized = key.toUpperCase();
-    if (keys.has(normalized) || /^(MXC_FFI_DIR|NODE_OPTIONS|NODE_PATH|AVE_MXC_.*)$/.test(normalized)
+    if (keys.has(normalized) || /^(MXC_FFI_DIR|MXC_BIN_DIR|NODE_OPTIONS|NODE_PATH|AVE_MXC_.*)$/.test(normalized)
       || typeof entry !== "string" || key.includes("=") || key.includes("\0") || entry.includes("\0")) fail();
     if (normalized === "ELECTRON_RUN_AS_NODE" && entry !== "1") fail();
     keys.add(normalized);

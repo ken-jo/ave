@@ -18,3 +18,10 @@ export class MxcSupervisorLostError extends Error {
     this.name = "MxcSupervisorLostError";
   }
 }
+
+export class MxcCapabilityUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "MxcCapabilityUnavailableError";
+  }
+}

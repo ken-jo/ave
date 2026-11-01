@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,7 +27,7 @@ function installation() {
   put("@koromix/koffi-win32-x64/package.json", JSON.stringify({ name: "@koromix/koffi-win32-x64", main: "index.js" }));
   put("@koromix/koffi-win32-x64/index.js", "module.exports = {};");
   put("@koromix/koffi-win32-x64/win32_x64/koffi.node", "fixture-addon");
-  return { root, pins: { sdk: { versions, files, architectures: { x64: {} } } } };
+  return { root, pins: { sdk: { versions, packages: Object.fromEntries(Object.keys(versions).map((name) => [name, name])), files, architectures: { x64: {} } } } };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -38,7 +39,7 @@ describe("installed SDK integrity", () => {
     ]);
   });
 
-  it.each(["MXC_FFI_DIR", "mxc_ffi_dir", "NODE_OPTIONS", "NODE_PATH"])("rejects loader override %s", (key) => {
+  it.each(["MXC_FFI_DIR", "mxc_ffi_dir", "MXC_BIN_DIR", "mxc_bin_dir", "NODE_OPTIONS", "NODE_PATH"])("rejects loader override %s", (key) => {
     const { root, pins } = installation();
     expect(() => verifyMxcSdk(root, "x64", pins, { [key]: "" })).toThrow(MxcIntegrityError);
   });
@@ -83,7 +84,8 @@ describe("SDK packaging source assertions", () => {
   it("keeps runtime-relative SDK and addon paths unpacked and SDK imports external", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf8"));
     expect(pkg.dependencies["@microsoft/mxc-sdk"]).toBe(PINS.version);
-    for (const rule of ["node_modules/@microsoft/mxc-sdk/**", "node_modules/koffi/**", "node_modules/semver/**", "node_modules/@koromix/koffi-win32-*/**", "node_modules/node-pty/**"]) expect(pkg.build.asarUnpack).toContain(rule);
+    for (const rule of ["node_modules/@microsoft/mxc-sdk/**", "node_modules/koffi/**", "node_modules/@koromix/koffi-win32-*/**", "node_modules/node-pty/**"]) expect(pkg.build.asarUnpack).toContain(rule);
+    expect(pkg.build.asarUnpack).not.toContain("node_modules/semver/**");
     expect(readFileSync("scripts/lib/main-bundle-externals.mjs", "utf8")).toContain('"@microsoft/mxc-sdk"');
     expect(readFileSync("scripts/electron-before-pack.cjs", "utf8")).toContain("verifyMxcSdk(");
     expect(readFileSync("scripts/electron-after-pack.cjs", "utf8")).toContain("prunePackagedMxcSdk(");
@@ -126,5 +128,123 @@ describe("packaged supervisor runtime byte inventory", () => {
     }
     expect(readFileSync("scripts/electron-after-sign.cjs", "utf8")).toContain("recordMxcSupervisorRuntime(");
     expect(readFileSync("scripts/electron-before-pack.cjs", "utf8")).toContain("stageMxcSdkAddon(");
+  });
+});
+
+
+describe("installed SDK import graph", () => {
+  it("verifies the real installed dependency layout with native addon bytes substituted only", () => {
+    const modules = path.resolve("node_modules");
+    const target = path.join(modules, "@koromix/koffi-win32-x64");
+    const pins = structuredClone(PINS);
+    const substituted = !existsSync(target);
+    try {
+      if (substituted) {
+        const files = {
+          "package.json": JSON.stringify({ name: "@koromix/koffi-win32-x64", main: "index.js" }),
+          "index.js": "throw new Error('Verification fixture must never execute');\n",
+          "win32_x64/koffi.node": "native bytes are not loaded by integrity verification",
+        };
+        for (const [relative, contents] of Object.entries(files)) {
+          mkdirSync(path.dirname(path.join(target, relative)), { recursive: true });
+          writeFileSync(path.join(target, relative), contents);
+          (pins.sdk.architectures.x64 as Record<string, string>)[`@koromix/koffi-win32-x64/${relative}`] = contentHash(contents);
+        }
+      }
+      expect(verifyMxcSdk(modules, "x64", pins, {}).sdkRoot).toBe(path.join(modules, "@microsoft/mxc-sdk"));
+      expect(pins.sdk.packages.semver).toBe("@microsoft/mxc-sdk/node_modules/semver");
+      expect(JSON.parse(readFileSync(path.join(modules, pins.sdk.packages.semver, "package.json"), "utf8")).version).toBe(pins.sdk.versions.semver);
+      expect(readFileSync("bun.lock", "utf8")).toContain(`"@microsoft/mxc-sdk/semver": ["semver@${pins.sdk.versions.semver}"`);
+    } finally {
+      if (substituted) rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("records the actual spawn and probe import-condition graph without executing native code", async () => {
+    const { build } = await import("esbuild");
+    const result = await build({
+      entryPoints: ["node_modules/@microsoft/mxc-sdk/dist/v1/index.js"],
+      bundle: true, write: false, metafile: true, platform: "node", format: "esm",
+      conditions: ["node", "import"], mainFields: ["main"],
+      // The only deferred package import is the separate PTY path. Optional
+      // native addons are byte-verified separately, never executed here.
+      external: ["node-pty", "@koromix/*"], logLevel: "silent",
+    });
+    const graph = Object.keys(result.metafile!.inputs).map((file) => file.replace(/^node_modules\//, ""));
+    for (const file of graph) expect(Object.hasOwn(PINS.sdk.files, file), file).toBe(true);
+    for (const file of ["koffi/index.js", "koffi/src/koffi/index.js", "koffi/src/koffi/src/static.js",
+      "@microsoft/mxc-sdk/dist/bindings/streaming.js", "@microsoft/mxc-sdk/dist/bindings/probe.js",
+      "@microsoft/mxc-sdk/node_modules/semver/index.js"]) expect(graph).toContain(file);
+  });
+
+  it("rejects an unpinned import-condition entry even when the require entry stays pinned", () => {
+    const { root, pins } = installation();
+    const manifest = JSON.stringify({ name: "koffi", version: "3.3.6", exports: { ".": { import: "./unverified.js", require: "./index.js" } } });
+    writeFileSync(path.join(root, "koffi/package.json"), manifest);
+    pins.sdk.files["koffi/package.json"] = contentHash(manifest);
+    writeFileSync(path.join(root, "koffi/unverified.js"), "throw new Error('Must not execute');");
+    expect(() => verifyMxcSdk(root, "x64", pins, {})).toThrow(/Runtime resolution redirected: koffi/);
+  });
+});
+
+describe("native signing and supervisor prerequisites", () => {
+  it("excludes every pinned executable and DLL from payload re-signing", () => {
+    const config = JSON.parse(readFileSync("package.json", "utf8")).build;
+    for (const arch of ["x64", "arm64"] as const) {
+      for (const relative of [...Object.keys(PINS.sdk.files), ...Object.keys(PINS.sdk.architectures[arch]), `mxc/${arch}/wxc-exec.exe`]) {
+        if (/\.(exe|dll)$/i.test(relative)) expect(config.win.signExts, relative).toContain("!" + path.basename(relative));
+      }
+    }
+  });
+
+  it("requires an enabled runtime node-mode fuse before packaging", async () => {
+    const { assertMxcSupervisorFuse } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const config = JSON.parse(readFileSync("package.json", "utf8")).build;
+    expect(() => assertMxcSupervisorFuse(config)).not.toThrow();
+    expect(() => assertMxcSupervisorFuse({ ...config, electronFuses: { runAsNode: false } })).toThrow(/RunAsNode fuse/);
+    expect(() => assertMxcSupervisorFuse({})).toThrow(/RunAsNode fuse/);
+  });
+
+  it("prunes a previous target addon from each subsequent architecture package idempotently", async () => {
+    const { pruneMxcSdkAddonArchitectures } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const root = mkdtempSync(path.join(tmpdir(), "ave-addon-architecture-")); roots.push(root);
+    for (const arch of ["x64", "arm64"] as const) {
+      for (const installed of ["x64", "arm64"]) mkdirSync(path.join(root, "@koromix", `koffi-win32-${installed}`), { recursive: true });
+      pruneMxcSdkAddonArchitectures(root, arch);
+      pruneMxcSdkAddonArchitectures(root, arch);
+      expect(readdirSync(path.join(root, "@koromix"))).toEqual([`koffi-win32-${arch}`]);
+    }
+  });
+});
+
+
+describe("packaged PTY native footprint", () => {
+  it("excludes the real source-build native inventory while retaining runtime prebuilds", () => {
+    const root = path.resolve(".");
+    const config = JSON.parse(readFileSync("package.json", "utf8")).build;
+    const require = createRequire(import.meta.url);
+    const builderRequire = createRequire(require.resolve("electron-builder/package.json"));
+    const { FileMatcher } = builderRequire("app-builder-lib/out/fileMatcher.js");
+    const filter = new FileMatcher(root, root, (value: string) => value, config.files).createFilter();
+    const sources = path.join(root, "node_modules/node-pty/third_party");
+    const files = readdirSync(sources, { recursive: true }).map(String).filter((file) => /\.(exe|dll)$/i.test(file));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const absolute = path.join(sources, file);
+      expect(filter(absolute, statSync(absolute)), file).toBe(false);
+    }
+    for (const arch of ["x64", "arm64"]) {
+      const file = path.join(root, "node_modules/node-pty/prebuilds", "win32-" + arch, "conpty/conpty.dll");
+      expect(filter(file, statSync(file))).toBe(true);
+    }
+  });
+
+  it("rejects leaked source-build payloads in the final unpacked tree", async () => {
+    const { assertPackagedMxcSdk } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const root = mkdtempSync(path.join(tmpdir(), "ave-pty-package-")); roots.push(root);
+    const directory = path.join(root, "app.asar.unpacked/node_modules/node-pty/third_party/conpty/win10-arm64");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, "conpty.dll"), "unexpected foreign source-build bytes");
+    expect(() => assertPackagedMxcSdk(root, "x64")).toThrow("Unexpected packaged PTY source-build payload");
   });
 });

@@ -7,7 +7,8 @@ import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests
 import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
 import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
-import { MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
+import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
+import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "../mxc-supervisor-bootstrap.js";
 
 vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: "unit-resources", isPackaged: false }) }));
@@ -48,7 +49,7 @@ async function collect(stream: PassThrough): Promise<Buffer> {
 
 describe("supervisor transport and lifecycle with an injected SDK (unit only)", () => {
   it("requires the supported platform and a packaged installation on the public path", async () => {
-    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcProcessContractError);
+    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
   });
 
   it("forwards binary stdin, stdout, stderr and terminal status, omitting telemetry", async () => {
@@ -153,8 +154,87 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
   it("refuses unsupported enumeration without SDK spawn or fallback", async () => {
     const f = transportFixture();
     f.probe.mockReturnValue({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: false } } as ProbeOutput);
-    await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
+    await expect(f.launch()).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
     expect(f.spawn).not.toHaveBeenCalled();
     await f.service.catch(() => {});
   });
+
+  it.each([
+    new MxcIntegrityError("Native payload hash mismatch"),
+    new MxcCapabilityUnavailableError("Native job containment is unavailable"),
+    new MxcSupervisorLostError("Native bootstrap disconnected"),
+    new MxcProcessContractError("Invalid supervisor bootstrap request"),
+  ])("preserves a typed startup rejection without inventing native cleanup failure: %s", async (failure) => {
+    const f = transportFixture();
+    f.bootstrap.mockRejectedValue(failure);
+    const error: unknown = await f.launch().catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(failure.constructor);
+    expect((error as Error).message).toBe(failure.message);
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.child.kill).not.toHaveBeenCalled();
+    await expect(f.service).rejects.toBe(failure);
+  });
+
+  it("reports supervisor loss before native creation without teardown pending", async () => {
+    const f = transportFixture();
+    let resolve!: (runtime: MxcSupervisorRuntime) => void;
+    f.bootstrap.mockImplementation(() => new Promise((yes) => { resolve = yes; }));
+    const launched = f.launch().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(f.bootstrap).toHaveBeenCalledOnce());
+    f.child.kill();
+    expect(await launched).toBeInstanceOf(MxcSupervisorLostError);
+    expect(f.spawn).not.toHaveBeenCalled();
+    resolve(f.runtime);
+    await f.service.catch(() => {});
+  });
+
+  it("preserves a post-spawn integrity rejection after confirmed native teardown", async () => {
+    const f = transportFixture();
+    vi.mocked(f.runtime.auditModules).mockImplementationOnce(() => ["verified-unit-path"])
+      .mockImplementationOnce(() => { throw new MxcIntegrityError("Unexpected native module"); });
+    await expect(f.launch()).rejects.toBeInstanceOf(MxcIntegrityError);
+    expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+    expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+    expect(f.child.kill).not.toHaveBeenCalled();
+    await expect(f.service).rejects.toBeInstanceOf(MxcIntegrityError);
+  });
+
+  it("keeps native teardown pending when spawn fails without returning an owned handle", async () => {
+    const f = transportFixture();
+    f.spawn.mockRejectedValue(new Error("Native spawn lost its handle"));
+    await expect(f.launch()).rejects.toBeInstanceOf(MxcProcessCleanupError);
+    await expect(f.service).rejects.toBeInstanceOf(MxcProcessCleanupError);
+  });
+
+  it("reports cleanup failure when native wait cannot confirm termination", async () => {
+    const f = transportFixture();
+    const owned = await f.launch();
+    f.fixture.reject(new Error("Native wait failed"));
+    await expect(owned.completion).rejects.toBeInstanceOf(MxcProcessCleanupError);
+    await expect(owned.dispose()).rejects.toBeInstanceOf(MxcProcessCleanupError);
+    await expect(f.service).rejects.toBeInstanceOf(MxcProcessCleanupError);
+  });
+
+  it("lets liveness EOF finish teardown when the stop frame cannot be sent", async () => {
+    const f = transportFixture();
+    f.fixture.native.kill.mockImplementation(() => {});
+    const owned = await f.launch();
+    const send = MxcExtensionChannel.prototype.send;
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+      if (frame.type === "stop") return Promise.reject(new Error("Control pipe closed"));
+      return send.call(this, frame);
+    });
+    try {
+      const disposed = owned.dispose();
+      await vi.waitFor(() => expect(f.fixture.native.kill).toHaveBeenCalledOnce());
+      expect(f.liveness.writableEnded).toBe(true);
+      expect(f.child.kill).not.toHaveBeenCalled();
+      f.fixture.stdout.end(); f.fixture.stderr.end();
+      f.fixture.resolve({ exitCode: 1, timedOut: false });
+      await disposed;
+      expect(f.child.kill).not.toHaveBeenCalled();
+      expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+    } finally { sending.mockRestore(); }
+  });
+
 });

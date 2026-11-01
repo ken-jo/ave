@@ -26,4 +26,11 @@ describe("sealed extension request boundary", () => {
     }
     expect(() => assertMxcExtensionRequest(request)).toThrow(MxcProcessContractError);
   });
+
+  it.each(["MXC_BIN_DIR", "mxc_bin_dir"])("rejects a native binary-directory override named %s", (name) => {
+    const request = createMxcExtensionRequest();
+    request.environment![name] = "C:\\override";
+    expect(() => assertMxcExtensionRequest(request)).toThrow(MxcProcessContractError);
+  });
+
 });

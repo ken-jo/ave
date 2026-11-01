@@ -3,7 +3,8 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
 import { MXC_STREAM_CHUNK_BYTES } from "./mxc-extension-protocol.js";
 import { MxcNativeProcess } from "./mxc-native-process.js";
-import { MxcProcessContractError, MxcProcessCleanupError } from "./mxc-extension-errors.js";
+import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
+import { MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 import type { MxcSupervisorRuntime } from "./mxc-supervisor-bootstrap.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 
@@ -12,6 +13,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
   bootstrap: () => Promise<MxcSupervisorRuntime>, onFatal: () => void): Promise<void> {
   let owned: MxcNativeProcess | undefined;
   let starting: Promise<{ exitCode: number; timedOut: boolean } | null> | undefined;
+  let creationStarted = false;
   let stopping = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let resolveTerminal!: (result: { exitCode: number; timedOut: boolean } | null) => void;
@@ -56,10 +58,13 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
               ? frame.request.containment.config?.filesystem?.enumeratePaths ?? [] : [];
             if (probe.tier !== "base-container" || probe.needsDaclAugmentation !== false
               || (enumeration.length && probe.probes.baseContainerSupportsEnumeratePaths !== true)) {
-              throw new MxcProcessContractError("Required native containment is unavailable");
+              throw new MxcCapabilityUnavailableError("Required native containment is unavailable");
             }
             runtime.auditModules();
             if (stopping) return null;
+            await channel.send({ type: "creating" });
+            if (stopping) return null;
+            creationStarted = true;
             // A single argument is deliberate: telemetry options are never passed.
             const native = await runtime.sdk.spawn(frame.request);
             owned = new MxcNativeProcess(native);
@@ -114,21 +119,37 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
     await channel.end();
   } catch (cause) {
     stop();
+    let failure = cause;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        starting?.catch(() => {}),
+        starting?.catch((error: unknown) => {
+          if (error instanceof MxcProcessCleanupError) throw error;
+        }),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new MxcProcessCleanupError("Supervisor cleanup is unverified")), TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+          timer = setTimeout(() => reject(creationStarted
+            ? new MxcProcessCleanupError("Supervisor cleanup is unverified")
+            : new MxcSupervisorLostError("Supervisor startup did not settle")), TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
         }),
       ]);
+      if (creationStarted && (!owned || owned.state !== "terminated")) {
+        failure = new MxcProcessCleanupError("Supervisor cleanup is unverified", { cause });
+      }
+    } catch (error) {
+      failure = error;
     } finally { clearTimeout(timer); }
+    const code = failure instanceof MxcProcessCleanupError ? "cleanup-unverified"
+      : failure instanceof MxcIntegrityError ? "integrity"
+      : failure instanceof MxcCapabilityUnavailableError ? "capability-unavailable"
+      : failure instanceof MxcSupervisorLostError ? "supervisor-lost" : "contract";
     try {
-      await channel.send({ type: "error", code: cause instanceof MxcProcessCleanupError ? "cleanup" : "contract",
-        message: cause instanceof Error ? cause.message.slice(0, 1024) : "Supervisor failed" });
+      // Every other error receipt certifies that creation never began or native
+      // termination and disposal completed; cleanup failure has its own code.
+      await channel.send({ type: "error", code,
+        message: failure instanceof Error ? failure.message.slice(0, 1024) : "Supervisor failed" });
       await channel.end();
     } catch { /* The parent may already be gone; process exit closes the native job. */ }
-    throw cause;
+    throw failure;
   } finally {
     clearTimeout(watchdog);
     liveness.off("end", stop); liveness.off("close", stop); liveness.off("error", fail); liveness.off("data", handleLivenessData);

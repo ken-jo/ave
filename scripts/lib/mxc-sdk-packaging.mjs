@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { verifyMxcSdk, verifyMxcSupervisorRuntime } from "./mxc-sdk-integrity.mjs";
 import PINS from "../../src/permissions/mxc-launcher-pins.json" with { type: "json" };
 
 export function assertPackagedMxcSdk(resources, arch) {
   const modules = path.join(resources, "app.asar.unpacked", "node_modules");
+  if (existsSync(path.join(modules, "node-pty", "third_party"))) throw new Error("Unexpected packaged PTY source-build payload");
   const verified = verifyMxcSdk(modules, arch, PINS, {}, true);
+  assertMxcSdkAddonArchitecture(modules, arch);
   const bin = path.join(verified.sdkRoot, "bin");
   for (const entry of readdirSync(bin)) {
     if (entry !== arch) throw new Error(`Unexpected packaged SDK architecture: ${entry}`);
@@ -23,6 +25,8 @@ export function assertPackagedMxcSdk(resources, arch) {
 }
 
 export function prunePackagedMxcSdk(resources, arch) {
+  const modules = path.join(resources, "app.asar.unpacked", "node_modules");
+  pruneMxcSdkAddonArchitectures(modules, arch);
   const bin = path.join(resources, "app.asar.unpacked", "node_modules", "@microsoft", "mxc-sdk", "bin");
   for (const entry of readdirSync(bin)) {
     if (entry !== arch) rmSync(path.join(bin, entry), { recursive: true, force: true });
@@ -49,4 +53,24 @@ export function recordMxcSupervisorRuntime(resources, arch, executable) {
   mkdirSync(path.dirname(target), { recursive: true });
   writeFileSync(target, JSON.stringify({ version: 1, arch, files }, null, 2) + "\n");
   verifyMxcSupervisorRuntime(executable, resources, arch);
+}
+
+// Staging is idempotent in the checkout. Package output must contain only the
+// selected target even after sequential cross-architecture builds.
+export function pruneMxcSdkAddonArchitectures(modules, arch) {
+  if (!["x64", "arm64"].includes(arch)) throw new Error("Unsupported SDK addon architecture");
+  const scope = path.join(modules, "@koromix");
+  for (const name of readdirSync(scope)) {
+    if (name.startsWith("koffi-win32-") && name !== `koffi-win32-${arch}`) rmSync(path.join(scope, name), { recursive: true, force: true });
+  }
+  assertMxcSdkAddonArchitecture(modules, arch);
+}
+
+function assertMxcSdkAddonArchitecture(modules, arch) {
+  const names = readdirSync(path.join(modules, "@koromix")).filter((name) => name.startsWith("koffi-win32-"));
+  if (names.length !== 1 || names[0] !== `koffi-win32-${arch}`) throw new Error("Unexpected packaged SDK addon architecture");
+}
+
+export function assertMxcSupervisorFuse(config) {
+  if (config.electronFuses?.runAsNode !== true) throw new Error("Extension supervisor requires the RunAsNode fuse");
 }

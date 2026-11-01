@@ -183,7 +183,7 @@ THE SOFTWARE.
 
 - **Version:** 1.0.1 (MIT), including `mxc_ffi.dll` and `wslcsdk.dll`.
 - **koffi:** 3.3.6 (MIT), including the matching `@koromix/koffi-win32-x64` or `@koromix/koffi-win32-arm64` native addon.
-- **semver:** 7.7.4 (ISC).
-- **node-pty:** 1.1.0 (MIT), shared with the existing terminal runtime.
+- **semver:** 7.8.5 (ISC).
+- **node-pty:** 1.1.0 (MIT), shared with the existing terminal runtime; its winpty payload includes the MIT license in `winpty-LICENSE.txt`.
 
 License texts and the native API header notices embedded by the FFI and terminal addons are included under `resources/licenses/mxc/`. Installed-byte hashes for the selected runtime artifacts are recorded in `src/permissions/mxc-launcher-pins.json`. Native packaged loading and dynamic DLL dependencies require verification on each target architecture.

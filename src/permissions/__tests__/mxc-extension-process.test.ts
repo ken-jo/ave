@@ -107,6 +107,16 @@ describe("owned native process state machine", () => {
 });
 
 describe("bounded supervisor frames", () => {
+  it.each(["integrity", "capability-unavailable", "contract", "supervisor-lost", "cleanup-unverified"] as const)("round trips the typed failure code %s", (code) => {
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "error", code, message: "Rejected" };
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
+  });
+
+  it("authenticates the native-creation boundary receipt", () => {
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "creating" };
+    expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
+  });
+
   it("round trips binary chunks across arbitrary boundaries", () => {
     const data = Buffer.from([0, 255, 10, 13, 128]);
     const frame = { version: 1 as const, generation: GENERATION, sequence: 0, type: "stdout" as const, data: data.toString("base64") };

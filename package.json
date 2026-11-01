@@ -262,6 +262,7 @@
       "!node_modules/*/{docs,doc,test,tests,__tests__,example,examples,benchmark,benchmarks,coverage}{,/**/*}",
       "!node_modules/@*/*/{docs,doc,test,tests,__tests__,example,examples,benchmark,benchmarks,coverage}{,/**/*}",
       "!node_modules/**/{browser-test,system-test,*-test,test-*}{,/**/*}",
+      "!node_modules/node-pty/third_party{,/**/*}",
       "!node_modules/better-sqlite3/deps{,/**/*}",
       "!node_modules/better-sqlite3/src{,/**/*}",
       "!node_modules/better-sqlite3/binding.gyp",
@@ -299,9 +300,9 @@
       "node_modules/@img/**",
       "node_modules/@microsoft/mxc-sdk/**",
       "node_modules/koffi/**",
-      "node_modules/semver/**",
       "node_modules/@koromix/koffi-win32-*/**"
     ],
+    "electronFuses": { "runAsNode": true },
     "directories": {
       "output": "release"
     },
@@ -475,7 +476,7 @@
       ]
     },
     "win": {
-      "signExts": ["!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node"],
+      "signExts": ["!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node", "!OpenConsole.exe", "!winpty-agent.exe", "!conpty.dll", "!winpty.dll"],
       "target": [
         "nsis"
       ],

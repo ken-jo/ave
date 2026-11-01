@@ -18,7 +18,7 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
     throw new MxcIntegrityError("Unsupported SDK installation or architecture");
   }
   for (const key of Object.keys(environment)) {
-    if (/^(MXC_FFI_DIR|NODE_OPTIONS|NODE_PATH)$/i.test(key) && environment[key] !== undefined) {
+    if (/^(MXC_FFI_DIR|MXC_BIN_DIR|NODE_OPTIONS|NODE_PATH)$/i.test(key) && environment[key] !== undefined) {
       throw new MxcIntegrityError(`Native loader override refused: ${key}`);
     }
   }
@@ -37,12 +37,27 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
     const sdkRoot = path.join(root, "@microsoft", "mxc-sdk");
     const require = createRequire(pathToFileURL(path.join(sdkRoot, "package.json")));
     for (const [name, version] of Object.entries(pins.sdk.versions)) {
-      const file = path.join(root, ...name.split("/"), "package.json");
+      const packageRoot = path.join(root, ...pins.sdk.packages[name].split("/"));
+      const file = path.join(packageRoot, "package.json");
       const pkg = JSON.parse(readFileSync(file, "utf8"));
       if (pkg.name !== name || pkg.version !== version) throw new MxcIntegrityError(`Runtime resolution mismatch: ${name}`);
-      const entry = require.resolve(name);
+      const requiredEntry = require.resolve(name);
+      if (!requiredEntry.startsWith(packageRoot + path.sep)) throw new MxcIntegrityError(`Runtime resolution redirected: ${name}`);
+      // Only exact root exports are used. Select in declaration order, matching
+      // the runtime's node/import/default conditions; reject unsupported targets.
+      const selectImport = (target) => {
+        if (typeof target === "string") return target;
+        if (!target || Array.isArray(target) || typeof target !== "object") throw new MxcIntegrityError("Unsupported import export target");
+        for (const [condition, value] of Object.entries(target)) {
+          if (["node", "node-addons", "import", "default"].includes(condition)) return selectImport(value);
+        }
+        throw new MxcIntegrityError("No supported import export target");
+      };
+      const target = pkg.exports === undefined ? (pkg.main ?? "index.js")
+        : selectImport(Object.hasOwn(pkg.exports, ".") ? pkg.exports["."] : pkg.exports);
+      const entry = path.resolve(packageRoot, target);
       const relativeEntry = path.relative(root, entry).split(path.sep).join("/");
-      if (!entry.startsWith(path.join(root, ...name.split("/")) + path.sep) || !Object.hasOwn(entries, relativeEntry)) {
+      if (!entry.startsWith(packageRoot + path.sep) || !Object.hasOwn(entries, relativeEntry)) {
         throw new MxcIntegrityError(`Runtime resolution redirected: ${name}`);
       }
     }

@@ -2,6 +2,7 @@ export class MxcIntegrityError extends Error {}
 export interface MxcSdkPins {
   sdk: {
     versions: Record<string, string>;
+    packages: Record<string, string>;
     files: Record<string, string>;
     architectures: Record<string, Record<string, string>>;
   };

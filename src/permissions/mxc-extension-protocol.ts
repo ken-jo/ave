@@ -7,11 +7,11 @@ export const MXC_FRAME_MAX_BYTES = 64 * 1024;
 export const MXC_STREAM_CHUNK_BYTES = 32 * 1024;
 
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
-type ControlFrame = { type: "stdin-end" | "stop" | "stopped" };
+type ControlFrame = { type: "stdin-end" | "stop" | "stopped" | "creating" };
 type StartFrame = { type: "start"; request: ContainerRequest };
 type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[] };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
-type FailureFrame = { type: "error"; code: "contract" | "cleanup" | "supervisor-lost"; message: string };
+type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string };
 export type MxcStreamFrame = (StreamFrame | ControlFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
   version: 1;
   generation: string;
@@ -31,7 +31,7 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
         || Buffer.byteLength(frame.data, "base64") > MXC_STREAM_CHUNK_BYTES) fail();
       fields = ["data"];
       break;
-    case "stdin-end": case "stop": case "stopped": fields = []; break;
+    case "stdin-end": case "stop": case "stopped": case "creating": fields = []; break;
     case "start": assertMxcExtensionRequest(frame.request); fields = ["request"]; break;
     case "ready":
       if (!Number.isSafeInteger(frame.id) || (frame.id as number) <= 0 || typeof frame.nodeVersion !== "string" || frame.nodeVersion.length > 64
@@ -44,7 +44,7 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
       fields = ["exitCode", "timedOut"];
       break;
     case "error":
-      if (!["contract", "cleanup", "supervisor-lost"].includes(String(frame.code))
+      if (!["contract", "integrity", "capability-unavailable", "cleanup-unverified", "supervisor-lost"].includes(String(frame.code))
         || typeof frame.message !== "string" || frame.message.length > 1024) fail();
       fields = ["code", "message"];
       break;

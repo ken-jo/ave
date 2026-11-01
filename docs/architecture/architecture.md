@@ -2484,30 +2484,49 @@ BaseContainer where the host offers one. The shell path uses the MIT-licensed
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
 npm tarball's sha512, each launcher's sha256). The extension process primitive
 runs SDK operations in a dedicated supervisor under the packaged executable's
-Node mode. Existing holders are not routed to this primitive yet. SDK JS,
+Node mode with `ELECTRON_RUN_AS_NODE=1`; the Electron RunAsNode fuse must remain
+explicitly enabled in packaging configuration. Existing holders
+are not routed to this primitive yet. SDK JS,
 FFI addon and architecture-specific DLLs live under `app.asar.unpacked`.
-Before any native require the supervisor verifies installed-byte pins and the
+Installed-byte pins cover SDK `dist` JavaScript, the FFI ESM entry chain and CJS
+entries, locked nested `semver` JavaScript, PTY JavaScript/prebuilds, and the selected
+bootstrap addon. Import-condition resolution must match those pinned roots; tests
+record the static SDK spawn/probe import graph without executing native code.
+This does not claim coverage of arbitrary computed dynamic imports.
+Before any native require the supervisor verifies these pins and the
 whole selected native directories plus the packaged executable/runtime DLL inventory,
 then loads only the verified bootstrap addon. The inventory is recorded after
 assembly and signing, and all non-system loaded modules must match it or the SDK pins.
 That trusted addon immediately restricts this process's DLL search to system
 and verified native directories before SDK import or native container loading.
-Loaded module paths are audited; startup refuses overrides, tamper and unexpected
-modules without a backend retry. The trust model allows user-owned installation
+Loaded paths and allowlist paths, including the actual system directory, are
+realpath-resolved and normalized identically before admission. Only pinned files
+or modules under that system directory are admitted. WinSxS and injected EDR/IME
+modules elsewhere fail closed with `MxcIntegrityError`; signatures alone do not
+authorize them. This compatibility policy remains native-unverified. Startup
+refuses loader overrides, tamper and unexpected modules without a backend retry.
+The trust model allows user-owned installation
 contents and does not protect against the same user racing replacement after
 verification. The current per-machine installer setting is unchanged and is not
 required by this trust premise. See [the bootstrap and lifetime contract](../design/windows-extensions-mxc.md#placement-and-dll-loading).
 A private inherited key/liveness pipe and direction-authenticated bounded frames
 connect main and supervisor; EOF starts teardown even while control input is blocked.
-Disposal closes liveness immediately. The supervisor retains a
+Disposal closes liveness immediately and waits for EOF-driven teardown even when
+the stop-frame write fails; forced termination waits for the cleanup deadline.
+The supervisor explicitly clears inheritance on fd 3 as well as all three control
+standard handles, resolving fd 3 through the running runtime’s `uv_get_osfhandle`
+export; unavailable protection is a capability error. The supervisor retains a
 non-inherited kill-on-close job without breakaway permission before SDK spawn.
 Terminal receipts follow stream drain, native wait and disposal. Missing receipts,
-crashes or cleanup deadlines remain failures with unverified termination.
+crashes or cleanup deadlines after possible native creation remain failures with
+unverified termination. Authenticated failures before native creation preserve
+integrity, capability-unavailable, contract or supervisor-lost error types.
 Actual packaged imports, DLL paths and job/PSEC descendant cleanup require native
 verification on x64 and arm64 before readiness or holder activation. Each shell
 command spawns `wxc-exec.exe --config-base64 <request>`
 from the launcher's own directory (`mxc-windows.ts`, `mxc-shell-launch.ts`);
-no administrator rights or UAC prompt are needed per run or at install.
+no administrator rights or UAC prompt are needed per run. Installation follows
+the existing per-machine installer configuration.
 
 The SDK payload includes pinned `mxc_ffi.dll` and `wslcsdk.dll`; packaged native
 loading must establish the dynamic dependency inventory on each architecture.

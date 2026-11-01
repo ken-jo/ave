@@ -10,7 +10,8 @@ import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
 import { MXC_STREAM_CHUNK_BYTES } from "./mxc-extension-protocol.js";
-import { MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
+import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
+import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 
 interface ProcessResult { exitCode: number; timedOut: boolean }
 export interface OwnedMxcExtensionProcess {
@@ -36,6 +37,8 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   private readonly closed: Promise<void>;
   private result: ProcessResult | undefined;
   private failure: Error | undefined;
+  private creationStarted = false;
+  private failureReceipt = false;
   private stopping = false;
   private stopped = false;
   private cleanup: Promise<void> | undefined;
@@ -102,8 +105,12 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
 
   private async read(): Promise<void> {
     for await (const frame of this.channel.frames()) {
-      if (this.result || this.stopped) throw new MxcProcessContractError("Supervisor sent data after termination");
-      if (frame.type === "ready") {
+      if (this.result || this.stopped || this.failureReceipt) throw new MxcProcessContractError("Supervisor sent data after termination");
+      if (frame.type === "creating") {
+        if (this.creationStarted || this.id) throw new MxcProcessContractError("Duplicate supervisor creation receipt");
+        this.creationStarted = true;
+      } else if (frame.type === "ready") {
+        if (!this.creationStarted) throw new MxcProcessContractError("Supervisor readiness preceded creation");
         if (this.id) throw new MxcProcessContractError("Duplicate supervisor readiness");
         this.id = frame.id;
         this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules };
@@ -119,7 +126,10 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         if (!this.stopping || this.id) throw new MxcProcessContractError("Unexpected supervisor stop receipt");
         this.stopped = true;
       } else if (frame.type === "error") {
-        if (frame.code === "cleanup") throw new MxcProcessCleanupError(frame.message);
+        this.failureReceipt = true;
+        if (frame.code === "cleanup-unverified") throw new MxcProcessCleanupError(frame.message);
+        if (frame.code === "integrity") throw new MxcIntegrityError(frame.message);
+        if (frame.code === "capability-unavailable") throw new MxcCapabilityUnavailableError(frame.message);
         if (frame.code === "supervisor-lost") throw new MxcSupervisorLostError(frame.message);
         throw new MxcProcessContractError(frame.message);
       } else throw new MxcProcessContractError("Unexpected supervisor event frame");
@@ -129,6 +139,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   private fail(error: Error): void {
     if (this.failure) return;
     this.failure = error instanceof MxcProcessContractError || error instanceof MxcProcessCleanupError || error instanceof MxcSupervisorLostError
+      || error instanceof MxcIntegrityError || error instanceof MxcCapabilityUnavailableError
       ? error : new MxcSupervisorLostError("Extension supervisor channel failed", { cause: error });
     this.rejectReady(this.failure); this.rejectCompletion(this.failure);
     void this.dispose().catch(() => {});
@@ -143,7 +154,11 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
     this.stopping = true;
     if (!this.liveness.destroyed && !this.liveness.writableEnded) this.liveness.end();
     this.stdout.resume(); this.stderr.resume(); this.stdin.destroy();
-    if (!this.closedAlready && !this.result && !this.stopped) void this.channel.send({ type: "stop" }).catch(() => { this.child.kill(); });
+    // Liveness EOF already requested teardown; a broken control pipe must not
+    // race that teardown with an immediate supervisor kill.
+    if (!this.closedAlready && !this.result && !this.stopped) {
+      void this.channel.send({ type: "stop" }).catch(() => {});
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -151,11 +166,16 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             this.liveness.destroy(); this.child.kill();
-            reject(new MxcProcessCleanupError("Extension supervisor cleanup deadline exceeded"));
+            reject(this.failure instanceof MxcProcessCleanupError || (this.creationStarted && !this.result && !this.stopped && !this.failureReceipt)
+              ? new MxcProcessCleanupError("Extension supervisor cleanup deadline exceeded")
+              : new MxcSupervisorLostError("Extension supervisor shutdown deadline exceeded"));
           }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
         }),
       ]);
-      if (this.failure || (!this.result && !this.stopped)) throw new MxcProcessCleanupError("Extension termination is unverified", { cause: this.failure });
+      if (this.failure instanceof MxcProcessCleanupError) throw this.failure;
+      if (this.creationStarted && !this.result && !this.stopped && !this.failureReceipt) {
+        throw new MxcProcessCleanupError("Extension termination is unverified", { cause: this.failure });
+      }
     } finally { clearTimeout(timer); }
   }
 }
@@ -189,7 +209,10 @@ async function spawnWith(request: ContainerRequest, nodeModules: string, entry: 
   } catch (error) {
     signal?.removeEventListener("abort", abort);
     try { await owned.dispose(); } catch (cleanupError) {
-      throw new MxcProcessCleanupError("Extension startup cleanup is unverified", { cause: new AggregateError([error, cleanupError]) });
+      if (cleanupError instanceof MxcProcessCleanupError) {
+        throw new MxcProcessCleanupError("Extension startup cleanup is unverified", { cause: new AggregateError([error, cleanupError]) });
+      }
+      throw error;
     }
     throw error;
   } finally {
@@ -200,9 +223,9 @@ async function spawnWith(request: ContainerRequest, nodeModules: string, entry: 
 
 /** The caller supplies an already-admitted immutable plan; no holder is wired here. */
 export async function spawnMxcExtensionProcess(request: ContainerRequest, options: { signal?: AbortSignal } = {}): Promise<OwnedMxcExtensionProcess> {
-  if (process.platform !== "win32") throw new MxcProcessContractError("Native extension processes require Windows");
+  if (process.platform !== "win32") throw new MxcCapabilityUnavailableError("Native extension processes require Windows");
   const resources = getHostResources();
-  if (!resources.isPackaged) throw new MxcProcessContractError("Native extension processes require a verified packaged installation");
+  if (!resources.isPackaged) throw new MxcCapabilityUnavailableError("Native extension processes require a verified packaged installation");
   const nodeModules = join(resources.resourcePath, "app.asar.unpacked", "node_modules");
   const entry = join(resources.resourcePath, "app.asar", "dist", "src", "main", "mxc-extension-supervisor.js");
   // The supervisor needs only the runtime mode; the admitted container environment

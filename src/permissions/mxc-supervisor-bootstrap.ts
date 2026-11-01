@@ -4,9 +4,9 @@ import { resolve, win32 as winPath } from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as Ffi from "koffi";
 import type * as Sdk from "@microsoft/mxc-sdk/v1";
-import { verifyMxcSdk, verifyMxcSupervisorRuntime } from "../../scripts/lib/mxc-sdk-integrity.mjs";
+import { MxcIntegrityError, verifyMxcSdk, verifyMxcSupervisorRuntime } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import PINS from "./mxc-launcher-pins.json" with { type: "json" };
-import { MxcProcessContractError } from "./mxc-extension-errors.js";
+import { MxcCapabilityUnavailableError } from "./mxc-extension-errors.js";
 
 export interface MxcSupervisorRuntime {
   readonly sdk: Pick<typeof Sdk, "spawn" | "probe">;
@@ -40,12 +40,12 @@ function createLifetimeJob(ffi: typeof Ffi, kernel: Ffi.LibraryHandle): void {
   const job = kernel.func("void * __stdcall CreateJobObjectW(void *, str16)")(null, null);
   const current = kernel.func("void * __stdcall GetCurrentProcess(void)")();
   const close = kernel.func("bool __stdcall CloseHandle(void *)");
-  if (!job) throw new MxcProcessContractError("Cannot create supervisor lifetime job");
+  if (!job) throw new MxcCapabilityUnavailableError("Cannot create supervisor lifetime job");
   if (!kernel.func("bool __stdcall SetInformationJobObject(void *, int, const void *, uint32_t)")(job, 9, limits, limits.length)
     || !kernel.func("bool __stdcall SetHandleInformation(void *, uint32_t, uint32_t)")(job, 1, 0)
     || !kernel.func("bool __stdcall AssignProcessToJobObject(void *, void *)")(job, current)) {
     close(job);
-    throw new MxcProcessContractError("Cannot bind supervisor lifetime job");
+    throw new MxcCapabilityUnavailableError("Cannot bind supervisor lifetime job");
   }
   // No breakaway flags, no inherited job handle. The kernel closes this retained
   // handle on process death, including native faults, killing the entire job.
@@ -59,24 +59,41 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
   const ffi = deps.loadAddon(installed.addonPath);
   const kernel = ffi.load("kernel32.dll");
   if (!kernel.func("bool __stdcall SetDefaultDllDirectories(uint32_t)")(0x800 | 0x400)) {
-    throw new MxcProcessContractError("Cannot restrict supervisor DLL search");
+    throw new MxcCapabilityUnavailableError("Cannot restrict supervisor DLL search");
   }
   const addDirectory = kernel.func("void * __stdcall AddDllDirectory(str16)");
   for (const directory of installed.nativeDirectories) {
-    if (!addDirectory(directory)) throw new MxcProcessContractError("Cannot register verified native directory");
+    if (!addDirectory(directory)) throw new MxcCapabilityUnavailableError("Cannot register verified native directory");
   }
   const getStandard = kernel.func("void * __stdcall GetStdHandle(int32_t)");
   const protectHandle = kernel.func("bool __stdcall SetHandleInformation(void *, uint32_t, uint32_t)");
   for (const descriptor of [-10, -11, -12]) {
     const handle = getStandard(descriptor);
-    if (!handle || !protectHandle(handle, 1, 0)) throw new MxcProcessContractError("Cannot protect supervisor control handles");
+    if (!handle || !protectHandle(handle, 1, 0)) throw new MxcCapabilityUnavailableError("Cannot protect supervisor control handles");
+  }
+  // Resolve fd 3 through the already running runtime's descriptor table, not
+  // another CRT's table. Looking up this export loads no additional library.
+  try {
+    const ownerHandle = ffi.load(null).func("uintptr_t uv_get_osfhandle(int)")(3);
+    const value = BigInt(ownerHandle);
+    if (value === 0n || value === 0xffffffffffffffffn || !protectHandle(ownerHandle, 1, 0)) {
+      throw new MxcCapabilityUnavailableError("Cannot protect supervisor owner handle");
+    }
+  } catch (error) {
+    throw new MxcCapabilityUnavailableError("Cannot protect supervisor owner handle", { cause: error });
   }
   const current = kernel.func("void * __stdcall GetCurrentProcess(void)")();
   const systemDirectory = Buffer.alloc(32768 * 2);
   const systemLength = kernel.func("uint32_t __stdcall GetSystemDirectoryW(void *, uint32_t)")(systemDirectory, 32768);
-  if (!systemLength || systemLength >= 32768) throw new MxcProcessContractError("Cannot resolve native system directory");
-  const system = systemDirectory.toString("utf16le", 0, systemLength * 2);
-  const key = (file: string) => winPath.normalize(file.replace(/^\\\\\?\\/, "")).toLowerCase();
+  if (!systemLength || systemLength >= 32768) throw new MxcCapabilityUnavailableError("Cannot resolve native system directory");
+  const key = (file: string): string => {
+    try {
+      return winPath.normalize(deps.resolvePath(file).replace(/^\\\\\?\\/, "")).toLowerCase();
+    } catch (error) {
+      throw new MxcIntegrityError("Cannot canonicalize supervisor native module", { cause: error });
+    }
+  };
+  const system = key(systemDirectory.toString("utf16le", 0, systemLength * 2));
   const pinned = new Set([installed.addonPath, ...Object.keys(PINS.sdk.architectures[arch as "x64" | "arm64"])
     .filter((file) => file.endsWith(".dll")).map((file) => winPath.join(nodeModules, ...file.split("/")))].map(key));
   const enumerate = kernel.func("bool __stdcall K32EnumProcessModules(void *, void *, uint32_t, _Out_ uint32_t *)");
@@ -84,13 +101,13 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
   const modules = (): string[] => {
     const handles = Buffer.alloc(2048 * 8), needed = [0];
     if (!enumerate(current, handles, handles.length, needed) || needed[0] > handles.length || needed[0] % 8) {
-      throw new MxcProcessContractError("Cannot enumerate supervisor modules");
+      throw new MxcCapabilityUnavailableError("Cannot enumerate supervisor modules");
     }
     const result: string[] = [];
     for (let offset = 0; offset < needed[0]; offset += 8) {
       const name = Buffer.alloc(32768 * 2);
       const length = moduleName(handles.readBigUInt64LE(offset), name, 32768);
-      if (!length || length >= 32768) throw new MxcProcessContractError("Cannot identify supervisor module");
+      if (!length || length >= 32768) throw new MxcCapabilityUnavailableError("Cannot identify supervisor module");
       result.push(name.toString("utf16le", 0, length * 2));
     }
     return result;
@@ -101,13 +118,13 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
   const assertModules = (): string[] => {
     const loaded = modules();
     for (const file of loaded) {
-      const name = winPath.basename(file).toLowerCase(), normalized = key(file);
+      const normalized = key(file), name = winPath.basename(normalized);
       const selected = name === "koffi.node" || name === "mxc_ffi.dll" || name === "wslcsdk.dll";
-      const systemRelative = winPath.relative(system, file);
+      const systemRelative = winPath.relative(system, normalized);
       const systemModule = !winPath.isAbsolute(systemRelative) && systemRelative !== ".." && !systemRelative.startsWith("..\\");
-      if ((selected && !pinned.has(key(deps.resolvePath(file))))
+      if ((selected && !pinned.has(normalized))
         || (!systemModule && !pinned.has(normalized) && !admittedRuntime.has(normalized))) {
-        throw new MxcProcessContractError("Unexpected supervisor native module");
+        throw new MxcIntegrityError("Unexpected supervisor native module");
       }
     }
     return loaded.filter((file) => pinned.has(key(file)));
@@ -121,11 +138,11 @@ async function bootstrap(nodeModules: string, arch: string, environment: NodeJS.
 
 export async function bootstrapMxcSupervisor(nodeModules: string): Promise<MxcSupervisorRuntime> {
   if (process.platform !== "win32" || !["x64", "arm64"].includes(process.arch)) {
-    throw new MxcProcessContractError("Native extension supervisor requires a supported Windows architecture");
+    throw new MxcCapabilityUnavailableError("Native extension supervisor requires a supported Windows architecture");
   }
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (!((major === 24 && minor >= 21) || (major === 26 && minor >= 8) || major > 26)) {
-    throw new MxcProcessContractError("Native extension supervisor runtime is unsupported");
+    throw new MxcCapabilityUnavailableError("Native extension supervisor runtime is unsupported");
   }
   const require = createRequire(import.meta.url);
   return bootstrap(nodeModules, process.arch, process.env, {
