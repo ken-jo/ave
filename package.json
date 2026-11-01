@@ -125,7 +125,7 @@
     "@ai-sdk/openai": "^4.0.101",
     "@ai-sdk/openai-compatible": "~3.0.77",
     "@ai-sdk/otel": "^1.0.150",
-    "@anthropic-ai/sandbox-runtime": "0.0.80",
+    "@anthropic-ai/sandbox-runtime": "0.0.81",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -506,6 +506,6 @@
     "beforePack": "scripts/electron-before-pack.cjs"
   },
   "patchedDependencies": {
-    "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch"
+    "@anthropic-ai/sandbox-runtime@0.0.81": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.81.patch"
   }
 }

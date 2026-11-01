@@ -1,8 +1,8 @@
 {
   "package": "@anthropic-ai/sandbox-runtime",
-  "version": "0.0.80",
+  "version": "0.0.81",
   "sha256": {
-    "x64": "484d9e5c77475cd87be3ab9733fb1cdd1cdea71288001b4750d99ae67b84e865",
-    "arm64": "60e511e0c23230e26c77203ea58ccaa4b715de8726e1e745b8682d0b64eae28d"
+    "x64": "a8e22bc098ac1146ec9b9151d5f1770c05b897cd1ac588161e1287a248cc9176",
+    "arm64": "c7b204c8fab94059dbf7a6a805b844abad3deb82614e07e4b8d4b5bb5c4374f7"
   }
 }

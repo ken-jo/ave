@@ -43,10 +43,11 @@ type VerifyWindowsWfpEgressFn = (opts?: {
   readonly srtWin?: SrtWinSpawn;
 }) => Promise<unknown>;
 
-// ASRT 0.0.80: the install is ASYNC (installWindowsSandboxAsync) and takes an explicit srt-win spawn descriptor. Keeping it async is what unfreezes the main process during the modal UAC wait (class).
+// ASRT 0.0.81 installation stays async during elevation; skipProfileGrant preserves caller-owned profile access.
 type InstallWindowsSandboxAsyncFn = (opts: {
   readonly proxyPortRange: readonly [number, number];
   readonly srtWin?: SrtWinSpawn;
+  readonly skipProfileGrant: true;
 }) => Promise<AsrtWindowsInstallCancelledLike | AsrtWindowsInstallSuccessLike>;
 
 interface ExecFileOptions {
@@ -406,6 +407,7 @@ export async function installAsrtWindowsSandbox(
     result = await runtime.installWindowsSandboxAsync({
       proxyPortRange: DEFAULT_WINDOWS_PROXY_PORT_RANGE,
       srtWin,
+      skipProfileGrant: true,
     });
   } catch (error) {
     if (error instanceof mod.WindowsSandboxError) {

@@ -41,6 +41,13 @@ vi.mock("@anthropic-ai/sandbox-runtime", async (importOriginal) => {
 
 // Initialization failure must revoke acquired ACLs. Match rollback inside a catch that clears config and rethrows the same error; teardown substrings cannot prove it. Match structure rather than minified identifiers.
 function rollsBackWindowsAclOnFailedInitialize(source: string): boolean {
+  // Denies may be restored only after every grant was released successfully.
+  const release = source.match(/function releaseWindowsSessionAcls\(([^)]*)\)\s*\{([\s\S]*?)\n\}/);
+  if (!release || !/if\s*\(windowsAclRestoreAllowed\(revokeWindowsAclChecked\(o\)\)\)\s*\{\s*logWindowsAclOutcomes\('deny restore', restoreWindowsAcl\(o\)\);\s*\}/.test(release[2])) {
+    return false;
+  }
+  if (!/const o = \{ sandboxUserSid, srtWin \};/.test(release[2])) return false;
+  if (!/function windowsAclRestoreAllowed\(revoke\)\s*\{[\s\S]*?if \(revoke\.complete\)\s*return true;[\s\S]*?return false;\s*\}/.test(source)) return false;
   const failClosed = new RegExp(
     String.raw`catch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{([\s\S]{0,1500}?)` +
       String.raw`config\s*=\s*undefined\s*;\s*throw\s+\1\s*;`,
@@ -49,8 +56,7 @@ function rollsBackWindowsAclOnFailedInitialize(source: string): boolean {
   for (const match of source.matchAll(failClosed)) {
     const body = match[2] ?? "";
     if (
-      /revokeWindowsAcl\(\s*\{\s*sandboxUserSid\s*:/.test(body)
-      && /restoreWindowsAcl\(\s*\{\s*sandboxUserSid\s*:/.test(body)
+      /releaseWindowsSessionAcls\(\s*([A-Za-z_$][\w$]*),\s*srtWin\s*\);\s*\}\s*\1\s*=\s*undefined\s*;/.test(body)
     ) {
       return true;
     }
@@ -334,7 +340,8 @@ describe("asrt-windows-support adapter", () => {
 
     const result = await installAsrtWindowsSandbox({
       loadRuntime: async () => ({
-        installWindowsSandboxAsync: async () => {
+        installWindowsSandboxAsync: async (options) => {
+          expect(options.skipProfileGrant).toBe(true);
           events.push("install");
           return {
             user: {
@@ -549,7 +556,7 @@ describe("asrt-windows-support adapter", () => {
     // 0 ok, 10 UAC cancelled, 12/13/14/17 the mapped failures; a renumbering upstream must come back here.
     const source = readAsrtWindowsUtilsSource();
     expect(source).toMatch(/r\.status === 0 \|\| r\.status === 10/);
-    expect(source).toMatch(/r\.status === 10 \? \{ \.\.\.state, cancelled: true \}/);
+    expect(source).toMatch(/if \(r\.status === 10\)\s*return \{ \.\.\.state, cancelled: true \}/);
     for (const [exit, code] of [[12, "install_wfp_failed"], [13, "install_config_conflict"], [14, "install_user_failed"], [17, "install_ambient_failed"]] as const) {
       expect(source).toMatch(new RegExp(`case ${exit}:\\s*throw new WindowsSandboxError\\('${code}'`));
     }
@@ -815,30 +822,42 @@ describe("asrt-windows-support adapter", () => {
   it("pins Windows filesystem ACL readiness to ASRT initialize fail-closed behavior", () => {
     const source = readAsrtSandboxManagerSource();
     // Applied at all — whitespace-tolerant, because the argument formatting is the bundler's choice and not a behaviour we are pinning.
-    expect(source).toMatch(/grantWindowsAcl\(\s*\{/);
-    expect(source).toMatch(/stampWindowsAcl\(\s*\{/);
+    expect(source).toMatch(/await grantWindowsAclPersistent\(\s*\{[\s\S]*?denyRead: acc\.denyRead,\s*denyWrite: acc\.denyWrite,/);
     // And released again when initialization fails. This is the assertion the test is named for; see the helper for why locating the block matters.
     expect(rollsBackWindowsAclOnFailedInitialize(source)).toBe(true);
   });
 
   // The assertion above reads a file this repo does not control, so it cannot be mutation-tested without editing `node_modules`. These drive the same predicate over fixtures instead: each is a shape ASRT could plausibly ship, and the first two are exactly what the previous assertions let through.
   describe("the ACL rollback pin", () => {
-    // The shape ASRT ships today, minified names and all.
+    const RELEASE = `
+function windowsAclRestoreAllowed(revoke) {
+  if (revoke.complete) return true;
+  return false;
+}
+function releaseWindowsSessionAcls(sandboxUserSid, srtWin) {
+  const o = { sandboxUserSid, srtWin };
+  if (windowsAclRestoreAllowed(revokeWindowsAclChecked(o))) {
+    logWindowsAclOutcomes('deny restore', restoreWindowsAcl(o));
+  }
+}`;
+    // The release helper is checked together with its initialization call site.
     const FAIL_CLOSED = `
+      ${RELEASE}
       catch (e) {
         if (windowsFsSbUserSid) {
-          revokeWindowsAcl({ sandboxUserSid: windowsFsSbUserSid, srtWin });
-          restoreWindowsAcl({ sandboxUserSid: windowsFsSbUserSid, srtWin });
+          releaseWindowsSessionAcls(windowsFsSbUserSid, srtWin);
         }
         windowsFsSbUserSid = undefined;
+        windowsFsStampedSet = undefined;
+        windowsProfileRead = undefined;
         config = undefined;
         throw e;
       }`;
     // The teardown call site, in a different function. Not a rollback.
     const TEARDOWN = `
+      ${RELEASE}
       function releaseWindowsHolds() {
-        for (const e of revokeWindowsAcl({ sandboxUserSid: sb, srtWin }) ?? []) log(e);
-        for (const e of restoreWindowsAcl({ sandboxUserSid: sb, srtWin }) ?? []) log(e);
+        releaseWindowsSessionAcls(sb, srtWin);
       }`;
 
     it("accepts the release-then-rethrow shape", () => {
@@ -875,12 +894,23 @@ describe("asrt-windows-support adapter", () => {
       expect(rollsBackWindowsAclOnFailedInitialize(source)).toBe(true);
 
       const stripped = source.replaceAll(
-        /^[^\n]*(?:revoke|restore)WindowsAcl\(\s*\{\s*sandboxUserSid[^\n]*\n/gm,
+        /^\s*releaseWindowsSessionAcls\([^\n]*\n/gm,
         "",
       );
       // Non-vacuous: a strip that matched nothing would make the assertion below true for the wrong reason.
       expect(stripped.length).toBeLessThan(source.length);
       expect(rollsBackWindowsAclOnFailedInitialize(stripped)).toBe(false);
+    });
+
+    it("rejects a deny restore that runs before grant revocation completes", () => {
+      expect(rollsBackWindowsAclOnFailedInitialize(FAIL_CLOSED.replace(
+        "if (windowsAclRestoreAllowed(revokeWindowsAclChecked(o)))",
+        "if (true)",
+      ))).toBe(false);
+      expect(rollsBackWindowsAclOnFailedInitialize(FAIL_CLOSED.replace(
+        "if (revoke.complete) return true;",
+        "return true;",
+      ))).toBe(false);
     });
 
     it("requires the rethrow to carry the value that was caught", () => {

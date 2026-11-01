@@ -1,4 +1,4 @@
-Two backports and eight Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Confinement additions onto @anthropic-ai/sandbox-runtime 0.0.81.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -197,13 +197,14 @@ the installed package.
     ~0.7 s on a loaded hosted runner); folded, about 75 remain.
     `setPathFilterCompactionForTesting` renders them unfolded for tests.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
+index 13f3a8a6dffc68d47763c5048880704a171bd043..ae1cb87d332b0692eec7c2f79264f68809f9fd84 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -1,9 +1,9 @@
+@@ -1,10 +1,10 @@
  export { SandboxManager } from './sandbox/sandbox-manager.js';
--export type { WrapWithSandboxOptions } from './sandbox/sandbox-manager.js';
-+export type { WrapWithSandboxOptions, ParentProxyRoute, ParentProxyRouter } from './sandbox/sandbox-manager.js';
+ export type { WindowsProfileReadWarning } from './sandbox/sandbox-manager.js';
+-export type { WrapWithSandboxOptions, SandboxInitializeOptions, } from './sandbox/sandbox-manager.js';
++export type { WrapWithSandboxOptions, SandboxInitializeOptions, ParentProxyRoute, ParentProxyRouter } from './sandbox/sandbox-manager.js';
  export { SandboxViolationStore } from './sandbox/sandbox-violation-store.js';
  export type { SandboxRuntimeConfig, NetworkConfig, FilesystemConfig, FilesystemPathEntry, CredentialsConfig, CredentialFileConfig, CredentialEnvVarConfig, CredentialMode, IgnoreViolationsConfig, } from './sandbox/sandbox-config.js';
  export { SandboxRuntimeConfigSchema, NetworkConfigSchema, FilesystemConfigSchema, CredentialsConfigSchema, IgnoreViolationsConfigSchema, RipgrepConfigSchema, } from './sandbox/sandbox-config.js';
@@ -213,7 +214,7 @@ index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
 diff --git a/dist/sandbox/http-proxy.d.ts b/dist/sandbox/http-proxy.d.ts
-index bb9071e3a..34cb5ff3f 100644
+index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..34cb5ff3f3366a5044ed88ee05e87659143d68d2 100644
 --- a/dist/sandbox/http-proxy.d.ts
 +++ b/dist/sandbox/http-proxy.d.ts
 @@ -8,8 +8,10 @@ import { type TunnelTimeouts } from './tls-terminate-proxy.js';
@@ -279,7 +280,7 @@ index bb9071e3a..34cb5ff3f 100644
       * Per-session bearer token. When set, every CONNECT and absolute-URI
       * request must carry `Proxy-Authorization: Basic
 diff --git a/dist/sandbox/http-proxy.js b/dist/sandbox/http-proxy.js
-index 7ad12c3c8..514f4c561 100644
+index 7ad12c3c8529987ba0a045103b8b30be09df0c99..514f4c5615de30f2600c01ee07b7139dca5a7506 100644
 --- a/dist/sandbox/http-proxy.js
 +++ b/dist/sandbox/http-proxy.js
 @@ -1,3 +1,4 @@
@@ -544,7 +545,7 @@ index 7ad12c3c8..514f4c561 100644
                  if (res.destroyed || req.socket.destroyed) {
                      // Client went away during the dial.
 diff --git a/dist/sandbox/linux-sandbox-utils.d.ts b/dist/sandbox/linux-sandbox-utils.d.ts
-index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18f0d4ed69 100644
+index 9a16855dff76efea64af8516a38d079c105a2ffb..895452af351cb59ab25be6ecc9679e0d4261d3cc 100644
 --- a/dist/sandbox/linux-sandbox-utils.d.ts
 +++ b/dist/sandbox/linux-sandbox-utils.d.ts
 @@ -16,6 +16,12 @@ export interface LinuxSandboxParams {
@@ -561,7 +562,7 @@ index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671fe6356ad5d9e187ca13753f345f931b..37148f95320768342b2dd8837b75ead011f7f96d 100644
+index b3acba671fe6356ad5d9e187ca13753f345f931b..64fcebe2402a63e030dbcfe371ce3a6ef3ab319f 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -1072,22 +1073,15 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..37148f95320768342b2dd8837b75ead0
          // ========== PID NAMESPACE ISOLATION ==========
          // IMPORTANT: These must come AFTER filesystem binds for nested bwrap to work
          // By default, always unshare PID namespace and mount fresh /proc.
-@@ -3144,4 +3384,4 @@ export async function wrapCommandWithSandboxLinux(params) {
-         throw error;
-     }
- }
--//# sourceMappingURL=linux-sandbox-utils.js.map
-\ No newline at end of file
-+//# sourceMappingURL=linux-sandbox-utils.js.map
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
-index 8af5e03041b27d060b0027278fb0567745b06f2f..51c351272bca59d6bb4cc91928ab2d33ff2bf02b 100644
+index 8af5e03041b27d060b0027278fb0567745b06f2f..c228590a31fa8ffc487b5cd773a6340db1dfafa7 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts
 +++ b/dist/sandbox/macos-sandbox-utils.d.ts
 @@ -48,6 +48,8 @@ export interface MacOSSandboxParams {
      degradeToDenyPaths?: readonly string[];
      ignoreViolations?: IgnoreViolationsConfig | undefined;
      allowPty?: boolean;
-+    /** Pty slave devices the caller spawns the child on (backport of anthropics/sandbox-runtime#722). */
++    /** Pty slave devices the caller spawns the child on. */
 +    ttys?: readonly string[];
      allowGitConfig?: boolean;
      /**
@@ -1104,7 +1098,7 @@ index 8af5e03041b27d060b0027278fb0567745b06f2f..51c351272bca59d6bb4cc91928ab2d33
  //# sourceMappingURL=macos-sandbox-utils.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/macos-sandbox-utils.js b/dist/sandbox/macos-sandbox-utils.js
-index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..16824444e6aa4335320b6f6b0a1a6f3ff2ab5f25 100644
+index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..4240033a2227b4137fb29fd0f7a2f3bdd7b7f9f1 100644
 --- a/dist/sandbox/macos-sandbox-utils.js
 +++ b/dist/sandbox/macos-sandbox-utils.js
 @@ -424,10 +424,96 @@ function renderRule(action, operations, filters, logTag) {
@@ -1233,7 +1227,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..16824444e6aa4335320b6f6b0a1a6f3f
          profile.push(')');
      }
 +    else if (ttys.length > 0) {
-+        // Backport of anthropics/sandbox-runtime#722: the child's own terminal
++        // Pty slave validation: the child's own terminal
 +        // only. Without file-ioctl on it, TIOCSETA and TIOCSPGRP fail with
 +        // EPERM: a shell cannot turn off echo or run job control.
 +        profile.push('');
@@ -1252,7 +1246,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..16824444e6aa4335320b6f6b0a1a6f3f
 +const PTY_SLAVE_PATH = /^\/dev\/ttys[0-9]{3,}$/;
 +/**
 + * Throws unless every entry is a pty slave device path (`/dev/ttys` and three
-+ * or more digits). Backport of anthropics/sandbox-runtime#722.
++ * or more digits). Backport of the per-wrap pty contract.
 + */
 +export function assertPtySlavePaths(ttys) {
 +    for (const device of ttys) {
@@ -1389,7 +1383,7 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..0e5f5fae9ec6e3c2accee790e7cdaa23
  export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
  export interface DirectRequestOptions {
 diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
-index 1f39c7792..bb34f8629 100644
+index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..bb34f8629ceabb393af090a3d1378ad3829eadab 100644
 --- a/dist/sandbox/parent-proxy.js
 +++ b/dist/sandbox/parent-proxy.js
 @@ -197,10 +197,15 @@ export function openConnectTunnel(opts) {
@@ -1526,6 +1520,58 @@ index 1f39c7792..bb34f8629 100644
          s.once('connect', () => done());
          s.once('error', done);
          s.once('close', () => done(new Error('socket closed before connect')));
+diff --git a/dist/sandbox/proxy-failure.d.ts b/dist/sandbox/proxy-failure.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab0de24a1aceac54c5e4bf112f36f3c6a0a0738c
+--- /dev/null
++++ b/dist/sandbox/proxy-failure.d.ts
+@@ -0,0 +1,10 @@
++import type { ServerResponse } from 'node:http';
++export type ProxyFailureKind = 'dns' | 'connect' | 'timeout' | 'routing';
++export declare class ProxyTransportError extends Error {
++    readonly kind: ProxyFailureKind;
++    readonly httpStatus: 502 | 504;
++    constructor(kind: ProxyFailureKind, reason: string);
++}
++export declare function transportFailure(error: unknown): ProxyTransportError;
++export declare function rawTransportFailure(failure: ProxyTransportError): string;
++export declare function respondTransportFailure(res: ServerResponse, failure: ProxyTransportError): void;
+diff --git a/dist/sandbox/proxy-failure.js b/dist/sandbox/proxy-failure.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..344c83b28b06e2ab293471df4935b2289621529b
+--- /dev/null
++++ b/dist/sandbox/proxy-failure.js
+@@ -0,0 +1,30 @@
++import { sanitizeDenialReason } from './sandbox-violation-store.js';
++// Transport failures never authorize a connection and never claim a policy denial.
++export class ProxyTransportError extends Error {
++    constructor(kind, reason) {
++        super(sanitizeDenialReason(reason) || 'upstream transport failed');
++        this.name = 'ProxyTransportError';
++        this.kind = kind;
++        this.httpStatus = kind === 'timeout' ? 504 : 502;
++    }
++}
++export function transportFailure(error) {
++    if (error instanceof ProxyTransportError) return error;
++    const code = error?.code;
++    if (code === 'ERR_SRT_STALE_ROUTE')
++        return new ProxyTransportError('routing', 'upstream routing changed during the connection decision');
++    if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT')
++        return new ProxyTransportError('timeout', 'upstream connection timed out');
++    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN')
++        return new ProxyTransportError('dns', 'destination name did not resolve');
++    return new ProxyTransportError('connect', 'upstream connection failed');
++}
++export function rawTransportFailure(failure) {
++    const phrase = failure.httpStatus === 504 ? 'Gateway Timeout' : 'Bad Gateway';
++    return `HTTP/1.1 ${failure.httpStatus} ${phrase}\r\nContent-Type: text/plain\r\nX-Proxy-Error: transport-${failure.kind}\r\nX-Proxy-Reason: ${failure.message}\r\nConnection: close\r\n\r\n${failure.message}\n`;
++}
++export function respondTransportFailure(res, failure) {
++    if (res.headersSent || res.destroyed) { res.destroy(); return; }
++    res.writeHead(failure.httpStatus, { 'Content-Type': 'text/plain', 'X-Proxy-Error': 'transport-' + failure.kind, 'X-Proxy-Reason': failure.message });
++    res.end(failure.message + '\n');
++}
 diff --git a/dist/sandbox/sandbox-config.d.ts b/dist/sandbox/sandbox-config.d.ts
 index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf68d4b71b9 100644
 --- a/dist/sandbox/sandbox-config.d.ts
@@ -1649,7 +1695,7 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
      };
      filesystem: {
 diff --git a/dist/sandbox/sandbox-config.js b/dist/sandbox/sandbox-config.js
-index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa57eb7a2b 100644
+index 76b00b1dc82a2d42a451a9f58068cbbd5e68da75..2af9ea0b48cbbd0cc4c21aa7b3a02c9afed0d3ae 100644
 --- a/dist/sandbox/sandbox-config.js
 +++ b/dist/sandbox/sandbox-config.js
 @@ -110,6 +110,12 @@ const ParentProxyConfigSchema = z.object({
@@ -1666,7 +1712,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e81355720485d0c1 100644
+index e4839e23f8cfa60c1cabfc338c73c684743ff53b..890c16cc166affc782e8fc0e8a50c26161516705 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -1,3 +1,11 @@
@@ -1681,7 +1727,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
  import { SentinelRegistry } from './credential-sentinel.js';
  import { MaskedFileStore } from './credential-mask-files.js';
  import { AwsPairRegistry } from './credential-aws-pairs.js';
-@@ -45,6 +53,53 @@ export type WrapWithSandboxOptions = {
+@@ -69,6 +77,53 @@ export type WrapWithSandboxOptions = {
       * reported as the violation's `command`. Defaults to `command`.
       */
      commandText?: string;
@@ -1689,7 +1735,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
 +     * macOS: the pty slave devices (`/dev/ttysNNN`) the command is spawned on.
 +     * Each gets `file-ioctl` as a literal; other terminals stay denied. Any
 +     * entry not matching `^/dev/ttys[0-9]{3,}$` throws. Backport of
-+     * anthropics/sandbox-runtime#722.
++     * the per-wrap pty contract.
 +     */
 +    ttys?: readonly string[];
 +    /** Refuse Unix sockets for this invocation, including shared worker grants. */
@@ -1735,7 +1781,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
  };
  /**
   * Interface for the sandbox manager API
-@@ -125,6 +180,66 @@ export interface ISandboxManager {
+@@ -149,6 +204,66 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -1802,7 +1848,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -150,4 +265,13 @@ export interface ISandboxManager {
+@@ -185,4 +300,13 @@ export interface ISandboxManager {
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
@@ -1818,7 +1864,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54..bf01699a7 100644
+index d475e55977bf54a2fe00a0c6aba38313761d55aa..5dc30fbc2f16fe9a4b1eab54c343bd44cc597ece 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -1833,7 +1879,7 @@ index 810b0aa54..bf01699a7 100644
 -import { wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
 +import { assertPtySlavePaths, wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
  import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
- import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
+ import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, restoreWindowsAcl, grantWindowsAclPersistent, windowsSetupVersionMismatch, windowsSrtWinOutdatedError, missingWindowsSrtWinCapability, windowsGrantsBeneathDenies, getWindowsProfileReadStatus, getWindowsProfileReadStatusAsync, windowsProfileExclusionConflicts, revokeWindowsAclChecked, getWindowsSandboxUserStatusAsync, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
  import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
  import { ownInstallWarning } from './own-files.js';
  import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredCommandKey, shouldIgnoreViolation, } from './sandbox-violation-store.js';
@@ -1881,7 +1927,7 @@ index 810b0aa54..bf01699a7 100644
  /** Read live through {@link directLookup}, so a config update applies to the next dial. */
  let resolvedAddressGuard = createResolvedAddressGuard();
  let mitmCA;
-@@ -84,6 +110,68 @@ let windowsWfpVerified = false;
+@@ -226,6 +252,68 @@ export function windowsProfileReadWarningsOf(grant) {
  // grants/stamps were applied with even if `config` mutated between.
  let srtWinSpawn;
  const sandboxViolationStore = new SandboxViolationStore();
@@ -1950,7 +1996,7 @@ index 810b0aa54..bf01699a7 100644
  // Per-session sentinel↔real-value map for masked credentials. Lives only in
  // process memory; never written to disk or logged. Cleared on reset().
  const sentinelRegistry = new SentinelRegistry();
-@@ -300,11 +388,21 @@ function deniedDomainReason(entry) {
+@@ -486,11 +574,21 @@ function deniedDomainReason(entry) {
      const own = Object.prototype.hasOwnProperty.call(reasons, entry);
      return (own ? reasons[entry] : undefined) ?? 'host is on the deny list';
  }
@@ -1974,7 +2020,7 @@ index 810b0aa54..bf01699a7 100644
      };
      if (!config) {
          logForDebugging('No config available, denying network request');
-@@ -340,7 +438,7 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -526,7 +624,7 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      for (const allowedDomain of config.network.allowedDomains) {
          if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
              logForDebugging(`Allowed by config rule: ${host}:${port}`);
@@ -1983,7 +2029,7 @@ index 810b0aa54..bf01699a7 100644
          }
      }
      // strictAllowlist makes the configured allowlist deterministic enforcement:
-@@ -353,33 +451,70 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -539,33 +637,70 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      // Coming after both configured lists, it lifts the default deny for that
      // one command and never a configured deniedDomains entry. The username is
      // presented by the sandboxed client: see registerCommandNetworkLists.
@@ -2034,7 +2080,7 @@ index 810b0aa54..bf01699a7 100644
 +    }, denied);
 +}
 +/**
-+ * One call of the ask callback. Backport of anthropics/sandbox-runtime#735:
++ * One call of the ask callback. Includes invocation attribution:
 + * `attributionKey` is the key the per-command lists and the violation store
 + * use, so the callback can tell which invocation opened the connection.
 + * Ave patch (invocation listeners): `identity` says how the key was learned.
@@ -2062,7 +2108,7 @@ index 810b0aa54..bf01699a7 100644
          // The callback's own reason, when it gave one, says what to do instead.
          return denied(denialReasonOf(answer) ?? 'user denied');
      }
-@@ -390,6 +525,47 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -576,6 +711,47 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
          return denied('permission prompt failed');
      }
  }
@@ -2110,7 +2156,7 @@ index 810b0aa54..bf01699a7 100644
  /**
   * Build the header-mutation callback that substitutes sentinel→real for
   * masked credentials. Returns undefined when no `credentials` block is
-@@ -438,7 +614,7 @@ function buildSigv4Planner() {
+@@ -624,7 +800,7 @@ function buildSigv4Planner() {
   * otherwise returns undefined.
   *
   * Matches the canonicalized hostname, like the allow/deny filter
@@ -2119,7 +2165,7 @@ index 810b0aa54..bf01699a7 100644
   * fails OPEN on a miss — a host that matches no MITM pattern is dialed
   * directly — so it must accept exactly the set of spellings the allowlist
   * accepts: otherwise `api.example.com.` (trailing-dot FQDN, same name to
-@@ -468,7 +644,7 @@ function getMitmSocketPath(host) {
+@@ -654,7 +830,7 @@ function getMitmSocketPath(host) {
   * so mTLS / cert-pinning clients can complete their own handshake.
   *
   * Matches the canonicalized hostname, like the allow/deny filter
@@ -2128,7 +2174,7 @@ index 810b0aa54..bf01699a7 100644
   * canonicalization (`127.1`, a trailing-dot FQDN) would dodge the exclusion
   * and get terminated anyway.
   */
-@@ -497,11 +673,231 @@ function shouldTerminateTLSForHost(host) {
+@@ -683,11 +859,231 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -2363,7 +2409,7 @@ index 810b0aa54..bf01699a7 100644
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +917,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -707,7 +1103,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -2372,7 +2418,7 @@ index 810b0aa54..bf01699a7 100644
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +934,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -724,19 +1120,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -2407,7 +2453,7 @@ index 810b0aa54..bf01699a7 100644
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +966,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -748,17 +1152,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -2436,7 +2482,7 @@ index 810b0aa54..bf01699a7 100644
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +1002,846 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -774,6 +1188,849 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -3280,10 +3326,13 @@ index 810b0aa54..bf01699a7 100644
 +    }
 +    return lane;
 +}
- // ============================================================================
- // Public Module Functions (will be exported via namespace)
- // ============================================================================
-@@ -616,7 +1870,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
++// ============================================================================
++// Public Module Functions (will be exported via namespace)
++// ============================================================================
+ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor = false, options) {
+     try {
+         await initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor, options);
+@@ -799,7 +2056,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3296,15 +3345,15 @@ index 810b0aa54..bf01699a7 100644
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,7 +1964,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -896,7 +2158,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
 -    if (getPlatform() === 'windows') {
 +    if (getPlatform() === 'windows' &&
 +        runtimeConfig.windows?.externalConfinement === 'embedder') {
-+        // Ave patch: the embedder confines its Windows children itself (MXC
-+        // containers pinned by the OS to a loopback proxy port) and runs only
++        // Ave patch: the embedder confines its Windows children itself through
++        // containers pinned by the OS to a loopback proxy port, and runs only
 +        // the proxy here. The srt-win account, its WFP fence and its session
 +        // ACLs are not used, so they are neither required nor touched, and
 +        // wrapWithSandboxArgv() refuses (see there).
@@ -3315,7 +3364,7 @@ index 810b0aa54..bf01699a7 100644
          // Resolve once (stats disk); captured module-level for wrap/reset.
          srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
          const srtWin = srtWinSpawn;
-@@ -992,6 +2261,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -1236,6 +2508,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -3328,17 +3377,17 @@ index 810b0aa54..bf01699a7 100644
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +2790,9 @@ async function waitToWalk(signal) {
+@@ -1776,6 +3054,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
-+    // Backport of anthropics/sandbox-runtime#722: validated on every platform,
++    // Validate pty slaves on every platform,
 +    // once, before any restart.
 +    assertPtySlavePaths(options?.ttys ?? []);
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2988,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1971,15 +3252,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -3360,7 +3409,7 @@ index 810b0aa54..bf01699a7 100644
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3009,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1989,29 +3273,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -3403,7 +3452,7 @@ index 810b0aa54..bf01699a7 100644
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3058,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -2030,7 +3322,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -3412,7 +3461,7 @@ index 810b0aa54..bf01699a7 100644
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3075,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -2047,6 +3339,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -3420,11 +3469,11 @@ index 810b0aa54..bf01699a7 100644
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3111,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -2082,7 +3375,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
-+    // Backport of anthropics/sandbox-runtime#722: before the Windows branch.
++    // Pty slave validation: before the Windows branch.
 +    assertPtySlavePaths(options?.ttys ?? []);
      const platform = getPlatform();
 +    if (platform === 'windows' &&
@@ -3437,7 +3486,7 @@ index 810b0aa54..bf01699a7 100644
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1950,7 +3249,7 @@ function getConfig() {
+@@ -2241,7 +3543,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -3446,7 +3495,7 @@ index 810b0aa54..bf01699a7 100644
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3288,7 @@ function updateConfig(newConfig) {
+@@ -2289,6 +3591,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -3454,7 +3503,7 @@ index 810b0aa54..bf01699a7 100644
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3522,8 @@ async function reset() {
+@@ -2510,6 +3813,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -3463,7 +3512,7 @@ index 810b0aa54..bf01699a7 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3531,26 @@ async function reset() {
+@@ -2517,6 +3822,26 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -3490,7 +3539,7 @@ index 810b0aa54..bf01699a7 100644
      maskedFileStore.dispose();
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3658,11 @@ export const SandboxManager = {
+@@ -2624,6 +3949,11 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -3503,7 +3552,7 @@ index 810b0aa54..bf01699a7 100644
      cleanupAfterCommand,
      reset,
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
-index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761c4ea77d9 100644
+index 4c0be53fa68af536b0dcf49192421651d7b51476..08fd0e5ddb686dcc598be6f312dc1e7bfc64ca4a 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
 +++ b/dist/sandbox/sandbox-schemas.d.ts
 @@ -151,8 +151,75 @@ export type NetworkHostPattern = {
@@ -3517,7 +3566,7 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761
  }>;
 +/**
 + * Which invocation opened the connection a SandboxAskCallback is asked about
-+ * (backport of anthropics/sandbox-runtime#735, issue #734). The library always
++ * The library always
 + * passes it; the parameter is optional only so a callback invoked directly by
 + * existing code still type-checks.
 + *
@@ -3585,7 +3634,7 @@ index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
-index 3c92084c9e46fb8bec96a25789e0fdec69965ecb..3384c42609399cdd4b59318af6e07a41f3fdb425 100644
+index f2f122821ae19cc7d705f13eba853ed4d47f30dd..d7b97e19d5cb18672144e7d1f8f3c2f0cd611642 100644
 --- a/dist/sandbox/sandbox-utils.js
 +++ b/dist/sandbox/sandbox-utils.js
 @@ -515,44 +515,15 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
@@ -3641,7 +3690,7 @@ index 3c92084c9e46fb8bec96a25789e0fdec69965ecb..3384c42609399cdd4b59318af6e07a41
  }
  /**
 diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
-index a4ba5d4f7..d987a8d7b 100644
+index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..d987a8d7b6da3fd9a46174e93cb33decd72664da 100644
 --- a/dist/sandbox/socks-proxy.d.ts
 +++ b/dist/sandbox/socks-proxy.d.ts
 @@ -1,12 +1,14 @@
@@ -3675,7 +3724,7 @@ index a4ba5d4f7..d987a8d7b 100644
       * Per-session token (same value as the HTTP proxy's). When set, the
       * server requires SOCKS5 username/password auth and only accepts
 diff --git a/dist/sandbox/socks-proxy.js b/dist/sandbox/socks-proxy.js
-index 760a10b1d..a7a39777c 100644
+index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1c6fb0995 100644
 --- a/dist/sandbox/socks-proxy.js
 +++ b/dist/sandbox/socks-proxy.js
 @@ -1,7 +1,8 @@
@@ -3741,55 +3790,3 @@ index 760a10b1d..a7a39777c 100644
              logForDebugging(`SOCKS connect to ${host}:${port} failed: ${err.message}`, { level: 'error' });
              if (!clientGone) {
                  try {
-diff --git a/dist/sandbox/proxy-failure.d.ts b/dist/sandbox/proxy-failure.d.ts
-new file mode 100644
-index 000000000..ab0de24a1
---- /dev/null
-+++ b/dist/sandbox/proxy-failure.d.ts
-@@ -0,0 +1,10 @@
-+import type { ServerResponse } from 'node:http';
-+export type ProxyFailureKind = 'dns' | 'connect' | 'timeout' | 'routing';
-+export declare class ProxyTransportError extends Error {
-+    readonly kind: ProxyFailureKind;
-+    readonly httpStatus: 502 | 504;
-+    constructor(kind: ProxyFailureKind, reason: string);
-+}
-+export declare function transportFailure(error: unknown): ProxyTransportError;
-+export declare function rawTransportFailure(failure: ProxyTransportError): string;
-+export declare function respondTransportFailure(res: ServerResponse, failure: ProxyTransportError): void;
-diff --git a/dist/sandbox/proxy-failure.js b/dist/sandbox/proxy-failure.js
-new file mode 100644
-index 000000000..344c83b28
---- /dev/null
-+++ b/dist/sandbox/proxy-failure.js
-@@ -0,0 +1,30 @@
-+import { sanitizeDenialReason } from './sandbox-violation-store.js';
-+// Transport failures never authorize a connection and never claim a policy denial.
-+export class ProxyTransportError extends Error {
-+    constructor(kind, reason) {
-+        super(sanitizeDenialReason(reason) || 'upstream transport failed');
-+        this.name = 'ProxyTransportError';
-+        this.kind = kind;
-+        this.httpStatus = kind === 'timeout' ? 504 : 502;
-+    }
-+}
-+export function transportFailure(error) {
-+    if (error instanceof ProxyTransportError) return error;
-+    const code = error?.code;
-+    if (code === 'ERR_SRT_STALE_ROUTE')
-+        return new ProxyTransportError('routing', 'upstream routing changed during the connection decision');
-+    if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT')
-+        return new ProxyTransportError('timeout', 'upstream connection timed out');
-+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN')
-+        return new ProxyTransportError('dns', 'destination name did not resolve');
-+    return new ProxyTransportError('connect', 'upstream connection failed');
-+}
-+export function rawTransportFailure(failure) {
-+    const phrase = failure.httpStatus === 504 ? 'Gateway Timeout' : 'Bad Gateway';
-+    return `HTTP/1.1 ${failure.httpStatus} ${phrase}\r\nContent-Type: text/plain\r\nX-Proxy-Error: transport-${failure.kind}\r\nX-Proxy-Reason: ${failure.message}\r\nConnection: close\r\n\r\n${failure.message}\n`;
-+}
-+export function respondTransportFailure(res, failure) {
-+    if (res.headersSent || res.destroyed) { res.destroy(); return; }
-+    res.writeHead(failure.httpStatus, { 'Content-Type': 'text/plain', 'X-Proxy-Error': 'transport-' + failure.kind, 'X-Proxy-Reason': failure.message });
-+    res.end(failure.message + '\n');
-+}

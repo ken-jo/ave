@@ -2096,7 +2096,15 @@ the invocation by such processes; these temporal and failed-cleanup risks are
 defined by the
 [same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
-Two ASRT 0.0.80 rules shape what a confined command can do:
+The Windows installer passes `skipProfileGrant: true`: installation does not
+open a broad profile read grant. Normal helper sessions retain the runtime's
+capability and setup checks, profile-exclusion checks, persistent write-root
+grants and restricted-token WFP verification. Persistent write roots survive
+session reset; grant revocation must complete before session deny ACEs can be
+restored. Externally confined sessions continue to use only the proxy and
+refuse helper-backed wraps. Native Windows behavior requires Windows validation.
+
+Two ASRT 0.0.81 rules shape what a confined command can do:
 
 - Linux: a sandboxed command cannot create a user namespace or a mount
   namespace of its own. The seccomp helper refuses those calls. Where the
@@ -2250,7 +2258,7 @@ refusals from that audit channel.
 The token is a label; what identifies an invocation to the policy is the
 channel its connections arrive on (`src/permissions/egress-identity.ts`). On
 macOS and Linux every wrap first opens its own proxy front end
-(`SandboxManager.openInvocationListener`, part 3 of the carried 0.0.80 bun
+(`SandboxManager.openInvocationListener`, part 3 of the carried 0.0.81 bun
 patch): a loopback port that the wrap's Seatbelt profile alone may reach, or a
 socket path bound into that wrap's bwrap in place of the shared bridge socket.
 A connection that arrives there reaches the ask callback with
@@ -2365,9 +2373,9 @@ share a parent directory into one regex for that parent. The regex matches the
 same paths, and sandbox-exec, which compiles the profile on every wrap, compiles
 it several times faster.
 
-To regenerate `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch`, save its
+To regenerate `patches/@anthropic-ai%2Fsandbox-runtime@0.0.81.patch`, save its
 explanatory preamble (everything before the first `diff --git`) and run
-`bun patch @anthropic-ai/sandbox-runtime@0.0.80`. Edit the installed package's
+`bun patch @anthropic-ai/sandbox-runtime@0.0.81`. Edit the installed package's
 `dist`, save a copy outside the checkout for comparison, then run
 `bun patch --commit node_modules/@anthropic-ai/sandbox-runtime`. Restore the
 updated preamble ahead of the generated diff and run `bun install --lockfile-only`
