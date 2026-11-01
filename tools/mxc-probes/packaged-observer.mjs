@@ -18,6 +18,7 @@ export function openPackagedObserver(executable, suppliedPins) {
     if (!kernel.func("void * __stdcall AddDllDirectory(str16)")(directory)) throw new Error("Observer verified directory registration failed");
   }
   const getTimes = kernel.func("bool __stdcall GetProcessTimes(void *, _Out_ uint64_t *, _Out_ uint64_t *, _Out_ uint64_t *, _Out_ uint64_t *)");
+  const lastError = kernel.func("uint32_t __stdcall GetLastError(void)");
   const getImage = kernel.func("bool __stdcall QueryFullProcessImageNameW(void *, uint32_t, void *, _Inout_ uint32_t *)");
   const now = kernel.func("void __stdcall GetSystemTimePreciseAsFileTime(_Out_ uint64_t *)");
   const current = kernel.func("void * __stdcall GetCurrentProcess(void)")();
@@ -27,6 +28,7 @@ export function openPackagedObserver(executable, suppliedPins) {
   const compare = nt.func("uint32_t __stdcall NtCompareObjects(uintptr_t, uintptr_t)");
   const close = kernel.func("bool __stdcall CloseHandle(void *)");
   const open = kernel.func("void * __stdcall OpenProcess(uint32_t, bool, uint32_t)");
+  const getPid = kernel.func("uint32_t __stdcall GetProcessId(void *)");
   const api = {
     handleValue(handle) {
       const value = typeof handle === "bigint" || typeof handle === "number" ? BigInt(handle) : BigInt(ffi.address(handle));
@@ -43,12 +45,17 @@ export function openPackagedObserver(executable, suppliedPins) {
     identity(handle) {
       const created = [0n], exit = [0n], kernelTime = [0n], userTime = [0n];
       const image = Buffer.alloc(65536), length = [32768];
-      if (!getTimes(handle, created, exit, kernelTime, userTime) || !getImage(handle, 0, image, length)) throw new Error("Cannot query measured process identity");
+      if (!getTimes(handle, created, exit, kernelTime, userTime)) throw new Error(`Cannot query measured process identity: GetProcessTimes failed (${lastError()})`);
+      if (!getImage(handle, 0, image, length)) throw new Error(`Cannot query measured process identity: QueryFullProcessImageNameW failed (${lastError()})`);
       return { createdAt: BigInt(created[0]), imagePath: realpathSync(image.toString("utf16le", 0, length[0] * 2)) };
     },
     open: (rights, inherit, pid) => open(rights | 0x450, inherit, pid),
     wait: kernel.func("uint32_t __stdcall WaitForSingleObject(void *, uint32_t)"),
-    pid: kernel.func("uint32_t __stdcall GetProcessId(void *)"),
+    pid(handle) {
+      const value = getPid(handle);
+      if (value === 0) throw new Error(`Cannot query measured process PID: GetProcessId failed (${lastError()}); possible handle-lifetime race`);
+      return value;
+    },
     sameProcess(first, second) { return compare(BigInt(api.handleValue(first)), BigInt(api.handleValue(second))) === 0; },
     terminate: kernel.func("bool __stdcall TerminateProcess(void *, uint32_t)"),
     close,

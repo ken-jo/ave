@@ -15,7 +15,7 @@ import { safeEnvironment, windowsQuote } from "./probe-common.mjs";
 // @ts-expect-error native observer is bundled only into the explicit verification entry
 import { openPackagedObserver } from "./packaged-observer.mjs";
 // @ts-expect-error standalone probe argument parser is bundled with this entry
-import { packagedMainArguments } from "./packaged-processes.mjs";
+import { packagedMainArguments, releasePackagedPins } from "./packaged-processes.mjs";
 
 const emit = (frame: object): void => { process.stdout.write(JSON.stringify(frame) + "\n"); };
 async function run(): Promise<void> {
@@ -131,11 +131,14 @@ async function run(): Promise<void> {
     }
     // Retain exact supervisor process objects until the external observer has
     // duplicated them, even when verification or cancellation made them exit.
-    emit({ event: "case-complete" });
-    try { if (!controlsClosed) await command("release"); }
-    catch { process.exitCode = 2; }
-    for (const handle of supervisorHandles) inspector.close(handle);
-    for (const handle of containerHandles) inspector.close(handle);
+    emit({ event: "case-complete", controlsClosed });
+    try { await releasePackagedPins(command, [...supervisorHandles, ...containerHandles], inspector.close); }
+    catch (error) {
+      emit({ event: "failure", name: "HarnessHandleLifetimeError", message: String(error instanceof Error ? error.message : error),
+        controlsClosed, inputEnded: process.stdin.readableEnded, inputDestroyed: process.stdin.destroyed,
+        cancelled: controller.signal.aborted, pinsRetainedUntilProcessExit: true });
+      process.exitCode = 2;
+    }
     controls.close(); process.stdin.destroy();
     proxy.closeAllConnections(); await new Promise<void>((resolve) => proxy.close(() => resolve()));
   }

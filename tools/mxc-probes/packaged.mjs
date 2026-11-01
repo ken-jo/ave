@@ -8,7 +8,7 @@ import { openPackagedObserver } from "./packaged-observer.mjs";
 import { writeProbeJson } from "./packaged-processes.mjs";
 import { pinRuntimeProcesses } from "./process-lifecycle.mjs";
 import { loadBudgets, safeEnvironment } from "./probe-common.mjs";
-import { cancellationObservation, exactOwnedPath, finalizePackagedObservation, ownerHandleObservationPassed, packagedProbeOptions, plantedDllRejected, stdioObservation, terminatePinnedProcess } from "./packaged-protocol.mjs";
+import { cancellationObservation, exactOwnedPath, finalizePackagedObservation, ownerHandleObservationPassed, packagedProbeOptions, pinnedProcessIdentity, plantedDllRejected, stdioObservation, terminatePinnedProcess } from "./packaged-protocol.mjs";
 import { copyPackagedTree } from "./packaged-filesystem.mjs";
 
 function imageKey(file) { return path.win32.normalize(file).toLowerCase(); }
@@ -78,8 +78,8 @@ async function main(result) {
     const copiedExecutable = await realpath(path.join(copyRoot, path.basename(original)));
     const entry = path.join(copyRoot, "resources/app.asar/dist/src/main/mxc-packaged-probe.js");
     const addRecord = (run, role, pid, handle) => {
-      const identity = native.identity(handle);
-      if (native.pid(handle) !== pid || imageKey(identity.imagePath) !== imageKey(copiedExecutable) || identity.createdAt < run.launchedAfter) throw new Error("Measured process identity mismatch");
+      const identity = pinnedProcessIdentity(native, handle, pid);
+      if (imageKey(identity.imagePath) !== imageKey(copiedExecutable) || identity.createdAt < run.launchedAfter) throw new Error("Measured process identity mismatch");
       const record = { role, pid, handle, createdAt: identity.createdAt.toString(), imagePath: identity.imagePath };
       run.records.push(record); return record;
     };

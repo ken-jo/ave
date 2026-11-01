@@ -20,3 +20,13 @@ export function packagedMainArguments(argv) {
   }
   return { runDirectory, mode, token, observerExecutable };
 }
+
+// The controller must explicitly finish consuming retained process objects.
+// Disconnection is a contract failure, never implicit permission to release.
+export async function releasePackagedPins(command, handles, close) {
+  try { await command("release"); }
+  catch (cause) {
+    throw new Error("Harness handle-lifetime contract failed: controller disconnected before explicit release", { cause });
+  }
+  for (const handle of handles) close(handle);
+}

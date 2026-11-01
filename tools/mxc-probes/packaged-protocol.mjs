@@ -31,6 +31,13 @@ export function cancellationObservation(frame, accounting) {
       : frame.pending === true ? {} : { inconclusive: "Cancellation did not overlap the native spawn await" }) };
 }
 
+export function pinnedProcessIdentity(native, handle, expectedPid) {
+  const actualPid = native.pid(handle);
+  if (actualPid === 0) throw new Error(`GetProcessId returned zero for expected PID ${expectedPid}; possible handle-lifetime race`);
+  if (actualPid !== expectedPid) throw new Error(`Measured process PID mismatch; possible handle-lifetime race: expected ${expectedPid}, got ${actualPid}`);
+  return native.identity(handle);
+}
+
 // Observation pins deliberately lack mutation rights. Emergency cleanup opens
 // separate authority and compares the actual objects before terminating one.
 export function terminatePinnedProcess(native, pin, exitCode) {
