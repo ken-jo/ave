@@ -88,14 +88,16 @@ node --check tools/mxc-probes/sdk-supervisor.mjs
 
 The verification build invokes the real public `spawnMxcExtensionProcess` entry and packaged supervisor. Diagnostic code is omitted from normal release builds; explicitly enable it only for this local verification build. Use a **non-elevated, standard-user Windows x64 interactive desktop session** in the checkout used to build the app. The driver rejects session 0 and elevated tokens; it does not install or prepare the host.
 
-The existing unsigned directory build selects x64 on an x64 host, builds native helpers, and assembles `release\win-unpacked\Ave.exe`. Neither `--dir` nor the probe installs the app:
+The existing unsigned directory build selects x64 on an x64 host, builds native helpers, and assembles `release\win-unpacked\Ave.exe`. Neither `--dir` nor the probe installs the app.
+
+The command uses `--skip-native-rebuild`, as the [release workflow](../../.github/workflows/build-installers.yml) does, because the locked `node-abi` 4.31.0 cannot resolve Electron 45.2.1 and causes `@electron/rebuild` to abort on `better-sqlite3`.
 
 ```powershell
 bun install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
 $env:AVE_MXC_VERIFICATION_BUILD = '1'
 try {
-  bun run dist:win -- --dir --skip-code-sign --publish never
+  bun run dist:win -- --dir --skip-code-sign --skip-native-rebuild --publish never
   if ($LASTEXITCODE -ne 0) { throw 'Verification build failed' }
 } finally { $env:AVE_MXC_VERIFICATION_BUILD = $null }
 $App = (Resolve-Path '.\release\win-unpacked\Ave.exe').Path
