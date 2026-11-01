@@ -2103,6 +2103,9 @@ shows the sandbox as not ready with instructions to end sandbox sessions and
 run `srt-win profile forget` using the helper that recorded the grant, then restart
 Ave. A stale status snapshot whose profile grant has since been forgotten is
 checked against the live record. No permission decision stage is bypassed.
+After initialization has registered the helper session, Ave rechecks the live
+profile record before publishing confinement. Any state other than `none`, or
+a failed status read, tears down initialization through the same typed refusal.
 Normal helper sessions retain the runtime's
 capability and setup checks, profile-exclusion checks, persistent write-root
 grants and restricted-token WFP verification. Persistent write roots survive

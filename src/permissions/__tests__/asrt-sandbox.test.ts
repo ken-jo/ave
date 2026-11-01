@@ -34,7 +34,13 @@ import { windowsReadDenyKey, type WindowsReadDenyEvidence } from "../../shared/w
 import * as readDenyEvidenceModule from "../../shared/windows-read-deny-evidence.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import * as windowsStampTargets from "../windows-stamp-targets.js";
-import { configureHostResources } from "../../main/host-resources.js";
+import { configureHostResources, getHostResources } from "../../main/host-resources.js";
+import * as policyHome from "../../shared/policy-home.js";
+
+vi.mock("@anthropic-ai/sandbox-runtime", async original => {
+  const actual = await original<typeof import("@anthropic-ai/sandbox-runtime")>();
+  return { ...actual, getWindowsProfileReadStatusAsync: vi.fn(actual.getWindowsProfileReadStatusAsync) };
+});
 
 vi.mock("../../shared/policy-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/policy-home.js")>();
@@ -2247,34 +2253,107 @@ describe.runIf(process.platform === "linux")("ordinary temporary write policy", 
 });
 
 describe("Windows inherited profile read grant", () => {
-  it.each(["granted", "absent", undefined] as const)("checks %s before publishing confinement", async (state) => {
+  it.each([
+    { snapshot: "granted", live: "none" },
+    { snapshot: "absent", live: "none" },
+    { snapshot: undefined, live: "none" },
+    { snapshot: "absent", live: "current" },
+    { snapshot: "absent", live: "unknown" },
+    { snapshot: "absent", live: "outdated" },
+    { snapshot: "absent", live: "incomplete" },
+    { snapshot: "absent", live: "read-error" },
+  ] as const)("checks snapshot $snapshot and live $live before publishing confinement", async ({ snapshot, live }) => {
     await resetAsrtSandbox();
     const original = process.platform;
-    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const originalResources = getHostResources();
+    const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath")!;
+    const root = mkdtempSync(join(tmpdir(), "ave-profile-grant-"));
+    const resourcePath = join(root, "resources");
+    const scripts = join(resourcePath, "skill-scripts");
+    const executable = join(root, "host-runtime.exe");
+    const profile = join(root, "profile");
+    mkdirSync(scripts, { recursive: true });
+    mkdirSync(profile);
+    writeFileSync(executable, "runtime fixture");
+    vi.stubEnv("AVE_ASRT_TEST_HOME", profile);
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("ProgramData", join(root, "program-data"));
+    vi.stubEnv("XDG_CONFIG_HOME", join(root, "config"));
+    vi.stubEnv("GIT_CONFIG_GLOBAL", join(root, ".gitconfig"));
+    vi.stubEnv("GIT_CONFIG_SYSTEM", join(root, "gitconfig-system"));
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    vi.spyOn(policyHome, "getPolicyHome").mockReturnValue(profile);
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
+    Object.defineProperty(process, "execPath", { ...originalExecPath, value: executable });
+    configureHostResources({ resourcePath, isPackaged: true });
+    const runtime = await import("@anthropic-ai/sandbox-runtime");
+    const { SandboxManager } = runtime;
     const integrity = await import("../srt-win-integrity.js");
     const initialized = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
     const reset = vi.spyOn(SandboxManager, "reset").mockResolvedValue(undefined);
-    const read = vi.spyOn(SandboxManager, "getWindowsProfileRead").mockReturnValue(state);
-    vi.spyOn(integrity, "prepareSrtWinExecutable").mockImplementation(path => path);
+    const read = vi.spyOn(SandboxManager, "getWindowsProfileRead").mockImplementation(() => {
+      expect(isAsrtSandboxActive()).toBe(false);
+      return snapshot;
+    });
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
+    let finishRead!: () => void;
+    let reachedRead!: () => void;
+    const readStarted = new Promise<void>(resolve => { reachedRead = resolve; });
+    const readReleased = new Promise<void>(resolve => { finishRead = resolve; });
+    const readError = new Error("Profile status could not be read");
+    const status = vi.spyOn(runtime, "getWindowsProfileReadStatusAsync").mockClear().mockImplementation(async () => {
+      reachedRead();
+      await readReleased;
+      if (live === "read-error") throw readError;
+      return { state: live, capabilities: [], notGranted: [], selfClosed: [], unverifiable: [], unprotected: [],
+        staleAllow: [], replacedFiles: [], extraExclusions: [], exclusions: [], ungrantedOnly: [],
+        counts: { containers: 0, granted: 0, files: 0, denied: 0 }, env: {} };
+    });
+    vi.spyOn(integrity, "prepareSrtWinExecutable").mockReturnValue(executable);
     setProcessPlatform("win32");
     try {
       const result = initializeAsrtSandbox({ allowedDomains: [] });
-      if (state === "absent") {
+      if (snapshot === "absent") {
+        await Promise.race([readStarted, result]);
+        expect(isAsrtSandboxActive()).toBe(false);
+        await expect(wrapToolCommand("echo blocked", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/);
+        expect(wrap).not.toHaveBeenCalled();
+        expect(initialized.mock.invocationCallOrder[0]).toBeLessThan(status.mock.invocationCallOrder[0]);
+        const helperPath = initialized.mock.calls[0][0].windows?.srtWin?.path;
+        expect(helperPath).toBeTypeOf("string");
+        expect(status).toHaveBeenCalledWith({ srtWin: expect.objectContaining({ exe: helperPath }) });
+        finishRead();
+      }
+      if (snapshot === "absent" && live === "none") {
         await result;
         expect(isAsrtSandboxActive()).toBe(true);
+        expect(reset).not.toHaveBeenCalled();
       } else {
-        await expect(result).rejects.toThrow(state === "granted" ? /srt-win profile forget/ : /did not report/);
-        if (state === "granted") await expect(result).rejects.toMatchObject({ name: "WindowsProfileReadError", code: "srt-win-profile-read-granted" });
+        await expect(result).rejects.toMatchObject({ name: "WindowsProfileReadError", code: "srt-win-profile-read-granted",
+          ...(live === "read-error" ? { cause: readError } : {}) });
         expect(isAsrtSandboxActive()).toBe(false);
+        await expect(wrapToolCommand("echo blocked", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/);
+        expect(wrap).not.toHaveBeenCalled();
         expect(reset).toHaveBeenCalledOnce();
       }
       expect(initialized).toHaveBeenCalledOnce();
       expect(read).toHaveBeenCalledOnce();
+      expect(status).toHaveBeenCalledTimes(snapshot === "absent" ? 1 : 0);
       expect(initialized.mock.invocationCallOrder[0]).toBeLessThan(read.mock.invocationCallOrder[0]);
+      const denyWrite = initialized.mock.calls[0][0].filesystem.denyWrite;
+      expect(denyWrite).toContain(scripts);
+      expect(denyWrite).toContain(executable);
+      expect(denyWrite).not.toContain(resolve("dist/skill-scripts"));
+      expect(denyWrite).not.toContain(originalExecPath.value);
     } finally {
+      finishRead();
       await resetAsrtSandbox();
       setProcessPlatform(original);
+      Object.defineProperty(process, "execPath", originalExecPath);
+      configureHostResources(originalResources);
+      vi.unstubAllEnvs();
       vi.restoreAllMocks();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
