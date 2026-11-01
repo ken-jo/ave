@@ -127,6 +127,7 @@
     "@ai-sdk/otel": "^1.0.155",
     "@anthropic-ai/sandbox-runtime": "0.0.80",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
+    "@microsoft/mxc-sdk": "1.0.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -281,7 +282,10 @@
       "!node_modules/**/*.{map,ts,tsx,mts,cts,md,markdown}",
       "!node_modules/**/tsconfig*.json",
       "!resources/uv{,/**/*}",
-      "!resources/uv-runtime{,/**/*}"
+      "!resources/uv-runtime{,/**/*}",
+      "!node_modules/@microsoft/mxc-sdk/bin/**/dotnet{,/**/*}",
+      "!node_modules/@microsoft/mxc-sdk/bin/**/*.{exe,so,dylib}",
+      "!node_modules/@microsoft/mxc-sdk/bin/**/{lxc-exec,unix-test-proxy}"
     ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/sandbox-runtime/vendor/**",
@@ -291,7 +295,11 @@
       "node_modules/sharp/**",
       "node_modules/@napi-rs/**",
       "node_modules/pdfjs-dist/{standard_fonts,cmaps,iccs,wasm}/**",
-      "node_modules/@img/**"
+      "node_modules/@img/**",
+      "node_modules/@microsoft/mxc-sdk/**",
+      "node_modules/koffi/**",
+      "node_modules/semver/**",
+      "node_modules/@koromix/koffi-win32-*/**"
     ],
     "directories": {
       "output": "release"

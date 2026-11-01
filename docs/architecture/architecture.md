@@ -2478,25 +2478,28 @@ terminate the wrapped worker.
 
 By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
-BaseContainer where the host offers one. Ave ships only the MIT-licensed
+BaseContainer where the host offers one. The shell path uses the MIT-licensed
 `wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.1 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
 npm tarball's sha512, each launcher's sha256). Ave does not load the SDK's
-JavaScript yet; loading it (its Windows stdio path needs Node 24.21+ or
-26.8+, which the bundled Electron Node now meets) is deferred to the change
-that runs extensions in MXC. Each
+JavaScript yet. The SDK JS, FFI addon and per-architecture DLL payloads are
+staged under `app.asar.unpacked` with installed-byte pins for the extension
+supervisor work in [the extension design](../design/windows-extensions-mxc.md#3-sdk-js-launcher-packaging-and-integrity).
+The native bootstrap and crash containment remain prerequisites to SDK loading. Each
 command spawns `wxc-exec.exe --config-base64 <request>`
 from the launcher's own directory (`mxc-windows.ts`, `mxc-shell-launch.ts`);
 no administrator rights or UAC prompt are needed per run or at install.
 
-The package's other binaries are not shipped because Ave never takes their
+The SDK payload includes pinned `mxc_ffi.dll` and `wslcsdk.dll`; packaged native
+loading must establish the dynamic dependency inventory on each architecture.
+The remaining backend executables are excluded because Ave never takes their
 paths: `winhttp-proxy-shim.exe` is the elevated, UAC-raising proxy fallback of
 the AppContainer tier, which MXC refuses for `runtimeConfig.networkProxy` with
 egress deny + ingress allow (the only shape Ave sends; boot also requires the
 dry run to select `base-container`); `plm.exe` is the elevated tracing helper
-behind `telemetry`, which Ave never enables; `wslcsdk.dll` and the daemon and
-host-prep binaries serve the WSL-container, Windows Sandbox, isolation-session
+behind `telemetry`, which Ave never enables; the daemon and host-prep binaries
+serve the WSL-container, Windows Sandbox, isolation-session
 and AppContainer+DACL backends. Every PR 9 measurement ran the launcher alone
 in its directory.
 

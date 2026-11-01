@@ -299,6 +299,10 @@ function assertBetterSqlite3Binary(context) {
 }
 
 module.exports = async function afterPack(context) {
+  if (context.electronPlatformName === "win32") {
+    const { prunePackagedMxcSdk } = await import("./lib/mxc-sdk-packaging.mjs");
+    prunePackagedMxcSdk(electronResourcesDir(context), ARCH_DIR_BY_ENUM[context.arch]);
+  }
   assertBundledUvResource(context);
   assertSandboxVendorBinaries(context);
   assertNodePtyBinary(context);
