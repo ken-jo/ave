@@ -1,4 +1,4 @@
-// Model resource access shares client capability, listed-URI, fetch, and size gates with user mentions (docs/development/mcp-resources-policy.md).
+// Model resource access shares client capability, listed-URI, fetch, and size gates with user mentions (docs/development/README.md#mcp-resource-consumption-policy).
 // Server content is untrusted tool data, never trusted overlay or turn provenance; builtin-name collisions roll back registration.
 import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
 import { createLogger } from "../lib/logger.js";

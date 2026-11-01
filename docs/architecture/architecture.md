@@ -63,9 +63,9 @@ retains ownership of request projection and attachment limits.
 
 Local document previews use a bounded and killable child. Admission covers reading
 and parsing; separate startup and parse deadlines cover the child lifecycle.
-The [table preview contract](table-document-preview.md) owns request replacement,
+The [table preview contract](document-previews.md#table-documents) owns request replacement,
 container checks, expansion refusals and bounded display windows.
-The [page preview contract](page-document-preview.md) adds presentation outlines
+The [page preview contract](document-previews.md#page-documents) adds presentation outlines
 and rendered PDF pages through that same lifecycle.
 The [agent document tools](agent-document-tools.md) reuse that parser with bounded
 model-context selections and policy-checked, session-bound panel requests.

@@ -1,4 +1,4 @@
-// Plugin skill loading uses the same turn authority as plugin tools (docs/development/skill-loading-policy.md).
+// Plugin skill loading uses the same turn authority as plugin tools (docs/development/README.md#skill-loading-policy).
 import { describe, it, expect, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";

@@ -2,7 +2,7 @@
 
 > Status: current Host contract. Rooted in
 > `docs/architecture/architecture.md` §4.5/§6.4 and
-> `docs/development/tool-loading-policy.md`.
+> `docs/development/README.md#tool-loading-policy`.
 
 ## Contract
 
