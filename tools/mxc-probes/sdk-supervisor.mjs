@@ -1,12 +1,14 @@
 import { spawn as spawnHost } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, copyFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, readFile, realpath, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import http from "node:http";
 import path from "node:path";
 import { release } from "node:os";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { captureChild, safeEnvironment, spawnWithoutTelemetry, windowsQuote } from "./probe-common.mjs";
+
+import { finishProcess, pinRuntimeProcesses, ProcessIdentityError } from "./process-lifecycle.mjs";
 
 const { name, options, budgets, temp } = JSON.parse(process.env.MXC_PROBE_INPUT);
 const resources = [];
@@ -39,7 +41,19 @@ async function initialize() {
   const session = [0];
   if (!kernel.func("bool __stdcall ProcessIdToSessionId(uint32_t, _Out_ uint32_t *)")(process.pid, session)) throw new Error("Cannot identify session");
   if (session[0] === 0) throw new Error("session-0: run from an interactive desktop session");
+  const getTimes = kernel.func("bool __stdcall GetProcessTimes(void *, _Out_ uint64_t *, _Out_ uint64_t *, _Out_ uint64_t *, _Out_ uint64_t *)");
+  const getImage = kernel.func("bool __stdcall QueryFullProcessImageNameW(void *, uint32_t, void *, _Inout_ uint32_t *)");
+  const getTime = kernel.func("void __stdcall GetSystemTimePreciseAsFileTime(_Out_ uint64_t *)");
   native = {
+    now() { const value = [0n]; getTime(value); return BigInt(value[0]); },
+    identity(handle) {
+      const created = [0n], exited = [0n], kernelTime = [0n], userTime = [0n];
+      const image = Buffer.alloc(32768 * 2), length = [32768];
+      if (!getTimes(handle, created, exited, kernelTime, userTime) || !getImage(handle, 0, image, length)) {
+        throw new Error("Cannot query fixture process identity");
+      }
+      return { createdAt: BigInt(created[0]), imagePath: image.toString("utf16le", 0, length[0] * 2) };
+    },
     open: kernel.func("void * __stdcall OpenProcess(uint32_t, bool, uint32_t)"),
     wait: kernel.func("uint32_t __stdcall WaitForSingleObject(void *, uint32_t)"),
     terminate: kernel.func("bool __stdcall TerminateProcess(void *, uint32_t)"),
@@ -104,12 +118,7 @@ async function firstJson(record) {
 }
 
 async function finish(record) {
-  record.stdin.end();
-  const result = await bounded(record.completion);
-  if (result.error) throw new Error(result.error);
-  record.closed = true;
-  record.processHandle.dispose(); record.disposed = true;
-  return { ...result.value, stdout: record.stdout, stderr: record.stderr };
+  return finishProcess(record, bounded);
 }
 
 async function one(executable, args, uiDisabled, extraReads = []) {
@@ -122,11 +131,24 @@ async function one(executable, args, uiDisabled, extraReads = []) {
 const payloadArgs = (mode) => [path.join(temp, "child-payload.mjs"), mode, String(ioBudget)];
 
 async function lifetime() {
+  const runtimePath = await realpath(options.runtime);
+  const launchedAfter = native.now();
   const child = await launch(request(options.runtime, payloadArgs("lifetime"), false, [], true));
   const ready = await firstJson(child);
   if (!Number.isInteger(ready.pid) || !Number.isInteger(ready.grandchildPid)) throw new Error("Missing child PIDs");
-  const handles = [ready.pid, ready.grandchildPid].map((pid) => native.open(0x00100000 | 0x0001, false, pid));
-  if (handles.some((handle) => !handle)) { for (const handle of handles) if (handle) native.close(handle); throw new Error("Cannot pin child process identity"); }
+  const handles = await pinRuntimeProcesses(native, [ready.pid, ready.grandchildPid], launchedAfter, runtimePath, async () => {
+    const nonce = randomUUID();
+    child.stdin.write(JSON.stringify({ nonce }) + "\n");
+    const until = Date.now() + ioBudget;
+    while (Date.now() < until) {
+      const confirmed = child.stdout.split(/\r?\n/).filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line)).some((frame) => frame.marker === "identity-confirmed"
+          && frame.nonce === nonce && frame.pid === ready.pid && frame.grandchildPid === ready.grandchildPid);
+      if (confirmed) return;
+      await pause(pollMs);
+    }
+    throw new Error("Fixture liveness challenge failed");
+  });
   try {
     if (handles.some((handle) => native.wait(handle, 0) !== 258)) throw new Error("Child exited before dispose");
     // Keep stdin open. Observe kernel process handles, not the disposed wait rejection, for death.
@@ -152,7 +174,7 @@ async function kernelObjects() {
   await copyFile(source, path.join(temp, "kernel-objects.cs"));
   const powershell = path.join(process.env.SYSTEMROOT, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const script = path.join(temp, "compile.ps1");
-  await writeFile(script, 'param($Source,$Output)\n$ErrorActionPreference="Stop"\nAdd-Type -Path $Source -OutputAssembly $Output -OutputType ConsoleApplication\n');
+  await writeFile(script, 'param($Source,$Output)\n$ErrorActionPreference="Stop"\nAdd-Type -Path $Source -OutputAssembly $Output -OutputType ConsoleApplication -ReferencedAssemblies System.dll,System.Core.dll\n');
   const compile = await captureChild(spawnHost(powershell, ["-NoProfile", "-NonInteractive", "-File", script,
     path.join(temp, "kernel-objects.cs"), executable], { cwd: temp, env: safeEnvironment(temp), stdio: ["ignore", "pipe", "pipe"] }), deadline);
   if (compile.code !== 0) throw new Error(`Fixture compilation failed: ${compile.stderr}`);
@@ -204,7 +226,7 @@ try {
     verdict = "inconclusive";
   } else throw new Error("Unknown probe");
   if (details.some((detail) => detail.error || detail.unavailable)) verdict = "inconclusive";
-} catch (error) { verdict = error.message.startsWith("session-0:") ? "unavailable" : "error"; details.push({ error: error.message }); }
+} catch (error) { verdict = error instanceof ProcessIdentityError ? "inconclusive" : error.message.startsWith("session-0:") ? "unavailable" : "error"; details.push({ error: error.message }); }
 finally {
   for (const resource of resources) {
     try {

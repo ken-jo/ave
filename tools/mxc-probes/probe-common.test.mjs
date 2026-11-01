@@ -27,6 +27,8 @@ test("child environment contains no inherited SDK override, auth token or defaul
   assert.equal(env.ELECTRON_RUN_AS_NODE, "1");
   assert.ok(!Object.hasOwn(env, "MXC_FFI_DIR"));
   assert.ok(!Object.hasOwn(env, "OPENAI_API_KEY"));
+  assert.ok(!Object.hasOwn(env, "SystemRoot"));
+  assert.ok(Object.keys(env).filter((key) => key.toLowerCase() === "systemroot").length <= 1);
 });
 
 test("command quoting preserves trailing separators and embedded quotes", () => {

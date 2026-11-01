@@ -31,7 +31,7 @@ public class KernelObjects {
         IntPtr attributes, ref PortAttributes portAttributes, IntPtr context, IntPtr request, IntPtr messageAttributes, byte accept);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     static PortAttributes Attributes() {
-        return new PortAttributes { SecurityQos = new Qos { Length = (uint)Marshal.SizeOf(typeof(Qos)), Level = 2 }, MaxMessageLength = (UIntPtr)512 };
+        return new PortAttributes { SecurityQos = new Qos { Length = (uint)Marshal.SizeOf(typeof(Qos)), Level = 1 }, MaxMessageLength = (UIntPtr)512 };
     }
     static UnicodeString Name(string name) {
         return new UnicodeString { Length = (ushort)(name.Length * 2), MaximumLength = (ushort)((name.Length + 1) * 2), Buffer = Marshal.StringToHGlobalUni(name) };
@@ -57,7 +57,8 @@ public class KernelObjects {
             while (true) {
                 UIntPtr size = (UIntPtr)1024; long timeout = -waitTicks;
                 int status = NtAlpcSendWaitReceivePort(port, 0, IntPtr.Zero, IntPtr.Zero, buffer, ref size, IntPtr.Zero, ref timeout);
-                if (status != 0) continue;
+                if (status == 0x102) continue; // The native wait already consumed its timeout.
+                if (status != 0) break;
                 if ((Marshal.ReadInt16(buffer, 4) & 0xFF) != 10) continue;
                 PortAttributes attributes = Attributes(); IntPtr connection;
                 int accepted = NtAlpcAcceptConnectPort(out connection, port, 0, IntPtr.Zero, ref attributes, IntPtr.Zero, buffer, IntPtr.Zero, 1);
@@ -91,7 +92,7 @@ public class KernelObjects {
                 try { Console.ReadLine(); } finally { if (port != IntPtr.Zero) CloseHandle(port); lock (Connections) foreach (IntPtr connection in Connections) CloseHandle(connection); }
             }
         } else if (mode == "read") {
-            string pipeResult = Attempt(() => { using (var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)) { pipe.Connect(waitMs); return pipe.IsConnected; } });
+            string pipeResult = Attempt(() => { using (var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None, TokenImpersonationLevel.Identification)) { pipe.Connect(waitMs); return pipe.IsConnected; } });
             string sectionResult = Attempt(() => { using (var section = MemoryMappedFile.OpenExisting(sectionName, MemoryMappedFileRights.Read)) { return section != null; } });
             string registryResult = Attempt(() => { using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion", false)) { return key != null && key.GetValue("CurrentBuildNumber") != null; } });
             Console.WriteLine("{\"pipe\":\"" + Escape(pipeResult) + "\",\"section\":\"" + Escape(sectionResult)

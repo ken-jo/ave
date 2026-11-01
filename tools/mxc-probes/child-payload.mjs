@@ -1,4 +1,5 @@
 import net from "node:net";
+import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 const [mode, budgetText] = process.argv.slice(2);
 const budget = Number(budgetText);
@@ -26,12 +27,23 @@ if (mode === "start") {
   const timer = setInterval(() => {}, budget);
   if (mode === "lifetime") {
     const child = spawn(process.execPath, [process.argv[1], "grandchild", budgetText], {
-      env: process.env, stdio: ["ignore", "ignore", "ignore"], windowsHide: true,
+      env: process.env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true,
     });
     child.once("error", (error) => { clearInterval(timer); emit({ error: error.message }); process.exitCode = 2; });
     child.once("spawn", () => emit({ marker: "long-lived", pid: process.pid, grandchildPid: child.pid }));
+    child.stdin.on("error", () => {});
+    const parentInput = createInterface({ input: process.stdin });
+    parentInput.on("line", (line) => child.stdin.write(line + "\n"));
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      const frame = JSON.parse(line);
+      emit({ ...frame, pid: process.pid, grandchildPid: frame.pid });
+    });
     // Deliberately keep running after input EOF: disposal must enforce the lifetime.
-    process.stdin.resume();
+  } else {
+    createInterface({ input: process.stdin }).on("line", (line) => {
+      const { nonce } = JSON.parse(line);
+      emit({ marker: "identity-confirmed", nonce, pid: process.pid });
+    });
   }
 } else {
   throw new Error("Unknown child measurement");

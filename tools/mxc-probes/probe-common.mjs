@@ -45,11 +45,11 @@ export function isWithin(target, root) {
 
 export function safeEnvironment(temp) {
   const env = {};
-  for (const key of ["SystemRoot", "WINDIR", "COMSPEC", "PATH", "PATHEXT"]) {
+  for (const key of ["SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT"]) {
     const actual = Object.keys(process.env).find((candidate) => candidate.toLowerCase() === key.toLowerCase());
     if (actual) env[key] = process.env[actual];
   }
-  return { ...env, SYSTEMROOT: env.SystemRoot, HOME: temp, USERPROFILE: temp, LOCALAPPDATA: temp,
+  return { ...env, HOME: temp, USERPROFILE: temp, LOCALAPPDATA: temp,
     APPDATA: temp, TEMP: temp, TMP: temp, TMPDIR: temp, ELECTRON_RUN_AS_NODE: "1" };
 }
 
