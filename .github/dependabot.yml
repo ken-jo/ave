@@ -8,6 +8,14 @@ updates:
     groups:
       bun:
         patterns: ["*"]
+    ignore:
+      # Owner decision 2026-11-01: Windows extensions move to MXC; hosts
+      # without MXC keep srt-win at the 0.0.80 grant model. 0.0.81 replaces
+      # ordinary-token grants with persistent write roots (see the design on
+      # deps/sandbox-runtime-0.0.81). Remove when that fallback is retired or
+      # re-designed.
+      - dependency-name: "@anthropic-ai/sandbox-runtime"
+        versions: [">= 0.0.81"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
