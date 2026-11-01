@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +30,11 @@ describe("missing deny parents", () => {
   it("keeps a missing leaf unchanged", () => {
     const deny = win32.join(root, ".vscode");
     expect(rankMxcFilesystem(policy([deny]), exists).denied).toEqual([deny]);
+  });
+
+  it("names a directory-form deny without its trailing separator", () => {
+    const deny = win32.join(root, "routine");
+    expect(rankMxcFilesystem(policy([`${deny}\\`]), () => true).denied).toEqual([deny]);
   });
 
   it("keeps a present deny unchanged", () => {
@@ -67,10 +72,13 @@ describe.skipIf(process.platform !== "win32")("native missing deny parents", () 
     try {
       expect(existsSync(join(directory, ".claude"))).toBe(false);
       expect(existsSync(join(directory, ".idea"))).toBe(false);
-      for (const [label, denies] of [["none", []], ["leaf", [join(directory, ".vscode")]],
+      writeFileSync(join(directory, "routine"), "");
+      for (const [label, denies] of [["none", []], ["leaf", [join(directory, ".vscode")]], ["file in directory form", [`${join(directory, "routine")}\\`]],
         ["nested", [join(directory, "a", "b", ".ssh")]], ["workspace", workspaceDenies]] as const) {
-        const grants = rankMxcFilesystem({ allowWrite: [directory], allowRead: [], denyRead: [],
-          denyWrite: denies, protectedFloor: label === "workspace" ? floor : [] }, existsSync);
+        // A floor row in directory form over a placeholder file, as `~/.ave/routine` can be.
+        const floorRow = label === "file in directory form";
+        const grants = rankMxcFilesystem({ allowWrite: [directory], allowRead: [], denyRead: floorRow ? denies : [],
+          denyWrite: floorRow ? [] : denies, protectedFloor: label === "workspace" ? floor : [] }, existsSync);
         const request = buildMxcShellRequest({ commandLine: powerShellMxcCommandLine(process.env.SystemRoot!, "exit 0"), cwd: directory, grants,
           env: { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory }, proxyUrl: "http://127.0.0.1:9", timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs });
         const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolveResult, reject) => {

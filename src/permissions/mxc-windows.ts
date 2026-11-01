@@ -263,6 +263,12 @@ function strictlyUnder(child: string, parent: string): boolean {
   return foldPath(child) !== foldPath(parent) && isWindowsPathAtOrUnder(child, parent);
 }
 
+// A floor row names a directory with a trailing separator; MXC then opens the path as one and refuses a file there (ERROR_DIRECTORY).
+function withoutTrailingSeparator(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  return trimmed.length === 0 || trimmed.endsWith(":") ? path : trimmed;
+}
+
 function dedupe(paths: readonly string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -321,10 +327,10 @@ export function rankMxcFilesystem(policy: ShellFilesystemPolicy, exists: (path: 
     return firstMissing;
   });
   return {
-    readwrite,
-    readonly: dedupe(readonlyOut).filter((path) => !readwrite.some((grant) => foldPath(grant) === foldPath(path))),
+    readwrite: readwrite.map(withoutTrailingSeparator),
+    readonly: dedupe(readonlyOut).filter((path) => !readwrite.some((grant) => foldPath(grant) === foldPath(path))).map(withoutTrailingSeparator),
     denied: dedupe(raised).filter((path, index, paths) =>
-      !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent))),
+      !paths.some((parent, parentIndex) => parentIndex !== index && isWindowsPathAtOrUnder(path, parent))).map(withoutTrailingSeparator),
   };
 }
 
