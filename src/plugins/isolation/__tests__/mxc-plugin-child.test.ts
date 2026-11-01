@@ -52,8 +52,10 @@ function fixture() {
   spawn.mockReset().mockImplementation(async (spec: MxcConfinedChildSpec) => {
     try {
       await spec.probe(admittedRequest(spec), new AbortController().signal);
-    } catch {
-      throw new MxcCapabilityUnavailableError("Native admission readiness failed: request-rejected");
+    } catch (error) {
+      // As readiness settlement does: only a capability failure becomes not-ready; anything else propagates.
+      if (error instanceof MxcCapabilityUnavailableError) throw new MxcCapabilityUnavailableError("Native admission readiness failed: probe-failed");
+      throw error;
     }
     return { process: owned, confinement: "windows-mxc", release: holderRelease };
   });
@@ -146,7 +148,8 @@ describe("native plugin stream ownership", () => {
       command: intent.command, args: intent.args, cwd: intent.cwd, home: launch.home, temp: launch.temp,
       filesystemOwnership: launch.filesystemOwnership, label: "plugin-child:native-probe",
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: "native-probe" },
-      allowRead: ["C:\\Ave\\plugins\\Kit", "C:\\Ave", "C:\\Ave\\app"],
+      // The entry's directory is under the runtime's, so it adds no grant of its own.
+      allowRead: ["C:\\Ave\\plugins\\Kit", "C:\\Ave"],
       allowWrite: ["C:\\Ave\\plugins\\Kit\\data", staging],
       baseEnv: intent.baseEnv, signal: launch.signal,
     });
@@ -160,6 +163,21 @@ describe("native plugin stream ownership", () => {
     expect((spawn.mock.calls[1]![0] as MxcConfinedChildSpec).holder).not.toBe(spec.holder);
     child.link.terminate("done");
     await child.waitForExit();
+  });
+
+  it.each([
+    ["inside a packaged archive", "C:\\Runtime\\ave.exe", "C:\\Program Files\\Ave\\resources\\app.asar\\dist\\plugin-child-main.js",
+      ["C:\\Ave\\plugins\\Kit", "C:\\Runtime"]],
+    ["inside an upper-case archive name", "C:\\Runtime\\ave.exe", "C:\\Ave\\resources\\APP.ASAR\\plugin-child-main.js",
+      ["C:\\Ave\\plugins\\Kit", "C:\\Runtime"]],
+    ["covered by an envelope read", "C:\\Runtime\\ave.exe", "C:\\Ave\\plugins\\Kit\\child\\entry.js",
+      ["C:\\Ave\\plugins\\Kit", "C:\\Runtime"]],
+    ["outside every other read root (granted)", "C:\\Runtime\\ave.exe", "D:\\checkout\\dist\\plugin-child-main.js",
+      ["C:\\Ave\\plugins\\Kit", "C:\\Runtime", "D:\\checkout\\dist"]],
+  ])("grants the entry's directory only when needed: %s", async (_label, command, entry, expected) => {
+    const { launch, intent } = fixture();
+    await spawnMxcPluginChild(launch, { ...intent, command, args: [entry] });
+    expect((spawn.mock.calls[0]![0] as MxcConfinedChildSpec).allowRead).toEqual(expected);
   });
 
   it("revocation fails row 2's validity check", async () => {

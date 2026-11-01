@@ -107,7 +107,8 @@ export function nativePluginChildStopBudgetMs(): number {
 }
 
 /** Constructing a native plugin child: native startup, the construct request (import plus factory), and, after a
- * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout. */
+ * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
+ * Row-2 admission also runs inside this budget: the egress lease and the readiness probe with its `mxcExtensionReadinessMs` (30 s) deadline. */
 export function nativePluginChildFactoryBudgetMs(): number {
   return TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.pluginImportMs
     + TOOL_TIMEOUT_POLICY.pluginFactoryMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;

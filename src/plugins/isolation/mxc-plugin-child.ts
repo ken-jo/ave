@@ -3,6 +3,7 @@ import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
 import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
+import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
 import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
@@ -132,6 +133,17 @@ export function assertLaunchMatchesIntent(request: ContainerRequest, intent: Pic
   }
 }
 
+/** The envelope reads, the runtime's directory, and the entry's directory unless another read root already covers it or
+ * it lies inside an archive: a packaged entry sits in `app.asar`, a file, which the runtime's own directory covers. */
+function pluginChildReadRoots(envelopeReads: readonly string[], command: string, entry: string | undefined): string[] {
+  const roots = [...new Set([...envelopeReads, winPath.dirname(command)])];
+  if (entry === undefined) return roots;
+  const entryDirectory = winPath.dirname(entry);
+  const inArchive = entryDirectory.split(/[\\/]/u).some((segment) => segment.toLowerCase().endsWith(".asar"));
+  if (inArchive || roots.some((root) => isWindowsPathAtOrUnder(entryDirectory, root))) return roots;
+  return [...roots, entryDirectory];
+}
+
 /** Admission is row 2's (`spawnMxcConfinedChild`): start guard, plan readiness, filesystem ranking, sibling-root and
  * executable nesting checks, HOME/temp placement, the single-use receipt and the executable re-measure in `beforeSpawn`.
  * This adds the plugin rules on top: the staging layout, the intent check on the measured request, the registration
@@ -144,13 +156,12 @@ export async function spawnMxcPluginChild(
   onTerminating?: () => void,
 ): Promise<MxcPluginChild> {
   let admitted: MxcConfinedChildSpawn;
-  let mismatch: unknown;
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
     const staging = assertMxcHolderStaging({ aveHome: aveHome(), home: launch.home, temp: launch.temp });
     const args = Object.freeze([...intent.args]);
-    const runtimeReads = [winPath.dirname(intent.command), ...args.slice(0, 1).map((entry) => winPath.dirname(entry))];
+    const allowRead = pluginChildReadRoots(intent.envelope.read, intent.command, args[0]);
     admitted = await spawnMxcConfinedChild({
       command: intent.command,
       args,
@@ -162,7 +173,7 @@ export async function spawnMxcPluginChild(
       holder: {},
       label: `plugin-child:${intent.pluginId}`,
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: intent.pluginId },
-      allowRead: [...new Set([...intent.envelope.read, ...runtimeReads])],
+      allowRead,
       allowWrite: [...intent.envelope.write, staging],
       floorPierces: intent.floorPierces,
       baseEnv: intent.baseEnv,
@@ -171,15 +182,11 @@ export async function spawnMxcPluginChild(
         launch.assertCurrent();
         if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
       },
-      // Readiness is probed on a snapshot of the exact request admission later consumes, so this is the
-      // request that runs. Readiness settlement reports a probe failure as not-ready; the mismatch is rethrown below.
+      // Readiness is probed on a snapshot of the exact request admission later consumes, so this is the request
+      // that runs. Readiness settlement maps only `MxcCapabilityUnavailableError` to not-ready; this contract error
+      // propagates out of admission unchanged.
       probe: async (request, signal) => {
-        try {
-          assertLaunchMatchesIntent(request, intent);
-        } catch (error) {
-          mismatch = error;
-          throw error;
-        }
+        assertLaunchMatchesIntent(request, intent);
         return launch.probe(request, signal);
       },
     });
@@ -187,7 +194,7 @@ export async function spawnMxcPluginChild(
     // Unverified startup cleanup keeps the planner's state: the process may still exist.
     if (error instanceof MxcProcessCleanupError) throw new PluginChildTerminationUnverifiedError(intent.pluginId, { cause: error });
     await launch.release();
-    throw mismatch ?? error;
+    throw error;
   }
   const child = attachMxcPluginChild(admitted.process, {
     signal: launch.signal,
