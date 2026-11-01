@@ -234,8 +234,8 @@ export function SubscriptionAuthControls({
   const signedOutUnverified = runtime === "unverified" && connection === "signed-out";
   const hasRuntimeSelection = runtime !== "not-configured" && runtime !== "checking";
   const needsRuntimeSelection = runtime === "not-configured";
-  const needsVerification = (runtime === "unverified" && !signedOutUnverified)
-    || (runtime === "ready" && connected && !chatReady);
+  // A connected, ready runtime is proven by its first chat turn (main re-proves the in-memory proof each launch), so it asks for nothing here.
+  const needsVerification = runtime === "unverified" && !signedOutUnverified;
   const isBusy = provider.busyAction !== null && provider.busyAction !== undefined;
   const disabled = provider.disabled === true || isBusy || provider.refreshPending === true;
   const safeDeviceCode = isSafeDeviceCode(status?.pendingDeviceCode)

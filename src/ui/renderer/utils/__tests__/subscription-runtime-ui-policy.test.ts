@@ -54,3 +54,25 @@ describe("selectSubscriptionRuntimeUiPolicy for ChatGPT plan usage", () => {
     expect(policy.imagesEnabled).toBe(true);
   });
 });
+
+describe("selectSubscriptionRuntimeUiPolicy after a restart", () => {
+  const UNPROVEN: SubscriptionRuntimeCapabilities = { ...READY, chat: false, images: false, files: false };
+  const policy = (provableOnUse: boolean) => selectSubscriptionRuntimeUiPolicy({
+    activeSubscriptionRuntime: { kind: "subscription", provider: "codex" },
+    settingsLoaded: true,
+    capabilities: UNPROVEN,
+    provableOnUse,
+  });
+
+  it("lets a connected, ready runtime send so its first turn re-proves it, without unproven attachments", () => {
+    const sendable = policy(true);
+    expect(sendable.chatReady).toBe(true);
+    expect(sendable.chatUnavailable).toBe(false);
+    expect(sendable.imagesEnabled).toBe(false);
+    expect(sendable.filesEnabled).toBe(false);
+  });
+
+  it("keeps chat unavailable when the runtime is not connected and ready", () => {
+    expect(policy(false).chatUnavailable).toBe(true);
+  });
+});
