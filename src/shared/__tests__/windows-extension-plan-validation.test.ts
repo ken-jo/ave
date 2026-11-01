@@ -4,12 +4,12 @@ import { planWindowsExtensionHolder } from "../../permissions/mxc-extension-read
 
 function ready() {
   return planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
-    fallback: { version: "0.0.80", ready: true }, holderOrAncestorAdmitted: false });
+    fallback: { version: "0.0.80", ready: true } });
 }
 
 describe("serialized extension backend plan", () => {
   it("accepts every produced state and fallback reason", () => {
-    const input = { requested: true, fallback: { version: "0.0.80", ready: true }, holderOrAncestorAdmitted: false };
+    const input = { requested: true, fallback: { version: "0.0.80", ready: true } };
     for (const plan of [
       ready(),
       planWindowsExtensionHolder({ ...input, requested: false, mxc: { state: "available" } }),
@@ -18,7 +18,7 @@ describe("serialized extension backend plan", () => {
       planWindowsExtensionHolder({ ...input, mxc: { state: "unavailable", reason: "readiness-deadline" } }),
       planWindowsExtensionHolder({ ...input, fallback: { version: "0.0.80", ready: false }, mxc: { state: "unavailable", reason: "readiness-deadline" } }),
       planWindowsExtensionHolder({ ...input, fallback: { version: "0.0.80", ready: false }, mxc: { state: "unavailable", reason: "runtime-start-failed" } }),
-      planWindowsExtensionHolder({ ...input, holderOrAncestorAdmitted: true, mxc: { state: "unavailable", reason: "runtime-start-failed" } }),
+      planWindowsExtensionHolder({ ...input, admittedAncestorBackend: "srt-win", mxc: { state: "unavailable", reason: "runtime-start-failed" } }),
     ]) expect(() => assertSandboxWindowsExtensionPlan(JSON.parse(JSON.stringify(plan)))).not.toThrow();
   });
 

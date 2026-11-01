@@ -19,17 +19,24 @@ $env:ELECTRON_RUN_AS_NODE = '1'
 ```
 
 Replace the two synthetic paths with verified absolute paths. Record their
-SHA-256 hashes, the OS build, session and JSON output. A non-loopback host IPv4
-address is required for a direct-egress fixture. Both loopback and non-loopback
-host positive controls must reach the unrelated fixture server before native
-isolation is attempted.
+SHA-256 hashes, the OS build, session and JSON output. Every fixture server
+listens on `127.0.0.1` only; the probe opens no wildcard or non-loopback
+listener, so it cannot raise a Windows Defender Firewall prompt or leave an
+inbound rule for the runtime executable. A non-loopback host IPv4 address is
+still required as the direct-egress target. Before native isolation is attempted,
+two host positive controls must hold: loopback reaches the unrelated fixture
+server, and a host connection to the same port on the non-loopback address is
+actively refused (`ECONNREFUSED`, since nothing listens there). That proves the
+address is routed and answered by the host stack, so the container's
+EACCES/EPERM on the same target is a policy refusal rather than a missing route.
+A host connection that succeeds or fails any other way stops the probe as an error.
 
 The production listener is main-owned. Its diagnostic upstream records the
 host-stamped authorization and returns 200 for `allowed.example/fixture`, 403 for
 `denied.example/fixture`; neither hostname causes external traffic. A container
 configured for holder A sends forged holder-B labels on both requests, then
-attempts raw TCP to holder B, an unrelated loopback listener and the host's
-non-loopback fixture address. The run records actual upstream attribution and
+attempts raw TCP to holder B, an unrelated loopback listener and the closed
+fixture port on the host's non-loopback address. The run records actual upstream attribution and
 independent unrelated-server accepts. Native refusal requires EACCES or EPERM;
 a deadline or absent listener cannot establish isolation. The request admits
 only A's proxy URL and no worker control port. The child creates no listener.

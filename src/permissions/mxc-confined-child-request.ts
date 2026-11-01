@@ -30,6 +30,8 @@ export function buildMxcConfinedChildRequest(input: MxcConfinedChildRequestInput
     throw new Error("Container runtime, home and temp must already be admitted");
   }
   if (input.args.some((arg) => /[\0\r\n]/.test(arg))) throw new Error("Container arguments contain a forbidden control character");
+  // Contract with the row-3 plugin-child factory: `request.command` must equal the shared Windows command-line helper's
+  // output for (command, args) — the same per-argument `quoteWindowsArgument` join. Never use a probe's quoting here.
   const command = [input.command, ...input.args].map(quoteWindowsArgument).join(" ");
   if (command.length + 1 > WINDOWS_COMMAND_LINE_LIMIT) throw new Error("Container command line exceeds the process limit");
   const safeKeys = new Set<string>(FORWARD_ENV_KEYS.map((key) => key.toUpperCase()));

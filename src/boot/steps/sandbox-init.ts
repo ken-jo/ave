@@ -12,6 +12,7 @@ import {
   canRetryWindowsAsProxyOnly,
   mxcShellCapability,
   planWindowsSandbox,
+  windowsExtensionBootWarning,
   windowsProxyOnlyCapability,
   windowsSubstrateFor,
   windowsSubstrateWithoutAsrt,
@@ -331,14 +332,9 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           if (windowsInputs !== undefined && windowsStart !== undefined) {
             recordWindows(windowsStart, false);
             const substrate = windowsSubstrateFor(windowsInputs, windowsStart);
-            if (workerRequested && substrate.extensions === "none" && windowsPlan?.start !== "srt-win") {
-              log.warn(
-                "boot: extension confinement is ON but the Windows sandbox (srt-win) is NOT ready — " +
-                  "plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation " +
-                  "until the one-time administrator install completes; agent shells run in Microsoft Execution Containers " +
-                "once the container start check passes.",
-              );
-            }
+            const extensionWarning = workerRequested && windowsPlan?.start !== "srt-win"
+              ? windowsExtensionBootWarning(substrate) : undefined;
+            if (extensionWarning !== undefined) log.warn(extensionWarning);
             log.info(
               "boot: Windows sandbox — MXC %s, shells: %s, extensions: %s, shell egress identity: %s",
               substrate.mxc.state,

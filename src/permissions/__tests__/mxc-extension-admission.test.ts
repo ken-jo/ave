@@ -34,6 +34,7 @@ vi.mock("../sandbox-write-policy.js", async original => {
 });
 
 const HOST_PLATFORM = process.platform;
+const HOLDER_OWNERSHIP = { readRoots: [], writeRoots: ["C:\\holder\\data"], hostStorageRoots: [] };
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 afterEach(() => {
   setProcessPlatform(HOST_PLATFORM);
@@ -54,7 +55,7 @@ describe("holder filesystem admission", () => {
   it("keeps only this holder's roots and shared mandatory controls without a session", () => {
     setProcessPlatform("win32");
     const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\runtime"], allowWrite: ["C:\\holder\\data"],
-      denyRead: ["C:\\holder\\data\\private"], denyWrite: ["C:\\holder\\data\\readonly"] });
+      denyRead: ["C:\\holder\\data\\private"], denyWrite: ["C:\\holder\\data\\readonly"] }, HOLDER_OWNERSHIP);
     expect(admitted.policy.allowRead).toEqual(["C:\\runtime"]);
     expect(admitted.policy.allowWrite).toEqual(["C:\\holder\\data"]);
     expect(admitted.policy.denyRead).toContain("C:\\holder\\data\\private");
@@ -67,9 +68,17 @@ describe("holder filesystem admission", () => {
 
   it.each(["C:\\holder\\data", "C:\\holder"])("keeps explicit read deny %s over equal or descendant read/write grants", deny => {
     setProcessPlatform("win32");
-    const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\holder\\data"], allowWrite: ["C:\\holder\\data"], denyRead: [deny] });
+    const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\holder\\data"], allowWrite: ["C:\\holder\\data"], denyRead: [deny] }, HOLDER_OWNERSHIP);
     expect(admitted.policy.protectedFloor).toContain(deny);
     expect(rankMxcFilesystem(admitted.policy, () => true)).toMatchObject({ readwrite: [], readonly: [] });
+  });
+
+  it("binds every write grant to the host-captured write roots, inside or outside plugin namespaces", () => {
+    setProcessPlatform("win32");
+    for (const ownership of [undefined, { ...HOLDER_OWNERSHIP, writeRoots: ["C:\\holder\\other"] }]) {
+      expect(() => admitMxcExtensionFilesystem({ allowRead: ["C:\\runtime"], allowWrite: ["C:\\holder\\data"] }, ownership))
+        .toThrow(/outside this holder's captured write roots/);
+    }
   });
 
   it("rejects pattern denies whose future matches cannot be fixed in a container policy", () => {
@@ -86,10 +95,11 @@ describe("holder filesystem admission", () => {
 describe("legacy adapter admission", () => {
   it("blocks checking and rejected starts before an unconfined or account holder can spawn", () => {
     setProcessPlatform("win32");
-    for (const state of ["checking", "unavailable"] as const) {
+    for (const reason of ["readiness-deadline", "runtime-start-failed"] as const) {
       const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
-        mxc: { state: "available" }, extensionMxc: state === "checking" ? { state } : { state, reason: "readiness-deadline" },
-        holderOrAncestorAdmitted: true, windowsBuild: null, srtWinReady: true });
+        mxc: { state: "available" }, extensionMxc: { state: "unavailable", reason },
+        admittedAncestorBackend: "srt-win", windowsBuild: null, srtWinReady: true });
+      expect(substrate.extensionPlan?.readiness).toBe("rejected");
       setWindowsSandboxSubstrate(substrate);
       expect(() => assertExtensionStartAllowed()).toThrow(/has not admitted/);
     }
@@ -100,7 +110,9 @@ describe("legacy adapter admission", () => {
     const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
       mxc: { state: "available" }, extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
     setWindowsSandboxSubstrate(substrate);
-    expect(() => assertExtensionStartAllowed()).toThrow(expect.objectContaining({ code: "worker-transport-unsupported" }));
+    // Holder-neutral for plugin children, MCP and hooks; the D1 worker code only for a declared worker.
+    expect(() => assertExtensionStartAllowed()).toThrow(expect.objectContaining({ code: "native-entry-required" }));
+    expect(() => assertExtensionStartAllowed({ holder: "worker" })).toThrow(expect.objectContaining({ code: "worker-transport-unsupported" }));
     expect(() => assertExtensionStartAllowed({ backend: "mxc" })).not.toThrow();
   });
 

@@ -8,11 +8,15 @@ export type WindowsExtensionMxcState =
   | { readonly state: "checking" }
   | { readonly state: "unavailable"; readonly reason: SandboxWindowsExtensionReason };
 
+/** The backend an already-admitted owner/parent of this start runs under. */
+export type AdmittedAncestorBackend = SandboxWindowsExtensionPlan["selectedBackend"];
+
 export interface WindowsExtensionHolderInputs {
   readonly requested: boolean;
   readonly mxc: WindowsExtensionMxcState;
   readonly fallback: { readonly version: string; readonly ready: boolean };
-  readonly holderOrAncestorAdmitted: boolean;
+  /** Absent: no holder or ancestor is admitted. Present: its backend binds the whole tree. */
+  readonly admittedAncestorBackend?: AdmittedAncestorBackend;
 }
 
 /** Select once before admission. A failed selected holder never calls this to downgrade. */
@@ -32,8 +36,14 @@ export function planWindowsExtensionHolder(input: WindowsExtensionHolderInputs):
   };
   if (!input.requested) return { ...base, readiness: "off", reason: "not-requested" };
   if (input.mxc.state === "checking") return { ...base, readiness: "checking", reason: "checking" };
-  if (input.mxc.state === "available") return { ...base, selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "kernel-channel" };
-  if (input.holderOrAncestorAdmitted) return { ...base, readiness: "rejected", reason: "ancestor-already-admitted" };
+  const ancestor = input.admittedAncestorBackend;
+  // One backend per holder tree: MXC is selectable only at the root or beneath an MXC ancestor.
+  if (input.mxc.state === "available") {
+    return ancestor === undefined || ancestor === "mxc"
+      ? { ...base, selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "kernel-channel" }
+      : { ...base, readiness: "rejected", reason: "ancestor-already-admitted" };
+  }
+  if (ancestor !== undefined) return { ...base, readiness: "rejected", reason: "ancestor-already-admitted" };
   if (input.fallback.version === "0.0.80" && input.fallback.ready) {
     return { ...base, selectedBackend: "srt-win", readiness: "fallback", reason: input.mxc.reason, fallbackVersion: "0.0.80" };
   }
@@ -54,6 +64,8 @@ export interface MxcExtensionReadinessEvidence {
   readonly directEgressRefused: boolean;
   readonly forgedLabelsAttributed: boolean;
   readonly noWorkerPort: boolean;
+  /** A reparse point substituted for an admitted grant path between admission and native open is refused. */
+  readonly reparseSubstitutionRefused: boolean;
 }
 
 export function classifyMxcExtensionReadiness(evidence: MxcExtensionReadinessEvidence): WindowsExtensionMxcState {
@@ -66,7 +78,7 @@ export function classifyMxcExtensionReadiness(evidence: MxcExtensionReadinessEvi
   return [evidence.installedPayloadVerified, evidence.baseContainerReady, evidence.exactRequestAccepted,
     evidence.uiEnabledRuntimeStarted, evidence.ancestorQueriesSupported, evidence.standardStreamsRoundTrip,
     evidence.cleanTermination, evidence.ownProxySucceeded, evidence.otherListenerRefused, evidence.directEgressRefused,
-    evidence.forgedLabelsAttributed, evidence.noWorkerPort].every(value => value === true)
+    evidence.forgedLabelsAttributed, evidence.noWorkerPort, evidence.reparseSubstitutionRefused].every(value => value === true)
     ? { state: "available" }
     : { state: "unavailable", reason: "native-validation-required" };
 }
@@ -75,7 +87,7 @@ export function classifyMxcExtensionReadiness(evidence: MxcExtensionReadinessEvi
 export async function settleWindowsExtensionReadiness(input: {
   readonly probe: (signal: AbortSignal) => Promise<MxcExtensionReadinessEvidence>;
   readonly fallback: WindowsExtensionHolderInputs["fallback"];
-  readonly isHolderOrAncestorAdmitted: () => boolean;
+  readonly admittedAncestorBackend: () => AdmittedAncestorBackend | undefined;
   readonly signal?: AbortSignal;
 }): Promise<SandboxWindowsExtensionPlan> {
   const controller = new AbortController();
@@ -97,10 +109,10 @@ export async function settleWindowsExtensionReadiness(input: {
   try {
     const mxc = await Promise.race([deadline, observed]);
     if (input.signal?.aborted) return { ...planWindowsExtensionHolder({ requested: true, mxc,
-      fallback: { ...input.fallback, ready: false }, holderOrAncestorAdmitted: input.isHolderOrAncestorAdmitted() }),
+      fallback: { ...input.fallback, ready: false }, admittedAncestorBackend: input.admittedAncestorBackend() }),
       selectedBackend: "none", readiness: "rejected", reason: "request-rejected", fallbackVersion: null, egressIdentity: "shared" };
     return planWindowsExtensionHolder({ requested: true, mxc, fallback: input.fallback,
-      holderOrAncestorAdmitted: input.isHolderOrAncestorAdmitted() });
+      admittedAncestorBackend: input.admittedAncestorBackend() });
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     if (cancelled) input.signal?.removeEventListener("abort", cancelled);

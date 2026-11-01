@@ -1,6 +1,6 @@
 
 
-import { MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
+import { MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -1008,15 +1008,17 @@ export function isPluginWorkerConfinementActive(): boolean {
 }
 
 // Refuse extension starts until private storage or session approval is established.
-export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" }): void {
+// `backend: "mxc"` is the native entry. A legacy adapter may declare `holder: "worker"` so a selected container backend refuses it with the worker transport code (D1); every other legacy holder gets the holder-neutral native-entry refusal.
+export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" } | { readonly holder: "worker" }): void {
   const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
+  const nativeEntry = options !== undefined && "backend" in options;
   if (plan?.readiness === "checking" || plan?.readiness === "rejected") {
     throw new MxcProcessContractError("Extension backend readiness has not admitted this start");
   }
-  if (plan?.selectedBackend === "mxc" && options?.backend !== "mxc") {
-    throw new WorkerTransportUnsupportedError();
+  if (plan?.selectedBackend === "mxc" && !nativeEntry) {
+    throw options !== undefined && options.holder === "worker" ? new WorkerTransportUnsupportedError() : new MxcNativeEntryRequiredError();
   }
-  if (options?.backend === "mxc" && (plan?.selectedBackend !== "mxc" || plan.readiness !== "ready")) {
+  if (nativeEntry && (plan?.selectedBackend !== "mxc" || plan.readiness !== "ready")) {
     throw new MxcProcessContractError("Native extension backend is not ready for this start");
   }
   // Intentionally gated by the boot request: a user who turned isolation off is not asked.

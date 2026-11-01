@@ -1,6 +1,6 @@
 import path from "node:path";
 import { lstat, readdir, rm, writeFile } from "node:fs/promises";
-import { withOrdinaryFilesystem } from "./packaged-filesystem.mjs";
+import { assertOrdinaryTree, withOrdinaryFilesystem } from "./packaged-filesystem.mjs";
 
 export function packagedProbeOptions(argv) {
   if (argv.length !== 2 || argv[0] !== "--app" || !path.isAbsolute(argv[1]) || !/\.exe$/i.test(argv[1])) throw new Error("Expected --app <absolute packaged executable>");
@@ -142,7 +142,14 @@ export function exactOwnedPath(root, candidate) {
 
 // Preserve the measured rows and owned path even when cleanup or diagnostic IO
 // fails. A finalization failure can never be converted into a measured verdict.
-export async function finalizePackagedObservation(result, root, cleanupVerified, io = { remove: rm, write: writeFile, measure: retainedTreeSize }) {
+// Recursive removal must never traverse a link or junction planted in the run tree: it would delete the target's
+// contents outside the owned directory. Removal runs only after every process is verified dead, so nothing writes meanwhile.
+async function removeOrdinaryTree(root, options) {
+  await assertOrdinaryTree(root);
+  return rm(root, options);
+}
+
+export async function finalizePackagedObservation(result, root, cleanupVerified, io = { remove: removeOrdinaryTree, write: writeFile, measure: retainedTreeSize }) {
   // Missing launch evidence is unknown, never proof that no process existed.
   result.spawned = result.spawned !== false;
   result.retainedTempRemovalSafe = result.spawned === false || (cleanupVerified

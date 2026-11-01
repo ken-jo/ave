@@ -13,7 +13,8 @@ export interface MxcExtensionAdmission { readonly [MXC_EXTENSION_ADMISSION]: tru
 interface AdmissionIdentity {
   readonly request: ContainerRequest;
   readonly holder: object;
-  readonly runtimeIdentity: string;
+  /** Digest of the admitted executable's realpath and file identity, re-measured synchronously at spawn. */
+  readonly executableIdentity: string;
   readonly bootPlan: SandboxWindowsExtensionPlan;
 }
 interface AdmissionRecord extends Omit<AdmissionIdentity, "request"> { readonly requestDigest: string; readonly bootPlanDigest: string }
@@ -31,8 +32,8 @@ export async function createMxcExtensionAdmission(input: AdmissionIdentity & {
   assertMxcExtensionRequest(input.request);
   assertSandboxWindowsExtensionPlan(input.bootPlan);
   if (input.bootPlan.selectedBackend !== "mxc" || input.bootPlan.readiness !== "ready"
-      || !/^[a-f0-9]{64}$/u.test(input.runtimeIdentity) || !input.holder || typeof input.holder !== "object") {
-    throw new MxcProcessContractError("Native admission requires a captured holder and verified runtime");
+      || !/^[a-f0-9]{64}$/u.test(input.executableIdentity) || !input.holder || typeof input.holder !== "object") {
+    throw new MxcProcessContractError("Native admission requires a captured holder and measured executable");
   }
   const capturedDigest = requestDigest(input.request);
   const capturedPlanDigest = canonicalStringify(input.bootPlan);
@@ -41,7 +42,8 @@ export async function createMxcExtensionAdmission(input: AdmissionIdentity & {
   const result = await settleWindowsExtensionReadiness({
     probe: signal => input.probe(snapshot, signal),
     fallback: { version: "0.0.80", ready: false },
-    isHolderOrAncestorAdmitted: () => true,
+    // This holder is itself being admitted under the selected MXC plan: no fallback, no other backend.
+    admittedAncestorBackend: () => "mxc",
     signal: input.signal,
   });
   if (input.signal?.aborted || requestDigest(snapshot) !== capturedDigest || requestDigest(input.request) !== capturedDigest
@@ -52,7 +54,7 @@ export async function createMxcExtensionAdmission(input: AdmissionIdentity & {
     throw new MxcCapabilityUnavailableError(`Native admission readiness failed: ${result.reason}`);
   }
   const admission = Object.freeze({}) as MxcExtensionAdmission;
-  admissions.set(admission, { holder: input.holder, runtimeIdentity: input.runtimeIdentity,
+  admissions.set(admission, { holder: input.holder, executableIdentity: input.executableIdentity,
     bootPlan: input.bootPlan, bootPlanDigest: capturedPlanDigest, requestDigest: capturedDigest });
   return admission;
 }
@@ -61,7 +63,7 @@ export async function createMxcExtensionAdmission(input: AdmissionIdentity & {
 export function consumeMxcExtensionAdmission(admission: MxcExtensionAdmission, identity: AdmissionIdentity): void {
   const record = admissions.get(admission);
   admissions.delete(admission);
-  if (!record || record.holder !== identity.holder || record.runtimeIdentity !== identity.runtimeIdentity
+  if (!record || record.holder !== identity.holder || record.executableIdentity !== identity.executableIdentity
       || record.bootPlan !== identity.bootPlan || record.bootPlanDigest !== canonicalStringify(identity.bootPlan)
       || identity.bootPlan.selectedBackend !== "mxc" || identity.bootPlan.readiness !== "ready"
       || record.requestDigest !== requestDigest(identity.request)) {

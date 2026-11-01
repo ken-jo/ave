@@ -30,7 +30,9 @@ export async function runEgressPolicyProbe({ launch, request, temp, ioBudget, bo
   const listen = async (server) => {
     servers.push(server);
     server.on("connection", (socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
-    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "0.0.0.0", resolve); });
+    // Loopback only: a wildcard listener would expose fixtures on every interface and can make Windows Defender
+    // Firewall prompt and persist an inbound rule for the runtime executable.
+    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     return server.address().port;
   };
   const auth = (owner) => `Basic ${Buffer.from(owner + ":fixture").toString("base64")}`;
@@ -44,12 +46,21 @@ export async function runEgressPolicyProbe({ launch, request, temp, ioBudget, bo
     const unrelatedPort = await listen(net.createServer((socket) => { unrelatedAccepts++; socket.end(); }));
     const directHost = Object.values(networkInterfaces()).flat().find((entry) => entry?.family === "IPv4" && !entry.internal)?.address;
     if (!directHost) throw new Error("A non-loopback host IPv4 address is required for the direct-egress fixture");
-    // Positive host controls establish that both loopback and the direct address reach this server.
-    const baseline = async (host) => bounded(new Promise((resolve, reject) => {
-      const socket = net.connect(unrelatedPort, host, () => { socket.end(); resolve(true); });
+    // Positive host controls. Loopback reaches the unrelated fixture. No listener exists on the non-loopback
+    // address, so the host's own connection there must be actively refused (ECONNREFUSED): the address is routable
+    // and answered by the host stack, and the container's EACCES/EPERM is then a policy refusal, not a missing route.
+    const loopbackControl = await bounded(new Promise((resolve, reject) => {
+      const socket = net.connect(unrelatedPort, "127.0.0.1", () => { socket.end(); resolve(true); });
       sockets.add(socket); socket.once("close", () => sockets.delete(socket)); socket.once("error", reject);
     }), ioBudget);
-    await baseline("127.0.0.1"); await baseline(directHost);
+    const directControl = await bounded(new Promise((resolve, reject) => {
+      const socket = net.connect(unrelatedPort, directHost, () => {
+        socket.destroy(); reject(new Error("Direct-egress control unexpectedly connected; the fixture port is not closed on the host address"));
+      });
+      sockets.add(socket); socket.once("close", () => sockets.delete(socket));
+      socket.once("error", (error) => error.code === "ECONNREFUSED" ? resolve("ECONNREFUSED")
+        : reject(new Error(`Direct-egress host control was not actively refused: ${error.code ?? error.message}`)));
+    }), ioBudget);
     const initialAccepts = unrelatedAccepts;
     for (const owner of ["holder-a", "holder-b"]) {
       const listener = await openInvocationProxyListener({
@@ -82,7 +93,7 @@ export async function runEgressPolicyProbe({ launch, request, temp, ioBudget, bo
     const expectedAttribution = [{ owner: auth("holder-a"), target: "http://allowed.example/fixture" }, { owner: auth("holder-a"), target: "http://denied.example/fixture" }];
     const passed = egressPolicyObservationPassed(result, attribution, expectedAttribution,
       unrelatedAccepts - initialAccepts + otherAccepts - initialOtherAccepts);
-    return [{ ...result, accepted: passed, passed, attribution, refusals, hostControls: { loopback: true, direct: true, otherListener: bControl },
+    return [{ ...result, accepted: passed, passed, attribution, refusals, hostControls: { loopback: loopbackControl, direct: directControl, otherListener: bControl },
       unrelatedAcceptsAfterBaseline: unrelatedAccepts - initialAccepts, holderProxyPorts: listeners.map((listener) => listener.port),
       otherListenerAcceptsAfterBaseline: otherAccepts - initialOtherAccepts,
       workerControlPorts: [], identity: "kernel-channel", peerOwnerAuthentication: false,

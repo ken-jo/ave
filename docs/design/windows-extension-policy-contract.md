@@ -24,7 +24,7 @@ owns state transitions. The following table defines the legacy start guard:
 | Readiness | Selected backend | Legacy start guard |
 | --- | --- | --- |
 | `off` | `none` | Existing opt-out behavior and privacy checks. |
-| `checking` | `none` | Refuse until the bounded readiness queue settles. |
+| `checking` | `none` | Per-holder candidate only; never published as the boot snapshot (see below). Refuse until the bounded readiness queue settles. |
 | `ready` | `mxc` | Refuse legacy transport; only the explicit native entry may proceed. |
 | `fallback` | `srt-win` | Retain existing pinned account-backed admission and release. |
 | `unavailable` | `none` | Preserve settled initial degraded-host behavior and privacy/approval checks; no confinement relaxation. |
@@ -32,7 +32,16 @@ owns state transitions. The following table defines the legacy start guard:
 
 The native entry always requires `ready` plus `mxc`. A checking record
 is not permission to run and the synchronous guard itself does not queue.
-The caller awaits the readiness resolver before retrying admission.
+The caller awaits the readiness resolver before retrying admission. Boot has no
+extension readiness settler, so `setWindowsSandboxSubstrate()` refuses a
+checking plan outright and boot inputs exclude it by type: a published checking
+plan would refuse every start for the whole session with nothing to resolve it.
+`checking` exists only as the per-holder resolver's transient candidate.
+
+Republishing the substrate for an unrelated change, such as the shell probe
+settling, keeps the identical extension plan object. Admission receipts and live
+MXC parents bind to that object, so only a change in plan content invalidates
+them; an MXC parent keeps admitting children after the shell probe settles.
 
 | Field | Meaning |
 | --- | --- |
@@ -68,12 +77,16 @@ ancestor admission is rechecked at settlement before returning the candidate.
 
 The readiness classifier requires every recorded observation: verified installed
 payload, BaseContainer support, exact-request acceptance, UI-enabled runtime
-startup, query ancestors, standard-stream round trip, clean termination, and
-endpoint isolation with correct forged-label attribution and no worker port.
+startup, query ancestors, standard-stream round trip, clean termination,
+endpoint isolation with correct forged-label attribution and no worker port, and
+refusal of reparse substitution of grant paths (`reparseSubstitutionRefused`).
 A launcher-only shell result supplies none of that extension evidence.
 
 On deadline or settled host unavailability, fallback requires version `0.0.80`,
 ready in the current boot/session, and no admitted holder or ancestor. The
+resolver takes the admitted ancestor's backend, not a boolean: an available MXC
+request becomes `ready` only at the root or beneath an MXC ancestor, and any
+other admitted ancestor rejects it with `ancestor-already-admitted`. The
 resolver never initializes or waits for a fallback after the deadline. Failure
 of an admitted holder does not call selection again. Internal contract errors
 propagate; externally reported capability unavailability can select the
@@ -88,9 +101,23 @@ into process-wide confinement. Per-process markers still require a completed
 native spawn and transport setup, and are removed when authority is revoked.
 `assertExtensionStartAllowed()` rejects checking/rejected starts before legacy
 adapters can create an unconfined or account-backed process. A selected MXC
-plan rejects legacy adapters with `worker-transport-unsupported`; the native
-entry opts in with `{ backend: "mxc" }` and rechecks readiness. This generic
-transport guard preserves unmigrated worker refusal without plugin-ID routing.
+plan rejects a legacy adapter by its declared holder role, never a plugin ID:
+the worker adapter declares `{ holder: "worker" }` and is refused with
+`worker-transport-unsupported` (D1); every other legacy holder (plugin child,
+MCP stdio, hooks) is refused with the holder-neutral `native-entry-required`
+(`MxcNativeEntryRequiredError`). The native entry opts in with
+`{ backend: "mxc" }` and rechecks readiness.
+
+The plugin-child adapter (row 3) checks that `request.command` equals the shared
+Windows command-line helper's output for its command and arguments, and that the
+folded cwd matches. The request builder therefore forms `command` with exactly
+that per-argument quoting (`quoteWindowsArgument` joined by spaces, the same
+algorithm as the helper); it never uses a probe's quoting.
+
+The confinement a holder reports is `windows-mxc` (`SpawnConfinement`, and so
+`PluginConfinementReport`). The holder adapter reports it only after the native
+spawn and its own transport setup both succeed, and stops reporting it when
+authority is revoked; a ready boot plan never produces it.
 
 `admitMxcExtensionFilesystem()` shares canonical grant pinning, protected read
 floors, private/plugin roots and mandatory write controls. It accepts only the
@@ -124,7 +151,17 @@ Native admission additionally requires a single-use receipt from
 request snapshot. Mutation of that snapshot, the production request or the
 captured boot plan during readiness rejects admission. A private receipt map
 binds the full canonical request, including the held proxy endpoint, to the
-captured holder object, host-measured runtime SHA-256 and exact boot-plan object.
+captured holder object, the `executableIdentity` and the exact boot-plan object.
+`executableIdentity` is a digest of the admitted executable's (`spec.command`)
+canonical path, volume and file ID, size and timestamps. It is measured
+synchronously at admission and re-measured synchronously in `beforeSpawn`; a
+change refuses creation. It is not a content hash: hashing a large runtime per
+spawn cannot be synchronous at the spawn boundary, and an earlier draft hashed
+the host's own Electron instead of the admitted executable. A same-size rewrite
+can restore settable timestamps, so admission also refuses any executable inside
+any live holder's writable root, the new holder's own planned writable roots
+included. Between admission and spawn only the signed-in user, outside this
+contract's threat model, can then change the executable.
 `consumeMxcExtensionAdmission()` runs at the native spawn boundary; a mismatch
 or second use refuses the start and cannot retry the receipt. A globally ready
 selection, a copied receipt or another holder's evidence cannot substitute.
@@ -133,8 +170,18 @@ its native observations still belong to the release gate.
 
 Filesystem ownership is an independent host-captured
 `MxcExtensionFilesystemOwnership` with read roots, write roots and host-only
-storage roots. These independently captured roots must include the holder's own
-HOME and temp leaves. Requested grants cannot declare their own ownership. Admission
+storage roots. Every requested write grant and every final ranked readwrite grant
+must lie inside a captured write root, inside or outside plugin namespaces, and
+the holder's HOME and temp must lie inside them too. HOME and temp must not lie
+below the shared private HOME, temp or handoff roots: an ancestor enumerate
+grant there would list every other holder's leaf. Holder adapters (rows 3 and 5)
+place them in a dedicated staging tree such as `<AVE_HOME>\mxc-staging\<opaque-id>`,
+so the staging root's enumerate grant reveals only opaque IDs. The staging tree
+still lives under the user profile, so its ancestor queries expose profile and
+`AVE_HOME` sibling names; the plugins root also gets enumerate access above a
+plugin's own data and generation roots, revealing other plugin IDs. Both are
+disclosed residuals (`ancestorNameExposure`), not privacy guarantees; a location
+outside the profile would need a separate owner decision. Requested grants cannot declare their own ownership. Admission
 rejects grants at or above plugin, cache and private HOME/temp namespace roots,
 another holder's roots,
 write access to a read-only generation, and read or write grants intersecting
@@ -150,9 +197,25 @@ backend, selected-only fallback version and both outer egress identities must
 agree. Withdrawing a backend clears its fallback version; deadline rejection
 remains rejection when the runtime is absent.
 
-Identity revalidation narrows substitution opportunities but does not remove
-the raw-path interval between the final check and native path consumption. It
-is not a handle-relative filesystem launch or protection against the signed-in
-user racing replacement of installation or admitted paths. Native traversal,
-root replacement, host/supervisor crash and descendant-death acceptance remain
-required; no source-only test establishes those properties.
+Threat model for path substitution: the attacker is a confined co-holder, not
+the signed-in user. The SDK opens string paths after the host's final identity
+check, so a holder that can write above another holder's path can swap in a
+junction or symlink in that interval. For example, a plugin child writing
+`plugin\data` could redirect a worker's `data\models` grant toward Documents if
+PSEC follows the reparse point when applying the grant. The host therefore
+refuses a new holder when any of its read, write or deny grants, cwd, HOME, temp
+or executable lies strictly inside another live holder's writable root, the
+parent included. Equal roots are permitted only when no deny or demoted path
+lands strictly inside the other holder's root, because write roots are pinned
+and cannot be replaced by their holder; production ranking places floor denies
+(such as a `.git` control) below writable roots, so in practice a descendant
+uses sibling roots. Live roots stay registered from admission
+until verified termination, including quarantined holders, and the check runs at
+admission and again synchronously in `beforeSpawn`.
+
+This narrows the raw-path interval but does not remove it: it is not a
+handle-relative launch, and it does not protect against the signed-in user
+replacing installation or admitted paths. Refusal of reparse substitution of
+grant paths is a required readiness observation and native release-gate test.
+Native traversal, root replacement, host/supervisor crash and descendant-death
+acceptance remain required too; no source-only test establishes them.

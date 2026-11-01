@@ -45,4 +45,28 @@ export function assertMxcExtensionFilesystemOwnership(input: {
   };
   check(input.allowRead, [...ownership.readRoots, ...ownership.writeRoots]);
   check(input.allowWrite, ownership.writeRoots);
+  // Writes are bound to the host-captured envelope everywhere, not only inside plugin namespaces.
+  for (const grant of input.allowWrite) {
+    if (!ownership.writeRoots.some(root => isWindowsPathAtOrUnder(grant, root))) {
+      throw new MxcProcessContractError("Container filesystem write grant is outside this holder's captured write roots");
+    }
+  }
+}
+
+/** HOME/temp must be inside the captured write envelope and outside the shared private HOME/temp/handoff roots. */
+export function assertMxcHolderPrivateDirectories(input: {
+  readonly home: string;
+  readonly temp: string;
+  readonly ownership: MxcExtensionFilesystemOwnership;
+  readonly sharedPrivateRoots: readonly string[];
+}): void {
+  for (const directory of [input.home, input.temp]) {
+    if (!input.ownership.writeRoots.some(root => isWindowsPathAtOrUnder(directory, root))) {
+      throw new MxcProcessContractError("Container HOME and temp must lie inside this holder's captured write roots");
+    }
+    // Ancestor enumerate grants on a shared private root would list every other holder's leaf there.
+    if (input.sharedPrivateRoots.some(root => isWindowsPathAtOrUnder(directory, root))) {
+      throw new MxcProcessContractError("Container HOME and temp must use a dedicated staging tree, not the shared private roots");
+    }
+  }
 }

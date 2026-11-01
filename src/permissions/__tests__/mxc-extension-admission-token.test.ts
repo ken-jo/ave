@@ -8,13 +8,13 @@ const EVIDENCE: MxcExtensionReadinessEvidence = {
   installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
   uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true, standardStreamsRoundTrip: true,
   cleanTermination: true, ownProxySucceeded: true, otherListenerRefused: true,
-  directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true,
+  directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
 };
 function identity() {
   return {
-    holder: Object.freeze({}), runtimeIdentity: "a".repeat(64),
+    holder: Object.freeze({}), executableIdentity: "a".repeat(64),
     bootPlan: planWindowsExtensionHolder({ requested: true, mxc: { state: "available" },
-      fallback: { version: "0.0.80", ready: false }, holderOrAncestorAdmitted: false }),
+      fallback: { version: "0.0.80", ready: false } }),
     request: buildMxcConfinedChildRequest({ command: "C:\\runtime\\runtime.exe", args: ["D:\\work\\entry.js"],
       cwd: "D:\\work", home: "D:\\work\\home", temp: "D:\\work\\temp",
       grants: { readwrite: ["D:\\work"], readonly: ["C:\\runtime", "C:\\Windows"], denied: [] },
@@ -37,12 +37,12 @@ describe("native request admission receipt", () => {
     expect(() => consumeMxcExtensionAdmission({} as MxcExtensionAdmission, identity())).toThrow(/does not match/);
   });
 
-  it.each(["holder", "runtime", "boot", "proxy", "command", "filesystem"] as const)("binds receipt to its %s and burns mismatches", async field => {
+  it.each(["holder", "executable", "boot", "proxy", "command", "filesystem"] as const)("binds receipt to its %s and burns mismatches", async field => {
     const captured = identity();
     const receipt = await createMxcExtensionAdmission({ ...captured, probe: async () => EVIDENCE });
     const changed = { ...captured, request: structuredClone(captured.request) };
     if (field === "holder") changed.holder = {};
-    if (field === "runtime") changed.runtimeIdentity = "b".repeat(64);
+    if (field === "executable") changed.executableIdentity = "b".repeat(64);
     if (field === "boot") changed.bootPlan = { ...captured.bootPlan };
     if (field === "proxy") changed.request.network!.runtimeConfig!.networkProxy = "http://127.0.0.1:43211";
     if (field === "command") changed.request.command += " changed";
@@ -61,10 +61,10 @@ describe("native request admission receipt", () => {
     } })).rejects.toThrow(/changed during readiness/);
   });
 
-  it("refuses missing observations and a caller-labelled runtime", async () => {
+  it("refuses missing observations and a caller-labelled executable", async () => {
     const captured = identity();
     await expect(createMxcExtensionAdmission({ ...captured, probe: async () => ({ ...EVIDENCE, otherListenerRefused: false }) })).rejects.toThrow(/readiness failed/);
-    await expect(createMxcExtensionAdmission({ ...captured, runtimeIdentity: "runtime.exe", probe: async () => EVIDENCE })).rejects.toThrow(/verified runtime/);
+    await expect(createMxcExtensionAdmission({ ...captured, executableIdentity: "runtime.exe", probe: async () => EVIDENCE })).rejects.toThrow(/measured executable/);
   });
 
   it("rejects mutation of the sealed plan after probing", async () => {

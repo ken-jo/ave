@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertMxcExtensionFilesystemOwnership } from "../mxc-filesystem-ownership.js";
+import { assertMxcExtensionFilesystemOwnership, assertMxcHolderPrivateDirectories } from "../mxc-filesystem-ownership.js";
 
 const PLUGINS = "C:\\private\\plugins";
 const CACHE = `${PLUGINS}\\.cache`;
@@ -55,4 +55,33 @@ it("isolates private HOME/temp leaves using captured ownership rather than reque
     expect(() => assertMxcExtensionFilesystemOwnership({ ...captured, allowRead: [other], allowWrite: [] })).toThrow(/another holder|outside this holder/);
     expect(() => assertMxcExtensionFilesystemOwnership({ ...captured, allowRead: [], allowWrite: [other] })).toThrow(/another holder|outside this holder/);
   }
+});
+
+it("binds write grants outside plugin namespaces to the captured write roots too", () => {
+  expect(() => assertMxcExtensionFilesystemOwnership({ ...BASE, allowRead: [], allowWrite: ["D:\\work"] }))
+    .toThrow(/outside this holder's captured write roots/);
+  expect(() => assertMxcExtensionFilesystemOwnership({ ...BASE, ownership: { ...OWNERSHIP, writeRoots: [DATA, "D:\\work"] },
+    allowRead: [], allowWrite: ["D:\\work\\out"] })).not.toThrow();
+});
+
+describe("holder HOME and temp placement", () => {
+  const shared = ["C:\\private\\sandbox\\home", "C:\\private\\sandbox\\temp", "C:\\private\\sandbox\\handoff"];
+  const staging = "C:\\private\\mxc-staging\\4f1c";
+  const ownership = { readRoots: [], writeRoots: [staging], hostStorageRoots: [] };
+
+  it("accepts a dedicated staging tree inside the captured write roots", () => {
+    expect(() => assertMxcHolderPrivateDirectories({ home: `${staging}\\home`, temp: `${staging}\\temp`, ownership, sharedPrivateRoots: shared })).not.toThrow();
+  });
+
+  it("refuses HOME/temp outside the captured write roots", () => {
+    expect(() => assertMxcHolderPrivateDirectories({ home: "D:\\elsewhere\\home", temp: `${staging}\\temp`, ownership, sharedPrivateRoots: shared }))
+      .toThrow(/inside this holder's captured write roots/);
+  });
+
+  it.each(shared)("refuses HOME/temp below the shared private root %s even when captured as owned", root => {
+    const leaf = `${root}\\holder-a`;
+    const owned = { ...ownership, writeRoots: [leaf] };
+    expect(() => assertMxcHolderPrivateDirectories({ home: leaf, temp: leaf, ownership: owned, sharedPrivateRoots: shared }))
+      .toThrow(/dedicated staging tree/);
+  });
 });

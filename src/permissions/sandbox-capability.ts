@@ -163,11 +163,28 @@ export function setWindowsSandboxSubstrate(
   if (info.extensionEgressIdentity !== (info.extensions === "mxc" ? "kernel-channel" : "shared")) {
     throw new Error("setWindowsSandboxSubstrate: extension egress identity contradicts the selected substrate");
   }
+  // Boot has no extension readiness settler, so a published checking plan would refuse every start forever.
+  // Per-holder readiness resolves `checking` itself and never publishes it.
+  if (info.extensionPlan?.readiness === "checking") {
+    throw new Error("setWindowsSandboxSubstrate: an extension plan in checking has no settle path and cannot be published");
+  }
+  // Admissions and live MXC parents are bound to the plan object. Republishing the substrate for an unrelated
+  // change (the shell probe settling) keeps an identical plan's identity; only changed content invalidates them.
+  const previousPlan = _windowsSubstrate?.extensionPlan;
+  const extensionPlan = info.extensionPlan === undefined ? undefined
+    : previousPlan !== undefined && sameExtensionPlan(previousPlan, info.extensionPlan) ? previousPlan
+      : Object.freeze({ ...info.extensionPlan });
   _windowsSubstrate = Object.freeze({ ...info, mxc: Object.freeze({ ...info.mxc }),
-    ...(info.extensionPlan ? { extensionPlan: Object.freeze({ ...info.extensionPlan }) } : {}),
+    ...(extensionPlan ? { extensionPlan } : {}),
   });
   _mxcShellCapability = mxcShellCapability === undefined ? undefined : Object.freeze({ ...mxcShellCapability });
   _sandboxGeneration += 1;
+}
+
+// Every plan field is a closed primitive (validated above), so field equality is content equality.
+function sameExtensionPlan(left: SandboxWindowsExtensionPlan, right: SandboxWindowsExtensionPlan): boolean {
+  const keys = Object.keys(left) as (keyof SandboxWindowsExtensionPlan)[];
+  return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
 }
 
 // What boot recorded for Windows, or null (off Windows, or before the gate ran).

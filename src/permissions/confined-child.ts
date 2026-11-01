@@ -2,9 +2,9 @@
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
-import { createReadStream, existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { extname, join } from "node:path";
+import { extname, join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import {
@@ -14,6 +14,9 @@ import {
   isPluginWorkerConfinementActive,
   assertExtensionStartAllowed,
   admitMxcExtensionFilesystem,
+  appOwnedSandboxHomeRoot,
+  appOwnedSandboxTempRoot,
+  appOwnedTerminalHandoffRoot,
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
@@ -23,14 +26,19 @@ import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } f
 import { getWindowsExtensionBackendPlan } from "./sandbox-capability.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
 import { buildMxcConfinedChildRequest } from "./mxc-confined-child-request.js";
-import { rankMxcFilesystem } from "./mxc-windows.js";
+import { isWindowsPathAtOrUnder, rankMxcFilesystem, type MxcFilesystemGrants } from "./mxc-windows.js";
 import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "./mxc-extension-process.js";
-import { MxcProcessCleanupError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
+import {
+  MxcNativeEntryRequiredError,
+  MxcProcessCleanupError,
+  MxcProcessContractError,
+  WorkerTransportUnsupportedError,
+} from "./mxc-extension-errors.js";
 import { createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
 import type { MxcExtensionReadinessEvidence } from "./mxc-extension-readiness.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
-import type { MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
+import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -120,7 +128,8 @@ export interface ConfinedChildSpec {
 }
 
 // The wrap a spawn actually applied — never the `features.pluginWorkerConfinement` setting. A child spawned unwrapped is `unconfined` whatever the setting says, because "confined" is a claim about this process, and only the wrap makes it true. One value per substrate ASRT wraps with.
-export type SpawnConfinement = "macos-sandbox" | "linux-bubblewrap" | "windows-srt" | "unconfined";
+// `windows-mxc` is a per-holder Microsoft Execution Container started through `spawnMxcConfinedChild`. Its holder adapter reports it only after the native spawn AND its own transport setup (the plugin protocol handshake) succeed, and stops reporting it when authority is revoked; `MxcConfinedChildSpawn.confinement` carries the value, never a boot plan.
+export type SpawnConfinement = "macos-sandbox" | "linux-bubblewrap" | "windows-srt" | "windows-mxc" | "unconfined";
 
 // A spawned, registered child and the wrap it runs under.
 export interface ConfinedChildSpawn {
@@ -149,7 +158,7 @@ export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
 
 export interface MxcConfinedChildSpawn {
   readonly process: OwnedMxcExtensionProcess;
-  readonly confinement: "windows-mxc";
+  readonly confinement: Extract<SpawnConfinement, "windows-mxc">;
   /** Release only after native termination; failed cleanup retains the listener and token. */
   release(): Promise<void>;
 }
@@ -166,10 +175,61 @@ interface NativeHolderBinding {
 const nativeHolderBindings = new WeakMap<MxcConfinedChildSpawn, NativeHolderBinding>();
 const admittedNativeHolderIdentities = new WeakSet<object>();
 
-async function nativeRuntimeIdentity(signal?: AbortSignal): Promise<string> {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(process.execPath, { signal })) hash.update(chunk);
-  return hash.digest("hex");
+/** Synchronous file identity of the admitted executable: canonical path, volume/file ID, size and timestamps.
+ * It is re-measured in `beforeSpawn`. A same-size rewrite that restores timestamps is closed by refusing any
+ * executable inside a live holder's writable root (see `assertNoCoHolderNesting`), leaving only the signed-in user. */
+function measureExecutableIdentity(command: string): string {
+  const canonical = realpathSync.native(command);
+  const stat = statSync(canonical, { bigint: true });
+  if (!stat.isFile()) throw new MxcProcessContractError("Container executable is not a regular file");
+  return createHash("sha256").update([winPath.normalize(canonical).toLowerCase(), stat.dev, stat.ino, stat.size,
+    stat.mtimeNs, stat.ctimeNs, stat.birthtimeNs].join("\0")).digest("hex");
+}
+
+// Lexical and canonical spellings, so a junction-spelled path and its target compare as one location.
+function pathForms(path: string): readonly string[] {
+  const lexical = winPath.normalize(path);
+  try {
+    const canonical = winPath.normalize(realpathSync.native(path).replace(/^\\\\\?\\/u, ""));
+    return canonical.toLowerCase() === lexical.toLowerCase() ? [lexical] : [lexical, canonical];
+  } catch (error) {
+    // A path that does not exist yet has no canonical spelling; its lexical form is still compared.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return [lexical];
+    throw error;
+  }
+}
+
+/** Writable roots of every holder that is admitted or still owned (pending, live or quarantined). */
+interface LiveHolderWritableRoots { readonly writable: readonly string[] }
+const liveHolderWritableRoots = new Set<LiveHolderWritableRoots>();
+
+function strictlyInside(path: string, root: string): boolean {
+  return isWindowsPathAtOrUnder(path, root) && winPath.normalize(path).replace(/\\+$/u, "").toLowerCase()
+    !== winPath.normalize(root).replace(/\\+$/u, "").toLowerCase();
+}
+
+/** A confined co-holder (the parent included) that can write above a path can swap a reparse point there between the
+ * host's final identity check and the SDK's native string-path open. Refuse such nesting; equal pinned roots are allowed.
+ * The executable must lie outside every live writable root, this holder's own included. */
+function assertNoCoHolderNesting(self: LiveHolderWritableRoots, paths: readonly string[], command: string): void {
+  const candidates = paths.flatMap(pathForms);
+  const commandForms = pathForms(command);
+  for (const holder of new Set([...liveHolderWritableRoots, self])) {
+    for (const root of holder.writable) {
+      if (commandForms.some((form) => isWindowsPathAtOrUnder(form, root))) {
+        throw new MxcProcessContractError("Container executable lies inside a holder's writable root");
+      }
+      if (holder !== self && candidates.some((candidate) => strictlyInside(candidate, root))) {
+        throw new MxcProcessContractError("Container path lies inside another live holder's writable root");
+      }
+    }
+  }
+}
+
+function assertWritesInsideEnvelope(grants: MxcFilesystemGrants, ownership: MxcExtensionFilesystemOwnership): void {
+  if (grants.readwrite.some((grant) => !ownership.writeRoots.some((root) => isWindowsPathAtOrUnder(grant, root)))) {
+    throw new MxcProcessContractError("Container write grant is outside this holder's captured write roots");
+  }
 }
 
 /** Preparation is per holder, with no session ACL union or fallback after selection. */
@@ -201,6 +261,14 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
   }, spec.filesystemOwnership);
   const grants = rankMxcFilesystem(admitted.policy, existsSync);
+  assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
+  assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
+    sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });
+  const ownRoots: LiveHolderWritableRoots = Object.freeze({ writable: Object.freeze([...new Set(
+    [...grants.readwrite, spec.home, spec.temp, ...spec.filesystemOwnership.writeRoots].flatMap(pathForms))]) });
+  const nestedPaths = Object.freeze([...grants.readwrite, ...grants.readonly, ...grants.denied, spec.cwd, spec.home, spec.temp]);
+  const assertNesting = (): void => assertNoCoHolderNesting(ownRoots, nestedPaths, spec.command);
+  assertNesting();
   if (!spec.holder || typeof spec.holder !== "object" || admittedNativeHolderIdentities.has(spec.holder)) {
     throw new MxcProcessContractError("Extension holder incarnation is invalid or already admitted");
   }
@@ -231,9 +299,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
       await lease?.close();
       egress.release();
       admittedNativeHolderIdentities.delete(spec.holder);
+      liveHolderWritableRoots.delete(ownRoots);
       if (spec.parent) nativeHolderBindings.get(spec.parent)?.children.delete(lifetime);
     });
     admittedNativeHolderIdentities.add(spec.holder);
+    // Owned from registration until verified termination, so a concurrent admission sees these roots.
+    liveHolderWritableRoots.add(ownRoots);
     if (spec.parent) nativeHolderBindings.get(spec.parent)!.children.add(lifetime);
   } catch (error) { egress.release(); throw error; }
   try {
@@ -242,8 +313,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     admitted.assertStillValid();
     if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before admission");
     const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl: lease.url });
-    const runtimeIdentity = await nativeRuntimeIdentity(signal);
-    const admissionInput = { request, holder: spec.holder, runtimeIdentity, bootPlan: plan };
+    assertNesting();
+    const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };
     const admission = await createMxcExtensionAdmission({ ...admissionInput, probe: spec.probe, signal });
     const child = await spawnMxcExtensionProcess(request, {
       signal,
@@ -255,7 +326,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
         admitted.assertStillValid();
         assertManagedChildProcessAdmissionOpen(spec.label);
         if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
-        consumeMxcExtensionAdmission(admission, admissionInput);
+        assertNesting();
+        consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
       },
     });
     native = child;
@@ -292,7 +364,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   }
   if (extensionPlan?.selectedBackend === "mxc") {
     assertMxcWorkerTransport(spec.egressOwner);
-    throw new MxcProcessContractError("Selected container backend requires the native stream adapter");
+    throw new MxcNativeEntryRequiredError();
   }
   spec.assertStillValid?.();
   const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];

@@ -1491,6 +1491,7 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     ["macos-sandbox", "macOS 샌드박스"],
     ["linux-bubblewrap", "Linux 샌드박스(bubblewrap)"],
     ["windows-srt", "Windows 샌드박스"],
+    ["windows-mxc", "Windows MXC 컨테이너"],
     ["unconfined", "OS 샌드박스 없음"],
   ] as const)("names a child spawned under %s in the Doctor panel", async (confinement, text) => {
     showCards([{
@@ -1658,6 +1659,7 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
       "pluginConfigTab.confinementMacosSandbox",
       "pluginConfigTab.confinementLinuxBubblewrap",
       "pluginConfigTab.confinementWindowsSrt",
+      "pluginConfigTab.confinementWindowsMxc",
       "pluginConfigTab.confinementUnconfined",
       "pluginConfigTab.confinementNotSpawned",
       "pluginConfigTab.lastUpdateRefused",
