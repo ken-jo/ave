@@ -387,6 +387,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "pluginConfigTab.confinementMacosSandbox": "macOS 샌드박스",
   "pluginConfigTab.confinementLinuxBubblewrap": "Linux 샌드박스(bubblewrap)",
   "pluginConfigTab.confinementWindowsSrt": "Windows 샌드박스",
+  "pluginConfigTab.confinementWindowsMxc": "Windows MXC 컨테이너",
   "pluginConfigTab.confinementUnconfined": "OS 샌드박스 없음",
   "pluginConfigTab.confinementNotSpawned": "프로세스 시작 전",
   "pluginConfigTab.lastUpdateRefused": "마지막 업데이트 거부됨: {message}",

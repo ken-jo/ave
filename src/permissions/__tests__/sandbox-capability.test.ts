@@ -31,6 +31,7 @@ import {
   unmarkPluginWorkerWrapped,
   setWindowsSandboxSubstrate,
   getWindowsSandboxSubstrate,
+  getWindowsExtensionBackendPlan,
   detectMxcShellCapability,
   detectPluginWorkerSandboxCapability,
   __resetWindowsSandboxSubstrateForTest,
@@ -40,6 +41,7 @@ import {
   mxcShellCapability,
   planWindowsSandbox,
   windowsProxyOnlyCapability,
+  windowsSubstrateFor,
 } from "../../boot/steps/windows-sandbox-plan.js";
 import type { ToolCategory } from "../../tools/types.js";
 
@@ -726,4 +728,59 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     expect(plan.substrate).toBe("none");
     expect(plan.requiresExplicitUserApproval).toBe(true);
   });
+});
+
+describe("extension selection is not per-process confinement evidence", () => {
+  afterEach(() => {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    __resetWindowsSandboxSubstrateForTest();
+  });
+
+  it("does not borrow the account backend's dimensions for selected container extensions", () => {
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32",
+      reason: "account backend active", confines: { filesystem: true, process: false, network: true } });
+    const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+      mxc: { state: "available" }, extensionMxc: { state: "available" },
+      windowsBuild: null, srtWinReady: true });
+    setWindowsSandboxSubstrate(substrate);
+    expect(detectPluginWorkerSandboxCapability()).toMatchObject({ kind: "none", confines: { filesystem: false, process: false, network: false } });
+    markPluginWorkerWrapped("sample", "worker");
+    try {
+      expect(resolveReviewerSandboxCapability("plugin", "query", undefined, "worker", "sample").kind).toBe("none");
+    } finally { unmarkPluginWorkerWrapped("sample", "worker"); }
+  });
+
+  it("keeps an identical extension plan's identity when the shell probe settles, and replaces it on a content change", () => {
+    const inputs = { shellRequested: true, workerRequested: true, mxc: { state: "checking" },
+      extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false } as const;
+    setWindowsSandboxSubstrate(windowsSubstrateFor(inputs, "proxy-only"));
+    const recorded = getWindowsSandboxSubstrate();
+    const plan = getWindowsExtensionBackendPlan();
+    const settled = windowsSubstrateFor({ ...inputs, mxc: { state: "available" } }, "proxy-only");
+    setWindowsSandboxSubstrate(settled, mxcShellCapability());
+    expect(getWindowsSandboxSubstrate()).not.toBe(recorded);
+    expect(getWindowsExtensionBackendPlan()).toBe(plan);
+    setWindowsSandboxSubstrate(windowsSubstrateFor({ ...inputs, extensionMxc: { state: "unavailable", reason: "runtime-start-failed" } }, "proxy-only"));
+    expect(getWindowsExtensionBackendPlan()).not.toBe(plan);
+    expect(getWindowsExtensionBackendPlan()).toMatchObject({ readiness: "unavailable" });
+  });
+
+  it("rejects a container extension claim without dedicated ready evidence", () => {
+    const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+      mxc: { state: "available" }, windowsBuild: null, srtWinReady: true });
+    expect(() => setWindowsSandboxSubstrate({ ...substrate, extensions: "mxc" })).toThrow(/dedicated ready request evidence/);
+  });
+});
+
+it("rejects serialized extension posture and outer egress contradictions at publication", () => {
+  const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+    mxc: { state: "available" }, extensionMxc: { state: "available" },
+    windowsBuild: null, srtWinReady: false });
+  expect(() => setWindowsSandboxSubstrate({ ...substrate, extensionEgressIdentity: "shared" })).toThrow(/extension egress identity/);
+  expect(() => setWindowsSandboxSubstrate({ ...substrate, shellEgressIdentity: "kernel-channel" })).toThrow(/shell egress identity/);
+  const malformed = JSON.parse(JSON.stringify(substrate)) as typeof substrate;
+  Object.assign(malformed.extensionPlan!, { proxyOwnerVerified: true });
+  expect(() => setWindowsSandboxSubstrate(malformed)).toThrow(/Invalid Windows extension backend plan/);
 });

@@ -4,7 +4,7 @@ import type { ChildProcess } from "node:child_process";
 import type { MxcProcess, ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { describe, expect, it, vi } from "vitest";
 import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
-import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
+import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, spawnMxcExtensionProcessForDiagnostics, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
 import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
 import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
@@ -38,7 +38,7 @@ function transportFixture() {
     void service.then(() => child.emit("close", 0, null), () => child.emit("close", 1, null));
     return child;
   });
-  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void) => _spawnMxcExtensionProcessForTest(createMxcExtensionRequest(), "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle);
+  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void) => _spawnMxcExtensionProcessForTest(createMxcExtensionRequest(), "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle, beforeSpawn, onOwned);
   return { fixture, probe, spawn, bootstrap, runtime, launch, fatal, get child() { return child; }, get liveness() { return liveness; }, get service() { return service; } };
 }
 
@@ -50,7 +50,13 @@ async function collect(stream: PassThrough): Promise<Buffer> {
 
 describe("supervisor transport and lifecycle with an injected SDK (unit only)", () => {
   it("requires the supported platform and a packaged installation on the public path", async () => {
-    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), { beforeSpawn: () => {} })).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    await expect(spawnMxcExtensionProcessForDiagnostics(createMxcExtensionRequest())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+  });
+
+  it("refuses a production native spawn that carries no row-2 admission at the spawn boundary", async () => {
+    const unadmitted = { signal: new AbortController().signal } as unknown as Parameters<typeof spawnMxcExtensionProcess>[1];
+    await expect(spawnMxcExtensionProcess(createMxcExtensionRequest(), unadmitted)).rejects.toThrow(/requires row-2 admission/);
   });
 
   it("forwards binary stdin, stdout, stderr and terminal status, omitting telemetry", async () => {
@@ -74,6 +80,54 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     await owned.dispose();
     expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
     expect(f.fatal).not.toHaveBeenCalled();
+  });
+
+  it("revalidates admission after bootstrap and native probing before authorizing spawn", async () => {
+    const f = transportFixture();
+    const beforeSpawn = vi.fn(() => {
+      expect(f.bootstrap).toHaveBeenCalledOnce();
+      expect(f.probe).toHaveBeenCalledOnce();
+      expect(f.runtime.auditModules).toHaveBeenCalledOnce();
+      expect(f.spawn).not.toHaveBeenCalled();
+    });
+    const owned = await f.launch(undefined, undefined, beforeSpawn);
+    expect(beforeSpawn).toHaveBeenCalledOnce();
+    expect(f.spawn).toHaveBeenCalledOnce();
+    await owned.dispose();
+  });
+
+  it("refuses roots changed during native bootstrap without creating a container", async () => {
+    const f = transportFixture();
+    let valid = true;
+    f.bootstrap.mockImplementation(async () => { valid = false; return f.runtime; });
+    const beforeSpawn = vi.fn(() => { if (!valid) throw new Error("Admitted root identity changed"); });
+    await expect(f.launch(undefined, undefined, beforeSpawn)).rejects.toMatchObject({
+      name: "MxcProcessContractError", message: "Extension admission revalidation failed",
+    });
+    expect(beforeSpawn).toHaveBeenCalledOnce();
+    expect(f.spawn).not.toHaveBeenCalled();
+    await f.service;
+    expect(f.fatal).not.toHaveBeenCalled();
+  });
+
+  it("refuses asynchronous admission checks without creating a container", async () => {
+    const f = transportFixture();
+    await expect(f.launch(undefined, undefined, async () => {})).rejects.toBeInstanceOf(MxcProcessContractError);
+    expect(f.spawn).not.toHaveBeenCalled();
+    await f.service;
+  });
+
+  it("hands ownership to the caller before bootstrap or startup cleanup can fail", async () => {
+    const f = transportFixture();
+    const onOwned = vi.fn((owned: OwnedMxcExtensionProcess) => {
+      expect(owned.dispose).toBeTypeOf("function");
+      expect(f.bootstrap).not.toHaveBeenCalled();
+    });
+    f.bootstrap.mockRejectedValue(new MxcIntegrityError("Rejected runtime"));
+    await expect(f.launch(undefined, undefined, undefined, onOwned)).rejects.toBeInstanceOf(MxcIntegrityError);
+    expect(onOwned).toHaveBeenCalledOnce();
+    expect(f.spawn).not.toHaveBeenCalled();
+    await f.service.catch(() => {});
   });
 
   it("stops idempotently and drains output even when the caller stopped reading", async () => {
@@ -113,7 +167,10 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const frames = host.frames();
     try {
       await host.send({ type: "start", request: createMxcExtensionRequest() });
-      for (const type of ["creating", "spawning"]) expect((await frames.next()).value?.type).toBe(type);
+      expect((await frames.next()).value?.type).toBe("creating");
+      expect(f.spawn).not.toHaveBeenCalled();
+      await host.send({ type: "spawn-authorized" });
+      expect((await frames.next()).value?.type).toBe("spawning");
       if (delayed) {
         if (action === "channel-eof-before-native") await host.end();
         else liveness.end();
@@ -141,7 +198,29 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     }
   }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs / 2);
 
+  it("cancels while awaiting final admission authorization without native creation", async () => {
+    const f = transportFixture();
+    const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
+    const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
+    const host = new MxcExtensionChannel(events, controls, generation, key, "host");
+    const service = serveMxcSupervisor(new MxcExtensionChannel(controls, events, generation, key, "supervisor"), liveness, f.bootstrap, f.fatal);
+    const frames = host.frames();
+    try {
+      await host.send({ type: "start", request: createMxcExtensionRequest() });
+      expect((await frames.next()).value?.type).toBe("creating");
+      await host.send({ type: "stop" });
+      expect((await frames.next()).value).toMatchObject({ type: "stopped", spawnPendingAtCancellation: false });
+      await expect(service).resolves.toBeUndefined();
+      expect(f.spawn).not.toHaveBeenCalled();
+      expect(f.fatal).not.toHaveBeenCalled();
+    } finally {
+      controls.destroy(); events.destroy(); liveness.destroy();
+      await frames.return(undefined);
+    }
+  });
+
   it("retains the pin when connected cancellation arrives between creation and observation", async () => {
+
     const f = transportFixture();
     const controls = new PassThrough(), events = new PassThrough(), liveness = new PassThrough();
     const key = Buffer.alloc(32, 7), generation = "a".repeat(64);
@@ -153,7 +232,9 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     const frames = host.frames();
     try {
       await host.send({ type: "start", request: createMxcExtensionRequest() });
-      for (const type of ["creating", "spawning", "native-created"]) expect((await frames.next()).value?.type).toBe(type);
+      expect((await frames.next()).value?.type).toBe("creating");
+      await host.send({ type: "spawn-authorized" });
+      for (const type of ["spawning", "native-created"]) expect((await frames.next()).value?.type).toBe(type);
       await host.send({ type: "stop" });
       await vi.waitFor(() => expect(f.fixture.native.dispose).toHaveBeenCalledOnce());
       await new Promise<void>((resolve) => setImmediate(resolve));

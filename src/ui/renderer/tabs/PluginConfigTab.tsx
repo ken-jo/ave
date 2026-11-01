@@ -61,6 +61,7 @@ const CONFINEMENT_I18N_KEY: Record<NonNullable<PluginCardSummary["confinement"]>
   "macos-sandbox": "pluginConfigTab.confinementMacosSandbox",
   "linux-bubblewrap": "pluginConfigTab.confinementLinuxBubblewrap",
   "windows-srt": "pluginConfigTab.confinementWindowsSrt",
+  "windows-mxc": "pluginConfigTab.confinementWindowsMxc",
   unconfined: "pluginConfigTab.confinementUnconfined",
   "not-spawned": "pluginConfigTab.confinementNotSpawned",
 };

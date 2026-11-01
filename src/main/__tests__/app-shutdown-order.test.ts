@@ -146,6 +146,39 @@ beforeEach(() => {
 });
 
 describe("runAppShutdownCleanup ordering (critic M1)", () => {
+  it.each(["normal", "incomplete"] as const)("retries retained native cleanup before the %s generic child drain", async (mode) => {
+    const services = makeServices();
+    getServices.mockReturnValue(mode === "normal" ? services : undefined);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    const { registerMxcHolderLifetime } = await import("../../permissions/mxc-holder-lifetime.js");
+    const cleanup = vi.fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("Native cleanup initially unverified"))
+      .mockImplementation(async () => {
+        calls.push("nativeHolderCleanup");
+        expect(() => registerMxcHolderLifetime("late-holder", async () => {})).toThrow("admission is closed");
+      });
+    await expect(registerMxcHolderLifetime("retained-holder", cleanup).release()).rejects.toThrow("initially unverified");
+    const outcome = mode === "normal"
+      ? await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
+      : await shutdown.runIncompleteBootShutdown();
+    expect(outcome).toBe("completed");
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(calls.indexOf("nativeHolderCleanup")).toBeLessThan(calls.indexOf("drainManagedChildren"));
+  });
+
+  it("attempts native holder cleanup after an earlier stage fails and before the force-kill backstop", async () => {
+    getServices.mockReturnValue(makeServices());
+    stopDocumentEngineSessions.mockRejectedValueOnce(new Error("Earlier shutdown stage failed"));
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    const { registerMxcHolderLifetime } = await import("../../permissions/mxc-holder-lifetime.js");
+    registerMxcHolderLifetime("retained-holder", async () => { calls.push("nativeHolderCleanup"); });
+    expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("failed");
+    expect(calls.indexOf("nativeHolderCleanup")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("nativeHolderCleanup")).toBeLessThan(calls.indexOf("forceKillManagedChildren"));
+  });
+
   it("drains partial bootstrap callbacks and children without published AppServices", async () => {
     getServices.mockReturnValue(undefined);
     vi.resetModules();

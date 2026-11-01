@@ -112,7 +112,7 @@ describe("bounded supervisor frames", () => {
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
   });
 
-  it.each(["creating", "spawning"] as const)("authenticates the native creation receipt %s", (type) => {
+  it.each(["creating", "spawning", "spawn-authorized"] as const)("authenticates the native creation receipt %s", (type) => {
     const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type };
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
   });

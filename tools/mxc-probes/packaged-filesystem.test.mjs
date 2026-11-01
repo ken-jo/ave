@@ -107,3 +107,21 @@ test("retained deletion status distinguishes no launch from uncertain process de
     { processCleanup: [{ cleanupDeathVerified: true, cleanupError: "unconfirmed" }] },
   ]) assert.equal((await finalizePackagedObservation({ ...evidence, ...partial }, root, true, io)).retainedTempRemovalSafe, false);
 });
+
+test("verified removal refuses a run tree containing a link and leaves the link target intact", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "packaged-link-refusal-"));
+  try {
+    const run = path.join(root, "run"), outside = path.join(root, "outside");
+    await mkdir(run); await mkdir(outside);
+    await writeFile(path.join(outside, "keep.txt"), "keep");
+    const { symlink } = await import("node:fs/promises");
+    // A junction needs no privilege on Windows; elsewhere a directory symlink is the same redirection.
+    await symlink(outside, path.join(run, "planted"), process.platform === "win32" ? "junction" : "dir");
+    const result = await finalizePackagedObservation({ spawned: true, observations: Array.from({ length: 6 }, () => ({ passed: true })),
+      processCleanup: [{ cleanupDeathVerified: true }], unverifiedProcesses: [] }, run, true);
+    assert.equal(result.tempRemoved, false);
+    assert.equal(result.verdict, "inconclusive");
+    assert.equal(result.finalizationErrors?.[0]?.stage, "remove-temp");
+    assert.equal(await readFile(path.join(outside, "keep.txt"), "utf8"), "keep");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

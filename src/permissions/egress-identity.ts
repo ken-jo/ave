@@ -1,4 +1,4 @@
-// On macOS/Linux, each sandbox reaches only its own kernel-bound listener and asks must vouch for listener identity. Windows identity stays shared except for host-owned shell relays; terminals and client usernames remain shared.
+// Endpoint-scoped listeners bind an invocation, without authenticating the proxy process owner. Terminals and client usernames retain shared identity.
 import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 
 // Whether ASRT opens a per-invocation listener on this platform.
@@ -15,9 +15,9 @@ export function noteAsrtUnixSocketPolicy(allowAllUnixSockets: boolean): void {
 
 // Identity strength for a runtime-produced ask context; never pass client-provided identity.
 export function egressIdentityStrength(
-  kind: "shell" | "extension",
+  _kind: "shell" | "extension",
   context?: { readonly identity?: "listener" | "username" },
 ): EgressIdentityStrength {
-  if (process.platform === "win32" && kind === "shell" && context?.identity === "listener") return "kernel-channel";
+  if (process.platform === "win32" && context?.identity === "listener") return "kernel-channel";
   return asrtInvocationListenersSupported() && !macUnixSocketsOpen ? "kernel-channel" : "shared";
 }

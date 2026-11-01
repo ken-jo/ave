@@ -24,6 +24,8 @@ export const TOOL_TIMEOUT_POLICY = {
   windowsAclRequestMs: 15_000,
   // Bound policy delivery even when the container launcher never connects.
   mxcRequestTransportMs: 15_000,
+  // Exact installed extension runtime/request readiness must settle before a holder is admitted.
+  mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.
   workloadBrokerPreEffectHandshakeMs: 15_000,
   // Receipt transport grace does not extend the operation deadline.

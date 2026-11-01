@@ -103,7 +103,7 @@ describe("independent pin-inspector routing", () => {
     const main = await readFile("tools/mxc-probes/packaged-main.ts", "utf8");
     const driver = await readFile("tools/mxc-probes/packaged.mjs", "utf8");
     expect(main).toContain("openPackagedObserver(observerExecutable, PINS)");
-    expect(main).toContain("await spawnMxcExtensionProcess(request,");
+    expect(main).toContain("await spawnMxcExtensionProcessForDiagnostics(request,");
     expect(driver).toContain('randomBytes(16).toString("hex"), budgets, original)');
     expect(driver).not.toContain("rm(planted)");
   });

@@ -131,8 +131,11 @@ import {
   setActiveSandboxCapability,
   __resetActiveSandboxCapabilityForTest,
   __resetWrappedPluginWorkersForTest,
+  __resetWindowsSandboxSubstrateForTest,
   isPluginWorkerWrapped,
+  setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
+import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
 import { resolvePluginChildEntryPath } from "../confined-child.js";
@@ -226,6 +229,20 @@ afterEach(() => {
   setProcessPlatform(REAL_PLATFORM);
   __resetActiveSandboxCapabilityForTest();
   __resetWrappedPluginWorkersForTest();
+});
+
+describe("spawnWorker — selected container backend", () => {
+  afterEach(() => __resetWindowsSandboxSubstrateForTest());
+
+  it("refuses an unmigrated worker with the D1 worker transport code before any process exists", async () => {
+    setProcessPlatform("win32");
+    const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
+      mxc: { state: "available" }, extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
+    setWindowsSandboxSubstrate(substrate);
+    await expect(spawnWorker({ pluginId: "sample", workerId: "control", command: "C:/runtime/worker.exe" }))
+      .rejects.toMatchObject({ code: "worker-transport-unsupported" });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 });
 
 // Gate OFF — plain unwrapped spawn
