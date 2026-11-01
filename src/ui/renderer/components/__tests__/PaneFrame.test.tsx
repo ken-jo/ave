@@ -527,6 +527,24 @@ describe("useChatGroups", () => {
     expect(result.current.groups.map((group) => group.id)).toEqual(before);
   });
 
+  it("opens a conversation picked beside a busy single tile on its own, not as a split", () => {
+    const { result } = renderCanvasGroups();
+    act(() => { result.current.adopt("main", () => true, { width: 1200, height: 800 }, "alone"); });
+    expect(result.current.focusedId).toBe("group-2");
+    expect(drawn(result.current.groups)).toEqual(["group-2"]);
+    // The busy conversation keeps its tile; picking it again brings it back the same way.
+    act(() => result.current.focus("main"));
+    expect(drawn(result.current.groups)).toEqual(["main"]);
+  });
+
+  it("keeps a split the user already made when a picked conversation adopts a tile", () => {
+    const { result } = renderCanvasGroups();
+    act(() => result.current.split("main", "row"));
+    act(() => { result.current.adopt("main", () => true, undefined, "alone"); });
+    expect(result.current.maximizedId).toBeNull();
+    expect(drawn(result.current.groups)).toEqual(["main", "group-3", "group-2"]);
+  });
+
   it("maximizes an adopted tile when the available size cannot carry a split", () => {
     const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));

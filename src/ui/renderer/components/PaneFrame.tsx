@@ -763,11 +763,13 @@ export function useChatGroups(canvasElement: HTMLElement | null) {
   }, [tree]);
 
   /** Adoption respects the loop ceiling; at capacity release only an idle, non-focused group and disclose lost
-   * draft/scroll state. */
+   * draft/scroll state. `alone` is for a gesture that never asked for a split (picking a conversation in the sidebar): on a
+   * canvas showing one tile, the new tile is maximized so the busy one keeps running out of view instead of opening a split. */
   const adopt = useCallback((
     besideGroupId: string,
     isIdle: (chatGroupId: string) => boolean,
     canvasSize: { width: number; height: number } | undefined,
+    reveal: "beside" | "alone" = "beside",
   ): { chatGroupId: string; released: string | null } | null => {
     let released: string | null = null;
     // Either ceiling forces the swap — the newcomer needs both a loop and a tile, so whichever is full is the one that has to
@@ -808,7 +810,10 @@ export function useChatGroups(canvasElement: HTMLElement | null) {
     });
     setFocusedId(id);
     // Narrow adoption changes focus only; keep the user's wide-canvas maximized choice.
-    if (!isSingleTile) setMaximizedId(splitFits(besideGroupId, "row", canvasSize) ? null : id);
+    const showsOneTile = countLeaves(tree) === 1 || maximizedId !== null;
+    if (!isSingleTile) {
+      setMaximizedId(reveal === "alone" && showsOneTile ? id : splitFits(besideGroupId, "row", canvasSize) ? null : id);
+    }
     return { chatGroupId: id, released };
   }, [tree, focusedId, splitFits, isSingleTile, maximizedId, conversationIds]);
 
