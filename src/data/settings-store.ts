@@ -1710,7 +1710,7 @@ export class SettingsService {
   }
 
   // Historical note: hasApiKey() only checked the single `llm.apiKey` key, while the IPC handler uses vendor-specific `llm.apiKey.<vendor>`
-  // secrets. Keep callers on the explicit `getSecret(...)` path so future vendor checks cannot accidentally return false for configured credentials.
+  // secrets. Presence checks name the exact vendor key through `hasStoredSecret(...)` so they cannot return false for configured credentials.
 
   private loadSettings(appVersion: string | undefined, systemLocale: string | undefined): { settings: AppSettings; writeBack: boolean } {
     if (!existsSync(this.settingsPath)) {

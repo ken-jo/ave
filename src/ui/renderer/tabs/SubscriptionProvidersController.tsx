@@ -153,7 +153,7 @@ export function useSubscriptionProviders(api: AveApi) {
     }
   }, [api, applySettings]);
 
-  const refreshStatus = useCallback(async (provider: SubscriptionRuntimeId) => {
+  const refreshStatus = useCallback(async (provider: SubscriptionRuntimeId, options?: { refresh: true }) => {
     const revision = ++statusRevisionByProviderRef.current[provider];
     setStates((current) => ({
       ...current,
@@ -161,7 +161,7 @@ export function useSubscriptionProviders(api: AveApi) {
     }));
     let result: SubscriptionRuntimeActionResult;
     try {
-      result = await api.subscriptionRuntimeStatus(provider);
+      result = await (options ? api.subscriptionRuntimeStatus(provider, options) : api.subscriptionRuntimeStatus(provider));
     } catch {
       result = safeFailure();
     }
@@ -387,7 +387,8 @@ export function useSubscriptionProviders(api: AveApi) {
   chatSelectionBusy,
   apiChatError,
   actions: {
-    refreshStatus,
+    // The user's "check again" bypasses main's settled-status cache.
+    refreshStatus: (provider) => refreshStatus(provider, { refresh: true }),
     configureRuntime: async (provider) => {
       await runAction(
         provider,

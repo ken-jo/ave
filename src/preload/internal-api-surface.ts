@@ -234,8 +234,10 @@ export function buildInternalApiSurface() {
   codexSubscriptionCancelLogin: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionCancelLogin),
   codexSubscriptionLogout: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionLogout),
   codexSubscriptionListModels: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionListModels),
-  subscriptionRuntimeStatus: async (provider: unknown) =>
-    ipcRenderer.invoke(CHANNELS.settings.subscriptionRuntimeStatus, provider),
+  subscriptionRuntimeStatus: async (provider: unknown, options?: unknown) =>
+    options === undefined
+      ? ipcRenderer.invoke(CHANNELS.settings.subscriptionRuntimeStatus, provider)
+      : ipcRenderer.invoke(CHANNELS.settings.subscriptionRuntimeStatus, provider, options),
   subscriptionChooseRuntime: async (provider: unknown) =>
     ipcRenderer.invoke(CHANNELS.settings.subscriptionChooseRuntime, provider),
   subscriptionForgetRuntime: async (provider: unknown) =>
