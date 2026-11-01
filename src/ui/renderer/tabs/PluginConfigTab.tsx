@@ -22,7 +22,9 @@ import {
   resolvePluginProtocolUpdatePath,
   type PluginProtocolUpdatePath,
 } from "./plugin-doctor-match.js";
-import { requestUpdateReview } from "./git-marketplace/update-review-request.js";
+import { requestDirectInstall, requestUpdateReview } from "./git-marketplace/update-review-request.js";
+import { requestNewChatDraft } from "../chat-draft-request.js";
+import { buildProtocol4MigrationPrompt } from "./plugin-migration-prompt.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -710,25 +712,32 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         </div>
       )}
 
-      {isDevMode && (
-        <div className="flex min-w-0 flex-col gap-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0 space-y-0.5">
-            <p className="text-xs font-medium text-warning">{t("pluginConfigTab.devToolsTitle")}</p>
-            <p className="text-[11px] text-warning/(--opacity-intense)">
-              {t("pluginConfigTab.devToolsDescription")}
-            </p>
-          </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {isDevMode && (
           <Button
             size="sm"
-            variant="outline"
-            className="h-7 self-start shrink-0 text-xs border-warning/(--opacity-half) text-warning hover:bg-warning/(--opacity-light) sm:self-auto"
+            variant="ghost"
+            className="h-7 text-xs text-warning"
+            data-testid="plugin-config:install-unreviewed"
             onClick={() => void handleInstallLocal()}
             disabled={localInstalling}
           >
-            {localInstalling ? t("pluginConfigTab.phaseInstalling") : t("pluginConfigTab.installFromLocalFolder")}
+            {localInstalling ? t("pluginConfigTab.phaseInstalling") : t("pluginConfigTab.installUnreviewedDev")}
           </Button>
-        </div>
-      )}
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          data-testid="plugin-config:install-folder"
+          onClick={() => {
+            requestDirectInstall();
+            onNavigate?.("marketplace");
+          }}
+        >
+          {t("pluginConfigTab.installFromFolder")}
+        </Button>
+      </div>
 
       {loading ? (
         <p className="text-xs text-muted-foreground">{t("pluginConfigTab.loading")}</p>
@@ -895,23 +904,49 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       </span>
                     )}
                     {selectedPlugin.loadStatus === "failed" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs px-2"
-                        data-testid={`plugin-config:doctor:${selectedPlugin.id}`}
-                        onClick={() => void handleDoctorPlugin(selectedPlugin)}
-                        disabled={doctoringId === selectedPlugin.id}
-                      >
-                        {doctoringId === selectedPlugin.id
-                          ? t("pluginConfigTab.phaseInstalling")
-                          : t("pluginConfigTab.doctorButton")}
-                      </Button>
+                      selectedPlugin.installFailureKind === "incompatible-host-protocol" && protocolUpdatePath?.kind === "catalog" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs px-2"
+                          data-testid={`plugin-config:protocol-update-button:${selectedPlugin.id}`}
+                          onClick={() => {
+                            requestUpdateReview([{ key: protocolUpdatePath.key }]);
+                            onNavigate?.("marketplace");
+                          }}
+                        >
+                          {t("pluginConfigTab.protocolUpdateButton", { version: protocolUpdatePath.version })}
+                        </Button>
+                      ) : selectedPlugin.installFailureKind === "incompatible-host-protocol" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs px-2"
+                          data-testid={`plugin-config:doctor-migrate:${selectedPlugin.id}`}
+                          onClick={() => requestNewChatDraft(buildProtocol4MigrationPrompt(selectedPlugin, protocolUpdatePath))}
+                        >
+                          {t("pluginConfigTab.doctorMigrateButton")}
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs px-2"
+                          data-testid={`plugin-config:doctor:${selectedPlugin.id}`}
+                          onClick={() => void handleDoctorPlugin(selectedPlugin)}
+                          disabled={doctoringId === selectedPlugin.id}
+                        >
+                          {doctoringId === selectedPlugin.id
+                            ? t("pluginConfigTab.phaseInstalling")
+                            : t("pluginConfigTab.doctorButton")}
+                        </Button>
+                      )
                     )}
                     <Button
                       size="sm"
                       variant="destructive"
                       className="h-7 text-xs px-2"
+                      data-testid={`plugin-config:remove:${selectedPlugin.id}`}
                       onClick={() => setUninstallTarget(selectedPlugin)}
                       disabled={saving}
                     >
@@ -986,51 +1021,16 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             </p>
                           </div>
                         ) : null}
-                        {selectedPlugin.installFailureKind === "incompatible-host-protocol" && protocolUpdatePath && (
+                        {selectedPlugin.installFailureKind === "incompatible-host-protocol" && protocolUpdatePath && protocolUpdatePath.kind !== "catalog" && (
                           <div className="mt-2 text-xs" data-testid={`plugin-config:protocol-update:${selectedPlugin.id}`}>
-                            {protocolUpdatePath.kind === "catalog" ? (
-                              <Button size="sm" variant="outline" onClick={() => {
-                                requestUpdateReview([{ key: protocolUpdatePath.key }]);
-                                onNavigate?.("marketplace");
-                              }}>
-                                {t("pluginConfigTab.protocolUpdateCatalog", { version: protocolUpdatePath.version })}
-                              </Button>
-                            ) : protocolUpdatePath.kind === "repository" ? (
-                              <div>
+                            {protocolUpdatePath.kind === "repository" ? (
+                              <>
                                 <p>{t("pluginConfigTab.protocolUpdateRepository", { source: protocolUpdatePath.sourceLabel })}</p>
                                 <p className="break-all font-mono">{protocolUpdatePath.url}</p>
-                                {protocolUpdatePath.url.startsWith("https://") && (
-                                  <Button size="sm" variant="outline" onClick={() => void getApi().openExternalUrl(protocolUpdatePath.url)}>
-                                    {t("pluginConfigTab.protocolOpenRepository")}
-                                  </Button>
-                                )}
-                              </div>
+                              </>
                             ) : <p>{t("pluginConfigTab.protocolUpdateUnavailable")}</p>}
                           </div>
                         )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 border-destructive/(--opacity-medium) px-2 text-xs text-destructive hover:bg-destructive/(--opacity-light)"
-                          onClick={() => void handleDoctorPlugin(selectedPlugin)}
-                          disabled={doctoringId === selectedPlugin.id}
-                        >
-                          {doctoringId === selectedPlugin.id
-                            ? t("pluginConfigTab.phaseInstalling")
-                            : t("pluginConfigTab.doctorButton")}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          className="h-7 px-2 text-xs"
-                          data-testid={`plugin-config:doctor-remove:${selectedPlugin.id}`}
-                          onClick={() => setUninstallTarget(selectedPlugin)}
-                          disabled={saving}
-                        >
-                          {t("pluginConfigTab.uninstallButton")}
-                        </Button>
                       </div>
                     </div>
                   </div>

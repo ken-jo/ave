@@ -96,6 +96,7 @@ import type { MarketplaceAnnouncementActionTarget } from "../../shared/marketpla
 import { useBootstrapStatus } from "./hooks/use-bootstrap-status.js";
 import { usePluginMarketplace } from "./hooks/use-plugin-marketplace.js";
 import { requestUpdateReview } from "./tabs/git-marketplace/update-review-request.js";
+import { onNewChatDraft } from "./chat-draft-request.js";
 import type { PackageUpdateView } from "../../shared/git-marketplace.js";
 import { usePluginAuthStatuses } from "./hooks/use-plugin-auth-status.js";
 import { useRolePresets } from "./hooks/use-role-presets.js";
@@ -1356,6 +1357,13 @@ export function App() {
     activeProject, adoptGroupBeside, defaultWorkspaceProject, focusedSession,
     resolveKnownProject, setActiveView, streaming,
   ]);
+
+  // A draft prepared elsewhere (Doctor's migration) lands in a fresh conversation's composer once that tile is drawn.
+  useEffect(() => onNewChatDraft((draft) => {
+    void handleNewChat().then(() => {
+      setTimeout(() => chatGroupSessions.read(chatGroupsRef.current.focusedId)?.prefillComposer(draft), 0);
+    });
+  }), [chatGroupSessions, handleNewChat]);
 
   // Refresh the conversation list after every row mutation.
   const conversationActions = useMemo<ConversationRowActions>(() => {
