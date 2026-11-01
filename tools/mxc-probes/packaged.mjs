@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { cp, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir, release } from "node:os";
 import { setTimeout as pause } from "node:timers/promises";
@@ -9,18 +9,14 @@ import { writeProbeJson } from "./packaged-processes.mjs";
 import { pinRuntimeProcesses } from "./process-lifecycle.mjs";
 import { loadBudgets, safeEnvironment } from "./probe-common.mjs";
 import { cancellationObservation, exactOwnedPath, finalizePackagedObservation, ownerHandleObservationPassed, packagedProbeOptions, plantedDllRejected, stdioObservation, terminatePinnedProcess } from "./packaged-protocol.mjs";
+import { copyPackagedTree } from "./packaged-filesystem.mjs";
 
-async function assertOrdinaryTree(directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const file = path.join(directory, entry.name);
-    if ((await lstat(file)).isSymbolicLink()) throw new Error("Packaged probe refuses redirected source files");
-    if (entry.isDirectory()) await assertOrdinaryTree(file);
-  }
-}
 function imageKey(file) { return path.win32.normalize(file).toLowerCase(); }
 
-function jsonChild(executable, entry, directory, mode, token, budgets, observerExecutable) {
+function jsonChild(observation, executable, entry, directory, mode, token, budgets, observerExecutable) {
   const child = spawn(executable, [entry, directory, mode, token, observerExecutable], { cwd: directory, env: safeEnvironment(directory), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  if (child.pid !== undefined) observation.spawned = true;
+  child.once("spawn", () => { observation.spawned = true; });
   const frames = [];
   let pending = "", diagnostic = "", bytes = 0, ended = false, failure;
   const closed = new Promise((resolve) => {
@@ -62,8 +58,7 @@ function jsonChild(executable, entry, directory, mode, token, budgets, observerE
   };
 }
 
-async function main() {
-  const result = { probe: "packaged-extension-process", verdict: "inconclusive", nativeVerified: false, observations: [], cleanupVerified: false };
+async function main(result) {
   if (process.platform !== "win32" || process.arch !== "x64") return { ...result, verdict: "unavailable", reason: "Run from a standard-user interactive Windows x64 desktop session" };
   const { executable } = packagedProbeOptions(process.argv.slice(2));
   const original = await realpath(executable);
@@ -79,8 +74,7 @@ async function main() {
   let cleanupVerified = true;
   const processes = [];
   try {
-    await assertOrdinaryTree(path.dirname(original));
-    await cp(path.dirname(original), copyRoot, { recursive: true, dereference: false });
+    await copyPackagedTree(path.dirname(original), copyRoot);
     const copiedExecutable = await realpath(path.join(copyRoot, path.basename(original)));
     const entry = path.join(copyRoot, "resources/app.asar/dist/src/main/mxc-packaged-probe.js");
     const addRecord = (run, role, pid, handle) => {
@@ -94,7 +88,7 @@ async function main() {
       await copyFile(new URL("./packaged-fixture.mjs", import.meta.url), path.join(directory, "fixture.mjs"));
       await copyFile(new URL("./packaged-processes.mjs", import.meta.url), path.join(directory, "packaged-processes.mjs"));
       const launchedAfter = native.now();
-      const run = jsonChild(copiedExecutable, entry, directory, mode, randomBytes(16).toString("hex"), budgets, original);
+      const run = jsonChild(result, copiedExecutable, entry, directory, mode, randomBytes(16).toString("hex"), budgets, original);
       run.launchedAfter = launchedAfter; processes.push(run);
       await run.waitFor((frame) => frame.event === "main-ready");
       const [handle] = await pinRuntimeProcesses(native, [run.child.pid], launchedAfter, copiedExecutable, async () => {
@@ -267,8 +261,9 @@ async function main() {
   }
   return result;
 }
+const result = { probe: "packaged-extension-process", verdict: "inconclusive", nativeVerified: false, observations: [], cleanupVerified: false, spawned: false };
 try {
-  const result = await main(); process.stdout.write(JSON.stringify(result) + "\n"); process.exitCode = result.verdict === "measured" ? 0 : 2;
+  const observation = await main(result); process.stdout.write(JSON.stringify(observation) + "\n"); process.exitCode = observation.verdict === "measured" ? 0 : 2;
 } catch (error) {
-  process.stdout.write(JSON.stringify({ probe: "packaged-extension-process", verdict: "error", nativeVerified: false, cleanupVerified: false, reason: error.message }) + "\n"); process.exitCode = 2;
+  process.stdout.write(JSON.stringify({ ...result, verdict: "error", nativeVerified: false, cleanupVerified: false, retainedTempRemovalSafe: result.spawned === false, reason: error.message }) + "\n"); process.exitCode = 2;
 }

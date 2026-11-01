@@ -1,5 +1,6 @@
 import path from "node:path";
 import { lstat, readdir, rm, writeFile } from "node:fs/promises";
+import { withOrdinaryFilesystem } from "./packaged-filesystem.mjs";
 
 export function packagedProbeOptions(argv) {
   if (argv.length !== 2 || argv[0] !== "--app" || !path.isAbsolute(argv[1]) || !/\.exe$/i.test(argv[1])) throw new Error("Expected --app <absolute packaged executable>");
@@ -78,13 +79,17 @@ export function plantedDllRejected(failure, relativePath) {
 }
 
 export async function retainedTreeSize(root, excludedFile) {
+  return withOrdinaryFilesystem(() => ordinaryTreeSize(root, excludedFile));
+}
+
+async function ordinaryTreeSize(root, excludedFile) {
   let total = 0;
   for (const entry of await readdir(root, { withFileTypes: true })) {
     const file = path.join(root, entry.name);
     if (file === excludedFile) continue;
     const info = await lstat(file);
     if (info.isSymbolicLink()) throw new Error("Cannot size redirected retained evidence");
-    total += info.isDirectory() ? await retainedTreeSize(file, excludedFile) : info.size;
+    total += info.isDirectory() ? await ordinaryTreeSize(file, excludedFile) : info.size;
     if (!Number.isSafeInteger(total)) throw new Error("Retained evidence size exceeds integer bound");
   }
   return total;
@@ -100,6 +105,12 @@ export function exactOwnedPath(root, candidate) {
 // Preserve the measured rows and owned path even when cleanup or diagnostic IO
 // fails. A finalization failure can never be converted into a measured verdict.
 export async function finalizePackagedObservation(result, root, cleanupVerified, io = { remove: rm, write: writeFile, measure: retainedTreeSize }) {
+  // Missing launch evidence is unknown, never proof that no process existed.
+  result.spawned = result.spawned !== false;
+  result.retainedTempRemovalSafe = result.spawned === false || (cleanupVerified
+    && Array.isArray(result.processCleanup) && result.processCleanup.length > 0
+    && result.processCleanup.every((record) => record.cleanupDeathVerified === true && !record.cleanupError)
+    && Array.isArray(result.unverifiedProcesses) && result.unverifiedProcesses.length === 0);
   result.temp = root;
   result.cleanupVerified = cleanupVerified;
   result.nativeVerified = result.observations.length === 6 && result.observations.every((row) => row.passed) && cleanupVerified;
@@ -112,7 +123,7 @@ export async function finalizePackagedObservation(result, root, cleanupVerified,
   };
   if (result.nativeVerified) {
     try {
-      await io.remove(root, { recursive: true });
+      await withOrdinaryFilesystem(() => io.remove(root, { recursive: true }));
       result.tempRemoved = true;
       result.tempSizeBytes = 0;
       return result;
