@@ -1,4 +1,4 @@
-import { readTailnetOwnerLogin } from "./tailnet-owner-identity.js";
+import { createTailnetOwnerIdentityPolicy, type TailnetOwnerIdentityEvidence } from "./tailnet-owner-policy.js";
 import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
 // Derive actor IDs with a domain-separated HMAC using an OS-encrypted secret; pairing still requires a separate scoped share.
 import { createHmac, randomBytes } from "node:crypto";
@@ -45,7 +45,9 @@ export interface TailnetPairedShareAuthorization {
 }
 
 export interface TailnetPairedShareAuthorizer {
-  ownerIdentityError(login: string): TailnetOwnerIdentityErrorCode | null;
+  probeOwnerIdentity(): Promise<TailnetOwnerIdentityEvidence>;
+  currentOwnerLogin(): string | null;
+  ownerIdentityError(login: string, evidence?: TailnetOwnerIdentityEvidence): TailnetOwnerIdentityErrorCode | null;
   // Host-only, opaque actor derivation; returns no raw login value.
   actorIdFor(login: string): TailnetShareActorId | null;
   // Resolve the current owner-approved share for the current conversation.
@@ -53,13 +55,14 @@ export interface TailnetPairedShareAuthorizer {
     login: string,
     currentConversationId: string,
     required: TailnetSharePermission,
+    evidence?: TailnetOwnerIdentityEvidence,
   ): TailnetPairedShareAuthorization | null;
   subscribe(listener: () => void): () => void;
 }
 
 export interface CreateTailnetPairedShareAuthorizerOptions {
-  readonly getOwnerLogin?: () => string | null;
-  readonly onOwnerIdentityFailure?: () => void;
+  readonly getOwnerLogin?: () => Promise<string | null> | string | null;
+  readonly onOwnerIdentityChanged?: () => void;
   readonly store: TailnetPairedShareStore;
   // OS-encrypted, durable secret material supplied by main-process boot.
   readonly actorSecret: string;
@@ -103,20 +106,16 @@ export function createTailnetPairedShareAuthorizer(
     return ("tailnet:" + digest) as TailnetShareActorId;
   };
 
-  const ownerIdentityError = (login: string): TailnetOwnerIdentityErrorCode | null => {
-    let owner: string | null = null;
-    try { owner = (options.getOwnerLogin ?? readTailnetOwnerLogin)(); } catch { /* Unreadable local identity grants nothing. */ }
-    const error = !safeTailnetLogin(owner) ? "tailnet-owner-identity-unavailable" : owner !== login ? "tailnet-owner-identity-mismatch" : null;
-    if (error !== null) options.onOwnerIdentityFailure?.();
-    return error;
-  };
+  const identityPolicy = createTailnetOwnerIdentityPolicy({ getOwnerLogin: options.getOwnerLogin, onChanged: options.onOwnerIdentityChanged });
+  const { probeOwnerIdentity, currentOwnerLogin, ownerIdentityError } = identityPolicy;
 
   const authorize = (
     login: string,
     currentConversation: string,
     required: TailnetSharePermission,
+    evidence: TailnetOwnerIdentityEvidence,
   ): TailnetPairedShareAuthorization | null => {
-    if (!permission(required) || ownerIdentityError(login) !== null) return null;
+    if (!permission(required) || ownerIdentityError(login, evidence) !== null) return null;
     const actorId = actorIdFor(login);
     const conversationId = validConversationId(currentConversation);
     if (actorId === null || conversationId === null) return null;
@@ -129,7 +128,7 @@ export function createTailnetPairedShareAuthorizer(
     const pairedShareGuard: TailnetPairedShareGuard = Object.freeze({
       isCurrent(candidate: TailnetPairingShareBinding): boolean {
         if (revoked || !sameBinding(candidate, pairedShare)) return false;
-        if (ownerIdentityError(login) !== null) { revoked = true; return false; }
+        if (ownerIdentityError(login, evidence) !== null) { revoked = true; return false; }
         const latestConversationId = currentConversationId(options.getCurrentConversationId);
         if (latestConversationId === null) return false;
         try {
@@ -147,7 +146,7 @@ export function createTailnetPairedShareAuthorizer(
     });
   };
 
-  return Object.freeze({ actorIdFor, authorize, ownerIdentityError, subscribe: (listener: () => void) => options.store.subscribe(listener) });
+  return Object.freeze({ actorIdFor, authorize, probeOwnerIdentity, currentOwnerLogin, ownerIdentityError, subscribe: (listener: () => void) => options.store.subscribe(listener) });
 }
 
 function safeTailnetLogin(value: unknown): value is string {

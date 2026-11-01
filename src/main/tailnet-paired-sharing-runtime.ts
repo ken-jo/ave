@@ -20,7 +20,7 @@ export interface TailnetPairedSharingRuntime {
 }
 
 export interface CreateTailnetPairedSharingRuntimeOptions {
-  readonly getOwnerLogin?: () => string | null;
+  readonly getOwnerLogin?: () => Promise<string | null> | string | null;
   readonly getCurrentConversationId: () => string;
   // Test-only injection; production uses the host's encrypted storage.
   readonly secretStore?: SecretStore;
@@ -40,16 +40,19 @@ export async function createTailnetPairedSharingRuntime(
   const actorSecret = ensureTailnetPairedShareActorSecret(secretStore);
   const getOwnerLogin = options.getOwnerLogin ?? readTailnetOwnerLogin;
   const store = createTailnetPairingShareStore({ ...options.storeOptions, getOwnerActorId: () => {
-    const login = getOwnerLogin();
+    const login = authorizer.currentOwnerLogin();
     return login === null ? null : authorizer.actorIdFor(login);
   } });
+  let opened = false;
   const authorizer = createTailnetPairedShareAuthorizer({
     getOwnerLogin,
-    onOwnerIdentityFailure: () => { store.ownerSnapshot(); },
+    onOwnerIdentityChanged: () => { if (opened) store.notifyOwnerIdentityChanged(); },
     store,
     actorSecret,
     getCurrentConversationId: options.getCurrentConversationId,
   });
+  await authorizer.probeOwnerIdentity();
   await store.open();
+  opened = true;
   return Object.freeze({ store, authorizer });
 }

@@ -39,7 +39,7 @@ describe("TailnetPairedShareAuthorizer", () => {
     expect(authorizer.actorIdFor("other@example.test")).not.toBe(actor);
   });
 
-  it("requires a current scoped grant and rechecks it at the final boundary", () => {
+  it("requires a current scoped grant and rechecks it at the final boundary", async () => {
     const current = { conversationId: "conversation-a" };
     let authoritative = true;
     let expectedActor = "";
@@ -66,7 +66,7 @@ describe("TailnetPairedShareAuthorizer", () => {
     });
     expectedActor = authorizer.actorIdFor("owner@example.test")!;
 
-    const grant = authorizer.authorize("owner@example.test", "conversation-a", "control");
+    const grant = authorizer.authorize("owner@example.test", "conversation-a", "control", await authorizer.probeOwnerIdentity());
     expect(grant).not.toBeNull();
     expect(grant?.pairedShareGuard.isCurrent(grant.pairedShare!)).toBe(true);
 

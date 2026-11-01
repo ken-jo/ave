@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createLogger } from "../lib/logger.js";
 import { TailnetOwnerIdentityError } from "./tailnet-owner-identity.js";
 import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
@@ -459,6 +460,7 @@ export class TailnetPairingShareStore {
   private readonly invitationTtlMs: number;
   private readonly shareTtlMs: number;
   private readonly mutex = new AsyncMutex();
+  private readonly ownerGuards = new AsyncLocalStorage<() => void>();
   private readonly listeners = new Set<ChangeListener>();
   private state: StoreState | undefined;
   private readonly getOwnerActorId: () => TailnetShareActorId | null;
@@ -505,7 +507,7 @@ export class TailnetPairingShareStore {
       if (!validState(parsed)) throw fail();
       let pruned = { ...prune(parsed, this.checkedNow()) };
       const owner = this.ownerActorId();
-      const invalid = pruned.state.pairings.filter(pairing => (pairing.state === "pending" || pairing.state === "active") && pairing.actorId !== owner);
+      const invalid = owner === null ? [] : pruned.state.pairings.filter(pairing => (pairing.state === "pending" || pairing.state === "active") && pairing.actorId !== owner);
       if (invalid.length > 0) {
         const invalidIds = new Set(invalid.map(pairing => pairing.id));
         const now = this.checkedNow();
@@ -515,6 +517,15 @@ export class TailnetPairingShareStore {
       this.state = pruned.state;
       if (pruned.changed) await this.persist(pruned.state);
     });
+  }
+
+  withOwnerIdentityGuard<T>(guard: () => void, operation: () => Promise<T>): Promise<T> {
+    return this.ownerGuards.run(guard, operation);
+  }
+
+  notifyOwnerIdentityChanged(): void {
+    this.ownerActorId();
+    this.emitChange();
   }
 
   subscribe(listener: ChangeListener): () => void {
@@ -800,7 +811,7 @@ export class TailnetPairingShareStore {
   ownerSnapshot(): TailnetOwnerSharingSnapshot {
     const stored = this.requireState();
     const owner = this.ownerActorId();
-    const ownerIdentityError: TailnetOwnerIdentityErrorCode | undefined = owner === null ? "tailnet-owner-identity-unavailable" : (this.invalidatedPairings.size > 0 || stored.pairings.some(pairing => pairing.actorId !== owner)) ? "tailnet-owner-identity-mismatch" : undefined;
+    const ownerIdentityError: TailnetOwnerIdentityErrorCode | undefined = owner === null ? "tailnet-owner-identity-unavailable" : stored.pairings.some(pairing => (pairing.state === "active" || pairing.state === "pending" && pairing.expiresAt !== null && pairing.expiresAt > this.checkedNow()) && pairing.actorId !== owner) ? "tailnet-owner-identity-mismatch" : undefined;
     const state = { ...stored, pairings: stored.pairings.filter(pairing => pairing.actorId === owner && !this.invalidatedPairings.has(pairing.id)), shares: stored.shares.filter(share => share.actorId === owner && !this.invalidatedPairings.has(share.pairingId)) };
     const now = this.checkedNow();
     return Object.freeze({
@@ -838,12 +849,19 @@ export class TailnetPairingShareStore {
       readonly changed: boolean;
     },
   ): Promise<T> {
+    const guard = this.ownerGuards.getStore();
     return await this.mutex.run(async () => {
+      guard?.();
       const pruned = prune(this.requireState(), this.checkedNow());
       const outcome = operation(pruned.state, this.checkedNow());
       if (pruned.changed || outcome.changed) {
         if (!validState(outcome.state)) throw fail();
+        guard?.();
         await this.persist(outcome.state);
+        try { guard?.(); } catch (error) {
+          try { await this.persist(pruned.state); } catch { this.state = undefined; log.error("tailnet-owner-mutation-rollback-failed"); throw fail(); }
+          throw error;
+        }
         this.state = outcome.state;
         this.emitChange();
       }
@@ -854,7 +872,7 @@ export class TailnetPairingShareStore {
   private ownerActorId(): TailnetShareActorId | null {
     let owner: TailnetShareActorId | null = null;
     try { const value = this.getOwnerActorId(); owner = isTailnetShareActorId(value) ? value : null; } catch { /* Unreadable host identity suspends existing access. */ }
-    const invalid = this.state?.pairings.filter(pairing => (pairing.state === "pending" || pairing.state === "active") && pairing.actorId !== owner) ?? [];
+    const invalid = owner === null ? [] : this.state?.pairings.filter(pairing => (pairing.state === "pending" || pairing.state === "active") && pairing.actorId !== owner) ?? [];
     for (const pairing of invalid) this.invalidatedPairings.add(pairing.id);
     if (invalid.length > 0 && !this.ownerReconciliationQueued) {
       this.ownerReconciliationQueued = true;

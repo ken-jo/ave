@@ -46,16 +46,17 @@ async function fixture(getOwnerLogin = () => "remote-owner@example.test" as stri
   const now = { value: 1_000_000 };
   const current = { id: "private-conversation-a" };
   const secrets = new MemorySecretStore();
+  const storage = namespace(directory);
   const runtime = await createTailnetPairedSharingRuntime({ getOwnerLogin, encryption: unavailableSecretEncryption,
     getCurrentConversationId: () => current.id,
     secretStore: secrets,
     storeOptions: {
-      namespace: namespace(directory),
+      namespace: storage,
       now: () => now.value,
     },
   });
   return {
-    secrets, now,
+    secrets, now, storage,
     current,
     runtime,
     owner: createTailnetSharingOwnerService({
@@ -70,7 +71,7 @@ describe("TailnetSharingOwnerService", () => {
     const f = await fixture();
     const invitation = await f.owner.createInvitation("10m");
     expect(invitation.expiresAt).toBe(1_600_000);
-    expect(f.owner.snapshot()).toEqual({
+    expect(await f.owner.snapshot()).toEqual({
       invitations: [{ id: invitation.id, expiresAt: invitation.expiresAt }],
       pairings: [],
       shares: [],
@@ -80,11 +81,11 @@ describe("TailnetSharingOwnerService", () => {
     expect(actor).not.toBeNull();
     const claim = await f.runtime.store.claimInvitation(invitation.code, actor!);
     expect(claim).not.toBeNull();
-    expect(JSON.stringify(f.owner.snapshot()))
+    expect(JSON.stringify(await f.owner.snapshot()))
       .not.toContain("remote-owner@example.test");
-    expect(JSON.stringify(f.owner.snapshot()))
+    expect(JSON.stringify(await f.owner.snapshot()))
       .not.toContain(invitation.code);
-    expect(JSON.stringify(f.owner.snapshot()))
+    expect(JSON.stringify(await f.owner.snapshot()))
       .not.toContain("private-conversation-a");
 
     expect(await f.owner.activatePairing(claim!.pairingId)).toBe(true);
@@ -139,7 +140,7 @@ describe("owner identity admission and migration", () => {
     const claim = await f.runtime.store.claimInvitation(invitation.code, actor);
     expect(await f.owner.activatePairing(claim!.pairingId)).toBe(true);
     expect(await f.owner.createCurrentConversationShare(claim!.pairingId, "control")).toBe(true);
-    const authorization = f.runtime.authorizer.authorize(login!, f.current.id, "control")!;
+    const authorization = f.runtime.authorizer.authorize(login!, f.current.id, "control", await f.runtime.authorizer.probeOwnerIdentity())!;
     expect(authorization).not.toBeNull();
     const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: authorization.actorId, pairedShare: authorization.pairedShare, pairedShareGuard: authorization.pairedShareGuard }, f.current.id);
     const manager = new PermissionManager(join(directories.at(-1)!, "permissions.json"));
@@ -149,9 +150,10 @@ describe("owner identity admission and migration", () => {
     manager.setMode("allow");
     expect(manager.checkDetailed("owner_network", "builtin", "network", undefined, { sessionId: f.current.id, remoteControllerAuthority }).decision).toBe("allow");
     login = "different-owner@example.test";
+    await f.runtime.authorizer.probeOwnerIdentity();
     expect(authorization.pairedShareGuard.isCurrent(authorization.pairedShare)).toBe(false);
     expect(manager.checkDetailed("owner_network", "builtin", "network", undefined, { sessionId: f.current.id, remoteControllerAuthority })).toMatchObject({ decision: "deny", reasonCode: "remote-controller-unbound" });
-    expect(f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-mismatch", pairings: [], shares: [] });
+    expect(await f.owner.snapshot()).toMatchObject({ pairings: [], shares: [] });
     login = "remote-owner@example.test";
     expect(authorization.pairedShareGuard.isCurrent(authorization.pairedShare)).toBe(false);
   });
@@ -162,16 +164,16 @@ describe("owner identity admission and migration", () => {
     const invitation = await f.owner.createInvitation();
     const other = f.runtime.authorizer.actorIdFor("another-user@example.test")!;
     await expect(f.runtime.store.claimInvitation(invitation.code, other)).rejects.toThrow("tailnet-owner-identity-mismatch");
-    expect(f.runtime.authorizer.ownerIdentityError("another-user@example.test")).toBe("tailnet-owner-identity-mismatch");
+    expect(f.runtime.authorizer.ownerIdentityError("another-user@example.test", await f.runtime.authorizer.probeOwnerIdentity())).toBe("tailnet-owner-identity-mismatch");
     expect(f.runtime.authorizer.authorize("another-user@example.test", f.current.id, "control")).toBeNull();
     const actor = f.runtime.authorizer.actorIdFor(login!)!;
     const pending = await f.runtime.store.claimInvitation(invitation.code, actor);
     login = null;
     await expect(f.owner.activatePairing(pending!.pairingId)).rejects.toThrow("tailnet-owner-identity-unavailable");
-    expect(f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-unavailable", pairings: [], shares: [] });
+    expect(await f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-unavailable", pairings: [], shares: [] });
   });
 
-  it("revokes existing persisted pairings and shares when restored under a different or unverifiable local owner", async () => {
+  it("suspends an unverifiable local owner and revokes grants only for a confirmed different owner", async () => {
     for (const login of ["another-owner@example.test", null]) {
       const f = await fixture();
       const invitation = await f.owner.createInvitation();
@@ -181,10 +183,10 @@ describe("owner identity admission and migration", () => {
       await f.owner.createCurrentConversationShare(claim!.pairingId, "control");
       const directory = directories.at(-1)!;
       const restored = await createTailnetPairedSharingRuntime({ encryption: unavailableSecretEncryption, getCurrentConversationId: () => f.current.id, getOwnerLogin: () => login, secretStore: f.secrets, storeOptions: { namespace: namespace(directory), now: () => f.now.value } });
-      expect(restored.store.ownerSnapshot()).toMatchObject({ ownerIdentityError: login === null ? "tailnet-owner-identity-unavailable" : "tailnet-owner-identity-mismatch", pairings: [], shares: [] });
+      expect(restored.store.ownerSnapshot()).toMatchObject({ ...(login === null ? { ownerIdentityError: "tailnet-owner-identity-unavailable" } : {}), pairings: [], shares: [] });
       const persisted = JSON.parse(readFileSync(join(directory, "pairing-share.json"), "utf8"));
-      expect(persisted.pairings.every((row: { state: string }) => row.state === "revoked")).toBe(true);
-      expect(persisted.shares.every((row: { state: string }) => row.state === "revoked")).toBe(true);
+      expect(persisted.pairings.every((row: { state: string }) => row.state === (login === null ? "active" : "revoked"))).toBe(true);
+      expect(persisted.shares.every((row: { state: string }) => row.state === (login === null ? "active" : "revoked"))).toBe(true);
     }
   });
 });
@@ -198,11 +200,64 @@ it("rechecks the local owner before activating a share for an already active pai
   await f.owner.activatePairing(claim!.pairingId);
   login = null;
   await expect(f.owner.createCurrentConversationShare(claim!.pairingId, "control")).rejects.toThrow("tailnet-owner-identity-unavailable");
-  expect(f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-unavailable", pairings: [], shares: [] });
+  expect(await f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-unavailable", pairings: [], shares: [] });
 });
 
 it("refuses invitation creation when the local node owner cannot be verified", async () => {
   const f = await fixture(() => null);
   await expect(f.owner.createInvitation()).rejects.toThrow("tailnet-owner-identity-unavailable");
-  expect(f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-unavailable", invitations: [] });
+  expect(await f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-unavailable", invitations: [] });
+});
+
+it("preserves durable pairings and shares through unavailable identity and resumes only with fresh same-owner evidence", async () => {
+  let login: string | null = "remote-owner@example.test";
+  const f = await fixture(() => login);
+  const invitation = await f.owner.createInvitation();
+  const actor = f.runtime.authorizer.actorIdFor(login!)!;
+  const claim = await f.runtime.store.claimInvitation(invitation.code, actor);
+  await f.owner.activatePairing(claim!.pairingId);
+  await f.owner.createCurrentConversationShare(claim!.pairingId, "control");
+  const oldEvidence = await f.runtime.authorizer.probeOwnerIdentity();
+  const oldAuthority = f.runtime.authorizer.authorize(login!, f.current.id, "control", oldEvidence)!;
+  const file = join(directories.at(-1)!, "pairing-share.json");
+  const before = readFileSync(file, "utf8");
+  login = null;
+  await f.runtime.authorizer.probeOwnerIdentity();
+  expect(await f.owner.snapshot()).toMatchObject({ ownerIdentityError: "tailnet-owner-identity-unavailable", pairings: [], shares: [] });
+  expect(oldAuthority.pairedShareGuard.isCurrent(oldAuthority.pairedShare)).toBe(false);
+  expect(readFileSync(file, "utf8")).toBe(before);
+  login = "remote-owner@example.test";
+  const freshEvidence = await f.runtime.authorizer.probeOwnerIdentity();
+  expect(f.runtime.authorizer.authorize(login, f.current.id, "control", oldEvidence)).toBeNull();
+  expect(f.runtime.authorizer.authorize(login, f.current.id, "control", freshEvidence)).not.toBeNull();
+  expect(oldAuthority.pairedShareGuard.isCurrent(oldAuthority.pairedShare)).toBe(false);
+  expect((await f.owner.snapshot()).ownerIdentityError).toBeUndefined();
+  expect(readFileSync(file, "utf8")).toBe(before);
+});
+
+it("rolls back a mutation persisted while its own request evidence was suspended and replaced", async () => {
+  let login: string | null = "remote-owner@example.test";
+  const f = await fixture(() => login);
+  let release!: () => void;
+  let entered!: () => void;
+  const enteredWrite = new Promise<void>(resolve => { entered = resolve; });
+  const heldWrite = new Promise<void>(resolve => { release = resolve; });
+  const write = f.storage.writeJson.bind(f.storage);
+  let first = true;
+  f.storage.writeJson = async (name, value) => {
+    if (first) { first = false; entered(); await heldWrite; }
+    return write(name, value);
+  };
+  const mutation = f.owner.createInvitation();
+  const refused = expect(mutation).rejects.toThrow("tailnet-owner-identity-unavailable");
+  await enteredWrite;
+  login = null;
+  await f.runtime.authorizer.probeOwnerIdentity();
+  login = "remote-owner@example.test";
+  await f.runtime.authorizer.probeOwnerIdentity();
+  release();
+  await refused;
+  expect((await f.owner.snapshot()).invitations).toEqual([]);
+  const persisted = JSON.parse(readFileSync(join(directories.at(-1)!, "pairing-share.json"), "utf8"));
+  expect(persisted.invitations).toEqual([]);
 });

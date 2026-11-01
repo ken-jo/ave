@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { runTailscaleCommand, tailscaleCliPath } from "./tailnet-cli.js";
+import { createLogger } from "../lib/logger.js";
 import { isRecord } from "../shared/is-record.js";
-import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
 
 export class TailnetOwnerIdentityError extends Error {
@@ -19,19 +18,27 @@ export function tailnetOwnerLoginFromStatus(status: unknown): string | null {
   return user.LoginName;
 }
 
-/** Fresh read-only daemon status is required even at synchronous effect-entry guards. */
-export function readTailnetOwnerLogin(): string | null {
-  const appCli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-  const cli = process.platform === "darwin" && existsSync(appCli) ? appCli : "tailscale";
-  try {
-    return tailnetOwnerLoginFromStatus(JSON.parse(execFileSync(cli, ["status", "--json"], {
-      encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.tailnetIdentityProbeMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
-    })));
-  } catch { return null; }
-}
+const log = createLogger("tailnet-owner-identity");
 
-export function tailnetOwnerIdentityError(login: string, getOwnerLogin: () => string | null = readTailnetOwnerLogin): TailnetOwnerIdentityErrorCode | null {
-  let owner: string | null = null;
-  try { owner = getOwnerLogin(); } catch { /* Unreadable local identity grants nothing. */ }
-  return owner === null ? "tailnet-owner-identity-unavailable" : owner !== login ? "tailnet-owner-identity-mismatch" : null;
+/** Each admission owns a fresh asynchronous daemon observation; no owner allow is cached here. */
+export async function readTailnetOwnerLogin(): Promise<string | null> {
+  let category: string;
+  try {
+    const result = await runTailscaleCommand(tailscaleCliPath(process.platform), ["status", "--json"]);
+    if (result.kind === "not-found") category = "ENOENT";
+    else if (result.kind === "failed") category = result.category === "timeout" ? "timeout" : "execution-failed";
+    else if (result.code !== 0) category = "nonzero-exit";
+    else {
+      let status: unknown;
+      try { status = JSON.parse(result.stdout); } catch {
+        log.warn("Owner identity probe unavailable: %s", "invalid-json");
+        return null;
+      }
+      const login = tailnetOwnerLoginFromStatus(status);
+      if (login !== null) return login;
+      category = "owner-unavailable";
+    }
+  } catch { category = "execution-failed"; }
+  log.warn("Owner identity probe unavailable: %s", category);
+  return null;
 }

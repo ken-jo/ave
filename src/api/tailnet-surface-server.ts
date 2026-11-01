@@ -1,3 +1,5 @@
+import { TailnetOwnerIdentityError } from "../main/tailnet-owner-identity.js";
+import type { TailnetOwnerIdentityEvidence } from "../main/tailnet-owner-policy.js";
 import type { TailnetOwnerIdentityErrorCode } from "../shared/tailnet-sharing.js";
 // Loopback observer ingress trusts injected identity headers only at the configured authorization boundary.
 // Local processes can forge those headers; network isolation does not replace the local boundary.
@@ -84,11 +86,13 @@ export interface TailnetPairingOptions {
   claimInvitation(
     code: string,
     actorId: TailnetShareActorId,
+    assertIdentity: () => void,
   ): Promise<{ readonly expiresAt: number } | null>;
   // Pairing and approval are separate states; only state crosses this boundary, while the desktop enforces expiry.
   deviceStatus?(
     login: string,
     actorId: TailnetShareActorId,
+    assertIdentity: () => void,
   ): Promise<TailnetPairingDeviceStatus>;
 }
 
@@ -103,8 +107,13 @@ export interface TailnetWebOptions {
   readonly sessions?: TailnetWebSessionStore;
 }
 
+const ownerAdmittedRequests = new WeakSet<IncomingMessage>();
+
 export interface TailnetSurfaceServerOptions {
-  readonly ownerIdentityError: (login: string) => TailnetOwnerIdentityErrorCode | null;
+  readonly probeOwnerIdentity: () => Promise<TailnetOwnerIdentityEvidence>;
+  readonly ownerIdentityError: (login: string, evidence?: TailnetOwnerIdentityEvidence) => TailnetOwnerIdentityErrorCode | null;
+  readonly refreshOwnerIdentity?: () => Promise<boolean>;
+  readonly assertOwnerIdentity?: () => void;
   /** Must be the literal 127.0.0.1; a Tailnet IP is never a direct bind. */
   readonly host?: string;
   readonly port: number;
@@ -300,7 +309,7 @@ export function startTailnetSurfaceServer(
   if (!Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65_535) {
     return Promise.reject(new Error("tailnet surface server port must be a nonzero TCP port"));
   }
-  if (typeof options.ownerIdentityError !== "function" || (options.pairedSharing !== undefined && typeof options.pairedSharing.ownerIdentityError !== "function")) {
+  if (typeof options.probeOwnerIdentity !== "function" || typeof options.ownerIdentityError !== "function" || (options.pairedSharing !== undefined && typeof options.pairedSharing.ownerIdentityError !== "function")) {
     return Promise.reject(new Error("tailnet-owner-identity-policy-unavailable"));
   }
   if (!isValidTailnetAuthorization(options.authorization)) {
@@ -404,6 +413,7 @@ export function startTailnetSurfaceServer(
       webReadRequestLimiter,
       webRuntime,
     ).catch((error) => {
+      if (error instanceof TailnetOwnerIdentityError && !res.headersSent) { sendJson(res, 403, { ok: false, error: error.code }); return; }
       options.log?.(`tailnet observer routing error: ${errorMessage(error)}`);
       if (!res.headersSent) {
         sendJson(res, 500, { ok: false, error: "internal-error" });
@@ -510,14 +520,39 @@ async function route(
     sendJson(res, 404, { ok: false, error: "not-found" });
     return;
   }
-  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, controllerRoute || attachmentRoute || webCommandRoute ? "controller" : pairingRoute || webPairingClaimRoute ? "pairing" : "observer");
+  if (!webRoute && isTailnetNativeBrowserRequest(req.headers)) {
+    req.resume();
+    sendJson(res, 403, { ok: false, error: pairingRoute ? "browser-pairing-not-ready" : controllerRoute || attachmentRoute ? "browser-controller-not-ready" : "browser-observer-not-ready" });
+    return;
+  }
+  const authenticatedLogin = authorizedTailnetLogin(req.headers, options.authorization, controllerRoute || attachmentRoute || webCommandRoute ? "controller" : pairingRoute || webPairingClaimRoute ? "pairing" : "observer") ?? (webDocumentRoute ? authorizedTailnetLogin(req.headers, options.authorization, "pairing") : undefined);
   if (authenticatedLogin !== undefined) {
-    const error = options.ownerIdentityError(authenticatedLogin);
+    const admissionLimiter = webSnapshotRoute || webEventsRoute ? webReadRequestLimiter : requestLimiter;
+    if (!admissionLimiter.accept(authenticatedLogin, req.socket)) {
+      if (method !== "GET") req.resume();
+      sendJson(res, 429, { ok: false, error: "tailnet-rate-limited" });
+      return;
+    }
+    const policy = options;
+    const evidence = await policy.probeOwnerIdentity();
+    const error = policy.ownerIdentityError(authenticatedLogin, evidence);
     if (error !== null) {
       if (method !== "GET") req.resume();
       sendJson(res, 403, { ok: false, error, message: error === "tailnet-owner-identity-unavailable" ? "This desktop cannot verify its local account. Remote access is suspended." : "Remote access is limited to the account signed in on this desktop." });
       return;
     }
+    ownerAdmittedRequests.add(req);
+    const assertIdentity = (): void => { const error = policy.ownerIdentityError(authenticatedLogin, evidence); if (error !== null) throw new TailnetOwnerIdentityError(error); };
+    const authorizer = options.pairedSharing;
+    const pairing = options.pairing;
+    options = { ...options, assertOwnerIdentity: assertIdentity,
+      ...(authorizer === undefined ? {} : { pairedSharing: { ...authorizer, actorIdFor: login => { assertIdentity(); return authorizer.actorIdFor(login); }, authorize: (login, conversationId, required) => authorizer.authorize(login, conversationId, required, evidence) } }),
+      ...(pairing === undefined ? {} : { pairing: { ...pairing,
+        claimInvitation: async (code, actorId) => { assertIdentity(); const result = await pairing.claimInvitation(code, actorId, assertIdentity); assertIdentity(); return result; },
+        ...(pairing.deviceStatus === undefined ? {} : { deviceStatus: async (login: string, actorId: TailnetShareActorId) => { assertIdentity(); const result = await pairing.deviceStatus!(login, actorId, assertIdentity); assertIdentity(); return result; } }),
+      } }),
+      refreshOwnerIdentity: async () => policy.ownerIdentityError(authenticatedLogin, await policy.probeOwnerIdentity()) === null,
+    };
   }
   if (webRoute && web !== undefined) {
     await routeTailnetWeb(
@@ -582,7 +617,7 @@ async function route(
     sendJson(res, 401, { ok: false, error: "unauthorized" });
     return;
   }
-  if (!requestLimiter.accept(login, req.socket)) {
+  if (!ownerAdmittedRequests.has(req) && !requestLimiter.accept(login, req.socket)) {
     sendJson(res, 429, { ok: false, error: "tailnet-rate-limited" });
     return;
   }
@@ -649,6 +684,7 @@ async function route(
     scope,
     currentScope,
     maxStreamLifetimeMs,
+    undefined, "reauthorize", options.refreshOwnerIdentity,
   );
 }
 async function routeTailnetWeb(
@@ -769,7 +805,7 @@ async function routeTailnetWebDocument(
     sendTailnetWebJson(res, web, 401, { ok: false, error: "unauthorized" });
     return;
   }
-  if (!requestLimiter.accept(login, req.socket)) {
+  if (!ownerAdmittedRequests.has(req) && !requestLimiter.accept(login, req.socket)) {
     sendTailnetWebJson(res, web, 429, { ok: false, error: "tailnet-rate-limited" });
     return;
   }
@@ -841,6 +877,7 @@ async function sendTailnetWebPairingDocument(
     return;
   }
   const device = await resolveTailnetDeviceStatus(req, options);
+  requestOwnerGuard(options)();
   const previousCookie = readTailnetWebCookie(req.headers);
   if (previousCookie !== undefined) web.sessions.revoke(previousCookie);
   let entry;
@@ -889,8 +926,9 @@ async function resolveTailnetDeviceStatus(
   const actorId = options.pairedSharing?.actorIdFor(login);
   if (actorId === null || actorId === undefined) return UNPAIRED_DEVICE;
   try {
-    return await deviceStatus(login, actorId);
-  } catch {
+    return await deviceStatus(login, actorId, requestOwnerGuard(options));
+  } catch (error) {
+    if (error instanceof TailnetOwnerIdentityError) throw error;
     return UNPAIRED_DEVICE;
   }
 }
@@ -1024,7 +1062,7 @@ function routeTailnetWebEvents(
       },
       checks: webSessionStreamChecks,
     },
-    "reconnect",
+    "reconnect", options.refreshOwnerIdentity,
   );
 }
 
@@ -1081,12 +1119,14 @@ async function routeTailnetWebCommand(
     );
     return;
   }
-  switch (await broker.submit(
+  const submitted = await broker.submit(
     reauthorized.login,
     decoded.command,
     reauthorized.scope.conversationId,
     reauthorized.pairedShare,
-  )) {
+  );
+  requestOwnerGuard(options)();
+  switch (submitted) {
     case "accepted":
       sendTailnetWebJson(res, web, 202, {
         ok: true,
@@ -1205,7 +1245,7 @@ function authorizeTailnetWebRequest(
     sendTailnetWebJson(res, web, 403, { ok: false, error: "tailnet-role-required" });
     return null;
   }
-  if (consumeRateLimit && !requestLimiter.accept(login, req.socket)) {
+  if (consumeRateLimit && !ownerAdmittedRequests.has(req) && !requestLimiter.accept(login, req.socket)) {
     req.resume();
     sendTailnetWebJson(res, web, 429, { ok: false, error: "tailnet-rate-limited" });
     return null;
@@ -1776,7 +1816,7 @@ async function routeControllerCommand(
     sendJson(res, 401, { ok: false, error: "unauthorized" });
     return;
   }
-  if (!requestLimiter.accept(login, req.socket)) {
+  if (!ownerAdmittedRequests.has(req) && !requestLimiter.accept(login, req.socket)) {
     req.resume();
     sendJson(res, 429, { ok: false, error: "tailnet-rate-limited" });
     return;
@@ -1806,7 +1846,9 @@ async function routeControllerCommand(
     );
     return;
   }
-  switch (await broker.submit(login, decoded.command, scope.conversationId, pairedShare)) {
+  const submitted = await broker.submit(login, decoded.command, scope.conversationId, pairedShare);
+  requestOwnerGuard(options)();
+  switch (submitted) {
     case "accepted":
       sendJson(res, 202, {
         ...publicTurnResponse(decoded.command, pairedShare),
@@ -1871,7 +1913,7 @@ async function routeTailnetAttachmentUpload(
     sendJson(res, 401, { ok: false, error: "unauthorized" });
     return;
   }
-  if (!requestLimiter.accept(login, req.socket)) {
+  if (!ownerAdmittedRequests.has(req) && !requestLimiter.accept(login, req.socket)) {
     req.resume();
     sendJson(res, 429, { ok: false, error: "tailnet-rate-limited" });
     return;
@@ -2111,7 +2153,7 @@ async function routePairingClaim(
     sendJson(res, 401, { ok: false, error: "unauthorized" });
     return;
   }
-  if (!requestLimiter.accept(login, req.socket)) {
+  if (!ownerAdmittedRequests.has(req) && !requestLimiter.accept(login, req.socket)) {
     req.resume();
     sendJson(res, 429, { ok: false, error: "tailnet-rate-limited" });
     return;
@@ -2133,8 +2175,9 @@ async function routePairingClaim(
   }
   let claim: { readonly expiresAt: number } | null;
   try {
-    claim = await options.pairing.claimInvitation(decoded.code, actorId);
-  } catch {
+    claim = await options.pairing.claimInvitation(decoded.code, actorId, requestOwnerGuard(options));
+  } catch (error) {
+    if (error instanceof TailnetOwnerIdentityError) { sendJson(res, 403, { ok: false, error: error.code }); return; }
     sendJson(res, 503, { ok: false, error: "pairing-store-unavailable" });
     return;
   }
@@ -2185,7 +2228,7 @@ async function routeTailnetWebPairingClaim(
     sendTailnetWebJson(res, web, 403, { ok: false, error: "tailnet-role-required" });
     return;
   }
-  if (!requestLimiter.accept(login, req.socket)) {
+  if (!ownerAdmittedRequests.has(req) && !requestLimiter.accept(login, req.socket)) {
     req.resume();
     sendTailnetWebJson(res, web, 429, { ok: false, error: "tailnet-rate-limited" });
     return;
@@ -2202,8 +2245,9 @@ async function routeTailnetWebPairingClaim(
   }
   let claim: { readonly expiresAt: number } | null;
   try {
-    claim = await options.pairing.claimInvitation(decoded.code, actorId);
-  } catch {
+    claim = await options.pairing.claimInvitation(decoded.code, actorId, requestOwnerGuard(options));
+  } catch (error) {
+    if (error instanceof TailnetOwnerIdentityError) { sendTailnetWebJson(res, web, 403, { ok: false, error: error.code }); return; }
     sendTailnetWebJson(res, web, 503, { ok: false, error: "pairing-store-unavailable" });
     return;
   }
@@ -2579,6 +2623,11 @@ function createTailnetControllerBroker(
   };
 }
 
+function requestOwnerGuard(options: TailnetSurfaceServerOptions): () => void {
+  if (!options.assertOwnerIdentity) throw new TailnetOwnerIdentityError("tailnet-owner-identity-unavailable");
+  return options.assertOwnerIdentity;
+}
+
 function resolvePairedShare(
   authorizer: TailnetPairedShareAuthorizer | undefined,
   login: string,
@@ -2782,6 +2831,7 @@ function handleEvents(
   maxStreamLifetimeMs: number,
   sessionGuard: TailnetStreamSessionGuard | undefined = undefined,
   lifetimeAction: "reauthorize" | "reconnect" = "reauthorize",
+  refreshOwnerIdentity?: () => Promise<boolean>,
 ): void {
   let cleaned = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -2857,7 +2907,6 @@ function handleEvents(
 
   const onEvent = (event: SharedConversationEventEnvelope) => {
     if (reauthorizeIfSessionChanged()) return;
-    if (reauthorizeIfPairingShareChanged()) return;
     if (resyncIfScopeChanged()) return;
     writeOrClose(formatSseEvent(event, scope.value));
   };
@@ -2889,7 +2938,6 @@ function handleEvents(
     for (const event of subscription.replay.events) {
       if (reauthorizeIfSessionChanged()) return;
       if (resyncIfScopeChanged()) return;
-      if (reauthorizeIfPairingShareChanged()) return;
       if (!writeOrClose(formatSseEvent(event, scope.value))) return;
     }
   } catch {
@@ -2898,12 +2946,18 @@ function handleEvents(
     return;
   }
   heartbeat = setInterval(() => {
-    if (reauthorizeIfSessionChanged() || reauthorizeIfPairingShareChanged()) return;
+    if (reauthorizeIfSessionChanged()) return;
     writeOrClose(": ping\n\n");
   }, SSE_HEARTBEAT_MS);
+  let checkingOwner = false;
   scopeCheck = setInterval(() => {
-    if (reauthorizeIfSessionChanged()) return;
-    resyncIfScopeChanged();
+    if (checkingOwner || cleaned) return;
+    checkingOwner = true;
+    void (async () => {
+      if (refreshOwnerIdentity && !await refreshOwnerIdentity()) { if (!cleaned) { writeOrClose(formatReauthorizeRequiredEvent(scope.value)); endStream(); } return; }
+      if (cleaned || reauthorizeIfSessionChanged() || reauthorizeIfPairingShareChanged()) return;
+      resyncIfScopeChanged();
+    })().catch(() => endStream()).finally(() => { checkingOwner = false; });
   }, SSE_HEARTBEAT_MS);
   scopeCheck.unref();
   heartbeat.unref();

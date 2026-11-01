@@ -223,3 +223,14 @@ describe("TailnetPairingShareStore", () => {
     await expect(corrupt.open()).rejects.toThrow("tailnet-pairing-share-store-invalid");
   });
 });
+
+it("does not report an archived revoked pairing as a current owner mismatch", async () => {
+  const now = { value: 300_000 };
+  const { store, directory } = await makeStore(now);
+  const pairingId = await activePairing(store);
+  await store.revokePairing(pairingId);
+  const restored = createTailnetPairingShareStore({ getOwnerActorId: () => OTHER_ACTOR, namespace: namespace(directory), now: () => now.value });
+  await restored.open();
+  expect(restored.ownerSnapshot()).toMatchObject({ pairings: [], shares: [] });
+  expect(restored.ownerSnapshot().ownerIdentityError).toBeUndefined();
+});

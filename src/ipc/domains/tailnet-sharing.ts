@@ -40,14 +40,14 @@ export function registerTailnetSharingHandlers(deps: IpcDeps): void {
     });
   }
 
-  ipcMain.handle(CHANNELS.tailnetSharing.snapshot, (event) => {
+  ipcMain.handle(CHANNELS.tailnetSharing.snapshot, async (event) => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.tailnetSharing.snapshot, event);
       return UNAUTHORIZED_FRAME;
     }
     if (!owner) return DISABLED;
     try {
-      const snapshot = parseTailnetSharingSnapshot(owner.snapshot());
+      const snapshot = parseTailnetSharingSnapshot(await owner.snapshot());
       return snapshot === null
         ? UNAVAILABLE : { ok: true as const, snapshot };
     } catch {

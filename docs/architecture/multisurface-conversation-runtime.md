@@ -50,11 +50,13 @@ AVE_TAILNET_OBSERVER_AUTHORIZATION=tailnet-identity
 # ...or the advanced boundary:
 # AVE_TAILNET_OBSERVER_AUTHORIZATION=app-capability:<owned-domain>/cap/ave-conversation
 AVE_TAILNET_OBSERVER_PORT=46173   # optional; fixed nonzero port
-AVE_TAILNET_CONTROLLER=1          # optional; default OFF
+AVE_TAILNET_CONTROLLER=1          # optional; default OFF; requires paired sharing
 AVE_TAILNET_PAIRED_SHARING=1      # required for owner pairing/share and Web
 AVE_TAILNET_WEB=1                 # optional same-origin browser adapter
 AVE_TAILNET_WEB_ORIGIN=https://<machine>.<tailnet>.ts.net
 ~~~
+
+`AVE_TAILNET_CONTROLLER=1` requires `AVE_TAILNET_PAIRED_SHARING=1`; a controller configuration without paired sharing fails startup with `tailnet-controller-requires-paired-sharing`.
 
 The renderer cannot set these values. The authorization boundary is an explicit
 choice with no implicit default: `tailnet-identity` requires the authenticated peer login supplied by Serve to match the local node owner before observe-versus-control share permissions apply, while `app-capability` additionally requires a capability key
@@ -112,7 +114,7 @@ rather than risk starting a second model turn. An unreadable or
 capacity-exhausted store returns `503`. Its result appears through the safe
 timeline.
 
-An authenticated controller must match the local node owner's current account and hold a live session-bound pairing/share. Only then does it enter the same tool rules, remembered grants, mode and reviewer as the local user. Missing, mismatched, tagged or unavailable local identity denies admission; existing bindings are revalidated and invalid access is revoked or suspended visibly. The [owner decision tree](permission-decision-tree.md) owns this sequence and the independent lifecycle of delegated work.
+An authenticated controller must match the local node owner's current account and hold a live session-bound pairing/share. Only then does it enter the same tool rules, remembered grants, mode and reviewer as the local user. Missing, mismatched, tagged or unavailable local identity denies admission. Unverifiable local identity suspends stored bindings without persisting a revocation; only a confirmed local-owner change persistently revokes non-matching pairings. A foreign requester mismatch never revokes the owner's own pairing. Identity probes are asynchronous, rate-limited before execution and shared within one request; streaming deltas do not launch them. The [owner decision tree](permission-decision-tree.md) owns this sequence and the independent lifecycle of delegated work.
 
 The host retains the distinct `tailnet-surface` transcript origin and carries controller authority separately. Local and remote intake reject the same mismatched staged envelopes. Ordinary controller input gains user-equivalent intent only after owner identity and session binding pass; attachments, explicit pasted content and genuine other-principal guidance retain their taint. Hooks use the ordinary policy, and controller revocation remains effective at approval and execution boundaries.
 
