@@ -382,6 +382,73 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     await f.service;
   });
 
+  it.each(["native-created", "native-observed"] as const)("retains container identity across cancellation while %s delivery is held", async (heldType) => {
+    const f = transportFixture();
+    let arrive!: (native: MxcProcess) => void;
+    f.spawn.mockImplementation(() => new Promise((resolve) => { arrive = resolve; }));
+    const controller = new AbortController();
+    const order: string[] = [];
+    let pinClosed = false, nativeTerminated = false;
+    let pinnedIdentity: { id: number; processHandle: string } | undefined;
+    const close = vi.fn(() => { pinClosed = true; });
+    f.runtime.pinProcess = vi.fn(() => ({ value: "161803", close }));
+    const wait = f.fixture.native.wait.getMockImplementation()!;
+    f.fixture.native.wait.mockImplementation(() => wait().then((result) => { nativeTerminated = true; return result; }));
+    let release: (() => Promise<void>) | undefined;
+    const send = MxcExtensionChannel.prototype.send;
+    const sending = vi.spyOn(MxcExtensionChannel.prototype, "send").mockImplementation(function (this: MxcExtensionChannel, frame) {
+      if (frame.type === heldType) {
+        release = () => { order.push(`${heldType}-delivered`); return send.call(this, frame); };
+        // Model a pipe write completing before the peer reads its bytes.
+        return Promise.resolve();
+      }
+      return send.call(this, frame);
+    });
+    const launched = f.launch(controller.signal, (event) => {
+      order.push(event.type);
+      if ((heldType === "native-created" && event.type === "spawning")
+        || (heldType === "native-observed" && event.type === "native-created")) {
+        order.push("cancel-requested"); controller.abort();
+      }
+      if (event.type === "native-created") {
+        // Unit model of DuplicateHandle: the supervisor must still retain the
+        // source object. Native object identity/death needs the Windows peer.
+        if (pinClosed) throw new Error("Cannot duplicate measured process handle");
+        pinnedIdentity = { id: event.id, processHandle: event.processHandle };
+      }
+    }).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(f.spawn).toHaveBeenCalledOnce());
+      arrive(f.fixture.native as unknown as MxcProcess);
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(controller.signal.aborted).toBe(true);
+      expect(f.liveness.writableEnded).toBe(false);
+      expect(close).not.toHaveBeenCalled();
+      if (heldType === "native-observed") {
+        expect(pinnedIdentity).toEqual({ id: 42, processHandle: "161803" });
+        expect(order.indexOf("native-created")).toBeLessThan(order.indexOf("cancel-requested"));
+      }
+      await release!(); release = undefined;
+      const failure = await launched;
+      expect(failure).toBeInstanceOf(MxcProcessContractError);
+      expect((failure as Error).message).toBe("Extension start was cancelled");
+      await expect(f.service).resolves.toBeUndefined();
+      expect(pinnedIdentity).toEqual({ id: 42, processHandle: "161803" });
+      expect(nativeTerminated).toBe(true);
+      expect(f.fixture.native.kill).toHaveBeenCalledOnce();
+      expect(f.fixture.native.dispose).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+      expect(f.child.kill).not.toHaveBeenCalled();
+      expect(f.fatal).not.toHaveBeenCalled();
+      expect(order.at(-1)).toBe("stopped");
+    } finally {
+      await release?.().catch(() => {});
+      await launched; await f.service.catch(() => {});
+      sending.mockRestore();
+    }
+  });
+
   it("adopts and disposes a late native handle when the spawning notification fails", async () => {
     const f = transportFixture();
     let arrive!: (native: MxcProcess) => void;

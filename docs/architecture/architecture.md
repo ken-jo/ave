@@ -2546,8 +2546,12 @@ verification. The current per-machine installer setting is unchanged and is not
 required by this trust premise. See [the bootstrap and lifetime contract](../design/windows-extensions-mxc.md#placement-and-dll-loading).
 A private inherited key/liveness pipe and direction-authenticated bounded frames
 connect main and supervisor; EOF starts teardown even while control input is blocked.
-Disposal closes liveness immediately and waits for EOF-driven teardown even when
-the stop-frame write fails; forced termination waits for the cleanup deadline.
+Startup cancellation sends a stop frame while retaining liveness through native
+process observation, so cancellation cannot imitate owner loss and release the
+process pin before duplication. A failed stop-frame send closes liveness for
+EOF-driven teardown. After readiness has confirmed observation, disposal closes
+liveness immediately to interrupt a backpressured control reader. Forced
+termination waits for the cleanup deadline.
 The supervisor explicitly clears inheritance on fd 3 as well as all three control
 standard handles, resolving fd 3 through the running runtime’s `uv_get_osfhandle`
 export; unavailable protection is a capability error. The supervisor retains a

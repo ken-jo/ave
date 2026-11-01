@@ -186,12 +186,18 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
 
   private async stop(): Promise<void> {
     this.stopping = true;
-    if (!this.liveness.destroyed && !this.liveness.writableEnded) this.liveness.end();
+    // Readiness follows native-observed. EOF can then interrupt a control
+    // reader blocked on native stdin without releasing an unobserved pin.
+    if (this.id && !this.liveness.destroyed && !this.liveness.writableEnded) this.liveness.end();
     this.stdout.resume(); this.stderr.resume(); this.stdin.destroy();
-    // Liveness EOF already requested teardown; a broken control pipe must not
-    // race that teardown with an immediate supervisor kill.
+    // Startup cancellation must retain owner liveness until native-observed;
+    // EOF would let the supervisor close the process pin before duplication.
+    // A failed stop send instead requests EOF teardown, without racing it with
+    // an immediate supervisor kill.
     if (!this.closedAlready && !this.result && !this.stopped) {
-      void this.channel.send({ type: "stop" }).catch(() => {});
+      void this.channel.send({ type: "stop" }).catch(() => {
+        if (!this.liveness.destroyed && !this.liveness.writableEnded) this.liveness.end();
+      });
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
