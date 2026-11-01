@@ -2493,7 +2493,7 @@ describe("host tabs and conversation-owned isolation", () => {
     const previous = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     try {
-      await expect(ensureConversationTerminal("conversation-windows", 8)).rejects.toThrow("Terminal requires the OS tool sandbox");
+      await expect(ensureConversationTerminal("conversation-windows", 8)).rejects.toThrow("An isolated agent terminal is not available on Windows yet");
       expect(ptySpawnMock).not.toHaveBeenCalled();
       expect(conversationTerminalRef("conversation-windows", 8)).toBeUndefined();
     } finally { Object.defineProperty(process, "platform", { value: previous, configurable: true }); }
