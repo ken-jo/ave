@@ -88,6 +88,7 @@ function projectPlatformConversationEventToLegacyChatFrame(
           ? {}
           : { executionPlan: event.ownerDetail.executionPlan }),
         ...(event.ownerDetail.uiPayload === undefined ? {} : { uiPayload: event.ownerDetail.uiPayload }),
+        ...(event.ownerDetail.browserPreview === undefined ? {} : { browserPreview: event.ownerDetail.browserPreview }),
         durationMs: event.durationMs,
       }));
     case "tool.output.delta":

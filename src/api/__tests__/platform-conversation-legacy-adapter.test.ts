@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { createPlatformConversationTimeline } from "../../engine/conversation-platform-protocol.js";
+import { applyToolStart, applyTranscriptFrame, type ChatStreamEvent } from "../../lib/chat-stream-state.js";
 import {
   createPlatformConversationLegacyStreamAdapter,
   createPlatformTurnId,
@@ -45,6 +46,24 @@ describe("platform conversation legacy adapter", () => {
     };
     expect(electronSink).toHaveBeenCalledWith(CHANNELS.chat.stream, expected);
     expect(sseSink).toHaveBeenCalledWith(CHANNELS.chat.stream, expected);
+  });
+
+  it("carries a browser tool's display thumbnail from tool.completed onto the renderer tool entry", () => {
+    const timeline = createPlatformConversationTimeline();
+    const adapter = createPlatformConversationLegacyStreamAdapter(timeline);
+    const sink = vi.fn();
+    adapter.subscribe(sink);
+    const browserPreview = { dataUrl: "data:image/jpeg;base64,QUdFTlQ=", width: 320, height: 180 };
+    const tool = { name: "browser_snapshot", groupId: "group-1", toolUseId: "tool-1", displayOrder: 0 };
+    timeline.publish({
+      conversationId: "main-session",
+      turnId: createPlatformTurnId(43),
+      event: { kind: "tool.completed", tool, isError: false, durationMs: 5, ownerDetail: { result: "outline", browserPreview } },
+    });
+    const frame = sink.mock.calls[0]![1] as ChatStreamEvent;
+    expect(frame).toMatchObject({ type: "tool_end", toolUseId: "tool-1", browserPreview });
+    const entries = applyTranscriptFrame(applyToolStart([], { groupId: "group-1", toolUseId: "tool-1", name: "browser_snapshot" }), frame);
+    expect(entries[0]).toMatchObject({ kind: "tool_group", tools: [{ status: "done", browserPreview }] });
   });
 
   it("fans live tool output out as a tool_output owner frame", () => {

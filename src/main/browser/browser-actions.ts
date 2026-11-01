@@ -7,6 +7,7 @@ import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared
 import { validateExternalUrl } from "../../shared/external-url.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
+import { captureAgentPreview, type AgentPreviewRecorder } from "./browser-agent-preview.js";
 import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
@@ -1381,6 +1382,7 @@ export function createBrowserPageActions(
   attribution: InputAttribution,
   originOf: (url: string) => string | null,
   hostContentOrigin: HostContentOrigin,
+  recordPreview?: AgentPreviewRecorder,
 ): BrowserPageActions<WebContents> {
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
@@ -1413,6 +1415,7 @@ export function createBrowserPageActions(
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       snapshot(await targetFor(live, attribution, hostContentOrigin), options),
     screenshot: async (live: LiveTab, options) => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options),
+    capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, recordPreview),
     hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
     drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),
     select: async (live, ref, value) => tracked(live, async () => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value)),

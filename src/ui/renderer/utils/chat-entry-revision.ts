@@ -48,6 +48,7 @@ export function toolGroupRevision(group: ToolGroupEntry): string {
         tool.startedAt ?? "",
         textRevision(tool.liveOutput),
         valueRevision(tool.uiPayload),
+        tool.browserPreview?.dataUrl.length ?? "",
       ].join(":"))
       .join("|"),
   ].join("#");
