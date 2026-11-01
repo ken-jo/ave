@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "knipVersion": "6.42.1",
+  "knipVersion": "6.43.0",
   "entries": [
     {
       "type": "devDependencies",

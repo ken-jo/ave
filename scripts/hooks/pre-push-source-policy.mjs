@@ -133,6 +133,7 @@ export const FULL_CHECK_GLOBAL_INPUT_FILES = Object.freeze([
   "src/__tests__/support/ave-home-isolation-guard.ts",
   "src/__tests__/vitest-ave-home.ts",
   "src/__tests__/vitest-model-catalog.ts",
+  "src/__tests__/vitest-renderer-web-streams.ts",
   "src/__tests__/vitest-vm-exit-hooks.ts",
   "src/i18n/testing/vitest-ambient-intl.ts",
   "src/shared/ave-home-test-guard.ts",
