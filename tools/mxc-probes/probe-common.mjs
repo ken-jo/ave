@@ -38,7 +38,7 @@ export function parseOptions(argv) {
   return options;
 }
 
-export function isWithin(target, root) {
+function isWithin(target, root) {
   const relative = path.relative(root, target);
   return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
