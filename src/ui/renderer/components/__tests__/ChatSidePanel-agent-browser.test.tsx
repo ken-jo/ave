@@ -57,7 +57,8 @@ beforeEach(() => {
   (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
 });
 
-function Harness({ api }: { api: AveApi }) {
+// `session: null` is a new chat, which has no session yet.
+function Harness({ api, session = "s1" }: { api: AveApi; session?: string | null }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const workspaceTabs = useWorkspaceTabs();
   store = workspaceTabs;
@@ -66,7 +67,7 @@ function Harness({ api }: { api: AveApi }) {
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
         <ChatSidePanel
           api={api}
-          sessionId="s1"
+          {...(session === null ? {} : { sessionId: session })}
           targets={[]}
           files={[]}
           selectedId={selectedId}
@@ -94,6 +95,19 @@ afterEach(() => {
 });
 
 describe("ChatSidePanel agent browser", () => {
+  it("lists an agent tab only in the chat that opened it, keeping its page mounted elsewhere", () => {
+    const { api } = makeApi();
+    const view = render(<Harness api={api} />);
+    act(() => { store!.openAgentBrowserTab("https://a.example/", "browser-op-owned", true, "s1"); });
+    expect(screen.getAllByTestId("chat-side-panel-tab")).toHaveLength(1);
+    view.rerender(<Harness api={api} session={null} />);
+    expect(screen.queryAllByTestId("chat-side-panel-tab")).toHaveLength(0);
+    expect(screen.getByTestId("chat-side-panel-browser-tab-host")).toHaveAttribute("aria-hidden", "true");
+    view.rerender(<Harness api={api} session="s1" />);
+    expect(screen.getAllByTestId("chat-side-panel-tab")).toHaveLength(1);
+    expect(screen.getByTestId("chat-side-panel-browser-tab-host")).not.toHaveAttribute("aria-hidden");
+  });
+
   it("revokes control before side-panel address navigation without a badge report", async () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
