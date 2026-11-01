@@ -561,6 +561,24 @@ describe("strict packaged dependency inventory", () => {
     pruneMxcPtyBuildPayloads(root, "x64");
     for (const relative of files) expect(existsSync(path.join(root, "node-pty", relative)), relative).toBe(["prebuilds/win32-x64/pty.node", "prebuilds/win32-x64/planted.exe"].includes(relative));
   });
+
+  it("removes only empty patch-install markers and rejects retained lookalikes", async () => {
+    const { pruneMxcPtyBuildPayloads } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const { root, pins } = installation();
+    mkdirSync(path.join(root, "node-pty/prebuilds/win32-x64"), { recursive: true });
+    const marker = path.join(root, "node-pty/.bun-tag-8c04ff0e0c6023a5");
+    writeFileSync(marker, "");
+    pruneMxcPtyBuildPayloads(root, "x64");
+    expect(existsSync(marker)).toBe(false);
+    for (const [name, contents] of [[".bun-tag-8c04ff0e0c6023a5", "planted"], [".bun-tag-invalid", ""], [".bun-tag-8c04ff0e0c6023a5\n", ""]]) {
+      const file = path.join(root, "node-pty", name);
+      writeFileSync(file, contents);
+      pruneMxcPtyBuildPayloads(root, "x64");
+      expect(existsSync(file)).toBe(true);
+      expect(() => assertMxcSdkInventory(root, pins, "x64")).toThrow(`Unexpected packaged SDK file: node-pty/${name}`);
+      rmSync(file);
+    }
+  });
 });
 
 describe("packaging mutation containment", () => {

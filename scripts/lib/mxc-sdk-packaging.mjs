@@ -116,6 +116,12 @@ export function pruneMxcPtyBuildPayloads(modules, arch) {
   if (!["x64", "arm64"].includes(arch)) throw new Error("Unsupported SDK addon architecture");
   assertMutationTreesSafe(modules, ["node-pty"], PTY_SOURCE_BUILD_DIRECTORIES.map((name) => `node-pty/${name}`));
   const root = path.join(modules, "node-pty");
+  // Empty patch-install markers are package-manager bookkeeping, never runtime inputs.
+  for (const name of readdirSync(root)) {
+    if (name.length !== 25 || !/^\.bun-tag-[0-9a-f]{16}$/.test(name)) continue;
+    const file = path.join(root, name), entry = lstatSync(file);
+    if (entry.isFile() && entry.size === 0) rmSync(file);
+  }
   for (const name of PTY_SOURCE_BUILD_DIRECTORIES) rmSync(path.join(root, name), { recursive: true, force: true });
   const prebuilds = path.join(root, "prebuilds");
   for (const name of readdirSync(prebuilds)) {
