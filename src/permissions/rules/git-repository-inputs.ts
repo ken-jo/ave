@@ -14,8 +14,14 @@ const MAX_METADATA_ENTRIES = 4096;
 const MAX_METADATA_DEPTH = 32;
 // Large control files (including packed refs) decline the verified read-only
 // path; the aggregate cap prevents thousands of small refs from multiplying I/O.
-const MAX_CONTROL_FILE_BYTES = 64 * 1024;
-const MAX_CONTROL_TOTAL_BYTES = 4 * 1024 * 1024;
+const MAX_CONTROL_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_CONTROL_TOTAL_BYTES = 16 * 1024 * 1024;
+const CONTROL_READ_BUFFER_BYTES = 64 * 1024;
+const CONTENT_METADATA_PATHS = new Set([
+  "config", "config.worktree", "head", "packed-refs", "shallow", "objects/info/packs",
+  "objects/info/commit-graphs/commit-graph-chain",
+  "auto_merge", "bisect_expected_rev", "notes_merge_partial", "notes_merge_ref", "merge_autostash",
+]);
 const FORBIDDEN_METADATA_PATHS = new Set(["commondir", "worktrees", "objects/info/alternates", "objects/info/http-alternates"]);
 
 function hasSupportedConfig(contents: Buffer): boolean {
@@ -53,31 +59,39 @@ function readControlFingerprint(path: string, expectedIdentity: string, maxBytes
   try {
     const stat = fstatSync(descriptor, { bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes) || metadataIdentity(stat) !== expectedIdentity) return null;
-    const contents = Buffer.alloc(maxBytes + 1);
+    const contents = Buffer.alloc(CONTROL_READ_BUFFER_BYTES);
+    const hash = createHash("sha256");
+    // Only configuration needs retained bytes for the existing syntax validator.
+    const configChunks: Buffer[] = [];
     let length = 0;
-    while (length < contents.length) {
-      const count = readSync(descriptor, contents, length, contents.length - length, null);
+    while (length <= maxBytes) {
+      const count = readSync(descriptor, contents, 0, Math.min(contents.length, maxBytes - length + 1), null);
       if (count === 0) break;
       length += count;
+      if (length > maxBytes) return null;
+      const bytes = contents.subarray(0, count);
+      hash.update(bytes);
+      if (isConfig) configChunks.push(Buffer.from(bytes));
     }
-    const bytes = contents.subarray(0, length);
-    if (length > maxBytes || (isConfig && !hasSupportedConfig(bytes))
+    if ((isConfig && !hasSupportedConfig(Buffer.concat(configChunks, length)))
       || metadataIdentity(fstatSync(descriptor, { bigint: true })) !== expectedIdentity
       || metadataIdentity(lstatSync(path, { bigint: true })) !== expectedIdentity) return null;
-    return { hash: createHash("sha256").update(bytes).digest("hex"), bytes: length };
+    return { hash: hash.digest("hex"), bytes: length };
   } finally {
     closeSync(descriptor);
   }
 }
 
 function needsContentEvidence(path: string): boolean {
-  // gitReadOnlyEnvironment redirects index reads to a protected absent path.
-  // Object storage is content-addressed, not mutable control state; reflog
-  // selectors are excluded by readOnlyGitArguments. Keep their metadata
-  // evidence without reading potentially huge data files. This is not an
-  // integrity check against arbitrary in-place corruption of object storage.
-  return path !== "index" && !/^sharedindex\.[^/]+$/.test(path)
-    && !path.startsWith("objects/") && !path.startsWith("logs/");
+  // readOnlyGitArguments admits revision/history, branch listing and tree diffs.
+  // Their mutable inputs are root refs/config, refs, shallow and info controls.
+  // Root refs include the irregular names recognized by the files backend.
+  // Pack listings and the commit-graph chain are text; binary data stays identity-only.
+  // Alternate-store text selectors are already forbidden above.
+  // gitReadOnlyEnvironment redirects the index; argv disables submodule reads
+  // and reflog selectors. Nested repository, cache and editor data is not read.
+  return CONTENT_METADATA_PATHS.has(path) || /^[a-z_-]+_head$/.test(path)
+    || path.startsWith("refs/") || path.startsWith("info/");
 }
 
 // Keeps each helper command line well below the 32,767-character CreateProcess limit.
@@ -134,7 +148,7 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       const isConfig = metadataPath === "config" || metadataPath === "config.worktree";
       if (stat.isFile()) {
         let contentHash = "";
-        if (needsContentEvidence(process.platform === "win32" ? metadataPath : relative)) {
+        if (needsContentEvidence(metadataPath)) {
           const fingerprint = readControlFingerprint(path, identity,
             Math.min(MAX_CONTROL_FILE_BYTES, MAX_CONTROL_TOTAL_BYTES - controlBytes), isConfig);
           if (fingerprint === null) return false;
