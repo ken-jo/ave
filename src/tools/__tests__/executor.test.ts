@@ -4858,7 +4858,7 @@ describe("ToolExecutor remote controller session authority", () => {
     });
     const card = await waitForApprovalPayload<{ id: string; nonce: string; hmac: string; kind?: string }>(wc);
     expect(card.kind).toBe("out-of-allowed-dir");
-    gate.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
+    await gate.resolveWithFreshIdentity(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
     await pending;
     expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ input: expect.stringContaining("remoteControllerOrigin=tailnet-controller") }));
   });

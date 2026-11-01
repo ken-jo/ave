@@ -48,7 +48,7 @@ it("rechecks revocation after the initial decision", () => {
   let current = true;
   const remoteControllerAuthority = bindRemoteControllerToSession({ ...rawAuthority,
     pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
-    pairedShareGuard: { isCurrent: () => current } }, "session");
+    pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current } }, "session");
   const initial = manager.checkDetailed("read_file", "builtin", "read", null, { sessionId: "session", remoteControllerAuthority });
   expect(initial.decision).toBe("allow");
   current = false;

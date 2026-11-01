@@ -74,6 +74,8 @@ export async function updatePermissionsFile(
   mutator: (file: PermissionsFile) => void | Promise<void>,
   authority?: ApprovalPersistenceGuard,
 ): Promise<void> {
+  // Probe before the global policy queue and cross-process lock; inside them only the synchronous fence below guards the commit.
+  await refreshApprovalPersistence(authority);
   await withShellPolicyMutation(() => withPermissionsLock(filePath, async () => {
     await withFileLock(filePath, async () => {
       const existing = await readPermissionsFile(filePath);
@@ -87,7 +89,6 @@ export async function updatePermissionsFile(
       await mutator(file);
       validateRuleList(filePath, file.rules, { keepInertWildcards: inert });
       file.updatedAt = new Date().toISOString();
-      await refreshApprovalPersistence(authority);
       if (authority) {
         if (!replaceUtf8FileAtomicSyncIf(filePath, `${JSON.stringify(file, null, 2)}\n`, authority.isCurrent)) throw new Error("Approval authority is unavailable");
       } else {

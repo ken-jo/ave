@@ -651,6 +651,15 @@ export type ApprovalSurfaceResolver = (
   terminalTabId?: string,
 ) => WebContents | null;
 
+/** Thrown when a Tailnet-controller approval reaches a synchronous answer path; such answers must use the fresh-identity methods. */
+export class ApprovalFreshIdentityRequiredError extends Error {
+  readonly code = "approval-fresh-identity-required";
+  constructor(readonly requestId: string) {
+    super(`Approval ${requestId} belongs to a Tailnet controller and must be answered through a fresh-identity path`);
+    this.name = "ApprovalFreshIdentityRequiredError";
+  }
+}
+
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
   private readonly ruleSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
@@ -1590,7 +1599,8 @@ export class ApprovalGate {
       // damage the owner's pending request, even with valid signed contents.
       return null;
     }
-    if (entry.remoteControllerAuthority?.kind === "tailnet-controller" && !identityRefreshed) return null;
+    // Tailnet answers need a fresh owner-identity probe; a synchronous answer path for them is a host contract violation, not a revoked controller.
+    if (entry.remoteControllerAuthority?.kind === "tailnet-controller" && !identityRefreshed) throw new ApprovalFreshIdentityRequiredError(requestId);
     if (!isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) {
       clearTimeout(entry.timer);
       this.pending.delete(requestId);

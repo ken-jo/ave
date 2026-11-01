@@ -173,6 +173,8 @@ export async function updateProjectRulesFile(
   mutator: (file: ProjectRulesFile) => void,
   authority?: ApprovalPersistenceGuard,
 ): Promise<ProjectRulesFile> {
+  // Probe before the global policy queue and cross-process lock; inside them only the synchronous fence below guards the commit.
+  await refreshApprovalPersistence(authority);
   return withShellPolicyMutation(async () => {
     await mkdir(dirname(location.filePath), { recursive: true, mode: PRIVATE_DIR_MODE });
     return withFileLock(location.filePath, async () => {
@@ -187,7 +189,6 @@ export async function updateProjectRulesFile(
       mutator(file);
       file.rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, keepInertWildcards: inert });
       file.updatedAt = new Date().toISOString();
-      await refreshApprovalPersistence(authority);
       if (authority) {
         if (!replaceUtf8FileAtomicSyncIf(location.filePath, `${JSON.stringify(file, null, 2)}\n`, authority.isCurrent)) throw new Error("Approval authority is unavailable");
       } else {

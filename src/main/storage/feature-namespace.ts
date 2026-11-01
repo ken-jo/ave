@@ -188,10 +188,9 @@ export async function writeJsonAtomic<T>(dir: string, name: string, value: T): P
   await writeFileAtomicAtPath(join(dir, name), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-/** Finish asynchronous preparation before checking authority and committing without yielding. */
-export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean, prepareCommit?: () => Promise<void>): Promise<boolean> {
+/** Finish directory preparation, then check authority and commit without yielding. Callers probe authority before entering their write queue. */
+export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
   await ensureDir(dirname(filePath));
-  await prepareCommit?.();
   return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
 }
 

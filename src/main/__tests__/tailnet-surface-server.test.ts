@@ -215,7 +215,7 @@ describe("Tailnet observer lifecycle", () => {
     const pairedRuntime = {
       store: { claimInvitation, withOwnerIdentityGuard: runGuardedOwnerOperation },
       authorizer: {
-        probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), currentOwnerLogin: () => "owner@example.test", ownerIdentityError: () => null, actorIdFor: vi.fn(),
+        probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => "owner@example.test", ownerIdentityError: () => null, actorIdFor: vi.fn(),
         authorize: vi.fn(),
         subscribe: vi.fn(() => () => {}),
       },
@@ -266,7 +266,7 @@ describe("Tailnet observer lifecycle", () => {
     });
     const pairedRuntime = {
       store: { createInvitation, claimInvitation, currentPairing: () => pairing, withOwnerIdentityGuard: async <T>(guard: () => void, operation: () => Promise<T>): Promise<T> => { guard(); const result = await operation(); guard(); return result; } },
-      authorizer: { probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), currentOwnerLogin: () => "owner@example.test", ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
+      authorizer: { probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => "owner@example.test", ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
     } as unknown as TailnetPairedSharingRuntime;
     const f = options({
       AVE_TAILNET_OBSERVER: "1",
@@ -319,7 +319,7 @@ describe("Tailnet observer lifecycle", () => {
         currentPairing: () => null,
         withOwnerIdentityGuard: runGuardedOwnerOperation,
       },
-      authorizer: { probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), currentOwnerLogin: () => null, ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
+      authorizer: { probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => null, ownerIdentityError: () => null, actorIdFor: vi.fn(), authorize: vi.fn(), subscribe: vi.fn(() => () => {}) },
     } as unknown as TailnetPairedSharingRuntime;
     const f = options({
       AVE_TAILNET_OBSERVER: "1",
@@ -944,7 +944,7 @@ function fakeRuntime(store: ReturnType<typeof fakeStore>, logins: Record<string,
   return {
     store,
     authorizer: {
-      probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: Object.keys(logins)[0] ?? null, accepted: true }), currentOwnerLogin: () => Object.keys(logins)[0] ?? null, ownerIdentityError: (login: string) => Object.keys(logins)[0] === login ? null : "tailnet-owner-identity-unavailable", actorIdFor: (login: string) => logins[login] ?? null,
+      probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: Object.keys(logins)[0] ?? null }), currentOwnerLogin: () => Object.keys(logins)[0] ?? null, ownerIdentityError: (login: string) => Object.keys(logins)[0] === login ? null : "tailnet-owner-identity-unavailable", actorIdFor: (login: string) => logins[login] ?? null,
       authorize: vi.fn(),
       subscribe: vi.fn(() => () => {}),
     },

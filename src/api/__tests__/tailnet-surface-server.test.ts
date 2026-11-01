@@ -72,7 +72,7 @@ async function fixture(options: FixtureOptions = {}) {
   });
   stores.push(store);
   const server = await startTailnetSurfaceServer({
-    probeOwnerIdentity: options.probeOwnerIdentity ?? (async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true })),
+    probeOwnerIdentity: options.probeOwnerIdentity ?? (async () => ({ revision: 1, ownerLogin: "owner@example.com" })),
     ownerIdentityError: options.ownerIdentityError ?? (() => null),
     port: await reservePort(),
     authorization: options.authorization ?? APP_CAPABILITY,
@@ -148,9 +148,12 @@ function pairedSharing(options: Readonly<{ observe: boolean; control: boolean; e
         && binding.shareEpoch === PAIRED_SHARE.shareEpoch
         && binding.scope === PAIRED_SHARE.scope;
     },
+    async refreshCurrent(binding: typeof PAIRED_SHARE): Promise<boolean> {
+      return pairedShareGuard.isCurrent(binding);
+    },
   };
   const authorizer: TailnetPairedShareAuthorizer = {
-    probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), currentOwnerLogin: () => "owner@example.com", ownerIdentityError: () => null, actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : null,
+    probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => "owner@example.com", ownerIdentityError: () => null, actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : null,
     authorize(login, conversationId, required) {
       if (
         !active
@@ -349,7 +352,7 @@ describe("Tailnet observer HTTP boundary", () => {
     const store = createSharedConversationProjectionStore(timeline);
     stores.push(store);
     const options = {
-      probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), ownerIdentityError: () => null,
+      probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), ownerIdentityError: () => null,
       port: await reservePort(),
       authorization: APP_CAPABILITY,
       projectionStore: store,
@@ -1706,7 +1709,7 @@ describe("Tailnet Web root and browser pairing", () => {
       ["active", "대화를 공유하기를 기다리는 중"],
     ] as const) {
       const { server } = await fixture({
-        pairedSharing: { ...sharing.authorizer, probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), currentOwnerLogin: () => "owner@example.com", ownerIdentityError: () => null, actorIdFor: () => GUEST_ACTOR },
+        pairedSharing: { ...sharing.authorizer, probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => "owner@example.com", ownerIdentityError: () => null, actorIdFor: () => GUEST_ACTOR },
         pairing: {
           claimInvitation: vi.fn(async () => null),
           deviceStatus: vi.fn(async () => ({ pairing: state, ownDevice: false })),
@@ -1737,7 +1740,7 @@ describe("Tailnet Web root and browser pairing", () => {
     const { server } = await fixture({
       pairedSharing: {
         ...sharing.authorizer,
-        probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), currentOwnerLogin: () => "owner@example.com", ownerIdentityError: () => null, actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : GUEST_ACTOR_ID,
+        probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), currentOwnerLogin: () => "owner@example.com", ownerIdentityError: () => null, actorIdFor: (login) => login === "owner@example.com" ? PAIRED_ACTOR_ID : GUEST_ACTOR_ID,
       },
       pairing: { claimInvitation: vi.fn(async () => null), deviceStatus },
       web: { origin: WEB_ORIGIN },
@@ -1797,7 +1800,7 @@ describe("local owner identity boundary", () => {
       expect(response.status).toBe(403);
       expect(await response.json()).toMatchObject({ ok: false, error, message: expect.any(String) });
     }
-    expect(ownerIdentityError).toHaveBeenCalledWith("owner@example.com", expect.objectContaining({ accepted: true }));
+    expect(ownerIdentityError).toHaveBeenCalledWith("owner@example.com", expect.objectContaining({ revision: 1, ownerLogin: "owner@example.com" }));
   });
 
   it("validates peer authorization before consulting local owner identity", async () => {
@@ -1812,7 +1815,7 @@ describe("local owner identity boundary", () => {
     const timeline = createPlatformConversationTimeline();
     const store = createSharedConversationProjectionStore(timeline);
     stores.push(store);
-    const options = { port: await reservePort(), authorization: APP_CAPABILITY, projectionStore: store, getCurrentConversationId: () => CONVERSATION_ID, isConversationBusy: () => false, probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }), ownerIdentityError: () => null };
+    const options = { port: await reservePort(), authorization: APP_CAPABILITY, projectionStore: store, getCurrentConversationId: () => CONVERSATION_ID, isConversationBusy: () => false, probeOwnerIdentity: async () => ({ revision: 1, ownerLogin: "owner@example.com" }), ownerIdentityError: () => null };
     await expect(startTailnetSurfaceServer({ ...options, controller: { commandPort: { submit: vi.fn(), execute: vi.fn() } as unknown as ConversationCommandPort, receiptStore: createReceiptStore() } })).rejects.toThrow("tailnet-controller-owner-pairing-required");
     await expect(startTailnetSurfaceServer({ ...options, ownerIdentityError: undefined as never })).rejects.toThrow("tailnet-owner-identity-policy-unavailable");
     await expect(startTailnetSurfaceServer({ ...options, pairedSharing: { ...pairedSharing({ observe: true, control: true }).authorizer, ownerIdentityError: undefined as never } })).rejects.toThrow("tailnet-owner-identity-policy-unavailable");
@@ -1821,7 +1824,7 @@ describe("local owner identity boundary", () => {
 
 describe("request-scoped asynchronous owner identity", () => {
   it("consumes the request budget before any probe and uses one probe for one admitted request", async () => {
-    const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+    const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
     const { server } = await fixture({ probeOwnerIdentity, maxRequestsPerWindow: 1 });
     expect((await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() })).status).toBe(200);
     expect(probeOwnerIdentity).toHaveBeenCalledOnce();
@@ -1833,7 +1836,7 @@ describe("request-scoped asynchronous owner identity", () => {
     const sharing = pairedSharing({ observe: true, control: true });
     const guard = sharing.authorizer.authorize("owner@example.com", CONVERSATION_ID, "observe", await sharing.authorizer.probeOwnerIdentity())!.pairedShareGuard;
     const isCurrent = vi.spyOn(guard, "isCurrent");
-    const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+    const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
     const { server, timeline } = await fixture({ probeOwnerIdentity, pairedSharing: sharing.authorizer });
     const response = await fetch(url(server, "/tailnet/v1/conversation/events"), { headers: observerHeaders() });
     const reader = response.body!.getReader();
@@ -1851,7 +1854,7 @@ describe("request-scoped asynchronous owner identity", () => {
 
   it("refreshes the owner only from the existing stream scope interval and closes when the refresh is unavailable", async () => {
     const sharing = pairedSharing({ observe: true, control: true });
-    const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+    const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
     let unavailable = false;
     const { server } = await fixture({ probeOwnerIdentity, pairedSharing: sharing.authorizer, ownerIdentityError: () => unavailable ? "tailnet-owner-identity-unavailable" : null });
     const intervals = vi.spyOn(globalThis, "setInterval");
@@ -1923,10 +1926,36 @@ it.each(["native", "web"] as const)("preserves an accepted %s command result whe
   expect(submit).toHaveBeenCalledOnce();
 });
 
+it.each([
+  ["unavailable", null, "remote-controller-authority-suspended"],
+  ["recovered to the same owner", "owner@example.com", "remote-controller-authority-suspended"],
+  ["changed to another owner", "next-owner@example.com", "remote-controller-authority-revoked"],
+] as const)("reports an accepted command as %s with its distinct authority code", async (_state, ownerAfter, code) => {
+  const sharing = pairedSharing({ observe: true, control: true });
+  let identityChanged = false;
+  const submit = vi.fn(() => {
+    identityChanged = true;
+    return { completion: Promise.resolve({ text: "", toolCalls: [], route: "default", stopReason: "end_turn" }) };
+  });
+  const { server } = await fixture({
+    pairedSharing: { ...sharing.authorizer, currentOwnerLogin: () => identityChanged ? ownerAfter : "owner@example.com" },
+    // The request's evidence is superseded once the identity changes, whatever the new state is.
+    ownerIdentityError: () => identityChanged ? "tailnet-owner-identity-unavailable" : null,
+    controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort,
+  });
+  const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
+  const scope = (await snapshot.json() as { conversation: { scope: string } }).conversation.scope;
+  const body = JSON.stringify({ id: "accepted-before-suspension-0001", type: "conversation.send", input: "perform work", scope });
+  const response = await fetch(url(server, "/tailnet/v1/commands"), { method: "POST", headers: { ...controllerHeaders(), "content-type": "application/json" }, body });
+  expect(response.status).toBe(202);
+  expect(await response.json()).toMatchObject({ accepted: true, turn: { denied: true, error: code } });
+  expect(submit).toHaveBeenCalledOnce();
+});
+
 it("closes an expired share before delivering the next delta without an identity probe or interval", async () => {
   const expiresAt = Date.now() + 60_000;
   const sharing = pairedSharing({ observe: true, control: true, expiresAt });
-  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
   const { server, timeline } = await fixture({ pairedSharing: sharing.authorizer, probeOwnerIdentity });
   const response = await fetch(url(server, "/tailnet/v1/conversation/events"), { headers: observerHeaders() });
   const reader = response.body!.getReader();
@@ -1942,7 +1971,7 @@ it("closes an expired share before delivering the next delta without an identity
 
 it("checks owner identity for controller-only web attachment uploads", async () => {
   const sharing = pairedSharing({ observe: true, control: true });
-  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
   const { server } = await fixture({ pairedSharing: sharing.authorizer, probeOwnerIdentity, controllerCommandPort: { submit: vi.fn(), execute: vi.fn() } as unknown as ConversationCommandPort, web: { origin: WEB_ORIGIN } });
   const session = await openWebSession(server, tailnetRoleHeaders(["observer", "controller"]));
   const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
@@ -1956,7 +1985,7 @@ it("checks owner identity for controller-only web attachment uploads", async () 
 it("checks request identity before submitting a command after asynchronous body reading", async () => {
   let unavailable = false;
   const submit = vi.fn();
-  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com", accepted: true }));
+  const probeOwnerIdentity = vi.fn(async () => ({ revision: 1, ownerLogin: "owner@example.com" }));
   const { server } = await fixture({ probeOwnerIdentity, ownerIdentityError: () => unavailable ? "tailnet-owner-identity-unavailable" : null, controllerCommandPort: { submit, execute: vi.fn() } as unknown as ConversationCommandPort });
   const snapshot = await fetch(url(server, "/tailnet/v1/status"), { headers: observerHeaders() });
   const scope = (await snapshot.json() as { conversation: { scope: string } }).conversation.scope;

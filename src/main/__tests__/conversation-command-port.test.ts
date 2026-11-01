@@ -173,7 +173,7 @@ describe("ConversationCommandPort", () => {
   it("preserves a host-minted paired share binding and guard through the command boundary", async () => {
     const { port, runTurn } = makeFixture();
     const pairedShare = pairedShareFixture();
-    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
+    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true), refreshCurrent: vi.fn(async () => true) });
     const actor = createTailnetControllerActor("e".repeat(64), {
       pairedShare,
       pairedShareGuard,
@@ -208,7 +208,7 @@ describe("ConversationCommandPort", () => {
       signalStarted();
     }));
     const pairedShare = pairedShareFixture();
-    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
+    const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true), refreshCurrent: vi.fn(async () => true) });
     const actor = createTailnetControllerActor("e".repeat(64), { pairedShare, pairedShareGuard });
     const otherActor = createTailnetControllerActor("f".repeat(64), { pairedShare, pairedShareGuard });
     const turnId = "tailnet-turn_" + "A".repeat(43);

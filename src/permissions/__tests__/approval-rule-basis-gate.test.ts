@@ -39,7 +39,7 @@ async function cardSnapshot(input: ApprovalRequestInput) {
   const snapshot = gate.getRequestSnapshot(input.id);
   expect(card).not.toHaveProperty("approvalRuleBasis");
   expect(card).not.toHaveProperty("reviewerApprovalBasis");
-  gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, surface as never);
+  await gate.resolveFromDesktopRendererWithFreshIdentity(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, surface as never);
   await pending;
   return snapshot;
 }
@@ -79,7 +79,9 @@ describe("host-issued rules-only approval ceiling", () => {
   it("retains the ordinary memory ceiling for an authenticated session-bound remote user", async () => {
     const input = request();
     const basis = issueApprovalRuleBasis(invocation(), { level: "medium", reason: "Rules-only assessment" }, input.approvalCacheKey);
-    const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner" }, "session");
+    const remoteControllerAuthority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner",
+      pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true } }, "session");
     expect(await cardSnapshot({ ...input, sessionId: "session", remoteControllerOrigin: "tailnet-controller", remoteControllerAuthority, approvalRuleBasis: basis })).toMatchObject({
       riskCeilingAtApproval: "medium", persistentAllowAllowed: true,
     });

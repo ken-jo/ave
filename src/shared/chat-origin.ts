@@ -38,7 +38,7 @@ export interface TailnetPairingShareBinding {
 export interface TailnetPairedShareGuard {
   isCurrent(binding: TailnetPairingShareBinding): boolean;
   /** Fresh host identity observation; completed observations cannot admit a later effect. */
-  refreshCurrent?(binding: TailnetPairingShareBinding): Promise<boolean>;
+  refreshCurrent(binding: TailnetPairingShareBinding): Promise<boolean>;
 }
 
 export interface TailnetControllerAuthority {
@@ -124,11 +124,20 @@ export function isRemoteControllerBoundToSession(authority: RemoteControllerAuth
   return authority === undefined || !!sessionId && remoteControllerSessions.get(authority) === sessionId && isRemoteControllerAuthorityCurrent(authority);
 }
 
+/** Host contract violation: remote controller authority reached an effect boundary in a shape the host never admits. */
+export class RemoteControllerContractError extends Error {
+  constructor(readonly code: "tailnet-controller-pairing-required") {
+    super(code);
+    this.name = "RemoteControllerContractError";
+  }
+}
+
 /** Async effect and approval boundary; synchronous callers retain separate revocation fences. */
 export async function refreshRemoteControllerBoundToSession(authority: RemoteControllerAuthority | undefined, sessionId: string | undefined): Promise<boolean> {
   if (!isRemoteControllerBoundToSession(authority, sessionId)) return false;
   if (authority?.kind === "tailnet-controller") {
-    if (!authority.pairedShare || !authority.pairedShareGuard?.refreshCurrent) return false;
+    // The surface server admits controllers only through owner pairing, so an unpaired controller here is a host bug, not a revocation.
+    if (!authority.pairedShare || !authority.pairedShareGuard) throw new RemoteControllerContractError("tailnet-controller-pairing-required");
     try {
       if (!await authority.pairedShareGuard.refreshCurrent(authority.pairedShare)) return false;
     } catch { return false; }

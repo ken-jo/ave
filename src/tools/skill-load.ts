@@ -179,10 +179,8 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         };
       }
       if (!alreadyApproved) {
-        // Bind persistence to the final authority check, including time spent queued or preparing the write.
-        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), controllerCurrent, async () => {
-          if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-        }).catch((err) => {
+        // The fresh probe above precedes the store's write queue; the synchronous fence guards the commit after any time spent queued or preparing the write.
+        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), controllerCurrent).catch((err) => {
           log.warn("skill_load: approval persistence failed (non-fatal): %s", (err as Error).message);
         });
         if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();

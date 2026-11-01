@@ -197,10 +197,9 @@ type ControllerSubmitResult =
 
 interface TailnetControllerBroker {
   submit(
-    login: string,
     command: TailnetControllerCommand,
     privateConversationId: string,
-    pairedShare: TailnetPairedShareAuthorization | undefined,
+    pairedShare: TailnetPairedShareAuthorization,
   ): Promise<ControllerSubmitResult>;
   revalidatePairedTurns(): void;
 }
@@ -1122,7 +1121,6 @@ async function routeTailnetWebCommand(
   }
   requestOwnerGuard(options)();
   const submitted = await broker.submit(
-    reauthorized.login,
     decoded.command,
     reauthorized.scope.conversationId,
     reauthorized.pairedShare,
@@ -1133,7 +1131,7 @@ async function routeTailnetWebCommand(
         ok: true,
         accepted: true,
         command: { id: decoded.command.id, scope: reauthorized.scope.value },
-        ...publicTurnResponse(decoded.command, reauthorized.pairedShare, options),
+        ...publicTurnResponse(decoded.command, reauthorized.login, reauthorized.pairedShare, options),
       });
       return;
     case "duplicate":
@@ -1142,7 +1140,7 @@ async function routeTailnetWebCommand(
         accepted: true,
         duplicate: true,
         command: { id: decoded.command.id, scope: reauthorized.scope.value },
-        ...publicTurnResponse(decoded.command, reauthorized.pairedShare, options),
+        ...publicTurnResponse(decoded.command, reauthorized.login, reauthorized.pairedShare, options),
       });
       return;
     case "idempotency-conflict":
@@ -1838,6 +1836,8 @@ async function routeControllerCommand(
     sendJson(res, 403, { ok: false, error: "pairing-share-required" });
     return;
   }
+  // Startup refuses a controller without owner pairing; reaching here without its authorizer is a host contract violation.
+  if (pairedShare === undefined) throw new Error("tailnet-controller-owner-pairing-required");
 
   if (decoded.command.scope !== scope.value) {
     sendSnapshotRequired(
@@ -1848,11 +1848,11 @@ async function routeControllerCommand(
     return;
   }
   requestOwnerGuard(options)();
-  const submitted = await broker.submit(login, decoded.command, scope.conversationId, pairedShare);
+  const submitted = await broker.submit(decoded.command, scope.conversationId, pairedShare);
   switch (submitted) {
     case "accepted":
       sendJson(res, 202, {
-        ...publicTurnResponse(decoded.command, pairedShare, options),
+        ...publicTurnResponse(decoded.command, login, pairedShare, options),
         ok: true,
         accepted: true,
         command: { id: decoded.command.id, scope: scope.value },
@@ -1861,7 +1861,7 @@ async function routeControllerCommand(
     case "duplicate":
       sendJson(res, 202, {
         ok: true,
-        ...publicTurnResponse(decoded.command, pairedShare, options),
+        ...publicTurnResponse(decoded.command, login, pairedShare, options),
         accepted: true,
         duplicate: true,
         command: { id: decoded.command.id, scope: scope.value },
@@ -2492,23 +2492,15 @@ function createTailnetControllerBroker(
   };
 
   return {
-    async submit(login, command, privateConversationId, pairedShare): Promise<ControllerSubmitResult> {
-      if (command.type === "turn.cancel-own" && pairedShare === undefined) {
-        return "turn-not-found";
-      }
-      if (command.type === "conversation.send" && command.attachmentIds !== undefined && pairedShare === undefined) {
-        return "attachment-unavailable";
-      }
-
-      const actor = pairedShare === undefined
-        ? createTailnetControllerActor(identityDigest(login))
-        : createTailnetControllerActor(
-          pairedShare.actorId.slice("tailnet:".length),
-          {
-            pairedShare: pairedShare.pairedShare,
-            pairedShareGuard: pairedShare.pairedShareGuard,
-          },
-        );
+    async submit(command, privateConversationId, pairedShare): Promise<ControllerSubmitResult> {
+      // Startup refuses a controller without owner pairing, so every submitted command carries a paired share.
+      const actor = createTailnetControllerActor(
+        pairedShare.actorId.slice("tailnet:".length),
+        {
+          pairedShare: pairedShare.pairedShare,
+          pairedShareGuard: pairedShare.pairedShareGuard,
+        },
+      );
       const keyDigest = controllerReceiptKeyDigest(actor.actorId, command.id);
       let reservation;
       try {
@@ -2563,7 +2555,7 @@ function createTailnetControllerBroker(
       let claim;
       if (command.attachmentIds !== undefined) {
         claim = attachmentStore.reserve(
-          pairedAttachmentOwnerKey(pairedShare!),
+          pairedAttachmentOwnerKey(pairedShare),
           command.attachmentIds,
         );
         if (claim === null) {
@@ -2571,12 +2563,10 @@ function createTailnetControllerBroker(
         }
       }
 
-      const publicTurn = pairedShare === undefined
-        ? undefined
-        : {
-          turnId: tailnetPublicTurnId(actor.actorId, command.id),
-          abortController: new AbortController(),
-        };
+      const publicTurn = {
+        turnId: tailnetPublicTurnId(actor.actorId, command.id),
+        abortController: new AbortController(),
+      };
       let submission;
       try {
         submission = submit.call(commandPort, actor, {
@@ -2586,7 +2576,7 @@ function createTailnetControllerBroker(
             input: command.input,
             ...(claim === undefined ? {} : { attachments: claim.attachments }),
           },
-          ...(publicTurn === undefined ? {} : { publicTurn }),
+          publicTurn,
         });
       } catch {
         // An adapter throw cannot prove the lease was never admitted; retain the reservation to prevent duplicate work.
@@ -2727,19 +2717,35 @@ function commandDigest(command: TailnetControllerCommand): string {
 
 function publicTurnResponse(
   command: TailnetControllerCommand,
-  pairedShare: TailnetPairedShareAuthorization | undefined,
+  login: string,
+  pairedShare: TailnetPairedShareAuthorization,
   options: TailnetSurfaceServerOptions,
 ): Readonly<Record<string, unknown>> {
-  let denied = false;
-  try { requestOwnerGuard(options)(); denied = pairedShare !== undefined && !isPairedShareCurrent(pairedShare); } catch { denied = true; }
-  return command.type === "conversation.send" && pairedShare !== undefined
+  const denial = controllerAuthorityDenial(login, pairedShare, options);
+  return command.type === "conversation.send"
     ? {
       turn: {
         id: tailnetPublicTurnId(pairedShare.actorId, command.id),
-        ...(denied ? { denied: true, error: "remote-controller-authority-revoked" } : {}),
+        ...(denial === undefined ? {} : { denied: true, error: denial }),
       },
     }
     : {};
+}
+
+// Suspension is recoverable by the same owner with a fresh request; revocation needs pairing again.
+function controllerAuthorityDenial(
+  login: string,
+  pairedShare: TailnetPairedShareAuthorization,
+  options: TailnetSurfaceServerOptions,
+): "remote-controller-authority-suspended" | "remote-controller-authority-revoked" | undefined {
+  try {
+    requestOwnerGuard(options)();
+  } catch {
+    // The request's identity evidence no longer holds. Unavailable identity, or a recovery to this same owner, suspends; a confirmed different owner revokes.
+    const owner = options.pairedSharing?.currentOwnerLogin();
+    return owner === null || owner === login ? "remote-controller-authority-suspended" : "remote-controller-authority-revoked";
+  }
+  return isPairedShareCurrent(pairedShare) ? undefined : "remote-controller-authority-revoked";
 }
 
 function controllerReceiptKeyDigest(actorId: string, commandId: string): string {

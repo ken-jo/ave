@@ -42,7 +42,7 @@ describe("delegated session controller boundary", () => {
         const authority = remote ? bindRemoteControllerToSession({
           kind: "tailnet-controller", actorId: "tailnet:delegation-test",
           pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
-          pairedShareGuard: { isCurrent: () => current },
+          pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current },
         }, "parent-session") : undefined;
         const floor = { code: "other-principal" as const, reason: "External guidance" };
         const parentPolicy = { allowExternalHooks: false, headless: true, ownerUnattended: true, floor, remoteControllerAuthority: authority };

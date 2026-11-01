@@ -139,7 +139,7 @@ describe("skill_load — plugin skills obey the turn's plugin scope", () => {
 
 
 describe("skill body approval controller authority", () => {
-  it("records no grant when authority is revoked while approval persistence waits", async () => {
+  it("records no grant when the host observes revocation while approval persistence waits in the write queue", async () => {
     const sessionId = "skill-persistence-owner";
     let current = true;
     let ownerAvailable = true;
@@ -167,6 +167,8 @@ describe("skill body approval controller authority", () => {
       const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
       await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
       await vi.waitFor(() => expect(approve).toHaveBeenCalledOnce());
+      // The fresh probe ran before the queue; the synchronous commit fence sees a revocation recorded during the wait.
+      current = false;
       ownerAvailable = false;
     } finally { release(); await held; }
     expect((await pending).isError).toBe(true);

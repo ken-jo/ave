@@ -11,6 +11,9 @@ export function withShellPolicyMutation<T>(mutation: () => Promise<T>): Promise<
 }
 
 // Final validation and the grant run synchronously. In-memory rule, mode and settings setters cannot interleave this callback on the host's event loop.
-export function withShellPolicyHandoff<T>(handoff: ShellPolicyHandoff<T>, prepare?: () => Promise<void>): Promise<T> {
-  return shellPolicyQueue(async () => { await prepare?.(); return handoff(); });
+// Asynchronous preparation (such as a fresh owner-identity probe) finishes before the caller joins the queue, so it never holds every other policy writer;
+// the handoff must repeat its synchronous revocation fence because the queue wait follows that preparation.
+export async function withShellPolicyHandoff<T>(handoff: ShellPolicyHandoff<T>, prepare?: () => Promise<void>): Promise<T> {
+  await prepare?.();
+  return shellPolicyQueue(async () => handoff());
 }

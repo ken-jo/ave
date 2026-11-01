@@ -294,7 +294,7 @@ it.each(["changed", "logged-out"] as const)("refuses the next tool in an idle co
   expect(persisted.pairings[0].state).toBe(state === "changed" ? "revoked" : "active");
 });
 
-it("coalesces concurrent tool-call identity probes without reusing a completed result", async () => {
+it("serializes concurrent tool-call identity probes so no effect reuses an observation that started before it asked", async () => {
   let calls = 0;
   let release: (() => void) | undefined;
   let pending: Promise<void> | undefined;
@@ -306,14 +306,14 @@ it("coalesces concurrent tool-call identity probes without reusing a completed r
   await f.owner.createCurrentConversationShare(claim!.pairingId, "control");
   const authorization = f.runtime.authorizer.authorize("remote-owner@example.test", f.current.id, "control", await f.runtime.authorizer.probeOwnerIdentity())!;
   let requested = 0;
-  let bothRequested!: () => void;
-  const bothEffectsWaiting = new Promise<void>(resolve => { bothRequested = resolve; });
+  let allRequested!: () => void;
+  const allEffectsWaiting = new Promise<void>(resolve => { allRequested = resolve; });
   const pairedShareGuard = {
     isCurrent: authorization.pairedShareGuard.isCurrent,
     refreshCurrent(binding: typeof authorization.pairedShare) {
-      const observation = authorization.pairedShareGuard.refreshCurrent!(binding);
+      const observation = authorization.pairedShareGuard.refreshCurrent(binding);
       requested += 1;
-      if (requested === 2) bothRequested();
+      if (requested === 3) allRequested();
       return observation;
     },
   };
@@ -327,16 +327,18 @@ it("coalesces concurrent tool-call identity probes without reusing a completed r
   const run = () => executor.executeAll([{ id: "concurrent-read", name: "owner_read", input: {} }], { sessionId: f.current.id, executionCwd: directories.at(-1)!, permissionContext: { trustOrigin: "user-keyboard", remoteControllerAuthority: authority } });
   const before = calls;
   pending = new Promise<void>(resolve => { release = resolve; });
-  const simultaneous = [run(), run()];
+  const simultaneous = [run(), run(), run()];
   try {
-    await bothEffectsWaiting;
+    await allEffectsWaiting;
+    // The first effect starts an observation; the two that ask while it is pending wait for, and share, the next one.
     expect(calls - before).toBe(1);
   } finally {
     release!();
     await Promise.allSettled(simultaneous);
   }
   for (const result of await Promise.all(simultaneous)) expect(result[0].is_error).toBeUndefined();
+  expect(calls - before).toBe(2);
   pending = undefined;
   expect((await run())[0].is_error).toBeUndefined();
-  expect(calls - before).toBe(2);
+  expect(calls - before).toBe(3);
 });

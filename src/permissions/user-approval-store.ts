@@ -264,7 +264,7 @@ async function atomicWrite(data: ApprovalsFile, authority?: ApprovalPersistenceG
 
 // The shared namespace writer owns exclusive random staging, file/directory fsync and rename to prevent symlink redirection.
   if (authority) {
-    if (!await writeFileAtomicAtPathIf(path, `${JSON.stringify(data, null, 2)}\n`, authority.isCurrent, () => refreshApprovalPersistence(authority))) throw new Error("Approval authority is unavailable");
+    if (!await writeFileAtomicAtPathIf(path, `${JSON.stringify(data, null, 2)}\n`, authority.isCurrent)) throw new Error("Approval authority is unavailable");
   } else {
     await writeFileAtomicAtPath(path, `${JSON.stringify(data, null, 2)}\n`);
   }
@@ -274,6 +274,8 @@ async function mutatePersistentApprovals(
   mutator: (file: ApprovalsFile) => Promise<void> | void,
   authority?: ApprovalPersistenceGuard,
 ): Promise<void> {
+  // Probe before the write queue; inside it only the synchronous fence in atomicWrite guards the commit.
+  await refreshApprovalPersistence(authority);
   return persistentWrites(async () => {
     const file = await readApprovalsFile();
     await mutator(file);

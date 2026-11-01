@@ -2,6 +2,7 @@ import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import "../../__tests__/support/trusted-powershell.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  ApprovalFreshIdentityRequiredError,
   ApprovalGate,
   approvalAnswererAuditToken,
   consumeHostApprovedOneShotExecutionBinding,
@@ -1670,6 +1671,17 @@ describe("ApprovalGate", () => {
       ]);
     });
 
+    it("fails clearly when a Tailnet-controller card reaches a synchronous answer path, leaving the card pending", async () => {
+      const { wc, gate } = makeAuditingGate();
+      const promise = gate.requestAndWait(makeControllerRequest({ id: "sync-tailnet", remoteControllerOrigin: "tailnet-controller" }));
+      const { nonce, hmac } = lastSentNonceHmac(wc);
+      const answer = { requestId: "sync-tailnet", choice: "allow-once" as const, nonce, hmac };
+      expect(() => gate.resolve("sync-tailnet", answer)).toThrow(ApprovalFreshIdentityRequiredError);
+      // The contract violation is not a revocation: the card stays pending for the fresh-identity path.
+      await expect(gate.resolveWithFreshIdentity("sync-tailnet", answer)).resolves.toMatchObject({ choice: "allow-once" });
+      await expect(promise).resolves.toMatchObject({ choice: "allow-once" });
+    });
+
     it("distinguishes the controllers instead of marking every remote turn alike", async () => {
       const { wc, auditLogger, gate } = makeAuditingGate();
 
@@ -1697,7 +1709,7 @@ describe("ApprovalGate", () => {
     it("states positively that no controller is behind an ordinary approval", async () => {
       const { wc, auditLogger, gate } = makeAuditingGate();
 
-      const promise = gate.requestAndWait(makeControllerRequest({ id: "origin-desk" }));
+      const promise = gate.requestAndWait(makeRequest({ id: "origin-desk", sessionId: "controller-session" }));
       const { nonce, hmac } = lastSentNonceHmac(wc);
       gate.resolve("origin-desk", {
         requestId: "origin-desk",

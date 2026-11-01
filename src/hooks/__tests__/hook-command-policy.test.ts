@@ -292,6 +292,18 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed during approval" });
   });
 
+  it("rechecks the admitted sandbox generation after the final fresh authority refresh", async () => {
+    const assertAllowed = vi.fn();
+    const authorizeCommand = async () => ({
+      decision: "allow" as const, reason: "approved", plan: getHostShellExecutionPlan(), assertAllowed,
+      // The generation changes while the final pre-spawn probe is pending.
+      refreshAllowed: async () => { setShellSandboxRequestedAtBoot(true); },
+    });
+    expect(await runOneHookScript(hook, payload, { authorizeCommand }))
+      .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed before spawn" });
+    expect(assertAllowed).not.toHaveBeenCalled();
+  });
+
   it("denies an unattended unresolved hook command in the default mode without raising a card", async () => {
     const p = policy();
     p.permissionManager.setMode("default");

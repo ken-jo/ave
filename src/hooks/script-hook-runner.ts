@@ -325,6 +325,13 @@ export async function runOneHookScript(
     }
   }
 
+  // The fresh authority probe is the last await before spawn. Everything after it, through spawn, runs in one synchronous turn.
+  let refreshError: unknown;
+  try {
+    await refreshCommandAllowed?.();
+  } catch (error) {
+    refreshError = error;
+  }
   if (abortSignal?.aborted) {
     if (windowsSpawn) await forceKillManagedChildProcess(windowsSpawn.child, "hook caller aborted");
     wrappedEgress?.release();
@@ -339,7 +346,7 @@ export async function runOneHookScript(
     return deny("hook shell execution policy changed before spawn");
   }
   try {
-    await refreshCommandAllowed?.();
+    if (refreshError !== undefined) throw refreshError;
     assertCommandAllowed?.();
   } catch (error) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook command permission changed");
