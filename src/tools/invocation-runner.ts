@@ -55,7 +55,7 @@ import type {
   TrustLevel,
   ToolCategory,
 } from "./types.js";
-import { trustFromSource } from "./types.js";
+import { ToolUnavailableError, trustFromSource } from "./types.js";
 import { PermissionManager, isTailnetControllerP1BlockedTool, requiredTier, type PermissionCheckResult } from "../permissions/permission-manager.js";
 import {
   isRemoteControllerAuthorityCurrent,
@@ -1192,13 +1192,16 @@ export async function runToolInvocation(
       }
     } catch (err) {
       const detail = errorMessage(err);
-      const msg = t("be_executor.invalidToolInput", {
+      const unavailable = err instanceof ToolUnavailableError;
+      const msg = t(unavailable ? "be_executor.toolUnavailable" : "be_executor.invalidToolInput", {
         name: toolUse.name,
         error: detail,
       });
       const durationMs = Date.now() - startTime;
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
+      // Never reached a permission decision, and the same call would fail the same way: nothing to rerun from Recently denied.
+      denialRecorded = true;
       await auditCurrentToolCall(
         sessionId,
         toolUse.name,
@@ -1210,7 +1213,7 @@ export async function runToolInvocation(
         startTime,
         {
           decision: "deny",
-          reason: t("be_executor.invalidToolInputAudit"),
+          reason: t(unavailable ? "be_executor.toolUnavailableAudit" : "be_executor.invalidToolInputAudit"),
           },
         Infinity,
         permissionContext,
