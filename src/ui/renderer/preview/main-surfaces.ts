@@ -15,6 +15,8 @@ export interface MainSurface {
   ordinal: number;
   /** A browser surface's host-set url; null for a terminal or a blank page. */
   url: string | null;
+  /** Set when an agent's page was loaded into this blank page (`browser_tab_new` from its pane chat); bound with the guest. */
+  agentRequestId?: string;
   /** A terminal's working directory: where the shell last said it was, or — before it has said — where a reopened one is to
    * start. Null when unknown. */
   cwd?: string | null;
@@ -57,6 +59,8 @@ export interface MainSurfacesStore {
   /** The most recently closed surface, removed from the memory. */
   takeLastClosed: () => ClosedSurface | undefined;
   setUrl: (tabId: string, url: string) => void;
+  /** Point a blank browser surface at an agent's bootstrap page; false when it is not a blank browser surface. */
+  loadAgent: (tabId: string, url: string, agentRequestId: string) => boolean;
   setCwd: (tabId: string, cwd: string) => void;
 }
 
@@ -125,6 +129,13 @@ export function useMainSurfaces(): MainSurfacesStore {
     commit(current.map((each) => (each.tabId === tabId ? { ...each, url } : each)));
   }, [commit]);
 
+  const loadAgent = useCallback((tabId: string, url: string, agentRequestId: string) => {
+    const current = surfacesRef.current;
+    if (!current.some((each) => each.tabId === tabId && each.kind === "browser" && each.url === null)) return false;
+    commit(current.map((each) => (each.tabId === tabId ? { ...each, url, agentRequestId } : each)));
+    return true;
+  }, [commit]);
+
   const setCwd = useCallback((tabId: string, cwd: string) => {
     const current = surfacesRef.current;
     if (!current.some((each) => each.tabId === tabId && each.cwd !== cwd)) return;
@@ -132,7 +143,7 @@ export function useMainSurfaces(): MainSurfacesStore {
   }, [commit]);
 
   return useMemo(
-    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd }),
-    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd],
+    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, loadAgent, setCwd }),
+    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, loadAgent, setCwd],
   );
 }

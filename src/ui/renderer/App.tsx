@@ -617,6 +617,8 @@ export function App() {
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => null,
     hasTab: (tabId) => mainBrowserHostRef.current.mainSurfaces.get(tabId)?.kind === "browser",
+    // A pane chat's own blank page takes the agent's page in place of a new tab.
+    loadAgentTab: (tabId, url, requestId) => mainBrowserHostRef.current.mainSurfaces.loadAgent(tabId, url, requestId),
     selectTab: openWorkspaceSurface,
     closeTab: (tabId) => {
       const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;

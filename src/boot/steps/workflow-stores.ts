@@ -212,6 +212,8 @@ export async function setupWorkflowStores(
             liveOriginSessionId,
             tabs: browserTabRegistry,
             pickUploadFiles: desktop.pickBrowserUploadFiles,
+            // Only a main chat view opens agent tabs; the side and pane chats act in their attached page.
+            opensAgentTabs: (hostSessionId: string) => ctx.findLoopBySessionId(hostSessionId) !== undefined,
             // Load page actions lazily outside the initial bundle.
             loadActions: async () => {
               const { createBrowserPageActions } = await import("../../main/browser/browser-actions.js");

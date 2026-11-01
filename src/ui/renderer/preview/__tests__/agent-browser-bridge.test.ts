@@ -171,6 +171,16 @@ describe("routeBrowserTabOp", () => {
     expect(panels.calls).toEqual(["select browser:7"]);
   });
 
+  it("loads a pane chat's page into the host holding that empty tab, never a new tab", () => {
+    const loads: string[] = [];
+    const panels = { ...host(null, ["browser:pane"]), loadAgentTab: (tabId: string, url: string, requestId: string) => { loads.push(`${tabId} ${url} ${requestId}`); return true; } };
+    const chat = host("pane-chat", []);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:pane", active: false }, [chat, panels]);
+    routeBrowserTabOp({ requestId: "r2", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:gone", active: false }, [chat, panels]);
+    expect(loads).toEqual(["browser:pane about:blank r1"]);
+    expect(chat.calls).toEqual([]);
+  });
+
   it("selects or closes in the view that holds the tab, and nowhere else", () => {
     const first = host("s1", ["browser:1"]);
     const second = host("s2", ["browser:2"]);

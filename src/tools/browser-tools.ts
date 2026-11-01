@@ -34,9 +34,11 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   releaseControl(tabId: string, leaseId: string): void;
   /** The tab a conversation acts on when a call names none (its pane chat's tab, else the shown one). */
   defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab;
+  /** The pane a pane chat is bound to, if any. */
+  conversationSurface(windowId: number, sessionId: string): { kind: "browser" | "terminal"; tabId: string } | undefined;
   requestTabOp(
     windowId: number,
-    op: { op: "new"; url: string; sessionId?: string; actor: BrowserSessionActor; active?: boolean } | { op: "select" | "close"; tabId: string; actor: BrowserSessionActor },
+    op: { op: "new"; url: string; sessionId?: string; inTabId?: string; actor: BrowserSessionActor; active?: boolean } | { op: "select" | "close"; tabId: string; actor: BrowserSessionActor },
     options?: { signal?: AbortSignal },
   ): Promise<BrowserTabOpOutcome>;
 }
@@ -85,6 +87,8 @@ export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends 
   readonly tabs: BrowserTabsAccess<G>;
   readonly pickUploadFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null>;
   readonly loadActions: () => Promise<BrowserPageActions<G>>;
+  /** False for a hosted conversation no renderer opens agent tabs for (side and pane chats); they act in their attached page. Absent: all may. */
+  readonly opensAgentTabs?: (hostSessionId: string) => boolean;
 }
 
 /** Keys `browser_press_key` accepts (mirrors browser-actions.ts PRESSABLE_KEYS). */
@@ -127,6 +131,8 @@ export interface BrowserToolPolicy<G extends BrowserGuest> {
   windowOf(sessionId: string | undefined): { windowId: number; hostSessionId: string } | null;
   /** The tab an input names (or the window's shown tab), within the session's window. */
   resolveTab(input: BrowserToolInput, sessionId: string | undefined): ResolvedBrowserTab<G> | undefined;
+  /** Where browser_tab_new opens a page: a new tab, the empty page a pane chat is bound to (`inTabId`), or nowhere (why). */
+  tabNewTarget(scope: { windowId: number; hostSessionId: string }): { ok: true; inTabId?: string } | { ok: false; reason: string };
 }
 
 export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps<G>): Tool[] {
@@ -144,6 +150,22 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       try { deps.tabs.assertActorAccess(tab, { sessionId, directParentSessionId: deps.liveOriginSessionId(sessionId) }); }
       catch { return undefined; }
       return { tab, origin: browserOrigin(tab.guest.getURL()), opener: tab.opener };
+    },
+    // Only a main chat view opens new tabs. A side or pane chat acts in its attached page, or loads one into its empty pane.
+    tabNewTarget: (scope) => {
+      if (deps.opensAgentTabs?.(scope.hostSessionId) !== false) return { ok: true };
+      const attached = deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId);
+      if (attached.ok) {
+        const url = deps.tabs.liveTabInWindow(attached.handle, scope.windowId)?.guest?.getURL();
+        return { ok: false, reason: `this chat cannot open browser tabs; it works in ${attached.handle}${url ? ` (${url})` : ""}. `
+          + "Load a URL there with browser_navigate and omit tabId." };
+      }
+      const bound = deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId);
+      // Only a page that never loaded is empty; one that closed or crashed is gone.
+      if (bound?.kind === "browser" && !deps.tabs.listTabs(scope.windowId).some((tab) => tab.rendererTabId === bound.tabId)) {
+        return { ok: true, inTabId: bound.tabId };
+      }
+      return { ok: false, reason: `this chat cannot open browser tabs: ${attached.error}` };
     },
   };
 
@@ -353,7 +375,11 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       name: BROWSER_TOOL.tabNew,
       description: t("be_browserTools.tabNewDescription"),
       category: "network",
-      categoryForInput: urlCategory,
+      // A chat that cannot open tabs is refused without asking: approving it would approve nothing.
+      categoryForInput: (raw, ctx) => {
+        const scope = policy.windowOf(ctx?.sessionId);
+        return scope && !policy.tabNewTarget(scope).ok ? "read" : urlCategory(raw);
+      },
       approvalMemoryScope: (raw) => urlScope(raw, "agent"),
       jsonSchema: object({ url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
       execute: execute(BROWSER_TOOL.tabNew),

@@ -294,7 +294,11 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (result.isError) return result;
       }
       const tabs = input.scope === "conversation" ? deps.tabs.listSessionTabs(scope.windowId, actor, input.includeDirectChildren === true) : deps.tabs.listTabs(scope.windowId);
-      return fenced({ tabs, ...(tabs.length === 0 ? { note: t("be_browserTools.noTabs") } : {}) });
+      const opening = policy.tabNewTarget(scope);
+      const note = !opening.ok ? opening.reason
+        : opening.inTabId !== undefined ? "This chat's page is empty; browser_tab_new loads a URL into it."
+          : tabs.length === 0 ? t("be_browserTools.noTabs") : undefined;
+      return fenced({ tabs, ...(note !== undefined ? { note } : {}) });
     },
 
     [BROWSER_TOOL.snapshot]: async (input, ctx) => {
@@ -449,13 +453,16 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!url.ok) return url.result;
       const scope = policy.windowOf(toolSessionId(ctx));
       if (!scope) return failure(NO_WINDOW);
+      const opening = policy.tabNewTarget(scope);
+      if (!opening.ok) return failure(opening.reason);
       const authorized = authorizedApprovalMemoryScope(ctx);
       if (authorized?.kind !== "browser-origin" || authorized.origin !== url.origin) {
         return failure("this tab was not approved for that URL; nothing was done. Call it again to ask.");
       }
       const outcome = await deps.tabs.requestTabOp(
         scope.windowId,
-        { op: "new", url: url.url, sessionId: scope.hostSessionId, actor: actorOf(ctx, deps), active: false },
+        { op: "new", url: url.url, sessionId: scope.hostSessionId, ...(opening.inTabId === undefined ? {} : { inTabId: opening.inTabId }),
+          actor: actorOf(ctx, deps), active: false },
         signalOptions(ctx),
       );
       if (!outcome.ok) return failure(`could not open the tab (${outcome.error})`);
