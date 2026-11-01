@@ -32,11 +32,28 @@ The driver is standalone Node; `--runtime` is the child being measured. Environm
 
 Record OS build (`[Environment]::OSVersion.Version`), exact driver/runtime paths and hashes (`Get-FileHash -Algorithm SHA256`), session, architecture and each JSON line in the review evidence. `observation.node` is the driver's bundled version; the `runtime-started` child record identifies the child runtime. The request uses a fresh cwd/HOME/temp, explicit runtime/SystemRoot reads and a temp-only write root. These intentionally generous diagnostic read roots do not certify production filesystem policy.
 
+## Ancestor-query rerun
+
+The Windows peer's f19e1dc87 run reached Node's main-module realpath with UI enabled but failed at `lstat D:\` before executing the script. The request now retains leaf file read/write grants and adds only their uncovered ancestors under SDK `containment.config.filesystem.enumeratePaths`. This is query/list access, **not** file-content read access or invisible traversal; it can expose names/metadata. It requires native PSEC 1.1 enumeration support. The exact list appears in `observation.filesystemPolicy` and each ordinary row; `driveRootRead:false` and `entryVariant:"script-file"` explicitly identify the chosen policy/entry. Runtime/data staging directly at a drive root is refused. Unsupported enumeration produces an inconclusive/error result before spawn; there is no broad drive-root read fallback. See [the design finding](../../docs/design/windows-extensions-mxc.md#ancestor-query-access-for-entry-resolution) and [the pinned schema](https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/docs/schema.md#L382-L420).
+
+The public SDK supports this narrow form, so no Node-side `--preserve-symlinks-main` or `-e`/stdin workaround is selected. The child and grandchild still execute the same file payload. Windows success under this revised policy is pending; a local policy-shape test cannot establish it.
+
+From the repository root in the same interactive standard-user session, reuse the peer's absolute `$Electron` and `$Sdk` paths (Electron 45.2.1 is both driver and runtime):
+
+```powershell
+$env:ELECTRON_RUN_AS_NODE = '1'
+& $Electron tools/mxc-probes/node-ui.mjs --sdk-root $Sdk --runtime $Electron
+& $Electron tools/mxc-probes/loopback.mjs --sdk-root $Sdk --runtime $Electron
+& $Electron tools/mxc-probes/stdio-lifetime.mjs --sdk-root $Sdk --runtime $Electron
+```
+
+D3 is resolved to UI enabled by the [reported results](../../docs/design/windows-extensions-mxc.md#windows-peer-results-at-f19e1dc87). Node-ui and loopback retain both UI rows as controls; judge the revised entry/loopback measurements using the UI-enabled row. Lifetime uses UI enabled. UI-disabled exit `0x80000003` and Bash failures remain expected observations, not an invitation to broaden filesystem grants. Git Bash hooks stay on their independently admitted srt-win/shell-plan route.
+
 ## What each probe means
 
 | Entry | Measurement | Interpretation |
 | --- | --- | --- |
-| `node-ui.mjs` | Actual child starts with UI disabled and enabled | Require exit 0 and `runtime-started`; retain failure status such as `0xC0000142`. A failed disabled start is evidence for D3, not permission to retry an admitted holder under another backend. |
+| `node-ui.mjs` | Actual child starts with UI disabled and enabled | The UI-enabled row must show exit 0 and `runtime-started` before entry resolution is cleared. Retain UI-disabled failure as a control for the resolved D3 decision; never retry an admitted holder under another backend. |
 | `loopback.mjs` | A listener and client **inside the same container**, under identity-less proxy mode, with both UI settings | Require the exact echo bytes and `connected:true`. Proxy mode can prevent this; that blocks the proposed D1 bridge. A start error is inconclusive about loopback. |
 | `stdio-lifetime.mjs` | Long-lived child + grandchild, stdin held open, then SDK `dispose()` | Before either process becomes eligible for cleanup termination, query its creation time and full image path through the opened handle: parent must postdate the launch lower bound, grandchild must postdate the parent, and both images must match the resolved runtime path. A fresh nonce over the owned child/grandchild pipes excludes same-runtime PID reuse after launch; the challenge is bounded by the shared I/O budget, and a failure/deadline closes candidates without termination. This assumes the toolkit-owned fixture faithfully forwards the nonce and its own PIDs, not that arbitrary extension output authenticates an OS identity; any mismatch/query/challenge failure closes candidate handles without terminating them and reports inconclusive. Verified process objects are pinned before disposal. Independently observe both signaled; SDK wait rejection does not count. Report pre-cleanup observations even when exact-handle cleanup must terminate survivors. This is not the main-crash/job test. |
 | `kernel-objects.mjs` | Unique `ave-mxc-probe-*` pipes, named sections, ALPC ports; benign registry query; host and cross-holder reach | Compare a successful same-user host baseline with container→host, container→peer and host→container. Raw NTSTATUS/HRESULT is evidence, not automatically “denied.” Default-DACL fixture results do not generalize to other objects. Always inconclusive for the full security contract: registry writes, explicit-DACL variants and production control-pipe authentication remain separate tests. |
@@ -46,10 +63,10 @@ Record OS build (`[Environment]::OSVersion.Version`), exact driver/runtime paths
 
 ## Verdicts, lifetime and retained temp data
 
-Illustrative successful startup observation (not a result from this checkout):
+Illustrative successful UI-enabled rerun format (not an observed result under the new policy):
 
 ```json
-{"probe":"node-ui","verdict":"measured","details":[{"uiDisabled":true,"exitCode":0,"stdout":"{\"marker\":\"runtime-started\"}\n"},{"uiDisabled":false,"exitCode":0,"stdout":"{\"marker\":\"runtime-started\"}\n"}]}
+{"probe":"node-ui","verdict":"measured","details":[{"uiDisabled":true,"exitHex":"0x80000003","stdout":""},{"uiDisabled":false,"exitCode":0,"stdout":"{\"marker\":\"runtime-started\"}\n"}]}
 ```
 
 `verdict: "measured"` (exit 0) means observations completed, **not** that every UI/shell combination worked or that confinement passed. Inspect every row's exit code, marker and stderr. `inconclusive`, `unavailable` and `error` exit 2. Native crash, missing dependency, session 0 and timeout (including SDK WaitResult.timedOut) cannot become success. A session-0 prerequisite failure is unavailable; in a verified interactive session, UI-disabled `0xC0000142` remains D3 startup evidence, not an automatic unavailable-host classification. SDK/native stdout diagnostics are captured by the outer driver so its public stdout remains one JSON line. Spawn passes one SDK argument and asserts telemetry is absent; no consent or telemetry calls are made.
@@ -63,6 +80,6 @@ D2's identity route needs a separate approved disposable-machine prototype; thes
 Local, non-native checks:
 
 ```sh
-node --test tools/mxc-probes/probe-common.test.mjs tools/mxc-probes/process-lifecycle.test.mjs
+node --test tools/mxc-probes/probe-common.test.mjs tools/mxc-probes/process-lifecycle.test.mjs tools/mxc-probes/filesystem-policy.test.mjs
 node --check tools/mxc-probes/sdk-supervisor.mjs
 ```

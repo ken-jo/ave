@@ -8,6 +8,7 @@ import { release } from "node:os";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { captureChild, safeEnvironment, spawnWithoutTelemetry, windowsQuote } from "./probe-common.mjs";
 
+import { buildProbeFilesystem, filesystemObservation } from "./filesystem-policy.mjs";
 import { finishProcess, pinRuntimeProcesses, ProcessIdentityError } from "./process-lifecycle.mjs";
 
 const { name, options, budgets, temp } = JSON.parse(process.env.MXC_PROBE_INPUT);
@@ -64,16 +65,18 @@ async function initialize() {
   proxy.on("connect", (_request, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"));
   await new Promise((resolve, reject) => { proxy.once("error", reject); proxy.listen(0, "127.0.0.1", resolve); });
   observation = { node: process.versions.node, arch: process.arch, sessionId: session[0], windowsRelease: release(), sdk: pkg.version, dllSha256: digest,
-    telemetryOmitted: true, proxyMode: "identity-less-endpoint-scoped", dllBootstrap: "trusted-addon-before-search-restriction" };
+    telemetryOmitted: true, proxyMode: "identity-less-endpoint-scoped", dllBootstrap: "trusted-addon-before-search-restriction",
+    filesystemPolicy: filesystemObservation(buildProbeFilesystem(options.runtime, temp, process.env.SYSTEMROOT), "script-file") };
   await copyFile(new URL("./child-payload.mjs", import.meta.url), path.join(temp, "child-payload.mjs"));
 }
 
 function request(executable, args, uiDisabled, extraReads = [], longLived = false) {
+  const policy = buildProbeFilesystem(options.runtime, temp, process.env.SYSTEMROOT, extraReads);
   return {
-    command: quote([executable, ...args]), containment: { type: "processcontainer" },
+    command: quote([executable, ...args]),
+    containment: { type: "processcontainer", config: { filesystem: { enumeratePaths: policy.enumeratePaths } } },
     workingDirectory: temp, environment: safeEnvironment(temp), inheritDefaultEnvironment: false,
-    filesystem: { readwritePaths: [temp], readonlyPaths: [...new Set([path.dirname(options.runtime), process.env.SYSTEMROOT, ...extraReads])],
-      deniedPaths: [], clearPolicyOnExit: true },
+    filesystem: policy.filesystem,
     network: { egress: { default: "deny" }, ingress: { default: "allow", hostLoopback: "allow" },
       runtimeConfig: { networkProxy: `http://127.0.0.1:${proxy.address().port}` } },
     ui: { disable: uiDisabled, clipboard: "none", allowInputInjection: false },
@@ -84,6 +87,10 @@ function request(executable, args, uiDisabled, extraReads = [], longLived = fals
 async function launch(config) {
   const probed = sdk.probe(config);
   if (probed.tier !== "base-container" || probed.needsDaclAugmentation) throw new Error(`BaseContainer unavailable: ${JSON.stringify(probed)}`);
+  if (config.containment.config.filesystem.enumeratePaths.length
+    && probed.probes?.baseContainerSupportsEnumeratePaths !== true) {
+    throw new Error("Ancestor query/enumeration requires native PSEC 1.1 support; no drive-root read fallback");
+  }
   // Intentionally one argument: telemetry must stay absent, including undefined opt-in objects.
   const processHandle = await spawnWithoutTelemetry(sdk, config);
   const stdin = processHandle.standardInput;
@@ -122,11 +129,15 @@ async function finish(record) {
 }
 
 async function one(executable, args, uiDisabled, extraReads = []) {
+  let filesystemPolicy;
   try {
-    const child = await launch(request(executable, args, uiDisabled, extraReads));
+    const config = request(executable, args, uiDisabled, extraReads);
+    filesystemPolicy = filesystemObservation({ enumeratePaths: config.containment.config.filesystem.enumeratePaths },
+      executable === options.runtime ? "script-file" : "native-command");
+    const child = await launch(config);
     const result = await finish(child);
-    return { uiDisabled, exitHex: `0x${(result.exitCode >>> 0).toString(16).padStart(8, "0")}`, ...result };
-  } catch (error) { return { uiDisabled, error: error.message }; }
+    return { uiDisabled, filesystemPolicy, exitHex: `0x${(result.exitCode >>> 0).toString(16).padStart(8, "0")}`, ...result };
+  } catch (error) { return { uiDisabled, filesystemPolicy, error: error.message }; }
 }
 const payloadArgs = (mode) => [path.join(temp, "child-payload.mjs"), mode, String(ioBudget)];
 
