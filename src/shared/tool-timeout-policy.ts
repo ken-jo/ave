@@ -84,6 +84,8 @@ export const TOOL_TIMEOUT_POLICY = {
   processTreeKillMs: 1_000,
   // Allow loaded Windows hosts enough time to enumerate and terminate process trees.
   windowsProcessTreeKillMs: 10_000,
+  // Outlast the pinned PTY dependency's five-second console lookup and allow exit cleanup.
+  windowsPtyShutdownMs: 6_000,
   // Emergency sweeps share one budget sized for a slow tree pass.
   windowsEmergencyProcessSweepMs: 10_000,
   // Give an ACP prompt cancellation time to acknowledge before closing transport.

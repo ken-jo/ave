@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, 
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { terminalSandboxWindowNotice } from "../terminal-sandbox-policy.js";
 import { t } from "../../../i18n/index.js";
 import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissions/asrt-sandbox.js";
@@ -696,6 +697,76 @@ describe("pty-manager lifecycle", () => {
     expect(__terminalSessionCountForTest()).toBe(0);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps a closing Windows PTY owned without scheduling a second kill", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const pty = lastPty;
+    const previous = process.platform;
+    vi.useFakeTimers();
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      killTerminal("terminal:0000000a-1");
+      expect(pty?.killSignals).toEqual([undefined]);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(pty?.killSignals).toEqual([undefined]);
+      expect(__terminalSessionCountForTest()).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+      pty?.emitExit(0);
+      expect(__terminalSessionCountForTest()).toBe(0);
+    } finally {
+      Object.defineProperty(process, "platform", { value: previous, configurable: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it("Windows shutdown waits past console enumeration for definitive exit", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const pty = lastPty;
+    const previous = process.platform;
+    vi.useFakeTimers();
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      let settled = false;
+      const shutdown = forceKillAllTerminalsForShutdown(1_000).then(count => { settled = true; return count; });
+      expect(pty?.killSignals).toEqual([undefined]);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(false);
+      expect(__terminalSessionCountForTest()).toBe(1);
+      pty?.emitExit(0);
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(shutdown).resolves.toBe(1);
+      expect(__terminalSessionCountForTest()).toBe(0);
+    } finally {
+      Object.defineProperty(process, "platform", { value: previous, configurable: true });
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, 1_000, TOOL_TIMEOUT_POLICY.windowsPtyShutdownMs + 1_000])(
+    "bounds a stalled Windows shutdown with a requested wait of %s ms", async requestedMs => {
+      await spawnTerminal({ tabId: "terminal:0000000a-1" });
+      const pty = lastPty;
+      const previous = process.platform;
+      vi.useFakeTimers();
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      try {
+        const waitMs = requestedMs === 0 ? 0 : Math.max(requestedMs, TOOL_TIMEOUT_POLICY.windowsPtyShutdownMs);
+        let settled = false;
+        const shutdown = forceKillAllTerminalsForShutdown(requestedMs).then(count => { settled = true; return count; });
+        if (waitMs > 0) {
+          await vi.advanceTimersByTimeAsync(waitMs - 10);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(10);
+        }
+        await expect(shutdown).resolves.toBe(1);
+        expect(__terminalSessionCountForTest()).toBe(1);
+        pty?.emitExit(0);
+      } finally {
+        Object.defineProperty(process, "platform", { value: previous, configurable: true });
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("app shutdown cancels and drains an in-flight spawn", async () => {
     let releaseWrap: ((value: { argv: string[]; env: NodeJS.ProcessEnv }) => void) | undefined;
