@@ -20,7 +20,7 @@ const roots: string[] = [];
 const RUNTIME_FILES = {
   linux: ["libvk_swiftshader.so", "libvulkan.so.1", "vk_swiftshader_icd.json"],
   darwin: ["libvk_swiftshader.dylib", "vk_swiftshader_icd.json"],
-  win32: ["vk_swiftshader.dll", "vulkan-1.dll", "vk_swiftshader_icd.json", "dxcompiler.dll", "dxil.dll"],
+  win32: ["vk_swiftshader.dll", "vulkan-1.dll", "vk_swiftshader_icd.json", "dxcompiler.dll"],
 };
 
 function putFile(path: string, content: string | Buffer = "runtime asset") {
@@ -94,6 +94,15 @@ afterEach(() => {
 });
 
 describe("packaged graphics runtime", () => {
+  it("requires upstream archive verification when the locked runtime major changes", () => {
+    const lock = readFileSync(new URL("../../bun.lock", import.meta.url), "utf8");
+    const version = lock.match(/^\s*"electron": \["electron@([^"]+)"/m)?.[1];
+    const major = Number(version?.split(".")[0]);
+    expect(major,
+      "Re-verify graphics runtime files against the locked electron upstream release zips for every platform, then update the version guard and fixtures.",
+    ).toBe(45);
+  });
+
   it.each(["linux", "darwin", "win32"] as const)("retains rendering assets through %s packaging", async (platform) => {
     const { context, libraryDirectory } = await createPackage(platform);
     await afterPack(context);
@@ -103,9 +112,12 @@ describe("packaged graphics runtime", () => {
     expect(() => assertGraphicsRuntimeFiles(libraryDirectory, platform)).not.toThrow();
   });
 
-  it.each(["linux", "darwin", "win32"] as const)("rejects a missing %s rendering library at package creation", async (platform) => {
+  it.each(
+    (["linux", "darwin", "win32"] as const).flatMap((platform) =>
+      RUNTIME_FILES[platform].map((file) => ({ platform, file }))),
+  )("rejects missing $platform/$file at package creation", async ({ platform, file }) => {
     const { context, libraryDirectory } = await createPackage(platform);
-    const missing = join(libraryDirectory, RUNTIME_FILES[platform][0]);
+    const missing = join(libraryDirectory, file);
     rmSync(missing);
     await expect(afterPack(context)).rejects.toThrow(missing);
     expect(() => assertGraphicsRuntimeFiles(libraryDirectory, platform)).toThrow(missing);
