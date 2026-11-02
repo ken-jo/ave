@@ -84,7 +84,7 @@ it("keeps repair notices out of desktop delivery on a headless host", () => {
 it("reports a repaired home root once, without its path in the log and without a pending notice", () => {
   const { show, present, notificationService } = notificationFixture();
   warn.mockClear(); acknowledge.mockClear();
-  const home = "C:\\Users\\someone\\ave";
+  const home = "C:\\Users\\example\\ave";
   notifyHomeBoundaryRepairs({ enforcement: "win32-dacl", home, sid: "fixture", repairs: [home, `${home}\\keys`] },
     { host: createBootHostFixture({ desktop: createDesktopHostFixture() }), notificationService });
   expect(show).toHaveBeenCalledTimes(2);

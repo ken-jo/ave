@@ -181,7 +181,9 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
   });
   it("migrates root configuration into fresh files without foreign read grants", () => {
     const dir = fixture();
-    grant(dir, "(OI)(CI)RX");
+    // Root-only: an inheritable foreign root grant now refuses the home (lead decision 2026-11-02), and the source file's own
+    // explicit grant below is what this checks the copy does not carry.
+    grant(dir, "RX");
     const source = join(dir, "settings.json");
     writeFileSync(source, '{"private":true}');
     grant(source, "R");
@@ -534,8 +536,12 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
       mkdirSync(parent, { recursive: true });
       setFixtureOwner(parent);
       const user = readWindowsDirectoryDacls([parent])[0]!.currentUserSid;
-      execFileSync(win32SystemBinary("icacls"), [parent, "/inheritance:r", "/grant:r",
-        "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", `*${user}:(OI)(CI)F`, "/q"], { windowsHide: true, stdio: "pipe" });
+      // The whole DACL in one write (CI run 41443259329: `icacls /inheritance:r /grant:r` left the runner's inherited
+      // Users and CREATOR OWNER entries on the parent).
+      native("$s=[System.Security.AccessControl.DirectorySecurity]::new(); $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;'+$u.Value+')'); [System.IO.Directory]::SetAccessControl($env:AVE_TEST_TARGET, $s)", parent);
+      const parentRules = readWindowsDirectoryDacls([parent])[0]!;
+      expect(parentRules).toMatchObject({ protected: true });
+      expect(new Set(parentRules.rules?.map((rule) => rule.sid))).toEqual(new Set(["S-1-5-18", "S-1-5-32-544", user]));
       const homeDir = join(parent, "home");
       mkdirSync(homeDir);
       setFixtureOwner(homeDir);

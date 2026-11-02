@@ -24,7 +24,7 @@
         "code": "worker-transport-unsupported",
         "name": "WorkerTransportUnsupportedError"
       },
-      "message": "Selected container backend requires native streams; workers require stdio control v1. Update the process adapter and its client before starting it"
+      "message": "이 익스텐션의 워커는 Windows 익스텐션 컨테이너가 지원하지 않는 연결 방식을 씁니다. 워커에는 stdio control v1 이 필요하니 익스텐션을 업데이트하세요(worker-transport-unsupported)"
     },
     "id": 1,
     "jsonrpc": "2.0"
