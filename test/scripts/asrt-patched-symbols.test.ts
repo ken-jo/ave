@@ -153,6 +153,34 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       expect(stub.calls()).toEqual(["revoke", "restore"]);
     });
 
+    it("reports srt-win's crash-recovery counts to the embedder's listener (part 13)", async () => {
+      const utils = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js");
+      const dir = mkdtempSync(join(tmpdir(), "ave-srt-win-stub-"));
+      stubDirs.push(dir);
+      const script = join(dir, "srt-win.mjs");
+      // `srt-win acl recover --json` prints {deadBrokers, acesRevoked}; STUB_EXIT sets the exit code.
+      writeFileSync(script, `process.stdout.write(JSON.stringify({ deadBrokers: 1, acesRevoked: 6 })); process.exitCode = Number(process.env.STUB_EXIT ?? 0);`);
+      const srtWin = { exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, prependArgs: [script] };
+      const reports: unknown[] = [];
+      utils.setWindowsAclRecoveryListener((report) => reports.push(report));
+      try {
+        expect(utils.recoverWindowsAcl({ srtWin: srtWin as never })).toEqual({ deadBrokers: 1, acesRevoked: 6 });
+        expect(reports).toEqual([{ deadBrokers: 1, acesRevoked: 6 }]);
+        process.env.STUB_EXIT = "1";
+        expect(() => utils.recoverWindowsAcl({ srtWin: srtWin as never })).toThrow(expect.objectContaining({ code: "srt_win_nonzero" }));
+        expect(reports).toHaveLength(1);
+      } finally {
+        delete process.env.STUB_EXIT;
+        utils.setWindowsAclRecoveryListener(undefined);
+      }
+      // initialize() recovers on its own before the session's first grant.
+      const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+      const recover = manager.indexOf("recoverWindowsAcl({ srtWin });");
+      const sessionGrant = manager.indexOf("grantWindowsAcl({\n                    sandboxUserSid: sb,");
+      expect(recover).toBeGreaterThan(0);
+      expect(sessionGrant).toBeGreaterThan(recover);
+    });
+
     it("lets an embedder that drains on its own signals keep the runtime's signal reset out", () => {
       const manager = readInstalled("dist/sandbox/sandbox-manager.js");
       expect(functionBody(manager, /\nfunction registerCleanup\(/u)).toMatch(
