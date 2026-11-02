@@ -1,4 +1,14 @@
 import { expect, it, vi } from "vitest";
+
+const warn = vi.hoisted(() => vi.fn());
+const acknowledge = vi.hoisted(() => vi.fn());
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return { ...actual, createLogger: (name: string) => ({ ...actual.createLogger(name), warn }) };
+});
+vi.mock("../../../shared/ave-home.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../shared/ave-home.js")>(), acknowledgeHomeBoundaryRepair: acknowledge,
+}));
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { NotificationService } from "../../../main/notification-service.js";
 import { translate } from "../../../i18n/index.js";
@@ -69,4 +79,23 @@ it("keeps repair notices out of desktop delivery on a headless host", () => {
     repairs: ["/fixture/secrets"] }, { host: createBootHostFixture(), notificationService });
   expect(show).not.toHaveBeenCalled();
   expect(present).not.toHaveBeenCalled();
+});
+
+it("reports a repaired home root once, without its path in the log and without a pending notice", () => {
+  const { show, present, notificationService } = notificationFixture();
+  warn.mockClear(); acknowledge.mockClear();
+  const home = "C:\\Users\\example\\ave";
+  notifyHomeBoundaryRepairs({ enforcement: "win32-dacl", home, sid: "fixture", repairs: [home, `${home}\\keys`] },
+    { host: createBootHostFixture({ desktop: createDesktopHostFixture() }), notificationService });
+  expect(show).toHaveBeenCalledTimes(2);
+  expect(present).toHaveBeenCalledWith(expect.objectContaining({
+    title: translate("ko", "homePrivacy.boundaryRepairedTitle"), body: translate("ko", "homePrivacy.rootRepaired"),
+  }));
+  // The root path names the user's profile; the log names the role. Only the subdirectory has a notice marker to acknowledge.
+  const rootLine = warn.mock.calls.find((call) => String(call[0]).includes("AVE_HOME root repaired"));
+  expect(rootLine).toBeDefined();
+  expect(JSON.stringify(rootLine)).not.toContain("someone");
+  expect(acknowledge.mock.calls.map((call) => call[1])).toEqual([`${home}\\keys`]);
+  for (const locale of ["en", "ko"] as const) expect([...translate(locale, "homePrivacy.rootRepaired")].length).toBeLessThanOrEqual(80);
+  expect(isModelFacingKey("homePrivacy.rootRepaired")).toBe(false);
 });

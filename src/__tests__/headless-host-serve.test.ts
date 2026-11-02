@@ -62,6 +62,18 @@ async function serveUntilReady(): Promise<number> {
 }
 
 describe("headless --serve", () => {
+  it("makes its first AVE_HOME write through ensureWorkspaceCwd, before the host-instance lock and the windowless host", async () => {
+    // ensureWorkspaceCwd only creates a missing home (create-only helper); repair runs in bootstrap() under the lock.
+    startTailnetSurface.mockResolvedValue({ ok: true, enabled: false });
+    const { ensureWorkspaceCwd } = await import("../main/ensure-workspace-cwd.js");
+    const { acquireHostInstanceLock } = await import("../main/host-instance-lock.js");
+    const { createWindowlessHost } = await import("../main/windowless-host.js");
+    await serveUntilReady();
+    const first = vi.mocked(ensureWorkspaceCwd).mock.invocationCallOrder[0]!;
+    expect(first).toBeLessThan(vi.mocked(acquireHostInstanceLock).mock.invocationCallOrder[0]!);
+    expect(first).toBeLessThan(vi.mocked(createWindowlessHost).mock.invocationCallOrder[0]!);
+  });
+
   it("keeps serving the local API when the Tailnet surface fails to start", async () => {
     startTailnetSurface.mockRejectedValue(new Error("tailnet-observer-config-unreadable: /Users/example/.ave/tailnet.json"));
 

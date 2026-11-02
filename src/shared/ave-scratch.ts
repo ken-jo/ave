@@ -27,6 +27,15 @@ function reject(path: string, reason: string): AveScratchState {
 
 /** Recheck every offer and refuse replaced links or unsafe ownership; same-account and root races remain outside this control. */
 export function verifyAveScratchDir(path = aveScratchDir()): AveScratchState {
+  return verifyPrivateTempDir(path);
+}
+
+/**
+ * The private-temp-directory check behind the scratch directory and the workspace fallback (`ensureWorkspaceCwd`): a real
+ * directory, not a link, owned by this account and, off Windows, closed to other accounts. On Windows the protection is the
+ * per-user temp DACL that both directories inherit.
+ */
+export function verifyPrivateTempDir(path: string): AveScratchState {
   let stat: Stats;
   try {
     stat = lstatSync(path);

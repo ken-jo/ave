@@ -2,14 +2,60 @@ import { isOwnerOnlyDacl, mapWindowsGenericRights, windowsOwnerRules, type Windo
 
 export const WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS = 0x1200a9;
 
-/** Root traversal may be shared; all mutating rights remain exclusive to the owner. */
+/**
+ * A foreign root entry Ave accepts (with a diagnostic): an allow of read-only rights that applies to the root alone. Traversal into the
+ * home may be shared; an inheritable entry (OI or CI) of any rights flows into every unprotected child (workspace, logs, plugin data),
+ * so it is an extra principal. All mutating rights remain exclusive to the owner.
+ */
+export function isWindowsHomeRootForeignTraversal(rule: { accessControlType: number; fileSystemRights: number; inheritanceFlags: number }): boolean {
+  return rule.accessControlType === 0 && rule.inheritanceFlags === 0
+    && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0;
+}
+
+/** Besides the user, the principals that may write to the workspace: SYSTEM and Administrators (lead decision 2026-11-02). */
+export const WINDOWS_WORKSPACE_TRUSTED_WRITERS: ReadonlySet<string> = new Set(["S-1-5-18", "S-1-5-32-544"]);
+
+/**
+ * The workspace is the cwd, the default workspace root and the in-project auto-write scope, so any other principal that can write to
+ * it, through an explicit or an inherited allow, is an extra principal there. A foreign read-only allow is reported, not refused.
+ */
+export function isWindowsWorkspaceForeignWriter(rule: { sid: string; accessControlType: number; fileSystemRights: number }, userSid: string): boolean {
+  return rule.sid !== userSid && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid) && rule.accessControlType === 0
+    && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) !== 0;
+}
+
 export function isWindowsHomeRootSafe(facts: WindowsDaclFacts): boolean {
   if (!facts.dacl?.protected) return false;
   const rules = windowsOwnerRules(facts.dacl);
   return isOwnerOnlyDacl({ ownerSid: facts.dacl.owner, elevated: facts.elevated,
     rules: rules.filter(rule => rule.sid === facts.currentUserSid) }, facts.currentUserSid)
-    && rules.every(rule => rule.sid === facts.currentUserSid || (rule.accessControlType === 0
-      && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0));
+    && rules.every(rule => rule.sid === facts.currentUserSid || isWindowsHomeRootForeignTraversal(rule));
+}
+
+/**
+ * Mirrors HomeDirectoryDacl.RepairInheritedRoot: the only root shape Ave repairs, the one its own plain mkdir produced before the
+ * protection helper created homes. The native helper re-checks it on the pinned handle it repairs through; this decides whether to ask.
+ */
+const ROOT_REPAIR_REMOVABLE = new Set(["S-1-5-18", "S-1-5-32-544"]);
+
+export function isWindowsHomeRootRepairable(facts: WindowsDaclFacts): boolean {
+  const dacl = facts.dacl;
+  if (facts.exists !== true || !facts.directory || facts.reparseTag !== 0 || (facts.attributes & 0x400) !== 0) return false;
+  if (!dacl || dacl.nullDacl) return false;
+  // Owned by the token user (an Administrators-owned root never qualifies, elevated or not), and never a protected DACL:
+  // a protected root, safe or not, is left exactly as it is.
+  if (dacl.owner !== facts.currentUserSid || dacl.protected) return false;
+  let userEntry = false;
+  for (const ace of dacl.aces) {
+    const own = ace.sid === facts.currentUserSid;
+    const inherited = (ace.flags & 0x10) !== 0;
+    if (!inherited && (!own || ace.type !== 0)) return false;
+    // The repair may drop only inherited SYSTEM and Administrators entries (owner decision 2026-11-02); any other inherited
+    // principal (Users, Authenticated Users, Everyone, CREATOR OWNER, a domain group, another user) is refused with the command.
+    if (!own && (ace.sid === null || !ROOT_REPAIR_REMOVABLE.has(ace.sid))) return false;
+    if (own) userEntry = true;
+  }
+  return userEntry;
 }
 
 export const WINDOWS_HOME_BOUNDARY_SOURCE = `using System;
@@ -76,7 +122,7 @@ public static class HomeDirectoryDacl {
       return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly, readOnly ? 7u : 3u);
     }
   }
-  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u) {
+  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u, uint access = 0u) {
     if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
     IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
     IntPtr memory = IntPtr.Zero;
@@ -89,7 +135,7 @@ public static class HomeDirectoryDacl {
       var attributes = new ObjectAttributes { Length = (uint)Marshal.SizeOf(typeof(ObjectAttributes)), Root = parent.DangerousGetHandle(), Name = memory, Attributes = noReparse ? 0x1040u : 0x40u, Descriptor = security.AddrOfPinnedObject() };
       SafeFileHandle handle;
       IoStatus io;
-      int status = NtCreateFile(out handle, readOnly ? 0x00120089u : 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, share, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
+      int status = NtCreateFile(out handle, access != 0u ? access : readOnly ? 0x00120089u : 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, share, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
       if (status == unchecked((int)0xC0000034)) { if (handle != null) handle.Dispose(); return null; }
       if (status < 0) {
         if (handle != null) handle.Dispose();
@@ -147,7 +193,8 @@ public static class HomeDirectoryDacl {
         ownRules++;
         if (rule.AccessControlType != AccessControlType.Allow || (int)rule.FileSystemRights != 2032127 ||
           (int)rule.InheritanceFlags != 3 || (int)rule.PropagationFlags != 0 || rule.IsInherited) return false;
-      } else if (rule.AccessControlType != AccessControlType.Allow || (MapFileGenericRights((int)rule.FileSystemRights) & ~readMask) != 0) return false;
+      } else if (rule.AccessControlType != AccessControlType.Allow || (int)rule.InheritanceFlags != 0 ||
+        (MapFileGenericRights((int)rule.FileSystemRights) & ~readMask) != 0) return false;
     }
     return ownRules == 1;
   }
@@ -412,6 +459,93 @@ public static class HomeDirectoryDacl {
       if (result != 0) throw new Win32Exception((int)result);
       if (!OwnerOnly(Read(handle), user, false)) throw new InvalidOperationException("Runtime ownership claim protection is unverified");
     }
+  }
+  // The one root shape Ave repairs: what a plain mkdir under a user profile produced before the protection helper created the home.
+  // Owned by the current user (an Administrators-owned root never qualifies, even elevated), not a link, an unprotected DACL whose
+  // every non-owner entry is inherited, and an entry for the user. Checked and repaired on the pinned home handle, then read back
+  // through RootSafe and OwnerOnly unchanged. Any other shape is left exactly as it is and refused by the caller.
+  public static bool RootRepairable(DirectorySecurity security, SecurityIdentifier user) {
+    if (security.GetOwner(typeof(SecurityIdentifier)).Value != user.Value) return false;
+    if (security.AreAccessRulesProtected) return false;
+    bool userEntry = false;
+    foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      bool own = rule.IdentityReference.Value == user.Value;
+      if (!rule.IsInherited && (!own || rule.AccessControlType != AccessControlType.Allow)) return false;
+      if (!own && rule.IdentityReference.Value != "S-1-5-18" && rule.IdentityReference.Value != "S-1-5-32-544") return false;
+      if (own) userEntry = true;
+    }
+    return userEntry;
+  }
+  public static bool RepairInheritedRoot(SafeFileHandle home, SecurityIdentifier user, bool elevated, int readMask) {
+    // Read() refuses a link or a non-directory on this same handle.
+    if (!RootRepairable(Read(home), user)) return false;
+    // Only the root's own DACL is written. SetSecurityInfo also propagated into existing children, and native run 4 showed that
+    // propagation turning the workspace's stale inherited SYSTEM and Administrators entries into explicit ones (before any other
+    // writer ran). NtSetSecurityObject computes no inheritance and reaches no child; the per-boot workspace check rewrites it.
+    var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected |
+      ControlFlags.DiscretionaryAclAutoInherited | ControlFlags.SelfRelative, null, null, null,
+      new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")").DiscretionaryAcl);
+    byte[] bytes = new byte[descriptor.BinaryLength];
+    descriptor.GetBinaryForm(bytes, 0);
+    Check(NtSetSecurityObject(home, 4u, bytes), "Home root repair failed");
+    var repaired = Read(home);
+    if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated)) throw new InvalidOperationException("Home root repair protection is unverified");
+    return true;
+  }
+  [DllImport("ntdll.dll")]
+  private static extern int NtSetSecurityObject(SafeFileHandle handle, uint info, byte[] descriptor);
+  // The root repair writes only the root (NtSetSecurityObject, no propagation), so a workspace made under the older, unprotected root
+  // keeps that root's stale inherited entries until it is rewritten here. Every boot whose root passes RootSafe checks this one
+  // directory, the cwd and default workspace root: when its inherited entries are anything but the single entry a RootSafe root
+  // passes down (the user's FullControl, object and container inherit), it is rewritten as its explicit entries in order followed
+  // by that entry. NtSetSecurityObject computes no inheritance, so the result is exactly this, and it is read back.
+  // Running every boot, not only in the boot that repaired the root, is what retries a boot whose rewrite failed.
+  // The workspace is the app's cwd, so it is opened for exactly READ_CONTROL, WRITE_DAC, FILE_READ_ATTRIBUTES and SYNCHRONIZE
+  // with full sharing: a request that could include DELETE is a sharing violation against the process's own cwd handle (CI run
+  // 41469456420). A link, a non-directory, a protected DACL or a foreign owner is "left"; one that cannot be opened or read is
+  // "unavailable", which the boot reports. Other children keep their stale SYSTEM and Administrators entries.
+  public static string ReinheritWorkspace(SafeFileHandle home, SecurityIdentifier user) {
+    SafeFileHandle handle;
+    try { handle = OpenRelative(home, "workspace", user, 1, true, true, false, false, 7u, 0x00160080u); }
+    catch (InvalidOperationException) { return "left"; }
+    catch (Win32Exception) { return "unavailable"; }
+    if (handle == null) return "absent";
+    using (handle) {
+      RawSecurityDescriptor raw;
+      try { raw = new RawSecurityDescriptor(ReadDescriptor(handle), 0); }
+      catch (Win32Exception) { return "unavailable"; }
+      if ((raw.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0 || raw.DiscretionaryAcl == null) return "left";
+      if (raw.Owner == null || raw.Owner.Value != user.Value) return "left";
+      if (!StaleInheritance(raw.DiscretionaryAcl, user)) return "clean";
+      var acl = new RawAcl(GenericAcl.AclRevision, raw.DiscretionaryAcl.Count + 1);
+      int index = 0;
+      foreach (GenericAce ace in raw.DiscretionaryAcl) {
+        if ((ace.AceFlags & AceFlags.Inherited) == 0) acl.InsertAce(index++, ace.Copy());
+      }
+      acl.InsertAce(index, new CommonAce(AceFlags.ObjectInherit | AceFlags.ContainerInherit | AceFlags.Inherited,
+        AceQualifier.AccessAllowed, 0x1f01ff, user, false, null));
+      var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclAutoInherited |
+        ControlFlags.SelfRelative, null, null, null, acl);
+      byte[] bytes = new byte[descriptor.BinaryLength];
+      descriptor.GetBinaryForm(bytes, 0);
+      Check(NtSetSecurityObject(handle, 4u, bytes), "Workspace inheritance reset failed");
+      if (StaleInheritance(new RawSecurityDescriptor(ReadDescriptor(handle), 0).DiscretionaryAcl, user)) {
+        throw new InvalidOperationException("Workspace inheritance reset is unverified");
+      }
+      return "rewritten";
+    }
+  }
+  // True unless the only inherited entry is the one a RootSafe root passes down to a child directory.
+  public static bool StaleInheritance(RawAcl acl, SecurityIdentifier user) {
+    int inherited = 0;
+    foreach (GenericAce ace in acl) {
+      if ((ace.AceFlags & AceFlags.Inherited) == 0) continue;
+      inherited++;
+      var common = ace as CommonAce;
+      if (common == null || common.AceQualifier != AceQualifier.AccessAllowed || common.SecurityIdentifier.Value != user.Value ||
+        common.AccessMask != 0x1f01ff || ace.AceFlags != (AceFlags.ObjectInherit | AceFlags.ContainerInherit | AceFlags.Inherited)) return true;
+    }
+    return inherited != 1;
   }
   public static int Repair(SafeFileHandle home, string name, SecurityIdentifier user, bool elevated, string path = "") {
     CleanupWarnings.Clear();

@@ -153,6 +153,9 @@ const {
 const { planWindowsExtensionHolder } = await import("../../permissions/mxc-extension-readiness.js");
 const { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } = await import("../../permissions/mxc-extension-errors.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
+const { WorkerTransportUnsupportedError, MxcNativeEntryRequiredError, MxcExtensionReadinessRefusedError } = await import("../../permissions/mxc-extension-errors.js");
+const { PluginChildTerminationUnverifiedError } = await import("../../plugins/isolation/plugin-child-transport.js");
+const { getLocale, setLocale, t } = await import("../../i18n/runtime.js");
 
 const READY = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" }, fallback: { version: "0.0.80", ready: false } });
 const FALLBACK = planWindowsExtensionHolder({ requested: true, mxc: { state: "unavailable", reason: "native-validation-required" },
@@ -294,15 +297,20 @@ describe("executable rule", () => {
   });
 
   it.each([
-    ["a relative path", ".\\tool.exe"],
-    ["a script shim", "npx.cmd"],
-    ["a missing program", "absent"],
-    ["a workspace executable", "D:\\work\\tool.exe"],
-    ["an executable in its own writable root", "C:\\ave\\mcp\\fs\\sandbox\\tool.exe"],
-  ])("refuses %s with a named admission error", async (_case, command) => {
-    const refusal = await spawnMxcBundledHolder(input({ command })).catch((error: unknown) => error);
+    ["a relative path", ".\\tool.exe", /is a relative path/u],
+    ["a script shim", "npx.cmd", /is not a Windows executable \(\.exe\)/u],
+    ["a missing program", "absent", /was not found as a Windows executable/u],
+    // The profile-rooted session case is named so the user can see why an npm global program is refused.
+    ["a workspace executable", "D:\\work\\tool.exe", /open project folder.*%APPDATA%\\npm/u],
+    ["an executable in its own writable root", "C:\\ave\\mcp\\fs\\sandbox\\tool.exe", /a folder a contained process can write/u],
+  ])("refuses %s with a named admission error", async (_case, command, detail) => {
+    const previous = getLocale();
+    setLocale("en");
+    const refusal = await spawnMxcBundledHolder(input({ command })).catch((error: unknown) => error).finally(() => setLocale(previous));
     expect(refusal).toBeInstanceOf(MxcExecutableNotAdmissibleError);
     expect((refusal as { code: string }).code).toBe("executable-not-admissible");
+    expect((refusal as Error).message).toMatch(detail);
+    expect((refusal as Error).message.endsWith("(executable-not-admissible)")).toBe(true);
     expect(state.spawn).not.toHaveBeenCalled();
   });
 
@@ -334,6 +342,21 @@ describe("workspace concurrency", () => {
     const refusal = await spawnMxcBundledHolder(userHook()).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(MxcHolderWorkspaceBusyError);
     expect((refusal as { code: string }).code).toBe("holder-workspace-busy");
+    // An ordinary overlap does not claim the profile / AVE_HOME case.
+    expect((refusal as { stagingOverlap: boolean }).stagingOverlap).toBe(false);
+    expect((refusal as Error).message).toBe(t("be_wrapBundledCommand.workspaceBusy", { code: "holder-workspace-busy" }));
+    expect(state.spawn).not.toHaveBeenCalled();
+  });
+
+  it("names the AVE_HOME staging overlap when the hook's workspace contains another holder's private folder", async () => {
+    // A user hook rooted at the profile: its workspace write contains <AVE_HOME>\mxc-staging, where a live MCP server keeps its staging.
+    state.live = ["C:\\ave\\mxc-staging\\0123456789abcdef0123456789abcdef"];
+    const refusal = await spawnMxcBundledHolder(input({ label: "hook:user",
+      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", allowRead: [], allowWrite: ["C:\\ave"],
+      ownedReadRoots: [], cwd: "C:\\ave", workspaceRoots: ["C:\\ave"] })).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(MxcHolderWorkspaceBusyError);
+    expect((refusal as { stagingOverlap: boolean }).stagingOverlap).toBe(true);
+    expect((refusal as Error).message).toBe(t("be_wrapBundledCommand.workspaceBusyStaging", { code: "holder-workspace-busy" }));
     expect(state.spawn).not.toHaveBeenCalled();
   });
 
@@ -366,7 +389,7 @@ describe("environment before admission", () => {
     if (refusal === undefined) throw new Error("the holder start was expected to be refused");
     expect(refusal).toBeInstanceOf(MxcHolderEnvironmentRefusedError);
     expect(refusal.code).toBe("holder-environment-refused");
-    expect(refusal.message).toMatch(new RegExp(`: ${keys}$`, "u"));
+    expect(refusal.message).toBe(t("be_wrapBundledCommand.environmentRefused", { keys, code: "holder-environment-refused" }));
     for (const value of [...Object.values(baseEnv), ...Object.values(holderEnv)]) expect(refusal.message).not.toContain(value);
     expect(state.spawn).not.toHaveBeenCalled();
     expect(stagingRoots()).toBe(before);
@@ -548,5 +571,59 @@ describe("teardown", () => {
     await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcProcessContractError);
     const removed = (state.spawn.mock.calls[1]![0] as Spec).home;
     expect(state.dirs.has(removed)).toBe(false);
+  });
+});
+
+describe("container refusal copy (row 6 disclosure)", () => {
+  const plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "unavailable", reason: "bash-incompatible" },
+    fallback: { version: "0.0.80", ready: false } });
+  const refusals = (): readonly (Error & { code: string })[] => [
+    new holderModule.MxcExecutableNotAdmissibleError("detail"),
+    new holderModule.MxcHolderWorkspaceBusyError(),
+    new holderModule.MxcHolderWorkspaceBusyError(true),
+    new holderModule.MxcBashIncompatibleError(plan),
+    new holderModule.MxcHolderEnvironmentRefusedError(["NODE_OPTIONS"]),
+    new holderModule.MxcHolderQuarantinedError("mcp:fs"),
+    new WorkerTransportUnsupportedError(),
+    new MxcNativeEntryRequiredError(),
+    new PluginChildTerminationUnverifiedError("demo", {}),
+    new MxcExtensionReadinessRefusedError(),
+  ];
+
+  it.each(["en", "ko"] as const)("localizes every refusal from a real %s key and keeps its stable code", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const codes = refusals().map((error) => {
+        // A missing key would render the raw key; a missing placeholder would render the braces.
+        expect(error.message).not.toMatch(/be_[A-Za-z]+\.|\{[a-z]+\}/u);
+        expect(error.message.endsWith(`(${error.code})`)).toBe(true);
+        return error.code;
+      });
+      expect(codes).toEqual(["executable-not-admissible", "holder-workspace-busy", "holder-workspace-busy", "bash-incompatible", "holder-environment-refused",
+        "holder-quarantined", "worker-transport-unsupported", "native-entry-required", "plugin-child-termination-unverified",
+        "extension-readiness-refused"]);
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  it.each(["en", "ko"] as const)("resolves the hook and lifecycle quarantine refusals from real %s keys", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      for (const [key, vars] of [
+        ["be_scriptHookRunner.containedSettleDeadline", { ms: 10, code: "hook-settle-deadline" }],
+        ["be_scriptHookRunner.containedTerminationUnverified", { detail: "x", code: "hook-termination-unverified" }],
+        ["be_runtimeIndex.lifecycleQuarantined", { pluginId: "demo", reason: "x", code: "plugin-lifecycle-quarantined" }],
+      ] as const) {
+        const text = t(key, vars);
+        expect(text).not.toContain(key);
+        expect(text).not.toMatch(/\{[a-zA-Z]+\}/u);
+        expect(text.endsWith(`(${vars.code})`)).toBe(true);
+      }
+    } finally {
+      setLocale(previous);
+    }
   });
 });

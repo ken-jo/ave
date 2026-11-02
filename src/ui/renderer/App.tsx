@@ -902,6 +902,9 @@ export function App() {
     isSessionStarred,
     handleToggleSessionStar,
   } = useStarred(api);
+  const handleProjectNotice = useCallback((message: string) => {
+    statusPushToast({ severity: "info", message, ttlMs: 10_000 });
+  }, [statusPushToast]);
   const handleProjectError = useCallback<ProjectErrorReporter>((operation, error, message) => {
     statusPushToast({
       severity: "error",
@@ -1950,6 +1953,7 @@ export function App() {
                 onNewChatForProject={onNewChatForProject}
                 onRefreshProjects={refreshWorkspaceProjects}
                 onProjectError={handleProjectError}
+                onProjectNotice={handleProjectNotice}
                 projects={workspaceProjects}
                 collapsed={sidebarCollapsed}
                 overlay={sidebarOverlay}

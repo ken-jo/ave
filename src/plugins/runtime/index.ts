@@ -114,6 +114,10 @@ export interface PluginCard {
   lastAttemptRefusal?: PluginAttemptRefusal;
   /** Registry hints, manifest ids, and deployment aliases address one canonical catalog card. */
   installAliases?: string[];
+  /** The plugin's lifecycle is quarantined until host restart (a stop, drain or startup that could not be confirmed, or an
+   * unverified child termination); it cannot restart until then. `grantsRetained` is true only when a quarantined sandbox
+   * grant incarnation still holds its registered filesystem grants, even past a narrowed ceiling. */
+  lifecycleQuarantined?: { grantsRetained: boolean };
 }
 
 export interface PluginPreparationStatus {
@@ -1454,6 +1458,16 @@ abstract class PluginRuntimeState {
     };
   }
 
+  /** A quarantined envelope record keeps its grants registered until host restart; any other quarantine holds none. */
+  protected hasQuarantinedSandboxGrants(pluginId: string): boolean {
+    for (const id of new Set([pluginId, this.resolveKnownPluginId(pluginId)])) {
+      for (const record of this.sandboxEnvelopes.get(id) ?? []) {
+        if (record.quarantined) return true;
+      }
+    }
+    return false;
+  }
+
   protected sandboxGrantWithdrawals(): Array<{ pluginId: string; settled: Promise<SandboxEnvelopeSettlement[]> }> {
     const affected: Array<{ pluginId: string; settled: Promise<SandboxEnvelopeSettlement[]> }> = [];
     for (const [pluginId, entries] of this.sandboxEnvelopes) {
@@ -2332,7 +2346,7 @@ abstract class PluginRuntimeState {
       ?? this.quarantinedPluginLifecycles.get(pluginId);
     if (!reason) return;
     const error = new Error(
-      `Plugin lifecycle is quarantined until host restart: ${canonicalId} (${reason})`,
+      t("be_runtimeIndex.lifecycleQuarantined", { pluginId: canonicalId, reason: withoutRefusalCode(reason), code: "plugin-lifecycle-quarantined" }),
     ) as Error & { code?: string };
     error.code = "plugin-lifecycle-quarantined";
     throw error;
@@ -2826,7 +2840,7 @@ abstract class PluginRuntimeState {
     } else if (err instanceof PluginSandboxGrantError) {
       this.refuseSandboxGrant(manifest, err);
     } else {
-      this.markFailed(manifest.id);
+      this.markFailed(manifest.id, undefined, containerRefusalDetail(err));
     }
     this.recordAttemptDiagnostics(manifest.id, attempt);
   }
@@ -6367,6 +6381,28 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
 
 }
 
+
+/** Host container refusals raised while a plugin's factory admits and spawns its child, each with a host-localized message
+ * ending in this stable code. Only these reach the Doctor detail; other factory errors may carry paths or internals and
+ * keep the generic text. (A start failure is a child RPC error and never carries one of these host refusals.) */
+const CONTAINER_REFUSAL_CODES = new Set([
+  "native-entry-required", "worker-transport-unsupported", "extension-readiness-refused", "plugin-child-termination-unverified",
+]);
+
+/** A quarantine reason taken from a localized container refusal already ends with that refusal's code; drop it when the
+ * reason is embedded in another refusal, so each code appears once. Only known refusal codes are stripped. */
+function withoutRefusalCode(reason: string): string {
+  const match = /\s*\(([a-z][a-z0-9-]*)\)$/u.exec(reason);
+  return match && CONTAINER_REFUSAL_CODES.has(match[1]!) ? reason.slice(0, match.index) : reason;
+}
+
+function containerRefusalDetail(err: unknown): { installFailureMessage: string } | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return err instanceof Error && typeof code === "string" && CONTAINER_REFUSAL_CODES.has(code) && err.message.endsWith(`(${code})`)
+    ? { installFailureMessage: err.message }
+    : undefined;
+}
+
 export class PluginRuntime extends PluginRuntimeLifecycle {
   private readonly pendingSandboxRetirements = new Map<string, Promise<void>>();
 
@@ -7106,6 +7142,9 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       // A refused replacement is attempt state; the incumbent stays loaded.
       const refusal = this.lastAttemptRefusal.get(pluginId);
       if (loadStatus === "loaded" && refusal) card.lastAttemptRefusal = { ...refusal };
+      if (this.isPluginLifecycleQuarantined(pluginId)) {
+        card.lifecycleQuarantined = { grantsRetained: this.hasQuarantinedSandboxGrants(pluginId) };
+      }
       cards.set(pluginId, card);
     }
     for (const [pluginId, stub] of this.failedPluginStubs) {

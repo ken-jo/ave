@@ -34,6 +34,7 @@ import { buildInternalApiSurface } from "../../../../preload/internal-api-surfac
 import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
 import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
+import { assertSandboxWindowsExtensionPlan, type SandboxWindowsExtensionPlan, type SandboxWindowsExtensionReason } from "../../../../shared/sandbox-capability-info.js";
 
 /** Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable` from the real predicate.
  * Built here the same way so a renderer that goes back to reading `managed` directly fails these tests. */
@@ -258,10 +259,10 @@ describe("PermissionsTab hook quarantine notice", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByTestId("permissions-load-error"))
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-policy"))
       .toHaveTextContent(t("permissionsTab.errorLoadFailed")));
     // The thrown text is logged, not shown.
-    expect(screen.getByTestId("permissions-load-error").textContent).not.toContain("settings unavailable");
+    expect(screen.getByTestId("permissions-load-error-policy").textContent).not.toContain("settings unavailable");
     expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("bash");
     await waitFor(() => expect(screen.getByTestId("exact-deny-focus-target")).toHaveFocus());
 
@@ -1128,6 +1129,20 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(screen.queryByTestId("os-sandbox-forced")).toBeNull();
   });
 
+  it("shows forced extension confinement as on and not clickable, whatever is stored", async () => {
+    // Native run 3: with AVE_PLUGIN_WORKER_CONFINEMENT=1 the row read "disabled" under a notice saying the variable forces it on.
+    installApi([[]], ["features.pluginWorkerConfinement"]);
+
+    await renderPermissionsTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-confinement-toggle")).toHaveAttribute("aria-checked", "true");
+    });
+    const toggle = screen.getByTestId("worker-confinement-toggle");
+    expect(toggle).toBeDisabled();
+    expect(toggle.parentElement).toHaveTextContent(t("permissionsTab.osSandboxEnabled"));
+  });
+
   it("renders platform and runtime status without a restart action when unchanged", async () => {
     const api = installApi([[]]);
     api.permission.sandboxCapability.mockResolvedValueOnce({
@@ -1324,6 +1339,348 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
+  it("explains an AVE_HOME privacy degrade with available-but-unused MXC on the Permissions tab (native peer snapshot)", async () => {
+    // The exact snapshot a Windows peer recorded: AVE_HOME on another drive keeps inherited principals, the gate degrades before
+    // ASRT starts, the MXC start probe still reports available, and no shell or extension uses a sandbox this session.
+    const homePrivacyError = {
+      path: "D:/ave-home", category: "extra-principals" as const, approvedForSession: false,
+      extraPrincipals: [{ sid: "S-1-5-11", account: "NT AUTHORITY\\Authenticated Users" }, { sid: "S-1-5-32-545" }],
+    };
+    const extensionPlan: SandboxWindowsExtensionPlan = {
+      requestedBackend: "mxc", selectedBackend: "none", fallbackVersion: null, uiPolicy: "ui-enabled", egressIdentity: "shared",
+      proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall", dnsProtection: "host-resolver",
+      ancestorAccess: "query-enumerate-only", ancestorNameExposure: true, readiness: "unavailable", reason: "native-validation-required",
+    };
+    assertSandboxWindowsExtensionPlan(extensionPlan);
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus: vi.fn(async () => ({
+      applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "", homePrivacyError,
+    })) });
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      homePrivacyError,
+      boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
+        shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared", extensionPlan,
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    // The OS sandbox section is mounted (the toggle always renders there; the composer badge pair alone does not prove it).
+    expect(screen.getByTestId("os-sandbox-toggle")).toBeTruthy();
+
+    const reason = t("permissionsTab.homePrivacyExtraPrincipals", {
+      principals: "S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545",
+    });
+    expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeTruthy();
+    const detail = screen.getByTestId("os-sandbox-boot-degraded-detail");
+    expect(detail.textContent).toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason }));
+    // The generic dependency hint is false for a folder-permission failure.
+    expect(detail.textContent).not.toBe(t("permissionsTab.osSandboxDiagnosticHint"));
+    expect(t("permissionsTab.osSandboxBootDegradedHomePrivacy")).not.toBe("permissionsTab.osSandboxBootDegradedHomePrivacy");
+
+    const substrate = screen.getByTestId("os-sandbox-windows-substrate");
+    expect(substrate).toHaveAttribute("data-shells", "none");
+    expect(substrate).toHaveAttribute("data-extensions", "none");
+    expect(substrate).toHaveAttribute("data-mxc", "available");
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsNone"));
+    expect(screen.getByTestId("os-sandbox-windows-mxc-unused").textContent).toBe(t("permissionsTab.osSandboxWindowsMxcUnused", { build: "10.0.26300.9711" }));
+    const extensions = screen.getByTestId("os-sandbox-windows-substrate-extensions");
+    expect(extensions).toHaveAttribute("data-readiness", "unavailable");
+    expect(extensions).toHaveAttribute("data-selected-backend", "none");
+    expect(extensions).toHaveAttribute("data-reason", "native-validation-required");
+    expect(extensions.textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsUnavailable", {
+      reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"),
+    }));
+    expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
+
+    const privacy = screen.getByTestId("os-sandbox-windows-home-privacy-error");
+    expect(privacy.textContent).toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason }));
+  });
+
+  describe("AVE_HOME privacy fix guidance per category", () => {
+    // The spec: each cause gets its own fix; a cause whose text already says what to do gets none appended.
+    const FIX: Record<string, string | null> = {
+      "directory-failed": "permissionsTab.homePrivacyFixDirectory",
+      "system-root-missing": "permissionsTab.homePrivacyFixSystemRoot",
+      "identity-failed": "permissionsTab.homePrivacyFixIdentity",
+      "icacls-failed": "permissionsTab.homePrivacyFixPermissions",
+      "read-back-failed": "permissionsTab.homePrivacyFixPermissions",
+      "not-protected": "permissionsTab.homePrivacyFixPermissions",
+      "invalid-owner-grant": "permissionsTab.homePrivacyFixPermissions",
+      "owner-claim-failed": null,
+      "reparse-point": "permissionsTab.homePrivacyFixReparsePoint",
+      "extra-principals": null,
+    };
+    const REASON: Record<string, string> = {
+      "directory-failed": "permissionsTab.homePrivacyDirectoryFailed",
+      "system-root-missing": "permissionsTab.homePrivacySystemRootMissing",
+      "identity-failed": "permissionsTab.homePrivacyIdentityFailed",
+      "icacls-failed": "permissionsTab.homePrivacyIcaclsFailed",
+      "read-back-failed": "permissionsTab.homePrivacyReadBackFailed",
+      "not-protected": "permissionsTab.homePrivacyNotProtected",
+      "invalid-owner-grant": "permissionsTab.homePrivacyInvalidOwnerGrant",
+      "owner-claim-failed": "permissionsTab.homePrivacyOwnerClaimFailed",
+      "reparse-point": "permissionsTab.homePrivacyReparsePoint",
+      "extra-principals": "permissionsTab.homePrivacyExtraPrincipals",
+    };
+    const rows = (["en", "ko"] as const).flatMap((locale) => Object.keys(FIX).map((category) => [locale, category] as const));
+    let previousLocale: ReturnType<typeof getLocale>;
+    beforeEach(() => { previousLocale = getLocale(); });
+    afterEach(() => { setLocale(previousLocale); });
+
+    it.each(rows)("%s: %s", async (locale, category) => {
+      setLocale(locale);
+      const homePrivacyError = {
+        path: "D:/ave-home", category, approvedForSession: false,
+        ...(category === "extra-principals" ? { extraPrincipals: [{ sid: "S-1-5-11" }] } : {}),
+      };
+      const { ave } = installApiWithWindows({ sandboxWindowsStatus: vi.fn(async () => ({
+        applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "", homePrivacyError,
+      })) });
+      ave.permission.sandboxCapability.mockResolvedValueOnce({
+        platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+        runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
+        homePrivacyError,
+        boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
+      } as never);
+      await act(async () => { render(<PermissionsTab />); });
+      const reason = t(REASON[category]!, { principals: "S-1-5-11" });
+      const fix = FIX[category];
+      const tail = fix === null ? "" : ` ${t(fix)}`;
+      if (fix !== null) expect(t(fix)).not.toBe(fix);
+      // The identity check is a SID read-back that disagreed inside one process: a restart comes first, the account second.
+      if (category === "identity-failed") {
+        expect(t(fix!)).toBe(locale === "en"
+          ? "Restart Ave; if it persists, check that you are signed in with your own Windows account."
+          : "Ave를 다시 시작하세요. 문제가 계속되면 본인 Windows 계정으로 로그인했는지 확인하세요.");
+      }
+      await waitFor(() => expect(screen.getByTestId("os-sandbox-boot-degraded-detail").textContent)
+        .toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason }) + tail));
+      await waitFor(() => expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent)
+        .toContain(`${t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason })}${tail} ${t("permissionsTab.homePrivacyApproveHint")}`));
+    });
+  });
+
+  describe("copyable fix command for a home Ave does not repair", () => {
+    async function renderPrivacy(homePrivacyError: Record<string, unknown>) {
+      const { ave } = installApiWithWindows({ sandboxWindowsStatus: vi.fn(async () => ({
+        applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "", homePrivacyError,
+      })) });
+      ave.permission.sandboxCapability.mockResolvedValueOnce({
+        platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+        runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
+        homePrivacyError,
+        boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
+      } as never);
+      await act(async () => { render(<PermissionsTab />); });
+    }
+
+    it("gives the exact icacls lines, removing only explicit extra principals, and copies them", async () => {
+      const writeText = vi.fn(async () => undefined);
+      vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+      try {
+        await renderPrivacy({ path: "D:\\ave-home", category: "extra-principals", approvedForSession: false,
+          extraPrincipals: [{ sid: "S-1-1-0", explicit: true }, { sid: "S-1-5-18" }] });
+        const block = await screen.findByTestId("os-sandbox-windows-home-privacy-command");
+        const expected = 'icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"\r\nicacls "D:\\ave-home" /remove *S-1-1-0';
+        expect(block.querySelector("pre")?.textContent).toBe(expected);
+        await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-windows-home-privacy-command-copy")); });
+        expect(writeText).toHaveBeenCalledWith(expected);
+        await waitFor(() => expect(screen.getByTestId("os-sandbox-windows-home-privacy-command-copy")).toHaveTextContent(t("permissionsTab.homePrivacyCommandCopied")));
+      } finally { vi.unstubAllGlobals(); }
+    });
+
+    it("gives only the inheritance line for an unprotected DACL", async () => {
+      await renderPrivacy({ path: "D:\\ave-home", category: "not-protected", approvedForSession: false });
+      expect((await screen.findByTestId("os-sandbox-windows-home-privacy-command")).querySelector("pre")?.textContent)
+        .toBe('icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"');
+    });
+
+    it("removes only the workspace's explicit writers and never drops its inheritance", async () => {
+      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals", approvedForSession: false,
+        extraPrincipals: [{ sid: "S-1-5-32-545", explicit: true }, { sid: "S-1-5-11" }] });
+      expect(await screen.findByTestId("os-sandbox-windows-home-privacy-error")).toHaveTextContent("S-1-5-32-545");
+      expect((await screen.findByTestId("os-sandbox-windows-home-privacy-command")).querySelector("pre")?.textContent)
+        .toBe('icacls "D:\\ave-home\\workspace" /remove *S-1-5-32-545');
+    });
+
+    it("offers no command when the workspace writer is only inherited", async () => {
+      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals", approvedForSession: false,
+        extraPrincipals: [{ sid: "S-1-5-11" }] });
+      await screen.findByTestId("os-sandbox-windows-home-privacy-error");
+      expect(screen.queryByTestId("os-sandbox-windows-home-privacy-command")).toBeNull();
+    });
+
+    it.each(["reparse-point", "invalid-owner-grant", "identity-failed"])("offers no permission command for %s", async (category) => {
+      await renderPrivacy({ path: "D:\\ave-home", category, approvedForSession: false });
+      await screen.findByTestId("os-sandbox-windows-home-privacy-error");
+      expect(screen.queryByTestId("os-sandbox-windows-home-privacy-command")).toBeNull();
+    });
+  });
+
+  describe("srt-win setup panel before the stored settings are read", () => {
+    async function renderWithSettings(settingsRead: "hang" | "reject") {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { ave } = installApiWithWindows({ togglesOff: true });
+      const settings = (window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn> }).getSettings;
+      if (settingsRead === "hang") settings.mockImplementation(() => new Promise(() => undefined));
+      else settings.mockRejectedValue(new Error("settings unreadable"));
+      ave.permission.sandboxCapability.mockResolvedValueOnce({
+        platform: "win32", enabled: false, available: true, kind: "partial", reason: "r", potentialReason: "r",
+        runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
+        boot: null,
+      } as never);
+      await act(async () => { render(<PermissionsTab />); });
+      return { ave, warn };
+    }
+
+    // The setup panel defers to the section's one settings notice: one line while pending, one error with one Refresh when failed.
+    const sandboxSection = () => document.querySelector<HTMLElement>('[data-settings-section="permissions-os-sandbox"]')!;
+
+    it("shows one loading line for the section while settings are pending", async () => {
+      const { ave, warn } = await renderWithSettings("hang");
+      await waitFor(() => expect(screen.getByTestId("permissions-loading-os-sandbox-settings")).toBeTruthy());
+      expect(sandboxSection().querySelectorAll('[data-testid^="permissions-loading-"]')).toHaveLength(1);
+      expect(ave.permission.sandboxWindowsStatus).toHaveBeenCalled();
+      expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+      warn.mockRestore();
+    });
+
+    it("shows one error with one Refresh for the section when the settings read failed", async () => {
+      const { warn } = await renderWithSettings("reject");
+      await waitFor(() => expect(screen.getByTestId("permissions-load-error-os-sandbox-settings")).toBeTruthy());
+      expect(sandboxSection().querySelectorAll('[data-testid^="permissions-load-error-"]')).toHaveLength(1);
+      expect([...sandboxSection().querySelectorAll("button")].filter((b) => b.textContent === t("permissionsTab.refreshButton"))).toHaveLength(1);
+      expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+      warn.mockRestore();
+    });
+  });
+
+  describe("extension backend plan (row 6 disclosure)", () => {
+    const POSTURE = {
+      uiPolicy: "ui-enabled", proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall",
+      dnsProtection: "host-resolver", ancestorAccess: "query-enumerate-only", ancestorNameExposure: true,
+    } as const;
+    function plan(readiness: SandboxWindowsExtensionPlan["readiness"], reason: SandboxWindowsExtensionReason): SandboxWindowsExtensionPlan {
+      const selectedBackend = readiness === "ready" ? "mxc" : readiness === "fallback" ? "srt-win" : "none";
+      return {
+        requestedBackend: readiness === "off" ? "none" : "mxc", selectedBackend, readiness, reason,
+        fallbackVersion: selectedBackend === "srt-win" ? "0.0.80" : null,
+        egressIdentity: selectedBackend === "mxc" ? "kernel-channel" : "shared", ...POSTURE,
+      };
+    }
+    async function renderWithPlan(extensionPlan: SandboxWindowsExtensionPlan, shells: "mxc" | "approved-host" = "mxc"): Promise<void> {
+      const { ave } = installApiWithWindows();
+      ave.permission.sandboxCapability.mockResolvedValueOnce({
+        platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+        runtime: { available: true, kind: "none", reason: "r" },
+        confines: { filesystem: true, process: false, network: true },
+        boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
+        windowsSubstrate: {
+          mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: extensionPlan.selectedBackend === "srt-win",
+          shells, extensions: extensionPlan.selectedBackend, extensionPlan,
+          shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared", extensionEgressIdentity: extensionPlan.egressIdentity,
+        },
+      } as never);
+      await act(async () => { render(<PermissionsTab />); });
+    }
+    const extensions = () => screen.getByTestId("os-sandbox-windows-substrate-extensions");
+
+    it.each([
+      ["checking", "checking"],
+      ["rejected", "readiness-deadline"],
+      ["rejected", "ancestor-already-admitted"],
+    ] as const)("says a %s plan (%s) refuses starts and never calls extensions unconfined", async (readiness, reason) => {
+      const fixture = plan(readiness, reason);
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture);
+      expect(extensions()).toHaveAttribute("data-readiness", readiness);
+      expect(extensions().textContent).toBe(readiness === "checking"
+        ? t("permissionsTab.osSandboxWindowsExtensionsChecking")
+        : t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason: t(`permissionsTab.osSandboxWindowsExtensionReason${reason === "readiness-deadline" ? "ReadinessDeadline" : "AncestorAlreadyAdmitted"}`) }));
+      // The pre-row-6 copy said "not confined: srt-win is not ready", which is false for a refusing plan.
+      expect(extensions().textContent).not.toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+      expect(extensions().textContent).not.toMatch(/not confined/u);
+      expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    });
+
+    it("shows the MXC selection with every D2/D3 and measured disclosure, even while shells are healthy", async () => {
+      const fixture = plan("ready", "ready");
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture, "mxc");
+      expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
+      expect(extensions().textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsMxcSelected"));
+      const disclosure = screen.getByTestId("os-sandbox-windows-extension-disclosure");
+      expect(disclosure).toHaveAttribute("data-egress-identity", "kernel-channel");
+      expect(disclosure).toHaveAttribute("data-proxy-owner-verified", "false");
+      expect(disclosure).toHaveAttribute("data-host-loopback", "bidirectional");
+      expect(disclosure).toHaveAttribute("data-ancestor-access", "query-enumerate-only");
+      for (const [id, key] of [
+        ["network", "permissionsTab.osSandboxWindowsExtensionsNetwork"],
+        ["windows", "permissionsTab.osSandboxWindowsExtensionsWindows"],
+        ["folder-names", "permissionsTab.osSandboxWindowsExtensionsFolderNames"],
+        ["temp", "permissionsTab.osSandboxWindowsExtensionsTemp"],
+        ["dll", "permissionsTab.osSandboxWindowsExtensionsDll"],
+        ["bash-hooks", "permissionsTab.osSandboxWindowsExtensionsBashHooks"],
+        ["environment", "permissionsTab.osSandboxWindowsExtensionsEnvironment"],
+        ["reviewer", "permissionsTab.osSandboxWindowsExtensionsReviewer"],
+      ] as const) {
+        expect(t(key)).not.toBe(key);
+        expect(screen.getByTestId(`os-sandbox-windows-extension-disclosure-${id}`).textContent).toBe(t(key));
+      }
+      expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
+    });
+
+    it("keeps container disclosures off the srt-win fallback and names its shared account and reason", async () => {
+      const fixture = plan("fallback", "native-validation-required");
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture, "approved-host");
+      expect(extensions().textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsFallback", {
+        reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"),
+      }));
+      expect(screen.getByTestId("os-sandbox-windows-shared-identity")).toBeTruthy();
+      expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    });
+
+    it.each([
+      ["off", "not-requested", "permissionsTab.osSandboxWindowsExtensionsOff"],
+      ["unavailable", "native-validation-required", "permissionsTab.osSandboxWindowsExtensionsUnavailable"],
+    ] as const)("reports a settled %s plan without container disclosures", async (readiness, reason, key) => {
+      const fixture = plan(readiness, reason);
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture);
+      expect(extensions().textContent).toBe(t(key, { reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired") }));
+      expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    });
+
+    // The catalog parity check cannot see a key the code names but no catalog defines; every reason must resolve in both locales.
+    const EVERY_REASON = {
+      "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true, "tier-unsupported": true,
+      "request-rejected": true, "launcher-mismatch": true, "powershell-start-failed": true, "unverified-session": true,
+      "not-requested": true, "native-validation-required": true, checking: true, ready: true, "readiness-deadline": true,
+      "ancestor-policy-unsupported": true, "runtime-start-failed": true, "endpoint-isolation-unverified": true,
+      "bash-incompatible": true, "ancestor-already-admitted": true, "runtime-unavailable": true,
+    } as const satisfies Record<SandboxWindowsExtensionReason, true>;
+    it.each(["en", "ko"] as const)("renders every extension reason from a real %s catalog key", async (locale) => {
+      const previous = getLocale();
+      setLocale(locale);
+      try {
+        for (const reason of Object.keys(EVERY_REASON) as SandboxWindowsExtensionReason[]) {
+          await renderWithPlan({ ...plan("unavailable", "native-validation-required"), reason });
+          const text = extensions().textContent ?? "";
+          expect(text).not.toContain("permissionsTab.");
+          expect(text).not.toContain("{reason}");
+          cleanup();
+        }
+      } finally {
+        setLocale(previous);
+      }
+    });
+  });
+
   it.each([
     ["srt-win-not-found", "permissionsTab.osSandboxWindowsInstallFailedHelperMissing"],
     ["srt-win-integrity-mismatch", "permissionsTab.osSandboxWindowsHelperIntegrityError"],
@@ -1461,10 +1818,18 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     Object.assign(ave.permission, { approveExtensionsWithoutIsolation: approve });
     await act(async () => { render(<PermissionsTab />); });
     expect(approve).not.toHaveBeenCalled();
+    // Before approval the offer is part of the message.
+    expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent).toContain(t("permissionsTab.homePrivacyApproveHint"));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })); });
     expect(approve).toHaveBeenCalledTimes(1);
     expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
+    // Approved: no "blocked", no offer to approve; the failure and its fix stay.
+    const approved = screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent ?? "";
+    const reason = t("permissionsTab.homePrivacyReadBackFailed");
+    expect(approved).toContain(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/private-state/secrets", reason })} ${t("permissionsTab.homePrivacyFixPermissions")}`);
+    expect(approved).not.toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/private-state/secrets", reason }));
+    expect(approved).not.toContain(t("permissionsTab.homePrivacyApproveHint"));
     cleanup();
     await act(async () => { render(<PermissionsTab />); });
     expect(approve).toHaveBeenCalledTimes(1);
@@ -2129,14 +2494,31 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     warn.mockRestore();
   });
 
+  it("a failed settings read hides only the stored-setting toggles; the rest of the panel stays", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    installApi([[]]);
+    (window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn> }).getSettings.mockRejectedValueOnce(new Error(RAW));
+    await renderPermissionsTab();
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-os-sandbox-settings")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    expect(screen.queryByTestId("os-sandbox-toggle")).toBeNull();
+    expect(screen.queryByTestId("worker-confinement-toggle")).toBeNull();
+    // Owner-away minutes come from the same read, so the approval section waits on it too.
+    expect(screen.getByTestId("permissions-load-error-approval-dialog")).toBeTruthy();
+    expect(document.querySelectorAll('[data-testid^="permissions-load-error"]')).toHaveLength(2);
+    expect(document.querySelector('[data-settings-section="permissions-policy"] [role="radiogroup"]')).toBeTruthy();
+    expectNoRaw();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "settings", "Error", RAW);
+    warn.mockRestore();
+  });
+
   it("a load failure shows localized copy and logs the raw text", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
     api.permission.getMode.mockRejectedValueOnce(new Error(RAW));
     await renderPermissionsTab();
-    await waitFor(() => expect(screen.getByTestId("permissions-load-error")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-policy")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
     expectNoRaw();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), RAW);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "mode", "Error", RAW);
     warn.mockRestore();
   });
 });
@@ -2149,10 +2531,11 @@ describe("PermissionsTab background refresh", () => {
     const onConfigChanged = api.permission.onConfigChanged as unknown as ReturnType<typeof vi.fn>;
 
     await renderPermissionsTab();
-    await waitFor(() => expect(screen.queryByTestId("permissions-loading")).toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull());
 
     // The hint the host broadcasts after addRule/removeRule.
-    const notify = onConfigChanged.mock.calls[0]?.[0] as (() => void) | undefined;
+    // The tab's own subscription is the last one: the judge section (a child) subscribes first, and its handler refreshes only itself.
+    const notify = onConfigChanged.mock.calls.at(-1)?.[0] as (() => void) | undefined;
     expect(notify).toBeTypeOf("function");
 
     let resolveRules: ((rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void) | undefined;
@@ -2163,15 +2546,17 @@ describe("PermissionsTab background refresh", () => {
     await act(async () => {
       notify!();
     });
+    // The refresh really ran; without this the test passes on a handler that never re-reads the panel.
+    expect(api.permission.listScopedRules).toHaveBeenCalledTimes(2);
 
     // Mid-refresh: the panel the user was reading is still there.
-    expect(screen.queryByTestId("permissions-loading")).toBeNull();
+    expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull();
     expect(screen.getByTestId("permissions-rule-pattern-input")).toBeTruthy();
 
     await act(async () => {
       resolveRules?.({ rules: [], errors: [] });
     });
-    expect(screen.queryByTestId("permissions-loading")).toBeNull();
+    expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull();
   });
 
   it("still shows the loading surface on the FIRST load, where there is nothing to keep", async () => {
@@ -2182,12 +2567,75 @@ describe("PermissionsTab background refresh", () => {
     );
 
     await renderPermissionsTab();
-    expect(screen.getByTestId("permissions-loading")).toBeTruthy();
+    expect(screen.getByTestId("permissions-loading-rules")).toBeTruthy();
+    // Only the section that reads the slow call waits; the others are already on screen.
+    expect(document.querySelector('[data-settings-section="permissions-policy"] [role="radiogroup"]')).toBeTruthy();
 
     await act(async () => {
       resolveRules?.({ rules: [], errors: [] });
     });
-    await waitFor(() => expect(screen.queryByTestId("permissions-loading")).toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull());
+  });
+});
+
+describe("PermissionsTab — per-section reads after the first load", () => {
+  const dirSection = () => document.querySelector<HTMLElement>('[data-settings-section="permissions-directories"]')!;
+  const dirRefresh = () => [...dirSection().querySelectorAll<HTMLButtonElement>("header button")]
+    .find((button) => button.textContent === t("permissionsTab.refreshButton"))!;
+  const listReply = (userAdditions: string[]) => ({ ok: true as const, verb: "list" as const, defaults: [], userAdditions, effective: userAdditions });
+
+  it("the directory Refresh clears a failed first read once the list arrives", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = installApi([[]]);
+    api.permission.dirDispatch.mockRejectedValueOnce(new Error("first read failed"));
+    await renderPermissionsTab();
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-directories")).toBeTruthy());
+    api.permission.dirDispatch.mockResolvedValueOnce(listReply(["/tmp/ave-extra"]) as never);
+    await act(async () => { fireEvent.click(dirRefresh()); });
+    await waitFor(() => expect(screen.queryByTestId("permissions-load-error-directories")).toBeNull());
+    expect(dirSection().textContent).toContain("/tmp/ave-extra");
+    expect(screen.queryByTestId("permissions-stale-directories")).toBeNull();
+    warn.mockRestore();
+  });
+
+  it.each([
+    ["an ok:false reply", () => Promise.resolve({ ok: false, error: "settings-unreadable" })],
+    ["a thrown read", () => Promise.reject(new Error("ipc failed"))],
+  ] as const)("the directory Refresh keeps last-known values and labels them stale on %s", async (_label, reply) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = installApi([[]]);
+    api.permission.dirDispatch.mockResolvedValueOnce(listReply(["/tmp/ave-kept"]) as never);
+    await renderPermissionsTab();
+    await waitFor(() => expect(dirSection().textContent).toContain("/tmp/ave-kept"));
+    api.permission.dirDispatch.mockImplementationOnce(reply as never);
+    await act(async () => { fireEvent.click(dirRefresh()); });
+    await waitFor(() => expect(screen.getByTestId("permissions-stale-directories")).toHaveTextContent(t("permissionsTab.sectionStale")));
+    expect(dirSection().contains(screen.getByTestId("permissions-stale-directories"))).toBe(true);
+    expect(dirSection().textContent).toContain("/tmp/ave-kept");
+    expect(screen.queryByTestId("permissions-load-error-directories")).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "directories", "Error", expect.any(String));
+    // The next good read clears the label.
+    api.permission.dirDispatch.mockResolvedValueOnce(listReply(["/tmp/ave-kept"]) as never);
+    await act(async () => { fireEvent.click(dirRefresh()); });
+    await waitFor(() => expect(screen.queryByTestId("permissions-stale-directories")).toBeNull());
+    warn.mockRestore();
+  });
+
+  it("labels a section stale beside its values when a config-change refresh fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = installApi([[], []]);
+    await renderPermissionsTab();
+    await waitFor(() => expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull());
+    // The tab's own subscription is the last one (the judge section, a child, subscribes first).
+    const notify = (api.permission.onConfigChanged as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as () => void;
+    (api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("rules unreadable"));
+    await act(async () => { notify(); });
+    const rulesSection = document.querySelector('[data-settings-section="permissions-rules"]')!;
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "rules", "Error", "rules unreadable"));
+    await waitFor(() => expect(rulesSection.querySelector('[data-testid="permissions-stale-rules"]')).toBeTruthy());
+    expect(screen.getByTestId("permissions-rule-pattern-input")).toBeTruthy();
+    expect(document.querySelectorAll('[data-testid^="permissions-stale-"]')).toHaveLength(1);
+    warn.mockRestore();
   });
 });
 
@@ -2415,7 +2863,7 @@ describe("reviewer mode recovery", () => {
       expect(judgeMode).toHaveValue("");
       expect(judgeMode).toHaveDisplayValue(locale === "ko" ? "선택 필요" : "Choose a mode");
       expect(judgeMode).toHaveAttribute("aria-describedby", "reviewer-mode-fault");
-      expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+      expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
       expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
       expect(document.body.textContent).not.toContain("private unsupported reviewer value");
       expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
@@ -2488,7 +2936,7 @@ describe("reviewer mode recovery", () => {
     expect(screen.getByText(t("permissionsTab.reviewerModeRecoveryRewireFailed"), { exact: false })).toBeVisible();
     expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm", "show"]);
     expect(document.body.textContent).not.toContain("private reviewer transport failure");
-    expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+    expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
     expect(api.permission.setMode).not.toHaveBeenCalled();
   });
 });

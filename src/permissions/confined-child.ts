@@ -36,6 +36,7 @@ import { buildMxcConfinedChildRequest } from "./mxc-confined-child-request.js";
 import { isWindowsPathAtOrUnder, rankMxcFilesystem, strictlyUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
 import { spawnMxcExtensionProcess, type OwnedMxcExtensionProcess } from "./mxc-extension-process.js";
 import {
+  MxcExtensionReadinessRefusedError,
   MxcNativeEntryRequiredError,
   MxcProcessCleanupError,
   MxcProcessContractError,
@@ -420,7 +421,7 @@ function isAdmittedUserHookShellRoute(spec: ConfinedChildSpec): boolean {
 export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<ConfinedChildSpawn> {
   const extensionPlan = process.platform === "win32" && !isAdmittedUserHookShellRoute(spec) ? getWindowsExtensionBackendPlan() : undefined;
   if (extensionPlan?.readiness === "checking" || extensionPlan?.readiness === "rejected") {
-    throw new MxcProcessContractError("Extension backend readiness has not admitted this start");
+    throw new MxcExtensionReadinessRefusedError();
   }
   if (extensionPlan?.selectedBackend === "mxc") {
     assertMxcWorkerTransport(spec.egressOwner);

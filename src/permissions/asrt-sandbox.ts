@@ -1,6 +1,6 @@
 
 
-import { MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
+import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -1014,7 +1014,7 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
   const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
   const nativeEntry = options !== undefined && "backend" in options;
   if (plan?.readiness === "checking" || plan?.readiness === "rejected") {
-    throw new MxcProcessContractError("Extension backend readiness has not admitted this start");
+    throw new MxcExtensionReadinessRefusedError();
   }
   if (plan?.selectedBackend === "mxc" && !nativeEntry) {
     throw options !== undefined && options.holder === "worker" ? new WorkerTransportUnsupportedError() : new MxcNativeEntryRequiredError();

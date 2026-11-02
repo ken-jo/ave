@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
+import { createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
@@ -11,6 +11,7 @@ import { permissionSettingsPath } from "../../permissions/permission-settings-st
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
+import * as windowsNativeHost from "../windows-native-host.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
@@ -180,45 +181,97 @@ describe("ensureAveHomePrivate", () => {
     const { result, dir } = check((entry, at) => at === index ? { path: entry.path, error: "read failed" } : entry);
     expect(result).toMatchObject({ enforcement: "none", failedPath: index ? join(dir, "secrets") : dir, category: "read-back-failed" });
   });
+  // Lead decision 2026-11-02 (stricter only): the workspace is the cwd and the in-project auto-write scope, so a principal other than
+  // the user, SYSTEM or Administrators that can write to it refuses the boot; a foreign read-only entry is reported only.
+  describe("the workspace's own entries", () => {
+    const rule = (sid: string, fileSystemRights: number, isInherited = false): WindowsAccessRule =>
+      ({ sid, accessControlType: 0, fileSystemRights, inheritanceFlags: 3, propagationFlags: 0, isInherited });
+    const withWorkspace = (extra: Partial<WindowsDirectoryDacl>) => check((entry, index) => index === 0 ? { ...entry, ...extra } : entry);
+    it.each([
+      ["explicit Users modify", rule("S-1-5-32-545", 0x1301bf), true],
+      ["explicit Everyone write data", rule("S-1-1-0", 0x2), true],
+      ["explicit domain group generic write", rule("S-1-5-21-1-2-3-513", 0x40000000), true],
+    ])("refuses %s on the workspace, names it and marks it explicit", (_name, foreign, explicit) => {
+      const { result, dir } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), foreign] });
+      expect(result).toMatchObject({ enforcement: "none", failedPath: join(dir, "workspace"), category: "workspace-extra-principals",
+        extraPrincipals: [{ sid: foreign.sid, ...(explicit ? { explicit: true } : {}) }] });
+    });
+    it("refuses an inherited foreign write on the workspace without marking it explicit", () => {
+      const { result } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), rule("S-1-5-11", 0x1301bf, true)] });
+      expect(result).toMatchObject({ category: "workspace-extra-principals", extraPrincipals: [{ sid: "S-1-5-11" }] });
+      expect((result as { extraPrincipals: unknown[] }).extraPrincipals[0]).not.toHaveProperty("explicit");
+    });
+    it("accepts SYSTEM and Administrators write entries on the workspace", () => {
+      const { result } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), rule("S-1-5-18", 2032127), rule("S-1-5-32-544", 2032127)] });
+      expect(result).toMatchObject({ enforcement: "win32-dacl" });
+      expect(result).not.toHaveProperty("diagnostics");
+    });
+    it("reports a foreign read-only workspace entry without refusing", () => {
+      const { result } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), rule("S-1-5-32-545", 0x1200a9)] });
+      expect(result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('Directory "workspace" has foreign read-only access: S-1-5-32-545')] });
+    });
+    it("reports a workspace rewritten to inherit from the protected root, and a linked workspace", () => {
+      expect(withWorkspace({ workspaceState: "rewritten" }).result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('"workspace" re-inherited')] });
+      // A workspace the check could not open (for example a sharing violation) is reported, never silently treated as clean.
+      expect(withWorkspace({ workspaceState: "unavailable" }).result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('"workspace" could not be opened')] });
+      expect(withWorkspace({ workspaceState: "clean" }).result).not.toHaveProperty("diagnostics");
+      expect(withWorkspace({ workspaceLink: true }).result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('"workspace" is a link')] });
+    });
+  });
+  // Lead decision 2026-11-02 (stricter only): a foreign read-only root entry is accepted only when it applies to the root alone.
+  it.each([
+    ["object inherit", 1],
+    ["container inherit", 2],
+    ["object and container inherit", 3],
+  ])("refuses an inheritable (%s) foreign read-only root grant as an explicit extra principal", (_name, inheritanceFlags) => {
+    const { result, dir } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 0x1200a9, inheritanceFlags }] } : entry);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals",
+      extraPrincipals: [{ sid: "S-1-1-0", explicit: true }] });
+  });
   it("warns when a foreign root grant contains read data", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read extended attributes", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 8 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 8, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains execute", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 32 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 32, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read attributes", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 128 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 128, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read control", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 131072 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 131072, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains synchronize", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1048576 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1048576, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read and execute", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1179817 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1179817, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
@@ -269,7 +322,7 @@ describe("ensureAveHomePrivate", () => {
   });
   it("warns when a foreign root grant contains generic read", () => {
     expect(check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: -2147483648 }] } : entry).result)
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: -2147483648, inheritanceFlags: 0 }] } : entry).result)
       .toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
   });
   it("refuses when a foreign root grant contains generic write", () => {
@@ -321,7 +374,7 @@ describe("ensureAveHomePrivate", () => {
     const { args, options } = windowsDirectoryProtectionRequest(paths);
     expect(args!.join(" ")).not.toContain(paths[0]);
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, readOnlyRights: 0x1200a9 });
+    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, readOnlyRights: 0x1200a9, repairRoot: false });
     // The system root reaches the child only inside the request, never as a second variable.
     expect(Object.keys(env).filter((name) => name.startsWith("AVE_DACL_"))).toEqual(["AVE_DACL_REQUEST"]);
   });
@@ -355,6 +408,93 @@ describe("ensureAveHomePrivate", () => {
       { path: dir, category: "invalid-owner-grant", error: "Home protection was refused before writing" },
     ]);
     expect(vi.mocked(execFileSync).mock.calls).toHaveLength(before);
+  });
+  describe("narrow root repair request", () => {
+    // The pre-write facts decide whether the helper is asked to repair; the helper re-checks on its pinned handle.
+    function inheritedRoot(path: string, extra: Array<{ type: number; flags: number; mask: number; sid: string }> = []): windowsPathFacts.WindowsDaclFacts {
+      const base = nativeDescriptor(path);
+      return { ...base, dacl: { ...base.dacl!, protected: false, aces: [
+        { type: 0, flags: 0x13, mask: 0x1f01ff, sid: OWNER_SID }, { type: 0, flags: 0x13, mask: 0x1f01ff, sid: "S-1-5-18" },
+        { type: 0, flags: 0x13, mask: 0x1f01ff, sid: "S-1-5-32-544" }, ...extra] } };
+    }
+    function requestFor(facts: (path: string) => windowsPathFacts.WindowsDaclFacts): { repairRoot: boolean } {
+      const dir = home();
+      vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths) => paths.map(facts));
+      // The helper itself is native; only its request is under test here.
+      vi.spyOn(windowsNativeHost, "runWindowsNative").mockImplementation((operation) => operation());
+      vi.mocked(execFileSync).mockImplementationOnce(() => JSON.stringify([{ path: dir }]));
+      readWindowsDirectoryDacls([dir], true);
+      const call = vi.mocked(execFileSync).mock.calls.at(-1)!;
+      return JSON.parse((call[2] as { env: Record<string, string> }).env.AVE_DACL_REQUEST!) as { repairRoot: boolean };
+    }
+    it("asks for the repair on the inherited-only root", () => {
+      expect(requestFor((path) => inheritedRoot(path)).repairRoot).toBe(true);
+    });
+    it("does not ask with an explicit foreign entry", () => {
+      expect(requestFor((path) => inheritedRoot(path, [{ type: 0, flags: 0, mask: 0x1200a9, sid: "S-1-1-0" }])).repairRoot).toBe(false);
+    });
+    it("does not ask for an already protected root", () => {
+      expect(requestFor((path) => nativeDescriptor(path)).repairRoot).toBe(false);
+    });
+  });
+  it("repairs the root only on request, on the pinned home handle, before RootSafe reads it back", () => {
+    const script = (windowsDirectoryProtectionRequest([home()], undefined, true).options as { input: string }).input;
+    const repair = script.indexOf("$request.repairRoot -and [HomeDirectoryDacl]::RepairInheritedRoot($handle,");
+    expect(repair).toBeGreaterThan(script.indexOf("$handle = $homeHandle;"));
+    expect(repair).toBeLessThan(script.indexOf("$refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle)"));
+    // The native repair re-checks the shape, writes only the DACL, and verifies through the unchanged predicates.
+    expect(script).toContain("if (!RootRepairable(Read(home), user)) return false;");
+    // Native run 4: SetSecurityInfo's propagation turned the workspace's stale inherited entries into explicit ones. The root is
+    // written alone, as a protected owner-only descriptor, with no propagation into children.
+    expect(script).toContain('Check(NtSetSecurityObject(home, 4u, bytes), "Home root repair failed");');
+    expect(script).toContain("ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected |");
+    expect(script).not.toMatch(/SetSecurityInfo\(home,/);
+    expect(script).toContain("if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated))");
+  });
+  it("opens the workspace for its DACL only, with full sharing, since it is the process's own cwd", () => {
+    // CI run 41469456420: a request that could include DELETE was a sharing violation against the cwd handle, so the check skipped.
+    const script = (windowsDirectoryProtectionRequest([home()]).options as { input: string }).input;
+    expect(script).toContain('OpenRelative(home, "workspace", user, 1, true, true, false, false, 7u, 0x00160080u)');
+  });
+  it("checks the workspace on every boot whose root passes RootSafe, not only after a root repair", () => {
+    // A boot whose workspace rewrite failed leaves a D:P root that is never repairable again; this is what retries it.
+    for (const repairRoot of [false, true]) {
+      const script = (windowsDirectoryProtectionRequest([home()], undefined, repairRoot).options as { input: string }).input;
+      const rootSafe = script.indexOf("$refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle)");
+      const workspace = script.indexOf("if (-not $refused) { $workspaceState = [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User) }");
+      expect(workspace).toBeGreaterThan(rootSafe);
+      expect(script).not.toMatch(/RepairInheritedRoot\([^)]*\)\s*\{[^}]*ReinheritWorkspace/);
+    }
+  });
+  it("keeps the pre-lock create a no-op off Windows, so a POSIX start cannot fail before bootstrap", () => {
+    const refuse = () => { throw new Error("must not run"); };
+    expect(createAveHomeIfAbsent(home(), { platform: "darwin", exists: refuse, create: refuse })).toBe("not-applicable");
+  });
+  it("refuses the home when the protect request times out mid-repair; nothing is reported repaired", () => {
+    // A root repair re-propagates inheritance over the existing tree, so a large home can hit the request timeout. The killed
+    // helper is a failure: no win32-dacl and no repairs this boot. The next boot reads the root again from scratch.
+    const dir = home();
+    const readDacls = vi.fn((_paths: readonly string[], protect?: boolean): WindowsDirectoryDacl[] => {
+      if (protect) throw Object.assign(new Error("spawnSync powershell ETIMEDOUT"), { code: "ETIMEDOUT" });
+      return [];
+    });
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls });
+    expect(result).toMatchObject({ enforcement: "none", home: dir });
+    expect(result).not.toHaveProperty("repairs");
+  });
+  it("records the repaired root in repairs and keeps the boot checks unchanged", () => {
+    const dir = home();
+    const readDacls = vi.fn((paths: readonly string[], _protect?: boolean) => paths.map((path) => ({ ...descriptor(path), ...(path === dir ? { repaired: true, skippedLinks: 0 } : {}) })));
+    expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls })).toEqual({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID, repairs: [dir] });
+  });
+  it("still refuses an explicit extra principal and marks it explicit for the fix command", () => {
+    const dir = home();
+    const readDacls = vi.fn((paths: readonly string[], _protect?: boolean) => paths.map((path) => path === dir
+      ? { ...descriptor(path), rules: [{ ...OWNER_RULE }, { sid: "S-1-1-0", accessControlType: 0, fileSystemRights: 2032127, inheritanceFlags: 3, propagationFlags: 0, isInherited: false },
+        { sid: "S-1-5-18", accessControlType: 0, fileSystemRights: 2032127, inheritanceFlags: 3, propagationFlags: 0, isInherited: true }] }
+      : descriptor(path)));
+    expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls })).toMatchObject({ enforcement: "none", category: "extra-principals",
+      extraPrincipals: [{ sid: "S-1-1-0", explicit: true }, { sid: "S-1-5-18" }] });
   });
   it("rejects a malformed native read-back result set", () => {
     vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(() => windowsPathFacts.decodeWindowsPathFacts("{}", 1, "--dacl") as windowsPathFacts.WindowsDaclFacts[]);
@@ -414,9 +554,9 @@ describe("ensureAveHomePrivate", () => {
     expect(options).toMatchObject({ timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
     const request = JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_REQUEST!);
     const script = (options as { input: string }).input;
-    expect(request).toEqual({ paths, claimableRuntimeRoot: runtimeRoot, readOnlyRights: 0x1200a9 });
+    expect(request).toEqual({ paths, claimableRuntimeRoot: runtimeRoot, readOnlyRights: 0x1200a9, repairRoot: false });
     expect(script).toContain('$path -eq $request.claimableRuntimeRoot');
-    expect(script.indexOf("[HomeDirectoryDacl]::ClaimRuntimeRoot")).toBeLessThan(script.indexOf("[HomeDirectoryDacl]::Repair"));
+    expect(script.indexOf("[HomeDirectoryDacl]::ClaimRuntimeRoot")).toBeLessThan(script.indexOf("[HomeDirectoryDacl]::Repair($homeHandle"));
     expect(script).toContain('string owner = Read(handle).GetOwner(typeof(SecurityIdentifier)).Value');
     expect(script.indexOf('owner != "S-1-5-32-544"')).toBeLessThan(script.indexOf("SetSecurityInfo(handle, 1, 0x80000005u"));
   });

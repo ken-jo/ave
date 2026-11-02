@@ -229,7 +229,7 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     api.permission.sandboxCapability.mockRejectedValueOnce(new Error("unreachable host"));
     await renderTab();
     expect(screen.getByTestId("sandbox-status-query-failed")).toHaveTextContent("샌드박스 상태 확인 불가");
-    expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+    expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "상태 다시 확인" }));
     await waitFor(() => expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("설정에서 비활성화됨"));
     expect(screen.queryByTestId("sandbox-status-query-failed")).toBeNull();

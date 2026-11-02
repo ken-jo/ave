@@ -2,6 +2,7 @@
 // Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
 import { spawn, type ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { t } from "../i18n/index.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import {
@@ -259,7 +260,7 @@ export async function runOneHookScript(
       assertMxcHolderNotBashForm(spawnCmd, shellFlavor);
     } catch (error) {
       if (!(error instanceof MxcBashIncompatibleError)) throw error;
-      return deny(`sandbox unavailable (${error.plan.reason}): ${error.message}`);
+      return deny(`sandbox unavailable: ${error.message}`);
     }
   }
   if (confinement && !containedRoute) {
@@ -620,10 +621,12 @@ function hookOutcome(forensics: HookResultForensics, deny: HookDeny, run: Observ
     timedOut: false, durationMs, ...(parsed.block ? { blockFeedback: parsed.reason } : {}) };
 }
 
-/** A stable reason code, when the refusal has one, so the deny names it. */
+/** A stable reason code, when the refusal has one, so the deny names it. A localized container refusal already ends
+ * with its code, so it is not repeated. */
 function errorCode(error: unknown): string {
   const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === "string" ? ` (${code})` : "";
+  if (typeof code !== "string") return "";
+  return (error as Error).message?.endsWith(`(${code})`) ? "" : ` (${code})`;
 }
 
 /** Bounded capture shared by both output streams. */
@@ -693,7 +696,7 @@ async function runContainedHook(input: {
     const result = await Promise.race([owned.completion, unsettled]);
     if (result === "unsettled") {
       stop();
-      return deny(`hook process did not settle within ${settleBudgetMs}ms; its sandbox resources stay held`,
+      return deny(t("be_scriptHookRunner.containedSettleDeadline", { ms: settleBudgetMs, code: "hook-settle-deadline" }),
         { rawStdout: stdout.text(), timedOut: true });
     }
     code = result.exitCode;
@@ -709,7 +712,7 @@ async function runContainedHook(input: {
   try {
     await holder.release();
   } catch (error) {
-    return deny(`hook process termination is unverified; its sandbox resources stay held: ${(error as Error).message}`,
+    return deny(t("be_scriptHookRunner.containedTerminationUnverified", { detail: (error as Error).message, code: "hook-termination-unverified" }),
       { rawStdout: stdout.text(), timedOut });
   }
   if (writeError) return deny(`failed to serialise hook payload: ${writeError.message}`);

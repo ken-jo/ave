@@ -54,7 +54,7 @@ them; an MXC parent keeps admitting children after the shell probe settles.
 | `egressIdentity` | `kernel-channel` for the selected MXC endpoint-scoped route; `shared` otherwise. |
 | `proxyOwnerVerified` | False: endpoint scoping does not authenticate the proxy process owner. |
 | `hostLoopback` / `inboundProtection` / `dnsProtection` | Bidirectional loopback request, host firewall for inbound, host resolver for DNS. |
-| `ancestorAccess` / `ancestorNameExposure` | Query/enumerate-only; ancestor names and metadata may be exposed, including profile siblings. Descendant enumeration remains a native measurement. |
+| `ancestorAccess` / `ancestorNameExposure` | Query/enumerate-only; ancestor names and metadata may be exposed, including profile siblings. Enumeration also cascades by name into nested directories under an ungranted sibling: the Windows x64 peer measured `descendantEnumeration: "visible"` at `356920e11` (backend-policy handoff, "Native evidence"), with TEMP redirected to a D: staging tree; a real-profile run belongs to the native release gate. |
 
 The UI, loopback and ancestor fields describe the requested MXC policy. They
 apply to a selected MXC request, not to the account fallback or an unconfined
@@ -370,7 +370,7 @@ nesting and the lifetime registry stay row 2's.
     `NODE_OPTIONS` and prepends its preserve-symlinks flags. The container
     route instead refuses any configured `NODE_OPTIONS`. A server that depends
     on one starts on srt-win and is refused under a selected container plan;
-    row 6 discloses this.
+    the Permissions disclosure for a selected container plan says so.
 - **Readiness probe.** The exact-request probe is registered by the native
   release gate through `registerMxcHolderReadinessProbe`. Until then every
   holder start fails closed with `MxcCapabilityUnavailableError`.
@@ -381,8 +381,9 @@ nesting and the lifetime registry stay row 2's.
     is withdrawn at close or exit.
   - A reconnect waits for the previous incarnation's release.
   - An unverified termination quarantines that server id. Its reconnect is
-    refused with `MxcHolderQuarantinedError` until the host restarts; row 6 must
-    disclose this.
+    refused with `MxcHolderQuarantinedError` until the host restarts. The server
+    state carries `containedQuarantined`, and its MCP row says so before any
+    reconnect attempt.
   - A hook's timeout or cancellation disposes the container. An unverified
     termination denies the hook and keeps its lease.
   - The hook's wait on completion is bounded by its timeout plus the

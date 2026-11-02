@@ -5,11 +5,11 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
-import { admitWindowsReparse, isOwnerOnlyDacl, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
+import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
-import { isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
+import { isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsWorkspaceForeignWriter, WINDOWS_WORKSPACE_TRUSTED_WRITERS, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
 import { fileIdentityKey } from "../lib/file-identity.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandleEntry } from "./windows-configuration-handles.js";
 
@@ -18,6 +18,9 @@ export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
 export const AVE_HOME_CONFIGURATION_MARKER_CONTENT = "ave-home-boundary-v1";
 
 let refusedConfigurationHome: string | undefined;
+/** Whether a refused home's configuration is its committed `config/`, decided by its first read in this run and kept for the run.
+ * Only the decision is kept: each caller gets the path in its own spelling of the home. */
+let refusedConfigurationCommitted: boolean | undefined;
 const verifiedConfigurationIdentities = new Map<string, string>();
 const configurationHomes = new Set<string>();
 const committedConfigurationHomes = new Set<string>();
@@ -41,6 +44,7 @@ function configurationKey(home: string): string {
 
 /** Only a refused home bypasses protected storage. */
 export function setAveHomeConfigurationRefusedAtBoot(home: string): void {
+  if (refusedConfigurationHome !== configurationKey(home)) refusedConfigurationCommitted = undefined;
   refusedConfigurationHome = configurationKey(home);
 }
 
@@ -51,10 +55,12 @@ export function isAveHomeConfigurationRefused(home: string): boolean {
 export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const root = resolve(home);
   configurationHomes.add(root);
-  if (isAveHomeConfigurationRefused(root)) return root;
   const key = configurationKey(root);
   const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
+    if (isAveHomeConfigurationRefused(root)) {
+      return (refusedConfigurationCommitted ??= refusedConfigurationDirectory(root, config) === config) ? config : root;
+    }
     if (process.platform === "win32") return windowsConfigurationDirectory(root, config, key);
     let directory;
     try { directory = lstatSync(config, { bigint: true }); }
@@ -91,6 +97,40 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
     if (error instanceof AveHomeConfigurationUntrustedError) throw error;
     throw new AveHomeConfigurationUntrustedError(config, (error as Error).message);
   }
+}
+
+/**
+ * A refused home is never migrated, and its root is not trusted. Configuration that an earlier verified boot committed to `config/`
+ * stays the configuration: every read and write there verifies `config/`'s own protected owner-only DACL, never the root's, so the
+ * user's committed policy (stricter than its absence) still applies. Reading the root instead found nothing and refused the whole
+ * boot before the privacy refusal could be shown (native run 4). A home that never committed stays root-only. The first read
+ * decides, and the run keeps that answer: a marker that appears later in a refused home never moves its configuration.
+ */
+function refusedConfigurationDirectory(root: string, config: string): string {
+  const markerPath = join(config, AVE_HOME_CONFIGURATION_MARKER);
+  // An absent directory needs no native probe: the home stays root-only.
+  try { lstatSync(config); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return root; throw error; }
+  if (process.platform === "win32") {
+    const [directory, marker] = pinWindowsPaths([config, markerPath]);
+    if (!admitWindowsReparse(directory!, "evidence") || (directory!.exists === true && !directory!.directory)) {
+      throw new Error("Configuration directory is a link or is not a directory");
+    }
+    if (directory!.exists !== true) return root;
+    if (!admitWindowsReparse(marker!, "evidence") || (marker!.exists === true && marker!.directory)) throw new Error("Configuration marker is not a regular file");
+    if (marker!.exists !== true) return root;
+  } else {
+    let directory;
+    try { directory = lstatSync(config); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return root; throw error; }
+    if (!directory.isDirectory()) throw new Error("Configuration directory is a link or is not a directory");
+    let marker;
+    try { marker = lstatSync(markerPath); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return root; throw error; }
+    if (!marker.isFile()) throw new Error("Configuration marker is not a regular file");
+  }
+  if (readFileSync(markerPath, "utf8") !== AVE_HOME_CONFIGURATION_MARKER_CONTENT) throw new Error("Configuration marker content is invalid");
+  return config;
 }
 
 function windowsConfigurationDirectory(root: string, config: string, key: string): string {
@@ -307,6 +347,7 @@ export type AveHomePrivacyFailureCategory =
   | "icacls-failed"
   | "read-back-failed"
   | "extra-principals"
+  | "workspace-extra-principals"
   | "not-protected"
   | "invalid-owner-grant"
   | "owner-claim-failed"
@@ -315,6 +356,8 @@ export type AveHomePrivacyFailureCategory =
 export interface AveHomePrincipal {
   sid: string;
   account?: string;
+  /** At least one of its entries is set on the directory itself rather than inherited; `icacls /inheritance:r` does not remove it. */
+  explicit?: true;
 }
 
 export interface WindowsDirectoryDacl {
@@ -324,6 +367,13 @@ export interface WindowsDirectoryDacl {
   ownerSid?: string;
   protected?: boolean;
   repaired?: boolean;
+  /** Home entry only: the per-boot workspace inheritance check ("rewritten" to what the protected root passes down, "clean",
+   * "absent", "left" for a link, protected DACL or foreign owner, "unavailable" when it could not be opened or read). */
+  workspaceState?: string;
+  /** Home entry only: the workspace's own entries, read after protection; absent when there is no workspace directory. */
+  workspaceRules?: WindowsAccessRule[];
+  /** Home entry only: the workspace is a link or junction, so its entries are not the workspace's. */
+  workspaceLink?: true;
   skippedLinks?: number;
   cleanupWarnings?: string[];
   rules?: WindowsAccessRule[];
@@ -358,29 +408,32 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   try { windowsSystemRoot(); } catch {
     return paths.map(path => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
   }
+  let repairRoot = false;
   if (protect && paths[0]) {
     const root = readWindowsDacls([resolve(paths[0])])[0]!;
+    repairRoot = isWindowsHomeRootRepairable(root);
     if (!admitWindowsReparse(root, "evidence") || (root.exists && root.dacl?.owner !== root.currentUserSid
       && !(root.elevated && root.dacl?.owner === "S-1-5-32-544"))) {
       const category = !admitWindowsReparse(root, "evidence") ? "reparse-point" : "invalid-owner-grant";
       return paths.map(path => ({ path, category, error: "Home protection was refused before writing" }));
     }
   }
-  const writes: WindowsDirectoryDacl[] = protect ? protectWindowsDirectories(paths, claimableRuntimeRoot) : paths.map(path => ({ path }));
+  const writes: WindowsDirectoryDacl[] = protect ? protectWindowsDirectories(paths, claimableRuntimeRoot, repairRoot) : paths.map(path => ({ path }));
   return paths.map((path, index) => {
     const write = writes[index]!;
     if ("error" in write) return write;
     try {
       const row = readWindowsDacls([resolve(path)])[0]!;
       if (!row.exists || !row.directory) return { path, category: "directory-failed", error: "Path is not a directory" };
-      return { ...write, ...directoryDescriptor(path, row) };
+      const descriptor = { ...write, ...directoryDescriptor(path, row) };
+      return protect && index === 0 && !("error" in descriptor) ? { ...descriptor, ...workspaceFacts(path) } : descriptor;
     } catch (error) {
       return { path, category: "read-back-failed", error: (error as Error).message };
     }
   });
 }
 
-export function windowsDirectoryProtectionRequest(paths: readonly string[], claimableRuntimeRoot?: string) {
+export function windowsDirectoryProtectionRequest(paths: readonly string[], claimableRuntimeRoot?: string, repairRoot = false) {
   const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
     $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
@@ -391,6 +444,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
 '@;
     $refused = $false;
     $homeHandle = $null;
+    $workspaceState = 'skipped';
     try {
       $results = @(foreach ($path in $request.paths) {
         if ($refused) { @{ path = $path; error = 'An enclosing directory was refused' }; continue }
@@ -400,7 +454,9 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
           if ($null -eq $homeHandle) {
             $homeHandle = [HomeDirectoryDacl]::OpenHome($path, $identity.User, $true);
             $handle = $homeHandle;
+            if ($request.repairRoot -and [HomeDirectoryDacl]::RepairInheritedRoot($handle, $identity.User, $elevated, $request.readOnlyRights)) { $repaired = 0 }
             $refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle), $identity.User, $elevated, $request.readOnlyRights);
+            if (-not $refused) { $workspaceState = [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User) }
           } else {
             if ([System.IO.Path]::GetDirectoryName($path) -ne [System.IO.Path]::GetFullPath($request.paths[0])) { throw 'Directory is outside the pinned home' }
             $leaf = [System.IO.Path]::GetFileName($path);
@@ -414,6 +470,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
           if ($null -eq $handle) { throw 'Directory does not exist' }
           $result = @{ path = $path };
           if ($repaired -ge 0) { $result.repaired = $true; $result.skippedLinks = $repaired }
+          if ($handle -eq $homeHandle) { $result.workspaceState = $workspaceState }
           if ($null -ne $homeHandle -and $handle -ne $homeHandle) { $result.cleanupWarnings = @([HomeDirectoryDacl]::CleanupWarnings.ToArray()) }
           $result
         } catch {
@@ -435,15 +492,15 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
   // A one-shot process cannot separate cold startup from its directory operation.
   ], options: { input: script, encoding: "utf-8" as const, windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs, env: windowsPowerShellEnv({ ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ paths, claimableRuntimeRoot, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) } };
+    AVE_DACL_REQUEST: JSON.stringify({ paths, claimableRuntimeRoot, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS, repairRoot }) }) } };
 }
 
-function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoot?: string): WindowsDirectoryDacl[] {
+function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoot?: string, repairRoot = false): WindowsDirectoryDacl[] {
   if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
     return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
   }
   const output = runWindowsNative(() => {
-    const { file, args, options } = windowsDirectoryProtectionRequest(paths, claimableRuntimeRoot);
+    const { file, args, options } = windowsDirectoryProtectionRequest(paths, claimableRuntimeRoot, repairRoot);
     return execFileSync(file, args, options);
   });
   const results: unknown = JSON.parse(output);
@@ -453,6 +510,15 @@ function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoo
   return results;
 }
 
+
+/** The workspace (cwd, default workspace root, in-project write scope) is read, not protected: its entries are checked at boot. */
+function workspaceFacts(home: string): Pick<WindowsDirectoryDacl, "workspaceRules" | "workspaceLink"> {
+  const row = readWindowsDacls([join(resolve(home), "workspace")])[0]!;
+  if (!row.exists) return {};
+  if (!admitWindowsReparse(row, "evidence")) return { workspaceLink: true };
+  if (!row.directory || !row.dacl) throw new Error("Workspace DACL read-back is invalid");
+  return { workspaceRules: windowsOwnerRules(row.dacl) };
+}
 
 function directoryDescriptor(path: string, row: WindowsDaclFacts): WindowsDirectoryDacl {
   if (!admitWindowsReparse(row, "evidence")) return { path, category: "reparse-point", error: "Directory is a link or junction" };
@@ -530,6 +596,7 @@ export function assertAveHomePrivacyForConfinement(): void {
 /** Test teardown only; production seals the result during boot. */
 export function _resetAveHomePrivacyForTest(): void {
   refusedConfigurationHome = undefined;
+  refusedConfigurationCommitted = undefined;
   verifiedConfigurationIdentities.clear();
   configurationHomes.clear();
   committedConfigurationHomes.clear();
@@ -537,6 +604,59 @@ export function _resetAveHomePrivacyForTest(): void {
   bootHomePrivacy = undefined;
   extensionsWithoutIsolationApproved = false;
   reportPrivacyRefusal = undefined;
+}
+
+/** Injected for tests; production uses the real filesystem and the native helper. */
+export interface AveHomeCreateRuntime {
+  platform: NodeJS.Platform;
+  exists(path: string): boolean;
+  create(home: string): void;
+}
+
+const DEFAULT_CREATE_RUNTIME: AveHomeCreateRuntime = {
+  platform: process.platform,
+  exists: (path) => { try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } },
+  create: (home) => {
+    mkdirSync(dirname(home), { recursive: true });
+    const { file, args, options } = windowsHomeCreateRequest(home);
+    runWindowsNative(() => execFileSync(file, args, options));
+  },
+};
+
+/**
+ * The pre-lock phase, run by every process start before the host-instance lock: on Windows, if AVE_HOME does not exist yet, the
+ * protection helper creates it with the owner-only descriptor and reads RootSafe back. Nothing else: no subdirectory repair, no
+ * runtime-root claim, no root repair and no sealed boot result. Those run only in bootstrap() under the lock, where a second
+ * instance cannot race a rename. A plain mkdir here would leave an inherited DACL that the later create-or-open keeps and RootSafe
+ * refuses for good. A home that exists is not touched, so later starts spawn nothing. POSIX keeps creating the home with mode 0700
+ * through the caller's mkdir.
+ */
+export function createAveHomeIfAbsent(home = aveHome(), runtime: AveHomeCreateRuntime = DEFAULT_CREATE_RUNTIME): "created" | "exists" | "not-applicable" {
+  if (runtime.platform !== "win32") return "not-applicable";
+  if (runtime.exists(home)) return "exists";
+  runtime.create(home);
+  return "created";
+}
+
+/** Create-only: OpenHome with the create disposition and the owner-only descriptor, then a read-only RootSafe check. */
+function windowsHomeCreateRequest(home: string) {
+  const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
+    $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
+    $elevated = ([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
+    Add-Type -TypeDefinition @'
+${WINDOWS_HOME_BOUNDARY_SOURCE}
+'@;
+    $homeHandle = [HomeDirectoryDacl]::OpenHome($request.home, $identity.User, $true);
+    try {
+      if (-not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($homeHandle), $identity.User, $elevated, $request.readOnlyRights)) { throw 'Home protection is unverified after create' }
+    } finally { $homeHandle.Dispose() }`;
+  const bootstrap = "$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))";
+  return { file: win32SystemBinary("WindowsPowerShell/v1.0/powershell"), args: [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
+  ], options: { input: script, encoding: "utf-8" as const, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+    timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+    env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({ home, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) } };
 }
 
 /** Windows needs an explicit owner-only inheritable DACL; report failure so confinement refuses unprotected storage. */
@@ -593,10 +713,11 @@ export function ensureAveHomePrivate(
       if (descriptor.ownerSid !== sid && !(descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544")) {
         return { enforcement: "none", home, failedPath: path, category: "invalid-owner-grant", reason: "Directory is owned by another account" };
       }
-      const extraPrincipals = [...new Map(descriptor.rules
-        .filter((rule) => rule.sid !== sid && (path !== home || rule.accessControlType !== 0 ||
-          (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_ROOT_READ_ONLY_RIGHTS) !== 0))
-        .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}) }])).values()];
+      const rules = descriptor.rules;
+      const extraPrincipals = [...new Map(rules
+        .filter((rule) => rule.sid !== sid && (path !== home || !isWindowsHomeRootForeignTraversal(rule)))
+        .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}),
+          ...(rules.some((entry) => entry.sid === sid && !entry.isInherited) ? { explicit: true as const } : {}) }])).values()];
       if (extraPrincipals.length > 0) {
         return { enforcement: "none", home, failedPath: path, category: "extra-principals", extraPrincipals,
           reason: "Remove the extra principal entries or move AVE_HOME" };
@@ -615,6 +736,20 @@ export function ensureAveHomePrivate(
       diagnostics.push(...descriptor.cleanupWarnings ?? []);
     }
     if (!sid) throw new Error("Current account SID read-back missing");
+    const homeEntry = descriptors.find((entry) => entry.path === home);
+    if (homeEntry?.workspaceState === "rewritten") diagnostics.push('Directory "workspace" re-inherited from the protected root');
+    if (homeEntry?.workspaceState === "unavailable") diagnostics.push('Directory "workspace" could not be opened to check its inheritance');
+    if (homeEntry?.workspaceLink) diagnostics.push('Directory "workspace" is a link or junction; its entries were not checked');
+    const workspaceRules = homeEntry?.workspaceRules ?? [];
+    const workspaceWriters = workspaceRules.filter((rule) => isWindowsWorkspaceForeignWriter(rule, sid));
+    if (workspaceWriters.length > 0) {
+      const extraPrincipals = [...new Map(workspaceWriters.map(({ sid: writer, account }) => [writer, { sid: writer, ...(account ? { account } : {}),
+        ...(workspaceWriters.some((entry) => entry.sid === writer && !entry.isInherited) ? { explicit: true as const } : {}) }])).values()];
+      return { enforcement: "none", home, failedPath: join(home, "workspace"), category: "workspace-extra-principals", extraPrincipals,
+        reason: "Another account can write to the workspace", ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
+    }
+    const workspaceReaders = workspaceRules.filter((rule) => rule.sid !== sid && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid));
+    if (workspaceReaders.length > 0) diagnostics.push(`Directory "workspace" has foreign read-only access: ${[...new Set(workspaceReaders.map((rule) => rule.sid))].join(", ")}`);
     return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   } catch (err) {
     return { enforcement: "none", home, failedPath: path, category, reason: (err as Error).message,

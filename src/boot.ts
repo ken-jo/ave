@@ -183,6 +183,8 @@ export async function bootstrap(
   await setupNetworkFetch(ctx);
 
   // Create protected storage boundaries before any feature writes.
+  // Under the host-instance lock: the full protection (subdirectory repair, runtime-root claim, the narrow root repair) and the
+  // sealed result. The pre-lock phase (createAveHomeIfAbsent, in ensureWorkspaceCwd) only ever creates a missing home.
   const homePrivacy = ensureAveHomePrivate();
   setAveHomePrivacyAtBoot(homePrivacy);
   if (homePrivacy.enforcement !== "posix-mode") {

@@ -2,6 +2,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import {
   classifyMultiplexedMessage,
@@ -104,7 +105,7 @@ export class PluginChildTerminationUnverifiedError extends Error {
   readonly code = "plugin-child-termination-unverified";
 
   constructor(pluginId: string, options: ErrorOptions) {
-    super(`Plugin child termination is unverified: ${pluginId}`, options);
+    super(t("be_pluginChildTransport.terminationUnverified", { pluginId, code: "plugin-child-termination-unverified" }), options);
     this.name = "PluginChildTerminationUnverifiedError";
   }
 }

@@ -2710,6 +2710,50 @@ in its directory.
 - **Settings.** Permissions shows the substrate chosen for shells and
   extensions, the MXC unavailable reason with the Windows build, the Bash
   limit, the DNS channel, and that extensions share one proxy identity.
+- **Extension disclosure (row 6).** The Permissions card renders the
+  extension state from `SandboxWindowsSubstrateInfo.extensionPlan`, never from
+  `extensions` alone: `checking` and `rejected` say starts are refused and that
+  nothing runs unconfined; `fallback` names srt-win 0.0.80 under one shared
+  account and its reason; `unavailable` and `off` say extensions are not
+  confined. Every closed reason maps to a catalog key. A ready MXC plan is
+  described as a selection, not proof that a process runs contained (a
+  plugin's Doctor card shows its own `windows-mxc` confinement, labelled
+  "Windows container (MXC)"). Only that selection lists what a container does
+  not hide or block: egress only through the holder's own proxy endpoint, whose
+  owner Windows does not verify (D2); loopback requested in both directions,
+  inbound left to Windows Firewall, DNS through the host resolver; untrusted
+  windows with clipboard and input injection off (D3); ancestor
+  query/enumerate grants that expose names and metadata, cascading into nested
+  folders, including profile and `AVE_HOME` sibling names and other plugin IDs
+  (peer-measured `descendantEnumeration: visible`); the effective temp in the
+  AppContainer profile under the staging home; DLL search from cwd/PATH and
+  holder-writable folders that the host does not harden; Bash hooks refused in
+  a container (D4); `NODE_OPTIONS`/`NODE_PATH` configurations refused; and the
+  binary MCP reviewer marker that does not name the backend. The chat input's
+  sandbox badge adds an extension warning when extension confinement was
+  requested and the plan is not `ready`, even while shells are healthy; it
+  shows nothing for a ready or unrequested plan. Holder and lifecycle refusals
+  (`executable-not-admissible`, `holder-workspace-busy`, `bash-incompatible`,
+  `holder-environment-refused`, `holder-quarantined`,
+  `worker-transport-unsupported`, `native-entry-required`,
+  `extension-readiness-refused`, `plugin-child-termination-unverified`,
+  `plugin-lifecycle-quarantined`, and the hook's `hook-settle-deadline` and
+  `hook-termination-unverified`) are localized on the host and end with their
+  stable code. Hook denies and MCP rows carry that text. A plugin's Doctor
+  detail carries it when the refusal is raised by the factory that admits and
+  spawns the child (`native-entry-required`, `worker-transport-unsupported`,
+  `extension-readiness-refused`, `plugin-child-termination-unverified`); other
+  factory and start errors keep the generic Doctor text, since a start failure
+  is a child RPC error and may carry paths. A quarantined MCP server's row
+  (`McpServerState.containedQuarantined`) says reconnect is blocked until Ave
+  restarts. A quarantined plugin's card (`lifecycleQuarantined`) says it cannot
+  restart until Ave restarts, and adds that its contained process keeps the
+  folder access it started with only when `grantsRetained` is true, i.e. a
+  quarantined sandbox grant incarnation is still registered (stop, drain and
+  startup quarantines hold no quarantined grant incarnation). A folder removal whose revocation did not
+  finish (`cleanupPending`) reports that as status text, never a confirmation,
+  because the user performed the removal. The MCP tab re-reads server state
+  when the window regains focus or becomes visible.
 
 Not covered: plugin workers stay on srt-win. MXC's proxy mode forbids direct
 egress rules, so a loopback worker channel cannot reach a container; host
@@ -2853,6 +2897,76 @@ with its own owner rule:
   `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
   `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
   `OBJ_DONT_REPARSE` relative to a pinned directory handle.
+  The helper is the first creator of the home. A plain `mkdir` would leave an
+  inherited DACL, which the helper's create-or-open keeps and RootSafe refuses.
+  Mutation and repair happen only under the host-instance lock.
+  Every process start runs `createAveHomeIfAbsent` in `ensureWorkspaceCwd`, its
+  first home write, before the lock. If the home is missing, that step only
+  creates it, with the owner-only descriptor, then reads RootSafe back.
+  It does no repair and no runtime-root claim, and it seals nothing.
+  An existing home spawns nothing. If the create fails, the start writes nothing
+  under AVE_HOME. It anchors cwd, which is the default workspace root, in a fresh
+  empty `ave-workspace-*` directory under the OS temp directory. That is never the
+  temp root itself and never AVE_HOME. mkdtemp inherits what the temp directory
+  grants, so the start verifies the directory with the same private-temp check
+  as the scratch directory (`verifyPrivateTempDir`): a real directory, not a
+  link, owned by this account and, off Windows, closed to other accounts. On
+  Windows that check relies on the per-user temp DACL, as the scratch directory
+  does. If the check fails, the start refuses with a configuration error and
+  never runs with a foreign-writable workspace. On exit the directory is removed
+  only while it is still empty, never recursively. Boot then degrades as for any
+  home failure.
+  `bootstrap()`, under the lock, runs the full protection and seals the result.
+  Under the lock, a root is repaired only in one narrow shape: the shape a plain
+  mkdir under a profile left before homes were created this way. The repair sets
+  `D:P(A;OICI;FA;;;<user>)` on the pinned home handle and verifies it through the
+  unchanged RootSafe and OwnerOnly checks. Every one of these must hold:
+  - the root is owned by the token user (an Administrators-owned root never
+    qualifies, even elevated)
+  - it is not a link
+  - its DACL is unprotected
+  - every non-owner entry is inherited, and is for SYSTEM or Administrators
+    (an inherited Users, Authenticated Users, Everyone, CREATOR OWNER, domain
+    group or other-user entry is refused)
+  - the user has an entry
+  The root repair writes only the root's own DACL, with
+  NtSetSecurityObject, which reaches no child. SetSecurityInfo, used before,
+  also propagated into existing children. In native run 4 that propagation
+  turned the workspace's stale inherited SYSTEM and Administrators entries
+  into explicit ones, before any other writer ran. Existing children keep
+  their stale inherited SYSTEM, Administrators and user entries. Ave leaves
+  them: only those two principals can remain, and they hold backup and
+  take-ownership rights over the volume anyway. A tree walk would cost boot
+  time in proportion to the home's size. The boundary subdirectories are
+  protected and checked on every boot by Repair and OwnerOnly. The one
+  exception is `workspace`: the cwd, the default workspace root and the
+  in-project auto-write scope.
+  Every boot whose root passes RootSafe checks the workspace on a no-reparse
+  handle, whether or not that boot repaired the root. The workspace is the
+  process's own cwd, so the handle is opened for READ_CONTROL, WRITE_DAC,
+  read-attributes and SYNCHRONIZE with full sharing. A request that could
+  include DELETE is a sharing violation against the cwd handle. A
+  workspace that cannot be opened is reported as a diagnostic, never
+  treated as clean. If its inherited
+  entries are anything other than the single user entry a protected root
+  passes down, Ave rewrites only that directory's own DACL: its explicit
+  entries in order, then that entry. It then reads the result back.
+  Because the check runs on every boot, a boot whose rewrite failed is
+  retried. That boot was refused with no repairs, and the root may already
+  be `D:P` owner-only. The same holds when the request times out.
+  A link, a protected DACL, a foreign owner, or a workspace that cannot be
+  opened or read is left as it is. A write that fails, or a read-back that
+  does not match, refuses the boot.
+  After protection, the workspace's own entries are read. An explicit or
+  inherited allow that grants write to any principal other than the user,
+  SYSTEM or Administrators is a workspace extra principal. The boot is
+  refused, and Settings names the principal and shows `icacls
+  "<workspace>" /remove *<sid>` for each explicit one. The command does not
+  drop the workspace's inheritance. A foreign read-only entry is reported
+  as a diagnostic only.
+  Any other root is refused. Settings then shows the exact `icacls` command. It
+  drops inheritance, then removes every grant and deny of each explicit extra
+  principal (`/remove *<sid>`).
   The boundary list is checked against the sensitive-path table. Permission
   settings, user policy and legacy root secrets migrate into `config` by
   copying into a fresh staged file, publishing it inside the protected directory,
@@ -2861,7 +2975,16 @@ with its own owner rule:
   The holder of the shared host-instance lock migrates, whether desktop or
   headless. Execution-mode and child processes without that lock only resolve
   the current on-disk layout.
-  A refused home stays root-only, without migration.
+  A refused home is never migrated, and its root is not trusted. If an
+  earlier verified boot committed `config/`, the refused boot keeps reading
+  and writing there. Each access verifies `config/`'s own protected
+  owner-only DACL, never the root's, so the committed policy still applies,
+  and boot reaches the privacy refusal and its fix command. Before this,
+  reading the root found nothing and the configuration error stopped boot
+  (native run 4). A marker with invalid content is refused. A home that
+  never committed `config/` stays root-only. The first read in a run
+  decides the location, and the run keeps it, so a marker that appears
+  later in a refused home never moves its configuration.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's
@@ -2918,11 +3041,15 @@ with its own owner rule:
   rewritten, and its children are never inspected. Traverse bypass does
   not grant access through a child's own protected DACL, so a foreign
   read grant on the root cannot open a boundary.
-  The root retains its protected user FullControl rule. Foreign root
-  grants contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
-  (`0x1200a9`, including SYNCHRONIZE) emit diagnostics without disabling
-  confinement. Any write, delete, WRITE_DAC, WRITE_OWNER or other wider
-  right refuses confinement before boundary repair.
+  The root retains its protected user FullControl rule. A foreign root
+  allow contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
+  (`0x1200a9`, including SYNCHRONIZE) that applies to the root alone (no
+  object or container inheritance) emits a diagnostic without disabling
+  confinement; that is the traversal case. An inheritable foreign entry of
+  any rights would flow into every unprotected child (workspace, logs,
+  extension data), so it is an extra principal. The refusal names it and the
+  `icacls` command removes it. Any write, delete, WRITE_DAC, WRITE_OWNER or
+  other wider right refuses confinement before boundary repair.
   A nonconforming boundary is renamed to `<name>.unprotected-recovery`,
   replaced with a freshly protected directory, and copied without carrying
   its ACLs or read-only attributes. Links and junctions are skipped and logged.

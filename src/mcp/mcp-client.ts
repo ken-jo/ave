@@ -1135,7 +1135,9 @@ export class McpClient {
 
   /** 서버 상태 조회 */
   getState(): McpServerState {
-    return { ...this.state };
+    // A server id quarantined by an unverified contained termination stays refused until restart; the row says so before
+    // any reconnect attempt surfaces the refusal.
+    return quarantinedContainedMcpServers.has(this.config.id) ? { ...this.state, containedQuarantined: true } : { ...this.state };
   }
 
   /** Enforce ui:// in main before app-resource requests; renderer checks and method-level governance cannot distinguish this path from core reads. */

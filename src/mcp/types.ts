@@ -291,6 +291,8 @@ export interface McpServerState {
   authError?: McpAuthErrorCode;
   connectedAt?: string;
   lastError?: string;
+  /** The server's previous contained process could not be confirmed stopped; reconnect is refused until the host restarts. */
+  containedQuarantined?: true;
   registeredTools: string[];
   /** Prompts declared by the server (only when it advertised + was approved for the `prompts` capability). */
   prompts?: McpPromptSummary[];
