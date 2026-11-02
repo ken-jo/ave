@@ -116,11 +116,6 @@ export class FramedMessageStream {
     this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 
-  /** Bytes queued on the output and not yet taken by the peer. */
-  get queuedBytes(): number {
-    return this.output.writableLength;
-  }
-
   /** If the output needs to drain, call `ready` once it has (or closed) and return true; otherwise return false. */
   whenDrained(ready: () => void): boolean {
     if (this.violated || !this.output.writableNeedDrain || this.output.destroyed) return false;

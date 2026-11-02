@@ -121,7 +121,7 @@ async function createServiceHarness(
   hostApi: Partial<PluginHostApi> = {},
   manifest: PluginManifest = MANIFEST,
   onMalformedCredentialSelector?: () => void,
-  pacing: Pick<ChildNotificationSink, "backlogBytes" | "whenDrained"> = {},
+  pacing: Pick<ChildNotificationSink, "whenDrained"> = {},
 ): Promise<ServiceHarness> {
   const requests: HostApiRequest[] = [];
   const notifications: HostApiNotification[] = [];
@@ -1338,7 +1338,7 @@ function stdioControl(worker: SpawnedPluginWorker): StdioControlPluginWorker {
 }
 
 describe("a worker's relayed output is paced by the child's wire", () => {
-  const CHUNK = "x".repeat(1024 * 1024);
+  const MIB = 1024 * 1024;
 
   function flowSpy(): WorkerOutputFlow & { readonly calls: string[] } {
     const calls: string[] = [];
@@ -1350,6 +1350,51 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     };
   }
 
+  /** A child wire that takes nothing until released, so its queue holds whatever is written to it. */
+  function stalledWire(): { wire: Writable; release: () => Promise<void>; stall: () => void } {
+    const callbacks: Array<() => void> = [];
+    let flowing = false;
+    const wire = new Writable({
+      highWaterMark: MIB,
+      write(_chunk, _encoding, callback) {
+        if (flowing) callback();
+        else callbacks.push(callback);
+      },
+    });
+    return {
+      wire,
+      release: async () => {
+        flowing = true;
+        for (const callback of callbacks.splice(0)) callback();
+        for (let turn = 0; turn < 100 && wire.writableLength > 0; turn += 1) await settle();
+      },
+      stall: () => {
+        flowing = false;
+      },
+    };
+  }
+
+  function pacingOf(wire: Writable): Pick<ChildNotificationSink, "whenDrained"> {
+    return {
+      whenDrained: (ready) => {
+        if (!wire.writableNeedDrain) return false;
+        wire.once("drain", ready);
+        return true;
+      },
+    };
+  }
+
+  /** Move every frame the harness sink records onto the wire as it is recorded. */
+  function feed(harness: ServiceHarness, wire: Writable): void {
+    harness.pushed.length = 0;
+    const record = harness.pushed.push.bind(harness.pushed);
+    harness.pushed.push = (...frames) => {
+      const count = record(...frames);
+      for (const frame of harness.pushed.splice(0)) wire.write(JSON.stringify(frame));
+      return count;
+    };
+  }
+
   it("pauses the worker while the wire must drain, once, and resumes it on drain", async () => {
     const worker = makeFakeWorker();
     const flow = flowSpy();
@@ -1357,7 +1402,6 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     let congested = false;
     let drained: (() => void) | undefined;
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, {
-      backlogBytes: () => 0,
       whenDrained: (ready) => {
         if (!congested) return false;
         drained = ready;
@@ -1375,33 +1419,68 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     expect(flow.calls).toEqual(["pause", "resume"]);
   });
 
-  it("ends the incarnation as output-overflow once the backlog passes the bound, or stops a worker it cannot pace", async () => {
-    const paced = makeFakeWorker();
+  it("pauses, never ends, a healthy worker when other traffic has filled the channel past the relay bound", async () => {
+    const worker = makeFakeWorker();
     const flow = flowSpy();
-    registerWorkerOutputFlow(paced, flow);
-    let backlog = 0;
-    const pacing = { backlogBytes: () => backlog, whenDrained: () => false };
-    const harness = await createServiceHarness({ spawnWorker: async () => paced }, MANIFEST, undefined, pacing);
+    registerWorkerOutputFlow(worker, flow);
+    const { wire, release } = stalledWire();
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
-    backlog = WORKER_RELAY_BACKLOG_BYTES_MAX;
-    paced.emitStdout("at the bound");
-    expect(flow.calls).toEqual([]);
-    backlog = WORKER_RELAY_BACKLOG_BYTES_MAX + 1;
-    paced.emitStdout("past the bound");
-    expect(flow.calls).toEqual(["end:output-overflow"]);
+    feed(harness, wire);
+    // A large tool result or two egress responses share the plugin's channel with the worker.
+    for (let index = 0; index < 3; index += 1) wire.write("x".repeat(14 * MIB));
+    expect(wire.writableLength).toBeGreaterThan(WORKER_RELAY_BACKLOG_BYTES_MAX);
+    worker.emitStderr("one log line\n");
+    expect(flow.calls).toEqual(["pause"]);
+    expect(worker.stopped()).toBe(0);
+    await release();
+    expect(flow.calls).toEqual(["pause", "resume"]);
+  });
 
-    const unpaced = makeFakeWorker();
-    backlog = 0;
-    const second = await createServiceHarness({ spawnWorker: async () => unpaced }, MANIFEST, undefined, pacing);
-    await second.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
-    backlog = WORKER_RELAY_BACKLOG_BYTES_MAX + 1;
-    unpaced.emitStdout("past the bound");
-    expect(unpaced.stopped()).toBe(1);
+  it("ends the incarnation as output-overflow once the worker's own undelivered bytes pass the bound, counting from the last drain", async () => {
+    const worker = makeFakeWorker();
+    const flow = flowSpy();
+    registerWorkerOutputFlow(worker, flow);
+    const { wire, release, stall } = stalledWire();
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    feed(harness, wire);
+    const chunk = "x".repeat(12 * MIB);
+    worker.emitStdout(chunk);
+    worker.emitStdout(chunk);
+    await release();
+    expect(flow.calls).toEqual(["pause", "resume"]);
+    // The wire drained, so what the worker pushed before no longer counts toward the bound.
+    stall();
+    worker.emitStdout(chunk);
+    worker.emitStdout(chunk);
+    expect(flow.calls).toEqual(["pause", "resume", "pause"]);
+    worker.emitStdout(chunk);
+    expect(flow.calls).toEqual(["pause", "resume", "pause", "end:output-overflow"]);
+  });
+
+  it("stops a handle it cannot pace once the worker's own undelivered bytes pass the bound", async () => {
+    const worker = makeFakeWorker();
+    let drained: (() => void) | undefined;
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, {
+      whenDrained: (ready) => {
+        drained = ready;
+        return true;
+      },
+    });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    const chunk = "x".repeat(12 * MIB);
+    worker.emitStdout(chunk);
+    worker.emitStdout(chunk);
+    expect(worker.stopped()).toBe(0);
+    worker.emitStdout(chunk);
+    expect(worker.stopped()).toBe(1);
+    expect(drained).toBeDefined();
   });
 
   it("keeps a fast worker under the bound against a slow child, delivering everything", async () => {
     const wire = new Writable({
-      highWaterMark: 1024 * 1024,
+      highWaterMark: MIB,
       write(_chunk, _encoding, callback) {
         setImmediate(callback);
       },
@@ -1413,10 +1492,12 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     let maxBacklog = 0;
     const ends: string[] = [];
     const worker = makeFakeWorker();
+    const chunk = "x".repeat(MIB);
     const pump = (): void => {
       while (!paused && produced < 64) {
         produced += 1;
-        worker.emitStdout(CHUNK);
+        worker.emitStdout(chunk);
+        maxBacklog = Math.max(maxBacklog, wire.writableLength);
       }
     };
     registerWorkerOutputFlow(worker, {
@@ -1431,28 +1512,8 @@ describe("a worker's relayed output is paced by the child's wire", () => {
       },
       end: (reason) => void ends.push(reason),
     });
-    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, {
-      backlogBytes: () => {
-        maxBacklog = Math.max(maxBacklog, wire.writableLength);
-        return wire.writableLength;
-      },
-      whenDrained: (ready) => {
-        if (!wire.writableNeedDrain) return false;
-        wire.once("drain", ready);
-        return true;
-      },
-    });
-    harness.pushed.length = 0;
-    const deliverToWire = (): void => {
-      for (const frame of harness.pushed.splice(0)) wire.write(JSON.stringify(frame));
-    };
-    // The harness sink records frames; move each to the slow wire as soon as it is recorded.
-    const recorded = harness.pushed.push.bind(harness.pushed);
-    harness.pushed.push = (...frames) => {
-      const count = recorded(...frames);
-      deliverToWire();
-      return count;
-    };
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
+    feed(harness, wire);
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
     pump();
     for (let turn = 0; turn < 2_000 && (produced < 64 || wire.writableLength > 0); turn += 1) await settle();

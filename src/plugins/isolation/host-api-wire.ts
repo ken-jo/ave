@@ -736,8 +736,6 @@ export interface HostApiChannel {
 /** The host's half: where host-originated notifications go. */
 export interface ChildNotificationSink {
   deliver(notification: HostApiNotification): void;
-  /** Bytes written toward the child and not yet taken by its pipe. Absent where delivery is synchronous. */
-  backlogBytes?(): number;
   /** If the wire to the child must drain first, call `ready` once it has (or closed) and return true; otherwise return false and never call it. */
   whenDrained?(ready: () => void): boolean;
 }

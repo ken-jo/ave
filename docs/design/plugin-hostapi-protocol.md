@@ -818,9 +818,12 @@ Bounds, each enforced by the host:
   requests and notifications, wait for the plugin's handler or first listener;
   beyond either the worker stops with `output-overflow`.
 - Toward a plugin child, the relay stops reading the worker's stdout and stderr
-  while the child's wire must drain and resumes once it has, so a worker that writes
-  faster than its plugin reads blocks on its own pipe. If the queue toward the child
-  still passes 2 × (16 MiB + 1) bytes, the incarnation ends with `output-overflow`.
+  whenever the child's wire must drain, whatever filled it, and resumes once it has,
+  so a worker that writes faster than its plugin reads blocks on its own pipe. The
+  wire's own queue bound covers the channel as a whole. The relay bounds only what
+  this worker pushed since the wire last drained: past 2 × (16 MiB + 1) bytes the
+  incarnation ends with `output-overflow`. A handle the host cannot pace (one it did
+  not produce itself) is stopped instead, with reason `stopped`.
 
 A listener the plugin registered that throws is logged; it never surfaces as an
 uncaught exception in the host. The worker is stopped, with the exit reason named,
@@ -831,7 +834,7 @@ when it breaks these rules:
 | `exited` | the worker exited by itself |
 | `stopped` | the plugin or the host stopped it |
 | `control-violation` | a line that is not a frame, a malformed frame, a reserved or invalid method, a duplicate or unknown id |
-| `output-overflow` | an output-only worker filled the pre-listener buffer, or too many notifications waited for a listener |
+| `output-overflow` | an output-only worker filled the pre-listener buffer, too many notifications or bytes waited for the plugin, or the worker pushed more than the relay bound toward a child that had not drained |
 
 Pending calls of an incarnation that ends reject with `worker-incarnation-ended`.
 Nothing is replayed: the host ends the incarnation and the plugin decides whether

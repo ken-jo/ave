@@ -137,8 +137,6 @@ export interface SubscriptionScope<Event = unknown> {
   shutdown(subscriptionId: string): Promise<void>;
   /** Route `notifications/ave/subscription/send` for this registration to `receive` until it closes. */
   accept(subscriptionId: string, receive: (payload: unknown) => void): void;
-  /** Bytes queued toward the child, where the wire can report them. */
-  backlogBytes(): number | undefined;
   /** See {@link ChildNotificationSink.whenDrained}; false where the wire cannot pace. */
   whenDrained(ready: () => void): boolean;
 }
@@ -899,9 +897,16 @@ function relayStdioControlWorker(
   });
 }
 
-/** Bytes a worker's relayed traffic may leave queued toward the child before its incarnation ends: two maximal worker
- * frames, well under the wire's own bound, so a flooding worker ends before it can end its plugin's whole channel. */
+/** Bytes one worker's relay may push toward the child while the child's wire has not drained, before its incarnation
+ * ends: two maximal worker frames, well under the wire's own bound, so a flooding worker ends before it can end its
+ * plugin's whole channel. Traffic from elsewhere on the channel does not count. */
 export const WORKER_RELAY_BACKLOG_BYTES_MAX = 2 * (WORKER_CONTROL_FRAME_BYTES_MAX + 1);
+
+/** Approximate size of a relayed event on the wire: the chunk for output, the JSON text otherwise. */
+function relayedBytesOf(payload: WireWorkerEvent): number {
+  if (payload.kind === "stdout" || payload.kind === "stderr") return payload.chunk.length;
+  return JSON.stringify(payload).length;
+}
 
 /** Worker handles carry IDs and notifications; the host retains process ownership. */
 function spawnWorkerPath(
@@ -919,34 +924,40 @@ function spawnWorkerPath(
       // Never signal an already-reaped PID; it may belong to another process.
       if (!exited) worker.stop();
     });
-    // Pace the worker against the child's wire: while it must drain, the worker's output pipes are not read, so the
-    // worker blocks on its own writes instead of the host buffering for it. A worker the relay cannot pause, or a backlog
-    // that grows past the bound anyway, ends the incarnation with `output-overflow`.
+    // Pace the worker against the child's wire: whenever the wire must drain, whoever filled it, the worker's output pipes
+    // are not read, so the worker blocks on its own writes instead of the host buffering for it. The channel as a whole
+    // stays bounded by the stream's own queue limit; the relay bounds only what this worker pushed since the wire last
+    // drained, so other traffic on the channel never ends a healthy worker. Past that bound the incarnation ends with
+    // `output-overflow`; a handle the host cannot pace is stopped.
     const flow = workerOutputFlowOf(worker);
     let paused = false;
-    const regulate = (): void => {
+    let relayed = 0;
+    const regulate = (bytes: number): void => {
       if (!live || exited) return;
-      const backlog = scope.backlogBytes();
-      if (backlog !== undefined && backlog > WORKER_RELAY_BACKLOG_BYTES_MAX) {
+      relayed += bytes;
+      if (!paused) {
+        const deferred = scope.whenDrained(() => {
+          paused = false;
+          relayed = 0;
+          if (live && !exited) flow?.resume();
+        });
+        if (!deferred) {
+          relayed = 0;
+          return;
+        }
+        paused = true;
+        flow?.pause();
+      }
+      if (relayed > WORKER_RELAY_BACKLOG_BYTES_MAX) {
         if (flow) flow.end("output-overflow");
         else worker.stop();
-        return;
-      }
-      if (!flow || paused) return;
-      const deferred = scope.whenDrained(() => {
-        paused = false;
-        if (live && !exited) flow.resume();
-      });
-      if (deferred) {
-        paused = true;
-        flow.pause();
       }
     };
     // Stop notifications at release to tolerate chunks arriving while worker pipes drain.
     const push = (payload: WireWorkerEvent): void => {
       if (!live) return;
       scope.deliver(handleId, payload);
-      if (payload.kind !== "exit") regulate();
+      if (payload.kind !== "exit") regulate(relayedBytesOf(payload));
     };
     try {
       if (worker.control === "output-only-v1") {
@@ -1833,7 +1844,6 @@ export class HostApiDispatcher {
         }
         this.receivers.set(subscriptionId, receive);
       },
-      backlogBytes: () => this.options.notifications.backlogBytes?.(),
       whenDrained: (ready) => this.options.notifications.whenDrained?.(ready) ?? false,
       deliver: (subscriptionId, payload) => {
         if (!this.subscriptions.get(subscriptionId)) {
