@@ -231,6 +231,26 @@ function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["home
   }
 }
 
+/** The fix for each AVE_HOME privacy failure, or null where the cause text already says what to do. */
+const HOME_PRIVACY_FIX_KEY = {
+  "directory-failed": "permissionsTab.homePrivacyFixDirectory",
+  "system-root-missing": "permissionsTab.homePrivacyFixSystemRoot",
+  "identity-failed": "permissionsTab.homePrivacyFixIdentity",
+  "icacls-failed": "permissionsTab.homePrivacyFixPermissions",
+  "read-back-failed": "permissionsTab.homePrivacyFixPermissions",
+  "not-protected": "permissionsTab.homePrivacyFixPermissions",
+  "invalid-owner-grant": "permissionsTab.homePrivacyFixPermissions",
+  "owner-claim-failed": null,
+  "reparse-point": "permissionsTab.homePrivacyFixReparsePoint",
+  "extra-principals": null,
+} as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;
+
+/** `sentence` followed by the category's own fix, when the cause text does not already carry one. */
+function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
+  const fix = HOME_PRIVACY_FIX_KEY[error.category];
+  return fix === null ? sentence : `${sentence} ${t(fix)}`;
+}
+
 function WindowsExtensionStatus({ substrate }: { substrate: SandboxWindowsSubstrateInfo }) {
   const { t } = useTranslation();
   const plan = substrate.extensionPlan;
@@ -494,23 +514,42 @@ export function PermissionsTab({
   // banner instead. Replacing loaded content with a loading or error line would collapse the scroll container and lose the user's place.
   const loadedReadsRef = useRef(new Set<PanelLoad>());
 
+  // A refresh that failed after an earlier success leaves last-known values on screen; the section says so beside them.
+  const [staleReads, setStaleReads] = useState<ReadonlySet<PanelLoad>>(() => new Set());
+
+  const settle = useCallback(async <T,>(load: PanelLoad, read: () => Promise<T>, apply: (value: T) => void): Promise<void> => {
+    try {
+      apply(await read());
+      loadedReadsRef.current.add(load);
+      setPanelLoad((prev) => ({ ...prev, [load]: "ready" }));
+      setStaleReads((prev) => { if (!prev.has(load)) return prev; const next = new Set(prev); next.delete(load); return next; });
+    } catch (e) {
+      // The read and the error class: a host refusal crosses IPC inside the message (for example AveHomeConfigurationUntrustedError).
+      console.warn("[ave] permissions: load failed:", load, e instanceof Error ? e.name : typeof e, errorMessage(e));
+      if (loadedReadsRef.current.has(load)) {
+        showBanner("error", t("permissionsTab.errorLoadFailed"));
+        setStaleReads((prev) => new Set(prev).add(load));
+      } else {
+        setPanelLoad((prev) => ({ ...prev, [load]: "failed" }));
+      }
+    }
+  }, [showBanner]);
+
+  const readDirectories = useCallback(() => {
+    if (!loadedReadsRef.current.has("directories")) setPanelLoad((prev) => ({ ...prev, directories: "pending" }));
+    return settle("directories", () => window.ave.permission.dirDispatch("list"), (dirRes) => {
+      if (!dirRes.ok) throw new Error(dirRes.error);
+      if (dirRes.verb !== "list") throw new Error(`unexpected directory reply '${dirRes.verb}'`);
+      setDirectories(dirRes.userAdditions);
+    });
+  }, [settle]);
+
   const fetchAll = useCallback(async () => {
     setPanelLoad((prev) => {
       const next = { ...prev };
       for (const load of PANEL_LOADS) if (!loadedReadsRef.current.has(load)) next[load] = "pending";
       return next;
     });
-    const settle = async <T,>(load: PanelLoad, read: () => Promise<T>, apply: (value: T) => void): Promise<void> => {
-      try {
-        apply(await read());
-        loadedReadsRef.current.add(load);
-        setPanelLoad((prev) => ({ ...prev, [load]: "ready" }));
-      } catch (e) {
-        console.warn("[ave] permissions: load failed:", load, errorMessage(e));
-        if (loadedReadsRef.current.has(load)) showBanner("error", t("permissionsTab.errorLoadFailed"));
-        else setPanelLoad((prev) => ({ ...prev, [load]: "failed" }));
-      }
-    };
     await Promise.all([
       settle("mode", () => window.ave.permission.getMode(), (modeRes) => {
         setMode(normalizeExecutionMode(modeRes.mode));
@@ -531,11 +570,7 @@ export function PermissionsTab({
         if (!hookTrustRes.ok) throw new Error(hookTrustRes.error ?? "hook trust list failed");
         setQuarantinedHooks(hookTrustRes.disabled);
       }),
-      settle("directories", () => window.ave.permission.dirDispatch("list"), (dirRes) => {
-        if (!dirRes.ok) throw new Error(dirRes.error);
-        if (dirRes.verb !== "list") throw new Error(`unexpected directory reply '${dirRes.verb}'`);
-        setDirectories(dirRes.userAdditions);
-      }),
+      readDirectories(),
       settle("reviewer", () => window.ave.permission.reviewerDispatch("show"), (reviewerRes) => {
         if (!reviewerRes.ok) throw new Error(reviewerRes.error);
         setReviewer(reviewerRes.settings);
@@ -547,7 +582,7 @@ export function PermissionsTab({
         setWorkerConfinementEnabled(settingsRes.features?.pluginWorkerConfinement ?? false);
       }),
     ]);
-  }, [showBanner]);
+  }, [settle, readDirectories]);
 
   /** The scoped pending/error line for a section built from `loads`, or null when every read it uses has arrived. */
   const panelLoadNotice = (scope: string, loads: readonly PanelLoad[]): ReactNode => {
@@ -573,12 +608,21 @@ export function PermissionsTab({
     );
   };
 
+  /** Beside a section whose last refresh failed after an earlier success: the values shown are the last ones loaded. */
+  const panelStaleNotice = (scope: string, loads: readonly PanelLoad[]): ReactNode =>
+    loads.some((load) => staleReads.has(load)) ? (
+      <p role="status" data-testid={`permissions-stale-${scope}`} className="text-[11px] text-warning">
+        {t("permissionsTab.sectionStale")}
+      </p>
+    ) : null;
+
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
   useEffect(() => {
     // On win32 with either setting ON (or a reported home-privacy / helper failure), surface the consent/setup state so
     // the panel persists across navigations until ready. Extension provisioning is separate from MXC shell readiness.
-    const windowsSetupRelevant = sandboxEnabled || workerConfinementEnabled ||
+    // Unread settings are not "not requested": the read-only status is fetched so the setup panel can say it is waiting on them.
+    const windowsSetupRelevant = panelLoad.settings !== "ready" || sandboxEnabled || workerConfinementEnabled ||
       sandboxCapability?.homePrivacyError !== undefined || bootReportsWindowsHelperFailure(sandboxCapability?.boot);
     if (sandboxCapability?.platform !== "win32" || !windowsSetupRelevant) {
       setWindowsStatus(null);
@@ -590,7 +634,7 @@ export function PermissionsTab({
       if (!cancelled) setWindowsStatus(status);
     }).catch(() => { /* The explicit setup action reports repair errors. */ });
     return () => { cancelled = true; };
-  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEnabled]);
+  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEnabled, panelLoad.settings]);
 
   const fetchApprovals = useCallback(async () => {
     if (!window.ave?.userApproval) return;
@@ -960,12 +1004,7 @@ export function PermissionsTab({
     }
   };
 
-  const refreshDirectories = async () => {
-    const res = await window.ave.permission.dirDispatch("list");
-    if (res.ok && res.verb === "list") {
-      setDirectories(res.userAdditions);
-    }
-  };
+  const refreshDirectories = readDirectories;
 
   const handleAddDirectory = async (acknowledgeWarnings = false) => {
     const dir = newDirectory.trim();
@@ -1036,8 +1075,12 @@ export function PermissionsTab({
   const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
+  // "Requested" needs the stored settings; until they are read, only a boot-reported helper failure can say so.
+  const settingsRead = panelLoad.settings === "ready";
   const windowsHelperRequested =
-    sandboxEnabled || workerConfinementEnabled || bootReportsWindowsHelperFailure(sandboxBoot);
+    (settingsRead && (sandboxEnabled || workerConfinementEnabled)) || bootReportsWindowsHelperFailure(sandboxBoot);
+  const windowsSetupPending = !settingsRead && !windowsHelperRequested && !windowsStatus?.homePrivacyError
+    && windowsStatus?.applicable === true && !windowsStatus.ready;
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
@@ -1054,6 +1097,7 @@ export function PermissionsTab({
           <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
           {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
           {/* The two rows read the stored settings that the panel load returns; until it has, they would state a setting nobody read. */}
+          {panelStaleNotice("os-sandbox-settings", ["settings"])}
           {settingsNotice ?? (
             <>
           <div className="flex items-start gap-3">
@@ -1164,10 +1208,10 @@ export function PermissionsTab({
                 >
                   {sandboxBoot.causes.includes("ave-home-privacy-failed")
                     ? sandboxCapability?.homePrivacyError
-                      ? t("permissionsTab.osSandboxBootDegradedHomePrivacy", {
+                      ? withHomePrivacyFix(t("permissionsTab.osSandboxBootDegradedHomePrivacy", {
                           path: sandboxCapability.homePrivacyError.path,
                           reason: homePrivacyReasonText(sandboxCapability.homePrivacyError),
-                        })
+                        }), sandboxCapability.homePrivacyError)
                       : t("permissionsTab.homePrivacyBootFailed")
                     : sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
                     ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
@@ -1254,6 +1298,7 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
+          {windowsSetupPending ? panelLoadNotice("windows-setup", ["settings"]) : null}
           {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
             windowsStatus.homePrivacyError ? (
               <div
@@ -1261,10 +1306,10 @@ export function PermissionsTab({
                 role="alert"
                 className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
               >
-                {t("permissionsTab.osSandboxWindowsHomePrivacyError", {
+                {withHomePrivacyFix(t("permissionsTab.osSandboxWindowsHomePrivacyError", {
                   path: windowsStatus.homePrivacyError.path,
                   reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
-                })}
+                }), windowsStatus.homePrivacyError)}
                 {windowsStatus.homePrivacyError.approvedForSession ? (
                   <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
                 ) : (
@@ -1428,6 +1473,7 @@ export function PermissionsTab({
 
 
         {panelLoadNotice("hooks", ["hooks"])}
+        {panelStaleNotice("hooks", ["hooks"])}
         {panelLoad.hooks === "ready" && quarantinedHooks.length > 0 && (
           <div
             data-testid="hook-quarantine-notice"
@@ -1473,6 +1519,7 @@ export function PermissionsTab({
           title={t("permissionsTab.currentPolicySummaryTitle")}
           description={t("permissionsTab.currentPolicySummaryDescription")}
         >
+          {panelStaleNotice("policy-summary", ["mode", "policy"])}
           {panelLoadNotice("policy-summary", ["mode", "policy"]) ?? (
           <>
           <div className="grid gap-2 sm:grid-cols-2">
@@ -1521,6 +1568,7 @@ export function PermissionsTab({
           title={t("permissionsTab.policyTitle")}
           description={t("permissionsTab.policyDescription")}
         >
+          {panelStaleNotice("policy", ["mode", "reviewer"])}
           {panelLoadNotice("policy", ["mode", "reviewer"]) ?? (
           <>
           <RadioGroup
@@ -1588,6 +1636,7 @@ export function PermissionsTab({
           title={t("permissionsTab.approvalDialogTitle")}
           description={t("permissionsTab.approvalDialogDescription")}
         >
+          {panelStaleNotice("approval-dialog", ["policy", "settings"])}
           {panelLoadNotice("approval-dialog", ["policy", "settings"]) ?? (
           <>
           <div className="flex items-center gap-3">
@@ -1651,6 +1700,7 @@ export function PermissionsTab({
           title={t("permissionsTab.unifiedRulesTitle")}
           description={t("permissionsTab.unifiedRulesDescription")}
         >
+          {panelStaleNotice("rules", ["rules"])}
           {panelLoadNotice("rules", ["rules"]) ?? (
           <>
           {ruleLoadErrors.length > 0 || approvalLoadError ? (
@@ -1769,6 +1819,7 @@ export function PermissionsTab({
             </Button>
           }
         >
+          {panelStaleNotice("directories", ["directories"])}
           {panelLoadNotice("directories", ["directories"]) ?? (
           <>
           {directories.length === 0 ? (
