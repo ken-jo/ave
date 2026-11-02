@@ -287,10 +287,17 @@ nesting and the lifetime registry stay row 2's.
   - The caller's roots are passed as the holder's own explicit roots, never as
     another holder's plan.
   - The executable's directory is the only added read. A configured cwd must
-    already lie inside the admitted roots and is never added to them. The default
-    cwd is the private HOME.
-  - After verified termination the staging tree is removed without following
-    links. An unverified termination keeps it.
+    already lie inside the admitted roots and is never added to them; an
+    out-of-root cwd is refused. An MCP server without a configured cwd starts
+    in its sandbox root, as on the legacy route. Only without a sandbox root
+    does the cwd default to the private HOME. Neither the host process cwd nor
+    a workspace is ever the default.
+  - The staging parent (`<AVE_HOME>\mxc-staging`) is refused if it is a link.
+  - After verified termination the staging tree is first renamed to a random
+    `retired-<opaque-id>` sibling, then removed without following links. A
+    link is unlinked itself and never chmod-ed or traversed. A file has its
+    read-only attribute cleared before it is unlinked. An unverified
+    termination keeps the tree.
 - **Executable rule.**
   - A configured command resolves through the caller's PATH, over absolute
     directories only, to a canonical `.exe`.
@@ -313,8 +320,9 @@ nesting and the lifetime registry stay row 2's.
   - Overlaps outside workspaces stay with row 2's nesting check.
 - **Bash.** A bash-form command is refused before admission with
   `MxcBashIncompatibleError`, whose plan carries reason `bash-incompatible`.
-  Bash-form means the executable basename is `bash`/`sh`, or the resolved shell
-  flavor is MSYS. Such a plan selects no fallback: a selected container boot
+  Bash-form means the executable basename is `bash`/`sh`/`git-bash`, the
+  executable lives in an MSYS `usr\bin` directory (Git for Windows' runtime
+  programs), or the resolved shell flavor is MSYS. Such a plan selects no fallback: a selected container boot
   plan offers no account-backed admission for an extension holder.
 - **Environment.** `holderEnv` carries the host-owned variables the same holder
   kind already receives on its legacy route, and nothing broader.
@@ -323,21 +331,41 @@ nesting and the lifetime registry stay row 2's.
   - These override forwarded values as they do on the legacy route. Wrapper
     proxy/trust keys and the container's profile/temp/cwd keys stay the
     wrapper's and the container's.
-  - The request validator still refuses loader overrides (`NODE_OPTIONS`,
-    `NODE_PATH`, SDK directory overrides) and a non-`1` `ELECTRON_RUN_AS_NODE`,
-    even where the legacy route would pass them.
+  - The container's base is the forwarded runtime set (`buildSafeChildEnv`:
+    `SystemRoot`, `SystemDrive`, `WINDIR`, `LOCALAPPDATA`, `COMSPEC`,
+    `PATHEXT`, …) with `holderEnv` on top. The legacy shell-style base
+    (`PATH`/`HOME`/`APPDATA`/`LANG`) is not the container's base: the request
+    builder forwards only the runtime keys, and the validator requires
+    `SYSTEMROOT` and `LOCALAPPDATA`.
+  - Loader overrides (`NODE_OPTIONS`, `NODE_PATH`, SDK directory overrides
+    `MXC_FFI_DIR`/`MXC_BIN_DIR`/`AVE_MXC_*`) and a non-`1`
+    `ELECTRON_RUN_AS_NODE` are refused by the adapter before admission, staging
+    or any native call, with `MxcHolderEnvironmentRefusedError`
+    (`holder-environment-refused`). The refusal names the keys only, never
+    their values. The request validator remains the last line of defense.
+  - Deliberate divergence from srt-win: the srt-win relay
+    (`windowsRelayLaunch` in `confined-child.ts`) keeps a configured
+    `NODE_OPTIONS` and prepends its preserve-symlinks flags. The container
+    route instead refuses any configured `NODE_OPTIONS`. A server that depends
+    on one starts on srt-win and is refused under a selected container plan;
+    row 6 discloses this.
 - **Readiness probe.** The exact-request probe is registered by the native
   release gate through `registerMxcHolderReadinessProbe`. Until then every
   holder start fails closed with `MxcCapabilityUnavailableError`.
 - **Lifetime.**
-  - MCP reports `windows-mxc` (the wrapped marker) only after a framed reply
-    crosses the native pipes, and withdraws it at close or exit.
+  - MCP reports `windows-mxc` (the wrapped marker) only after a JSON-RPC 2.0
+    response (string or number `id`, with `result` or `error`) crosses the
+    native pipes. A notification or any other frame does not set it. The marker
+    is withdrawn at close or exit.
   - A reconnect waits for the previous incarnation's release.
   - An unverified termination quarantines that server id. Its reconnect is
     refused with `MxcHolderQuarantinedError` until the host restarts; row 6 must
     disclose this.
   - A hook's timeout or cancellation disposes the container. An unverified
     termination denies the hook and keeps its lease.
+  - The hook's wait on completion is bounded by its timeout plus the
+    process-tree kill budget. Past that bound the hook is denied without
+    waiting, and the holder stays with its lifetime owner.
 
 Confined child DLL search from cwd/PATH is not host-hardened; PSEC behavior is
 native-unverified. The request forwards `PATH` (`FORWARD_ENV_KEYS`), and a Node

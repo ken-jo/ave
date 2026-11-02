@@ -126,6 +126,22 @@ test("the MCP measurement accepts initialize, call, cancel-by-disposal and a fre
   assert.equal(result.accepted, true);
 }));
 
+test("the MCP measurement is wall-clock bounded and disposes what it launched", async () => withTemp(async (temp) => {
+  const ctx = await fakeContext(temp);
+  const records = [];
+  const launch = ctx.launch;
+  ctx.launch = async (...args) => { const record = await launch(...args); records.push(record); return record; };
+  const result = await runHolderMcpProbe(ctx, 1);
+  assert.equal(result.accepted, false);
+  assert.equal(result.wallClockExpired, true);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(records.length > 0);
+  for (const record of records) {
+    assert.equal(record.disposed, true);
+    assert.equal(ctx.native.wait({ pid: record.processHandle.id }), 0);
+  }
+}));
+
 test("the hook measurement reports status and JSON per case, and is not accepted without its shell controls", async () => withTemp(async (temp) => {
   const result = await runHolderHookProbe(await fakeContext(temp));
   assert.deepEqual(result.cases.map((entry) => [entry.variant, entry.exitCode, entry.statusMatches]),

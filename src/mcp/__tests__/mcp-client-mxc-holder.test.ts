@@ -31,7 +31,7 @@ const { governanceWithPolicy, buildPolicy, stdioApproval } = await import("./tes
 const { __resetWrappedMcpServersForTest, isMcpServerWrapped } = await import("../../permissions/sandbox-capability.js");
 const { MxcHolderQuarantinedError } = await import("../../sandbox/wrap-bundled-command.js");
 const { MxcProcessCleanupError } = await import("../../permissions/mxc-extension-errors.js");
-const { FORWARD_ENV_KEYS } = await import("../../tools/safe-env.js");
+const { buildSafeChildEnv, FORWARD_ENV_KEYS } = await import("../../tools/safe-env.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 
 const REAL_PLATFORM = process.platform;
@@ -122,6 +122,27 @@ describe("contained MCP stdio server", () => {
     expect(isMcpServerWrapped("fs")).toBe(false);
   });
 
+  it("does not report confinement for a stray notification or a frame that is not a JSON-RPC 2.0 response", async () => {
+    const server = containedServer({});
+    state.holderSpawn.mockResolvedValue(server.holder);
+    const mcp = client();
+    const connecting = mcp.connect().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(server.received.length).toBeGreaterThan(0));
+    const { stdout } = server.holder.process;
+    stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info" } })}\n`);
+    stdout.write(`${JSON.stringify({ id: 999, result: {} })}\n`);
+    stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })}\n`);
+    stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 998 })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(isMcpServerWrapped("fs")).toBe(false);
+    // Control: the first real response marks it.
+    stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 997, result: {} })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(isMcpServerWrapped("fs")).toBe(true);
+    await mcp.disconnect();
+    await connecting;
+  });
+
   it("passes a configured cwd and plugin roots to the holder without widening them", async () => {
     const server = containedServer(LEGACY_HANDSHAKE);
     state.holderSpawn.mockResolvedValue(server.holder);
@@ -131,6 +152,24 @@ describe("contained MCP stdio server", () => {
       allowRead: ["C:\\ave\\plugins\\fs\\gen"], ownedReadRoots: ["C:\\ave\\plugins\\fs\\gen"],
       allowWrite: ["C:\\ave\\mcp\\fs\\sandbox", "C:\\ave\\plugins\\fs\\data"] });
     await mcp.disconnect();
+  });
+
+  it("defaults the cwd to the sandbox root, and leaves it to the private HOME only without one", async () => {
+    const server = containedServer(LEGACY_HANDSHAKE);
+    state.holderSpawn.mockResolvedValue(server.holder);
+    const rooted = client();
+    await rooted.connect();
+    await rooted.disconnect();
+    expect(state.holderSpawn.mock.calls[0]![0]).toMatchObject({ cwd: "C:\\ave\\mcp\\fs\\sandbox" });
+    const bare = containedServer(LEGACY_HANDSHAKE);
+    state.holderSpawn.mockResolvedValue(bare.holder);
+    const unrooted = client({ sandboxRoot: undefined });
+    await unrooted.connect();
+    await unrooted.disconnect();
+    const input = state.holderSpawn.mock.calls[1]![0] as Record<string, unknown>;
+    // Neither the host process cwd nor a workspace: the adapter falls back to the holder's own staging HOME.
+    expect(Object.hasOwn(input, "cwd")).toBe(false);
+    expect(input.cwd).not.toBe(process.cwd());
   });
 
   it("cancels in-flight calls on disconnect, disposes the container and never replays them", async () => {
@@ -206,7 +245,9 @@ describe("contained MCP stdio server", () => {
     const hostOwned = Object.fromEntries(Object.entries(legacy).filter(([key, value]) => value !== undefined && !forwarded.has(key.toUpperCase())));
     expect(holderInput.holderEnv).toEqual(hostOwned);
     expect(holderInput.holderEnv).toMatchObject({ FS_MODE: "ro", FS_TOKEN: "k-123" });
-    expect(holderInput.baseEnv).toEqual(legacy);
+    // The container inherits nothing, so its base is the forwarded runtime set (SystemRoot, LOCALAPPDATA, …), not the
+    // legacy shell-style base; the host-owned variables sit on top of it on both routes.
+    expect(holderInput.baseEnv).toEqual(buildSafeChildEnv(holderInput.holderEnv));
   });
 });
 

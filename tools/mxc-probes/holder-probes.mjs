@@ -80,8 +80,39 @@ function echoObservation(reply, layout) {
   };
 }
 
-/** initialize/call over native pipes; cancel by disposing with a request outstanding; reconnect as a new incarnation. */
-export async function runHolderMcpProbe(ctx) {
+/** The MCP containers are long-lived and carry no SDK timeout, so the whole measurement has a wall-clock bound. On
+ * expiry every container it launched is disposed, a later launch is disposed at once, and the result is inconclusive.
+ * A native spawn still pending at expiry cannot be disposed here; the supervisor's own deadline and cleanup own it. */
+export async function runHolderMcpProbe(ctx, wallClockMs = ctx.budgets.windowsAclHostStartupMs * 3) {
+  const launched = [];
+  let expired = false;
+  const disposeAll = () => {
+    for (const record of launched) {
+      if (record.disposed) continue;
+      try { record.processHandle.dispose(); record.disposed = true; } catch { /* recorded by the supervisor's cleanup */ }
+    }
+  };
+  const tracked = { ...ctx, async launch(...args) {
+    const record = await ctx.launch(...args);
+    launched.push(record);
+    if (expired) { disposeAll(); throw new Error("Wall-clock bound expired"); }
+    return record;
+  } };
+  let timer;
+  const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve("expired"), wallClockMs); });
+  const measurement = measureHolderMcp(tracked);
+  measurement.catch(() => {});
+  try {
+    const result = await Promise.race([measurement, deadline]);
+    if (result !== "expired") return result;
+    expired = true;
+    disposeAll();
+    return { probe: "holder-mcp-stdio", accepted: false, wallClockExpired: true, wallClockMs,
+      containersDisposed: launched.length, reason: "Wall-clock bound expired; containers disposed, result inconclusive" };
+  } finally { clearTimeout(timer); }
+}
+
+async function measureHolderMcp(ctx) {
   const payload = path.join(ctx.temp, "holder-payload.mjs");
   await copyFile(new URL("./holder-payload.mjs", import.meta.url), payload);
   const runtimePath = await realpath(ctx.runtime);

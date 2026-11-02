@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   dirs: new Set<string>(),
   links: new Map<string, string>(),
   removed: [] as string[],
+  readonly: new Set<string>(),
+  ops: [] as string[],
 }));
 
 vi.mock("../../permissions/confined-child.js", () => ({
@@ -81,12 +83,44 @@ vi.mock("node:fs", async (original) => {
       state.removed.push(winPath.normalize(path));
       for (const dir of state.dirs) if (fold(dir) === fold(path)) state.dirs.delete(dir);
     }) as typeof actual.rmdirSync,
+    renameSync: ((from: unknown, to: unknown) => {
+      if (!isDrive(from) || !isDrive(to)) return actual.renameSync(from as string, to as string);
+      if (!exists(from)) throw enoent(from);
+      state.ops.push(`rename ${winPath.normalize(from)} -> ${winPath.normalize(to)}`);
+      const moved = (path: string): string | undefined => fold(path) === fold(from) || fold(path).startsWith(`${fold(from)}\\`)
+        ? winPath.normalize(to) + winPath.normalize(path).slice(winPath.normalize(from).length) : undefined;
+      for (const set of [state.dirs, state.files, state.readonly]) {
+        for (const entry of [...set]) { const next = moved(entry); if (next !== undefined) { set.delete(entry); set.add(next); } }
+      }
+      for (const [link, target] of [...state.links]) {
+        const next = moved(link);
+        if (next !== undefined) { state.links.delete(link); state.links.set(next, target); }
+      }
+    }) as typeof actual.renameSync,
+    chmodSync: ((path: unknown, mode: unknown) => {
+      if (!isDrive(path)) return actual.chmodSync(path as string, mode as never);
+      state.ops.push(`chmod ${winPath.normalize(path)}`);
+      if (((mode as number) & 0o200) !== 0) for (const entry of state.readonly) if (fold(entry) === fold(path)) state.readonly.delete(entry);
+    }) as typeof actual.chmodSync,
     unlinkSync: ((path: unknown) => {
       if (!isDrive(path)) return actual.unlinkSync(path as string);
+      // Windows refuses to delete a file with the read-only attribute.
+      if (has(state.readonly, path)) throw Object.assign(new Error(`EPERM: ${path}`), { code: "EPERM" });
+      state.ops.push(`unlink ${winPath.normalize(path)}`);
       state.removed.push(winPath.normalize(path));
       for (const file of state.files) if (fold(file) === fold(path)) state.files.delete(file);
       for (const link of state.links.keys()) if (fold(link) === fold(path)) state.links.delete(link);
     }) as typeof actual.unlinkSync,
+  };
+});
+
+// `renameDirectory` renames through node:fs/promises; drive-letter paths go to the in-memory drive above.
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  const fake = await import("node:fs");
+  return {
+    ...actual,
+    rename: async (from: string, to: string) => /^[a-z]:\\/iu.test(from) ? fake.renameSync(from, to) : actual.rename(from, to),
   };
 });
 
@@ -97,6 +131,7 @@ const {
   isMxcExtensionBackendSelected,
   MxcBashIncompatibleError,
   MxcExecutableNotAdmissibleError,
+  MxcHolderEnvironmentRefusedError,
   MxcHolderWorkspaceBusyError,
   registerMxcHolderReadinessProbe,
   spawnMxcBundledHolder,
@@ -146,6 +181,8 @@ beforeEach(() => {
   state.dirs = new Set(["C:\\ave\\mcp\\fs\\sandbox", "C:\\ave\\plugins\\fs\\gen", "D:\\work"]);
   state.links = new Map();
   state.removed = [];
+  state.readonly = new Set();
+  state.ops = [];
   state.spawn.mockReset();
   state.spawn.mockResolvedValue(spawned);
   spawned.release.mockReset();
@@ -202,7 +239,8 @@ describe("container holder selection", () => {
 });
 
 describe("bash-incompatible before admission", () => {
-  it.each(["bash", "bash.exe", "sh", "C:\\Program Files\\Git\\bin\\bash.exe", "/usr/bin/sh"])("refuses %s by name", async (command) => {
+  it.each(["bash", "bash.exe", "sh", "C:\\Program Files\\Git\\bin\\bash.exe", "/usr/bin/sh",
+    "C:\\Program Files\\Git\\git-bash.exe", "C:\\Program Files\\Git\\usr\\bin\\env.exe"])("refuses %s by name", async (command) => {
     const refusal = await spawnMxcBundledHolder(input({ command })).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(MxcBashIncompatibleError);
     const plan = (refusal as InstanceType<typeof MxcBashIncompatibleError>).plan;
@@ -214,6 +252,12 @@ describe("bash-incompatible before admission", () => {
 
   it("refuses an MSYS flavor whatever its name, and leaves a non-bash program alone", () => {
     expect(isBashFormCommand("C:\\msys64\\usr\\bin\\zsh.exe", "msys")).toBe(true);
+    // Git for Windows ships its MSYS runtime programs under `usr\bin`, and `git-bash.exe` is its bash launcher.
+    expect(isBashFormCommand("C:\\Program Files\\Git\\usr\\bin\\env.exe")).toBe(true);
+    expect(isBashFormCommand("C:\\Program Files\\Git\\git-bash.exe")).toBe(true);
+    expect(isBashFormCommand("git-bash")).toBe(true);
+    expect(isBashFormCommand("C:\\Program Files\\Git\\cmd\\git.exe")).toBe(false);
+    expect(isBashFormCommand("C:\\usr\\binaries\\tool.exe")).toBe(false);
     expect(isBashFormCommand("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")).toBe(false);
     expect(isBashFormCommand("C:\\tools\\bashful.exe")).toBe(false);
     expect(isBashFormCommand(NODE, "wsl")).toBe(false);
@@ -291,6 +335,33 @@ describe("workspace concurrency", () => {
   });
 });
 
+describe("environment before admission", () => {
+  const stagingRoots = (): number => [...state.dirs].filter((dir) => /mxc-staging\\[0-9a-f]{32}$/u.test(dir)).length;
+
+  it.each([
+    [{ NODE_OPTIONS: "--require C:\\x\\loader.js" }, {}, "NODE_OPTIONS"],
+    [{}, { NODE_PATH: "C:\\x\\modules" }, "NODE_PATH"],
+    [{ ELECTRON_RUN_AS_NODE: "0" }, {}, "ELECTRON_RUN_AS_NODE"],
+    [{ node_options: "--inspect=0.0.0.0:9229" }, { AVE_MXC_FFI: "C:\\x" }, "AVE_MXC_FFI, NODE_OPTIONS"],
+  ])("refuses %o / %o by key name only, before staging or the native entry", async (baseEnv, holderEnv, keys) => {
+    const before = stagingRoots();
+    const refusal = await spawnMxcBundledHolder(input({ baseEnv: { ...input().baseEnv, ...baseEnv },
+      holderEnv: { ...input().holderEnv, ...holderEnv } })).then(() => undefined, (error: unknown) => error as Error & { code?: string });
+    if (refusal === undefined) throw new Error("the holder start was expected to be refused");
+    expect(refusal).toBeInstanceOf(MxcHolderEnvironmentRefusedError);
+    expect(refusal.code).toBe("holder-environment-refused");
+    expect(refusal.message).toMatch(new RegExp(`: ${keys}$`, "u"));
+    for (const value of [...Object.values(baseEnv), ...Object.values(holderEnv)]) expect(refusal.message).not.toContain(value);
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect(stagingRoots()).toBe(before);
+  });
+
+  it("admits ELECTRON_RUN_AS_NODE=1, the value the bundled runtime needs", async () => {
+    await spawnMxcBundledHolder(input({ holderEnv: { ELECTRON_RUN_AS_NODE: "1" } }));
+    expect(state.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("holder layout", () => {
   it("gives the holder its own staging HOME/temp sibling and its own incarnation, passing host env through", async () => {
     await spawnMxcBundledHolder(input());
@@ -331,10 +402,48 @@ describe("teardown", () => {
     await holder.release();
     await holder.release();
     expect(spawned.release).toHaveBeenCalledTimes(1);
-    expect(state.removed).toContain(`${temp}\\escape`);
+    // Removal runs on the retired sibling, so the link is unlinked under that name.
+    expect(state.removed.some((path) => /\\retired-[0-9a-f]{32}\\temp\\escape$/u.test(path))).toBe(true);
+    expect(temp).toMatch(/\\temp$/u);
     expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
     expect(state.dirs.has("D:\\work")).toBe(true);
     expect([...state.dirs].some((dir) => /mxc-staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
+  });
+
+  it("renames the tree to a random sibling before deleting anything inside it", async () => {
+    const holder = await spawnMxcBundledHolder(input());
+    const root = winPath.dirname(lastSpec().home);
+    state.files.add(`${root}\\temp\\scratch.txt`);
+    await holder.release();
+    const rename = state.ops.findIndex((op) => op.startsWith(`rename ${root} -> `));
+    expect(rename).toBe(0);
+    expect(state.ops[0]).toMatch(/ -> C:\\ave\\mxc-staging\\retired-[0-9a-f]{32}$/u);
+    expect(state.ops.slice(1).every((op) => !op.includes(root + "\\"))).toBe(true);
+    expect(state.removed.some((path) => /retired-[0-9a-f]{32}\\temp\\scratch\.txt$/u.test(path))).toBe(true);
+    expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
+  });
+
+  it("clears a read-only attribute before unlinking, and never chmods a planted link", async () => {
+    const holder = await spawnMxcBundledHolder(input());
+    const temp = lastSpec().temp;
+    state.files.add(`${temp}\\locked.txt`);
+    state.readonly.add(`${temp}\\locked.txt`);
+    state.links.set(`${temp}\\escape`, "D:\\work\\tool.exe");
+    await holder.release();
+    const chmod = state.ops.findIndex((op) => /^chmod .*\\locked\.txt$/u.test(op));
+    const unlink = state.ops.findIndex((op) => /^unlink .*\\locked\.txt$/u.test(op));
+    expect(chmod).toBeGreaterThan(-1);
+    expect(unlink).toBeGreaterThan(chmod);
+    expect(state.ops.some((op) => /^chmod .*\\escape$/u.test(op))).toBe(false);
+    expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
+    expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
+  });
+
+  it("refuses a staging parent that is a link before creating any holder directory or starting anything", async () => {
+    state.links.set("C:\\ave\\mxc-staging", "D:\\work");
+    await expect(spawnMxcBundledHolder(input())).rejects.toThrow(/staging parent is a link/u);
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect([...state.dirs].some((dir) => /^D:\\work\\[0-9a-f]{32}/iu.test(dir) || /mxc-staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
   });
 
   it("stays quarantined with its staging tree when termination is unverified, and retries cleanup", async () => {

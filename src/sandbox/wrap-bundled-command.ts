@@ -11,7 +11,7 @@ import {
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { createLogger } from "../lib/logger.js";
@@ -37,6 +37,7 @@ import {
 } from "../permissions/windows-acl-grant-holder.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { aveHome } from "../shared/ave-home.js";
+import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
 const log = createLogger("wrap-bundled-command");
@@ -262,11 +263,40 @@ export class MxcHolderQuarantinedError extends Error {
   }
 }
 
-const BASH_BASENAME = /^(?:bash|sh)(?:\.exe)?$/iu;
+const BASH_BASENAME = /^(?:bash|sh|git-bash)(?:\.exe)?$/iu;
+// Git for Windows and MSYS2 keep their POSIX runtime programs in `<root>\usr\bin`; every one of them loads the MSYS
+// runtime that cannot start in a container. Native Windows has no `usr\bin` directory of its own.
+const MSYS_USR_BIN = /[\\/]usr[\\/]bin[\\/][^\\/]+$/iu;
 
-/** Bash-form: a Git Bash / MSYS interpreter, by its resolved flavor or by its executable name. */
+/** Bash-form: a Git Bash / MSYS interpreter or tool, by its resolved flavor, its executable name (`bash`, `sh`,
+ * `git-bash`) or its location in an MSYS `usr\bin`. */
 export function isBashFormCommand(command: string, shellFlavor?: string): boolean {
-  return shellFlavor === "msys" || BASH_BASENAME.test(winPath.basename(command));
+  return shellFlavor === "msys" || BASH_BASENAME.test(winPath.basename(command)) || MSYS_USR_BIN.test(command);
+}
+
+/** Loader and SDK overrides a container request refuses. A holder whose host-owned variables carry one is refused
+ * here, by key name, before any lease or staging; the request validator stays the last line of defense. */
+const CONTAINER_REFUSED_ENV = /^(?:NODE_OPTIONS|NODE_PATH|MXC_FFI_DIR|MXC_BIN_DIR|AVE_MXC_.*)$/u;
+
+export class MxcHolderEnvironmentRefusedError extends Error {
+  readonly code = "holder-environment-refused";
+  constructor(readonly keys: readonly string[]) {
+    super(`An extension container cannot receive these environment variables: ${keys.join(", ")}`);
+    this.name = "MxcHolderEnvironmentRefusedError";
+  }
+}
+
+function assertHolderEnvironmentAdmissible(...environments: Readonly<Record<string, string | undefined>>[]): void {
+  const refused = new Set<string>();
+  for (const environment of environments) {
+    for (const [name, value] of Object.entries(environment)) {
+      if (value === undefined) continue;
+      const key = name.toUpperCase();
+      if (CONTAINER_REFUSED_ENV.test(key) || (key === "ELECTRON_RUN_AS_NODE" && value !== "1")) refused.add(key);
+    }
+  }
+  // Names only: a value may be a secret.
+  if (refused.size > 0) throw new MxcHolderEnvironmentRefusedError([...refused].sort());
 }
 
 /** Produce `bash-incompatible` before admission. The plan selects no fallback: under a selected container boot plan an
@@ -379,7 +409,11 @@ interface HolderStaging { readonly root: string; readonly home: string; readonly
 
 /** `<AVE_HOME>\mxc-staging\<opaque-id>\{home,temp}`: its enumerate grant reveals only opaque IDs (contract doc). */
 function createHolderStaging(): HolderStaging {
-  const root = winPath.join(aveHome(), "mxc-staging", randomBytes(16).toString("hex"));
+  const parent = winPath.join(aveHome(), "mxc-staging");
+  mkdirSync(parent, { recursive: true });
+  // A link at the staging parent would place every holder's HOME/temp, and later its removal, somewhere else.
+  if (lstatSync(parent).isSymbolicLink()) throw new MxcProcessContractError("Holder staging parent is a link");
+  const root = winPath.join(parent, randomBytes(16).toString("hex"));
   const home = winPath.join(root, "home");
   const temp = winPath.join(root, "temp");
   mkdirSync(home, { recursive: true });
@@ -389,21 +423,33 @@ function createHolderStaging(): HolderStaging {
 }
 
 /** Remove a dead holder's staging tree without following links: a confined child may have planted a junction there, and
- * a recursive removal through it would delete the target. A link is unlinked itself; nothing is followed. */
-function removeHolderStaging(root: string): void {
+ * a recursive removal through it would delete the target. The tree is first renamed to a random sibling, so nothing can
+ * reach it by its old name mid-removal. A link is unlinked itself and never followed or chmod-ed; a read-only file has
+ * its read-only attribute cleared first. The rename retries Windows lock codes, which a just-exited holder's handles can
+ * still raise. */
+async function removeHolderStaging(root: string): Promise<void> {
   const remove = (path: string): void => {
     const entry = lstatSync(path);
-    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    if (entry.isSymbolicLink()) {
+      unlinkSync(path);
+      return;
+    }
+    if (!entry.isDirectory()) {
+      chmodSync(path, 0o666);
       unlinkSync(path);
       return;
     }
     for (const name of readdirSync(path)) remove(winPath.join(path, name));
     rmdirSync(path);
   };
+  let target = root;
   try {
-    remove(root);
+    const retired = winPath.join(winPath.dirname(root), `retired-${randomBytes(16).toString("hex")}`);
+    await renameDirectory(root, retired);
+    target = retired;
+    remove(target);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && target === root) return;
     log.warn(`holder staging removal incomplete: ${(error as Error).message}`);
   }
 }
@@ -445,6 +491,7 @@ export interface MxcBundledHolder {
 export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promise<MxcBundledHolder> {
   if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
   assertMxcHolderNotBashForm(input.command);
+  assertHolderEnvironmentAdmissible(input.baseEnv, input.holderEnv);
   const probe = registeredHolderReadinessProbe();
   const executable = resolveHolderExecutable(input.command, input.baseEnv);
   assertMxcHolderNotBashForm(executable);
@@ -480,7 +527,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
     });
   } catch (error) {
     // An unverified startup cleanup keeps the staging tree with the rest of the holder's resources.
-    if (!(error instanceof MxcProcessCleanupError)) removeHolderStaging(staging.root);
+    if (!(error instanceof MxcProcessCleanupError)) await removeHolderStaging(staging.root);
     throw error;
   }
   let releasing: Promise<void> | undefined;

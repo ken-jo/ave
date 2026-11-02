@@ -32,7 +32,7 @@ import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { hookEventName, hookJsonInput } from "./hook-contract.js";
 import { isRecord } from "../shared/is-record.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
-import { MAX_TIMER_DELAY_MS } from "../shared/tool-timeout-policy.js";
+import { MAX_TIMER_DELAY_MS, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { resolveScriptAnchor } from "./hook-config-trust.js";
 import { resolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
@@ -682,14 +682,27 @@ async function runContainedHook(input: {
   }
   let code: number | null = null;
   let fault: unknown;
+  // The hook's own timeout disposes the container; disposal itself is bounded by the process-tree kill budget. Past
+  // both, completion has not settled: deny instead of waiting on it, and leave the holder to its lifetime owner.
+  const settleBudgetMs = input.timeoutMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  const unsettled = new Promise<"unsettled">((resolveUnsettled) => {
+    settleTimer = setTimeout(() => resolveUnsettled("unsettled"), settleBudgetMs);
+  });
   try {
-    const result = await owned.completion;
+    const result = await Promise.race([owned.completion, unsettled]);
+    if (result === "unsettled") {
+      stop();
+      return deny(`hook process did not settle within ${settleBudgetMs}ms; its sandbox resources stay held`,
+        { rawStdout: stdout.text(), timedOut: true });
+    }
     code = result.exitCode;
     if (result.timedOut) timedOut = true;
   } catch (error) {
     fault = error;
   } finally {
     clearTimeout(timer);
+    clearTimeout(settleTimer);
     input.abortSignal?.removeEventListener("abort", onAbort);
   }
   await Promise.race([stdoutEnded, new Promise<void>((resolveLate) => setTimeout(resolveLate, 1_000).unref())]);

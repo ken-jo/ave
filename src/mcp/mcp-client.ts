@@ -72,6 +72,7 @@ import {
   type MxcBundledHolder,
 } from "../sandbox/wrap-bundled-command.js";
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
+import { buildSafeChildEnv } from "../tools/safe-env.js";
 import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
@@ -1765,7 +1766,9 @@ class StdioTransport implements McpTransport {
     // A selected container backend runs the server as its own extension holder through the native entry; the legacy
     // wrap below would be refused by the start guard (`native-entry-required`).
     if (isMxcExtensionBackendSelected()) {
-      await this.openContained(spawnCommand, baseEnv, holderEnv);
+      // The container gets no inherited environment, so its base is the forwarded runtime set (SystemRoot,
+      // LOCALAPPDATA, COMSPEC, PATHEXT, …) the request validator requires, with the host-owned variables on top.
+      await this.openContained(spawnCommand, buildSafeChildEnv(holderEnv), holderEnv);
       return;
     }
 
@@ -1914,6 +1917,9 @@ class StdioTransport implements McpTransport {
     baseEnv: NodeJS.ProcessEnv,
     holderEnv: Record<string, string>,
   ): Promise<void> {
+    // The per-server sandbox root is persistent and already write-granted, so it is the default working directory; the
+    // private staging HOME (removed with every incarnation) is the default only for a server without one.
+    const cwd = this.config.cwd ?? this.config.sandboxRoot;
     const id = this.config.id;
     const label = `mcp:${id}`;
     await terminatingContainedMcpServers.get(id);
@@ -1928,7 +1934,7 @@ class StdioTransport implements McpTransport {
       args: spawnCommand.args,
       baseEnv,
       holderEnv,
-      ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
+      ...(cwd ? { cwd } : {}),
       allowRead: payload,
       allowWrite,
       ownedReadRoots: payload,
@@ -1965,9 +1971,14 @@ class StdioTransport implements McpTransport {
     if (!this.closedExternally) this.closeHandler?.(t("be_mcpClient.processExitedUnexpectedly"));
   }
 
-  /** `windows-mxc` is reported only once the native pipes carried a framed reply, and withdrawn at revocation. */
-  private confirmContainedTransport(): void {
-    if (this.native !== null && !this.nativeEnded && this.wrappedOwner === null) {
+  /** `windows-mxc` is reported only once the native pipes carried a JSON-RPC 2.0 response (an id with a result or an
+   * error), not any JSON line, and withdrawn at revocation. */
+  private confirmContainedTransport(message: unknown): void {
+    const response = message as { jsonrpc?: unknown; id?: unknown } | null;
+    const isResponse = typeof response === "object" && response !== null && response.jsonrpc === "2.0"
+      && (typeof response.id === "number" || typeof response.id === "string")
+      && (Object.hasOwn(response, "result") || Object.hasOwn(response, "error"));
+    if (isResponse && this.native !== null && !this.nativeEnded && this.wrappedOwner === null) {
       this.wrappedOwner = markMcpServerWrapped(this.config.id);
     }
   }
@@ -2130,7 +2141,7 @@ class StdioTransport implements McpTransport {
 
       try {
         const parsed = JSON.parse(messageStr) as JsonRpcResponse;
-        this.confirmContainedTransport();
+        this.confirmContainedTransport(parsed);
         this.messageHandler?.(parsed);
       } catch {
         log.warn(`${this.config.id} JSON parse failed: %s`, messageStr.slice(0, 200));

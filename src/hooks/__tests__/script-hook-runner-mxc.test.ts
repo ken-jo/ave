@@ -46,6 +46,7 @@ vi.mock("../../main/managed-child-processes.js", async (original) => ({
 const { runOneHookScript } = await import("../script-hook-runner.js");
 const { MxcProcessCleanupError } = await import("../../permissions/mxc-extension-errors.js");
 const { FORWARD_ENV_KEYS } = await import("../../tools/safe-env.js");
+const { TOOL_TIMEOUT_POLICY } = await import("../../shared/tool-timeout-policy.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 
 const REAL_PLATFORM = process.platform;
@@ -181,6 +182,28 @@ describe("plugin hook under a selected container backend", () => {
     controller.abort();
     expect(await pending).toMatchObject({ decision: "deny", reason: "Hook execution cancelled" });
     expect(cancelled.holder.release).toHaveBeenCalled();
+  });
+
+  it("denies with the lease held when completion never settles, instead of waiting on it", async () => {
+    const stuck = fakeHolder({ hang: true });
+    // A disposal that returns without the process ever completing.
+    stuck.holder.release.mockImplementation(async () => undefined);
+    state.holderSpawn.mockResolvedValue(stuck.holder);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let settled = false;
+      const pending = runOneHookScript({ ...pluginHook(), timeoutMs: 20 }, PAYLOAD).finally(() => { settled = true; });
+      await vi.waitFor(() => expect(state.holderSpawn).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(20 + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs - 100);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      const result = await pending;
+      expect(result).toMatchObject({ decision: "deny", timedOut: true });
+      expect(result.reason).toMatch(/did not settle within \d+ms; its sandbox resources stay held/u);
+      expect(stuck.holder.release).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("denies and keeps the lease when termination is unverified", async () => {

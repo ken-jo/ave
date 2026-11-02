@@ -258,6 +258,16 @@ probes write only below the run's own temp directory and delete nothing; the run
 directory is retained for inspection like the other probes. No ACL, registry,
 account, service or firewall changes are made.
 
+Wall-clock bound: the MCP containers are long-lived and the SDK gives them no
+timeout, so `holder-mcp-stdio.mjs` bounds the whole measurement at three times
+`windowsAclHostStartupMs`. On expiry it disposes every container it launched,
+disposes any container whose launch returns later, and records the run as
+`inconclusive` (`wallClockExpired: true`, `containersDisposed`). A native spawn
+still pending at expiry cannot be disposed by the probe; the supervisor's own
+startup deadline and cleanup own it. If a run reports `wallClockExpired`, check
+Task Manager for a leftover `electron.exe` (the `--runtime` image) before
+re-running, and keep the JSONL as evidence rather than retrying until it passes.
+
 Harness self-assessment: the fixtures and the measurement logic are exercised off
 Windows by `holder-probes.test.mjs` with host child processes behind a fake
 container context, including cancel-by-disposal and the pinned-handle rule. That
