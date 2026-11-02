@@ -339,11 +339,24 @@ nesting and the lifetime registry stay row 2's.
     proxy/trust keys and the container's profile/temp/cwd keys stay the
     wrapper's and the container's.
   - The container's base is the forwarded runtime set (`buildSafeChildEnv`:
-    `SystemRoot`, `SystemDrive`, `WINDIR`, `LOCALAPPDATA`, `COMSPEC`,
-    `PATHEXT`, …) with `holderEnv` on top. The legacy shell-style base
+    `SystemRoot`, `SystemDrive`, `WINDIR`, `COMSPEC`, `PATHEXT`, …) with
+    `holderEnv` on top. The legacy shell-style base
     (`PATH`/`HOME`/`APPDATA`/`LANG`) is not the container's base: the request
     builder forwards only the runtime keys, and the validator requires
     `SYSTEMROOT` and `LOCALAPPDATA`.
+  - `LOCALAPPDATA` is container-owned, like `HOME`/`USERPROFILE`/`TEMP`: the
+    request builder sets it to the holder's staging HOME, never the host's.
+  - Effective temp. Inside the AppContainer, Windows ignores the passed
+    `TEMP` and places the process's temp at
+    `<LOCALAPPDATA>\Packages\<sandbox moniker>\AC\Temp`. Under MXC that
+    is therefore `<staging home>\Packages\sandbox.{GUID}\AC\Temp`, inside
+    the staging tree (peer evidence: Windows 10.0.26300.9818, the row-5 MCP
+    probe). The planned `<opaque-id>\temp` root stays granted, because row 2
+    requires distinct HOME and temp, but it may go unused. Nothing depends on
+    writes landing there: rows 2 and 3 only require it admitted, writable and
+    private. Staging removal deletes the `home\Packages\…` subtree with the
+    same link-refusing walk. Open for row 7: drop the planned temp root, or
+    point `TEMP` elsewhere.
   - Loader overrides (`NODE_OPTIONS`, `NODE_PATH`, SDK directory overrides
     `MXC_FFI_DIR`/`MXC_BIN_DIR`/`AVE_MXC_*`) and a non-`1`
     `ELECTRON_RUN_AS_NODE` are refused by the adapter before admission, staging

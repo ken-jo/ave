@@ -31,8 +31,10 @@ describe("per-holder native request", () => {
       PROVIDER_API_KEY: "secret", HTTP_PROXY: "http://evil.test", NODE_OPTIONS: "--require=evil",
       MXC_FFI_DIR: "C:\\override", USERPROFILE: "C:\\host", HOME: "C:\\host", TEMP: "C:\\host", PWD: "C:\\host",
     } });
-    expect(request.environment).toMatchObject({ HOME: spec.home, USERPROFILE: spec.home, TEMP: spec.temp, TMP: spec.temp,
-      PWD: spec.cwd, ELECTRON_RUN_AS_NODE: "1" });
+    // LOCALAPPDATA is container-owned too: Windows derives the AppContainer TEMP from it.
+    expect(request.environment).toMatchObject({ HOME: spec.home, USERPROFILE: spec.home, LOCALAPPDATA: spec.home,
+      TEMP: spec.temp, TMP: spec.temp, PWD: spec.cwd, ELECTRON_RUN_AS_NODE: "1" });
+    expect(Object.values(request.environment!)).not.toContain("C:\\profile\\AppData\\Local");
     for (const key of ["PROVIDER_API_KEY", "HTTP_PROXY", "NODE_OPTIONS", "MXC_FFI_DIR"]) expect(request.environment).not.toHaveProperty(key);
     expect(request.inheritDefaultEnvironment).toBe(false);
   });

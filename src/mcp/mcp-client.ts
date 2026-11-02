@@ -1766,8 +1766,8 @@ class StdioTransport implements McpTransport {
     // A selected container backend runs the server as its own extension holder through the native entry; the legacy
     // wrap below would be refused by the start guard (`native-entry-required`).
     if (isMxcExtensionBackendSelected()) {
-      // The container gets no inherited environment, so its base is the forwarded runtime set (SystemRoot,
-      // LOCALAPPDATA, COMSPEC, PATHEXT, …) the request validator requires, with the host-owned variables on top.
+      // The container gets no inherited environment, so its base is the forwarded runtime set (SystemRoot, COMSPEC,
+      // PATHEXT, …) the request validator requires, with the host-owned variables on top.
       await this.openContained(spawnCommand, buildSafeChildEnv(holderEnv), holderEnv);
       return;
     }

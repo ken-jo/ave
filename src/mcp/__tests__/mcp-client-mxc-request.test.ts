@@ -152,8 +152,11 @@ describe("contained MCP request", () => {
     await mcp.connect();
     await mcp.disconnect();
     const [request] = state.requests;
-    expect(request!.environment).toMatchObject({ SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: RUNTIME_ENV.LOCALAPPDATA,
-      COMSPEC: RUNTIME_ENV.COMSPEC, FS_MODE: "ro", FS_TOKEN: "k-123" });
+    expect(request!.environment).toMatchObject({ SYSTEMROOT: "C:\\Windows", COMSPEC: RUNTIME_ENV.COMSPEC,
+      FS_MODE: "ro", FS_TOKEN: "k-123" });
+    // The host's LOCALAPPDATA is required on the host side but never reaches the container: it is the staging HOME.
+    expect(request!.environment!.LOCALAPPDATA).toBe(request!.environment!.HOME);
+    expect(request!.environment!.LOCALAPPDATA).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}\\home$/u);
     expect(request!.workingDirectory).toBe(SANDBOX);
     expect(request!.inheritDefaultEnvironment).toBe(false);
     expect(request!.command.startsWith(`"${NODE}"`)).toBe(true);
