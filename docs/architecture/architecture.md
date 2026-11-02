@@ -2798,6 +2798,39 @@ with its own owner rule:
   grants covering that outer directory are refused. Session reset or holder
   release removes the deny when its final hold ends. A dead holder leaves its
   ACE until a later native ACL operation prunes its tracked hold.
+  The session reset spawns this copy to revoke and restore the session's ACEs.
+  The quit sequences (`runAppShutdownCleanup` on a clean, failed or timed-out
+  quit, and `runIncompleteBootShutdown`) await `releaseAsrtSandboxForExit` after
+  their confined children are down and before the host closes. The release
+  follows srt-win's own outcome (carried ASRT patch part 12). It fails when
+  srt-win did not run, exited non-zero (srt-win leaves a path it could not
+  release out of its JSON), or answered a status outside its `AceRelease` set.
+  The quit is then `failed` and the runtime keeps the session for a retry.
+  `revoked`, `stillHeld`, `downgraded`, `relocated` and `noRow` are completed
+  releases. `mismatch` and `missing` mean srt-win already dropped the holder
+  row, so a retry would change nothing. They do not fail the quit; Ave logs
+  their counts per step, without paths. A mismatched object's ACE is left as
+  it was, so a deny there stays fail-closed, and the next boot's ACL recovery
+  handles leftovers.
+  The copy's `exit` handler, registered at import and so run before the
+  runtime's own, removes the copy only after a successful release.
+  Otherwise it keeps the copy and writes one line to stderr, since the file log
+  is closed by then. The runtime's `exit` handler then retries the release with
+  the copy still present, the next boot's sweep removes the copy, and ACL
+  recovery remains the fallback for a crash.
+  Some exits skip the quit sequences and rely on that `exit` handler path:
+  `--plugin-smoke` ends with `app.exit()`, and a desktop GUI boot failure quits
+  before services exist, where `before-quit` returns early.
+  Signals: the headless host claims SIGINT and SIGTERM
+  (`claimAsrtSignalRelease`) before the runtime initializes, so the runtime
+  registers no signal reset and the host's handler runs the quit sequence.
+  While that cleanup runs, the host keeps a listener that only reports
+  "shutdown already in progress", so a repeated signal cannot end the process
+  before the release; without a listener the process would end with no `exit`
+  event at all.
+  In the desktop app the runtime's own signal handler still resets it as soon
+  as the signal arrives, before children are drained. Any later reset, including
+  the one in a quit sequence, finds no ACL session left to release.
   The stale-copy sweep checks both directory owners and DACLs for the new layout,
   and also accepts the old single-level layout with its original marker checks.
   It deletes only `srt-win.exe` and `owner.json`, then their empty directories,

@@ -705,7 +705,7 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
       vi.spyOn(SandboxManager, "initialize").mockImplementation(async next => { config = next; }),
       vi.spyOn(SandboxManager, "getConfig").mockImplementation(() => config),
       vi.spyOn(SandboxManager, "updateConfig").mockImplementation(next => { config = next; }),
-      vi.spyOn(SandboxManager, "reset").mockImplementation(async () => { config = undefined; }),
+      vi.spyOn(SandboxManager, "reset").mockImplementation(async () => { config = undefined; return { windowsAclUnreleased: [] }; }),
     ];
     reader = vi.spyOn(readDenyEvidenceModule, "readWindowsReadDenyEvidence").mockImplementation(async paths =>
       new Map(paths.map(path => [windowsReadDenyKey(path), { status: "missing" as const }])));

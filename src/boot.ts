@@ -45,7 +45,7 @@ import { configureHostResources } from "./main/host-resources.js";
  */
 import type { BrowserWindow } from "electron";
 import { CHANNELS } from "./contract/app-contract.js";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
 import { agentPluginDataRoot } from "./marketplace/content/agent-plugin-data.js";
 import { migratePluginHostStorage, sweepPluginSocketDiscardDirs } from "./plugins/plugin-storage-layout.js";
@@ -80,12 +80,13 @@ import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
 import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler.js";
 import { createLogger } from "./lib/logger.js";
+import { writeExitDiagnostic } from "./shared/exit-diagnostic.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
 import { migrateAveHomeConfiguration } from "./shared/ave-home-configuration.js";
 import { isAveHomeConfigurationOwner } from "./shared/ave-home-configuration-access.js";
-import { ensureAveScratchDir } from "./shared/ave-scratch.js";
+import { ensureAveScratchDir, removeAveScratchDirIfEmpty } from "./shared/ave-scratch.js";
 import {
   listAveHomeDocUpgradeMarkers,
   seedAveHomeDocs,
@@ -208,6 +209,13 @@ export async function bootstrap(
   const scratch = ensureAveScratchDir();
   if (!scratch.ok) {
     log.error(`boot: scratch directory ${scratch.path} is not usable (${scratch.reason}) — no default scratch space will be offered`);
+  } else {
+    // A fresh application home creates its own scratch directory; one left empty is removed at exit so temp does not collect them.
+    process.once("exit", () => {
+      const removal = removeAveScratchDirIfEmpty(scratch.path);
+      // The file log sink is closed by now.
+      if (removal.status === "failed") writeExitDiagnostic(`scratch directory ${basename(scratch.path)} was not removed on exit (${removal.code})`);
+    });
   }
 
   // Seed user-facing docs into `~/.ave/` before any other component reads

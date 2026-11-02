@@ -88,6 +88,11 @@ vi.mock("../../tools/shell-tools.js", () => ({
     waitForAllBrokerCleanup: () => waitForAllBrokerCleanup(),
   },
 }));
+// Stands in for the sandbox runtime's reset, which on Windows spawns the private srt-win copy to release the session's ACEs.
+const releaseAsrtSandboxForExit = vi.fn(async () => { calls.push("releaseOsSandbox"); });
+vi.mock("../../permissions/asrt-sandbox.js", () => ({
+  releaseAsrtSandboxForExit: () => releaseAsrtSandboxForExit(),
+}));
 // A test that exercises the timed-out branch flips this; the body is not run then, exactly as a real deadline abandons a cleanup that never settles.
 let hardTimeoutFires = false;
 vi.mock("../shutdown-timeout.js", () => ({
@@ -143,6 +148,98 @@ beforeEach(() => {
   shutdownCompleted = false;
   vi.clearAllMocks();
   stopDocumentEngineSessions.mockReset().mockImplementation(async () => { calls.push("stopDocumentEngines"); });
+  releaseAsrtSandboxForExit.mockReset().mockImplementation(async () => { calls.push("releaseOsSandbox"); });
+});
+
+describe("OS sandbox release at quit", () => {
+  // The private srt-win copy is removed by an exit handler; every quit path must reset the runtime first, once its confined children are down.
+  it("resets the runtime after the child drain and before the host closes on a clean quit", async () => {
+    getServices.mockReturnValue(makeServices());
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    shutdown.configureAppShutdownHost(createBootHostFixture({ exit: hostExit, close: async () => { calls.push("closeHost"); } }));
+    expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("completed");
+    expect(releaseAsrtSandboxForExit).toHaveBeenCalledOnce();
+    expect(calls.indexOf("drainManagedChildren")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
+    expect(calls.indexOf("forceKillTerminals")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
+    expect(calls.indexOf("stopPluginRuntime")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
+    expect(calls.indexOf("releaseOsSandbox")).toBeLessThan(calls.indexOf("closeHost"));
+    expect(calls.at(-1)).toBe("closeFileLogSink");
+  });
+
+  it("reports a failed reset as a failed shutdown rather than a clean one", async () => {
+    getServices.mockReturnValue(makeServices());
+    // The production retry finds the runtime already inactive and does nothing.
+    releaseAsrtSandboxForExit.mockRejectedValueOnce(Object.assign(new Error("Windows sandbox ACL release incomplete: grant revoke did not run"), { code: "acl_release_failed" }));
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("failed");
+    expect(logError).toHaveBeenCalledWith(expect.anything(), "%s: shutdown cleanup failed: %s", "before-quit", "Windows sandbox ACL release incomplete: grant revoke did not run");
+  });
+
+  it("still resets the runtime when an earlier stage fails, after the force-kill backstop", async () => {
+    getServices.mockReturnValue(makeServices());
+    stopDocumentEngineSessions.mockRejectedValueOnce(new Error("Earlier shutdown stage failed"));
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("failed");
+    expect(releaseAsrtSandboxForExit).toHaveBeenCalledOnce();
+    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
+  });
+
+  it("still resets the runtime when the cleanup deadline passes, before the hard exit", async () => {
+    getServices.mockReturnValue(makeServices());
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    hostExit.mockImplementation(() => { calls.push("hostExit"); });
+    hardTimeoutFires = true;
+    try {
+      expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: true })).toBe("timed-out");
+    } finally {
+      hardTimeoutFires = false;
+      hostExit.mockReset();
+    }
+    expect(releaseAsrtSandboxForExit).toHaveBeenCalledOnce();
+    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
+    expect(calls.indexOf("releaseOsSandbox")).toBeLessThan(calls.indexOf("hostExit"));
+  });
+
+  it("does not hold a timed-out quit on a reset that never finishes", async () => {
+    getServices.mockReturnValue(makeServices());
+    releaseAsrtSandboxForExit.mockImplementation(() => new Promise<void>(() => {}));
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    vi.useFakeTimers();
+    hardTimeoutFires = true;
+    try {
+      const outcome = shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+      await vi.runAllTimersAsync();
+      expect(await outcome).toBe("timed-out");
+    } finally {
+      hardTimeoutFires = false;
+      vi.useRealTimers();
+    }
+    expect(logError).toHaveBeenCalledWith(expect.anything(), "shutdown: OS sandbox runtime reset did not finish before exit");
+  });
+
+  it.each(["completed", "timed-out"] as const)("resets the runtime of an interrupted bootstrap (%s cleanup)", async (status) => {
+    getServices.mockReturnValue(undefined);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    hardTimeoutFires = status === "timed-out";
+    try {
+      expect(await shutdown.runIncompleteBootShutdown(createBootHostFixture({ close: async () => { calls.push("closeHost"); } }))).toBe(status);
+    } finally {
+      hardTimeoutFires = false;
+    }
+    expect(releaseAsrtSandboxForExit).toHaveBeenCalledOnce();
+    if (status === "completed") {
+      expect(calls.indexOf("drainManagedChildren")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
+      expect(calls.indexOf("releaseOsSandbox")).toBeLessThan(calls.indexOf("closeHost"));
+    } else {
+      expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
+    }
+  });
 });
 
 describe("runAppShutdownCleanup ordering (critic M1)", () => {
@@ -193,7 +290,7 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     expect(await shutdown.runIncompleteBootShutdown(host)).toBe("completed");
     expect(calls).toEqual([
       "partialWatcher", "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialPluginRuntimeStop", "stopDocumentEngines", "stopSubscriptionRuntimes",
-      "forceKillTerminals", "drainManagedChildren", "closeHost", "closeFileLogSink",
+      "forceKillTerminals", "drainManagedChildren", "releaseOsSandbox", "closeHost", "closeFileLogSink",
     ]);
     expect(sealManagedChildProcessAdmission).toHaveBeenCalledWith("host bootstrap interrupted or failed");
     shutdown.registerShutdownHook("late-watcher", () => { calls.push("lateWatcher"); });
