@@ -259,10 +259,10 @@ describe("PermissionsTab hook quarantine notice", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByTestId("permissions-load-error"))
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-policy"))
       .toHaveTextContent(t("permissionsTab.errorLoadFailed")));
     // The thrown text is logged, not shown.
-    expect(screen.getByTestId("permissions-load-error").textContent).not.toContain("settings unavailable");
+    expect(screen.getByTestId("permissions-load-error-policy").textContent).not.toContain("settings unavailable");
     expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("bash");
     await waitFor(() => expect(screen.getByTestId("exact-deny-focus-target")).toHaveFocus());
 
@@ -2313,14 +2313,31 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     warn.mockRestore();
   });
 
+  it("a failed settings read hides only the stored-setting toggles; the rest of the panel stays", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    installApi([[]]);
+    (window.aveApi as unknown as { getSettings: ReturnType<typeof vi.fn> }).getSettings.mockRejectedValueOnce(new Error(RAW));
+    await renderPermissionsTab();
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-os-sandbox-settings")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    expect(screen.queryByTestId("os-sandbox-toggle")).toBeNull();
+    expect(screen.queryByTestId("worker-confinement-toggle")).toBeNull();
+    // Owner-away minutes come from the same read, so the approval section waits on it too.
+    expect(screen.getByTestId("permissions-load-error-approval-dialog")).toBeTruthy();
+    expect(document.querySelectorAll('[data-testid^="permissions-load-error"]')).toHaveLength(2);
+    expect(document.querySelector('[data-settings-section="permissions-policy"] [role="radiogroup"]')).toBeTruthy();
+    expectNoRaw();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "settings", RAW);
+    warn.mockRestore();
+  });
+
   it("a load failure shows localized copy and logs the raw text", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
     api.permission.getMode.mockRejectedValueOnce(new Error(RAW));
     await renderPermissionsTab();
-    await waitFor(() => expect(screen.getByTestId("permissions-load-error")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error-policy")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
     expectNoRaw();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), RAW);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "mode", RAW);
     warn.mockRestore();
   });
 });
@@ -2333,7 +2350,7 @@ describe("PermissionsTab background refresh", () => {
     const onConfigChanged = api.permission.onConfigChanged as unknown as ReturnType<typeof vi.fn>;
 
     await renderPermissionsTab();
-    await waitFor(() => expect(screen.queryByTestId("permissions-loading")).toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull());
 
     // The hint the host broadcasts after addRule/removeRule.
     const notify = onConfigChanged.mock.calls[0]?.[0] as (() => void) | undefined;
@@ -2349,13 +2366,13 @@ describe("PermissionsTab background refresh", () => {
     });
 
     // Mid-refresh: the panel the user was reading is still there.
-    expect(screen.queryByTestId("permissions-loading")).toBeNull();
+    expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull();
     expect(screen.getByTestId("permissions-rule-pattern-input")).toBeTruthy();
 
     await act(async () => {
       resolveRules?.({ rules: [], errors: [] });
     });
-    expect(screen.queryByTestId("permissions-loading")).toBeNull();
+    expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull();
   });
 
   it("still shows the loading surface on the FIRST load, where there is nothing to keep", async () => {
@@ -2366,12 +2383,14 @@ describe("PermissionsTab background refresh", () => {
     );
 
     await renderPermissionsTab();
-    expect(screen.getByTestId("permissions-loading")).toBeTruthy();
+    expect(screen.getByTestId("permissions-loading-rules")).toBeTruthy();
+    // Only the section that reads the slow call waits; the others are already on screen.
+    expect(document.querySelector('[data-settings-section="permissions-policy"] [role="radiogroup"]')).toBeTruthy();
 
     await act(async () => {
       resolveRules?.({ rules: [], errors: [] });
     });
-    await waitFor(() => expect(screen.queryByTestId("permissions-loading")).toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-testid^="permissions-loading"]')).toBeNull());
   });
 });
 
@@ -2599,7 +2618,7 @@ describe("reviewer mode recovery", () => {
       expect(judgeMode).toHaveValue("");
       expect(judgeMode).toHaveDisplayValue(locale === "ko" ? "선택 필요" : "Choose a mode");
       expect(judgeMode).toHaveAttribute("aria-describedby", "reviewer-mode-fault");
-      expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+      expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
       expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(9);
       expect(document.body.textContent).not.toContain("private unsupported reviewer value");
       expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
@@ -2672,7 +2691,7 @@ describe("reviewer mode recovery", () => {
     expect(screen.getByText(t("permissionsTab.reviewerModeRecoveryRewireFailed"), { exact: false })).toBeVisible();
     expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm", "show"]);
     expect(document.body.textContent).not.toContain("private reviewer transport failure");
-    expect(screen.queryByTestId("permissions-load-error")).toBeNull();
+    expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
     expect(api.permission.setMode).not.toHaveBeenCalled();
   });
 });

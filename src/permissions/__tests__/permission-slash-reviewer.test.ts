@@ -108,6 +108,17 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     }
   });
 
+  it("show answers ok for an unwired reviewer: the Settings read never depends on boot wiring", async () => {
+    // Fresh install: persisted mode is llm, no provider is configured, and boot degrades to rule.
+    // `show` only reads the settings file; the IPC layer adds the runtime degrade flag beside it.
+    const path = tmpSettingsPath();
+    await setReviewerSettingsPersist({ mode: "llm" }, path);
+    const rewire = vi.fn(() => { throw new Error("no provider configured"); });
+    const r = await dispatchPermissionReviewerCommandWithRewire({ verb: "show", value: "" }, rewire, path);
+    expect(r).toMatchObject({ ok: true, verb: "show", settings: { mode: "llm" } });
+    expect(rewire).not.toHaveBeenCalled();
+  });
+
   it("mode llm persists to settings.json", async () => {
     const path = tmpSettingsPath();
     await dispatchPermissionReviewerCommand({ verb: "mode", value: "llm" }, path);

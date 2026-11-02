@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
@@ -379,6 +379,12 @@ export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMod
   return m === "auto" ? "llm" : "disabled";
 }
 
+/** The independent reads behind the panel's sections. */
+const PANEL_LOADS = ["mode", "policy", "rules", "hooks", "directories", "reviewer", "settings"] as const;
+type PanelLoad = (typeof PANEL_LOADS)[number];
+type PanelLoadState = "pending" | "ready" | "failed";
+const INITIAL_PANEL_LOAD = Object.fromEntries(PANEL_LOADS.map((load) => [load, "pending"])) as Record<PanelLoad, PanelLoadState>;
+
 export function PermissionsTab({
   exactDenyDraft = null,
   onExactDenySaved,
@@ -390,8 +396,8 @@ export function PermissionsTab({
 } = {}) {
   const { t } = useTranslation();
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Each panel read settles on its own: a failing or slow read marks only the sections that use it, never the whole tab.
+  const [panelLoad, setPanelLoad] = useState<Record<PanelLoad, PanelLoadState>>(INITIAL_PANEL_LOAD);
 
 
   const [banner, setBanner] = useState<{ type: "error" | "warn"; msg: string } | null>(null);
@@ -484,59 +490,88 @@ export function PermissionsTab({
   const windowsInstallBusy = windowsInstallPhase !== null;
   const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
-  // True once the panel has content on screen. After that, a refresh must not reach for the blank/error surface: `loading` replaces the WHOLE panel with one line, the scroll container collapses from ~4000px to
-  // one viewport, and the browser clamps scrollTop to the new maximum. When the content comes back the scroll position is gone; which is why removing a rule at the bottom of the page threw the user back to the top.
-  const hasLoadedRef = useRef(false);
+  // A read that has succeeded once keeps its last-known values on screen when a later refresh fails; the failure goes to the
+  // banner instead. Replacing loaded content with a loading or error line would collapse the scroll container and lose the user's place.
+  const loadedReadsRef = useRef(new Set<PanelLoad>());
 
   const fetchAll = useCallback(async () => {
-    if (!hasLoadedRef.current) {
-      setLoading(true);
-      setError(null);
-    }
-    try {
-      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, settingsRes] =
-        await Promise.all([
-          window.ave.permission.getMode(),
-          window.ave.policy.get(),
-          window.ave.permission.listScopedRules(),
-          window.ave.permission.hookTrustList(),
-          window.ave.permission.dirDispatch("list"),
-          window.ave.permission.reviewerDispatch("show"),
-          getApi().getSettings(),
-        ]);
-      if (!reviewerRes.ok) {
-        throw new Error(reviewerRes.error);
+    setPanelLoad((prev) => {
+      const next = { ...prev };
+      for (const load of PANEL_LOADS) if (!loadedReadsRef.current.has(load)) next[load] = "pending";
+      return next;
+    });
+    const settle = async <T,>(load: PanelLoad, read: () => Promise<T>, apply: (value: T) => void): Promise<void> => {
+      try {
+        apply(await read());
+        loadedReadsRef.current.add(load);
+        setPanelLoad((prev) => ({ ...prev, [load]: "ready" }));
+      } catch (e) {
+        console.warn("[ave] permissions: load failed:", load, errorMessage(e));
+        if (loadedReadsRef.current.has(load)) showBanner("error", t("permissionsTab.errorLoadFailed"));
+        else setPanelLoad((prev) => ({ ...prev, [load]: "failed" }));
       }
-      setMode(normalizeExecutionMode(modeRes.mode));
-      setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
-      setRequireExplicit(policyRes.requireExplicitApproval);
-      // Host-derived: `managed` alone misses an admin-dir file that does not set managed:true, which savePolicy still refuses to overwrite.
-      setPolicyManaged(!policyRes.editable);
-      setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
-      setPolicyAdminPath(policyRes.adminPath as string | undefined);
-      setPolicyAdminReason(policyRes.adminStatus === "invalid" ? policyRes.adminReason : undefined);
-      setRules(rulesRes.rules);
-      setRuleLoadErrors(rulesRes.errors);
-      setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
-      setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
-      setReviewer(reviewerRes.settings);
-      setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
-      const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
-      setSandboxEnabled(osSandboxOn);
-      const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
-      setWorkerConfinementEnabled(workerConfinementOn);
-    } catch (e) {
-      console.warn("[ave] permissions: load failed:", errorMessage(e));
-      const message = t("permissionsTab.errorLoadFailed");
-      // Same rule for the failure surface. A refresh that fails still has the last-known state on screen,
-      // so it reports through the banner instead of replacing what the user is reading with an error page.
-      if (hasLoadedRef.current) showBanner("error", message);
-      else setError(message);
-    } finally {
-      hasLoadedRef.current = true;
-      setLoading(false);
-    }
+    };
+    await Promise.all([
+      settle("mode", () => window.ave.permission.getMode(), (modeRes) => {
+        setMode(normalizeExecutionMode(modeRes.mode));
+      }),
+      settle("policy", () => window.ave.policy.get(), (policyRes) => {
+        setRequireExplicit(policyRes.requireExplicitApproval);
+        // Host-derived: `managed` alone misses an admin-dir file that does not set managed:true, which savePolicy still refuses to overwrite.
+        setPolicyManaged(!policyRes.editable);
+        setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
+        setPolicyAdminPath(policyRes.adminPath as string | undefined);
+        setPolicyAdminReason(policyRes.adminStatus === "invalid" ? policyRes.adminReason : undefined);
+      }),
+      settle("rules", () => window.ave.permission.listScopedRules(), (rulesRes) => {
+        setRules(rulesRes.rules);
+        setRuleLoadErrors(rulesRes.errors);
+      }),
+      settle("hooks", () => window.ave.permission.hookTrustList(), (hookTrustRes) => {
+        if (!hookTrustRes.ok) throw new Error(hookTrustRes.error ?? "hook trust list failed");
+        setQuarantinedHooks(hookTrustRes.disabled);
+      }),
+      settle("directories", () => window.ave.permission.dirDispatch("list"), (dirRes) => {
+        if (!dirRes.ok) throw new Error(dirRes.error);
+        if (dirRes.verb !== "list") throw new Error(`unexpected directory reply '${dirRes.verb}'`);
+        setDirectories(dirRes.userAdditions);
+      }),
+      settle("reviewer", () => window.ave.permission.reviewerDispatch("show"), (reviewerRes) => {
+        if (!reviewerRes.ok) throw new Error(reviewerRes.error);
+        setReviewer(reviewerRes.settings);
+        setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
+      }),
+      settle("settings", () => getApi().getSettings(), (settingsRes) => {
+        setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
+        setSandboxEnabled(settingsRes.features?.osToolSandbox ?? false);
+        setWorkerConfinementEnabled(settingsRes.features?.pluginWorkerConfinement ?? false);
+      }),
+    ]);
   }, [showBanner]);
+
+  /** The scoped pending/error line for a section built from `loads`, or null when every read it uses has arrived. */
+  const panelLoadNotice = (scope: string, loads: readonly PanelLoad[]): ReactNode => {
+    if (loads.every((load) => panelLoad[load] === "ready")) return null;
+    if (loads.some((load) => panelLoad[load] === "failed")) {
+      return (
+        <div
+          role="alert"
+          data-testid={`permissions-load-error-${scope}`}
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-sm text-destructive"
+        >
+          <span className="min-w-0 break-words">{t("permissionsTab.errorLoadFailed")}</span>
+          <Button type="button" size="sm" variant="outline" onClick={() => void fetchAll()}>
+            {t("permissionsTab.refreshButton")}
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <p data-testid={`permissions-loading-${scope}`} className="py-2 text-sm text-muted-foreground">
+        {t("permissionsTab.loading")}
+      </p>
+    );
+  };
 
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
@@ -1006,9 +1041,8 @@ export function PermissionsTab({
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
-  // The panel load (rules, policy, hooks, directories, reviewer, settings) gates the rest of the tab. The OS sandbox disclosure reads its own
-  // host snapshot, so it renders while that load is pending or has failed: a degraded boot must never leave Settings with no reason shown.
-  const settingsKnown = !loading && error === null;
+  // The OS sandbox disclosure reads its own host snapshot and never waits on the panel reads; only the two rows that state stored settings do.
+  const settingsNotice = panelLoadNotice("os-sandbox-settings", ["settings"]);
   // ── OS Tool Sandbox ──
   const osSandboxSection = (
         <SettingsSection
@@ -1020,7 +1054,7 @@ export function PermissionsTab({
           <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
           {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
           {/* The two rows read the stored settings that the panel load returns; until it has, they would state a setting nobody read. */}
-          {settingsKnown ? (
+          {settingsNotice ?? (
             <>
           <div className="flex items-start gap-3">
             <Checkbox
@@ -1078,7 +1112,7 @@ export function PermissionsTab({
             className="mt-2"
           />
             </>
-          ) : null}
+          )}
           {sandboxCapability && !sandboxCapability.available ? (
             <p
               data-testid="os-sandbox-unavailable"
@@ -1392,33 +1426,9 @@ export function PermissionsTab({
           </div>
         ) : null}
 
-        {loading ? (
-          <>
-          <div
-            className="py-8 text-center text-sm text-muted-foreground"
-            data-testid="permissions-loading"
-          >
-            {t("permissionsTab.loading")}
-          </div>
-          {osSandboxSection}
-          </>
-        ) : error ? (
-          <>
-          <div
-            className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-sm text-destructive"
-            data-testid="permissions-load-error"
-          >
-            <span className="min-w-0 break-words">{error}</span>
-            <Button type="button" size="sm" variant="outline" onClick={() => void fetchAll()}>
-              {t("permissionsTab.refreshButton")}
-            </Button>
-          </div>
-          {osSandboxSection}
-          </>
-        ) : (
-          <>
 
-        {quarantinedHooks.length > 0 && (
+        {panelLoadNotice("hooks", ["hooks"])}
+        {panelLoad.hooks === "ready" && quarantinedHooks.length > 0 && (
           <div
             data-testid="hook-quarantine-notice"
             className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
@@ -1463,6 +1473,8 @@ export function PermissionsTab({
           title={t("permissionsTab.currentPolicySummaryTitle")}
           description={t("permissionsTab.currentPolicySummaryDescription")}
         >
+          {panelLoadNotice("policy-summary", ["mode", "policy"]) ?? (
+          <>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="rounded-md border px-3 py-2">
               <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryPolicyPreset")}</p>
@@ -1473,6 +1485,8 @@ export function PermissionsTab({
               <p className="mt-1 text-sm font-medium">{requireExplicit ? t("permissionsTab.summaryExplicitRequired") : t("permissionsTab.summaryCloseDenies")}</p>
             </div>
           </div>
+          </>
+          )}
         </SettingsSection>
 
         {reviewerModeInvalid ? (
@@ -1507,6 +1521,8 @@ export function PermissionsTab({
           title={t("permissionsTab.policyTitle")}
           description={t("permissionsTab.policyDescription")}
         >
+          {panelLoadNotice("policy", ["mode", "reviewer"]) ?? (
+          <>
           <RadioGroup
             value={mode}
             disabled={modeBusy || reviewerRecoveryBusy}
@@ -1562,6 +1578,8 @@ export function PermissionsTab({
               </Label>
             ))}
           </RadioGroup>
+          </>
+          )}
         </SettingsSection>
 
         {/* ── Section B: Explicit Approval Policy ── */}
@@ -1570,6 +1588,8 @@ export function PermissionsTab({
           title={t("permissionsTab.approvalDialogTitle")}
           description={t("permissionsTab.approvalDialogDescription")}
         >
+          {panelLoadNotice("approval-dialog", ["policy", "settings"]) ?? (
+          <>
           <div className="flex items-center gap-3">
             <Checkbox
               checked={requireExplicit}
@@ -1607,6 +1627,8 @@ export function PermissionsTab({
                 : t("permissionsTab.adminPolicyNoPath")}
             </p>
           )}
+          </>
+          )}
         </SettingsSection>
 
         <RecentlyDeniedPanel showEmpty />
@@ -1629,6 +1651,8 @@ export function PermissionsTab({
           title={t("permissionsTab.unifiedRulesTitle")}
           description={t("permissionsTab.unifiedRulesDescription")}
         >
+          {panelLoadNotice("rules", ["rules"]) ?? (
+          <>
           {ruleLoadErrors.length > 0 || approvalLoadError ? (
             <div role="alert" data-testid="permissions-rule-load-error" className="text-xs text-destructive">
               {t("permissionsTab.unifiedRulesLoadError")}
@@ -1724,6 +1748,8 @@ export function PermissionsTab({
               {t("permissionsTab.addButton")}
             </Button>
           </div>
+          </>
+          )}
         </SettingsSection>
 
         {/* ── Section D: Additional Directories ── */}
@@ -1743,6 +1769,8 @@ export function PermissionsTab({
             </Button>
           }
         >
+          {panelLoadNotice("directories", ["directories"]) ?? (
+          <>
           {directories.length === 0 ? (
             <p className="text-[11px] text-muted-foreground italic">{t("permissionsTab.directoriesEmpty")}</p>
           ) : (
@@ -1821,6 +1849,8 @@ export function PermissionsTab({
               </div>
             </div>
           )}
+          </>
+          )}
         </SettingsSection>
 
         {/* ── Audit Log ── */}
@@ -1841,9 +1871,6 @@ export function PermissionsTab({
               bar, and its 480px would not fit a tile at the width floor. */}
           <AuditPanel open={auditOpen} onClose={() => setAuditOpen(false)} />
         </SettingsSection>
-
-          </>
-        )}
 
       </div>
     </div>

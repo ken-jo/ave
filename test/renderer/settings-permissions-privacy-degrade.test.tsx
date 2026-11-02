@@ -31,7 +31,11 @@ const snapshot = {
   },
 };
 
-async function openPermissions(panelCall: "resolve" | "reject" | "hang") {
+type Reply = "resolve" | "reject" | "hang";
+const reply = <T,>(how: Reply, value: T, error: string): Promise<T> =>
+  how === "resolve" ? Promise.resolve(value) : how === "reject" ? Promise.reject(new Error(error)) : new Promise<T>(() => undefined);
+
+async function openPermissions(opts: { directories?: Reply; reviewer?: unknown } = {}) {
   assertSandboxWindowsExtensionPlan(extensionPlan);
   const { container, emitViewActivate } = await renderApp({ hasApiKey: true });
   const ns = (window as unknown as { ave: { permission: Record<string, unknown>; policy?: unknown } }).ave;
@@ -42,10 +46,9 @@ async function openPermissions(panelCall: "resolve" | "reject" | "hang") {
     sandboxWindowsInstall: vi.fn(async () => ({ cancelled: true })),
     approveExtensionsWithoutIsolation: vi.fn(async () => ({ ok: true })),
     hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
-    // One of the panel-load calls the OS sandbox section does not read; the peer's tab showed no section at all.
-    dirDispatch: vi.fn(() => panelCall === "resolve" ? Promise.resolve(dirList)
-      : panelCall === "reject" ? Promise.reject(new Error("directory policy unavailable")) : new Promise(() => undefined)),
-    reviewerDispatch: vi.fn(async () => ({ ok: true, verb: "show", settings: { mode: "disabled", fallbackOnError: "deny" } })),
+    // Panel reads the OS sandbox section does not use; before the fix one failure left the tab with no section at all.
+    dirDispatch: vi.fn(() => reply(opts.directories ?? "resolve", dirList, "directory policy unavailable")),
+    reviewerDispatch: vi.fn(async () => opts.reviewer ?? { ok: true, verb: "show", settings: { mode: "disabled", fallbackOnError: "deny" } }),
   });
   ns.policy ??= { get: vi.fn(async () => ({ requireExplicitApproval: true, managed: false, source: "defaults" })), set: vi.fn(async () => ({ ok: true })) };
 
@@ -70,28 +73,58 @@ async function expectDisclosure(container: HTMLElement): Promise<void> {
   await waitFor(() => expect(container.querySelector('[data-testid="os-sandbox-windows-home-privacy-error"]')).toBeTruthy());
 }
 
+const q = (container: HTMLElement, selector: string) => container.querySelector(selector);
+const anyLoadError = '[data-testid^="permissions-load-error"]';
+const policyControls = '[data-settings-section="permissions-policy"] [role="radiogroup"]';
+const directoriesSection = '[data-settings-section="permissions-directories"]';
+
 describe("Settings → Permissions with an AVE_HOME privacy degrade (native peer snapshot)", () => {
   it("mounts the OS sandbox section with the degraded reason, the substrate and the privacy panel", async () => {
     const errors = vi.spyOn(console, "error");
-    const container = await openPermissions("resolve");
-    await waitFor(() => expect(container.querySelector('[data-testid="os-sandbox-toggle"]')).toBeTruthy());
+    const container = await openPermissions();
+    await waitFor(() => expect(q(container, '[data-testid="os-sandbox-toggle"]')).toBeTruthy());
     await expectDisclosure(container);
+    expect(q(container, anyLoadError)).toBeNull();
     expect(errors.mock.calls.filter((call) => String(call[0]).includes("render error in boundary"))).toEqual([]);
   });
 
-  it("keeps the disclosure when an unrelated panel load fails, without stating an unread toggle", async () => {
-    const container = await openPermissions("reject");
-    await waitFor(() => expect(container.querySelector('[data-testid="permissions-load-error"]')).toBeTruthy());
+  it("scopes a failed directory read to its own section; the disclosure and every other section still render", async () => {
+    const container = await openPermissions({ directories: "reject" });
+    await waitFor(() => expect(q(container, '[data-testid="permissions-load-error-directories"]')).toBeTruthy());
+    expect(q(container, directoriesSection)?.querySelector('[data-testid="permissions-load-error-directories"]')).toBeTruthy();
+    expect(container.querySelectorAll(anyLoadError)).toHaveLength(1);
     await expectDisclosure(container);
-    // The stored settings were never read, so the rows that would say on/off are not drawn.
-    expect(container.querySelector('[data-testid="os-sandbox-toggle"]')).toBeNull();
-    expect(container.querySelector('[data-testid="worker-confinement-toggle"]')).toBeNull();
+    await waitFor(() => expect(q(container, '[data-testid="os-sandbox-toggle"]')).toBeTruthy());
+    expect(q(container, policyControls)).toBeTruthy();
   });
 
-  it("keeps the disclosure while an unrelated panel load is still pending", async () => {
-    const container = await openPermissions("hang");
-    expect(container.querySelector('[data-testid="permissions-loading"]')).toBeTruthy();
+  it("keeps the disclosure and the loaded sections while a directory read is still pending", async () => {
+    const container = await openPermissions({ directories: "hang" });
+    await waitFor(() => expect(q(container, policyControls)).toBeTruthy());
+    expect(q(container, '[data-testid="permissions-loading-directories"]')).toBeTruthy();
     await expectDisclosure(container);
-    expect(container.querySelector('[data-testid="os-sandbox-toggle"]')).toBeNull();
+    expect(q(container, '[data-testid="os-sandbox-toggle"]')).toBeTruthy();
+    expect(q(container, anyLoadError)).toBeNull();
+  });
+
+  it("loads with an unwired reviewer (persisted llm, degraded to rule at boot) and shows no load error", async () => {
+    const container = await openPermissions({
+      reviewer: { ok: true, verb: "show", settings: { mode: "llm", fallbackOnError: "deny" }, reviewerDegradedToRule: true },
+    });
+    await waitFor(() => expect(q(container, policyControls)).toBeTruthy());
+    await waitFor(() => expect(q(container, '[data-testid="os-sandbox-toggle"]')).toBeTruthy());
+    expect(q(container, anyLoadError)).toBeNull();
+    expect(q(container, '[data-testid="reviewer-mode-fault"]')).toBeNull();
+  });
+
+  it("shows a genuine reviewer read failure on the policy section only", async () => {
+    const container = await openPermissions({ reviewer: { ok: false, error: "settings-unreadable" } });
+    await waitFor(() => expect(q(container, '[data-testid="permissions-load-error-policy"]')).toBeTruthy());
+    // The mode radio would otherwise write through a reviewer setting nobody read.
+    expect(q(container, policyControls)).toBeNull();
+    expect(container.querySelectorAll(anyLoadError)).toHaveLength(1);
+    expect(q(container, directoriesSection)?.querySelector('[data-testid^="permissions-load"]')).toBeNull();
+    await waitFor(() => expect(q(container, '[data-testid="os-sandbox-toggle"]')).toBeTruthy());
+    await expectDisclosure(container);
   });
 });
