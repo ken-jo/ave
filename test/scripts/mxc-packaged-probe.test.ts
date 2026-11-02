@@ -168,7 +168,7 @@ describe("packaged probe entry", () => {
 
 describe("packaged observation finalization", () => {
   const root = path.resolve(tmpdir(), "packaged-finalization-owned");
-  const observed = () => ({ temp: root, observations: Array.from({ length: 6 }, (_, index) => ({ name: String(index), passed: true })) });
+  const observed = () => ({ temp: root, observations: Array.from({ length: 8 }, (_, index) => ({ name: String(index), passed: true })) });
 
   it("removes only the allocated root after verified cleanup", async () => {
     const io = { measure: vi.fn(async () => 123), remove: vi.fn(async () => {}), write: vi.fn(async () => {}) };

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { once } from "node:events";
+import { pathToFileURL } from "node:url";
 import { writeProbeJson } from "./packaged-processes.mjs";
 const [mode, token, heartbeatText] = process.argv.slice(2);
 const heartbeat = Number(heartbeatText);
@@ -21,7 +22,14 @@ async function answerChallenge() {
     await writeProbeJson(directory, `ack-${process.pid}.json`, { token, nonce: challenged, pid: process.pid });
   }
 }
-if (mode === "echo") {
+if (mode === "plugin" || mode === "plugin-overflow") {
+  while (!(await file("go.json"))) { await answerChallenge(); await pause(heartbeat); }
+  const runtimeEntry = process.argv[5];
+  if (!path.isAbsolute(runtimeEntry)) throw new Error("Missing packaged child runtime");
+  const { servePluginChild } = await import(pathToFileURL(runtimeEntry).href);
+  const service = servePluginChild(process.stdin, process.stdout);
+  process.stdin.once("end", () => { service.hostGone(); process.exit(0); });
+} else if (mode === "echo") {
   while (!(await file("go.json"))) { await answerChallenge(); await pause(heartbeat); }
   for await (const bytes of process.stdin) if (!process.stdout.write(bytes)) await once(process.stdout, "drain");
   process.stderr.write("fixture-input-eof\n");

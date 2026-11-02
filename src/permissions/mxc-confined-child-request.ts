@@ -1,7 +1,7 @@
 import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { FORWARD_ENV_KEYS, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
-import { quoteWindowsArgument, WINDOWS_COMMAND_LINE_LIMIT } from "../shared/windows-command-line.js";
+import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLine } from "../shared/windows-command-line.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { synthesizeMxcAncestorQueries } from "./mxc-filesystem-policy.js";
 import { isWindowsPathAtOrUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
@@ -31,8 +31,8 @@ export function buildMxcConfinedChildRequest(input: MxcConfinedChildRequestInput
   }
   if (input.args.some((arg) => /[\0\r\n]/.test(arg))) throw new Error("Container arguments contain a forbidden control character");
   // Contract with the row-3 plugin-child factory: `request.command` must equal the shared Windows command-line helper's
-  // output for (command, args) — the same per-argument `quoteWindowsArgument` join. Never use a probe's quoting here.
-  const command = [input.command, ...input.args].map(quoteWindowsArgument).join(" ");
+  // output for (command, args). Never use a probe's quoting here.
+  const command = windowsCommandLine(input.command, input.args);
   if (command.length + 1 > WINDOWS_COMMAND_LINE_LIMIT) throw new Error("Container command line exceeds the process limit");
   const safeKeys = new Set<string>(FORWARD_ENV_KEYS.map((key) => key.toUpperCase()));
   const environment: Record<string, string> = {};

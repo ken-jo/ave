@@ -98,6 +98,24 @@ export interface ChildLink {
   onFault(handler: (reason: string) => void): void;
 }
 
+/** A child whose termination could not be established. Its owner keeps the launch lease and envelope
+ * registration, quarantines the lifecycle and refuses replacement; this is never a revocation claim. */
+export class PluginChildTerminationUnverifiedError extends Error {
+  readonly code = "plugin-child-termination-unverified";
+
+  constructor(pluginId: string, options: ErrorOptions) {
+    super(`Plugin child termination is unverified: ${pluginId}`, options);
+    this.name = "PluginChildTerminationUnverifiedError";
+  }
+}
+
+/** Keep both the failure that started teardown and the cleanup failure that followed it. */
+export function terminationUnverified(pluginId: string, original: unknown, cleanupError: unknown): PluginChildTerminationUnverifiedError {
+  return new PluginChildTerminationUnverifiedError(pluginId, {
+    cause: new AggregateError([original, cleanupError], "Teardown after a failure could not verify termination"),
+  });
+}
+
 export interface PluginChildTransportOptions
   extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild" | "invocations"> {
   readonly link: ChildLink;
@@ -128,6 +146,7 @@ export class PluginChildTransport {
     this.link = options.link;
     this.dispatcher = new HostApiDispatcher({
       ...options,
+      isActive: () => this.closedReason === undefined && options.isActive(),
       invocations: {
         resolve: (token) => this.liveInvocations.get(token) ?? this.settledInvocations.get(token),
         toolCallsInFlight: () => this.liveInvocations.size,
@@ -337,6 +356,9 @@ export class PluginChildTransport {
   }
 
   private route(message: MultiplexedMessage): void {
+    // Keep the existing inactive reply for late host requests while refusing
+    // effects through the dispatcher's liveness predicate during native drain.
+    if (this.closedReason !== undefined && classifyMultiplexedMessage(message) !== "host-request") return;
     switch (classifyMultiplexedMessage(message)) {
       case "response": {
         const id = String(message.id);
