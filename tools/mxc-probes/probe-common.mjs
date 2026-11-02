@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-export const PROBE_NAMES = ["node-ui", "loopback", "stdio-lifetime", "kernel-objects", "shell-ui", "ancestor-exposure", "egress-policy"];
+export const PROBE_NAMES = ["node-ui", "loopback", "stdio-lifetime", "kernel-objects", "shell-ui", "ancestor-exposure", "egress-policy", "holder-mcp-stdio", "holder-hook-json"];
 
 // Read the numeric entries from the owning policy without loading app code in a standalone probe.
 export async function loadBudgets() {
