@@ -51,10 +51,10 @@ export function isAveHomeConfigurationRefused(home: string): boolean {
 export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const root = resolve(home);
   configurationHomes.add(root);
-  if (isAveHomeConfigurationRefused(root)) return root;
   const key = configurationKey(root);
   const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
+    if (isAveHomeConfigurationRefused(root)) return refusedConfigurationDirectory(root, config);
     if (process.platform === "win32") return windowsConfigurationDirectory(root, config, key);
     let directory;
     try { directory = lstatSync(config, { bigint: true }); }
@@ -91,6 +91,36 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
     if (error instanceof AveHomeConfigurationUntrustedError) throw error;
     throw new AveHomeConfigurationUntrustedError(config, (error as Error).message);
   }
+}
+
+/**
+ * A refused home is never migrated, and its root is not trusted. Configuration that an earlier verified boot committed to `config/`
+ * stays the configuration: every read and write there verifies `config/`'s own protected owner-only DACL, never the root's, so the
+ * user's committed policy (stricter than its absence) still applies. Reading the root instead found nothing and refused the whole
+ * boot before the privacy refusal could be shown (native run 4). A home that never committed stays root-only.
+ */
+function refusedConfigurationDirectory(root: string, config: string): string {
+  const markerPath = join(config, AVE_HOME_CONFIGURATION_MARKER);
+  if (process.platform === "win32") {
+    const [directory, marker] = pinWindowsPaths([config, markerPath]);
+    if (!admitWindowsReparse(directory!, "evidence") || (directory!.exists === true && !directory!.directory)) {
+      throw new Error("Configuration directory is a link or is not a directory");
+    }
+    if (directory!.exists !== true) return root;
+    if (!admitWindowsReparse(marker!, "evidence") || (marker!.exists === true && marker!.directory)) throw new Error("Configuration marker is not a regular file");
+    if (marker!.exists !== true) return root;
+  } else {
+    let directory;
+    try { directory = lstatSync(config); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return root; throw error; }
+    if (!directory.isDirectory()) throw new Error("Configuration directory is a link or is not a directory");
+    let marker;
+    try { marker = lstatSync(markerPath); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return root; throw error; }
+    if (!marker.isFile()) throw new Error("Configuration marker is not a regular file");
+  }
+  if (readFileSync(markerPath, "utf8") !== AVE_HOME_CONFIGURATION_MARKER_CONTENT) throw new Error("Configuration marker content is invalid");
+  return config;
 }
 
 function windowsConfigurationDirectory(root: string, config: string, key: string): string {

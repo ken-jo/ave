@@ -440,7 +440,11 @@ describe("ensureAveHomePrivate", () => {
     expect(repair).toBeLessThan(script.indexOf("$refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle)"));
     // The native repair re-checks the shape, writes only the DACL, and verifies through the unchanged predicates.
     expect(script).toContain("if (!RootRepairable(Read(home), user)) return false;");
-    expect(script).toContain("SetSecurityInfo(home, 1, 0x80000004u, null, IntPtr.Zero, access, IntPtr.Zero)");
+    // Native run 4: SetSecurityInfo's propagation turned the workspace's stale inherited entries into explicit ones. The root is
+    // written alone, as a protected owner-only descriptor, with no propagation into children.
+    expect(script).toContain('Check(NtSetSecurityObject(home, 4u, bytes), "Home root repair failed");');
+    expect(script).toContain("ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected |");
+    expect(script).not.toMatch(/SetSecurityInfo\(home,/);
     expect(script).toContain("if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated))");
   });
   it("checks the workspace on every boot whose root passes RootSafe, not only after a root repair", () => {

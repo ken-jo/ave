@@ -479,23 +479,26 @@ public static class HomeDirectoryDacl {
   public static bool RepairInheritedRoot(SafeFileHandle home, SecurityIdentifier user, bool elevated, int readMask) {
     // Read() refuses a link or a non-directory on this same handle.
     if (!RootRepairable(Read(home), user)) return false;
-    RawAcl acl = new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")").DiscretionaryAcl;
-    byte[] access = new byte[acl.BinaryLength];
-    acl.GetBinaryForm(access, 0);
-    uint result = SetSecurityInfo(home, 1, 0x80000004u, null, IntPtr.Zero, access, IntPtr.Zero);
-    if (result != 0) throw new Win32Exception((int)result, "Home root repair failed");
+    // Only the root's own DACL is written. SetSecurityInfo also propagated into existing children, and native run 4 showed that
+    // propagation turning the workspace's stale inherited SYSTEM and Administrators entries into explicit ones (before any other
+    // writer ran). NtSetSecurityObject computes no inheritance and reaches no child; the per-boot workspace check rewrites it.
+    var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected |
+      ControlFlags.DiscretionaryAclAutoInherited | ControlFlags.SelfRelative, null, null, null,
+      new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")").DiscretionaryAcl);
+    byte[] bytes = new byte[descriptor.BinaryLength];
+    descriptor.GetBinaryForm(bytes, 0);
+    Check(NtSetSecurityObject(home, 4u, bytes), "Home root repair failed");
     var repaired = Read(home);
     if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated)) throw new InvalidOperationException("Home root repair protection is unverified");
     return true;
   }
   [DllImport("ntdll.dll")]
   private static extern int NtSetSecurityObject(SafeFileHandle handle, uint info, byte[] descriptor);
-  // The handle-based root write does not reach existing children (native run 3: 20,200 kept their inherited entries), so a
-  // workspace made under an older, unprotected root keeps that root's stale inherited entries. A later DACL write on it that
-  // recomputes inheritance (most likely the extension grant) carries them over as explicit ones. Every boot whose root passes RootSafe
-  // checks this one directory, the cwd and default workspace root: when its inherited entries are anything but the single entry a
-  // RootSafe root passes down (the user's FullControl, object and container inherit), it is rewritten as its explicit entries in
-  // order followed by that entry. NtSetSecurityObject computes no inheritance, so the result is exactly this, and it is read back.
+  // The root repair writes only the root (NtSetSecurityObject, no propagation), so a workspace made under the older, unprotected root
+  // keeps that root's stale inherited entries until it is rewritten here. Every boot whose root passes RootSafe checks this one
+  // directory, the cwd and default workspace root: when its inherited entries are anything but the single entry a RootSafe root
+  // passes down (the user's FullControl, object and container inherit), it is rewritten as its explicit entries in order followed
+  // by that entry. NtSetSecurityObject computes no inheritance, so the result is exactly this, and it is read back.
   // Running every boot, not only in the boot that repaired the root, is what retries a boot whose rewrite failed.
   // A link, a non-directory, a protected DACL, a foreign owner, or a workspace that cannot be opened or read is left as it is.
   // Other children keep their stale SYSTEM and Administrators entries.

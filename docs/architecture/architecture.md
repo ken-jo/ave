@@ -2919,19 +2919,18 @@ with its own owner rule:
     (an inherited Users, Authenticated Users, Everyone, CREATOR OWNER, domain
     group or other-user entry is refused)
   - the user has an entry
-  The handle-based root write does not re-propagate to existing children.
-  Native run 3 found 20,200 pre-existing entries that kept their inherited
-  SYSTEM, Administrators and user entries. Ave leaves them: the repair
-  admits only those two principals, which hold backup and take-ownership
-  rights over the volume anyway. A tree walk would cost boot time in
-  proportion to the home's size. The boundary subdirectories are protected
-  and checked on every boot by Repair and OwnerOnly. The one exception is
-  `workspace`: the cwd, the default workspace root and the in-project
-  auto-write scope. The start may have created it under the old root. In
-  native run 3 its stale inherited entries later appeared as explicit
-  SYSTEM and Administrators entries. That is consistent with a DACL write
-  that recomputes inheritance, most likely the extension grant, but the
-  writer is not confirmed.
+  The root repair writes only the root's own DACL, with
+  NtSetSecurityObject, which reaches no child. SetSecurityInfo, used before,
+  also propagated into existing children. In native run 4 that propagation
+  turned the workspace's stale inherited SYSTEM and Administrators entries
+  into explicit ones, before any other writer ran. Existing children keep
+  their stale inherited SYSTEM, Administrators and user entries. Ave leaves
+  them: only those two principals can remain, and they hold backup and
+  take-ownership rights over the volume anyway. A tree walk would cost boot
+  time in proportion to the home's size. The boundary subdirectories are
+  protected and checked on every boot by Repair and OwnerOnly. The one
+  exception is `workspace`: the cwd, the default workspace root and the
+  in-project auto-write scope.
   Every boot whose root passes RootSafe checks the workspace on a no-reparse
   handle, whether or not that boot repaired the root. If its inherited
   entries are anything other than the single user entry a protected root
@@ -2961,7 +2960,14 @@ with its own owner rule:
   The holder of the shared host-instance lock migrates, whether desktop or
   headless. Execution-mode and child processes without that lock only resolve
   the current on-disk layout.
-  A refused home stays root-only, without migration.
+  A refused home is never migrated, and its root is not trusted. If an
+  earlier verified boot committed `config/`, the refused boot keeps reading
+  and writing there. Each access verifies `config/`'s own protected
+  owner-only DACL, never the root's, so the committed policy still applies,
+  and boot reaches the privacy refusal and its fix command. Before this,
+  reading the root found nothing and the configuration error stopped boot
+  (native run 4). A marker with invalid content is refused. A home that
+  never committed `config/` stays root-only.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's

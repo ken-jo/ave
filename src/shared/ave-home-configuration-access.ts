@@ -51,14 +51,17 @@ function writeHome(path: string): string {
 }
 
 function verifyWriteBoundary(home: string): void {
-  if (isAveHomeConfigurationRefused(home)) return;
+  // A refused home's root is not verified; a write into its committed `config/` still verifies that directory's own DACL.
+  const refused = isAveHomeConfigurationRefused(home);
+  if (refused && resolveConfigurationFile(join(home, "settings.json")) === join(resolve(home), "settings.json")) return;
   if (process.platform === "win32") {
     try { windowsReadBoundary(resolveConfigurationFile(join(home, "settings.json")), { present: false }).handles?.close(); }
     catch (error) {
       if (error instanceof AveHomeConfigurationUntrustedError) throw error;
       throw new AveHomeConfigurationUntrustedError(home, (error as Error).message);
     }
-  } else verifyAveHomeConfiguration(home, "boundary");
+  } else if (!refused) verifyAveHomeConfiguration(home, "boundary");
+  if (refused) return;
   if (homeKey(home) === homeKey(aveHome())) {
     if (!configurationEntryExists(join(home, "config"))) throw new AveHomeConfigurationUntrustedError(home, "Configuration directory is missing");
   }
