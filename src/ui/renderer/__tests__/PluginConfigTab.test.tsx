@@ -1476,7 +1476,7 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     showCards([{ ...base, id: "meeting", loadStatus, lifecycleQuarantined: true as const }]);
     render(<PluginConfigTab />);
     const line = await screen.findByTestId("plugin-config:lifecycle-quarantined:meeting");
-    expect(line).toHaveTextContent("이 플러그인 프로세스가 멈췄는지 확인하지 못했습니다");
+    expect(line).toHaveTextContent("이 익스텐션 프로세스가 멈췄는지 확인하지 못했습니다");
     expect(line).toHaveTextContent("다시 시작할 수 없습니다");
     expect(line).toHaveAttribute("role", "status");
     expect(screen.queryByTestId("plugin-config:doctor-panel:meeting") !== null).toBe(doctor);

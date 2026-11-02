@@ -392,7 +392,7 @@ export const en = {
   "pluginConfigTab.confinementWindowsMxc": "Windows container (MXC)",
   "pluginConfigTab.confinementUnconfined": "no OS sandbox",
   "pluginConfigTab.confinementNotSpawned": "process not started",
-  "pluginConfigTab.doctorLifecycleQuarantined": "Ave could not confirm that this plugin's process stopped. Until you restart Ave it keeps the folder access it was started with, even for folders removed from Ave since, and it cannot be restarted.",
+  "pluginConfigTab.doctorLifecycleQuarantined": "Ave could not confirm that this extension's process stopped. Until you restart Ave it keeps the folder access it was started with, even for folders removed from Ave since, and it cannot be restarted.",
   "pluginConfigTab.lastUpdateRefused": "Last update refused: {message}",
   "pluginConfigTab.lastRestartRefused": "Last restart refused: {message}",
   "gitMarketplace.version.hostProtocol": "Requires a different extension host protocol",
