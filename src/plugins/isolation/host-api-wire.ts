@@ -40,6 +40,7 @@ import {
   describeNonJson,
 } from "../../shared/json-representable.js";
 import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
+import { WORKER_CONTROL_METHOD } from "../public-contract.js";
 import type {
   PluginLifecycleEvent,
   PluginWorkerControl,
@@ -2359,8 +2360,9 @@ export function asWireWorkerSend(payload: unknown, label: string): WireWorkerSen
   switch (send.kind) {
     case "request":
     case "notification":
-      if (!hasOnlyKeys(send, ["kind", "id", "method", "params"]) || typeof send.method !== "string") {
-        refuse(`${String(send.kind)} carries no method or an unknown field`);
+      if (!hasOnlyKeys(send, ["kind", "id", "method", "params"]) || typeof send.method !== "string"
+        || !WORKER_CONTROL_METHOD.test(send.method)) {
+        refuse(`${String(send.kind)} carries no valid method or an unknown field`);
       }
       break;
     case "response": {

@@ -1422,6 +1422,35 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     expect(harness.host.openSubscriptionCount).toBe(0);
   });
 
+  it("drops a send for a handle this plugin does not hold, and a malformed send for one it does", async () => {
+    const worker = makeFakeControlWorker();
+    const harness = await createServiceHarness({ spawnWorker: async () => worker });
+    stdioControl(await harness.child.hostApi.spawnWorker!({
+      workerId: "indexer",
+      control: "stdio-control-v1",
+      command: "/usr/bin/python3",
+    }));
+    const handleId = handleIdOf(harness, "spawnWorker");
+    const send = (subscriptionId: string, payload: unknown): void => harness.host.handleNotification({
+      jsonrpc: "2.0",
+      method: "notifications/ave/subscription/send",
+      params: { subscriptionId, payload },
+    } as HostApiNotification);
+
+    // Only the dispatcher of the plugin that spawned a worker holds its handle: another id reaches no worker.
+    send(`${handleId}_forged`, { kind: "request", id: 0, method: "search_bm25", params: {} });
+    send("worker_0", { kind: "notification", id: 1, method: "set_allowed_roots", params: { roots: ["/"] } });
+    // The handle exists, but the payload is not a send: it is logged and dropped, never half-applied.
+    send(handleId, { kind: "request", id: "not-a-number", method: "search_bm25" });
+    send(handleId, { kind: "request", id: 2, method: "search.bm25" });
+    await settle();
+    expect(worker.requests).toEqual([]);
+    expect(worker.notified).toEqual([]);
+    expect(harness.pushed.filter((frame) => frame.method === "notifications/ave/subscription"
+      && (frame.params as { subscriptionId?: string }).subscriptionId === handleId
+      && ((frame.params as { payload?: { kind?: string } }).payload?.kind === "result"))).toEqual([]);
+  });
+
   it("refuses a spec without a declared control mode before the host spawns anything", async () => {
     const spawnWorker = vi.fn(async () => makeFakeControlWorker());
     const harness = await createServiceHarness({ spawnWorker });

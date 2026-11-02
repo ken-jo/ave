@@ -280,6 +280,45 @@ describe("spawnWorker — gate OFF (default)", () => {
     }
   });
 
+  it("carries a stdio-control worker's frames through the Windows relay: hello first, then requests", async () => {
+    setProcessPlatform("win32");
+    gateActive = true;
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32", reason: "Filesystem confinement", confines: { filesystem: true, process: false, network: true } });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["srt-win.exe", "exec", "--", "cmd.exe"], env: { ...process.env } });
+    const holder = new StubWorkerChild();
+    holder.pid = 5201;
+    const child = new StubWorkerChild();
+    child.pid = 5202;
+    spawnMock.mockReturnValueOnce(holder).mockReturnValueOnce(child);
+    const spawning = spawnWorker({ pluginId: "local-indexer", workerId: "relay-control", command: "C:/runtime/worker.exe", control: "stdio-control-v1" });
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2));
+    const peer = await startFakeRelayPeer(child.stdout);
+    try {
+      // The relay socket carries the host's frames to the worker; the worker's frames come back on the relayed stdout.
+      let pending = "";
+      peer.onInput((text) => {
+        pending += text;
+        let newline: number;
+        while ((newline = pending.indexOf("\n")) >= 0) {
+          const frame = JSON.parse(pending.slice(0, newline)) as { id?: number; method?: string; params?: unknown };
+          pending = pending.slice(newline + 1);
+          if (frame.method === "$/ave/hello") {
+            child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 0, result: { protocol: "ave-worker-stdio-control", version: "1" } })}\n`);
+          } else if (frame.method === "echo") {
+            child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: frame.params })}\n`);
+          }
+        }
+      });
+      const worker = await spawning;
+      expect(worker.control).toBe("stdio-control-v1");
+      await expect(worker.request("echo", { through: "relay" })).resolves.toEqual({ through: "relay" });
+      worker.stop();
+      child.emit("exit", 0, "SIGTERM");
+    } finally {
+      peer.close();
+    }
+  });
+
   it("rejects ambiguous path aliases instead of silently normalizing them", async () => {
     await expect(spawnWorker({
       pluginId: "local-indexer",
