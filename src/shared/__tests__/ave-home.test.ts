@@ -181,6 +181,43 @@ describe("ensureAveHomePrivate", () => {
     const { result, dir } = check((entry, at) => at === index ? { path: entry.path, error: "read failed" } : entry);
     expect(result).toMatchObject({ enforcement: "none", failedPath: index ? join(dir, "secrets") : dir, category: "read-back-failed" });
   });
+  // Lead decision 2026-11-02 (stricter only): the workspace is the cwd and the in-project auto-write scope, so a principal other than
+  // the user, SYSTEM or Administrators that can write to it refuses the boot; a foreign read-only entry is reported only.
+  describe("the workspace's own entries", () => {
+    const rule = (sid: string, fileSystemRights: number, isInherited = false): WindowsAccessRule =>
+      ({ sid, accessControlType: 0, fileSystemRights, inheritanceFlags: 3, propagationFlags: 0, isInherited });
+    const withWorkspace = (extra: Partial<WindowsDirectoryDacl>) => check((entry, index) => index === 0 ? { ...entry, ...extra } : entry);
+    it.each([
+      ["explicit Users modify", rule("S-1-5-32-545", 0x1301bf), true],
+      ["explicit Everyone write data", rule("S-1-1-0", 0x2), true],
+      ["explicit domain group generic write", rule("S-1-5-21-1-2-3-513", 0x40000000), true],
+    ])("refuses %s on the workspace, names it and marks it explicit", (_name, foreign, explicit) => {
+      const { result, dir } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), foreign] });
+      expect(result).toMatchObject({ enforcement: "none", failedPath: join(dir, "workspace"), category: "workspace-extra-principals",
+        extraPrincipals: [{ sid: foreign.sid, ...(explicit ? { explicit: true } : {}) }] });
+    });
+    it("refuses an inherited foreign write on the workspace without marking it explicit", () => {
+      const { result } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), rule("S-1-5-11", 0x1301bf, true)] });
+      expect(result).toMatchObject({ category: "workspace-extra-principals", extraPrincipals: [{ sid: "S-1-5-11" }] });
+      expect((result as { extraPrincipals: unknown[] }).extraPrincipals[0]).not.toHaveProperty("explicit");
+    });
+    it("accepts SYSTEM and Administrators write entries on the workspace", () => {
+      const { result } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), rule("S-1-5-18", 2032127), rule("S-1-5-32-544", 2032127)] });
+      expect(result).toMatchObject({ enforcement: "win32-dacl" });
+      expect(result).not.toHaveProperty("diagnostics");
+    });
+    it("reports a foreign read-only workspace entry without refusing", () => {
+      const { result } = withWorkspace({ workspaceRules: [rule(OWNER_SID, 2032127, true), rule("S-1-5-32-545", 0x1200a9)] });
+      expect(result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('Directory "workspace" has foreign read-only access: S-1-5-32-545')] });
+    });
+    it("reports a workspace rewritten to inherit from the protected root, and a linked workspace", () => {
+      expect(withWorkspace({ workspaceReinherited: true }).result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('"workspace" re-inherited')] });
+      expect(withWorkspace({ workspaceLink: true }).result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('"workspace" is a link')] });
+    });
+  });
   // Lead decision 2026-11-02 (stricter only): a foreign read-only root entry is accepted only when it applies to the root alone.
   it.each([
     ["object inherit", 1],
@@ -405,6 +442,16 @@ describe("ensureAveHomePrivate", () => {
     expect(script).toContain("if (!RootRepairable(Read(home), user)) return false;");
     expect(script).toContain("SetSecurityInfo(home, 1, 0x80000004u, null, IntPtr.Zero, access, IntPtr.Zero)");
     expect(script).toContain("if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated))");
+  });
+  it("checks the workspace on every boot whose root passes RootSafe, not only after a root repair", () => {
+    // A boot whose workspace rewrite failed leaves a D:P root that is never repairable again; this is what retries it.
+    for (const repairRoot of [false, true]) {
+      const script = (windowsDirectoryProtectionRequest([home()], undefined, repairRoot).options as { input: string }).input;
+      const rootSafe = script.indexOf("$refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle)");
+      const workspace = script.indexOf("$workspaceReinherited = (-not $refused) -and [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User);");
+      expect(workspace).toBeGreaterThan(rootSafe);
+      expect(script).not.toMatch(/RepairInheritedRoot\([^)]*\)\s*\{[^}]*ReinheritWorkspace/);
+    }
   });
   it("keeps the pre-lock create a no-op off Windows, so a POSIX start cannot fail before bootstrap", () => {
     const refuse = () => { throw new Error("must not run"); };

@@ -9,7 +9,7 @@ import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
-import { isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
+import { isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsWorkspaceForeignWriter, WINDOWS_WORKSPACE_TRUSTED_WRITERS, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
 import { fileIdentityKey } from "../lib/file-identity.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandleEntry } from "./windows-configuration-handles.js";
 
@@ -307,6 +307,7 @@ export type AveHomePrivacyFailureCategory =
   | "icacls-failed"
   | "read-back-failed"
   | "extra-principals"
+  | "workspace-extra-principals"
   | "not-protected"
   | "invalid-owner-grant"
   | "owner-claim-failed"
@@ -326,6 +327,12 @@ export interface WindowsDirectoryDacl {
   ownerSid?: string;
   protected?: boolean;
   repaired?: boolean;
+  /** Home entry only: the workspace's stale inherited entries were rewritten to what the protected root passes down. */
+  workspaceReinherited?: boolean;
+  /** Home entry only: the workspace's own entries, read after protection; absent when there is no workspace directory. */
+  workspaceRules?: WindowsAccessRule[];
+  /** Home entry only: the workspace is a link or junction, so its entries are not the workspace's. */
+  workspaceLink?: true;
   skippedLinks?: number;
   cleanupWarnings?: string[];
   rules?: WindowsAccessRule[];
@@ -377,7 +384,8 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     try {
       const row = readWindowsDacls([resolve(path)])[0]!;
       if (!row.exists || !row.directory) return { path, category: "directory-failed", error: "Path is not a directory" };
-      return { ...write, ...directoryDescriptor(path, row) };
+      const descriptor = { ...write, ...directoryDescriptor(path, row) };
+      return protect && index === 0 && !("error" in descriptor) ? { ...descriptor, ...workspaceFacts(path) } : descriptor;
     } catch (error) {
       return { path, category: "read-back-failed", error: (error as Error).message };
     }
@@ -395,6 +403,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
 '@;
     $refused = $false;
     $homeHandle = $null;
+    $workspaceReinherited = $false;
     try {
       $results = @(foreach ($path in $request.paths) {
         if ($refused) { @{ path = $path; error = 'An enclosing directory was refused' }; continue }
@@ -406,6 +415,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
             $handle = $homeHandle;
             if ($request.repairRoot -and [HomeDirectoryDacl]::RepairInheritedRoot($handle, $identity.User, $elevated, $request.readOnlyRights)) { $repaired = 0 }
             $refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle), $identity.User, $elevated, $request.readOnlyRights);
+            $workspaceReinherited = (-not $refused) -and [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User);
           } else {
             if ([System.IO.Path]::GetDirectoryName($path) -ne [System.IO.Path]::GetFullPath($request.paths[0])) { throw 'Directory is outside the pinned home' }
             $leaf = [System.IO.Path]::GetFileName($path);
@@ -419,6 +429,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
           if ($null -eq $handle) { throw 'Directory does not exist' }
           $result = @{ path = $path };
           if ($repaired -ge 0) { $result.repaired = $true; $result.skippedLinks = $repaired }
+          if ($handle -eq $homeHandle -and $workspaceReinherited) { $result.workspaceReinherited = $true }
           if ($null -ne $homeHandle -and $handle -ne $homeHandle) { $result.cleanupWarnings = @([HomeDirectoryDacl]::CleanupWarnings.ToArray()) }
           $result
         } catch {
@@ -458,6 +469,15 @@ function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoo
   return results;
 }
 
+
+/** The workspace (cwd, default workspace root, in-project write scope) is read, not protected: its entries are checked at boot. */
+function workspaceFacts(home: string): Pick<WindowsDirectoryDacl, "workspaceRules" | "workspaceLink"> {
+  const row = readWindowsDacls([join(resolve(home), "workspace")])[0]!;
+  if (!row.exists) return {};
+  if (!admitWindowsReparse(row, "evidence")) return { workspaceLink: true };
+  if (!row.directory || !row.dacl) throw new Error("Workspace DACL read-back is invalid");
+  return { workspaceRules: windowsOwnerRules(row.dacl) };
+}
 
 function directoryDescriptor(path: string, row: WindowsDaclFacts): WindowsDirectoryDacl {
   if (!admitWindowsReparse(row, "evidence")) return { path, category: "reparse-point", error: "Directory is a link or junction" };
@@ -674,6 +694,19 @@ export function ensureAveHomePrivate(
       diagnostics.push(...descriptor.cleanupWarnings ?? []);
     }
     if (!sid) throw new Error("Current account SID read-back missing");
+    const homeEntry = descriptors.find((entry) => entry.path === home);
+    if (homeEntry?.workspaceReinherited) diagnostics.push('Directory "workspace" re-inherited from the protected root');
+    if (homeEntry?.workspaceLink) diagnostics.push('Directory "workspace" is a link or junction; its entries were not checked');
+    const workspaceRules = homeEntry?.workspaceRules ?? [];
+    const workspaceWriters = workspaceRules.filter((rule) => isWindowsWorkspaceForeignWriter(rule, sid));
+    if (workspaceWriters.length > 0) {
+      const extraPrincipals = [...new Map(workspaceWriters.map(({ sid: writer, account }) => [writer, { sid: writer, ...(account ? { account } : {}),
+        ...(workspaceWriters.some((entry) => entry.sid === writer && !entry.isInherited) ? { explicit: true as const } : {}) }])).values()];
+      return { enforcement: "none", home, failedPath: join(home, "workspace"), category: "workspace-extra-principals", extraPrincipals,
+        reason: "Another account can write to the workspace", ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
+    }
+    const workspaceReaders = workspaceRules.filter((rule) => rule.sid !== sid && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid));
+    if (workspaceReaders.length > 0) diagnostics.push(`Directory "workspace" has foreign read-only access: ${[...new Set(workspaceReaders.map((rule) => rule.sid))].join(", ")}`);
     return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   } catch (err) {
     return { enforcement: "none", home, failedPath: path, category, reason: (err as Error).message,

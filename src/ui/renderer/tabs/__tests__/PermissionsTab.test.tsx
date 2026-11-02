@@ -1499,6 +1499,21 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         .toBe('icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"');
     });
 
+    it("removes only the workspace's explicit writers and never drops its inheritance", async () => {
+      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals", approvedForSession: false,
+        extraPrincipals: [{ sid: "S-1-5-32-545", explicit: true }, { sid: "S-1-5-11" }] });
+      expect(await screen.findByTestId("os-sandbox-windows-home-privacy-error")).toHaveTextContent("S-1-5-32-545");
+      expect((await screen.findByTestId("os-sandbox-windows-home-privacy-command")).querySelector("pre")?.textContent)
+        .toBe('icacls "D:\\ave-home\\workspace" /remove *S-1-5-32-545');
+    });
+
+    it("offers no command when the workspace writer is only inherited", async () => {
+      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals", approvedForSession: false,
+        extraPrincipals: [{ sid: "S-1-5-11" }] });
+      await screen.findByTestId("os-sandbox-windows-home-privacy-error");
+      expect(screen.queryByTestId("os-sandbox-windows-home-privacy-command")).toBeNull();
+    });
+
     it.each(["reparse-point", "invalid-owner-grant", "identity-failed"])("offers no permission command for %s", async (category) => {
       await renderPrivacy({ path: "D:\\ave-home", category, approvedForSession: false });
       await screen.findByTestId("os-sandbox-windows-home-privacy-error");

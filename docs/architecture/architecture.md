@@ -2890,20 +2890,30 @@ with its own owner rule:
   rights over the volume anyway. A tree walk would cost boot time in
   proportion to the home's size. The boundary subdirectories are protected
   and checked on every boot by Repair and OwnerOnly. The one exception is
-  `workspace`, the cwd and default workspace root. The start may have
-  created it under the old root. In native run 3 its stale inherited entries
-  later appeared as explicit SYSTEM and Administrators entries. That is
-  consistent with a DACL write that recomputes inheritance, most likely the
-  extension grant, but the writer is not confirmed. After the root is
-  verified, the repair rewrites
-  only that directory's own DACL on a no-reparse handle: its explicit
-  entries in order, then the single entry the repaired root passes down.
-  It then reads the result back. A link, a protected DACL, a foreign owner
-  or a workspace that cannot be opened or read is left as it is, and the
-  boot keeps the verified root. If the request times out, this boot is refused and no
-  repair is reported. The root may already be `D:P` owner-only. In that
-  case the next boot passes it as win32-dacl, with no repair line and no
-  notice, and the workspace may keep its stale entries.
+  `workspace`: the cwd, the default workspace root and the in-project
+  auto-write scope. The start may have created it under the old root. In
+  native run 3 its stale inherited entries later appeared as explicit
+  SYSTEM and Administrators entries. That is consistent with a DACL write
+  that recomputes inheritance, most likely the extension grant, but the
+  writer is not confirmed.
+  Every boot whose root passes RootSafe checks the workspace on a no-reparse
+  handle, whether or not that boot repaired the root. If its inherited
+  entries are anything other than the single user entry a protected root
+  passes down, Ave rewrites only that directory's own DACL: its explicit
+  entries in order, then that entry. It then reads the result back.
+  Because the check runs on every boot, a boot whose rewrite failed is
+  retried. That boot was refused with no repairs, and the root may already
+  be `D:P` owner-only. The same holds when the request times out.
+  A link, a protected DACL, a foreign owner, or a workspace that cannot be
+  opened or read is left as it is. A write that fails, or a read-back that
+  does not match, refuses the boot.
+  After protection, the workspace's own entries are read. An explicit or
+  inherited allow that grants write to any principal other than the user,
+  SYSTEM or Administrators is a workspace extra principal. The boot is
+  refused, and Settings names the principal and shows `icacls
+  "<workspace>" /remove *<sid>` for each explicit one. The command does not
+  drop the workspace's inheritance. A foreign read-only entry is reported
+  as a diagnostic only.
   Any other root is refused. Settings then shows the exact `icacls` command. It
   drops inheritance, then removes every grant and deny of each explicit extra
   principal (`/remove *<sid>`).

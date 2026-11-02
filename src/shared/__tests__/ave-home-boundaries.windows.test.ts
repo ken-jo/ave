@@ -574,6 +574,34 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
         expect(["S-1-5-18", "S-1-5-32-544", user]).toContain(rule.sid);
       }
     });
+    it("retries the workspace on a later boot whose root is already protected", () => {
+      // A boot whose workspace rewrite failed after the root was written leaves a D:P root (not repairable again) and a stale
+      // workspace. The workspace check runs on every boot whose root passes RootSafe, so the next boot completes it.
+      const dir = inheritedHome();
+      const workspace = join(dir, "workspace");
+      mkdirSync(workspace); setFixtureOwner(workspace);
+      expect(native("$h=[HomeDirectoryDacl]::OpenHome($env:AVE_TEST_TARGET,$u,$false); try { [HomeDirectoryDacl]::RepairInheritedRoot($h,$u,$false,0x1200a9) } finally { $h.Dispose() }", dir)).toBe("True");
+      const user = rootOf(dir).currentUserSid;
+      const stale = rootOf(workspace).rules?.some((rule) => rule.isInherited && rule.sid !== user) === true;
+      const privacy = ensureAveHomePrivate(dir);
+      expect(privacy, JSON.stringify(privacy)).toMatchObject({ enforcement: "win32-dacl" });
+      expect("repairs" in privacy ? privacy.repairs ?? [] : []).not.toContain(dir);
+      const diagnosticsOf = (result: ReturnType<typeof ensureAveHomePrivate>) => ("diagnostics" in result ? result.diagnostics ?? [] : []);
+      if (stale) expect(diagnosticsOf(privacy)).toEqual(expect.arrayContaining([expect.stringContaining('"workspace" re-inherited')]));
+      expect(rootOf(workspace).rules?.filter((rule) => rule.isInherited).map((rule) => rule.sid)).toEqual([user]);
+      // Clean now: the next boot does not rewrite it again.
+      expect(diagnosticsOf(ensureAveHomePrivate(dir))).not.toEqual(expect.arrayContaining([expect.stringContaining("re-inherited")]));
+    });
+    it("refuses an explicit foreign write on the workspace and names it", () => {
+      const dir = fixture();
+      const workspace = join(dir, "workspace");
+      mkdirSync(workspace); setFixtureOwner(workspace);
+      execFileSync(win32SystemBinary("icacls"), [workspace, "/grant", "*S-1-5-32-546:(OI)(CI)M", "/q"], { windowsHide: true, stdio: "pipe" });
+      expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none", failedPath: workspace, category: "workspace-extra-principals",
+        extraPrincipals: [expect.objectContaining({ sid: "S-1-5-32-546", explicit: true })] });
+      execFileSync(win32SystemBinary("icacls"), [workspace, "/remove", "*S-1-5-32-546", "/q"], { windowsHide: true, stdio: "pipe" });
+      expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    });
     it("refuses an explicit inheritable foreign allow, names it, and leaves the root as it was", () => {
       const dir = inheritedHome();
       grant(dir, "(OI)(CI)R");

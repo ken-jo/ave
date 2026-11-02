@@ -1,7 +1,7 @@
 // The narrow root repair (owner decision 2026-11-02): Ave repairs only the root shape its own pre-fix mkdir produced.
 // The native helper re-checks this predicate on the pinned handle; the SDDL parity test runs both on Windows.
 import { describe, expect, it } from "vitest";
-import { isWindowsHomeRootRepairable, isWindowsHomeRootSafe } from "../windows-home-boundary.js";
+import { isWindowsHomeRootRepairable, isWindowsHomeRootSafe, isWindowsWorkspaceForeignWriter } from "../windows-home-boundary.js";
 import type { WindowsDaclFacts } from "../windows-path-facts.js";
 
 const USER = "S-1-5-21-1004336348-11-77-1417";
@@ -69,10 +69,29 @@ describe("isWindowsHomeRootSafe and foreign read-only root entries", () => {
     ["container inherit", 0x2, false],
     ["object and container inherit", 0x3, false],
     ["inherit-only container", 0x2 | 0x8, false],
-  ])("Everyone read-only, %s: accepted=%s", (_name, flags, accepted) => {
+  ])("Everyone read-only, %s (ACE flags %i): accepted %s", (_name, flags, accepted) => {
     expect(isWindowsHomeRootSafe(root([OWNER_ONLY, ace("S-1-1-0", flags, 0, 0x1200a9)], { protected: true }))).toBe(accepted);
   });
   it("still refuses a root-only foreign write", () => {
     expect(isWindowsHomeRootSafe(root([OWNER_ONLY, ace("S-1-1-0", 0, 0, 0x2)], { protected: true }))).toBe(false);
+  });
+});
+
+describe("isWindowsWorkspaceForeignWriter", () => {
+  const writer = (sid: string, fileSystemRights: number, accessControlType = 0) => ({ sid, accessControlType, fileSystemRights });
+  it.each([
+    ["the user's own FullControl", false, writer(USER, 0x1f01ff)],
+    ["SYSTEM FullControl", false, writer("S-1-5-18", 0x1f01ff)],
+    ["Administrators FullControl", false, writer("S-1-5-32-544", 0x1f01ff)],
+    ["Users read and execute", false, writer("S-1-5-32-545", 0x1200a9)],
+    ["Users generic read", false, writer("S-1-5-32-545", -2147483648)],
+    ["a deny of write for Users", false, writer("S-1-5-32-545", 0x2, 1)],
+    ["Users modify", true, writer("S-1-5-32-545", 0x1301bf)],
+    ["Everyone write data", true, writer("S-1-1-0", 0x2)],
+    ["Authenticated Users append", true, writer("S-1-5-11", 0x4)],
+    ["CREATOR OWNER FullControl", true, writer("S-1-3-0", 0x1f01ff)],
+    ["another user generic all", true, writer("S-1-5-21-1-2-3-1001", 0x10000000)],
+  ])("%s: foreign writer %s", (_name, expected, rule) => {
+    expect(isWindowsWorkspaceForeignWriter(rule, USER)).toBe(expected);
   });
 });

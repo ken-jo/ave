@@ -229,6 +229,9 @@ function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["home
     case "extra-principals": return t("permissionsTab.homePrivacyExtraPrincipals", {
       principals: (error.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
     });
+    case "workspace-extra-principals": return t("permissionsTab.homePrivacyWorkspaceExtraPrincipals", {
+      principals: (error.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+    });
   }
 }
 
@@ -244,6 +247,7 @@ const HOME_PRIVACY_FIX_KEY = {
   "owner-claim-failed": null,
   "reparse-point": "permissionsTab.homePrivacyFixReparsePoint",
   "extra-principals": null,
+  "workspace-extra-principals": null,
 } as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;
 
 /** `sentence` followed by the category's own fix, when the cause text does not already carry one. */
@@ -257,11 +261,14 @@ function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsS
  * foreign principal's grants and denies (`/remove` without `:g`; inheritance removal does not touch explicit entries). Command Prompt syntax, so `%USERNAME%` stays a literal here.
  */
 function homePrivacyFixCommand(error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string | null {
-  if (error.category !== "extra-principals" && error.category !== "not-protected") return null;
   const target = `"${error.path}"`;
+  const removals = (error.extraPrincipals ?? []).filter((principal) => principal.explicit === true).map(({ sid }) => `icacls ${target} /remove *${sid}`);
+  // The workspace keeps inheriting from the protected home: only its own foreign entries are removed.
+  if (error.category === "workspace-extra-principals") return removals.length > 0 ? removals.join("\r\n") : null;
+  if (error.category !== "extra-principals" && error.category !== "not-protected") return null;
   return [
     `icacls ${target} /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"`,
-    ...(error.extraPrincipals ?? []).filter((principal) => principal.explicit === true).map(({ sid }) => `icacls ${target} /remove *${sid}`),
+    ...removals,
   ].join("\r\n");
 }
 
