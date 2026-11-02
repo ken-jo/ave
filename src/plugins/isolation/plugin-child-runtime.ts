@@ -41,6 +41,15 @@ import {
   SubscriptionLedger,
   type SubscriptionRelease,
 } from "./subscription-ledger.js";
+import { OUTBOUND_QUEUE_BYTES_MAX } from "./child-stream-multiplex.js";
+
+/**
+ * MCP responses the child may hold unwritten while protocol stdout drains, one frame at a time, to the host.
+ * The same size as the protocol's outbound bound: two maximal replies always fit, and a response past it is
+ * refused as an error reply for that call rather than buffered without limit. Requests keep arriving
+ * (cancellations included), so a slow host reader never stalls host-to-child traffic.
+ */
+const CHILD_MCP_UNWRITTEN_OUTPUT_BYTES_MAX = OUTBOUND_QUEUE_BYTES_MAX;
 
 /** Carry runtime context as data; rebuild log and hostApi from the channel. */
 export interface PluginChildContext {
@@ -412,7 +421,7 @@ export async function startPluginChildRuntime(
         })
       : undefined;
   const server = new PluginMcpServer(manifest, delegate, uiResources);
-  new StdioServerLoop(options.input, options.output, server, FRAME_BYTES_MAX).start();
+  new StdioServerLoop(options.input, options.output, server, FRAME_BYTES_MAX, CHILD_MCP_UNWRITTEN_OUTPUT_BYTES_MAX).start();
 
   return {
     instance,

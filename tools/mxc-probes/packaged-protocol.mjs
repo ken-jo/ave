@@ -158,7 +158,7 @@ export async function finalizePackagedObservation(result, root, cleanupVerified,
     && Array.isArray(result.unverifiedProcesses) && result.unverifiedProcesses.length === 0);
   result.temp = root;
   result.cleanupVerified = cleanupVerified;
-  result.nativeVerified = result.observations.length === 6 && result.observations.every((row) => row.passed) && cleanupVerified;
+  result.nativeVerified = result.observations.length === 8 && result.observations.every((row) => row.passed) && cleanupVerified;
   result.verdict = result.nativeVerified ? "measured" : "inconclusive";
   result.tempRemoved = false;
   const failed = (stage, error) => {
