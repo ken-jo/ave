@@ -145,6 +145,19 @@ describe("the frame bound", () => {
 });
 
 describe("pacing a producer against the output", () => {
+  it("returns the UTF-8 bytes it queued for a frame it serialized, and 0 once the bound is broken", () => {
+    const input = new PassThrough();
+    const output = new Writable({ write() { /* never drains */ } });
+    const stream = new FramedMessageStream(input, output, () => {}, () => {}, () => {});
+    stream.start();
+    const message = { jsonrpc: "2.0", method: "notifications/ave/subscription", params: { text: "\uD55C\uAE00" } };
+    expect(stream.send(message)).toBe(Buffer.byteLength(`${JSON.stringify(message)}\n`, "utf8"));
+    expect(stream.send(message)).toBe(output.writableLength / 2);
+    for (let index = 0; index < 4; index += 1) stream.forward(lineOf(FRAME_BYTES_MAX));
+    expect(stream.send(message)).toBe(0);
+    input.destroy(); output.destroy();
+  });
+
   it("calls back once the output drains, and only when it must", async () => {
     const input = new PassThrough();
     let release: (() => void) | undefined;

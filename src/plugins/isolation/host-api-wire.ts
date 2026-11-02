@@ -735,7 +735,9 @@ export interface HostApiChannel {
 
 /** The host's half: where host-originated notifications go. */
 export interface ChildNotificationSink {
-  deliver(notification: HostApiNotification): void;
+  /** Returns the UTF-8 bytes it queued toward the child, measured where the frame was serialized; a sink that delivers
+   * synchronously, with nothing left queued, returns nothing. */
+  deliver(notification: HostApiNotification): number | void;
   /** If the wire to the child must drain first, call `ready` once it has (or closed) and return true; otherwise return false and never call it. */
   whenDrained?(ready: () => void): boolean;
 }

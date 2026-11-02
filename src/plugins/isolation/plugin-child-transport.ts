@@ -297,9 +297,10 @@ export class PluginChildTransport {
     return await settled;
   }
 
-  sendToChild(notification: HostApiNotification): void {
-    if (this.closedReason !== undefined) return;
-    this.stream.send(notification);
+  /** Returns the UTF-8 bytes queued toward the child for it (0 once closed). */
+  sendToChild(notification: HostApiNotification): number {
+    if (this.closedReason !== undefined) return 0;
+    return this.stream.send(notification);
   }
 
   /** Close is idempotent; mark termination before fallible callbacks that can reenter. */

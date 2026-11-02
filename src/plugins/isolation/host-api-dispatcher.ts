@@ -130,7 +130,8 @@ export interface SubscriptionScope<Event = unknown> {
   /** Allocate host IDs for worker handles and key leases. */
   open(teardown: (reason: SubscriptionCloseReason) => void): string;
   /** Event payload types come from the shared contract; never means no pushes. */
-  deliver(subscriptionId: string, payload: Event): void;
+  /** Returns the bytes the sink queued toward the child for this event, where it reports them. */
+  deliver(subscriptionId: string, payload: Event): number | undefined;
   /** Host closure releases its registration and tells the child to clear local handle or credential state. */
   release(subscriptionId: string): boolean;
   /** Await the registered child shutdown handler under the owner request bound. */
@@ -902,12 +903,6 @@ function relayStdioControlWorker(
  * plugin's whole channel. Traffic from elsewhere on the channel does not count. */
 export const WORKER_RELAY_BACKLOG_BYTES_MAX = 2 * (WORKER_CONTROL_FRAME_BYTES_MAX + 1);
 
-/** Approximate size of a relayed event on the wire: the chunk for output, the JSON text otherwise. */
-function relayedBytesOf(payload: WireWorkerEvent): number {
-  if (payload.kind === "stdout" || payload.kind === "stderr") return payload.chunk.length;
-  return JSON.stringify(payload).length;
-}
-
 /** Worker handles carry IDs and notifications; the host retains process ownership. */
 function spawnWorkerPath(
   hostApi: ServiceHostApi,
@@ -956,8 +951,8 @@ function spawnWorkerPath(
     // Stop notifications at release to tolerate chunks arriving while worker pipes drain.
     const push = (payload: WireWorkerEvent): void => {
       if (!live) return;
-      scope.deliver(handleId, payload);
-      if (payload.kind !== "exit") regulate(relayedBytesOf(payload));
+      const queued = scope.deliver(handleId, payload);
+      if (payload.kind !== "exit") regulate(queued ?? 0);
     };
     try {
       if (worker.control === "output-only-v1") {
@@ -1852,11 +1847,12 @@ export class HostApiDispatcher {
             `[host-api-dispatcher] no open subscription '${subscriptionId}'`,
           );
         }
-        this.options.notifications.deliver({
+        const queued = this.options.notifications.deliver({
           jsonrpc: "2.0",
           method: HOST_PROTOCOL_NOTIFICATIONS.subscription,
           params: { subscriptionId, payload },
         });
+        return typeof queued === "number" ? queued : undefined;
       },
     };
   }

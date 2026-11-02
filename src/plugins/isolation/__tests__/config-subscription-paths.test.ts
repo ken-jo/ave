@@ -157,7 +157,7 @@ async function harness(
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: options.isActive ?? (() => true),
-    notifications: { deliver: (notification) => child.deliver(notification) },
+    notifications: { deliver: (notification) => { child.deliver(notification); } },
     reportUnknownField: () => {},
     shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     table: {

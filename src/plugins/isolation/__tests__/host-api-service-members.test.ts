@@ -6,6 +6,7 @@ vi.mock("node:fs", async original => (await import("../../../__tests__/support/s
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough, Writable } from "node:stream";
 import { registerWorkerOutputFlow, type WorkerOutputFlow } from "../../../permissions/worker-flow.js";
+import { frameMessage } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import type {
   PluginHostApi,
@@ -121,7 +122,10 @@ async function createServiceHarness(
   hostApi: Partial<PluginHostApi> = {},
   manifest: PluginManifest = MANIFEST,
   onMalformedCredentialSelector?: () => void,
-  pacing: Pick<ChildNotificationSink, "whenDrained"> = {},
+  pacing: Pick<ChildNotificationSink, "whenDrained"> & {
+    /** Where the sink queues a frame toward the child; returns the bytes it queued, as the transport does. */
+    readonly queue?: (notification: HostApiNotification) => number;
+  } = {},
 ): Promise<ServiceHarness> {
   const requests: HostApiRequest[] = [];
   const notifications: HostApiNotification[] = [];
@@ -156,8 +160,9 @@ async function createServiceHarness(
       deliver: (notification) => {
         pushed.push(notification);
         child.deliver(notification);
+        return pacing.queue?.(notification);
       },
-      ...pacing,
+      ...(pacing.whenDrained ? { whenDrained: pacing.whenDrained } : {}),
     },
     // Compose bound entries over the static table only where the child incarnation is owned.
     table: {
@@ -1374,24 +1379,19 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     };
   }
 
-  function pacingOf(wire: Writable): Pick<ChildNotificationSink, "whenDrained"> {
+  /** A sink over `wire` that serializes each frame once, as the transport does, and reports the bytes it queued. */
+  function pacingOf(wire: Writable) {
     return {
-      whenDrained: (ready) => {
+      whenDrained: (ready: () => void) => {
         if (!wire.writableNeedDrain) return false;
         wire.once("drain", ready);
         return true;
       },
-    };
-  }
-
-  /** Move every frame the harness sink records onto the wire as it is recorded. */
-  function feed(harness: ServiceHarness, wire: Writable): void {
-    harness.pushed.length = 0;
-    const record = harness.pushed.push.bind(harness.pushed);
-    harness.pushed.push = (...frames) => {
-      const count = record(...frames);
-      for (const frame of harness.pushed.splice(0)) wire.write(JSON.stringify(frame));
-      return count;
+      queue: (notification: HostApiNotification) => {
+        const frame = frameMessage(notification);
+        wire.write(frame);
+        return frame.length;
+      },
     };
   }
 
@@ -1426,7 +1426,6 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     const { wire, release } = stalledWire();
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
-    feed(harness, wire);
     // A large tool result or two egress responses share the plugin's channel with the worker.
     for (let index = 0; index < 3; index += 1) wire.write("x".repeat(14 * MIB));
     expect(wire.writableLength).toBeGreaterThan(WORKER_RELAY_BACKLOG_BYTES_MAX);
@@ -1444,7 +1443,6 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     const { wire, release, stall } = stalledWire();
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
-    feed(harness, wire);
     const chunk = "x".repeat(12 * MIB);
     worker.emitStdout(chunk);
     worker.emitStdout(chunk);
@@ -1467,6 +1465,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
         drained = ready;
         return true;
       },
+      queue: (notification) => frameMessage(notification).length,
     });
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
     const chunk = "x".repeat(12 * MIB);
@@ -1476,6 +1475,36 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     worker.emitStdout(chunk);
     expect(worker.stopped()).toBe(1);
     expect(drained).toBeDefined();
+  });
+
+  it("counts the UTF-8 bytes the sink queued, not the UTF-16 length of the text", async () => {
+    const worker = makeFakeWorker();
+    const flow = flowSpy();
+    registerWorkerOutputFlow(worker, flow);
+    const { wire } = stalledWire();
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    // Four mebi-characters of a three-byte character: 12 MiB on the wire, 4 Mi in UTF-16 units.
+    const chunk = "\uD55C".repeat(4 * MIB);
+    expect(Buffer.byteLength(chunk, "utf8")).toBe(12 * MIB);
+    worker.emitStdout(chunk);
+    worker.emitStdout(chunk);
+    expect(flow.calls).toEqual(["pause"]);
+    worker.emitStdout(chunk);
+    expect(flow.calls).toEqual(["pause", "end:output-overflow"]);
+  });
+
+  it("takes the size from the sink that serialized the frame, and measures nothing itself", async () => {
+    const worker = makeFakeWorker();
+    const flow = flowSpy();
+    registerWorkerOutputFlow(worker, flow);
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, {
+      whenDrained: () => true,
+      queue: () => WORKER_RELAY_BACKLOG_BYTES_MAX + 1,
+    });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    worker.emitStderr("x");
+    expect(flow.calls).toEqual(["pause", "end:output-overflow"]);
   });
 
   it("keeps a fast worker under the bound against a slow child, delivering everything", async () => {
@@ -1513,7 +1542,6 @@ describe("a worker's relayed output is paced by the child's wire", () => {
       end: (reason) => void ends.push(reason),
     });
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
-    feed(harness, wire);
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
     pump();
     for (let turn = 0; turn < 2_000 && (produced < 64 || wire.writableLength > 0); turn += 1) await settle();

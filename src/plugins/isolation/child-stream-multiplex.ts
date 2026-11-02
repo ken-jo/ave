@@ -88,20 +88,18 @@ export class FramedMessageStream {
     this.input.on("data", onData);
   }
 
-  /** Write each complete frame once so concurrent writers cannot interleave its bytes. */
-  send(message: unknown): void {
-    if (this.violated) return;
+  /** Write each complete frame once so concurrent writers cannot interleave its bytes. Returns the UTF-8 bytes queued
+   * on the output for it: the frame serialized here, a refusal in its place, or 0 when nothing was queued. */
+  send(message: unknown): number {
+    if (this.violated) return 0;
     const frame = frameMessage(message);
-    if (frame.length - 1 <= FRAME_BYTES_MAX) {
-      this.write(frame);
-      return;
-    }
+    if (frame.length - 1 <= FRAME_BYTES_MAX) return this.write(frame);
     const dropped = droppedNotificationOf(message, frame.length - 1);
     if (dropped) {
       this.onDroppedNotification(dropped);
-      return;
+      return 0;
     }
-    this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
+    return this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 
   /** Prebuilt MCP frames obey the same outbound size limit. */
@@ -149,13 +147,14 @@ export class FramedMessageStream {
 
   /** Synchronous protocol producers cannot await drain. Refuse a stalled peer
    * before its writable queue grows without bound; never drop a request silently. */
-  private write(frame: Buffer): void {
+  private write(frame: Buffer): number {
     if (this.output.writableLength + frame.length > OUTBOUND_QUEUE_BYTES_MAX) {
       this.violated = true;
       this.onViolation("Plugin output queue exceeds limit");
-      return;
+      return 0;
     }
     this.output.write(frame);
+    return frame.length;
   }
 }
 

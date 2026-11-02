@@ -821,7 +821,8 @@ Bounds, each enforced by the host:
   whenever the child's wire must drain, whatever filled it, and resumes once it has,
   so a worker that writes faster than its plugin reads blocks on its own pipe. The
   wire's own queue bound covers the channel as a whole. The relay bounds only what
-  this worker pushed since the wire last drained: past 2 × (16 MiB + 1) bytes the
+  this worker pushed since the wire last drained, counted in UTF-8 bytes where each
+  frame is serialized: past 2 × (16 MiB + 1) bytes the
   incarnation ends with `output-overflow`. A handle the host cannot pace (one it did
   not produce itself) is stopped instead, with reason `stopped`.
 
