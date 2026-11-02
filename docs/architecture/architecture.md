@@ -2747,7 +2747,7 @@ in its directory.
   restart until Ave restarts, and adds that its contained process keeps the
   folder access it started with only when `grantsRetained` is true, i.e. a
   quarantined sandbox grant incarnation is still registered (stop, drain and
-  startup quarantines hold no grants). A folder removal whose revocation did not
+  startup quarantines hold no quarantined grant incarnation). A folder removal whose revocation did not
   finish (`cleanupPending`) reports that as status text, never a confirmation,
   because the user performed the removal. The MCP tab re-reads server state
   when the window regains focus or becomes visible.

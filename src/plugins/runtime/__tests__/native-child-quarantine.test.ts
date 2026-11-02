@@ -1,6 +1,7 @@
 /** End to end through the runtime, the real out-of-process factory and the real envelope registration:
  * a native plugin child whose termination is unverified quarantines before any second spawn or replacement. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../../i18n/runtime.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -119,7 +120,13 @@ describe("native plugin child quarantine through the runtime", () => {
     child.failCleanup();
     await starting;
     expect(runtime.listPluginIds()).not.toContain(PLUGIN_ID);
-    await expect(runtime.addPlugin(PLUGIN_ID)).rejects.toMatchObject({ code: "plugin-lifecycle-quarantined" });
+    // The embedded child refusal keeps its text but not its code: each code appears once, the outer one last.
+    const childRefusal = t("be_pluginChildTransport.terminationUnverified", { pluginId: PLUGIN_ID, code: "plugin-child-termination-unverified" });
+    const reason = childRefusal.slice(0, childRefusal.lastIndexOf("(plugin-child-termination-unverified)")).trimEnd();
+    await expect(runtime.addPlugin(PLUGIN_ID)).rejects.toMatchObject({
+      code: "plugin-lifecycle-quarantined",
+      message: t("be_runtimeIndex.lifecycleQuarantined", { pluginId: PLUGIN_ID, reason, code: "plugin-lifecycle-quarantined" }),
+    });
     expect(spawnNativeChild).toHaveBeenCalledOnce();
     expect(release).not.toHaveBeenCalled();
     // The settings card says so per plugin (row 6 disclosure), and never reports the quarantined plugin as loaded.

@@ -2346,7 +2346,7 @@ abstract class PluginRuntimeState {
       ?? this.quarantinedPluginLifecycles.get(pluginId);
     if (!reason) return;
     const error = new Error(
-      t("be_runtimeIndex.lifecycleQuarantined", { pluginId: canonicalId, reason, code: "plugin-lifecycle-quarantined" }),
+      t("be_runtimeIndex.lifecycleQuarantined", { pluginId: canonicalId, reason: withoutRefusalCode(reason), code: "plugin-lifecycle-quarantined" }),
     ) as Error & { code?: string };
     error.code = "plugin-lifecycle-quarantined";
     throw error;
@@ -6388,6 +6388,13 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
 const CONTAINER_REFUSAL_CODES = new Set([
   "native-entry-required", "worker-transport-unsupported", "extension-readiness-refused", "plugin-child-termination-unverified",
 ]);
+
+/** A quarantine reason taken from a localized container refusal already ends with that refusal's code; drop it when the
+ * reason is embedded in another refusal, so each code appears once. Only known refusal codes are stripped. */
+function withoutRefusalCode(reason: string): string {
+  const match = /\s*\(([a-z][a-z0-9-]*)\)$/u.exec(reason);
+  return match && CONTAINER_REFUSAL_CODES.has(match[1]!) ? reason.slice(0, match.index) : reason;
+}
 
 function containerRefusalDetail(err: unknown): { installFailureMessage: string } | undefined {
   const code = (err as { code?: unknown } | null)?.code;
