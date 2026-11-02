@@ -18,6 +18,8 @@ export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
 export const AVE_HOME_CONFIGURATION_MARKER_CONTENT = "ave-home-boundary-v1";
 
 let refusedConfigurationHome: string | undefined;
+/** Where a refused home's configuration lives, decided by its first read in this run and kept for the run. */
+let refusedConfigurationLocation: string | undefined;
 const verifiedConfigurationIdentities = new Map<string, string>();
 const configurationHomes = new Set<string>();
 const committedConfigurationHomes = new Set<string>();
@@ -41,6 +43,7 @@ function configurationKey(home: string): string {
 
 /** Only a refused home bypasses protected storage. */
 export function setAveHomeConfigurationRefusedAtBoot(home: string): void {
+  if (refusedConfigurationHome !== configurationKey(home)) refusedConfigurationLocation = undefined;
   refusedConfigurationHome = configurationKey(home);
 }
 
@@ -54,7 +57,7 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const key = configurationKey(root);
   const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
-    if (isAveHomeConfigurationRefused(root)) return refusedConfigurationDirectory(root, config);
+    if (isAveHomeConfigurationRefused(root)) return refusedConfigurationLocation ??= refusedConfigurationDirectory(root, config);
     if (process.platform === "win32") return windowsConfigurationDirectory(root, config, key);
     let directory;
     try { directory = lstatSync(config, { bigint: true }); }
@@ -97,10 +100,14 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
  * A refused home is never migrated, and its root is not trusted. Configuration that an earlier verified boot committed to `config/`
  * stays the configuration: every read and write there verifies `config/`'s own protected owner-only DACL, never the root's, so the
  * user's committed policy (stricter than its absence) still applies. Reading the root instead found nothing and refused the whole
- * boot before the privacy refusal could be shown (native run 4). A home that never committed stays root-only.
+ * boot before the privacy refusal could be shown (native run 4). A home that never committed stays root-only. The first read
+ * decides, and the run keeps that answer: a marker that appears later in a refused home never moves its configuration.
  */
 function refusedConfigurationDirectory(root: string, config: string): string {
   const markerPath = join(config, AVE_HOME_CONFIGURATION_MARKER);
+  // An absent directory needs no native probe: the home stays root-only.
+  try { lstatSync(config); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return root; throw error; }
   if (process.platform === "win32") {
     const [directory, marker] = pinWindowsPaths([config, markerPath]);
     if (!admitWindowsReparse(directory!, "evidence") || (directory!.exists === true && !directory!.directory)) {
@@ -357,8 +364,9 @@ export interface WindowsDirectoryDacl {
   ownerSid?: string;
   protected?: boolean;
   repaired?: boolean;
-  /** Home entry only: the workspace's stale inherited entries were rewritten to what the protected root passes down. */
-  workspaceReinherited?: boolean;
+  /** Home entry only: the per-boot workspace inheritance check ("rewritten" to what the protected root passes down, "clean",
+   * "absent", "left" for a link, protected DACL or foreign owner, "unavailable" when it could not be opened or read). */
+  workspaceState?: string;
   /** Home entry only: the workspace's own entries, read after protection; absent when there is no workspace directory. */
   workspaceRules?: WindowsAccessRule[];
   /** Home entry only: the workspace is a link or junction, so its entries are not the workspace's. */
@@ -433,7 +441,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
 '@;
     $refused = $false;
     $homeHandle = $null;
-    $workspaceReinherited = $false;
+    $workspaceState = 'skipped';
     try {
       $results = @(foreach ($path in $request.paths) {
         if ($refused) { @{ path = $path; error = 'An enclosing directory was refused' }; continue }
@@ -445,7 +453,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
             $handle = $homeHandle;
             if ($request.repairRoot -and [HomeDirectoryDacl]::RepairInheritedRoot($handle, $identity.User, $elevated, $request.readOnlyRights)) { $repaired = 0 }
             $refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle), $identity.User, $elevated, $request.readOnlyRights);
-            $workspaceReinherited = (-not $refused) -and [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User);
+            if (-not $refused) { $workspaceState = [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User) }
           } else {
             if ([System.IO.Path]::GetDirectoryName($path) -ne [System.IO.Path]::GetFullPath($request.paths[0])) { throw 'Directory is outside the pinned home' }
             $leaf = [System.IO.Path]::GetFileName($path);
@@ -459,7 +467,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
           if ($null -eq $handle) { throw 'Directory does not exist' }
           $result = @{ path = $path };
           if ($repaired -ge 0) { $result.repaired = $true; $result.skippedLinks = $repaired }
-          if ($handle -eq $homeHandle -and $workspaceReinherited) { $result.workspaceReinherited = $true }
+          if ($handle -eq $homeHandle) { $result.workspaceState = $workspaceState }
           if ($null -ne $homeHandle -and $handle -ne $homeHandle) { $result.cleanupWarnings = @([HomeDirectoryDacl]::CleanupWarnings.ToArray()) }
           $result
         } catch {
@@ -585,6 +593,7 @@ export function assertAveHomePrivacyForConfinement(): void {
 /** Test teardown only; production seals the result during boot. */
 export function _resetAveHomePrivacyForTest(): void {
   refusedConfigurationHome = undefined;
+  refusedConfigurationLocation = undefined;
   verifiedConfigurationIdentities.clear();
   configurationHomes.clear();
   committedConfigurationHomes.clear();
@@ -725,7 +734,8 @@ export function ensureAveHomePrivate(
     }
     if (!sid) throw new Error("Current account SID read-back missing");
     const homeEntry = descriptors.find((entry) => entry.path === home);
-    if (homeEntry?.workspaceReinherited) diagnostics.push('Directory "workspace" re-inherited from the protected root');
+    if (homeEntry?.workspaceState === "rewritten") diagnostics.push('Directory "workspace" re-inherited from the protected root');
+    if (homeEntry?.workspaceState === "unavailable") diagnostics.push('Directory "workspace" could not be opened to check its inheritance');
     if (homeEntry?.workspaceLink) diagnostics.push('Directory "workspace" is a link or junction; its entries were not checked');
     const workspaceRules = homeEntry?.workspaceRules ?? [];
     const workspaceWriters = workspaceRules.filter((rule) => isWindowsWorkspaceForeignWriter(rule, sid));

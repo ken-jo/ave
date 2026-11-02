@@ -2932,7 +2932,12 @@ with its own owner rule:
   exception is `workspace`: the cwd, the default workspace root and the
   in-project auto-write scope.
   Every boot whose root passes RootSafe checks the workspace on a no-reparse
-  handle, whether or not that boot repaired the root. If its inherited
+  handle, whether or not that boot repaired the root. The workspace is the
+  process's own cwd, so the handle is opened for READ_CONTROL, WRITE_DAC,
+  read-attributes and SYNCHRONIZE with full sharing. A request that could
+  include DELETE is a sharing violation against the cwd handle. A
+  workspace that cannot be opened is reported as a diagnostic, never
+  treated as clean. If its inherited
   entries are anything other than the single user entry a protected root
   passes down, Ave rewrites only that directory's own DACL: its explicit
   entries in order, then that entry. It then reads the result back.
@@ -2967,7 +2972,9 @@ with its own owner rule:
   and boot reaches the privacy refusal and its fix command. Before this,
   reading the root found nothing and the configuration error stopped boot
   (native run 4). A marker with invalid content is refused. A home that
-  never committed `config/` stays root-only.
+  never committed `config/` stays root-only. The first read in a run
+  decides the location, and the run keeps it, so a marker that appears
+  later in a refused home never moves its configuration.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's

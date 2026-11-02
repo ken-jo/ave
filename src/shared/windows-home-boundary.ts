@@ -122,7 +122,7 @@ public static class HomeDirectoryDacl {
       return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly, readOnly ? 7u : 3u);
     }
   }
-  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u) {
+  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u, uint access = 0u) {
     if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
     IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
     IntPtr memory = IntPtr.Zero;
@@ -135,7 +135,7 @@ public static class HomeDirectoryDacl {
       var attributes = new ObjectAttributes { Length = (uint)Marshal.SizeOf(typeof(ObjectAttributes)), Root = parent.DangerousGetHandle(), Name = memory, Attributes = noReparse ? 0x1040u : 0x40u, Descriptor = security.AddrOfPinnedObject() };
       SafeFileHandle handle;
       IoStatus io;
-      int status = NtCreateFile(out handle, readOnly ? 0x00120089u : 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, share, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
+      int status = NtCreateFile(out handle, access != 0u ? access : readOnly ? 0x00120089u : 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, share, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
       if (status == unchecked((int)0xC0000034)) { if (handle != null) handle.Dispose(); return null; }
       if (status < 0) {
         if (handle != null) handle.Dispose();
@@ -500,21 +500,23 @@ public static class HomeDirectoryDacl {
   // passes down (the user's FullControl, object and container inherit), it is rewritten as its explicit entries in order followed
   // by that entry. NtSetSecurityObject computes no inheritance, so the result is exactly this, and it is read back.
   // Running every boot, not only in the boot that repaired the root, is what retries a boot whose rewrite failed.
-  // A link, a non-directory, a protected DACL, a foreign owner, or a workspace that cannot be opened or read is left as it is.
-  // Other children keep their stale SYSTEM and Administrators entries.
-  public static bool ReinheritWorkspace(SafeFileHandle home, SecurityIdentifier user) {
+  // The workspace is the app's cwd, so it is opened for exactly READ_CONTROL, WRITE_DAC, FILE_READ_ATTRIBUTES and SYNCHRONIZE
+  // with full sharing: a request that could include DELETE is a sharing violation against the process's own cwd handle (CI run
+  // 41469456420). A link, a non-directory, a protected DACL or a foreign owner is "left"; one that cannot be opened or read is
+  // "unavailable", which the boot reports. Other children keep their stale SYSTEM and Administrators entries.
+  public static string ReinheritWorkspace(SafeFileHandle home, SecurityIdentifier user) {
     SafeFileHandle handle;
-    try { handle = OpenRelative(home, "workspace", user, 1, true, true, false); }
-    catch (InvalidOperationException) { return false; }
-    catch (Win32Exception) { return false; }
-    if (handle == null) return false;
+    try { handle = OpenRelative(home, "workspace", user, 1, true, true, false, false, 7u, 0x00160080u); }
+    catch (InvalidOperationException) { return "left"; }
+    catch (Win32Exception) { return "unavailable"; }
+    if (handle == null) return "absent";
     using (handle) {
       RawSecurityDescriptor raw;
       try { raw = new RawSecurityDescriptor(ReadDescriptor(handle), 0); }
-      catch (Win32Exception) { return false; }
-      if ((raw.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0 || raw.DiscretionaryAcl == null) return false;
-      if (raw.Owner == null || raw.Owner.Value != user.Value) return false;
-      if (!StaleInheritance(raw.DiscretionaryAcl, user)) return false;
+      catch (Win32Exception) { return "unavailable"; }
+      if ((raw.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0 || raw.DiscretionaryAcl == null) return "left";
+      if (raw.Owner == null || raw.Owner.Value != user.Value) return "left";
+      if (!StaleInheritance(raw.DiscretionaryAcl, user)) return "clean";
       var acl = new RawAcl(GenericAcl.AclRevision, raw.DiscretionaryAcl.Count + 1);
       int index = 0;
       foreach (GenericAce ace in raw.DiscretionaryAcl) {
@@ -530,7 +532,7 @@ public static class HomeDirectoryDacl {
       if (StaleInheritance(new RawSecurityDescriptor(ReadDescriptor(handle), 0).DiscretionaryAcl, user)) {
         throw new InvalidOperationException("Workspace inheritance reset is unverified");
       }
-      return true;
+      return "rewritten";
     }
   }
   // True unless the only inherited entry is the one a RootSafe root passes down to a child directory.

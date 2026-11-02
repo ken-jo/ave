@@ -610,6 +610,7 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
       expect("repairs" in privacy ? privacy.repairs ?? [] : []).not.toContain(dir);
       const diagnosticsOf = (result: ReturnType<typeof ensureAveHomePrivate>) => ("diagnostics" in result ? result.diagnostics ?? [] : []);
       if (stale) expect(diagnosticsOf(privacy)).toEqual(expect.arrayContaining([expect.stringContaining('"workspace" re-inherited')]));
+      expect(diagnosticsOf(privacy)).not.toEqual(expect.arrayContaining([expect.stringContaining("could not be opened")]));
       expect(rootOf(workspace).rules?.filter((rule) => rule.isInherited).map((rule) => rule.sid)).toEqual([user]);
       // Clean now: the next boot does not rewrite it again.
       expect(diagnosticsOf(ensureAveHomePrivate(dir))).not.toEqual(expect.arrayContaining([expect.stringContaining("re-inherited")]));

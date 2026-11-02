@@ -55,6 +55,10 @@ describe.runIf(process.platform !== "win32")("configuration of a home refused af
     setAveHomeConfigurationRefusedAtBoot(home);
     expect(aveHomeConfigurationDirectory(home)).toBe(home);
     expect(readAveHomeConfigurationFile(join(home, "settings.json"))?.toString("utf8")).toBe('{"legacy":true}');
+    // A marker that appears later in the run never moves a refused home's configuration.
+    mkdirSync(join(home, "config"), { mode: 0o700 });
+    writeFileSync(join(home, "config", ".ave-config-migrated"), "ave-home-boundary-v1");
+    expect(aveHomeConfigurationDirectory(home)).toBe(home);
   });
 
   it("refuses a committed marker with the wrong content instead of guessing a location", () => {

@@ -212,8 +212,12 @@ describe("ensureAveHomePrivate", () => {
         diagnostics: [expect.stringContaining('Directory "workspace" has foreign read-only access: S-1-5-32-545')] });
     });
     it("reports a workspace rewritten to inherit from the protected root, and a linked workspace", () => {
-      expect(withWorkspace({ workspaceReinherited: true }).result).toMatchObject({ enforcement: "win32-dacl",
+      expect(withWorkspace({ workspaceState: "rewritten" }).result).toMatchObject({ enforcement: "win32-dacl",
         diagnostics: [expect.stringContaining('"workspace" re-inherited')] });
+      // A workspace the check could not open (for example a sharing violation) is reported, never silently treated as clean.
+      expect(withWorkspace({ workspaceState: "unavailable" }).result).toMatchObject({ enforcement: "win32-dacl",
+        diagnostics: [expect.stringContaining('"workspace" could not be opened')] });
+      expect(withWorkspace({ workspaceState: "clean" }).result).not.toHaveProperty("diagnostics");
       expect(withWorkspace({ workspaceLink: true }).result).toMatchObject({ enforcement: "win32-dacl",
         diagnostics: [expect.stringContaining('"workspace" is a link')] });
     });
@@ -447,12 +451,17 @@ describe("ensureAveHomePrivate", () => {
     expect(script).not.toMatch(/SetSecurityInfo\(home,/);
     expect(script).toContain("if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated))");
   });
+  it("opens the workspace for its DACL only, with full sharing, since it is the process's own cwd", () => {
+    // CI run 41469456420: a request that could include DELETE was a sharing violation against the cwd handle, so the check skipped.
+    const script = (windowsDirectoryProtectionRequest([home()]).options as { input: string }).input;
+    expect(script).toContain('OpenRelative(home, "workspace", user, 1, true, true, false, false, 7u, 0x00160080u)');
+  });
   it("checks the workspace on every boot whose root passes RootSafe, not only after a root repair", () => {
     // A boot whose workspace rewrite failed leaves a D:P root that is never repairable again; this is what retries it.
     for (const repairRoot of [false, true]) {
       const script = (windowsDirectoryProtectionRequest([home()], undefined, repairRoot).options as { input: string }).input;
       const rootSafe = script.indexOf("$refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle)");
-      const workspace = script.indexOf("$workspaceReinherited = (-not $refused) -and [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User);");
+      const workspace = script.indexOf("if (-not $refused) { $workspaceState = [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User) }");
       expect(workspace).toBeGreaterThan(rootSafe);
       expect(script).not.toMatch(/RepairInheritedRoot\([^)]*\)\s*\{[^}]*ReinheritWorkspace/);
     }
