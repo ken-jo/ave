@@ -151,7 +151,7 @@ async function harness(
     reportUnknownField: () => {},
     shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
-    notifications: { deliver: (notification) => child.deliver(notification) },
+    notifications: { deliver: (notification) => { child.deliver(notification); } },
     table:
       options.bindPaths === false
         ? HOSTAPI_DISPATCH_TABLE

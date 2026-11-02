@@ -1,6 +1,7 @@
 /** The bun patch on @anthropic-ai/sandbox-runtime is dist JavaScript edited by hand. A version bump that re-rolls it can apply cleanly and still drop a piece, and nothing else notices: the terminal's own-tty grant degrades to a plain deny, the ask callback loses
  * the attribution key that tells a plugin worker's connection from a shell's, or an invocation loses the listener that identifies it. So each symbol the patch adds is asserted on the INSTALLED package, the bytes Ave actually loads, on every OS the suite runs on. */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   setDestinationResolverForTesting,
   setListenerQuarantineForTesting,
+  setWindowsAclReleaseForTesting,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import type {
   SandboxAskCallback,
@@ -60,6 +62,106 @@ afterEach(() => {
 });
 
 describe("patched @anthropic-ai/sandbox-runtime", () => {
+  describe("host-owned release (part 12)", () => {
+    // reset() drives the real revokeWindowsAcl/restoreWindowsAcl against a stand-in srt-win: a Node script that answers `acl revoke|restore --json`
+    // with the planned exit code and JSON, as srt-win v0.0.80 does (statuses from vendor/srt-win-src/src/state_db.rs AceRelease).
+    type Plan = Record<"revoke" | "restore", { code: number; json: { path: string; status: string }[] }>;
+    const PRIVATE_PATH = "D:\\work\\private-target";
+    const stubDirs: string[] = [];
+    afterEach(() => {
+      setWindowsAclReleaseForTesting(undefined);
+      for (const dir of stubDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+    function stubSrtWin(plan: Plan): { srtWin: { exe: string; prependArgs: string[] }; calls: () => string[] } {
+      const dir = mkdtempSync(join(tmpdir(), "ave-srt-win-stub-"));
+      stubDirs.push(dir);
+      const script = join(dir, "srt-win.mjs");
+      const callLog = join(dir, "calls.txt");
+      writeFileSync(script, [
+        `import { appendFileSync } from "node:fs";`,
+        `const plan = ${JSON.stringify(plan)};`,
+        `const step = plan[process.argv[3]];`,
+        `appendFileSync(${JSON.stringify(callLog)}, process.argv[3] + "\\n");`,
+        `process.stdout.write(JSON.stringify(step.json));`,
+        `process.exitCode = step.code;`,
+      ].join("\n"));
+      return {
+        srtWin: { exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, prependArgs: [script] },
+        calls: () => existsSync(callLog) ? readFileSync(callLog, "utf8").trim().split("\n") : [],
+      };
+    }
+    async function releaseWith(srtWin: { exe: string; prependArgs: string[] }) {
+      const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+      const utils = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js");
+      setWindowsAclReleaseForTesting({
+        sandboxUserSid: "S-1-5-21-1", srtWin: srtWin as never,
+        revoke: utils.revokeWindowsAcl as never, restore: utils.restoreWindowsAcl as never,
+      });
+      return SandboxManager;
+    }
+    const entries = (...statuses: string[]) => statuses.map((status) => ({ path: PRIVATE_PATH, status }));
+
+    it("rejects when srt-win cannot run, after the teardown, and keeps the session for the exit handler's retry", async () => {
+      const missingImage = { exe: join(tmpdir(), "ave-srt-win-missing", "srt-win.exe"), prependArgs: [] };
+      const SandboxManager = await releaseWith(missingImage);
+      // The original quit failure: the private image was already gone (ENOENT).
+      await expect(SandboxManager.reset()).rejects.toMatchObject({
+        name: "WindowsSandboxError",
+        code: "acl_release_failed",
+        message: "Windows sandbox ACL release incomplete: grant revoke did not run; deny restore did not run",
+      });
+      // The retry finds the session still there and releases it with a working image.
+      const stub = stubSrtWin({ revoke: { code: 0, json: entries("revoked") }, restore: { code: 0, json: entries("revoked") } });
+      await releaseWith(stub.srtWin);
+      await expect(SandboxManager.reset()).resolves.toEqual({ windowsAclUnreleased: [] });
+      expect(stub.calls()).toEqual(["revoke", "restore"]);
+      // Released: the exit handler's reset has nothing left to do.
+      await SandboxManager.reset();
+      expect(stub.calls()).toEqual(["revoke", "restore"]);
+    });
+
+    it("rejects a non-zero exit even when the JSON lists only released paths, since srt-win leaves a failed path out", async () => {
+      const stub = stubSrtWin({ revoke: { code: 1, json: entries("revoked") }, restore: { code: 0, json: entries("stillHeld") } });
+      const SandboxManager = await releaseWith(stub.srtWin);
+      await expect(SandboxManager.reset()).rejects.toMatchObject({
+        code: "acl_release_failed", message: "Windows sandbox ACL release incomplete: grant revoke exited non-zero",
+      });
+    });
+
+    it("treats every completed release status as released", async () => {
+      const stub = stubSrtWin({
+        revoke: { code: 0, json: entries("revoked", "stillHeld", "downgraded", "relocated", "noRow") },
+        restore: { code: 0, json: entries("revoked", "stillHeld", "downgraded", "noRow", "restored", "alreadyOriginal") },
+      });
+      const SandboxManager = await releaseWith(stub.srtWin);
+      await expect(SandboxManager.reset()).resolves.toEqual({ windowsAclUnreleased: [] });
+    });
+
+    it("reports rows srt-win dropped without release, counted and without paths, and does not retry them", async () => {
+      const stub = stubSrtWin({
+        revoke: { code: 0, json: entries("missing", "missing", "revoked") },
+        restore: { code: 0, json: entries("mismatch") },
+      });
+      const SandboxManager = await releaseWith(stub.srtWin);
+      const report = await SandboxManager.reset();
+      expect(report).toEqual({ windowsAclUnreleased: [
+        { step: "grant revoke", status: "missing", count: 2 },
+        { step: "deny restore", status: "mismatch", count: 1 },
+      ] });
+      expect(JSON.stringify(report)).not.toContain("private-target");
+      await SandboxManager.reset();
+      expect(stub.calls()).toEqual(["revoke", "restore"]);
+    });
+
+    it("lets an embedder that drains on its own signals keep the runtime's signal reset out", () => {
+      const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+      expect(functionBody(manager, /\nfunction registerCleanup\(/u)).toMatch(
+        /if \(!signalCleanupOwnedByHost\) \{\s*process\.once\('SIGINT', cleanupHandler\);\s*process\.once\('SIGTERM', cleanupHandler\);\s*\}/u);
+      expect(manager).toMatch(/\n {4}setSignalCleanupOwnedByHost,\n/u);
+      expect(readInstalled("dist/sandbox/sandbox-manager.d.ts")).toContain("setSignalCleanupOwnedByHost(owned: boolean): void;");
+    });
+  });
+
   it("retains transport failures as a separate response and violation path", () => {
     const manager = readInstalled("dist/sandbox/sandbox-manager.js");
     expect(manager).toContain("if (plan.failure !== undefined) throw plan.failure;");
@@ -912,7 +1014,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
 
   it("keeps the test seams off SandboxManager and the package entry, and refuses them outside the test runner", async () => {
     const entry = await import("@anthropic-ai/sandbox-runtime");
-    for (const seam of ["setDestinationResolverForTesting", "setListenerQuarantineForTesting"]) {
+    for (const seam of ["setDestinationResolverForTesting", "setListenerQuarantineForTesting", "setWindowsAclReleaseForTesting"]) {
       expect(Object.keys(entry)).not.toContain(seam);
       expect(Object.keys(entry.SandboxManager)).not.toContain(seam);
       expect(seam in entry.SandboxManager).toBe(false);
@@ -921,12 +1023,13 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     const env = { ...process.env };
     delete env.VITEST;
     const script = `import(${JSON.stringify(pathToFileURL(join(sandboxDir, "sandbox-manager.js")).href)})`
-      + ".then((m) => { for (const f of [m.setDestinationResolverForTesting, m.setListenerQuarantineForTesting]) {"
+      + ".then((m) => { for (const f of [m.setDestinationResolverForTesting, m.setListenerQuarantineForTesting, m.setWindowsAclReleaseForTesting]) {"
       + " try { f(undefined); console.log('allowed'); } catch (e) { console.log(String(e.message)); } } })";
     const out = execFileSync(process.execPath, ["-e", script], { env: { ...env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8" });
     expect(out.trim().split("\n")).toEqual([
       "setDestinationResolverForTesting is a test seam and is available only under the test runner",
       "setListenerQuarantineForTesting is a test seam and is available only under the test runner",
+      "setWindowsAclReleaseForTesting is a test seam and is available only under the test runner",
     ]);
   });
 

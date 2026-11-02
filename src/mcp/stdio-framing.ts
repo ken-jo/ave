@@ -13,15 +13,28 @@ export class StdioFrameOverflowError extends Error {
   }
 }
 
-/** Buffer bytes until a full line preserves split UTF-8 code points; malformed lines are skipped.
- * The caller line cap applies before delimiters and all pushes fail after overflow. */
+/** A strict decoder met a line that is not one JSON object; like overflow, it is terminal. */
+class StdioFrameMalformedError extends Error {
+  constructor() {
+    super("[stdio-framing] a line is not one JSON object");
+    this.name = "StdioFrameMalformedError";
+  }
+}
+
+/** Buffer bytes until a full line preserves split UTF-8 code points; malformed lines are skipped,
+ * unless the decoder is strict, where the first one is terminal. The caller line cap applies before
+ * delimiters and all pushes fail after overflow or a strict refusal. */
 export class StdioFrameDecoder {
   // Join an unfinished line only once at its delimiter to avoid quadratic copying across chunks.
   private partial: Buffer[] = [];
   private partialBytes = 0;
   private overflowed = false;
+  private malformed = false;
 
-  constructor(private readonly maxLineBytes: number) {
+  constructor(
+    private readonly maxLineBytes: number,
+    private readonly options: { readonly strict?: boolean } = {},
+  ) {
     if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) {
       throw new RangeError(`[stdio-framing] maxLineBytes must be a positive integer, got ${maxLineBytes}`);
     }
@@ -33,6 +46,7 @@ export class StdioFrameDecoder {
 
   push(chunk: Buffer): Array<Record<string, unknown>> {
     if (this.overflowed) throw new StdioFrameOverflowError(this.maxLineBytes);
+    if (this.malformed) throw new StdioFrameMalformedError();
     const out: Array<Record<string, unknown>> = [];
 
     // Scan each incoming byte once; buffered chunks are already known to contain no newline.
@@ -50,13 +64,20 @@ export class StdioFrameDecoder {
       this.partialBytes = 0;
       lineStart = lineEnd + 1;
 
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(line.toString("utf-8"));
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          out.push(parsed as Record<string, unknown>);
-        }
+        parsed = JSON.parse(line.toString("utf-8"));
       } catch {
         // Skip an unparseable line; the next one may still be intact.
+        parsed = undefined;
+      }
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        out.push(parsed as Record<string, unknown>);
+      } else if (this.options.strict) {
+        this.malformed = true;
+        this.partial = [];
+        this.partialBytes = 0;
+        throw new StdioFrameMalformedError();
       }
     }
     if (lineStart < chunk.length) {

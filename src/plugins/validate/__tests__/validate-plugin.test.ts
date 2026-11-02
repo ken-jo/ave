@@ -39,7 +39,7 @@ vi.mock("../validation-session.js", async (importOriginal) => {
 const RAW = fileURLToPath(new URL("./fixtures/raw/", import.meta.url));
 const PROCESS_PLUGIN = fileURLToPath(new URL("./fixtures/process/", import.meta.url));
 const GOLDEN_PLUGINS = fileURLToPath(
-  new URL("../../isolation/__tests__/fixtures/host-protocol/4/plugins/", import.meta.url),
+  new URL("../../isolation/__tests__/fixtures/host-protocol/5/plugins/", import.meta.url),
 );
 const CHILD_MAIN = fileURLToPath(new URL("../../isolation/plugin-child-main.ts", import.meta.url));
 const LOGGER_HOOK = fileURLToPath(
@@ -88,7 +88,7 @@ function rawManifest(tools: string[] = [], entry = "raw.mjs"): PluginManifest {
     name: "Raw Fixture",
     version: "1.0.0",
     entry,
-    requires: { hostProtocol: "4", minAppVersion: "0.12.0" },
+    requires: { hostProtocol: "5", minAppVersion: "0.12.0" },
     description: "a child that speaks the protocol by hand",
     tools: tools.map((name) => ({
       name,
@@ -227,12 +227,12 @@ describe("the manifest step", () => {
 
   it("uses the served protocol without inventing a first app release", async () => {
     const dir = editedPlugin("local-indexer", (extension) => {
-      extension.requires = { minAppVersion: "0.11.0", hostProtocol: "4" };
+      extension.requires = { minAppVersion: "0.11.0", hostProtocol: "5" };
     });
     const rows = await validatePluginDirectory(dir, SOURCE_MODE);
     expect(row(rows, "manifest.min-app-version")).toMatchObject({
       ok: true,
-      message: "host protocol 4 availability is negotiated; no published app floor is recorded",
+      message: "host protocol 5 availability is negotiated; no published app floor is recorded",
       path: "#/extensions/ai.agent-connector.ave/requires/minAppVersion",
     });
     expect(reportExitCode(rows)).toBe(0);
@@ -240,7 +240,7 @@ describe("the manifest step", () => {
 
   it("still requires an explicit minimum app declaration for an unreleased protocol", async () => {
     const dir = editedPlugin("local-indexer", extension => {
-      extension.requires = { hostProtocol: "4" };
+      extension.requires = { hostProtocol: "5" };
     });
     const rows = await validatePluginDirectory(dir, SOURCE_MODE);
     expect(row(rows, "manifest.min-app-version")).toMatchObject({ ok: false });

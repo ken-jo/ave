@@ -330,13 +330,18 @@ functions in a return value.
 **`callLlm(prompt, { maxTokens, systemPrompt, signal })`.** Plain data plus an
 `AbortSignal`, which cancels by request id as above. Reply is a `string`.
 
-**`spawnWorker(spec) → SpawnedPluginWorker`.** Returns `{ socketPath, pid, stop(),
-onStdout(), onStderr(), onExit() }` — live process control.
+**`spawnWorker(spec) → SpawnedPluginWorker`.** Returns `{ control, pid, stop(),
+onStderr(), onExit() }` plus `onStdout()` for an `output-only-v1` worker, or
+`request()`, `notify()`, `onRequest()` and `onNotification()` for a
+`stdio-control-v1` worker — live process control. Host protocol 5 removed the
+earlier `socketPath`; the worker channel is its own stdio
+(`docs/design/plugin-hostapi-protocol.md` §3.3.2).
 
 - The host **keeps owning the worker process**. It must: the ASRT grant machinery,
   the wrapped-worker registry (`markPluginWorkerWrapped`), the Windows holder-PID
   ACL lifecycle, and `trackManagedChildProcess` all live in main.
-- Reply: `{ handleId, socketPath, pid }`. The child stub's `stop()` sends a
+- Reply: `{ handleId, control, pid }`. Control traffic from the child is the
+  notification `notifications/ave/subscription/send` on the same handle. The child stub's `stop()` sends a
   notification; `onStdout` / `onStderr` / `onExit` register **child-local**
   listeners fed by host notifications keyed by `handleId`.
 - Both sides derive the internal `handleId` as `worker_<request id>` from the
@@ -673,7 +678,8 @@ Honest cost of not using `utilityProcess`:
 Python workers. Its `spawnWorker` provides: ASRT argv wrapping (`wrapWorkerCommand`),
 a per-worker control dir at `~/.ave/plugins/<pluginId>/run/<workerId>/`
 (`PLUGIN_WORKER_RUN_DIR_NAME`), the Linux `registerWorkerUnixSocketDir` shared-config
-dance, the Windows holder-PID ACL grant/revoke lifecycle, secret-stripped env via
+dance (both removed for workers by host protocol 5, which gives workers stdio control
+and a host-allocated `workers/<workerId>/` state directory instead), the Windows holder-PID ACL grant/revoke lifecycle, secret-stripped env via
 `buildSafeChildEnv` / `buildSandboxedChildEnv`, `markPluginWorkerWrapped` so the
 effect boundary can recognise a confined worker, and registration into
 `managed-child-processes` (`trackManagedChildProcess`,

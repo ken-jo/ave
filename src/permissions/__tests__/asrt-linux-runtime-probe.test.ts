@@ -64,6 +64,8 @@ vi.mock("../srt-win-integrity.js", () => ({
   getSrtWinArchitecture: () => "x64",
   prepareSrtWinExecutable: (source: string) => source,
   srtWinPrivateDirectories: () => [],
+  markSrtWinRuntimeReleasePending: () => undefined,
+  markSrtWinRuntimeReleased: () => undefined,
 }));
 
 import {

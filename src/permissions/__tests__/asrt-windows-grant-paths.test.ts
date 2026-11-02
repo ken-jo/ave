@@ -56,7 +56,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.spyOn(runtime.SandboxManager, "initialize").mockImplementation(async next => { config = next; });
     vi.spyOn(runtime.SandboxManager, "getConfig").mockImplementation(() => config);
     vi.spyOn(runtime.SandboxManager, "updateConfig").mockImplementation(next => { config = next; });
-    vi.spyOn(runtime.SandboxManager, "reset").mockImplementation(async () => { config = undefined; });
+    vi.spyOn(runtime.SandboxManager, "reset").mockImplementation(async () => { config = undefined; return { windowsAclUnreleased: [] }; });
   });
 
   afterEach(async () => {

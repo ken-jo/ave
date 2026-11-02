@@ -209,7 +209,8 @@ function spawnWorkerTargetFromArgs(args: readonly unknown[],
   const command = typeof record.command === "string" ? record.command : "";
   const allowRead = stringArray(record.allowReadPaths);
   const allowWrite = stringArray(record.allowWritePaths);
-  return JSON.stringify({ workerId, command, allowRead, allowWrite });
+  // A requested state directory is write reach the host adds; name it so the approval shows it. Omitted otherwise, keeping existing targets unchanged.
+  return JSON.stringify({ workerId, command, allowRead, allowWrite, ...(record.stateDirectory === true ? { stateDirectory: true } : {}) });
 }
 
 // Missing real host API leaves fail completeness and record conservative writes at runtime. The renderer callTool bridge is not a plugin-JS host method and records effects on its executor path instead.

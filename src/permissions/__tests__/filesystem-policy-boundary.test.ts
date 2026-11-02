@@ -174,7 +174,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
           await expect(sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite })).rejects.toThrow(/contains machine root/);
         } else if (producer === "worker-spawn") {
           const { spawnWorker } = await import("../worker-spawn.js");
-          await expect(spawnWorker({ pluginId: "fixture", workerId: "fixture", command: "fixture.exe", allowWritePaths: allowWrite }))
+          await expect(spawnWorker({ pluginId: "fixture", workerId: "fixture", control: "output-only-v1", command: "fixture.exe", allowWritePaths: allowWrite }))
             .rejects.toThrow(/contains machine root/);
         } else if (producer === "holder") {
           const { holdWindowsFilesystemGrant } = await import("../windows-acl-grant-holder.js");
@@ -182,7 +182,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
         } else if (producer === "plugin") {
           const { spawnConfinedPluginChild } = await import("../../plugins/isolation/out-of-process-plugin.js");
           await expect(spawnConfinedPluginChild({ pluginId: "fixture", envelope: { read: [], write: allowWrite },
-            socketDir: join(scratch(), "sockets"), workerRunRoot: scratch(), launch: { kind: "entry", childEntryPath: join(scratch(), "entry.js") } }))
+            socketDir: join(scratch(), "sockets"), launch: { kind: "entry", childEntryPath: join(scratch(), "entry.js") } }))
             .rejects.toThrow(/contains machine root/);
         } else {
           const { spawnWindowsBundledProcess } = await import("../../sandbox/wrap-bundled-command.js");

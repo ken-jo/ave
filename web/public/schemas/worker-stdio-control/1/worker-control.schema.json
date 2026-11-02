@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ave.agent-connector.ai/schemas/worker-stdio-control/1/worker-control.schema.json",
+  "title": "Ave worker stdio control 1",
+  "description": "One frame of worker stdio control v1: a single line of UTF-8 JSON, ending in a newline, on a delegated worker's stdin (host to worker) or stdout (worker to host). stdout carries frames only; logs go to stderr. A frame is at most 16 MiB before its newline. The host's hello is always the first frame and the worker's answer to it must be the first frame the worker writes. Each side may have at most 64 requests outstanding toward the other. docs/design/plugin-hostapi-protocol.md describes the protocol.",
+  "anyOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/helloAnswer" },
+    { "$ref": "#/$defs/cancel" },
+    { "$ref": "#/$defs/shutdown" },
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/notification" },
+    { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "jsonrpc": { "const": "2.0" },
+    "id": {
+      "description": "A request id: a non-negative integer or a string of 1 to 128 characters. Id 0 is the host's hello.",
+      "oneOf": [
+        { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        { "type": "string", "minLength": 1, "maxLength": 128 }
+      ]
+    },
+    "method": {
+      "description": "A method either side may call. Names beginning with $/ belong to the host and are never valid here.",
+      "type": "string",
+      "pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$"
+    },
+    "hello": {
+      "description": "Host to worker, first frame: the protocol and the versions the host speaks.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "id": { "const": 0 },
+        "method": { "const": "$/ave/hello" },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["protocol", "versions", "frameBytesMax"],
+          "properties": {
+            "protocol": { "const": "ave-worker-stdio-control" },
+            "versions": { "type": "array", "items": { "type": "string" }, "minItems": 1, "contains": { "const": "1" } },
+            "frameBytesMax": { "const": 16777216 }
+          }
+        }
+      }
+    },
+    "helloAnswer": {
+      "description": "Worker to host, first frame: the version the worker chose.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "id": { "const": 0 },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["protocol", "version"],
+          "properties": {
+            "protocol": { "const": "ave-worker-stdio-control" },
+            "version": { "const": "1" }
+          }
+        }
+      }
+    },
+    "cancel": {
+      "description": "Either direction: the sender no longer wants the answer to its request id. The receiver still answers it, typically with error code -32800.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "method": { "const": "$/ave/cancel" },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id"],
+          "properties": { "id": { "$ref": "#/$defs/id" } }
+        }
+      }
+    },
+    "shutdown": {
+      "description": "Host to worker: an orderly stop. The host closes stdin next; stdin EOF alone also means exit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "method"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "method": { "const": "$/ave/shutdown" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "method"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "id": { "$ref": "#/$defs/id" },
+        "method": { "$ref": "#/$defs/method" },
+        "params": true
+      }
+    },
+    "notification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "method"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "method": { "$ref": "#/$defs/method" },
+        "params": true
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "id": { "$ref": "#/$defs/id" },
+        "result": true
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "error"],
+      "properties": {
+        "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
+        "id": { "$ref": "#/$defs/id" },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "integer" },
+            "message": { "type": "string" },
+            "data": true
+          }
+        }
+      }
+    }
+  }
+}

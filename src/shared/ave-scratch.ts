@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, type Stats } from "node:fs";
+import { lstatSync, mkdirSync, rmdirSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { aveHome } from "./ave-home.js";
 
 /** Use a verified app-owned private scratch directory, never the shared temp root; include account and app-home identity. */
@@ -59,4 +59,23 @@ export function ensureAveScratchDir(path = aveScratchDir()): AveScratchState {
     return reject(path, `could not create: ${(err as Error).message}`);
   }
   return verifyAveScratchDir(path);
+}
+
+export type AveScratchRemoval =
+  | { status: "removed" | "kept" }
+  | { status: "failed"; code: string };
+
+/** On exit the scratch directory is removed only while it is still empty; anything the agent, a tool or the user left in it stays. */
+export function removeAveScratchDirIfEmpty(path = aveScratchDir()): AveScratchRemoval {
+  try {
+    // Windows cannot remove a process's current directory; its paths compare without case.
+    const fold = (value: string) => process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value);
+    if (fold(process.cwd()) === fold(path)) process.chdir(tmpdir());
+    rmdirSync(path);
+    return { status: "removed" };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOENT") return { status: "kept" };
+    return { status: "failed", code: code ?? "unknown" };
+  }
 }

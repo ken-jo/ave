@@ -109,7 +109,10 @@
         "src/core/model-catalog/__tests__/fixtures/refresh-process.ts",
         // The conversation turn the SIGKILL durability test runs in its own
         // process and kills mid-stream; spawned BY PATH.
-        "src/engine/__tests__/fixtures/mid-stream-writer.ts"
+        "src/engine/__tests__/fixtures/mid-stream-writer.ts",
+        // The srt-win exit-order test runs it as a separate process so its
+        // exit handlers fire for real; spawned BY PATH.
+        "src/permissions/__tests__/fixtures/srt-win-exit-order-child.ts"
       ]
     },
     "web": {

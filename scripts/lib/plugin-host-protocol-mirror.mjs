@@ -44,6 +44,7 @@ export function hostProtocolSchemaId(relative) {
 export const PUBLISHED_SCHEMAS = Object.freeze([
   ["schemas/plugin-manifest.schema.json", "plugin/3/plugin.schema.json"],
   ["schemas/skill-package.schema.json", "skill/1/skill.schema.json"],
+  ["schemas/worker-stdio-control/1/worker-control.schema.json", "worker-stdio-control/1/worker-control.schema.json"],
   ["schemas/marketplace/index.schema.json", "marketplace/2/index.schema.json"],
   ["schemas/marketplace/package.schema.json", "marketplace/2/package.schema.json"],
   ["schemas/marketplace/revocations.schema.json", "marketplace/2/revocations.schema.json"],

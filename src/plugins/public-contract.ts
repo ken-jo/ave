@@ -1314,28 +1314,46 @@ export type PluginLifecycleEvent =
   | { type: "_future"; readonly __exhaustive: never };
 
 /**
+ * How a delegated worker talks to its plugin. Both modes use only the worker's
+ * standard streams; no mode binds or connects a socket or a loopback port.
+ *
+ * - `"stdio-control-v1"`: worker stdio control v1. stdin and stdout carry only
+ *   newline-delimited JSON-RPC 2.0 frames (one object per line, at most
+ *   {@link WORKER_CONTROL_FRAME_BYTES_MAX} bytes); the worker writes logs and
+ *   diagnostics to stderr. The host opens the channel with a `$/ave/hello`
+ *   request before `spawnWorker` resolves. Anything else on stdout ends the
+ *   worker. The schema is `schemas/worker-stdio-control/1/worker-control.schema.json`.
+ * - `"output-only-v1"`: a command with no control channel. stdout and stderr are
+ *   raw output; stdin carries no bytes.
+ *
+ * In both modes EOF on stdin means "exit now". It is the one signal that
+ * survives a host crash or kill, so a long-lived worker MUST honour it.
+ */
+export type PluginWorkerControl = "stdio-control-v1" | "output-only-v1";
+
+/** Largest worker stdio control v1 frame, in bytes, excluding its newline. */
+export const WORKER_CONTROL_FRAME_BYTES_MAX = 16 * 1024 * 1024;
+
+/** Method names a plugin or a worker may use on the worker control channel; names under `$/` are the host's and never match. */
+export const WORKER_CONTROL_METHOD = /^[a-zA-Z_][a-zA-Z0-9_]{0,127}$/;
+
+/**
  * The spec a plugin hands `PluginHostApi.spawnWorker`. `pluginId` is NOT part of
  * the spec — the host binds it from the calling hostApi instance, so a plugin
  * cannot spawn a worker under another plugin's namespace. (The host-internal
  * primitive in `src/permissions/worker-spawn.ts` accepts the same shape plus
  * the bound `pluginId`.)
- *
- * The worker's stdin is the host's liveness pipe: it carries no bytes and
- * closes only when the host process is gone. A long-lived worker MUST treat
- * EOF on stdin as "exit now" — it is the one signal that survives a host crash
- * or kill, which the host's shutdown sweep never sees. A short-lived command
- * may ignore it.
  */
 export interface PluginWorkerSpec {
   /**
-   * Stable per-worker id — names the control dir + reviewer registry key.
-   * Must match `[a-z0-9][a-z0-9._-]{0,127}`; uppercase and other invalid
-   * ids fail closed so case-insensitive filesystems cannot alias workers.
+   * Stable per-worker id — names the worker's state directory and reviewer
+   * registry key. Must match `[a-z0-9][a-z0-9._-]{0,127}`; uppercase and other
+   * invalid ids fail closed so case-insensitive filesystems cannot alias workers.
    */
   readonly workerId: string;
   /** The worker executable to spawn (absolute path or PATH-resolved name). */
   readonly command: string;
-  /** Argv for the worker. The UDS path is injected per `udsArgName`. */
+  /** Argv for the worker. */
   readonly args?: readonly string[];
   /** Extra env merged onto the host's secret-stripped base env. */
   readonly env?: Record<string, string | undefined>;
@@ -1345,49 +1363,137 @@ export interface PluginWorkerSpec {
    * not infer filesystem grants from argv.
    */
   readonly allowReadPaths?: readonly string[];
-  /** Paths the worker may write. The host-allocated control-socket dir is
-   *  unioned on automatically. */
+  /** Paths the worker may write. */
   readonly allowWritePaths?: readonly string[];
+  /** The worker's declared control mode. Required: there is no default. */
+  readonly control: PluginWorkerControl;
   /**
-   * How the host tells the worker WHERE to bind the control socket (only when
-   * the returned `socketPath` is non-null):
-   *   - a string like `"--uds"` → appends `[udsArgName, socketPath]` to args;
-   *   - `{ env: "AVE_CONTROL_SOCKET" }` → sets that env var to socketPath.
-   * Omitted ⇒ the worker is not told the path through this primitive.
+   * Ask the host for this worker's private state directory,
+   * `<plugin root>/workers/<workerId>/`. The host creates it, grants the worker
+   * read and write on it, and names it in the worker's `AVE_WORKER_STATE_DIR`
+   * environment variable. It survives plugin updates and restarts. It sits
+   * beside the plugin's data directory, never inside it, and the plugin process
+   * itself gets no write grant on it: only the worker writes there.
    */
-  readonly udsArgName?: string | { readonly env: string };
+  readonly stateDirectory?: boolean;
 }
 
-/**
- * The handle `PluginHostApi.spawnWorker` resolves to. `socketPath` is the
- * host-side UDS path to connect to, or `null` when the worker should use TCP
- * control. `null` covers gate-OFF plain spawn and Windows ASRT-wrapped workers
- * (Windows keeps TCP control while filesystem/network effects are confined).
- * Callers must not infer sandbox status from transport alone. `stop()` is the
- * host's orderly path; the worker's stdin (see {@link PluginWorkerSpec}) is the
- * one that outlives the host.
- */
-export interface SpawnedPluginWorker {
-  readonly socketPath: string | null;
+/** Why a worker's incarnation ended. */
+export type PluginWorkerExitReason =
+  /** The process exited on its own. */
+  | "exited"
+  /** `stop()` was called, or the plugin incarnation that owns the worker ended. */
+  | "stopped"
+  /** The worker broke worker stdio control v1 (a non-frame line on stdout, an invalid or oversized frame, a failed hello). */
+  | "control-violation"
+  /** Output arrived faster than any listener took it and overflowed the bounded buffer. */
+  | "output-overflow";
+
+/** What `onExit` reports, once, after the process is gone and its streams drained. */
+export interface PluginWorkerExitInfo {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly reason: PluginWorkerExitReason;
+}
+
+/** The members every worker handle has. */
+interface SpawnedPluginWorkerBase {
   readonly pid: number | undefined;
-  /** Stop the worker (SIGTERM → SIGKILL grace) + release ASRT/UDS state. */
+  /** Stop the worker (EOF, then SIGTERM → SIGKILL grace) and release its confinement state. */
   stop(): void;
-  /** Subscribe to worker stdout (utf-8 chunks). */
-  onStdout(listener: (chunk: string) => void): void;
   /** Subscribe to worker stderr (utf-8 chunks). */
   onStderr(listener: (chunk: string) => void): void;
   /**
    * Subscribe to worker EXIT (crash or normal). Fires once when the worker
    * process exits. The handle owns lifecycle, so a consumer MUST use this to
    * detect a crashed worker (mark it dead / restart) — without it `isRunning`
-   * style state can never go false after a crash.
+   * style state can never go false after a crash. A replacement worker is a new
+   * `spawnWorker` call; nothing the old one was asked is replayed to it.
    */
-  onExit(
-    listener: (info: {
-      code: number | null;
-      signal: NodeJS.Signals | null;
-    }) => void,
-  ): void;
+  onExit(listener: (info: PluginWorkerExitInfo) => void): void;
+}
+
+/** A worker spawned with `control: "output-only-v1"`. */
+export interface OutputOnlyPluginWorker extends SpawnedPluginWorkerBase {
+  readonly control: "output-only-v1";
+  /** Subscribe to worker stdout (utf-8 chunks). */
+  onStdout(listener: (chunk: string) => void): void;
+}
+
+/** Options for one control request to a worker. */
+export interface WorkerControlRequestOptions {
+  /** Abort sends `$/ave/cancel` to the worker and rejects with `worker-request-cancelled`. */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Answers one request the worker sent. The resolved value (JSON-representable)
+ * becomes the result; a throw becomes a JSON-RPC error reply. `signal` aborts
+ * when the worker cancels the request or the incarnation ends.
+ */
+export type WorkerControlRequestHandler = (
+  method: string,
+  params: unknown,
+  signal: AbortSignal,
+) => unknown;
+
+/**
+ * A worker spawned with `control: "stdio-control-v1"`. Method names match
+ * `^[a-zA-Z_][a-zA-Z0-9_]{0,127}$`; names starting `$/` belong to the host.
+ * Params and results must be JSON-representable.
+ */
+export interface StdioControlPluginWorker extends SpawnedPluginWorkerBase {
+  readonly control: "stdio-control-v1";
+  /**
+   * Send a request and resolve with the worker's result. Rejects with a
+   * {@link WorkerControlError}: `worker-request-failed` when the worker replied
+   * with an error, `worker-request-cancelled`, `worker-backpressure` when the
+   * host's bounded queue or in-flight limit is full, `payload-too-large`, or
+   * `worker-incarnation-ended` when the worker stopped first. A request that
+   * fails is never replayed.
+   */
+  request(method: string, params?: unknown, options?: WorkerControlRequestOptions): Promise<unknown>;
+  /** Send a notification. Resolves once the host has written it to the worker. */
+  notify(method: string, params?: unknown): Promise<void>;
+  /** Answer requests the worker sends. One handler; a second registration throws. */
+  onRequest(handler: WorkerControlRequestHandler): void;
+  /** Receive notifications the worker sends. */
+  onNotification(listener: (method: string, params: unknown) => void): void;
+}
+
+/**
+ * The handle `PluginHostApi.spawnWorker` resolves to, discriminated by the
+ * spec's `control`. `stop()` is the host's orderly path; EOF on the worker's
+ * stdin (see {@link PluginWorkerControl}) is the one signal that outlives the host.
+ */
+export type SpawnedPluginWorker = OutputOnlyPluginWorker | StdioControlPluginWorker;
+
+/** Why a worker control call failed. */
+export type WorkerControlErrorCode =
+  | "worker-request-failed"
+  | "worker-request-cancelled"
+  | "worker-backpressure"
+  | "worker-incarnation-ended"
+  | "payload-too-large";
+
+/** The error a worker returned in a JSON-RPC error reply. */
+export interface WorkerControlRemoteError {
+  readonly code: number;
+  readonly message: string;
+  readonly data?: unknown;
+}
+
+/** A worker control call failed. Branch on `code`, never on the message. */
+export class WorkerControlError extends Error {
+  readonly code: WorkerControlErrorCode;
+  /** Present for `worker-request-failed`: the worker's own error. */
+  readonly remote?: WorkerControlRemoteError;
+  constructor(code: WorkerControlErrorCode, message: string, remote?: WorkerControlRemoteError) {
+    super(message);
+    this.name = "WorkerControlError";
+    this.code = code;
+    if (remote !== undefined) this.remote = remote;
+  }
 }
 
 /**
@@ -1576,21 +1682,18 @@ export interface PluginHostApi {
   onShutdown(handler: () => void | Promise<void>): void;
 
   /**
-   * Spawn a long-lived plugin worker, host-mediated and (when the OS-tool ASRT
-   * sandbox gate is ON) ASRT-wrapped. macOS/Linux workers use a bind-mounted
-   * Unix-domain-socket (UDS) control channel; Windows workers keep TCP control
-   * but run under srt-win with a worker-lifetime holder PID ACL grant.
+   * Spawn a plugin worker, host-mediated and (when the OS-tool sandbox gate is
+   * ON) confined. The worker talks to the plugin only over its standard
+   * streams, as the spec's `control` declares (see {@link PluginWorkerControl});
+   * the host never allocates a socket or a port for it.
    *
    * `pluginId` is bound by the host from THIS hostApi instance — a plugin
-   * cannot spawn a worker under another plugin's namespace. The worker's
-   * control dir lives under the plugin's own `~/.ave/plugins/<pluginId>/run/
-   * <workerId>/` (host-allocated, 0o700; socket 0o600).
-   *
-   * Returns a handle whose `socketPath` is the host-side path to connect to
-   * (undici `Agent({ connect: { socketPath } })` / `http.request({ socketPath })`)
-   * on the wrapped macOS/Linux UDS path. It is `null` for gate-OFF plain TCP and
-   * for the Windows ASRT path, where the worker keeps TCP control while
-   * filesystem/network effects are confined by the srt-win holder grant.
+   * cannot spawn a worker under another plugin's namespace. A
+   * `"stdio-control-v1"` spawn resolves only after the worker answered the
+   * host's `$/ave/hello`; a worker that does not is stopped and the call
+   * rejects with `worker-control-failed`. A host whose extension backend cannot
+   * run the declared mode refuses before creating the process with
+   * `worker-transport-unsupported`.
    *
    * OPTIONAL: undefined on host builds that predate this primitive — guard with
    * `typeof hostApi.spawnWorker === "function"`, mirroring `resolveApiKey?`.
