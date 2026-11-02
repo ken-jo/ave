@@ -60,6 +60,8 @@ export const TOOL_TIMEOUT_POLICY = {
   pluginShutdownHandlerMs: 5_000,
   // Kill grace ensures the shutdown runner timeout wins over the transport deadline.
   pluginShutdownKillGraceMs: 1_000,
+  // A stdio-control worker must answer the host's hello before spawnWorker resolves; cold interpreter start on Windows included.
+  workerControlHelloMs: 60_000,
   // UI-resource hooks run on the render path with a tighter deadline than tools; expiry yields no card.
   pluginUiResourceReadMs: 10_000,
   // A small subagent round budget still receives the wall-clock floor.

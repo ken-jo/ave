@@ -298,7 +298,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
         } else if (producer === "plugin-holder") {
           vi.spyOn(sandbox, "isPluginWorkerConfinementActive").mockReturnValue(true);
           const { spawnWorker } = await import("../worker-spawn.js");
-          await expect(spawnWorker({ pluginId: "fixture", workerId: "fixture", command: "fixture.exe", allowWritePaths: filesystem.allowWrite }))
+          await expect(spawnWorker({ pluginId: "fixture", workerId: "fixture", control: "output-only-v1", command: "fixture.exe", allowWritePaths: filesystem.allowWrite }))
             .rejects.toThrow(/contains machine root/);
         } else {
           const { spawnWindowsBundledProcess } = await import("../../sandbox/wrap-bundled-command.js");

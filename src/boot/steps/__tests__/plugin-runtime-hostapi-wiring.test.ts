@@ -174,8 +174,8 @@ type ConfigHostApi = {
     | { ok: true; exposure: "raw"; vendor: string; key: string; release: () => Promise<void> }
   >;
   hostFetch: (input: string, init?: RequestInit & { auth?: { lease: string } }) => Promise<Response>;
-  spawnWorker: (spec: { workerId: string; command: string }) => Promise<{
-    socketPath: string | null;
+  spawnWorker: (spec: { workerId: string; command: string; control: "output-only-v1" }) => Promise<{
+    control: "output-only-v1";
     pid: number | undefined;
     stop: () => void;
     onStdout: (listener: (chunk: string) => void) => void;
@@ -1122,7 +1122,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
   it("gives a worker only the floor pierces its plugin's reviewed declaration asked for", async () => {
     // Only host-interpreted manifest grants can name reads inside the protected floor.
     runtimeTestState.spawnWorker.mockResolvedValue({
-      socketPath: null, pid: 7, stop: vi.fn(), onStdout: vi.fn(), onStderr: vi.fn(), onExit: vi.fn(),
+      control: "output-only-v1", pid: 7, stop: vi.fn(), onStdout: vi.fn(), onStderr: vi.fn(), onExit: vi.fn(),
     });
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
     const lifecycle = {
@@ -1140,7 +1140,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
         lifecycle,
         "plugin-a",
       );
-      await api.spawnWorker({ workerId: "w", command: "node", floorPierces: ["/"] } as never);
+      await api.spawnWorker({ workerId: "w", command: "node", control: "output-only-v1", floorPierces: ["/"] } as never);
       return (runtimeTestState.spawnWorker.mock.calls[0]?.[0] as { floorPierces?: string[] }).floorPierces;
     };
     expect(await spawnFor()).toEqual([]);
@@ -1164,7 +1164,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const workerOnStderr = vi.fn();
     const workerOnExit = vi.fn();
     runtimeTestState.spawnWorker.mockResolvedValue({
-      socketPath: "/tmp/plugin-a.sock",
+      control: "output-only-v1",
       pid: 42,
       stop: workerStop,
       onStdout: workerOnStdout,
@@ -1196,7 +1196,9 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const worker = await api.spawnWorker({
       workerId: "worker-a",
       command: "node",
+      control: "output-only-v1",
     });
+    if (worker.control !== "output-only-v1") throw new Error("expected an output-only handle");
     const stdoutListener = vi.fn();
     const stderrListener = vi.fn();
     const exitListener = vi.fn();
@@ -1206,10 +1208,10 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
 
     workerOnStdout.mock.calls[0]?.[0]("before");
     workerOnStderr.mock.calls[0]?.[0]("before-error");
-    workerOnExit.mock.calls[0]?.[0]({ code: 0, signal: null });
+    workerOnExit.mock.calls[0]?.[0]({ code: 0, signal: null, reason: "exited" });
     expect(stdoutListener).toHaveBeenCalledWith("before");
     expect(stderrListener).toHaveBeenCalledWith("before-error");
-    expect(exitListener).toHaveBeenCalledWith({ code: 0, signal: null });
+    expect(exitListener).toHaveBeenCalledWith({ code: 0, signal: null, reason: "exited" });
     stdoutListener.mockClear();
     stderrListener.mockClear();
     exitListener.mockClear();

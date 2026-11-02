@@ -113,13 +113,13 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
   const SHA = "c".repeat(64);
   const processAuthority = (minAppVersion = "0.14.0"): PluginAuthority => ({
     ...authority(),
-    requires: { capabilities: ["llm.chat"], minAppVersion, hostProtocol: "4" },
+    requires: { capabilities: ["llm.chat"], minAppVersion, hostProtocol: "5" },
   });
   const admitted = (patch: Partial<ExpectedPlugin> = {}): ExpectedPlugin => ({
     name: "alpha",
     version: "1.2.0",
     minAppVersion: "0.14.0",
-    hostProtocol: "4",
+    hostProtocol: "5",
     authority: processAuthority(),
     platforms: ["darwin", "linux"],
     artifact: { release: { repo: "acme/alpha", sha256: SHA } },
@@ -178,9 +178,9 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
   });
 
   it("takes platforms and artifact from the plan, so every plan-based producer checks them", () => {
-    const plan = { name: "alpha", version: "1.2.0", minAppVersion: "0.14.0", hostProtocol: "4", platforms: ["darwin" as const], authority: processAuthority(), artifact: { tree: "x" } };
+    const plan = { name: "alpha", version: "1.2.0", minAppVersion: "0.14.0", hostProtocol: "5", platforms: ["darwin" as const], authority: processAuthority(), artifact: { tree: "x" } };
     expect(expectedPluginOf(plan)).toEqual({
-      name: "alpha", version: "1.2.0", minAppVersion: "0.14.0", hostProtocol: "4", authority: processAuthority(), platforms: ["darwin"], artifact: { tree: "x" },
+      name: "alpha", version: "1.2.0", minAppVersion: "0.14.0", hostProtocol: "5", authority: processAuthority(), platforms: ["darwin"], artifact: { tree: "x" },
     });
   });
 });

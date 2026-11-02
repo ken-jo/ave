@@ -12,7 +12,7 @@ vi.mock("../../main/managed-child-processes.js", () => ({
   },
 }));
 
-import { spawnWorker, type SpawnedWorker } from "../worker-spawn.js";
+import { spawnWorker, type OutputOnlyWorker, type SpawnedWorker } from "../worker-spawn.js";
 
 // RunAsNode makes `process.execPath` the Electron binary under this repo's test runner; `ELECTRON_RUN_AS_NODE` makes that binary behave as Node, and is harmless when a plain Node path is supplied instead.
 const NODE_COMMAND = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
@@ -29,7 +29,7 @@ function exitOf(worker: SpawnedWorker): Promise<{ code: number | null; signal: N
   });
 }
 
-let worker: SpawnedWorker | undefined;
+let worker: OutputOnlyWorker | undefined;
 
 afterEach(() => {
   worker?.stop();
@@ -42,6 +42,7 @@ describe("spawnWorker — stdin is the host's liveness pipe (real child)", () =>
     worker = await spawnWorker({
       pluginId: "liveness-probe",
       workerId: "reads-stdin",
+      control: "output-only-v1",
       command: NODE_COMMAND,
       args: [
         "-e",
@@ -57,7 +58,7 @@ describe("spawnWorker — stdin is the host's liveness pipe (real child)", () =>
     // The host never writes to or ends this stream; destroying it is what the OS does to the host's end of the pipe when the host process is gone.
     trackedChild?.stdin?.destroy();
 
-    await expect(exited).resolves.toEqual({ code: 7, signal: null });
+    await expect(exited).resolves.toEqual({ code: 7, signal: null, reason: "exited" });
   }, 20_000);
 
   it("raises nothing on the host when the worker exits on its own first", async () => {
@@ -71,6 +72,7 @@ describe("spawnWorker — stdin is the host's liveness pipe (real child)", () =>
       worker = await spawnWorker({
         pluginId: "liveness-probe",
         workerId: "exits-first",
+        control: "output-only-v1",
         command: NODE_COMMAND,
         args: ["-e", "process.exit(0)"],
         env: NODE_ENV,
@@ -79,7 +81,7 @@ describe("spawnWorker — stdin is the host's liveness pipe (real child)", () =>
       const stdin = trackedChild?.stdin;
       expect(stdin?.listenerCount("error")).toBeGreaterThan(0);
 
-      await expect(exited).resolves.toEqual({ code: 0, signal: null });
+      await expect(exited).resolves.toEqual({ code: 0, signal: null, reason: "exited" });
       // A stream error on the host's end, if one were coming, arrives after the exit; give it the turn it would need.
       await new Promise((resolve) => setTimeout(resolve, 200));
       expect(raised).toEqual([]);

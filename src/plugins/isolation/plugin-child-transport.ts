@@ -153,6 +153,7 @@ export class PluginChildTransport {
       },
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
+        whenDrained: (ready) => this.closedReason === undefined && this.stream.whenDrained(ready),
       },
       // Apply the shutdown-handler bound with grace so the host reports timeout before child termination.
       shutdownChild: async (subscriptionId) => {
@@ -296,9 +297,10 @@ export class PluginChildTransport {
     return await settled;
   }
 
-  sendToChild(notification: HostApiNotification): void {
-    if (this.closedReason !== undefined) return;
-    this.stream.send(notification);
+  /** Returns the UTF-8 bytes queued toward the child for it (0 once closed). */
+  sendToChild(notification: HostApiNotification): number {
+    if (this.closedReason !== undefined) return 0;
+    return this.stream.send(notification);
   }
 
   /** Close is idempotent; mark termination before fallible callbacks that can reenter. */

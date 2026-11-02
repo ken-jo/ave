@@ -142,7 +142,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       name: "test-plugin", version: "1.2.3", description: "Process extension",
       extensions: { "ai.agent-connector.ave": {
         process: { command: "./bin/plugin" },
-        requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
         tools: [],
       } },
     }), "utf8");
@@ -496,7 +496,7 @@ describe("PluginMarketplaceService.installLocal", () => {
 
     const activateLikeTheRuntime: PreparedMarketplacePluginActivation = async (prepared) => {
       const granted = materialiseCandidateRuntimeDirsForTest(prepared.installId, prepared.pluginRoot, pluginsDir);
-      grantedInodes = [statSync(granted.socketDir).ino, statSync(granted.workerRunRoot).ino];
+      grantedInodes = [statSync(granted.socketDir).ino, statSync(granted.legacyRunDir).ino];
       const completion = Promise.resolve();
       return { result: await prepared.durableCommit(), retirement: completion, completion, retirementDeferred: false };
     };

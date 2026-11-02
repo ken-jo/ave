@@ -20,6 +20,7 @@ import {
   PLUGIN_SOCKET_CARRY_DIR_NAME,
   PLUGIN_SOCKET_DISCARD_DIR_NAME,
   PLUGIN_WORKER_RUN_DIR_NAME,
+  PLUGIN_WORKER_STATE_DIR_NAME,
   assertUnixSocketPathFits,
   carryPluginStateDirs,
   carryPluginSocketDirs,
@@ -318,6 +319,35 @@ describe("carryPluginStateDirs", () => {
 
     expect(readFileSync(join(to, PLUGIN_HOST_STORAGE_DIR_NAME, "auth", "token-default.json"), "utf-8")).toBe("ENC(token)");
     expect(existsSync(join(from, PLUGIN_HOST_STORAGE_DIR_NAME))).toBe(false);
+  });
+
+  it("carries the host-allocated worker state directory with the plugin's other state", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_WORKER_STATE_DIR_NAME, "indexer"), { recursive: true });
+    await writeFile(join(from, PLUGIN_WORKER_STATE_DIR_NAME, "indexer", "index.db"), "rows");
+    await mkdir(to);
+
+    await expect(carryPluginStateDirs(from, to, REJECT)).resolves.toBe(true);
+
+    expect(readFileSync(join(to, PLUGIN_WORKER_STATE_DIR_NAME, "indexer", "index.db"), "utf-8")).toBe("rows");
+    expect(existsSync(join(from, PLUGIN_WORKER_STATE_DIR_NAME))).toBe(false);
+  });
+
+  it("refuses before moving anything when only the worker state directories collide", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(from);
+    await seedPluginDataFixture(from);
+    await mkdir(join(from, PLUGIN_WORKER_STATE_DIR_NAME));
+    await mkdir(join(to, PLUGIN_WORKER_STATE_DIR_NAME), { recursive: true });
+
+    await expect(carryPluginStateDirs(from, to, REJECT)).rejects.toThrow(
+      /both roots hold a plugin worker state directory/,
+    );
+
+    expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
+    expect(existsSync(join(to, PLUGIN_DATA_DIR_NAME))).toBe(false);
   });
 });
 

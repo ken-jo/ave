@@ -26,7 +26,6 @@ import { PLUGIN_INSTANCE_METHODS } from "../../isolation/plugin-instance-wire.js
 import type { ChildLink } from "../../isolation/plugin-child-transport.js";
 import {
   resolvePluginSocketDir,
-  resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { createValidationHost } from "../validation-host.js";
 import { openValidationSession } from "../validation-session.js";
@@ -40,7 +39,7 @@ const GRANTED_MANIFEST: PluginManifest = {
   name: "Validation Probe",
   version: "1.0.0",
   entry: "plugin.mjs",
-  requires: { hostProtocol: "4" },
+  requires: { hostProtocol: "5" },
   description: "declares a grant the validator must not apply",
   tools: [],
   sandbox: {
@@ -128,7 +127,7 @@ describe("the validation session's authority", () => {
     try {
       const socketDir = resolvePluginSocketDir(pluginDataDir);
       expect(session.confinement).toEqual({
-        read: [pluginRoot, pluginDataDir, socketDir, resolvePluginWorkerRunRoot(pluginDataDir)],
+        read: [pluginRoot, pluginDataDir, socketDir],
         write: [pluginDataDir, socketDir],
       });
       expect(settingsReads.count).toBe(0);
@@ -137,7 +136,7 @@ describe("the validation session's authority", () => {
         jsonrpc: "2.0",
         id: "into-approved",
         method: "ave/host/spawnWorker",
-        params: { spec: { workerId: "into-approved", command: "/usr/bin/true", allowWritePaths: [approved] } },
+        params: { spec: { workerId: "into-approved", command: "/usr/bin/true", control: "output-only-v1", allowWritePaths: [approved] } },
       });
       await vi.waitFor(() => expect(child.sent.find((frame) => frame.id === "into-approved")).toBeDefined());
       expect(child.sent.find((frame) => frame.id === "into-approved")).toMatchObject({

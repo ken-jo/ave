@@ -1,0 +1,33 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/spawnWorker",
+    "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
+      "spec": {
+        "args": [
+          "--version"
+        ],
+        "command": "/usr/bin/true",
+        "control": "stdio-control-v1",
+        "workerId": "golden"
+      }
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "worker-control-failed",
+        "name": "WorkerControlFailedError"
+      },
+      "message": "[worker-spawn] worker:golden-invoker:indexer: no answer to $/ave/hello within 60000ms"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a stdio-control worker that never answered the hello"
+}

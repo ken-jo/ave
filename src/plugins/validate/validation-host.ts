@@ -5,6 +5,9 @@ import type {
   PluginHostApi,
   PluginLifecycleEvent,
   SpawnedPluginWorker,
+  PluginWorkerControl,
+  PluginWorkerExitInfo,
+  WorkerControlRequestHandler,
 } from "../public-contract.js";
 import type { DelegatedWorkerConfinement } from "../isolation/host-api-dispatcher.js";
 import { derivePluginChildEnvelope } from "../isolation/out-of-process-plugin.js";
@@ -74,22 +77,44 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
     return () => void listeners.delete(listener);
   };
 
-  const scriptedWorker = (spec: { workerId: string }): SpawnedPluginWorker => {
+  const scriptedWorker = (spec: { workerId: string; control: PluginWorkerControl }): SpawnedPluginWorker => {
     const stdout: Array<Listener<string>> = [];
     const stderr: Array<Listener<string>> = [];
-    const exit: Array<Listener<{ code: number | null; signal: NodeJS.Signals | null }>> = [];
+    const exit: Array<Listener<PluginWorkerExitInfo>> = [];
+    const notifications: Array<(method: string, params: unknown) => void> = [];
+    let requestHandler: WorkerControlRequestHandler | undefined;
     firing.push(() => {
-      for (const listener of stdout) listener(`${spec.workerId} ready\n`);
-      for (const listener of stderr) listener(`${spec.workerId} warming up\n`);
-      for (const listener of exit) listener({ code: 0, signal: null });
+      const rest = (): void => {
+        for (const listener of stdout) listener(`${spec.workerId} ready\n`);
+        for (const listener of stderr) listener(`${spec.workerId} warming up\n`);
+        for (const listener of notifications) listener("ready", { workerId: spec.workerId });
+        for (const listener of exit) listener({ code: 0, signal: null, reason: "exited" });
+      };
+      if (!requestHandler) return rest();
+      // A stdio-control worker asks its plugin for egress it may not perform itself, and exits only after the answer.
+      void Promise.resolve()
+        .then(() => requestHandler!("egress_fetch", { url: "https://example.com/model" }, new AbortController().signal))
+        .catch(() => undefined)
+        .then(rest);
     });
-    return {
-      socketPath: `/run/${spec.workerId}.sock`,
+    const base = {
       pid: 4242,
       stop: () => undefined,
-      onStdout: (listener) => void stdout.push(listener),
-      onStderr: (listener) => void stderr.push(listener),
-      onExit: (listener) => void exit.push(listener),
+      onStderr: (listener: Listener<string>) => void stderr.push(listener),
+      onExit: (listener: Listener<PluginWorkerExitInfo>) => void exit.push(listener),
+    };
+    if (spec.control === "output-only-v1") {
+      return { ...base, control: "output-only-v1", onStdout: (listener) => void stdout.push(listener) };
+    }
+    return {
+      ...base,
+      control: "stdio-control-v1",
+      request: async (method, params) => ({ echoed: method, params: params ?? null }),
+      notify: async () => undefined,
+      onRequest: (handler) => {
+        requestHandler = handler;
+      },
+      onNotification: (listener) => void notifications.push(listener),
     };
   };
 
@@ -153,7 +178,7 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
     logEvent: (level: string, message: string, data?: unknown) =>
       void logged.push([level, message, data]),
     onShutdown: (handler: () => void | Promise<void>) => void shutdownHandlers.push(handler),
-    spawnWorker: async (spec: { workerId: string }) => scriptedWorker(spec),
+    spawnWorker: async (spec: { workerId: string; control: PluginWorkerControl }) => scriptedWorker(spec),
     openAuthWindow: async (options: { returnFinalUrl?: boolean }) => {
       const cookies = [{ name: "session", value: "cookie-value", domain: "login.example.com" }];
       return options.returnFinalUrl

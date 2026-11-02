@@ -51,26 +51,27 @@ describe("worker request preregistration on the framed channel", () => {
   it("replays reply, output, exit and close decoded from one input chunk", async () => {
     const { input, output, service, runtime } = await constructedChild();
     const requestFrame = nextFramedMessage(output);
-    const pending = runtime.hostApi.spawnWorker!({ workerId: "quick", command: "/bin/true" });
+    const pending = runtime.hostApi.spawnWorker!({ workerId: "quick", control: "output-only-v1", command: "/bin/true" });
     const request = await requestFrame;
     const subscriptionId = `worker_${request.id}`;
     expect(runtime.openSubscriptionCount).toBe(1);
     const notification = (payload: unknown) => ({ jsonrpc: "2.0", method: "notifications/ave/subscription", params: { subscriptionId, payload } });
     input.write(Buffer.concat([
-      frameMessage({ jsonrpc: "2.0", id: request.id, result: { handleId: subscriptionId, socketPath: null, pid: 4242 } }),
+      frameMessage({ jsonrpc: "2.0", id: request.id, result: { handleId: subscriptionId, control: "output-only-v1", pid: 4242 } }),
       frameMessage(notification({ kind: "stdout", chunk: "final result" })),
       frameMessage(notification({ kind: "stderr", chunk: "final warning" })),
-      frameMessage(notification({ kind: "exit", code: 7, signal: null })),
+      frameMessage(notification({ kind: "exit", code: 7, signal: null, reason: "exited" })),
       frameMessage({ jsonrpc: "2.0", method: "notifications/ave/subscription/closed", params: { subscriptionId, reason: "revoked" } }),
     ]));
     const handle = await pending;
+    if (handle.control !== "output-only-v1") throw new Error("expected an output-only handle");
     const stdout: string[] = [], stderr: string[] = [], exits: unknown[] = [];
     handle.onStdout((chunk) => stdout.push(chunk));
     handle.onStderr((chunk) => stderr.push(chunk));
     handle.onExit((info) => exits.push(info));
     expect(stdout).toEqual(["final result"]);
     expect(stderr).toEqual(["final warning"]);
-    expect(exits).toEqual([{ code: 7, signal: null }]);
+    expect(exits).toEqual([{ code: 7, signal: null, reason: "exited" }]);
     expect(runtime.openSubscriptionCount).toBe(0);
     service.hostGone();
   });

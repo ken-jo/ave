@@ -144,6 +144,45 @@ describe("the frame bound", () => {
   });
 });
 
+describe("pacing a producer against the output", () => {
+  it("returns the UTF-8 bytes it queued for a frame it serialized, and 0 once the bound is broken", () => {
+    const input = new PassThrough();
+    const output = new Writable({ write() { /* never drains */ } });
+    const stream = new FramedMessageStream(input, output, () => {}, () => {}, () => {});
+    stream.start();
+    const message = { jsonrpc: "2.0", method: "notifications/ave/subscription", params: { text: "\uD55C\uAE00" } };
+    expect(stream.send(message)).toBe(Buffer.byteLength(`${JSON.stringify(message)}\n`, "utf8"));
+    expect(stream.send(message)).toBe(output.writableLength / 2);
+    for (let index = 0; index < 4; index += 1) stream.forward(lineOf(FRAME_BYTES_MAX));
+    expect(stream.send(message)).toBe(0);
+    input.destroy(); output.destroy();
+  });
+
+  it("calls back once the output drains, and only when it must", async () => {
+    const input = new PassThrough();
+    let release: (() => void) | undefined;
+    const output = new Writable({
+      highWaterMark: 1024,
+      write(_chunk, _encoding, callback) {
+        release = callback;
+      },
+    });
+    const stream = new FramedMessageStream(input, output, () => {}, () => {}, () => {});
+    stream.start();
+    expect(stream.whenDrained(() => {})).toBe(false);
+    stream.forward(lineOf(4096));
+    expect(output.writableLength).toBe(4096 + 1);
+    let drained = 0;
+    expect(stream.whenDrained(() => { drained += 1; })).toBe(true);
+    release!();
+    await settle();
+    expect(drained).toBe(1);
+    expect(output.writableLength).toBe(0);
+    expect(stream.whenDrained(() => { drained += 1; })).toBe(false);
+    input.destroy(); output.destroy();
+  });
+});
+
 describe("the host, reading a child that breaks the bound", () => {
   it("kills the child and fails what was waiting on it", async () => {
     const childStdout = new PassThrough();

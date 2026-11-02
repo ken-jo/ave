@@ -11,6 +11,8 @@ import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { resolveProcessLaunch } from "../../process-entry.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
+import { WorkerTransportUnsupportedError } from "../../../permissions/mxc-extension-errors.js";
+import { WorkerControlFailedError } from "../../../permissions/worker-stdio-control.js";
 import { ManifestIntegrityError } from "../../../permissions/manifest-integrity.js";
 import { PluginRuntimeDetachedOperationError } from "../../runtime/detached-operation.js";
 import { CredentialLeaseError } from "../../secret-access/credential-lease-registry.js";
@@ -45,7 +47,7 @@ import { settle } from "./stream-turns.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { repositoryRoot } from "./child-entry-bundle.js";
 
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/4/", import.meta.url));
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/5/", import.meta.url));
 const INVOKER_ENTRY = join(GOLDEN_ROOT, "invoker.mjs");
 
 type Frame = Record<string, unknown>;
@@ -87,7 +89,7 @@ const INVOKER_MANIFEST: PluginManifest = {
   name: "Golden Invoker",
   version: "1.0.0",
   entry: "invoker.mjs",
-  requires: { hostProtocol: "4" },
+  requires: { hostProtocol: "5" },
   description: "calls one hostApi member per tool call, so each method's golden is one pair",
   tools: ["invoke_member", "invoke_cancelled", "write_log", "dispose_all"].map((name) => ({
     name,
@@ -438,6 +440,18 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
     },
     provoke: throughStub("openExternalUrl"),
   },
+  "worker-transport-unsupported": {
+    trigger: "a container backend that cannot carry the worker",
+    overrides: { spawnWorker: throwing(() => new WorkerTransportUnsupportedError()) },
+    provoke: throughStub("spawnWorker"),
+  },
+  "worker-control-failed": {
+    trigger: "a stdio-control worker that never answered the hello",
+    overrides: {
+      spawnWorker: throwing(() => new WorkerControlFailedError("[worker-spawn] worker:golden-invoker:indexer: no answer to $/ave/hello within 60000ms")),
+    },
+    provoke: throughStub("spawnWorker"),
+  },
   "credential-conflict": {
     trigger: "a malformed credential selector",
     provoke: byHand("ave/host/hostFetch", { input: "https://example.com", init: { auth: { token: "x" } } }),
@@ -689,8 +703,8 @@ describe("a golden reads the same on every machine", () => {
 
 describe("one conversation per installed plugin's surface", () => {
   it.each([
-    ["meeting", /speaks host protocol 2; this app serves 4/],
-    ["samplemail", /speaks host protocol 3; this app serves 4/],
+    ["meeting", /speaks host protocol 2; this app serves 5/],
+    ["samplemail", /speaks host protocol 3; this app serves 5/],
     ["local-indexer", /does not declare a host protocol/],
   ] as const)("refuses an old %s bundle before its child connects", async (pluginId, refusal) => {
     const dir = join(GOLDEN_ROOT, "old-bundles", pluginId);

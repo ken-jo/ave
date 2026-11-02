@@ -25,8 +25,10 @@ unchanged into `contract/` at an app release tag, and record their hashes in
 `requires.minAppVersion: "0.14.0"`. The retired `@ave/plugin-sdk` package is not a
 contract source.
 
-**Upcoming, unreleased:** protocol 4 requires host-validated loopback OAuth state.
-This development build serves 4, but released hosts still serve 3. Keep published
+**Upcoming, unreleased:** protocol 5 requires host-validated loopback OAuth state
+and a declared worker control mode (stdio control v1 or output-only). Protocol 4 was
+never released; released hosts move from 3 straight to 5. This development build
+serves 5, but released hosts still serve 3. Keep published
 packages on protocol 3 until the coordinated release. The future app version is
 owned by release preparation; protocol negotiation, rather than a guessed
 `minAppVersion`, determines whether a host can run the new contract.
@@ -52,7 +54,7 @@ The manifest should include:
 Every extension, JavaScript or `process`, declares `requires.hostProtocol`
 (a positive integer written as a string). The host refuses an absent or unserved
 version with `incompatible-host-protocol` before activation. A declared minimum
-app version cannot make a protocol-3 host serve protocol 4. Known first-release
+app version cannot make a protocol-3 host serve protocol 5. Known first-release
 app floors remain enforced; an unreleased protocol has no numeric floor until
 release preparation records the actual first supporting release.
 
@@ -119,7 +121,7 @@ whose `entryPath` is the resolved absolute path of `command`. Its rules:
   starts from the host's minimal environment, not the user's.
 - For released hosts, use `requires.hostProtocol: "3"` and a minimum app
   version of `0.14.0`. The separate process-entry floor remains `0.13.0`.
-  Protocol 4 is unreleased and negotiates availability independently of a
+  Protocol 5 is unreleased and negotiates availability independently of a
   numeric app floor.
 
 Three refusals apply to a `process` extension, each with what to do:
@@ -188,12 +190,12 @@ not validate replies; validate with the schema where you need to.
 
 ### Loopback OAuth with PKCE
 
-**Upcoming protocol 4; not available in released protocol-3 hosts.** The example
+**Upcoming protocol 5; not available in released protocol-3 hosts.** The example
 below targets the unreleased contract. Keep published packages on protocol 3
 until the app release ships. For private testing, use a separate unpublished
-package with `requires.hostProtocol: "4"` and retain the minimum app version
+package with `requires.hostProtocol: "5"` and retain the minimum app version
 needed by its existing features; do not infer a new minimum from the candidate
-schema path. Protocol-3 packages cannot activate in this protocol-4-only build.
+schema path. Protocol-3 packages cannot activate in this protocol-5-only build.
 
 The host owns the redirect listener and its state. `authRedirect.open()` returns
 `{ handle, redirectUri, state }`; send that state unchanged, alongside a fresh
@@ -232,14 +234,57 @@ settling the waiter. The first valid callback consumes the state; replays fail.
 rejects on timeout or close. An error response must be handled before any code
 exchange. A later `wait()` reads the same validated result, never a new callback.
 
-When protocol 4 ships, re-vendor the public types, manifest schema and protocol
-schema/client from that app release tag. Set the manifest and package descriptor
-to `hostProtocol: "4"` and the actual first supporting app version, and update each
+When protocol 5 ships, re-vendor the public types, manifest schema, protocol
+schema/client and worker control schema from that app release tag. Set the manifest and package descriptor
+to `hostProtocol: "5"` and the actual first supporting app version, and update each
 OAuth library adapter to use the host's state. If a library owns state, use its
 supported state option, or exchange the host-validated code directly with the
 same attempt's PKCE verifier; never disable host validation.
-Protocol-3 packages fail before activation on the protocol-4 build and require
+Protocol-3 packages fail before activation on the protocol-5 build and require
 an updated package; released protocol-3 hosts continue to require the old contract.
+
+### Delegated workers
+
+**Upcoming protocol 5; not available in released protocol-3 hosts.** A worker
+started with `api.spawnWorker` talks to its plugin over its own stdin, stdout and
+stderr; there is no socket, port or `udsArgName`. Declare one `control` mode:
+
+- `"output-only-v1"` for a command whose stdout is text you read with `onStdout`.
+- `"stdio-control-v1"` for a long-lived worker you send requests to. Its stdout
+  carries only newline-delimited JSON-RPC 2.0 frames, so it must log to stderr.
+  Answer the host's `$/ave/hello` first, exit on stdin EOF or `$/ave/shutdown`,
+  and stay within the 16 MiB frame limit and 64 outstanding requests per direction.
+  The frame schema is `schemas/worker-stdio-control/1/worker-control.schema.json`
+  (`docs/design/plugin-hostapi-protocol.md` §3.3.2).
+
+```ts
+const worker = await api.spawnWorker({
+  workerId: "indexer",
+  command: pythonPath,
+  args: ["-u", "worker.py"],
+  control: "stdio-control-v1",
+  // The host creates ~/.ave/plugins/<id>/workers/indexer/ for this worker and names it in AVE_WORKER_STATE_DIR.
+  stateDirectory: true,
+});
+// The worker has no network of its own: it asks the plugin, which fetches under its own declarations.
+worker.onRequest(async (method, params) => {
+  if (method !== "egress_fetch") throw new Error(`unknown worker request ${method}`);
+  const response = await api.hostFetch((params as { url: string }).url);
+  return { status: response.status, body: await response.text() };
+});
+worker.onExit(({ reason }) => {
+  // "exited", "stopped", "control-violation" or "output-overflow". Pending calls
+  // already rejected with worker-incarnation-ended; nothing is replayed. Start a
+  // new worker if you still need one.
+});
+const status = await worker.request("index_status", { scope: "all" });
+```
+
+`spawnWorker` resolves only after the hello. A worker that writes anything else
+first, answers wrongly or never answers is stopped and the call rejects with
+`worker-control-failed`. A worker's state directory is a sibling of your `data/`
+directory: your plugin process cannot write it, and a worker that kept its state in
+`data/` must rebuild it in the state directory.
 
 ## UI Extensions
 

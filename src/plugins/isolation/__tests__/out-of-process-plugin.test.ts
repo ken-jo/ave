@@ -20,12 +20,14 @@ vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
 }));
 
 /** Sandbox liveness is controlled here; shared-config registration is inert because spawns are recorded. */
-const sandbox = vi.hoisted(() => ({ active: false }));
+const sandbox = vi.hoisted(() => ({ active: false, registeredSocketDirs: [] as string[] }));
 vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>()),
   isAsrtSandboxActive: () => sandbox.active,
   isPluginWorkerConfinementActive: () => sandbox.active,
-  registerWorkerUnixSocketDir: async () => undefined,
+  registerWorkerUnixSocketDir: async (dir: string) => {
+    sandbox.registeredSocketDirs.push(dir);
+  },
   unregisterWorkerUnixSocketDir: async () => undefined,
   cleanupAsrtSandboxAfterCommand: async () => undefined,
 }));
@@ -91,7 +93,8 @@ import { spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 import type {
   PluginHostApi,
   PluginManifest,
@@ -137,7 +140,7 @@ const MANIFEST: PluginManifest = {
   name: "Sample Assistant",
   version: "0.10.14",
   entry: "dist/hostPlugin.js",
-  requires: { hostProtocol: "4" },
+  requires: { hostProtocol: "5" },
   description: "the pilot plugin, served out of process",
   tools: [
     { name: "pilot_echo", description: "echo a payload back", inputSchema: EMPTY_SCHEMA },
@@ -334,7 +337,7 @@ function sessionFactory(spec: {
     const session = await openPluginProtocolSession({
       pluginId: spec.manifest.id,
       manifest: spec.manifest,
-      hostProtocolVersion: "4",
+      hostProtocolVersion: "5",
       link: spec.link,
       context,
       entryPath: spec.entryPath,
@@ -1100,7 +1103,7 @@ describe("construct negotiates the host protocol", () => {
     delete (hostApi as { hostFetch?: unknown }).hostFetch;
     try {
       const factory = sessionFactory({
-        manifest: { ...MANIFEST, requires: { hostProtocol: "4" } },
+        manifest: { ...MANIFEST, requires: { hostProtocol: "5" } },
         entryPath,
         link: child.link,
       });
@@ -1109,7 +1112,7 @@ describe("construct negotiates the host protocol", () => {
       const { hostProtocol } = construct?.params as {
         hostProtocol: { version: string; capabilities: string[] };
       };
-      expect(hostProtocol.version).toBe("4");
+      expect(hostProtocol.version).toBe("5");
       // Advertise capabilities from the actual bound table.
       expect(hostProtocol.capabilities).toContain("ave/host/callLlm");
       expect(hostProtocol.capabilities).not.toContain("ave/host/hostFetch");
@@ -1178,7 +1181,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
     name: "Process Kit",
     version: "1.0.0",
     process: { command: "./bin/plugin", args: ["--x=1"], env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
-    requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
+    requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
     description: "a process entry whose spawn is recorded",
     tools: [],
   };
@@ -1310,6 +1313,29 @@ describe("the factory's launch reaches the spawn as decided", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "grants the child no worker run root: it reads, and holds a Unix-socket allow for, its own socket directory only",
+    async () => {
+      const roots = spawnableRoots();
+      spawnConfinedChild.mockClear();
+      sandbox.registeredSocketDirs.length = 0;
+      sandbox.active = true;
+      try {
+        await attempt({ kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") }, MANIFEST, roots);
+        expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+        const pluginDir = dirname(roots.context.pluginDataDir!);
+        // Workers speak stdio (host protocol 5): nothing binds under run/, so the child neither reads it nor may connect there.
+        expect(sandbox.registeredSocketDirs).toEqual([resolvePluginSocketDir(roots.context.pluginDataDir!)]);
+        const spec = spawnConfinedChild.mock.calls[0]![0] as { allowRead?: readonly string[] };
+        expect(spec.allowRead ?? []).not.toContain(join(pluginDir, "run"));
+        expect(spec.allowRead ?? []).not.toContain(join(pluginDir, "workers"));
+      } finally {
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
+
   it("keeps an entry launch on the reference runtime, as Node", async () => {
     const roots = spawnableRoots();
     spawnConfinedChild.mockClear();
@@ -1432,10 +1458,10 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect(grant.label).toBe(`plugin-child:${PLUGIN_ID}:asrt-win-acl`);
       const { pluginRoot, pluginDataDir } = layout.context;
       const sockets = join(layout.own, "sockets");
-      const run = join(layout.own, "run");
       const home = grant.allowRead.at(-1)!;
       expect(home).toContain("oop-fake-sandbox-home-");
-      expect([...grant.allowRead].sort()).toEqual([pluginRoot, pluginDataDir, sockets, run, home].sort());
+      // No run/ root: workers speak stdio since host protocol 5.
+      expect([...grant.allowRead].sort()).toEqual([pluginRoot, pluginDataDir, sockets, home].sort());
       // Write grants cover the envelope and home, never generation or host worker roots.
       expect([...grant.allowWrite].sort()).toEqual([pluginDataDir, sockets, home].sort());
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
@@ -1810,7 +1836,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
       name: "Tilde Cache",
       version: "1.0.0",
       entry: "plugin.mjs",
-      requires: { hostProtocol: "4" },
+      requires: { hostProtocol: "5" },
       description: "keeps a cache in a directory the user chooses",
       sandbox: { write: [{ kind: "userChosenDirectory", configKey: "dataDirectory", why: "where the cache is written" }] },
       tools: [{ name: "cache_where", description: "name the cache directory", inputSchema: EMPTY_SCHEMA }],

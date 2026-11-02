@@ -80,7 +80,7 @@ async function escapeSecrets(context, args) {
 /** Capture worker output and exit, or report timeout without claiming denial. */
 async function workerReads(context, workerId, command, file, allowReadPaths, waitMs) {
   return attemptAsync(async () => {
-    const worker = await context.hostApi.spawnWorker({ workerId, command, args: [file], allowReadPaths, allowWritePaths: [] });
+    const worker = await context.hostApi.spawnWorker({ workerId, command, args: [file], allowReadPaths, allowWritePaths: [], control: "output-only-v1" });
     let stdout = "";
     let stderr = "";
     worker.onStdout((chunk) => { stdout += chunk; });
