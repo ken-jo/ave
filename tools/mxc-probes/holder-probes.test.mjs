@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { HOLDER_ENV_MARKER, holderLayout, runHolderHookProbe, runHolderMcpProbe } from "./holder-probes.mjs";
+import { classifyEchoedTemp, HOLDER_ENV_MARKER, holderLayout, runHolderHookProbe, runHolderMcpProbe } from "./holder-probes.mjs";
 import { captureChild, loadBudgets } from "./probe-common.mjs";
 
 const payload = fileURLToPath(new URL("./holder-payload.mjs", import.meta.url));
@@ -114,11 +114,38 @@ test("each holder layout is a fresh opaque staging tree inside the run's own tem
   assert.equal(first.environment.PWD, first.data);
 }));
 
+test("an echoed TEMP is staged only at the planned temp or the AppContainer profile temp under the staging home", () => {
+  const id = "0123456789abcdef0123456789abcdef";
+  const layout = { home: `C:\\run\\mxc-staging\\${id}\\home`, temp: `C:\\run\\mxc-staging\\${id}\\temp` };
+  const profile = `${layout.home}\\Packages\\sandbox.{4F1C2A9E-0000-4000-8000-00000000AB12}\\AC\\Temp`;
+  assert.equal(classifyEchoedTemp(layout.temp, layout, "win32"), "planned");
+  assert.equal(classifyEchoedTemp(layout.temp.toUpperCase(), layout, "win32"), "planned");
+  assert.equal(classifyEchoedTemp(profile, layout, "win32"), "appcontainer-profile");
+  assert.equal(classifyEchoedTemp(profile.toLowerCase(), layout, "win32"), "appcontainer-profile");
+  for (const rejected of [
+    "C:\\Users\\example\\AppData\\Local\\Temp", // outside staging
+    `C:\\run\\mxc-staging\\${id}\\other`, // inside staging, not a known temp
+    `${layout.home}\\Temp`, // under home but not AC\Temp
+    `${layout.home}\\Packages\\sandbox.x\\AC\\Other`,
+    `${layout.home}\\Packages\\a\\b\\AC\\Temp`, // two moniker segments
+    `${layout.home}\\Packages\\AC\\Temp`, // no moniker segment
+    `${layout.home}\\Packages\\sandbox.x\\AC\\Temp\\..\\..\\..\\..\\..\\elsewhere`, // traversal
+    `${layout.home}\\Packages\\..\\AC\\Temp`,
+    `${layout.home}\\Packages\\.\\AC\\Temp`,
+    `${layout.home}/Packages/sandbox.x/AC/Temp`, // not normalized
+    `${profile}\\`, // trailing separator
+    "", undefined,
+  ]) assert.equal(classifyEchoedTemp(rejected, layout, "win32"), null, String(rejected));
+});
+
 test("the MCP measurement accepts initialize, call, cancel-by-disposal and a fresh reconnect", async () => withTemp(async (temp) => {
   const result = await runHolderMcpProbe(await fakeContext(temp));
   assert.deepEqual(result.initialize, { discoverFallback: true, initialized: true, toolNames: ["echo", "hang"] });
   assert.equal(result.call.holderVariable, true);
   assert.equal(result.call.homeStaged, true);
+  assert.equal(result.call.tempStaged, true);
+  assert.equal(result.call.tempLocation, "planned");
+  assert.equal(result.reconnect.call.tempLocation, "planned");
   assert.equal(result.cancel.pendingUnanswered, true);
   assert.equal(result.cancel.processDead, true);
   assert.equal(result.reconnect.freshStaging, true);

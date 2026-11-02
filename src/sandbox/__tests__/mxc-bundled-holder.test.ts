@@ -426,6 +426,27 @@ describe("teardown", () => {
     expect([...state.dirs].some((dir) => /mxc-staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
   });
 
+  it("removes the AppContainer profile subtree MXC creates under HOME, unlinking any reparse point there unfollowed", async () => {
+    const holder = await spawnMxcBundledHolder(input());
+    const home = lastSpec().home;
+    const moniker = `${home}\\Packages\\sandbox.{4F1C2A9E-0000-4000-8000-00000000AB12}`;
+    for (const dir of [`${home}\\Packages`, moniker, `${moniker}\\AC`, `${moniker}\\AC\\Temp`]) state.dirs.add(dir);
+    state.files.add(`${moniker}\\AC\\Temp\\scratch.txt`);
+    state.readonly.add(`${moniker}\\AC\\Temp\\scratch.txt`);
+    // Reparse points at two depths: one inside AC\Temp, one replacing a profile folder, both aimed outside staging.
+    state.links.set(`${moniker}\\AC\\Temp\\escape`, "D:\\work");
+    state.links.set(`${moniker}\\LocalState`, "D:\\work");
+    await holder.release();
+    expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect([...state.files].some((file) => /mxc-staging\\/u.test(file))).toBe(false);
+    expect([...state.links.keys()].some((link) => /mxc-staging\\/u.test(link))).toBe(false);
+    expect(state.removed.some((path) => /\\retired-[0-9a-f]{32}\\home\\Packages\\[^\\]+\\AC\\Temp\\escape$/u.test(path))).toBe(true);
+    expect(state.removed.some((path) => /\\retired-[0-9a-f]{32}\\home\\Packages\\[^\\]+\\LocalState$/u.test(path))).toBe(true);
+    expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
+    expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
+    expect(state.ops.some((op) => /^chmod .*(?:escape|LocalState)$/u.test(op))).toBe(false);
+  });
+
   it("renames the tree to a random sibling before deleting anything inside it", async () => {
     const holder = await spawnMxcBundledHolder(input());
     const root = winPath.dirname(lastSpec().home);

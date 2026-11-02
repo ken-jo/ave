@@ -66,6 +66,28 @@ async function handshake(rpc) {
   };
 }
 
+/** Where the echoed TEMP lies: the planned `<id>\temp`, or the AppContainer profile temp Windows substitutes inside the
+ * container, `<staging home>\Packages\<moniker>\AC\Temp` (LOCALAPPDATA is the staging HOME). Anything else, including a
+ * non-normalized path or a `.`/`..` segment, is null. Case-insensitive on win32. */
+export function classifyEchoedTemp(echoed, layout, platform = process.platform) {
+  if (typeof echoed !== "string" || echoed.length === 0) return null;
+  const win = platform === "win32";
+  const paths = win ? path.win32 : path.posix;
+  // A `.`/`..` segment, a doubled or (win32) forward separator all change under normalize, so this also refuses traversal.
+  if (paths.normalize(echoed) !== echoed) return null;
+  const fold = (value) => win ? value.toLowerCase() : value;
+  if (fold(echoed) === fold(paths.normalize(layout.temp))) return "planned";
+  const home = paths.normalize(layout.home);
+  const prefix = fold(home.endsWith(paths.sep) ? home : `${home}${paths.sep}`);
+  if (!fold(echoed).startsWith(prefix)) return null;
+  const rest = echoed.slice(prefix.length).split(paths.sep);
+  const literal = (actual, expected) => fold(actual) === fold(expected);
+  if (rest.length === 4 && literal(rest[0], "Packages") && rest[1].length > 0 && literal(rest[2], "AC") && literal(rest[3], "Temp")) {
+    return "appcontainer-profile";
+  }
+  return null;
+}
+
 function echoObservation(reply, layout) {
   const text = reply?.result?.content?.[0]?.text;
   if (typeof text !== "string") return { replied: false };
@@ -74,7 +96,8 @@ function echoObservation(reply, layout) {
     replied: true,
     cwdAdmitted: path.win32.normalize(echoed.cwd).toLowerCase() === path.win32.normalize(layout.data).toLowerCase(),
     homeStaged: echoed.home === layout.home,
-    tempStaged: echoed.temp === layout.temp,
+    tempStaged: classifyEchoedTemp(echoed.temp, layout) !== null,
+    tempLocation: classifyEchoedTemp(echoed.temp, layout),
     holderVariable: echoed.holderVariables?.AVE_PROBE_TOKEN === HOLDER_ENV_MARKER,
     argumentsEchoed: echoed.echo?.probe === "call",
   };
