@@ -1690,8 +1690,10 @@ Key boundaries:
   the user-activation gate and runs on an extension-origin chain) (#1556);
 - long-lived extension workers are spawned only through HostApi `spawnWorker`;
   filesystem read grants must be declared explicitly as `allowReadPaths` and are
-  never inferred from argv. The worker's stdin is the host's liveness pipe — it
-  carries no bytes and closes only when the host process is gone — so a
+  never inferred from argv. Each worker declares `control`: an `output-only-v1`
+  worker reads nothing on stdin, and a `stdio-control-v1` worker reads its frames
+  there. Either way stdin is the host's liveness pipe: the host closes it only on
+  an orderly stop, otherwise it closes when the host process is gone, so a
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
 
@@ -2107,8 +2109,8 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
 - Linux: a sandboxed command cannot create a user namespace or a mount
   namespace of its own. The seccomp helper refuses those calls. Where the
   helper is not in the chain, bubblewrap 0.8 or later is passed
-  `--disable-userns`. The helper is out of the chain whenever a worker control
-  socket is registered, because that turns on `allowAllUnixSockets`. So
+  `--disable-userns`. The helper is out of the chain whenever a plugin's own
+  socket directory is registered, because that turns on `allowAllUnixSockets`. So
   anything that sandboxes itself that way fails inside Ave's sandbox:
   Chromium's or Electron's namespace sandbox, rootless podman or buildah, a
   nested bubblewrap, `unshare -U`. Plugin workers are not affected, because
@@ -2266,7 +2268,7 @@ nothing. On Linux every lane socket and every proxy backend socket lives in
 one private 0700 directory, and each wrap mounts a tmpfs over that directory
 and binds back only its own lane socket, so no wrap can see another's socket
 even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
-worker socket directory does). On macOS `allowAllUnixSockets` would expose the
+plugin socket directory does). On macOS `allowAllUnixSockets` would expose the
 shared bridge socket, so while it is set shell and extension identity is
 `shared`. The proxy refuses a destination that is a proxy front end's port on
 this host, so one invocation cannot hop onto another's listener. The
@@ -2471,8 +2473,9 @@ when the channel is strong. Grant lookup filters eligible scopes before
 selecting the narrowest match.
 
 `spawnWorker` is the only host primitive that can establish that worker-backed
-plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket
-control path. Windows workers keep TCP control, but their filesystem access is
+plugin substrate. Workers on every platform talk to their plugin over their own
+stdio (worker stdio control v1 or output-only, host protocol 5); none gets a socket
+or a port. On Windows their filesystem access is
 scoped through a per-worker holder PID ACL grant using ASRT's Windows
 `grantWindowsAcl`/`revokeWindowsAcl` primitives, then the command is wrapped
 through srt-win. The holder command must be launched through a pinned System32
@@ -2709,9 +2712,9 @@ in its directory.
   limit, the DNS channel, and that extensions share one proxy identity.
 
 Not covered: plugin workers stay on srt-win. MXC's proxy mode forbids direct
-egress rules, so the TCP worker control channel cannot reach a container; a
-container worker needs a stdio control path or control over its own proxy
-port. Windows PowerShell 5.1 and Node inside a container start only in an
+egress rules, so a loopback worker channel cannot reach a container; host
+protocol 5 gives workers stdio control instead, and the container worker adapter
+follows it. Windows PowerShell 5.1 and Node inside a container start only in an
 interactive session: in the SSH session-0 window station both fail with
 `0xC0000142`, which detection reports as `unverified-session`. An
 interactive-session probe (2026-10-16) ran both with `ui.disable: false`, which

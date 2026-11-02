@@ -33,12 +33,12 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
     signal: controller.signal, release() { releases++; },
   });
   const manifest: PluginManifest = { id: "stream-probe", name: "Stream probe", version: "1.0.0", entry: "plugin.mjs",
-    requires: { hostProtocol: "4" }, description: "Diagnostic stream fixture",
+    requires: { hostProtocol: "5" }, description: "Diagnostic stream fixture",
     tools: ["subscribe", "read", "forge", "overflow"].map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) };
   const context = { pluginId: manifest.id, pluginRoot: directory, pluginDataDir: directory,
     pluginSocketDir: directory, hostRoot: directory, userHome: directory, aveHome: directory, config: {},
     log() {}, hostApi } as PluginRuntimeContext;
-  const session = await openPluginProtocolSession({ pluginId: manifest.id, manifest, context, hostProtocolVersion: "4",
+  const session = await openPluginProtocolSession({ pluginId: manifest.id, manifest, context, hostProtocolVersion: "5",
     link: child.link, entryPath: path.join(directory, "plugin.mjs"),
     table: createBoundHostApiDispatchTable(hostApi, { read: [directory], write: [directory] }),
     auditLog: (_level, _message, data) => {

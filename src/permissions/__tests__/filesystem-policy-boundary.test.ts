@@ -182,7 +182,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
         } else if (producer === "plugin") {
           const { spawnConfinedPluginChild } = await import("../../plugins/isolation/out-of-process-plugin.js");
           await expect(spawnConfinedPluginChild({ pluginId: "fixture", envelope: { read: [], write: allowWrite },
-            socketDir: join(scratch(), "sockets"), workerRunRoot: scratch(), launch: { kind: "entry", childEntryPath: join(scratch(), "entry.js") } }))
+            socketDir: join(scratch(), "sockets"), launch: { kind: "entry", childEntryPath: join(scratch(), "entry.js") } }))
             .rejects.toThrow(/contains machine root/);
         } else {
           const { spawnWindowsBundledProcess } = await import("../../sandbox/wrap-bundled-command.js");

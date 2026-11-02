@@ -757,11 +757,6 @@ async function lstatOrUndefined(path: string): Promise<Stats | undefined> {
   }
 }
 
-/** Host-allocated worker control sockets use run/<workerId>/; child grants must reach that same root. */
-export function resolvePluginWorkerRunRoot(pluginDataDir: string): string {
-  // Derive from pluginDataDir so worker socket grants and creation share one root.
-  return resolve(dirname(pluginDataDir), PLUGIN_WORKER_RUN_DIR_NAME);
-}
 
 /** Reserve the terminating NUL in sockaddr_un; oversized paths otherwise fail as opaque malformed addresses. */
 const MAX_UNIX_SOCKET_PATH_BYTES = (process.platform === "darwin" ? 104 : 108) - 1;

@@ -32,7 +32,6 @@ import {
   resolvePluginHostStorageDir,
   resolvePluginSocketDir,
   writeGrantsReachingHostStorage,
-  resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
 // Global setup builds this entry once with the shipped bundle boundary. Every confinement case still spawns that real bundle through the real wrap.
@@ -436,9 +435,6 @@ function socketDirOf(fx: Fixture): string {
 
 /** The other half of the same boundary: `run/` is where the HOST binds a control socket for a worker this
  * plugin asked for, and the child is the client. READ only; the child connects, it does not create anything there. */
-function workerRunRootOf(fx: Fixture): string {
-  return resolvePluginWorkerRunRoot(fx.pluginDataDir);
-}
 
 function baseEnvelope(fx: Fixture): DelegatedWorkerConfinement {
   return derivePluginChildEnvelope({
@@ -456,7 +452,6 @@ async function runProbe(
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
     envelope,
     launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
   });
@@ -496,7 +491,6 @@ process.stdout.write("PROBE:" + JSON.stringify(attempt(() => readFileSync(${JSON
   const child = await spawnConfinedPluginChild({
     pluginId: reader.pluginId,
     socketDir: resolvePluginSocketDir(reader.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(reader.pluginDataDir),
     envelope: derivePluginChildEnvelope({
       pluginId: reader.pluginId,
       pluginRoot: reader.pluginRoot,
@@ -544,7 +538,6 @@ setTimeout(() => process.exit(0), 4000).unref?.();
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
     envelope: baseEnvelope(fx),
     launch: { kind: "entry", childEntryPath: probePath },
   });
@@ -694,7 +687,7 @@ describe("the host decides how far a plugin child reaches", () => {
         configValue: () => undefined,
       }),
     ).toEqual({
-      read: [fx.pluginRoot, fx.pluginDataDir, socketDirOf(fx), workerRunRootOf(fx)],
+      read: [fx.pluginRoot, fx.pluginDataDir, socketDirOf(fx)],
       write: [fx.pluginDataDir, socketDirOf(fx)],
     });
   });
@@ -712,7 +705,6 @@ describe("the host decides how far a plugin child reaches", () => {
       fx.pluginRoot,
       fx.pluginDataDir,
       socketDirOf(fx),
-      workerRunRootOf(fx),
       join(fx.aveHome, "runtime"),
       join(fx.aveHome, "certs"),
     ]);
@@ -1126,7 +1118,6 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     const child = await spawnConfinedPluginChild({
       pluginId: PLUGIN_ID,
       socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-      workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
       envelope: baseEnvelope(fx),
       launch: { kind: "entry", childEntryPath: probePath },
     });
@@ -1166,7 +1157,6 @@ setTimeout(() => process.exit(0), 2000).unref?.();
       spawnConfinedPluginChild({
         pluginId: PLUGIN_ID,
         socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-        workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
         envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
         launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
       }),
@@ -1188,7 +1178,6 @@ setTimeout(() => process.exit(0), 2000).unref?.();
           spawnConfinedPluginChild({
             pluginId: PLUGIN_ID,
             socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-            workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
             envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
             launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
           }),
@@ -2446,7 +2435,6 @@ await reset();
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: plugin.socketDir,
-    workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
     envelope: derivePluginChildEnvelope({
       pluginId: PLUGIN_ID,
       pluginRoot: plugin.pluginRoot,
@@ -2585,19 +2573,20 @@ describe("a confined child and a Unix-domain socket", () => {
     120_000,
   );
 
-  it.runIf(process.platform !== "win32")(
-    "connects to a worker socket the host bound in the plugin's run directory",
+  it.runIf(process.platform === "darwin")(
+    "cannot connect to a socket in the plugin's retired run directory",
     async () => {
       if (!(await sandboxCasesRun())) return;
-      // The field failure this closes: local-indexer's worker bound its control socket successfully; an unconfined probe reached it; and the plugin's own confined child got `connect EPERM` on the same path, every boot, so the health check timed out at 30s and every one of that plugin's tools was refused
-      // for the rest of the session. `worker-spawn.ts` registers the directory so the WORKER may bind; nothing registered it for the client, because its header recorded an assumption; "the host connects from OUTSIDE the sandbox (unconstrained)"; that stopped being true when every plugin moved out of process.
-      const runDir = join(resolvePluginWorkerRunRoot(shortPlugin.pluginDataDir), "w");
+      // Workers speak stdio since host protocol 5, so the child's envelope names no run/ root and registers no
+      // Unix-socket allow there. A listener the host binds in that directory must be out of the child's reach.
+      // Linux permits the socket family without path scope, so only macOS can assert the refusal.
+      const runDir = join(dirname(shortPlugin.pluginDataDir), "run", "w");
       mkdirSync(runDir, { recursive: true, mode: 0o700 });
 
-      // This is another operation under the identical registered envelope; reset closes every socket before this case and after its result.
       const report = await runUnixConnectProbe(session!, join(runDir, "control.sock"));
 
-      expect(report, JSON.stringify(report)).toEqual({ ok: true });
+      expect(report.ok, JSON.stringify(report)).toBe(false);
+      expect(report.code).toMatch(/EPERM|EACCES/);
     },
     120_000,
   );
@@ -2883,7 +2872,6 @@ process.stdin.on("end", () => process.exit(0));
     const child = await spawnConfinedPluginChild({
       pluginId: plugin.pluginId,
       socketDir: resolvePluginSocketDir(plugin.pluginDataDir),
-      workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
       envelope: derivePluginChildEnvelope({
         pluginId: plugin.pluginId,
         pluginRoot: plugin.pluginRoot,
@@ -3822,7 +3810,6 @@ async function runPluginChildToExit(plugin: InstalledPlugin, entry: string): Pro
   const child = await spawnConfinedPluginChild({
     pluginId: plugin.pluginId,
     socketDir: resolvePluginSocketDir(plugin.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
     envelope: derivePluginChildEnvelope({
       pluginId: plugin.pluginId,
       pluginRoot: plugin.pluginRoot,

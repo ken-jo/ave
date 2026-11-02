@@ -20,12 +20,14 @@ vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
 }));
 
 /** Sandbox liveness is controlled here; shared-config registration is inert because spawns are recorded. */
-const sandbox = vi.hoisted(() => ({ active: false }));
+const sandbox = vi.hoisted(() => ({ active: false, registeredSocketDirs: [] as string[] }));
 vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>()),
   isAsrtSandboxActive: () => sandbox.active,
   isPluginWorkerConfinementActive: () => sandbox.active,
-  registerWorkerUnixSocketDir: async () => undefined,
+  registerWorkerUnixSocketDir: async (dir: string) => {
+    sandbox.registeredSocketDirs.push(dir);
+  },
   unregisterWorkerUnixSocketDir: async () => undefined,
   cleanupAsrtSandboxAfterCommand: async () => undefined,
 }));
@@ -91,7 +93,8 @@ import { spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 import type {
   PluginHostApi,
   PluginManifest,
@@ -1310,6 +1313,29 @@ describe("the factory's launch reaches the spawn as decided", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "grants the child no worker run root: it reads, and holds a Unix-socket allow for, its own socket directory only",
+    async () => {
+      const roots = spawnableRoots();
+      spawnConfinedChild.mockClear();
+      sandbox.registeredSocketDirs.length = 0;
+      sandbox.active = true;
+      try {
+        await attempt({ kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") }, MANIFEST, roots);
+        expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+        const pluginDir = dirname(roots.context.pluginDataDir!);
+        // Workers speak stdio (host protocol 5): nothing binds under run/, so the child neither reads it nor may connect there.
+        expect(sandbox.registeredSocketDirs).toEqual([resolvePluginSocketDir(roots.context.pluginDataDir!)]);
+        const spec = spawnConfinedChild.mock.calls[0]![0] as { allowRead?: readonly string[] };
+        expect(spec.allowRead ?? []).not.toContain(join(pluginDir, "run"));
+        expect(spec.allowRead ?? []).not.toContain(join(pluginDir, "workers"));
+      } finally {
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
+
   it("keeps an entry launch on the reference runtime, as Node", async () => {
     const roots = spawnableRoots();
     spawnConfinedChild.mockClear();
@@ -1432,10 +1458,10 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect(grant.label).toBe(`plugin-child:${PLUGIN_ID}:asrt-win-acl`);
       const { pluginRoot, pluginDataDir } = layout.context;
       const sockets = join(layout.own, "sockets");
-      const run = join(layout.own, "run");
       const home = grant.allowRead.at(-1)!;
       expect(home).toContain("oop-fake-sandbox-home-");
-      expect([...grant.allowRead].sort()).toEqual([pluginRoot, pluginDataDir, sockets, run, home].sort());
+      // No run/ root: workers speak stdio since host protocol 5.
+      expect([...grant.allowRead].sort()).toEqual([pluginRoot, pluginDataDir, sockets, home].sort());
       // Write grants cover the envelope and home, never generation or host worker roots.
       expect([...grant.allowWrite].sort()).toEqual([pluginDataDir, sockets, home].sort());
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);

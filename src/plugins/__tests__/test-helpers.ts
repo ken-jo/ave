@@ -16,7 +16,7 @@ import {
   PLUGIN_HOST_STORAGE_DIR_NAME,
   resolvePluginHostStorageDir,
   resolvePluginSocketDir,
-  resolvePluginWorkerRunRoot,
+  PLUGIN_WORKER_RUN_DIR_NAME,
 } from "../plugin-storage-layout.js";
 import { ensurePluginDataDir } from "../runtime/sandbox.js";
 import {
@@ -120,16 +120,17 @@ export const preparedActivationOptionsForTest = Object.freeze({
   activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
 });
 
-/** Materialize runtime directories at the final root before commit, matching real candidate activation. */
+/** Materialize runtime directories at the final root before commit, matching real candidate activation, plus the run/
+ * directory an older host left behind: no current host creates it, but activation must still carry it unchanged. */
 export function materialiseCandidateRuntimeDirsForTest(
   pluginId: string,
   stagedPluginRoot: string,
   pluginsRoot: string,
-): { dataDir: string; socketDir: string; workerRunRoot: string } {
+): { dataDir: string; socketDir: string; legacyRunDir: string } {
   const dataDir = ensurePluginDataDir(pluginId, stagedPluginRoot, pluginsRoot);
-  const workerRunRoot = resolvePluginWorkerRunRoot(dataDir);
-  mkdirSync(workerRunRoot, { recursive: true, mode: 0o700 });
-  return { dataDir, socketDir: resolvePluginSocketDir(dataDir), workerRunRoot };
+  const legacyRunDir = resolve(dirname(dataDir), PLUGIN_WORKER_RUN_DIR_NAME);
+  mkdirSync(legacyRunDir, { recursive: true, mode: 0o700 });
+  return { dataDir, socketDir: resolvePluginSocketDir(dataDir), legacyRunDir };
 }
 
 /** Keep test lifecycle defaults here without weakening production activation requirements. */

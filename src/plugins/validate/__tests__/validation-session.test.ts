@@ -26,7 +26,6 @@ import { PLUGIN_INSTANCE_METHODS } from "../../isolation/plugin-instance-wire.js
 import type { ChildLink } from "../../isolation/plugin-child-transport.js";
 import {
   resolvePluginSocketDir,
-  resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { createValidationHost } from "../validation-host.js";
 import { openValidationSession } from "../validation-session.js";
@@ -128,7 +127,7 @@ describe("the validation session's authority", () => {
     try {
       const socketDir = resolvePluginSocketDir(pluginDataDir);
       expect(session.confinement).toEqual({
-        read: [pluginRoot, pluginDataDir, socketDir, resolvePluginWorkerRunRoot(pluginDataDir)],
+        read: [pluginRoot, pluginDataDir, socketDir],
         write: [pluginDataDir, socketDir],
       });
       expect(settingsReads.count).toBe(0);

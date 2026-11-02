@@ -496,7 +496,7 @@ describe("PluginMarketplaceService.installLocal", () => {
 
     const activateLikeTheRuntime: PreparedMarketplacePluginActivation = async (prepared) => {
       const granted = materialiseCandidateRuntimeDirsForTest(prepared.installId, prepared.pluginRoot, pluginsDir);
-      grantedInodes = [statSync(granted.socketDir).ino, statSync(granted.workerRunRoot).ino];
+      grantedInodes = [statSync(granted.socketDir).ino, statSync(granted.legacyRunDir).ino];
       const completion = Promise.resolve();
       return { result: await prepared.durableCommit(), retirement: completion, completion, retirementDeferred: false };
     };

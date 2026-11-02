@@ -33,7 +33,6 @@ import {
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
 import {
   resolvePluginSocketDir,
-  resolvePluginWorkerRunRoot,
   writeGrantsReachingHostStorage,
 } from "../plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
@@ -293,10 +292,9 @@ export function derivePluginChildEnvelope(
   // The socket directory is in the BASE envelope rather than in a per-plugin grant row, and that is deliberate. It grants no reach: the directory is inside the plugin's own storage namespace, which `pluginDataDir` already sits in, so a plugin that could
   // write one could always write the other. What it does is make the ONE place a plugin may bind a Unix socket exist for every confined child, so the spawn can register that place with ASRT unconditionally instead of only for the plugins someone remembered.
   const socketDir = resolvePluginSocketDir(inputs.pluginDataDir);
-  // READ, not write: the child is the CLIENT of a worker socket the host allocated and the worker bound. Connecting needs the directory reachable and named on the
-  // Unix-socket allow; creating anything in it is the host's job, and granting write would hand the plugin the ability to leave a socket where the host expects to find its own.
-  const workerRunRoot = resolvePluginWorkerRunRoot(inputs.pluginDataDir);
-  const read = [inputs.pluginRoot, inputs.pluginDataDir, socketDir, workerRunRoot];
+  // No worker root: a delegated worker talks to its plugin over stdio (host protocol 5), so the child needs neither the
+  // worker state directory nor the retired run/ directory, and holds no Unix-socket allow for either.
+  const read = [inputs.pluginRoot, inputs.pluginDataDir, socketDir];
   const write = [inputs.pluginDataDir, socketDir];
   const grants: Array<{ grant: PluginEnvelopeGrant; access: "read" | "write" }> = [
     ...(inputs.sandbox?.read ?? []).map((grant) => ({ grant, access: "read" as const })),
@@ -353,13 +351,6 @@ export interface ConfinedPluginChildSpec {
    * it back out of the list would mean guessing.
    */
   readonly socketDir: string;
-  /**
-   * Where a worker this plugin asks the host to spawn will bind its control
-   * socket, as {@link resolvePluginWorkerRunRoot} derived it. Registered next to
-   * {@link socketDir} and for the same reason — the child has to be able to
-   * CONNECT there, and the allow is generated when the child is wrapped.
-   */
-  readonly workerRunRoot: string;
   /** What the wrap runs: see {@link ConfinedPluginLaunch}. */
   readonly launch: ConfinedPluginLaunch;
 }
@@ -481,10 +472,8 @@ export async function spawnConfinedPluginChild(
   const spawnLine = confinedSpawnLine(spec.pluginId, spec.launch);
   const sandboxHome = createSandboxProcessHome();
   const socketDir = spec.socketDir;
-  const workerRunRoot = spec.workerRunRoot;
   let socketDirRegistered = false;
   const socketHolder = {};
-  let workerRunRootRegistered = false;
   let wrapped = false;
   let windowsGrant: HeldWindowsGrant | undefined;
   const releaseSandboxState = (): void => {
@@ -498,10 +487,6 @@ export async function spawnConfinedPluginChild(
       // The ALLOW is a SHARED-config entry, so it outlives the child that needed it and would accumulate one
       // `(subpath <dir>)` per plugin ever loaded. Removed on the same unconditional path the confined marker is.
       void unregisterWorkerUnixSocketDir(socketDir, socketHolder);
-    }
-    if (workerRunRootRegistered) {
-      workerRunRootRegistered = false;
-      void unregisterWorkerUnixSocketDir(workerRunRoot, socketHolder);
     }
     if (wrapped) {
       wrapped = false;
@@ -520,12 +505,6 @@ export async function spawnConfinedPluginChild(
     if (process.platform !== "win32" && isPluginWorkerConfinementActive()) {
       await registerWorkerUnixSocketDir(socketDir, socketHolder);
       socketDirRegistered = true;
-    }
-    // Register worker leaves for bind and the plugin run subtree for connect; neither profile grant implies the other.
-    // Shared socket entries do not widen filesystem reach: per-plugin path confinement remains the boundary.
-    if (process.platform !== "win32" && isPluginWorkerConfinementActive()) {
-      await registerWorkerUnixSocketDir(workerRunRoot, socketHolder);
-      workerRunRootRegistered = true;
     }
     // Windows: the wrap takes denies only, so the child's own directories are granted to the shared `srt-sandbox` account for exactly the child's lifetime, against a holder the host owns; the model a delegated worker already uses (`worker-spawn.ts`). Without it the child reaches only
     // what the directories' existing ACLs admit, which under the default `<AVE_HOME>` in the user profile is nothing: not its entry, not its data. The grant is held to the plugin's own roots, because Windows has no `denyPluginsRoot` to stop an inheriting grant from covering a neighbour.
@@ -852,7 +831,6 @@ export function createOutOfProcessPluginFactory(
         envelope,
         assertStillValid: () => registration?.assertCurrent(),
         socketDir: resolvePluginSocketDir(context.pluginDataDir),
-        workerRunRoot: resolvePluginWorkerRunRoot(context.pluginDataDir),
         launch: spec.launch.kind === "entry"
           ? { kind: "entry", childEntryPath }
           : spec.launch,

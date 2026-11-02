@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
 import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
 import { spawnWorker, type SpawnedWorker } from "../../../permissions/worker-spawn.js";
-import { resolvePluginSocketDir, resolvePluginWorkerRunRoot } from "../../plugin-storage-layout.js";
+import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 import { derivePluginChildEnvelope, spawnConfinedPluginChild, type ConfinedPluginChild } from "../../isolation/out-of-process-plugin.js";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
@@ -114,7 +114,6 @@ describe("real sandbox ceiling withdrawal", () => {
           pluginId: PLUGIN_ID,
           envelope,
           socketDir: resolvePluginSocketDir(dataDir),
-          workerRunRoot: resolvePluginWorkerRunRoot(dataDir),
           launch: { kind: "entry", childEntryPath },
           assertStillValid: registration.assertCurrent,
         });

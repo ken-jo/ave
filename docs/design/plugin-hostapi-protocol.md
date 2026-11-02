@@ -212,9 +212,10 @@ confines only filesystem and network — srt-win, `deny-only`, `out-of-process-p
 — it does not load, because an arbitrary executable with no confinement is a different risk class than a JS
 module the host's own runtime evaluates (§7.3).
 
-The filesystem envelope is `{pluginRoot, pluginDataDir, socketDir, workerRunRoot}` for
+The filesystem envelope was `{pluginRoot, pluginDataDir, socketDir, workerRunRoot}` for
 read and `{pluginDataDir, socketDir}` for write (`out-of-process-plugin.ts:717-723` at
-`f1a8d191e`). Widening it today is a host-side table keyed by plugin id
+`f1a8d191e`). Host protocol 5 dropped `workerRunRoot` and its Unix-socket allow: workers
+speak stdio (§3.3.2), so the read base is `{pluginRoot, pluginDataDir, socketDir}`. Widening it today is a host-side table keyed by plugin id
 (`PLUGIN_ENVELOPE_GRANTS`, `:322-368`), whose only entry is `local-indexer`. The Lease
 step (§9.1) deletes that table and moves the declaration into the manifest, as a
 **sibling** of `requires`, `capabilities`, `networkAccess` and `alerts` inside the Ave
