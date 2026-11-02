@@ -2818,6 +2818,16 @@ with its own owner rule:
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL
   recovery remains the fallback for a crash.
+  That recovery runs as `srt-win acl recover --json` (carried ASRT patch part
+  13) at the next initialize that starts an srt-win session. It does not run
+  on the Windows proxy-only path (`windows.externalConfinement`), which sets
+  up no session ACLs. Every srt-win acl command runs the same recovery, so
+  when another live Ave process's acl command recovered first, this run
+  reports 0. The counts went to that process instead, and they reach its log
+  only when its own initialize recover found them. Ave logs the counts,
+  without paths, at INFO when it pruned a dead holder or revoked an ACE. It also warns when a previous
+  session's ACEs had to be revoked, so a crash leftover is visible without
+  `SRT_DEBUG`.
   Some exits skip the quit sequences and rely on that `exit` handler path:
   `--plugin-smoke` ends with `app.exit()`, and a desktop GUI boot failure quits
   before services exist, where `before-quit` returns early.

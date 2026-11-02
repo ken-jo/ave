@@ -9,7 +9,7 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths } from "./windows-stamp-targets.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
-import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { expandWindowsFsPaths, setWindowsAclRecoveryListener, type WindowsAclRecoveryReport } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
@@ -1916,6 +1916,16 @@ async function verifyAsrtRuntime(
   }
 }
 
+// srt-win's crash recovery at initialize (carried patch part 13): what a previous session that never released its ACEs (a crash, a kill, a failed
+// quit) left behind. Counts only; nothing to report when both are zero.
+function logWindowsAclRecovery({ deadBrokers, acesRevoked }: WindowsAclRecoveryReport): void {
+  if (deadBrokers === 0 && acesRevoked === 0) return;
+  log.info("Windows sandbox ACL recovery: pruned %d dead holder(s), revoked %d orphan ACE(s)", deadBrokers, acesRevoked);
+  if (acesRevoked > 0) {
+    log.warn("Windows sandbox ACLs left behind by a previous session were revoked (%d ACE(s))", acesRevoked);
+  }
+}
+
 // srt-win dropped these rows without releasing them (`mismatch`: the path now names another object, whose ACE is left as it was, so a deny stays
 // fail-closed; `missing`: the path is gone). Retrying changes nothing, so the reset still succeeds; the next boot's ACL recovery handles leftovers.
 // Counts only, never paths. A test double's reset() may resolve with nothing.
@@ -1988,6 +1998,7 @@ export async function initializeAsrtSandbox(
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
     // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
     SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
+    setWindowsAclRecoveryListener(logWindowsAclRecovery);
     // A host that claimed its signals (asrt-signal-ownership.ts) drains confined children before it resets the runtime; the runtime's own signal
     // handler would reset it, and revoke its ACEs, while they still run (carried patch part 12).
     if (readAsrtSignalReleaseClaim()) SandboxManager.setSignalCleanupOwnedByHost(true);

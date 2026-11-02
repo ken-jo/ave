@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdtempSync, rmdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,6 +8,7 @@ import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-priv
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 // The real patched manager module (the mock above replaces only the package entry): its reset() releases a seam-provided ACL session.
 import { SandboxManager as RealSandboxManager, setWindowsAclReleaseForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import { recoverWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, releaseAsrtSandboxForExit, resetAsrtSandbox } from "../asrt-sandbox.js";
 import {
   getSrtWinArchitecture,
@@ -172,5 +173,52 @@ describe("signal release owned by the host", () => {
     }
     expect(manager.setSignalCleanupOwnedByHost).toHaveBeenCalledWith(true);
     expect(order).toEqual(["owned", "initialize"]);
+  });
+});
+
+describe("Windows ACL crash recovery at initialize", () => {
+  const originalPlatform = process.platform;
+  const stubs: string[] = [];
+  afterEach(async () => {
+    try {
+      if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    } finally {
+      markSrtWinRuntimeReleased();
+      setProcessPlatform(originalPlatform);
+      for (const dir of stubs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The runtime's initialize runs `srt-win acl recover --json` (carried patch part 13); a stand-in prints the planned counts.
+  async function recoverWith(counts: { deadBrokers: number; acesRevoked: number }) {
+    setProcessPlatform("linux");
+    manager.reset.mockReset().mockResolvedValue(undefined);
+    manager.initialize.mockReset().mockResolvedValue(undefined);
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const dir = mkdtempSync(join(tmpdir(), "ave-srt-win-stub-"));
+    stubs.push(dir);
+    const script = join(dir, "srt-win.mjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(counts))});`);
+    const info = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      recoverWindowsAcl({ srtWin: { exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, prependArgs: [script] } as never });
+      return { info: [...info.mock.calls], warn: [...warn.mock.calls] };
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  }
+
+  it("logs what a previous session left behind at INFO, and warns when ACEs had to be revoked", async () => {
+    const { info, warn } = await recoverWith({ deadBrokers: 1, acesRevoked: 6 });
+    expect(info).toContainEqual([expect.stringContaining("Windows sandbox ACL recovery: pruned %d dead holder(s), revoked %d orphan ACE(s)"), 1, 6]);
+    expect(warn).toContainEqual([expect.stringContaining("Windows sandbox ACLs left behind by a previous session were revoked (%d ACE(s))"), 6]);
+  });
+
+  it("says nothing when recovery found nothing", async () => {
+    const { info, warn } = await recoverWith({ deadBrokers: 0, acesRevoked: 0 });
+    expect(JSON.stringify(info)).not.toContain("ACL recovery");
+    expect(JSON.stringify(warn)).not.toContain("left behind");
   });
 });
