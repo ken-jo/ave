@@ -1006,310 +1006,11 @@ export function PermissionsTab({
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
-  return (
-    <div className="pr-1">
-      <div className="space-y-6">
-        <SettingsPageHeader
-          title={t("permissionsTab.pageTitle")}
-          description={t("permissionsTab.pageDescription")}
-        />
-
-        {/* ── 인라인 배너 (§F9 — alert 대체) ── */}
-        {banner && (
-          <div
-            role={banner.type === "error" ? "alert" : "status"}
-            aria-live={banner.type === "error" ? "assertive" : "polite"}
-            aria-atomic="true"
-            className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[12px] ${banner.type === "error" ? "border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive" : "border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning"}`}
-          >
-            <span className="mt-0.5 flex-shrink-0">{banner.type === "error" ? "⚠" : "🔒"}</span>
-            <span>{banner.msg}</span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="ml-auto h-6 w-6 flex-shrink-0 opacity-60 hover:opacity-100"
-              onClick={() => setBanner(null)}
-              aria-label={t("permissionsTab.closeBannerAriaLabel")}
-            >
-              ✕
-            </Button>
-          </div>
-        )}
-
-        {exactDenyDraft ? (
-          <div
-            ref={exactDenyFocusRef}
-            tabIndex={-1}
-            className="scroll-mt-3 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            data-testid="exact-deny-focus-target"
-          >
-            <SettingsSection
-              title={t("permissionsTab.exactDenyDraftTitle")}
-              description={t("permissionsTab.exactDenyDraftDescription")}
-            >
-              <div className="rounded-md border border-destructive/(--opacity-muted) bg-destructive/(--opacity-faint) p-3" data-testid="exact-deny-draft">
-              <div className="grid gap-2 text-xs sm:grid-cols-2">
-                <div>
-                  <p className="text-[10px] text-muted-foreground">{t("permissionsTab.approvalsColTool")}</p>
-                  <code className="break-all font-mono">{exactDenyDraft.toolName}</code>
-                </div>
-                <div>
-                  <p className="text-[10px] text-muted-foreground">{t("permissionsTab.rulesColSource")}</p>
-                  <code className="break-all font-mono">{exactDenyDraft.source}</code>
-                </div>
-              </div>
-              <details className="group mt-3 overflow-hidden rounded-md border bg-background">
-                <summary className="cursor-pointer px-3 py-2 text-xs font-semibold">
-                  {t("permissionsTab.exactDenyReviewInput")}
-                </summary>
-                <pre className="max-h-48 overflow-auto border-t px-3 py-2 whitespace-pre-wrap break-all font-mono text-[11px]">
-                  {JSON.stringify(exactDenyDraft.args, null, 2)}
-                </pre>
-              </details>
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                {t("permissionsTab.exactDenyScopeNotice")}
-              </p>
-              <div className="mt-3 flex flex-wrap justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={exactDenyBusy}
-                  onClick={handleDiscardExactDeny}
-                >
-                  {t("permissionsTab.cancelButton")}
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  disabled={exactDenyBusy}
-                  onClick={() => void handleSaveExactDeny()}
-                  data-testid="save-exact-deny"
-                >
-                  {t("permissionsTab.saveExactDeny")}
-                </Button>
-              </div>
-              </div>
-            </SettingsSection>
-          </div>
-        ) : null}
-
-        {loading ? (
-          <div
-            className="py-8 text-center text-sm text-muted-foreground"
-            data-testid="permissions-loading"
-          >
-            {t("permissionsTab.loading")}
-          </div>
-        ) : error ? (
-          <div
-            className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-sm text-destructive"
-            data-testid="permissions-load-error"
-          >
-            <span className="min-w-0 break-words">{error}</span>
-            <Button type="button" size="sm" variant="outline" onClick={() => void fetchAll()}>
-              {t("permissionsTab.refreshButton")}
-            </Button>
-          </div>
-        ) : (
-          <>
-
-        {quarantinedHooks.length > 0 && (
-          <div
-            data-testid="hook-quarantine-notice"
-            className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
-          >
-            <div className="flex items-start gap-2">
-              <Badge variant="secondary" className="mt-0.5 text-[10px] text-warning">
-                {t("permissionsTab.hookQuarantineBadge", { count: quarantinedHooks.length })}
-              </Badge>
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">{t("permissionsTab.hookQuarantineTitle")}</p>
-                <p className="mt-1 text-[11px]">
-                  {t("permissionsTab.hookQuarantineInstructionBefore")}<code className="rounded bg-background/(--opacity-stronger) px-1 font-mono">/permission hooks list</code>{t("permissionsTab.hookQuarantineInstructionAfter")}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {quarantinedHooks.slice(0, 3).map((hook) => (
-                    <code key={hook.fileName} className="rounded border border-warning/(--opacity-medium) bg-background/(--opacity-stronger) px-1.5 py-0.5 font-mono text-[10px]">
-                      {hook.fileName}
-                    </code>
-                  ))}
-                  {quarantinedHooks.length > 3 && (
-                    <span className="text-[10px] text-warning/(--opacity-intense)">
-                      +{quarantinedHooks.length - 3}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 px-2 text-[11px]"
-                onClick={() => void fetchAll()}
-              >
-                {t("permissionsTab.refreshButton")}
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* ── 현재 권한 정책 요약 ── */}
-        <SettingsSection
-          data-settings-section="permissions-policy-summary"
-          title={t("permissionsTab.currentPolicySummaryTitle")}
-          description={t("permissionsTab.currentPolicySummaryDescription")}
-        >
-          <div className="grid gap-2 sm:grid-cols-2">
-            <div className="rounded-md border px-3 py-2">
-              <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryPolicyPreset")}</p>
-              <p className="mt-1 text-sm font-medium">{EXEC_MODE_OPTIONS.find((opt) => opt.value === mode)?.label ?? t("permissionModeBadge.labelUnknown")}</p>
-            </div>
-            <div className="rounded-md border px-3 py-2">
-              <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryApprovalDialog")}</p>
-              <p className="mt-1 text-sm font-medium">{requireExplicit ? t("permissionsTab.summaryExplicitRequired") : t("permissionsTab.summaryCloseDenies")}</p>
-            </div>
-          </div>
-        </SettingsSection>
-
-        {reviewerModeInvalid ? (
-          <div
-            className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-3 text-sm"
-            data-testid="reviewer-mode-fault"
-            id="reviewer-mode-fault"
-            role="alert"
-          >
-            <p className="font-medium">{t("permissionsTab.reviewerModeFaultTitle")}</p>
-            <p className="mt-1 text-xs text-muted-foreground">{t("permissionsTab.reviewerModeFaultDescription")}</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Button type="button" size="sm" disabled={reviewerRecoveryBusy || modeBusy}
-                data-testid="reviewer-mode-repair-llm"
-                onClick={() => void handleReviewerModeRecovery("llm")}>
-                {t("permissionsTab.reviewerModeRepairLlm")}
-              </Button>
-              <Button type="button" size="sm" variant="outline" disabled={reviewerRecoveryBusy || modeBusy}
-                data-testid="reviewer-mode-repair-disabled"
-                onClick={() => void handleReviewerModeRecovery("disabled")}>
-                {t("permissionsTab.reviewerModeRepairDisabled")}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        <PermissionJudgeContent reviewerModeInvalid={reviewerModeInvalid} />
-
-        {/* ── Section A: Permission Policy Preset ── */}
-        <SettingsSection
-          data-settings-section="permissions-policy"
-          title={t("permissionsTab.policyTitle")}
-          description={t("permissionsTab.policyDescription")}
-        >
-          <RadioGroup
-            value={mode}
-            disabled={modeBusy || reviewerRecoveryBusy}
-            aria-label={t("permissionsTab.policyAriaLabel")}
-            onValueChange={(value) => {
-              if (!isExecutionMode(value)) return;
-              void handleModeChange(value);
-            }}
-            className="space-y-1.5"
-          >
-            {EXEC_MODE_OPTIONS.map((opt) => (
-              <Label
-                key={opt.value}
-                htmlFor={`exec-mode-${opt.value}-radio`}
-                data-testid={execModeTestId(opt.value)}
-                className={`flex h-auto min-w-0 w-full cursor-pointer items-start justify-start gap-2.5 rounded-md border px-3 py-2 text-left text-sm font-normal ${mode === opt.value ? "border-primary bg-primary/(--opacity-subtle) hover:bg-primary/(--opacity-subtle)" : "border-muted hover:border-muted-foreground/(--opacity-medium)"}`}
-              >
-                <RadioGroupItem
-                  id={`exec-mode-${opt.value}-radio`}
-                  value={opt.value}
-                  aria-label={opt.label}
-                  className="mt-0.5"
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="font-medium">{opt.label}</span>
-                  <span className="mt-0.5 block text-[11px] text-muted-foreground">{opt.description}</span>
-                  {opt.value === "auto" && mode === "auto" && (
-                    <>
-                      <span
-                        className="mt-2 block rounded-md border bg-background/(--opacity-stronger) px-3 py-2 text-[11px] text-muted-foreground"
-                        data-testid="auto-review-behavior"
-                      >
-                        {t("permissionsTab.autoReviewBehavior")}
-                      </span>
-                      <details
-                        className="mt-2 rounded-md border bg-muted/(--opacity-light)"
-                        data-testid={TEST_IDS.reviewerPromptPanel}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold text-muted-foreground">
-                          {t("permissionsTab.frameworkSystemPromptTitle")}
-                        </summary>
-                        <pre
-                          className="max-h-44 overflow-auto border-t px-3 py-3 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed"
-                          data-testid="reviewer-system-prompt"
-                        >
-                          {PERMISSION_REVIEWER_FRAMEWORK.systemPrompt}
-                        </pre>
-                      </details>
-                    </>
-                  )}
-                </span>
-              </Label>
-            ))}
-          </RadioGroup>
-        </SettingsSection>
-
-        {/* ── Section B: Explicit Approval Policy ── */}
-        <SettingsSection
-          data-settings-section="permissions-approval-dialog"
-          title={t("permissionsTab.approvalDialogTitle")}
-          description={t("permissionsTab.approvalDialogDescription")}
-        >
-          <div className="flex items-center gap-3">
-            <Checkbox
-              checked={requireExplicit}
-              aria-label={t("permissionsTab.approvalDialogCheckboxAriaLabel")}
-              disabled={policyManaged || policyBusy}
-              className="size-5"
-              onCheckedChange={() => void handleExplicitToggle()}
-            />
-            <span className="text-sm">{requireExplicit ? t("permissionsTab.policyEnabled") : t("permissionsTab.policyDisabled")}</span>
-            {policyManaged && <span className="text-base" title={t("permissionsTab.adminManagedTitle")}>🔒</span>}
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="owner-away-auto-skip">{t("permissionsTab.ownerAwayAutoSkipLabel")}</Label>
-            <p className="text-xs text-muted-foreground">{t("permissionsTab.ownerAwayAutoSkipHint")}</p>
-            <Input
-              key={ownerAwayRevision}
-              id="owner-away-auto-skip"
-              data-testid="owner-away-auto-skip"
-              type="number"
-              min={0}
-              step={1}
-              defaultValue={ownerAwayAutoSkipMinutes}
-              disabled={ownerAwayBusy}
-              aria-label={t("permissionsTab.ownerAwayAutoSkipLabel")}
-              className="w-32"
-              onBlur={(event) => void handleOwnerAwayAutoSkip(event.currentTarget.value === "" ? Number.NaN : Number(event.currentTarget.value))}
-            />
-          </div>
-          {policyManaged && (
-            <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
-              {policyAdminReason
-                ? t("permissionsTab.invalidAdminPolicy", { reason: policyAdminReason })
-                : (policySource === "admin" || policySource === "merged") && policyAdminPath
-                ? t("permissionsTab.adminPolicyWithPath", { policyAdminPath })
-                : t("permissionsTab.adminPolicyNoPath")}
-            </p>
-          )}
-        </SettingsSection>
-
-        <RecentlyDeniedPanel showEmpty />
-
-        {/* ── OS Tool Sandbox ── */}
+  // The panel load (rules, policy, hooks, directories, reviewer, settings) gates the rest of the tab. The OS sandbox disclosure reads its own
+  // host snapshot, so it renders while that load is pending or has failed: a degraded boot must never leave Settings with no reason shown.
+  const settingsKnown = !loading && error === null;
+  // ── OS Tool Sandbox ──
+  const osSandboxSection = (
         <SettingsSection
           data-settings-section="permissions-os-sandbox"
           title={t("permissionsTab.osSandboxTitle")}
@@ -1318,6 +1019,9 @@ export function PermissionsTab({
           <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
           <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
           {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
+          {/* The two rows read the stored settings that the panel load returns; until it has, they would state a setting nobody read. */}
+          {settingsKnown ? (
+            <>
           <div className="flex items-start gap-3">
             <Checkbox
               checked={sandboxEnabled}
@@ -1373,6 +1077,8 @@ export function PermissionsTab({
             testId="worker-confinement-forced"
             className="mt-2"
           />
+            </>
+          ) : null}
           {sandboxCapability && !sandboxCapability.available ? (
             <p
               data-testid="os-sandbox-unavailable"
@@ -1594,6 +1300,318 @@ export function PermissionsTab({
           ) : null}
           <UpstreamProxySettings />
         </SettingsSection>
+  );
+
+  return (
+    <div className="pr-1">
+      <div className="space-y-6">
+        <SettingsPageHeader
+          title={t("permissionsTab.pageTitle")}
+          description={t("permissionsTab.pageDescription")}
+        />
+
+        {/* ── 인라인 배너 (§F9 — alert 대체) ── */}
+        {banner && (
+          <div
+            role={banner.type === "error" ? "alert" : "status"}
+            aria-live={banner.type === "error" ? "assertive" : "polite"}
+            aria-atomic="true"
+            className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[12px] ${banner.type === "error" ? "border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive" : "border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning"}`}
+          >
+            <span className="mt-0.5 flex-shrink-0">{banner.type === "error" ? "⚠" : "🔒"}</span>
+            <span>{banner.msg}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="ml-auto h-6 w-6 flex-shrink-0 opacity-60 hover:opacity-100"
+              onClick={() => setBanner(null)}
+              aria-label={t("permissionsTab.closeBannerAriaLabel")}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
+
+        {exactDenyDraft ? (
+          <div
+            ref={exactDenyFocusRef}
+            tabIndex={-1}
+            className="scroll-mt-3 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="exact-deny-focus-target"
+          >
+            <SettingsSection
+              title={t("permissionsTab.exactDenyDraftTitle")}
+              description={t("permissionsTab.exactDenyDraftDescription")}
+            >
+              <div className="rounded-md border border-destructive/(--opacity-muted) bg-destructive/(--opacity-faint) p-3" data-testid="exact-deny-draft">
+              <div className="grid gap-2 text-xs sm:grid-cols-2">
+                <div>
+                  <p className="text-[10px] text-muted-foreground">{t("permissionsTab.approvalsColTool")}</p>
+                  <code className="break-all font-mono">{exactDenyDraft.toolName}</code>
+                </div>
+                <div>
+                  <p className="text-[10px] text-muted-foreground">{t("permissionsTab.rulesColSource")}</p>
+                  <code className="break-all font-mono">{exactDenyDraft.source}</code>
+                </div>
+              </div>
+              <details className="group mt-3 overflow-hidden rounded-md border bg-background">
+                <summary className="cursor-pointer px-3 py-2 text-xs font-semibold">
+                  {t("permissionsTab.exactDenyReviewInput")}
+                </summary>
+                <pre className="max-h-48 overflow-auto border-t px-3 py-2 whitespace-pre-wrap break-all font-mono text-[11px]">
+                  {JSON.stringify(exactDenyDraft.args, null, 2)}
+                </pre>
+              </details>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                {t("permissionsTab.exactDenyScopeNotice")}
+              </p>
+              <div className="mt-3 flex flex-wrap justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={exactDenyBusy}
+                  onClick={handleDiscardExactDeny}
+                >
+                  {t("permissionsTab.cancelButton")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  disabled={exactDenyBusy}
+                  onClick={() => void handleSaveExactDeny()}
+                  data-testid="save-exact-deny"
+                >
+                  {t("permissionsTab.saveExactDeny")}
+                </Button>
+              </div>
+              </div>
+            </SettingsSection>
+          </div>
+        ) : null}
+
+        {loading ? (
+          <>
+          <div
+            className="py-8 text-center text-sm text-muted-foreground"
+            data-testid="permissions-loading"
+          >
+            {t("permissionsTab.loading")}
+          </div>
+          {osSandboxSection}
+          </>
+        ) : error ? (
+          <>
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-sm text-destructive"
+            data-testid="permissions-load-error"
+          >
+            <span className="min-w-0 break-words">{error}</span>
+            <Button type="button" size="sm" variant="outline" onClick={() => void fetchAll()}>
+              {t("permissionsTab.refreshButton")}
+            </Button>
+          </div>
+          {osSandboxSection}
+          </>
+        ) : (
+          <>
+
+        {quarantinedHooks.length > 0 && (
+          <div
+            data-testid="hook-quarantine-notice"
+            className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
+          >
+            <div className="flex items-start gap-2">
+              <Badge variant="secondary" className="mt-0.5 text-[10px] text-warning">
+                {t("permissionsTab.hookQuarantineBadge", { count: quarantinedHooks.length })}
+              </Badge>
+              <div className="min-w-0 flex-1">
+                <p className="font-medium">{t("permissionsTab.hookQuarantineTitle")}</p>
+                <p className="mt-1 text-[11px]">
+                  {t("permissionsTab.hookQuarantineInstructionBefore")}<code className="rounded bg-background/(--opacity-stronger) px-1 font-mono">/permission hooks list</code>{t("permissionsTab.hookQuarantineInstructionAfter")}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {quarantinedHooks.slice(0, 3).map((hook) => (
+                    <code key={hook.fileName} className="rounded border border-warning/(--opacity-medium) bg-background/(--opacity-stronger) px-1.5 py-0.5 font-mono text-[10px]">
+                      {hook.fileName}
+                    </code>
+                  ))}
+                  {quarantinedHooks.length > 3 && (
+                    <span className="text-[10px] text-warning/(--opacity-intense)">
+                      +{quarantinedHooks.length - 3}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => void fetchAll()}
+              >
+                {t("permissionsTab.refreshButton")}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* ── 현재 권한 정책 요약 ── */}
+        <SettingsSection
+          data-settings-section="permissions-policy-summary"
+          title={t("permissionsTab.currentPolicySummaryTitle")}
+          description={t("permissionsTab.currentPolicySummaryDescription")}
+        >
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="rounded-md border px-3 py-2">
+              <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryPolicyPreset")}</p>
+              <p className="mt-1 text-sm font-medium">{EXEC_MODE_OPTIONS.find((opt) => opt.value === mode)?.label ?? t("permissionModeBadge.labelUnknown")}</p>
+            </div>
+            <div className="rounded-md border px-3 py-2">
+              <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryApprovalDialog")}</p>
+              <p className="mt-1 text-sm font-medium">{requireExplicit ? t("permissionsTab.summaryExplicitRequired") : t("permissionsTab.summaryCloseDenies")}</p>
+            </div>
+          </div>
+        </SettingsSection>
+
+        {reviewerModeInvalid ? (
+          <div
+            className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-3 text-sm"
+            data-testid="reviewer-mode-fault"
+            id="reviewer-mode-fault"
+            role="alert"
+          >
+            <p className="font-medium">{t("permissionsTab.reviewerModeFaultTitle")}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("permissionsTab.reviewerModeFaultDescription")}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button type="button" size="sm" disabled={reviewerRecoveryBusy || modeBusy}
+                data-testid="reviewer-mode-repair-llm"
+                onClick={() => void handleReviewerModeRecovery("llm")}>
+                {t("permissionsTab.reviewerModeRepairLlm")}
+              </Button>
+              <Button type="button" size="sm" variant="outline" disabled={reviewerRecoveryBusy || modeBusy}
+                data-testid="reviewer-mode-repair-disabled"
+                onClick={() => void handleReviewerModeRecovery("disabled")}>
+                {t("permissionsTab.reviewerModeRepairDisabled")}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        <PermissionJudgeContent reviewerModeInvalid={reviewerModeInvalid} />
+
+        {/* ── Section A: Permission Policy Preset ── */}
+        <SettingsSection
+          data-settings-section="permissions-policy"
+          title={t("permissionsTab.policyTitle")}
+          description={t("permissionsTab.policyDescription")}
+        >
+          <RadioGroup
+            value={mode}
+            disabled={modeBusy || reviewerRecoveryBusy}
+            aria-label={t("permissionsTab.policyAriaLabel")}
+            onValueChange={(value) => {
+              if (!isExecutionMode(value)) return;
+              void handleModeChange(value);
+            }}
+            className="space-y-1.5"
+          >
+            {EXEC_MODE_OPTIONS.map((opt) => (
+              <Label
+                key={opt.value}
+                htmlFor={`exec-mode-${opt.value}-radio`}
+                data-testid={execModeTestId(opt.value)}
+                className={`flex h-auto min-w-0 w-full cursor-pointer items-start justify-start gap-2.5 rounded-md border px-3 py-2 text-left text-sm font-normal ${mode === opt.value ? "border-primary bg-primary/(--opacity-subtle) hover:bg-primary/(--opacity-subtle)" : "border-muted hover:border-muted-foreground/(--opacity-medium)"}`}
+              >
+                <RadioGroupItem
+                  id={`exec-mode-${opt.value}-radio`}
+                  value={opt.value}
+                  aria-label={opt.label}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium">{opt.label}</span>
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">{opt.description}</span>
+                  {opt.value === "auto" && mode === "auto" && (
+                    <>
+                      <span
+                        className="mt-2 block rounded-md border bg-background/(--opacity-stronger) px-3 py-2 text-[11px] text-muted-foreground"
+                        data-testid="auto-review-behavior"
+                      >
+                        {t("permissionsTab.autoReviewBehavior")}
+                      </span>
+                      <details
+                        className="mt-2 rounded-md border bg-muted/(--opacity-light)"
+                        data-testid={TEST_IDS.reviewerPromptPanel}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold text-muted-foreground">
+                          {t("permissionsTab.frameworkSystemPromptTitle")}
+                        </summary>
+                        <pre
+                          className="max-h-44 overflow-auto border-t px-3 py-3 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed"
+                          data-testid="reviewer-system-prompt"
+                        >
+                          {PERMISSION_REVIEWER_FRAMEWORK.systemPrompt}
+                        </pre>
+                      </details>
+                    </>
+                  )}
+                </span>
+              </Label>
+            ))}
+          </RadioGroup>
+        </SettingsSection>
+
+        {/* ── Section B: Explicit Approval Policy ── */}
+        <SettingsSection
+          data-settings-section="permissions-approval-dialog"
+          title={t("permissionsTab.approvalDialogTitle")}
+          description={t("permissionsTab.approvalDialogDescription")}
+        >
+          <div className="flex items-center gap-3">
+            <Checkbox
+              checked={requireExplicit}
+              aria-label={t("permissionsTab.approvalDialogCheckboxAriaLabel")}
+              disabled={policyManaged || policyBusy}
+              className="size-5"
+              onCheckedChange={() => void handleExplicitToggle()}
+            />
+            <span className="text-sm">{requireExplicit ? t("permissionsTab.policyEnabled") : t("permissionsTab.policyDisabled")}</span>
+            {policyManaged && <span className="text-base" title={t("permissionsTab.adminManagedTitle")}>🔒</span>}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="owner-away-auto-skip">{t("permissionsTab.ownerAwayAutoSkipLabel")}</Label>
+            <p className="text-xs text-muted-foreground">{t("permissionsTab.ownerAwayAutoSkipHint")}</p>
+            <Input
+              key={ownerAwayRevision}
+              id="owner-away-auto-skip"
+              data-testid="owner-away-auto-skip"
+              type="number"
+              min={0}
+              step={1}
+              defaultValue={ownerAwayAutoSkipMinutes}
+              disabled={ownerAwayBusy}
+              aria-label={t("permissionsTab.ownerAwayAutoSkipLabel")}
+              className="w-32"
+              onBlur={(event) => void handleOwnerAwayAutoSkip(event.currentTarget.value === "" ? Number.NaN : Number(event.currentTarget.value))}
+            />
+          </div>
+          {policyManaged && (
+            <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
+              {policyAdminReason
+                ? t("permissionsTab.invalidAdminPolicy", { reason: policyAdminReason })
+                : (policySource === "admin" || policySource === "merged") && policyAdminPath
+                ? t("permissionsTab.adminPolicyWithPath", { policyAdminPath })
+                : t("permissionsTab.adminPolicyNoPath")}
+            </p>
+          )}
+        </SettingsSection>
+
+        <RecentlyDeniedPanel showEmpty />
+
+        {osSandboxSection}
 
         {/* ── Network: what the sandbox proxy refused ── */}
         <SettingsSection
