@@ -30,11 +30,14 @@ describe("per-holder native request", () => {
     const request = buildMxcConfinedChildRequest({ ...spec, baseEnv: { ...spec.baseEnv,
       PROVIDER_API_KEY: "secret", HTTP_PROXY: "http://evil.test", NODE_OPTIONS: "--require=evil",
       MXC_FFI_DIR: "C:\\override", USERPROFILE: "C:\\host", HOME: "C:\\host", TEMP: "C:\\host", PWD: "C:\\host",
-    } });
+      APPDATA: "C:\\profile\\AppData\\Roaming",
+    }, holderEnv: { APPDATA: "C:\\holder\\Roaming", LOCALAPPDATA: "C:\\holder\\Local" } });
     // LOCALAPPDATA is container-owned too: Windows derives the AppContainer TEMP from it.
-    expect(request.environment).toMatchObject({ HOME: spec.home, USERPROFILE: spec.home, LOCALAPPDATA: spec.home,
+    expect(request.environment).toMatchObject({ HOME: spec.home, USERPROFILE: spec.home, APPDATA: spec.home, LOCALAPPDATA: spec.home,
       TEMP: spec.temp, TMP: spec.temp, PWD: spec.cwd, ELECTRON_RUN_AS_NODE: "1" });
-    expect(Object.values(request.environment!)).not.toContain("C:\\profile\\AppData\\Local");
+    for (const host of ["C:\\profile\\AppData\\Local", "C:\\profile\\AppData\\Roaming", "C:\\holder\\Roaming", "C:\\holder\\Local"]) {
+      expect(Object.values(request.environment!)).not.toContain(host);
+    }
     for (const key of ["PROVIDER_API_KEY", "HTTP_PROXY", "NODE_OPTIONS", "MXC_FFI_DIR"]) expect(request.environment).not.toHaveProperty(key);
     expect(request.inheritDefaultEnvironment).toBe(false);
   });

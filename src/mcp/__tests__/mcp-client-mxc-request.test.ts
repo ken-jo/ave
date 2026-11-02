@@ -118,7 +118,7 @@ const { registerMxcHolderReadinessProbe } = await import("../../sandbox/wrap-bun
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 
 const REAL_PLATFORM = process.platform;
-const RUNTIME_ENV = { SystemRoot: "C:\\Windows", LOCALAPPDATA: "C:\\profile\\AppData\\Local", COMSPEC: "C:\\Windows\\System32\\cmd.exe", PATHEXT: ".COM;.EXE" };
+const RUNTIME_ENV = { SystemRoot: "C:\\Windows", APPDATA: "C:\\profile\\AppData\\Roaming", LOCALAPPDATA: "C:\\profile\\AppData\\Local", COMSPEC: "C:\\Windows\\System32\\cmd.exe", PATHEXT: ".COM;.EXE" };
 const savedEnv: Record<string, string | undefined> = {};
 let unregister: () => void;
 
@@ -148,14 +148,15 @@ afterEach(() => {
 
 describe("contained MCP request", () => {
   it("passes the container validator with the runtime variables, host-owned variables and sandbox-root cwd", async () => {
-    const mcp = client();
+    const mcp = client({ env: { FS_MODE: "ro", APPDATA: "C:\\configured\\Roaming" } });
     await mcp.connect();
     await mcp.disconnect();
     const [request] = state.requests;
     expect(request!.environment).toMatchObject({ SYSTEMROOT: "C:\\Windows", COMSPEC: RUNTIME_ENV.COMSPEC,
       FS_MODE: "ro", FS_TOKEN: "k-123" });
-    // The host's LOCALAPPDATA is required on the host side but never reaches the container: it is the staging HOME.
+    // The host's APPDATA/LOCALAPPDATA never reach the container, even when configured: both are the staging HOME.
     expect(request!.environment!.LOCALAPPDATA).toBe(request!.environment!.HOME);
+    expect(request!.environment!.APPDATA).toBe(request!.environment!.HOME);
     expect(request!.environment!.LOCALAPPDATA).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}\\home$/u);
     expect(request!.workingDirectory).toBe(SANDBOX);
     expect(request!.inheritDefaultEnvironment).toBe(false);

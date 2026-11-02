@@ -67,8 +67,10 @@ async function handshake(rpc) {
 }
 
 /** Where the echoed TEMP lies: the planned `<id>\temp`, or the AppContainer profile temp Windows substitutes inside the
- * container, `<staging home>\Packages\<moniker>\AC\Temp` (LOCALAPPDATA is the staging HOME). Anything else, including a
+ * container, `<staging home>\Packages\sandbox.{GUID}\AC\Temp` (LOCALAPPDATA is the staging HOME). Anything else, including a
  * non-normalized path or a `.`/`..` segment, is null. Case-insensitive on win32. */
+const SANDBOX_MONIKER = /^sandbox\.\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$/iu;
+
 export function classifyEchoedTemp(echoed, layout, platform = process.platform) {
   if (typeof echoed !== "string" || echoed.length === 0) return null;
   const win = platform === "win32";
@@ -82,7 +84,7 @@ export function classifyEchoedTemp(echoed, layout, platform = process.platform) 
   if (!fold(echoed).startsWith(prefix)) return null;
   const rest = echoed.slice(prefix.length).split(paths.sep);
   const literal = (actual, expected) => fold(actual) === fold(expected);
-  if (rest.length === 4 && literal(rest[0], "Packages") && rest[1].length > 0 && literal(rest[2], "AC") && literal(rest[3], "Temp")) {
+  if (rest.length === 4 && literal(rest[0], "Packages") && SANDBOX_MONIKER.test(rest[1]) && literal(rest[2], "AC") && literal(rest[3], "Temp")) {
     return "appcontainer-profile";
   }
   return null;

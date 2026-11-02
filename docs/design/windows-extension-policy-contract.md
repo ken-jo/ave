@@ -344,8 +344,10 @@ nesting and the lifetime registry stay row 2's.
     (`PATH`/`HOME`/`APPDATA`/`LANG`) is not the container's base: the request
     builder forwards only the runtime keys, and the validator requires
     `SYSTEMROOT` and `LOCALAPPDATA`.
-  - `LOCALAPPDATA` is container-owned, like `HOME`/`USERPROFILE`/`TEMP`: the
-    request builder sets it to the holder's staging HOME, never the host's.
+  - `APPDATA` and `LOCALAPPDATA` are container-owned, like
+    `HOME`/`USERPROFILE`/`TEMP`: the request builder sets both to the holder's
+    staging HOME, after the forwarded and holder variables, so neither the
+    host's value nor a configured one reaches the container.
   - Effective temp. Inside the AppContainer, Windows ignores the passed
     `TEMP` and places the process's temp at
     `<LOCALAPPDATA>\Packages\<sandbox moniker>\AC\Temp`. Under MXC that

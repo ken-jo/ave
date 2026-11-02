@@ -56,11 +56,12 @@ export function buildMxcConfinedChildRequest(input: MxcConfinedChildRequestInput
     if (isSandboxWrapperEnvKey(name)) continue;
     environment[key] = value;
   }
-  // Profile and working-directory hints must not point back into the host profile. LOCALAPPDATA is one: inside the
-  // AppContainer, Windows places the process's TEMP at `<LOCALAPPDATA>\Packages\<moniker>\AC\Temp`, so it is the
-  // holder's staging HOME, keeping that temp inside the tree the holder adapter removes.
+  // Profile and working-directory hints must not point back into the host profile; APPDATA and LOCALAPPDATA are two.
+  // These are applied last, so neither a forwarded nor a holder value overrides them. Inside the
+  // AppContainer, Windows places the process's TEMP at `<LOCALAPPDATA>\Packages\<moniker>\AC\Temp`; with LOCALAPPDATA
+  // at the staging HOME, that temp stays inside the tree the holder adapter removes.
   Object.assign(environment, {
-    HOME: input.home, USERPROFILE: input.home, LOCALAPPDATA: input.home,
+    HOME: input.home, USERPROFILE: input.home, APPDATA: input.home, LOCALAPPDATA: input.home,
     HOMEDRIVE: winPath.parse(input.home).root.slice(0, 2), HOMEPATH: input.home.slice(2),
     TEMP: input.temp, TMP: input.temp, TMPDIR: input.temp, PWD: input.cwd,
   });

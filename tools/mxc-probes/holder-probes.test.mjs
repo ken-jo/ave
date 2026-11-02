@@ -122,6 +122,9 @@ test("an echoed TEMP is staged only at the planned temp or the AppContainer prof
   assert.equal(classifyEchoedTemp(layout.temp.toUpperCase(), layout, "win32"), "planned");
   assert.equal(classifyEchoedTemp(profile, layout, "win32"), "appcontainer-profile");
   assert.equal(classifyEchoedTemp(profile.toLowerCase(), layout, "win32"), "appcontainer-profile");
+  // The moniker the native peer observed.
+  const observed = `${layout.home}\\Packages\\sandbox.{9236ff29-ed9f-4911-a5d2-2f6de8afb283}\\AC\\Temp`;
+  assert.equal(classifyEchoedTemp(observed, layout, "win32"), "appcontainer-profile");
   for (const rejected of [
     "C:\\Users\\example\\AppData\\Local\\Temp", // outside staging
     `C:\\run\\mxc-staging\\${id}\\other`, // inside staging, not a known temp
@@ -129,6 +132,10 @@ test("an echoed TEMP is staged only at the planned temp or the AppContainer prof
     `${layout.home}\\Packages\\sandbox.x\\AC\\Other`,
     `${layout.home}\\Packages\\a\\b\\AC\\Temp`, // two moniker segments
     `${layout.home}\\Packages\\AC\\Temp`, // no moniker segment
+    `${layout.home}\\Packages\\Microsoft.App_8wekyb3d8bbwe\\AC\\Temp`, // a package family, not the sandbox moniker
+    `${layout.home}\\Packages\\sandbox.{not-a-guid}\\AC\\Temp`,
+    `${layout.home}\\Packages\\sandbox.{9236ff29-ed9f-4911-a5d2-2f6de8afb283}x\\AC\\Temp`,
+    `${layout.home}\\Packages\\sandbox.9236ff29-ed9f-4911-a5d2-2f6de8afb283\\AC\\Temp`, // no braces
     `${layout.home}\\Packages\\sandbox.x\\AC\\Temp\\..\\..\\..\\..\\..\\elsewhere`, // traversal
     `${layout.home}\\Packages\\..\\AC\\Temp`,
     `${layout.home}\\Packages\\.\\AC\\Temp`,
