@@ -88,6 +88,7 @@ async function main(result) {
       const directory = exactOwnedPath(root, path.join(root, name)); await mkdir(directory);
       await copyFile(new URL("./packaged-fixture.mjs", import.meta.url), path.join(directory, "fixture.mjs"));
       await copyFile(new URL("./packaged-processes.mjs", import.meta.url), path.join(directory, "packaged-processes.mjs"));
+      if (mode.startsWith("plugin")) await copyFile(new URL("./plugin-stream-fixture.mjs", import.meta.url), path.join(directory, "plugin.mjs"));
       const launchedAfter = native.now();
       const run = jsonChild(result, copiedExecutable, entry, directory, mode, randomBytes(16).toString("hex"), budgets, original);
       run.launchedAfter = launchedAfter; processes.push(run);
@@ -177,6 +178,18 @@ async function main(result) {
         passed: stdio.passed && accounting.processDeathVerified && accounting.exit.code === 0 && !accounting.exit.signal
           && ["mxc_ffi.dll", "koffi.node"].every((name) => owned.diagnostics.nativeModules.some((file) => path.basename(file).toLowerCase() === name)) };
     });
+    for (const mode of ["plugin", "plugin-overflow"]) {
+      await observe(`packaged-${mode}-streams`, async () => {
+        const run = await launch(mode, mode);
+        const owned = await run.waitFor((frame) => frame.event === "owned");
+        if (!(await pinFixtures(run, false))) throw new Error("Cannot independently pin plugin container");
+        await writeProbeJson(run.directory, "go.json", {}); run.send({ action: "run" });
+        const streams = await run.waitFor((frame) => frame.event === "plugin-streams");
+        const accounting = await finishRun(run);
+        return { ...streams, ...accounting, diagnostics: owned.diagnostics,
+          passed: streams.passed === true && accounting.processDeathVerified && accounting.exit.code === 0 && !accounting.exit.signal };
+      });
+    }
     for (const action of ["dispose", "main-death", "supervisor-death"]) {
       await observe(action, async () => {
         const run = await launch(action, "lifetime");

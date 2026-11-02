@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildImportUrl } from "../plugin-loader.js";
+import { PluginChildTerminationUnverifiedError } from "../../isolation/plugin-child-transport.js";
 import {
   makeTestPluginRuntime,
   TestPluginRuntime,
@@ -291,6 +292,56 @@ export default async function createPlugin() {
     expect(runtime.listPluginIds()).toContain("lc-restart-timeout");
     await expect(runtime.call("lc_restart_timeout_ping")).resolves.toBe("old-still-live");
     await expect(runtime.restartPlugin("lc-restart-timeout")).rejects.toMatchObject({
+      code: "plugin-lifecycle-quarantined",
+    });
+  });
+
+  it("quarantines a restart whose factory could not verify child termination", async () => {
+    const pluginDir = join(installedDir, "lc-unverified");
+    await mkdir(pluginDir, { recursive: true });
+    const manifestPath = join(pluginDir, "plugin.json");
+    await writeFile(
+      join(pluginDir, "entry.mjs"),
+      `export default async function createPlugin() {
+  return { handlers: { lc_unverified_ping: async () => "old-still-live" }, stop: async () => {} };
+}`,
+      "utf-8",
+    );
+    await writeFile(
+      manifestPath,
+      JSON.stringify(servedAgentPluginsDocument({
+        id: "lc-unverified",
+        name: "Unverified Termination",
+        version: "1.0.0",
+        entry: "entry.mjs",
+        tools: [{
+          name: "lc_unverified_ping",
+          description: "Unverified termination regression tool",
+          inputSchema: { type: "object", properties: {} },
+          _meta: { ui: { visibility: ["model", "app"] } },
+        }],
+        description: "Unverified termination regression.",
+      })),
+      "utf-8");
+    await writeFile(
+      registryPath,
+      JSON.stringify({ version: 1, plugins: [{ id: "lc-unverified", manifestPath, enabled: true }] }),
+      "utf-8",
+    );
+    const runtime = makeRuntime();
+    await runtime.startAll();
+    // The host factory, not plugin code, raises this: its spawned child could not be shown to have exited.
+    const routing = runtime as unknown as {
+      importPluginFactoryForLifecycle(...args: unknown[]): Promise<{ createPlugin: () => Promise<never>; arm: string }>;
+    };
+    vi.spyOn(routing, "importPluginFactoryForLifecycle").mockResolvedValue({
+      arm: "child",
+      createPlugin: async () => {
+        throw new PluginChildTerminationUnverifiedError("lc-unverified", { cause: new Error("cleanup unverified") });
+      },
+    });
+    await expect(runtime.restartPlugin("lc-unverified")).resolves.toBe("failed");
+    await expect(runtime.restartPlugin("lc-unverified")).rejects.toMatchObject({
       code: "plugin-lifecycle-quarantined",
     });
   });
