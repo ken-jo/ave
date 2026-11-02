@@ -1437,10 +1437,16 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       const fix = FIX[category];
       const tail = fix === null ? "" : ` ${t(fix)}`;
       if (fix !== null) expect(t(fix)).not.toBe(fix);
+      // The identity check is a SID read-back that disagreed inside one process: a restart comes first, the account second.
+      if (category === "identity-failed") {
+        expect(t(fix!)).toBe(locale === "en"
+          ? "Restart Ave; if it persists, check that you are signed in with your own Windows account."
+          : "Ave를 다시 시작하세요. 문제가 계속되면 본인 Windows 계정으로 로그인했는지 확인하세요.");
+      }
       await waitFor(() => expect(screen.getByTestId("os-sandbox-boot-degraded-detail").textContent)
         .toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason }) + tail));
       await waitFor(() => expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent)
-        .toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason }) + tail));
+        .toContain(`${t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason })}${tail} ${t("permissionsTab.homePrivacyApproveHint")}`));
     });
   });
 
@@ -1460,17 +1466,24 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       return { ave, warn };
     }
 
-    it("says the setup state is loading instead of hiding it while settings are pending", async () => {
+    // The setup panel defers to the section's one settings notice: one line while pending, one error with one Refresh when failed.
+    const sandboxSection = () => document.querySelector<HTMLElement>('[data-settings-section="permissions-os-sandbox"]')!;
+
+    it("shows one loading line for the section while settings are pending", async () => {
       const { ave, warn } = await renderWithSettings("hang");
-      await waitFor(() => expect(screen.getByTestId("permissions-loading-windows-setup")).toBeTruthy());
+      await waitFor(() => expect(screen.getByTestId("permissions-loading-os-sandbox-settings")).toBeTruthy());
+      expect(sandboxSection().querySelectorAll('[data-testid^="permissions-loading-"]')).toHaveLength(1);
       expect(ave.permission.sandboxWindowsStatus).toHaveBeenCalled();
       expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
       warn.mockRestore();
     });
 
-    it("shows its own load error when the settings read failed", async () => {
+    it("shows one error with one Refresh for the section when the settings read failed", async () => {
       const { warn } = await renderWithSettings("reject");
-      await waitFor(() => expect(screen.getByTestId("permissions-load-error-windows-setup")).toBeTruthy());
+      await waitFor(() => expect(screen.getByTestId("permissions-load-error-os-sandbox-settings")).toBeTruthy());
+      expect(sandboxSection().querySelectorAll('[data-testid^="permissions-load-error-"]')).toHaveLength(1);
+      expect([...sandboxSection().querySelectorAll("button")].filter((b) => b.textContent === t("permissionsTab.refreshButton"))).toHaveLength(1);
+      expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
       warn.mockRestore();
     });
   });
@@ -1734,10 +1747,18 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     Object.assign(ave.permission, { approveExtensionsWithoutIsolation: approve });
     await act(async () => { render(<PermissionsTab />); });
     expect(approve).not.toHaveBeenCalled();
+    // Before approval the offer is part of the message.
+    expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent).toContain(t("permissionsTab.homePrivacyApproveHint"));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })); });
     expect(approve).toHaveBeenCalledTimes(1);
     expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
+    // Approved: no "blocked", no offer to approve; the failure and its fix stay.
+    const approved = screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent ?? "";
+    const reason = t("permissionsTab.homePrivacyReadBackFailed");
+    expect(approved).toContain(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/private-state/secrets", reason })} ${t("permissionsTab.homePrivacyFixPermissions")}`);
+    expect(approved).not.toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/private-state/secrets", reason }));
+    expect(approved).not.toContain(t("permissionsTab.homePrivacyApproveHint"));
     cleanup();
     await act(async () => { render(<PermissionsTab />); });
     expect(approve).toHaveBeenCalledTimes(1);

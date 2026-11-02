@@ -1079,8 +1079,6 @@ export function PermissionsTab({
   const settingsRead = panelLoad.settings === "ready";
   const windowsHelperRequested =
     (settingsRead && (sandboxEnabled || workerConfinementEnabled)) || bootReportsWindowsHelperFailure(sandboxBoot);
-  const windowsSetupPending = !settingsRead && !windowsHelperRequested && !windowsStatus?.homePrivacyError
-    && windowsStatus?.applicable === true && !windowsStatus.ready;
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
@@ -1298,7 +1296,7 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
-          {windowsSetupPending ? panelLoadNotice("windows-setup", ["settings"]) : null}
+          {/* Until settings are read the setup panel cannot say whether it was requested; the section's one settings notice above covers it. */}
           {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
             windowsStatus.homePrivacyError ? (
               <div
@@ -1306,10 +1304,14 @@ export function PermissionsTab({
                 role="alert"
                 className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
               >
-                {withHomePrivacyFix(t("permissionsTab.osSandboxWindowsHomePrivacyError", {
+                {/* After the session approval extensions run unisolated, so "blocked" and the approval offer would both be false. */}
+                {withHomePrivacyFix(t(windowsStatus.homePrivacyError.approvedForSession
+                  ? "permissionsTab.osSandboxBootDegradedHomePrivacy"
+                  : "permissionsTab.osSandboxWindowsHomePrivacyError", {
                   path: windowsStatus.homePrivacyError.path,
                   reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
                 }), windowsStatus.homePrivacyError)}
+                {windowsStatus.homePrivacyError.approvedForSession ? null : ` ${t("permissionsTab.homePrivacyApproveHint")}`}
                 {windowsStatus.homePrivacyError.approvedForSession ? (
                   <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
                 ) : (
