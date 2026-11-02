@@ -168,6 +168,13 @@ describe("contained MCP request", () => {
     expect(request!.workingDirectory).toBe(request!.environment!.HOME);
   });
 
+  it("refuses a configured cwd outside the admitted roots before any native start, never widening them", async () => {
+    const mcp = client({ cwd: "D:\\elsewhere" });
+    await expect(mcp.connect()).rejects.toThrow(/working directory is outside this process's admitted folders/u);
+    expect(state.nativeStarts).toBe(0);
+    expect(state.requests).toHaveLength(0);
+  });
+
   it("refuses a loader override by name, without its value, before any native start", async () => {
     const mcp = client({ env: { NODE_OPTIONS: "--require=C:\\secret-loader.js", ELECTRON_RUN_AS_NODE: "0" } });
     const refusal = await mcp.connect().then(() => undefined, (error: unknown) => error as Error & { code?: string });

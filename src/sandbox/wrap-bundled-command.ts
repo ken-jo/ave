@@ -414,6 +414,7 @@ function createHolderStaging(): HolderStaging {
   mkdirSync(parent, { recursive: true });
   // A link at the staging parent would place every holder's HOME/temp, and later its removal, somewhere else.
   if (lstatSync(parent).isSymbolicLink()) throw new MxcProcessContractError("Holder staging parent is a link");
+  sweepRetiredStaging(parent);
   const dir = winPath.join(parent, randomBytes(16).toString("hex"));
   const home = winPath.join(dir, "home");
   const temp = winPath.join(dir, "temp");
@@ -425,35 +426,60 @@ function createHolderStaging(): HolderStaging {
   return Object.freeze({ root, home, temp });
 }
 
-/** Remove a dead holder's staging tree without following links: a confined child may have planted a junction there, and
- * a recursive removal through it would delete the target. The tree is first renamed to a random sibling, so nothing can
- * reach it by its old name mid-removal. A link is unlinked itself and never followed or chmod-ed; a read-only file has
- * its read-only attribute cleared first. The rename retries Windows lock codes, which a just-exited holder's handles can
- * still raise. */
+/** Delete a tree without following links: a confined child may have planted a junction there, and a recursive removal
+ * through it would delete the target. A link is unlinked itself and never followed or chmod-ed; a read-only file has its
+ * read-only attribute cleared first. */
+function removeTreeWithoutFollowingLinks(path: string): void {
+  const entry = lstatSync(path);
+  if (entry.isSymbolicLink()) {
+    unlinkSync(path);
+    return;
+  }
+  if (!entry.isDirectory()) {
+    chmodSync(path, 0o666);
+    unlinkSync(path);
+    return;
+  }
+  for (const name of readdirSync(path)) removeTreeWithoutFollowingLinks(winPath.join(path, name));
+  rmdirSync(path);
+}
+
+/** Remove a dead holder's staging tree. It is first renamed to a random `retired-` sibling, so nothing can reach it by
+ * its old name mid-removal. The rename retries Windows lock codes, which a just-exited holder's handles can still
+ * raise. A partial failure leaves the retired tree for the next sweep. */
 async function removeHolderStaging(root: string): Promise<void> {
-  const remove = (path: string): void => {
-    const entry = lstatSync(path);
-    if (entry.isSymbolicLink()) {
-      unlinkSync(path);
-      return;
-    }
-    if (!entry.isDirectory()) {
-      chmodSync(path, 0o666);
-      unlinkSync(path);
-      return;
-    }
-    for (const name of readdirSync(path)) remove(winPath.join(path, name));
-    rmdirSync(path);
-  };
   let target = root;
   try {
     const retired = winPath.join(winPath.dirname(root), `retired-${randomBytes(16).toString("hex")}`);
     await renameDirectory(root, retired);
     target = retired;
-    remove(target);
+    // Synchronous after the rename, so no sweep in this process interleaves with it.
+    removeTreeWithoutFollowingLinks(target);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && target === root) return;
     log.warn(`holder staging removal incomplete: ${(error as Error).message}`);
+  }
+}
+
+/** Remove `retired-*` siblings a partial removal left behind, with the same link-refusing delete. A tree that a live
+ * holder's writable roots reach is skipped. Failure only warns: a leftover never blocks a start. */
+function sweepRetiredStaging(parent: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(parent).filter((name) => /^retired-/iu.test(name));
+  } catch (error) {
+    log.warn(`retired holder staging sweep skipped: ${(error as Error).message}`);
+    return;
+  }
+  const live = liveMxcHolderWritableRoots();
+  for (const name of names) {
+    const path = winPath.join(parent, name);
+    if (live.some((root) => overlaps(root, path))) continue;
+    try {
+      removeTreeWithoutFollowingLinks(path);
+    } catch (error) {
+      log.warn(`retired holder staging not removed: ${(error as Error).message}`);
+    }
   }
 }
 

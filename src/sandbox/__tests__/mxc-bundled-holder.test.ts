@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   readonly: new Set<string>(),
   ops: [] as string[],
   stagingRefusal: undefined as Error | undefined,
+  unlinkFail: new Set<string>(),
 }));
 
 vi.mock("../../permissions/confined-child.js", () => ({
@@ -118,6 +119,7 @@ vi.mock("node:fs", async (original) => {
       if (!isDrive(path)) return actual.unlinkSync(path as string);
       // Windows refuses to delete a file with the read-only attribute.
       if (has(state.readonly, path)) throw Object.assign(new Error(`EPERM: ${path}`), { code: "EPERM" });
+      if (has(state.unlinkFail, path)) throw Object.assign(new Error(`EBUSY: ${path}`), { code: "EBUSY" });
       state.ops.push(`unlink ${winPath.normalize(path)}`);
       state.removed.push(winPath.normalize(path));
       for (const file of state.files) if (fold(file) === fold(path)) state.files.delete(file);
@@ -196,6 +198,7 @@ beforeEach(() => {
   state.readonly = new Set();
   state.ops = [];
   state.stagingRefusal = undefined;
+  state.unlinkFail = new Set();
   state.spawn.mockReset();
   state.spawn.mockResolvedValue(spawned);
   spawned.release.mockReset();
@@ -450,6 +453,43 @@ describe("teardown", () => {
     expect(state.ops.some((op) => /^chmod .*\\escape$/u.test(op))).toBe(false);
     expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
     expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
+  });
+
+  it("sweeps leftover retired trees at the next start without following a link or touching a live holder's tree", async () => {
+    const P = "C:\\ave\\mxc-staging";
+    const live = `${P}\\0123456789abcdef0123456789abcdef`;
+    state.dirs.add(P);
+    state.dirs.add(`${P}\\retired-aaaa`);
+    state.dirs.add(`${P}\\retired-aaaa\\temp`);
+    state.files.add(`${P}\\retired-aaaa\\temp\\locked.txt`);
+    state.readonly.add(`${P}\\retired-aaaa\\temp\\locked.txt`);
+    state.links.set(`${P}\\retired-x`, "D:\\work");
+    state.dirs.add(`${P}\\retired-held`);
+    state.dirs.add(live);
+    state.live = [`${P}\\retired-held\\temp`, live];
+    await spawnMxcBundledHolder(input());
+    expect(state.spawn).toHaveBeenCalledTimes(1);
+    expect(state.dirs.has(`${P}\\retired-aaaa`)).toBe(false);
+    expect(state.files.has(`${P}\\retired-aaaa\\temp\\locked.txt`)).toBe(false);
+    // The link is unlinked itself; its target and everything under it stay.
+    expect(state.links.has(`${P}\\retired-x`)).toBe(false);
+    expect(state.removed).toContain(`${P}\\retired-x`);
+    expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
+    expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
+    expect(state.ops.some((op) => op === `chmod ${P}\\retired-x`)).toBe(false);
+    expect(state.dirs.has(`${P}\\retired-held`)).toBe(true);
+    expect(state.dirs.has(live)).toBe(true);
+  });
+
+  it("only warns when a leftover retired tree cannot be removed, and still starts the holder", async () => {
+    const P = "C:\\ave\\mxc-staging";
+    state.dirs.add(P);
+    state.dirs.add(`${P}\\retired-busy`);
+    state.files.add(`${P}\\retired-busy\\held.dll`);
+    state.unlinkFail.add(`${P}\\retired-busy\\held.dll`);
+    await spawnMxcBundledHolder(input());
+    expect(state.spawn).toHaveBeenCalledTimes(1);
+    expect(state.files.has(`${P}\\retired-busy\\held.dll`)).toBe(true);
   });
 
   it("forms staging through the shared staging-shape check, before creating a holder directory", async () => {

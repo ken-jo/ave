@@ -302,6 +302,9 @@ nesting and the lifetime registry stay row 2's.
     link is unlinked itself and never chmod-ed or traversed. A file has its
     read-only attribute cleared before it is unlinked. An unverified
     termination keeps the tree.
+  - A partial removal leaves its `retired-*` tree. Each new holder start sweeps
+    those siblings with the same delete, skipping any that a live holder's
+    writable roots reach. A sweep failure only warns and never blocks admission.
 - **Executable rule.**
   - A configured command resolves through the caller's PATH, over absolute
     directories only, to a canonical `.exe`.
