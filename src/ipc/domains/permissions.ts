@@ -18,8 +18,6 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
-import { getAveHomeConfigurationNotice, resolveAveHomeConfigurationNotice } from "../../shared/ave-home-configuration.js";
-import type { HomeConfigurationNoticeChoice } from "../../shared/sandbox-capability-info.js";
 import { getWindowsProfileReadDenyWarnings } from "../../permissions/asrt-sandbox.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
@@ -322,7 +320,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
     }
     const privacyFailure = getAveHomePrivacyFailure();
-    const homeConfiguration = getAveHomeConfigurationNotice();
     return {
       platform,
       enabled,
@@ -345,7 +342,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         extraPrincipals: privacyFailure.extraPrincipals,
         approvedForSession: areExtensionsWithoutIsolationApproved(),
       } } : {}),
-      ...(homeConfiguration ? { homeConfiguration } : {}),
       // What the gate decided THIS boot. The runtime snapshot cannot stand in for it: a degraded gate never publishes a capability, so `runtime` reports the same "no OS
       // sandbox configured" it reports when the user never turned the sandbox on. Raw dependency messages stay main-side (boot log); the renderer gets the classified causes.
       boot: boot === null ? null : sandboxBootOutcomeView(boot),
@@ -571,27 +567,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           category: failure.category, path: failure.failedPath ?? failure.home }) });
       approveExtensionsWithoutIsolation();
     }
-    return { ok: true };
-  });
-
-  ipcMain.handle(PERMISSIONS.resolveHomeConfigurationNotice, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.resolveHomeConfigurationNotice, e); return UNAUTHORIZED_FRAME; }
-    const body = payloadRecord(payload);
-    const intent = requireUserKeyboardIntent(body.intent);
-    if (!intent.ok) return intent;
-    let choice: HomeConfigurationNoticeChoice;
-    if (body.action === "restore" && typeof body.folder === "string" && typeof body.name === "string") {
-      choice = { action: "restore", folder: body.folder, name: body.name };
-    } else if (body.action === "dismiss" || body.action === "start-fresh") choice = { action: body.action };
-    else return { ok: false, error: "invalid-payload", message: "Unknown home configuration notice choice" };
-    try {
-      resolveAveHomeConfigurationNotice(choice);
-    } catch (error) {
-      return { ok: false, error: "not-applicable", message: errorMessage(error) };
-    }
-    auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
-      output: JSON.stringify({ action: `home_configuration_${choice.action.replace("-", "_")}`, who: "user-ui",
-        ...(choice.action === "restore" ? { file: choice.name, folder: choice.folder } : {}) }) });
     return { ok: true };
   });
 

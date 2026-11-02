@@ -441,59 +441,6 @@ public static class HomeDirectoryDacl {
     }
     return diagnostics.ToArray();
   }
-  public static string[] QuarantineConfiguration(string path, string folder, string[] names, SecurityIdentifier user, bool elevated, string[] configNames) {
-    var results = new System.Collections.Generic.List<string>();
-    using (var home = OpenHome(path, user, false)) {
-      if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
-      using (var parent = OpenRelative(home, "quarantine", user, 3, true, true, true)) {
-        if (parent == null || !OwnerOnly(Read(parent), user, elevated)) throw new InvalidOperationException("Quarantine protection is unverified");
-        SafeFileHandle target = null;
-        try {
-          foreach (string name in names) {
-            try {
-              using (var source = OpenRelative(home, name, user, 1, false, false, false, false, 7u, 0x00110080u)) {
-                if (source == null) continue;
-                if (target == null) {
-                  target = OpenRelative(parent, folder, user, 2, true, true, true);
-                  if (target == null || !OwnerOnly(Read(target), user, elevated)) throw new InvalidOperationException("Quarantine protection is unverified");
-                }
-                Rename(source, target, name, false);
-                results.Add("+" + name);
-              }
-            } catch (Exception error) { results.Add("!" + name + ": " + error.Message); }
-          }
-          if (configNames.Length > 0) {
-            using (var config = OpenRelative(home, "config", user, 1, true, true, true)) {
-              if (config != null) {
-                if (!OwnerOnly(Read(config), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
-                SafeFileHandle aside = null;
-                try {
-                  foreach (string name in configNames) {
-                    try {
-                      using (var source = OpenRelative(config, name, user, 1, false, false, false, false, 7u, 0x00110080u)) {
-                        if (source == null) continue;
-                        if (target == null) {
-                          target = OpenRelative(parent, folder, user, 2, true, true, true);
-                          if (target == null || !OwnerOnly(Read(target), user, elevated)) throw new InvalidOperationException("Quarantine protection is unverified");
-                        }
-                        if (aside == null) {
-                          aside = OpenRelative(target, "config", user, 2, true, true, true);
-                          if (aside == null || !OwnerOnly(Read(aside), user, elevated)) throw new InvalidOperationException("Quarantine protection is unverified");
-                        }
-                        Rename(source, aside, name, false);
-                        results.Add("+config/" + name);
-                      }
-                    } catch (Exception error) { results.Add("!config/" + name + ": " + error.Message); }
-                  }
-                } finally { if (aside != null) aside.Dispose(); }
-              }
-            }
-          }
-        } finally { if (target != null) target.Dispose(); }
-      }
-    }
-    return results.ToArray();
-  }
   [DllImport("advapi32.dll", SetLastError = true)]
   private static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint info, byte[] owner, IntPtr group, byte[] dacl, IntPtr sacl);
   public static void ClaimRuntimeRoot(SafeFileHandle home, string name, SecurityIdentifier user) {

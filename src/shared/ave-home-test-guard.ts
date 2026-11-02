@@ -14,8 +14,3 @@ export function checkSandboxStampTargets(_paths: readonly string[]): void {}
 export function testSandboxPrivateBase(): string | undefined {
   return undefined;
 }
-
-/** Tests keep home trust records inside the run; production keeps them in the account's local application data. */
-export function testHomeTrustDirectory(): string | undefined {
-  return undefined;
-}

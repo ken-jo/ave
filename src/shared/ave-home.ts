@@ -16,28 +16,11 @@ import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, 
 export const AVE_HOME_CONFIGURATION_DIRECTORY = "config";
 export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
 export const AVE_HOME_CONFIGURATION_MARKER_CONTENT = "ave-home-boundary-v1";
-export const AVE_HOME_CONFIGURATION_FILES = ["settings.json", "policy.json", "ave-secrets.json"] as const;
-
-/**
- * Why a home's configuration is sealed for this run: reads find nothing (so the strict defaults apply) and writes are refused.
- * - `trust-record-unverified`: the home's trust record exists but cannot be verified.
- * - `configuration-missing`: `config/` was committed before, and is now gone or uncommitted.
- * - `configuration-unverified`: `config/`'s marker or its owner-only protection does not verify.
- * - `migration-interrupted`: a refused home holds migration state without a commit.
- * - `quarantine-failed`: root configuration of a home with a refusal history could not be set aside, or the fresh configuration did not commit.
- */
-export type AveHomeConfigurationSealReason =
-  | "trust-record-unverified"
-  | "configuration-missing"
-  | "configuration-unverified"
-  | "migration-interrupted"
-  | "quarantine-failed";
 
 let refusedConfigurationHome: string | undefined;
 /** Whether a refused home's configuration is its committed `config/`, decided by its first read in this run and kept for the run.
  * Only the decision is kept: each caller gets the path in its own spelling of the home. */
 let refusedConfigurationCommitted: boolean | undefined;
-const sealedConfigurationHomes = new Map<string, AveHomeConfigurationSealReason>();
 const verifiedConfigurationIdentities = new Map<string, string>();
 const configurationHomes = new Set<string>();
 const committedConfigurationHomes = new Set<string>();
@@ -69,22 +52,11 @@ export function isAveHomeConfigurationRefused(home: string): boolean {
   return refusedConfigurationHome === configurationKey(home);
 }
 
-/** Boot seals a home whose configuration location cannot be trusted; nothing unseals it during the run. */
-export function sealAveHomeConfiguration(home: string, reason: AveHomeConfigurationSealReason): void {
-  if (!sealedConfigurationHomes.has(configurationKey(home))) sealedConfigurationHomes.set(configurationKey(home), reason);
-}
-
-export function aveHomeConfigurationSeal(home: string): AveHomeConfigurationSealReason | undefined {
-  return sealedConfigurationHomes.get(configurationKey(home));
-}
-
 export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const root = resolve(home);
   configurationHomes.add(root);
   const key = configurationKey(root);
   const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
-  // A sealed home never resolves to its root: its readers find nothing and its writers are refused.
-  if (sealedConfigurationHomes.has(key)) return config;
   try {
     if (isAveHomeConfigurationRefused(root)) {
       return (refusedConfigurationCommitted ??= refusedConfigurationDirectory(root, config) === config) ? config : root;
@@ -222,7 +194,7 @@ function windowsConfigurationDirectory(root: string, config: string, key: string
 export function configurationHomeForFile(path: string): string | undefined {
   const candidate = configurationKey(path);
   for (const home of new Set([aveHome(), ...configurationHomes])) {
-    for (const name of AVE_HOME_CONFIGURATION_FILES) {
+    for (const name of ["settings.json", "policy.json", "ave-secrets.json"]) {
       if (candidate === configurationKey(join(home, name)) || candidate === configurationKey(join(home, "config", name))) return home;
     }
   }
@@ -356,8 +328,7 @@ export const AGENTS_MERGED_DOC_NAME = "AGENTS.md.merged";
 /** Report actual protection: POSIX modes do not establish Windows ACL isolation. */
 export type AveHomePrivacy =
   | { enforcement: "posix-mode"; home: string }
-  /** `workspaceUnavailable`: this start's workspace check could not open the workspace (boot counts consecutive starts). */
-  | { enforcement: "win32-dacl"; home: string; sid: string; repairs?: string[]; diagnostics?: string[]; workspaceUnavailable?: true }
+  | { enforcement: "win32-dacl"; home: string; sid: string; repairs?: string[]; diagnostics?: string[] }
   | {
     enforcement: "none";
     home: string;
@@ -367,7 +338,6 @@ export type AveHomePrivacy =
     extraPrincipals?: AveHomePrincipal[];
     repairs?: string[];
     diagnostics?: string[];
-    workspaceUnavailable?: true;
   };
 
 export type AveHomePrivacyFailureCategory =
@@ -627,7 +597,6 @@ export function assertAveHomePrivacyForConfinement(): void {
 export function _resetAveHomePrivacyForTest(): void {
   refusedConfigurationHome = undefined;
   refusedConfigurationCommitted = undefined;
-  sealedConfigurationHomes.clear();
   verifiedConfigurationIdentities.clear();
   configurationHomes.clear();
   committedConfigurationHomes.clear();
@@ -769,7 +738,6 @@ export function ensureAveHomePrivate(
     if (!sid) throw new Error("Current account SID read-back missing");
     const homeEntry = descriptors.find((entry) => entry.path === home);
     if (homeEntry?.workspaceState === "rewritten") diagnostics.push('Directory "workspace" re-inherited from the protected root');
-    const workspaceUnavailable = homeEntry?.workspaceState === "unavailable" ? { workspaceUnavailable: true as const } : {};
     if (homeEntry?.workspaceState === "unavailable") diagnostics.push('Directory "workspace" could not be opened to check its inheritance');
     if (homeEntry?.workspaceLink) diagnostics.push('Directory "workspace" is a link or junction; its entries were not checked');
     const workspaceRules = homeEntry?.workspaceRules ?? [];
@@ -778,11 +746,11 @@ export function ensureAveHomePrivate(
       const extraPrincipals = [...new Map(workspaceWriters.map(({ sid: writer, account }) => [writer, { sid: writer, ...(account ? { account } : {}),
         ...(workspaceWriters.some((entry) => entry.sid === writer && !entry.isInherited) ? { explicit: true as const } : {}) }])).values()];
       return { enforcement: "none", home, failedPath: join(home, "workspace"), category: "workspace-extra-principals", extraPrincipals,
-        reason: "Another account can write to the workspace", ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...workspaceUnavailable };
+        reason: "Another account can write to the workspace", ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
     }
     const workspaceReaders = workspaceRules.filter((rule) => rule.sid !== sid && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid));
     if (workspaceReaders.length > 0) diagnostics.push(`Directory "workspace" has foreign read-only access: ${[...new Set(workspaceReaders.map((rule) => rule.sid))].join(", ")}`);
-    return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...workspaceUnavailable };
+    return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   } catch (err) {
     return { enforcement: "none", home, failedPath: path, category, reason: (err as Error).message,
       ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };

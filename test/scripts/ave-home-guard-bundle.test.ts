@@ -19,7 +19,7 @@ async function bundle(): Promise<string> {
     stdin: {
       contents: [
         'export { aveHome } from "./src/shared/ave-home.ts";',
-        'export { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkAdminPolicyPath, checkSandboxStampTargets, testHomeTrustDirectory } from "./src/shared/ave-home-test-guard.ts";',
+        'export { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkAdminPolicyPath, checkSandboxStampTargets } from "./src/shared/ave-home-test-guard.ts";',
       ].join("\n"),
       resolveDir: repo,
       loader: "ts",
@@ -52,7 +52,7 @@ describe("the Ave home guard in a production bundle", () => {
     const home = join(scratch, "home");
     const run = (extra: Record<string, string>) => spawnSync(
       node,
-      ["--input-type=module", "-e", `const m = await import(${JSON.stringify(pathToFileURL(file).href)}); m.checkAdminPolicyPath("C:/ProgramData/Ave/policy.json"); m.checkSandboxStampTargets(["C:/Users/example/.curlrc", "C:/ProgramData/Ave/policy.json"]); console.log(JSON.stringify([m.aveHome(), m.AVE_HOME_ISOLATION_GUARD_ACTIVE, m.testHomeTrustDirectory() ?? null]));`],
+      ["--input-type=module", "-e", `const m = await import(${JSON.stringify(pathToFileURL(file).href)}); m.checkAdminPolicyPath("C:/ProgramData/Ave/policy.json"); m.checkSandboxStampTargets(["C:/Users/example/.curlrc", "C:/ProgramData/Ave/policy.json"]); console.log(JSON.stringify([m.aveHome(), m.AVE_HOME_ISOLATION_GUARD_ACTIVE]));`],
       {
         encoding: "utf8",
         timeout: 15_000,
@@ -70,11 +70,11 @@ describe("the Ave home guard in a production bundle", () => {
     for (const vitest of ["1", "0", "true"]) {
       const result = run({ VITEST: vitest });
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual([join(home, ".ave"), false, null]);
+      expect(JSON.parse(result.stdout)).toEqual([join(home, ".ave"), false]);
     }
     const withRun = run({ VITEST: "1", AVE_TEST_RUN_HOME: join(scratch, "run"), AVE_TEST_SANDBOX_BASE: join(scratch, "sbx") });
     expect(withRun.status, withRun.stderr).toBe(0);
-    expect(JSON.parse(withRun.stdout)).toEqual([join(home, ".ave"), false, null]);
+    expect(JSON.parse(withRun.stdout)).toEqual([join(home, ".ave"), false]);
   });
 
   it("is the guard in this test process, through the test configuration alone", async () => {

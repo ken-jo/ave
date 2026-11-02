@@ -455,7 +455,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permissions:judge-set",
         "ave:permissions:recently-denied-list",
         "ave:permissions:recently-denied-rerun",
-        "ave:permissions:resolve-home-configuration-notice",
         "ave:permissions:reviewer-dispatch",
         "ave:permissions:sandbox-capability",
         "ave:permissions:sandbox-windows-install",

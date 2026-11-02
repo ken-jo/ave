@@ -2985,67 +2985,7 @@ with its own owner rule:
   never committed `config/` stays root-only. The first read in a run
   decides the location, and the run keeps it, so a marker that appears
   later in a refused home never moves its configuration.
-  Refusal history (owner decision 2026-11-03). Each home has a trust record
-  outside it: `%LOCALAPPDATA%\Ave\home-trust\<sha256 of the home path>.json`.
-  Ave creates that directory with the owner-only `D:P` descriptor through
-  the same create-or-open helper as the home. It verifies the directory as
-  this account's protected owner-only directory on every read and write.
-  The home root's DACL has no bearing on the record. A principal that can
-  write to the root, which is what a refusal means, cannot reach it to
-  erase it. Nor can it forge it: a directory it creates is owned by it, and
-  verification refuses that. Tests keep records in the run's sandbox base
-  through the home guard seam. POSIX homes keep no record: mode `0700` is
-  enforced at every start, so they are never refused.
-  The record holds four things. `refused` is set by any refused start.
-  `committed` is set once `config/` is committed. `workspaceUnavailable`
-  counts consecutive starts whose workspace check could not open the
-  workspace; from the second such start the boot warns with the count.
-  `quarantined` lists files a start set aside.
-  A home with `refused` never migrates or trusts root configuration files.
-  The first trusted start after a refusal moves `settings.json`,
-  `policy.json` and `ave-secrets.json` from the root into a new
-  `quarantine/<UTC timestamp>/` folder. Both `quarantine` and the folder are
-  created on pinned handles with the owner-only `D:P` descriptor. Each entry
-  is opened relative to the pinned root without following a reparse point,
-  then renamed into the folder, so a link is moved and never followed.
-  When `config/` is not committed, its copies of those files and its
-  `.ave-config-sources.json` move into the folder's `config` subfolder the
-  same way. An interrupted migration, or a lost commit marker, then
-  finishes from an empty boundary instead of refusing to overwrite them.
-  The start then migrates with no root sources: fresh defaults, including
-  `requireExplicitApproval: true`. `refused` is cleared only after the
-  fresh `config/` commits. A committed home with `refused` sets its root
-  files aside in the same way, instead of keeping them beside the root.
-  `quarantine` is a sensitive-path row.
-  The Permissions panel names the set-aside files (file names only), says
-  why, and shows the folder to review. Restoring is a user action only. A
-  click with a user gesture (`resolveHomeConfigurationNotice`, gesture
-  required) marks one file in the record. The next trusted start reads it
-  without following links and checks it has the SHA-256 recorded when it
-  was set aside. It passes the reader validation, then is written into
-  `config/` through the verified write path, before any reader starts.
-  Nothing restores automatically or within the run. Dismiss forgets the
-  notice and leaves the files in the folder.
-  A committed `config/` never falls back to the root. Ave seals the
-  configuration for the run in five cases. One: the record says
-  `committed`, but `config/` is now missing or uncommitted, on either kind
-  of start. Two: a refused start finds `config/` that is no longer the
-  account's owner-only directory. Three: a refused start finds migration
-  state (`.ave-config-sources.json`) without a commit. Four: the record
-  itself does not verify. Five: a home with `refused` could not set a root
-  file aside, or its fresh `config/` did not commit; `refused` stays, so
-  the next trusted start tries again.
-  On a trusted start, the record makes an invalid marker tampering, not an
-  interrupted write: it is never recovered into a fresh migration. A sealed
-  home reads every configuration file as absent, so the strict defaults
-  apply. Its writes raise `AveHomeConfigurationUntrustedError`. Its
-  location stays `config/`. Boot still reaches the Permissions panel, and
-  the panel states the reason. When committed configuration is missing,
-  the panel offers start-fresh: a click with a gesture lets the next
-  trusted start set the root aside and create a fresh `config/`.
-  No process caches the configuration location, except the refused-home
-  decision above: a refused run keeps the location its first read decided,
-  and a sealed run keeps `config/`. Otherwise every read and write inspects
+  No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's
   volume serial, file ID and ChangeTime. These predicates inspect no ancestor

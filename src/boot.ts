@@ -84,8 +84,7 @@ import { writeExitDiagnostic } from "./shared/exit-diagnostic.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
-import { migrateAveHomeConfiguration, restoreRequestedConfiguration } from "./shared/ave-home-configuration.js";
-import { recordAveHomeWorkspaceCheck } from "./shared/ave-home-trust-record.js";
+import { migrateAveHomeConfiguration } from "./shared/ave-home-configuration.js";
 import { isAveHomeConfigurationOwner } from "./shared/ave-home-configuration-access.js";
 import { ensureAveScratchDir, removeAveScratchDirIfEmpty } from "./shared/ave-scratch.js";
 import {
@@ -203,19 +202,6 @@ export async function bootstrap(
     ? migrateAveHomeConfiguration(homePrivacy.home, homePrivacy) : [];
   if (homePrivacy.enforcement === "none") setAveHomeConfigurationRefusedAtBoot(homePrivacy.home);
   for (const diagnostic of configurationDiagnostics) log.warn(`boot: ${diagnostic}`);
-  // Quarantined files the user chose to restore are written into config/ now, before any configuration reader starts.
-  if (isAveHomeConfigurationOwner()) {
-    for (const diagnostic of await restoreRequestedConfiguration(homePrivacy.home)) log.warn(`boot: ${diagnostic}`);
-  }
-  // A workspace check that keeps failing is reported with its count, not repeated as the same one-start warning.
-  if (homePrivacy.enforcement !== "posix-mode" && isAveHomeConfigurationOwner()) {
-    try {
-      const warning = recordAveHomeWorkspaceCheck(homePrivacy.home, homePrivacy.workspaceUnavailable === true);
-      if (warning !== undefined) log.warn(`boot: ${warning}`);
-    } catch (error) {
-      log.warn(`boot: workspace check history was not updated: ${(error as Error).message}`);
-    }
-  }
 
   // The application-owned scratch directory the agent may stage work in
   // without an approval. It is offered to the model and to the Layer 1

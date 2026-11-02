@@ -5,7 +5,7 @@ import type { WindowsReadDenyPrincipal } from "./windows-read-deny-evidence.js";
  * Windows uses one sandbox account, so filesystem confinement protects the host and does not isolate plugins from each other. */
 
 /** What the sandbox confines, by platform. `network` is false where egress is not contained. */
-import type { AveHomeConfigurationSealReason, AveHomePrincipal, AveHomePrivacyFailureCategory } from "./ave-home.js";
+import type { AveHomePrincipal, AveHomePrivacyFailureCategory } from "./ave-home.js";
 
 export interface SandboxConfinement {
   filesystem: boolean;
@@ -334,28 +334,11 @@ export interface SandboxRuntimeCapabilityInfo {
   reason: string;
 }
 
-export type HomeConfigurationSealReason = AveHomeConfigurationSealReason;
-
-export interface HomeConfigurationNoticeInfo {
-  sealed?: HomeConfigurationSealReason;
-  quarantine?: {
-    directory: string;
-    files: Array<{ folder: string; name: string; restorable: boolean; restoreRequested: boolean }>;
-  };
-}
-
-export type HomeConfigurationNoticeChoice =
-  | { action: "restore"; folder: string; name: string }
-  | { action: "dismiss" }
-  | { action: "start-fresh" };
-
 /** Capability snapshot returned to the renderer for the settings toggle. */
 export interface SandboxCapabilityInfo {
   /** Host-issued default shell route, distinct from the platform potential. */
   shellExecutionPlan?: HostShellExecutionPlanAuditProjection;
   homePrivacyError?: SandboxWindowsStatusInfo["homePrivacyError"];
-  /** Why this run's configuration is sealed, and the root configuration files a trusted start set aside (file names only). */
-  homeConfiguration?: HomeConfigurationNoticeInfo;
   profileReadDenyWarnings?: SandboxWindowsStatusInfo["profileReadDenyWarnings"];
   platform: NodeJS.Platform;
   /** Whether the shell sandbox setting (`features.osToolSandbox`, or its env escape-hatch `AVE_SANDBOX_ENABLED=1`) is currently enabled. */

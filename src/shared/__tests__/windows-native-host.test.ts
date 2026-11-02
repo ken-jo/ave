@@ -82,8 +82,7 @@ describe("native host capture", () => {
     const access = await import("../ave-home-configuration-access.js");
     access.setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => true });
     try {
-      // The cleanup and the home trust record write each stop at the native guard.
-      expect(configuration.migrateAveHomeConfiguration(home)).toEqual([expect.stringContaining(MESSAGE), expect.stringMatching(new RegExp(`^Home trust record was not updated: .*${MESSAGE}`))]);
+      expect(configuration.migrateAveHomeConfiguration(home)).toEqual([expect.stringContaining(MESSAGE)]);
     } finally { access.setAveHomeConfigurationOwner(undefined); }
     expect(execFileSync).not.toHaveBeenCalled();
     expect(openSync).not.toHaveBeenCalled();
