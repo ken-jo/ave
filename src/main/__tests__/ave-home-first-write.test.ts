@@ -3,7 +3,7 @@
 // its inherited DACL. The fix has two phases: before the host-instance lock a start only creates a missing home through the
 // helper; repair and sealing stay in bootstrap() under the lock. This models the helper's create-or-open on a real temp directory.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { AveHomeCreateRuntime, AveHomePrivacyRuntime, WindowsDirectoryDacl } from "../../shared/ave-home.js";
@@ -15,6 +15,9 @@ const inherited = (sid: string) => ({ sid, accessControlType: 0, fileSystemRight
 
 let createdByHelper: Set<string>;
 let createFails = false;
+/** The temp directory grants other accounts access, so mkdtemp inherits it (POSIX stand-in for an inherited %TEMP% DACL). */
+let looseTemp = false;
+const madeTemp: string[] = [];
 const order: string[] = [];
 const fullProtection = vi.hoisted(() => vi.fn());
 
@@ -52,7 +55,16 @@ vi.mock("../../shared/ave-home.js", async (importOriginal) => {
 });
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, mkdirSync: vi.fn((...args: Parameters<typeof actual.mkdirSync>) => { order.push(`mkdir ${String(args[0])}`); return actual.mkdirSync(...args); }) };
+  return {
+    ...actual,
+    mkdirSync: vi.fn((...args: Parameters<typeof actual.mkdirSync>) => { order.push(`mkdir ${String(args[0])}`); return actual.mkdirSync(...args); }),
+    mkdtempSync: vi.fn((prefix: string) => {
+      const made = actual.mkdtempSync(prefix);
+      madeTemp.push(made);
+      if (looseTemp) actual.chmodSync(made, 0o755);
+      return made;
+    }),
+  };
 });
 
 describe("the pre-lock AVE_HOME write of a process start", () => {
@@ -68,6 +80,7 @@ describe("the pre-lock AVE_HOME write of a process start", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     createdByHelper = new Set();
     createFails = false;
+    looseTemp = false;
     order.length = 0;
     fullProtection.mockClear();
   });
@@ -76,6 +89,8 @@ describe("the pre-lock AVE_HOME write of a process start", () => {
     const leftCwd = process.cwd();
     process.chdir(prevCwd);
     if (basename(leftCwd).startsWith("ave-workspace-")) await cleanupTmpDir(leftCwd);
+    for (const made of madeTemp.splice(0)) if (basename(made).startsWith("ave-workspace-")) await cleanupTmpDir(made);
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     const { _resetAveHomePrivacyForTest } = await import("../../shared/ave-home.js");
     _resetAveHomePrivacyForTest();
@@ -138,6 +153,52 @@ describe("the pre-lock AVE_HOME write of a process start", () => {
     const fold = (path: string) => realpathSync(path).toLowerCase();
     expect(directories.map((dir) => dir.toLowerCase())).toContain(fold(cwd));
     expect(directories.map((dir) => dir.toLowerCase())).not.toContain(fold(tmpdir()));
+  });
+
+  // The mode bits are the POSIX half of the shared private-temp check; on Windows the same check relies on the per-user temp DACL.
+  it.runIf(process.platform !== "win32")("refuses to start in a fallback other accounts can open, and names no profile path", async () => {
+    createFails = true;
+    looseTemp = true;
+    const { ensureWorkspaceCwd, WorkspaceFallbackUnsafeError } = await import("../ensure-workspace-cwd.js");
+    let refused: unknown;
+    try { ensureWorkspaceCwd(); } catch (error) { refused = error; }
+    expect(refused).toBeInstanceOf(WorkspaceFallbackUnsafeError);
+    expect((refused as Error).message).toMatch(/ave-workspace-\S+ is not private to this account \(mode 755/);
+    expect((refused as Error).message).not.toContain(tmpdir());
+    expect(realpathSync(process.cwd())).toBe(realpathSync(prevCwd));
+  });
+
+  it("refuses the fallback whenever the shared private-temp check fails", async () => {
+    createFails = true;
+    const scratch = await import("../../shared/ave-scratch.js");
+    vi.spyOn(scratch, "verifyPrivateTempDir").mockImplementation((path) => ({ ok: false, path, reason: "is a symbolic link" }));
+    const { ensureWorkspaceCwd, WorkspaceFallbackUnsafeError } = await import("../ensure-workspace-cwd.js");
+    expect(() => ensureWorkspaceCwd()).toThrow(WorkspaceFallbackUnsafeError);
+    expect(scratch.verifyPrivateTempDir).toHaveBeenCalledWith(madeTemp.at(-1));
+    expect(basename(madeTemp.at(-1)!)).toMatch(/^ave-workspace-/);
+    expect(realpathSync(process.cwd())).toBe(realpathSync(prevCwd));
+  });
+
+  it("removes the fallback on exit only while it is still empty", async () => {
+    createFails = true;
+    const exits: Array<() => void> = [];
+    vi.spyOn(process, "once").mockImplementation(((event: string, listener: () => void) => {
+      if (event === "exit") exits.push(listener);
+      return process;
+    }) as typeof process.once);
+    const { ensureWorkspaceCwd } = await import("../ensure-workspace-cwd.js");
+
+    const empty = ensureWorkspaceCwd();
+    expect(exits).toHaveLength(1);
+    exits[0]!();
+    expect(existsSync(empty)).toBe(false);
+    expect(realpathSync(process.cwd())).toBe(realpathSync(tmpdir()));
+
+    const used = ensureWorkspaceCwd();
+    writeFileSync(join(used, "notes.txt"), "keep");
+    mkdirSync(join(used, "project"));
+    exits[1]!();
+    expect(readdirSync(used).sort()).toEqual(["notes.txt", "project"]);
   });
 
   it("is the defect it fixes: a plain mkdir before the helper leaves a home the lock holder refuses", async () => {

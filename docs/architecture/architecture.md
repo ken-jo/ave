@@ -2861,7 +2861,15 @@ with its own owner rule:
   An existing home spawns nothing. If the create fails, the start writes nothing
   under AVE_HOME. It anchors cwd, which is the default workspace root, in a fresh
   empty `ave-workspace-*` directory under the OS temp directory. That is never the
-  temp root itself and never AVE_HOME. Boot then degrades as for any home failure.
+  temp root itself and never AVE_HOME. mkdtemp inherits what the temp directory
+  grants, so the start verifies the directory with the same private-temp check
+  as the scratch directory (`verifyPrivateTempDir`): a real directory, not a
+  link, owned by this account and, off Windows, closed to other accounts. On
+  Windows that check relies on the per-user temp DACL, as the scratch directory
+  does. If the check fails, the start refuses with a configuration error and
+  never runs with a foreign-writable workspace. On exit the directory is removed
+  only while it is still empty, never recursively. Boot then degrades as for any
+  home failure.
   `bootstrap()`, under the lock, runs the full protection and seals the result.
   Under the lock, a root is repaired only in one narrow shape: the shape a plain
   mkdir under a profile left before homes were created this way. The repair sets
@@ -2875,9 +2883,15 @@ with its own owner rule:
     (an inherited Users, Authenticated Users, Everyone, CREATOR OWNER, domain
     group or other-user entry is refused)
   - the user has an entry
-  Setting the DACL re-propagates inheritance below the root. If that runs past
-  the request timeout, the boot is refused, no repair is reported, and the next
-  boot reads the root again from scratch.
+  Setting the DACL writes the root first, then re-propagates inheritance below
+  it. If that runs past the request timeout, this boot is refused and no repair
+  is reported. The root may already be `D:P` owner-only. In that case the next
+  boot passes it as win32-dacl, with no repair line and no notice. Children the
+  propagation did not reach keep their inherited SYSTEM and Administrators
+  entries. They are not re-propagated: the repair admits only those two
+  principals, which hold backup and take-ownership rights over the volume
+  anyway. The boundary subdirectories are protected and are checked on every
+  boot by Repair and OwnerOnly.
   Any other root is refused. Settings then shows the exact `icacls` command. It
   drops inheritance, then removes every grant and deny of each explicit extra
   principal (`/remove *<sid>`).
