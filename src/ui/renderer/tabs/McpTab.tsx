@@ -273,6 +273,26 @@ export function McpTab() {
     void fetchAll();
   }, [fetchAll]);
 
+  // There is no server-state event: a status that changes while the tab stays open (a contained server quarantined at
+  // disconnect, a crash) is re-read when the user returns to the window, without polling.
+  useEffect(() => {
+    let active = true;
+    const refreshStates = (): void => {
+      if (document.visibilityState === "hidden") return;
+      const requestId = ++statesRequestRef.current;
+      void window.ave.mcp.servers().then((nextStates) => {
+        if (active && requestId === statesRequestRef.current) setStates(nextStates);
+      }).catch(() => { /* Keep the last observed status until the next refresh. */ });
+    };
+    window.addEventListener("focus", refreshStates);
+    document.addEventListener("visibilitychange", refreshStates);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refreshStates);
+      document.removeEventListener("visibilitychange", refreshStates);
+    };
+  }, []);
+
   const hasOAuthServer = configs.some((config) => config.transport === "http" && config.auth === "oauth")
     || states.some((state) => state.authStatus !== undefined);
   useEffect(() => {

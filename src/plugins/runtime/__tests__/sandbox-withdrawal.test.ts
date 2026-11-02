@@ -313,7 +313,7 @@ describe("approved-directory withdrawal", () => {
     expect(subject.failureKind("verified-plugin")).toBe("sandbox-grant-outside-ceiling");
     // Fail closed: the quarantined grant stays registered and refuses every later check and replacement.
     expect(grants.get("unverified-plugin")!.assertCurrent).toThrow(/sandbox-grant-outside-ceiling/);
-    expect(() => subject.lifecycleAvailable("unverified-plugin")).toThrow(/quarantined until host restart/);
+    expect(() => subject.lifecycleAvailable("unverified-plugin")).toThrow(/\(plugin-lifecycle-quarantined\)$/u);
     // A later withdrawal settles at once and reports the same quarantine again rather than hanging.
     await expect(subject.retireSandboxGrantsOutsideCeiling()).rejects.toThrow(/sandbox grant retirement failed/);
     // Restoring the ceiling does not reopen the quarantined grant.

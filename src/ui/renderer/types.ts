@@ -209,8 +209,9 @@ export type PluginCardSummary = {
   confinement?: PluginConfinementReport;
   /** The last refused update or restart of this running plugin. */
   lastAttemptRefusal?: PluginAttemptRefusal;
-  /** Quarantined until host restart after an unverified child termination; keeps its folder access and cannot restart. */
-  lifecycleQuarantined?: true;
+  /** Quarantined until host restart; cannot restart. `grantsRetained`: a quarantined sandbox grant incarnation still
+   * holds its folder access, even for folders removed since. */
+  lifecycleQuarantined?: { grantsRetained: boolean };
   /** Marketplace request slugs that should collapse onto this installed plugin. */
   installAliases?: string[];
 };

@@ -2,6 +2,7 @@
 // Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
 import { spawn, type ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { t } from "../i18n/index.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import {
@@ -695,7 +696,7 @@ async function runContainedHook(input: {
     const result = await Promise.race([owned.completion, unsettled]);
     if (result === "unsettled") {
       stop();
-      return deny(`hook process did not settle within ${settleBudgetMs}ms; its sandbox resources stay held`,
+      return deny(t("be_scriptHookRunner.containedSettleDeadline", { ms: settleBudgetMs, code: "hook-settle-deadline" }),
         { rawStdout: stdout.text(), timedOut: true });
     }
     code = result.exitCode;
@@ -711,7 +712,7 @@ async function runContainedHook(input: {
   try {
     await holder.release();
   } catch (error) {
-    return deny(`hook process termination is unverified; its sandbox resources stay held: ${(error as Error).message}`,
+    return deny(t("be_scriptHookRunner.containedTerminationUnverified", { detail: (error as Error).message, code: "hook-termination-unverified" }),
       { rawStdout: stdout.text(), timedOut });
   }
   if (writeError) return deny(`failed to serialise hook payload: ${writeError.message}`);

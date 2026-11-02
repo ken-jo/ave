@@ -153,7 +153,7 @@ const {
 const { planWindowsExtensionHolder } = await import("../../permissions/mxc-extension-readiness.js");
 const { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } = await import("../../permissions/mxc-extension-errors.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
-const { WorkerTransportUnsupportedError, MxcNativeEntryRequiredError } = await import("../../permissions/mxc-extension-errors.js");
+const { WorkerTransportUnsupportedError, MxcNativeEntryRequiredError, MxcExtensionReadinessRefusedError } = await import("../../permissions/mxc-extension-errors.js");
 const { PluginChildTerminationUnverifiedError } = await import("../../plugins/isolation/plugin-child-transport.js");
 const { getLocale, setLocale, t } = await import("../../i18n/runtime.js");
 
@@ -342,6 +342,21 @@ describe("workspace concurrency", () => {
     const refusal = await spawnMxcBundledHolder(userHook()).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(MxcHolderWorkspaceBusyError);
     expect((refusal as { code: string }).code).toBe("holder-workspace-busy");
+    // An ordinary overlap does not claim the profile / AVE_HOME case.
+    expect((refusal as { stagingOverlap: boolean }).stagingOverlap).toBe(false);
+    expect((refusal as Error).message).toBe(t("be_wrapBundledCommand.workspaceBusy", { code: "holder-workspace-busy" }));
+    expect(state.spawn).not.toHaveBeenCalled();
+  });
+
+  it("names the AVE_HOME staging overlap when the hook's workspace contains another holder's private folder", async () => {
+    // A user hook rooted at the profile: its workspace write contains <AVE_HOME>\mxc-staging, where a live MCP server keeps its staging.
+    state.live = ["C:\\ave\\mxc-staging\\0123456789abcdef0123456789abcdef"];
+    const refusal = await spawnMxcBundledHolder(input({ label: "hook:user",
+      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", allowRead: [], allowWrite: ["C:\\ave"],
+      ownedReadRoots: [], cwd: "C:\\ave", workspaceRoots: ["C:\\ave"] })).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(MxcHolderWorkspaceBusyError);
+    expect((refusal as { stagingOverlap: boolean }).stagingOverlap).toBe(true);
+    expect((refusal as Error).message).toBe(t("be_wrapBundledCommand.workspaceBusyStaging", { code: "holder-workspace-busy" }));
     expect(state.spawn).not.toHaveBeenCalled();
   });
 
@@ -565,12 +580,14 @@ describe("container refusal copy (row 6 disclosure)", () => {
   const refusals = (): readonly (Error & { code: string })[] => [
     new holderModule.MxcExecutableNotAdmissibleError("detail"),
     new holderModule.MxcHolderWorkspaceBusyError(),
+    new holderModule.MxcHolderWorkspaceBusyError(true),
     new holderModule.MxcBashIncompatibleError(plan),
     new holderModule.MxcHolderEnvironmentRefusedError(["NODE_OPTIONS"]),
     new holderModule.MxcHolderQuarantinedError("mcp:fs"),
     new WorkerTransportUnsupportedError(),
     new MxcNativeEntryRequiredError(),
     new PluginChildTerminationUnverifiedError("demo", {}),
+    new MxcExtensionReadinessRefusedError(),
   ];
 
   it.each(["en", "ko"] as const)("localizes every refusal from a real %s key and keeps its stable code", (locale) => {
@@ -583,8 +600,28 @@ describe("container refusal copy (row 6 disclosure)", () => {
         expect(error.message.endsWith(`(${error.code})`)).toBe(true);
         return error.code;
       });
-      expect(codes).toEqual(["executable-not-admissible", "holder-workspace-busy", "bash-incompatible", "holder-environment-refused",
-        "holder-quarantined", "worker-transport-unsupported", "native-entry-required", "plugin-child-termination-unverified"]);
+      expect(codes).toEqual(["executable-not-admissible", "holder-workspace-busy", "holder-workspace-busy", "bash-incompatible", "holder-environment-refused",
+        "holder-quarantined", "worker-transport-unsupported", "native-entry-required", "plugin-child-termination-unverified",
+        "extension-readiness-refused"]);
+    } finally {
+      setLocale(previous);
+    }
+  });
+
+  it.each(["en", "ko"] as const)("resolves the hook and lifecycle quarantine refusals from real %s keys", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      for (const [key, vars] of [
+        ["be_scriptHookRunner.containedSettleDeadline", { ms: 10, code: "hook-settle-deadline" }],
+        ["be_scriptHookRunner.containedTerminationUnverified", { detail: "x", code: "hook-termination-unverified" }],
+        ["be_runtimeIndex.lifecycleQuarantined", { pluginId: "demo", reason: "x", code: "plugin-lifecycle-quarantined" }],
+      ] as const) {
+        const text = t(key, vars);
+        expect(text).not.toContain(key);
+        expect(text).not.toMatch(/\{[a-zA-Z]+\}/u);
+        expect(text.endsWith(`(${vars.code})`)).toBe(true);
+      }
     } finally {
       setLocale(previous);
     }

@@ -103,6 +103,23 @@ describe("McpTab contained quarantine (row 6 disclosure)", () => {
     expect(line).toHaveAttribute("role", "status");
   });
 
+  it("picks up a quarantine that happens while the tab is open when the window regains focus", async () => {
+    const servers = vi.fn()
+      .mockResolvedValueOnce([{ id: "srv-a", status: "connected", registeredTools: [] }])
+      .mockResolvedValue([{ id: "srv-a", status: "disconnected", registeredTools: [], containedQuarantined: true }]);
+    vi.stubGlobal("ave", { mcp: {
+      servers,
+      getConfigs: vi.fn(async () => [{ id: "srv-a", transport: "stdio" as const, command: "server.exe" }]),
+      getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
+    } });
+    render(<McpTab />);
+    await screen.findByText("srv-a");
+    expect(screen.queryByTestId("mcp-contained-quarantined-srv-a")).toBeNull();
+    fireEvent.focus(window);
+    expect(await screen.findByTestId("mcp-contained-quarantined-srv-a")).toBeInTheDocument();
+    expect(servers).toHaveBeenCalledTimes(2);
+  });
+
   it("shows no quarantine line otherwise", async () => {
     installServerState({});
     render(<McpTab />);

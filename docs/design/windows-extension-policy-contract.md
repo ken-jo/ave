@@ -54,7 +54,7 @@ them; an MXC parent keeps admitting children after the shell probe settles.
 | `egressIdentity` | `kernel-channel` for the selected MXC endpoint-scoped route; `shared` otherwise. |
 | `proxyOwnerVerified` | False: endpoint scoping does not authenticate the proxy process owner. |
 | `hostLoopback` / `inboundProtection` / `dnsProtection` | Bidirectional loopback request, host firewall for inbound, host resolver for DNS. |
-| `ancestorAccess` / `ancestorNameExposure` | Query/enumerate-only; ancestor names and metadata may be exposed, including profile siblings. Descendant enumeration remains a native measurement. |
+| `ancestorAccess` / `ancestorNameExposure` | Query/enumerate-only; ancestor names and metadata may be exposed, including profile siblings. Enumeration also cascades by name into nested directories under an ungranted sibling: the Windows x64 peer measured `descendantEnumeration: "visible"` at `356920e11` (backend-policy handoff, "Native evidence"), with TEMP redirected to a D: staging tree; a real-profile run belongs to the native release gate. |
 
 The UI, loopback and ancestor fields describe the requested MXC policy. They
 apply to a selected MXC request, not to the account fallback or an unconfined

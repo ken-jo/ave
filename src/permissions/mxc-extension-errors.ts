@@ -36,6 +36,16 @@ export class WorkerTransportUnsupportedError extends Error {
   }
 }
 
+/** Extension backend readiness is checking or rejected: the start is refused, never run unconfined. A contract error, so
+ * callers that treat readiness refusals as `MxcProcessContractError` keep doing so. */
+export class MxcExtensionReadinessRefusedError extends MxcProcessContractError {
+  readonly code = "extension-readiness-refused";
+  constructor() {
+    super(t("be_mxcExtensionErrors.readinessRefused", { code: "extension-readiness-refused" }));
+    this.name = "MxcExtensionReadinessRefusedError";
+  }
+}
+
 /** A selected container backend refuses a holder adapter that still creates processes through the legacy wrap. */
 export class MxcNativeEntryRequiredError extends Error {
   readonly code = "native-entry-required";

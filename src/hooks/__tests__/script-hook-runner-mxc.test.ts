@@ -200,7 +200,7 @@ describe("plugin hook under a selected container backend", () => {
       await vi.advanceTimersByTimeAsync(200);
       const result = await pending;
       expect(result).toMatchObject({ decision: "deny", timedOut: true });
-      expect(result.reason).toMatch(/did not settle within \d+ms; its sandbox resources stay held/u);
+      expect(result.reason).toBe(t("be_scriptHookRunner.containedSettleDeadline", { ms: 20 + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs, code: "hook-settle-deadline" }));
       expect(stuck.holder.release).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -213,7 +213,7 @@ describe("plugin hook under a selected container backend", () => {
     state.holderSpawn.mockResolvedValue(fake.holder);
     const result = await runOneHookScript(pluginHook(), PAYLOAD);
     expect(result.decision).toBe("deny");
-    expect(result.reason).toMatch(/termination is unverified/u);
+    expect(result.reason).toBe(t("be_scriptHookRunner.containedTerminationUnverified", { detail: "death unverified", code: "hook-termination-unverified" }));
   });
 
   it("names a refusal's stable code", async () => {

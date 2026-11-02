@@ -1470,14 +1470,17 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
   });
 
   it.each([
-    ["failed", true],
-    ["disabled", false],
-  ] as const)("tells a %s quarantined plugin it keeps its folder access and cannot restart until Ave restarts", async (loadStatus, doctor) => {
-    showCards([{ ...base, id: "meeting", loadStatus, lifecycleQuarantined: true as const }]);
+    ["failed", true, true],
+    ["disabled", false, true],
+    ["failed", true, false],
+  ] as const)("tells a %s quarantined plugin it cannot restart until Ave restarts (doctor %s, grants retained %s)", async (loadStatus, doctor, grantsRetained) => {
+    showCards([{ ...base, id: "meeting", loadStatus, lifecycleQuarantined: { grantsRetained } }]);
     render(<PluginConfigTab />);
     const line = await screen.findByTestId("plugin-config:lifecycle-quarantined:meeting");
-    expect(line).toHaveTextContent("이 익스텐션 프로세스가 멈췄는지 확인하지 못했습니다");
-    expect(line).toHaveTextContent("다시 시작할 수 없습니다");
+    expect(line).toHaveTextContent("이 익스텐션이 멈췄는지 확인하지 못해 Ave 를 재시작할 때까지 다시 시작할 수 없습니다.");
+    expect(line).toHaveAttribute("data-grants-retained", String(grantsRetained));
+    // Folder access is claimed only for a retained sandbox grant incarnation.
+    expect(line.textContent?.includes("시작 당시의 폴더 접근을 유지")).toBe(grantsRetained);
     expect(line).toHaveAttribute("role", "status");
     expect(screen.queryByTestId("plugin-config:doctor-panel:meeting") !== null).toBe(doctor);
   });

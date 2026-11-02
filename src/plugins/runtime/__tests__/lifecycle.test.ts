@@ -293,7 +293,9 @@ export default async function createPlugin() {
     await expect(runtime.call("lc_restart_timeout_ping")).resolves.toBe("old-still-live");
     await expect(runtime.restartPlugin("lc-restart-timeout")).rejects.toMatchObject({
       code: "plugin-lifecycle-quarantined",
-    });
+    });    // A startup timeout holds no sandbox grant incarnation, so the card must not claim retained folder access.
+    expect(runtime.listPluginCards().find((card) => card.id === "lc-restart-timeout")?.lifecycleQuarantined)
+      .toEqual({ grantsRetained: false });
   });
 
   it("quarantines a restart whose factory could not verify child termination", async () => {

@@ -124,7 +124,10 @@ describe("native plugin child quarantine through the runtime", () => {
     expect(release).not.toHaveBeenCalled();
     // The settings card says so per plugin (row 6 disclosure), and never reports the quarantined plugin as loaded.
     const card = runtime.listPluginCards().find((entry) => entry.id === PLUGIN_ID);
-    expect(card?.lifecycleQuarantined).toBe(true);
+    // The envelope's quarantined record keeps its grants registered, so the card says so.
+    expect(card?.lifecycleQuarantined).toEqual({ grantsRetained: true });
+    // The Doctor detail carries the host-localized refusal, ending with its stable code.
+    expect(card?.installFailureMessage?.endsWith("(plugin-child-termination-unverified)")).toBe(true);
     expect(card?.loadStatus).toBe("failed");
   });
 

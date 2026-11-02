@@ -238,11 +238,13 @@ export class MxcExecutableNotAdmissibleError extends Error {
   }
 }
 
-/** Another live extension holder writes the same workspace; two such holders cannot be live at once and are never queued. */
+/** Another live extension holder writes the same workspace; two such holders cannot be live at once and are never queued.
+ * `stagingOverlap`: the overlap is another holder's private staging tree under AVE_HOME inside this workspace (a project
+ * rooted at the user profile), which the message then names. */
 export class MxcHolderWorkspaceBusyError extends Error {
   readonly code = "holder-workspace-busy";
-  constructor() {
-    super(t("be_wrapBundledCommand.workspaceBusy", { code: "holder-workspace-busy" }));
+  constructor(readonly stagingOverlap = false) {
+    super(t(stagingOverlap ? "be_wrapBundledCommand.workspaceBusyStaging" : "be_wrapBundledCommand.workspaceBusy", { code: "holder-workspace-busy" }));
     this.name = "MxcHolderWorkspaceBusyError";
   }
 }
@@ -402,9 +404,11 @@ function assertNoLiveWorkspaceWriter(allowWrite: readonly string[], workspaceRoo
   const workspaces = [...listAuthorizedWorkspaceRoots(), ...workspaceRoots].flatMap(pathForms);
   const workspaceWrites = allowWrite.flatMap(pathForms).filter((write) => workspaces.some((root) => overlaps(write, root)));
   if (workspaceWrites.length === 0) return;
-  if (liveMxcHolderWritableRoots().some((live) => workspaceWrites.some((write) => overlaps(write, live)))) {
-    throw new MxcHolderWorkspaceBusyError();
-  }
+  const busy = liveMxcHolderWritableRoots().filter((live) => workspaceWrites.some((write) => overlaps(write, live)));
+  if (busy.length === 0) return;
+  // The profile / AVE_HOME case: the caller's workspace write contains another holder's private staging tree.
+  const staging = pathForms(winPath.join(aveHome(), "mxc-staging"));
+  throw new MxcHolderWorkspaceBusyError(busy.some((live) => staging.some((root) => isWindowsPathAtOrUnder(live, root))));
 }
 
 interface HolderStaging { readonly root: string; readonly home: string; readonly temp: string }

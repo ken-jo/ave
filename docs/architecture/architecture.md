@@ -2729,17 +2729,28 @@ in its directory.
   binary MCP reviewer marker that does not name the backend. The chat input's
   sandbox badge adds an extension warning when extension confinement was
   requested and the plan is not `ready`, even while shells are healthy; it
-  shows nothing for a ready or unrequested plan. Holder refusals
+  shows nothing for a ready or unrequested plan. Holder and lifecycle refusals
   (`executable-not-admissible`, `holder-workspace-busy`, `bash-incompatible`,
   `holder-environment-refused`, `holder-quarantined`,
   `worker-transport-unsupported`, `native-entry-required`,
-  `plugin-child-termination-unverified`) are localized on the host and end with
-  their stable code, so hook denies, MCP rows and plugin Doctor details carry
-  the same text. A quarantined MCP server's row (`McpServerState.containedQuarantined`)
-  and a quarantined plugin's card (`lifecycleQuarantined`) say the process keeps
-  its access and cannot restart until Ave restarts; a folder removal whose
-  revocation did not finish (`cleanupPending`) reports that as status text,
-  never a confirmation, because the user performed the removal.
+  `extension-readiness-refused`, `plugin-child-termination-unverified`,
+  `plugin-lifecycle-quarantined`, and the hook's `hook-settle-deadline` and
+  `hook-termination-unverified`) are localized on the host and end with their
+  stable code. Hook denies and MCP rows carry that text. A plugin's Doctor
+  detail carries it when the refusal is raised by the factory that admits and
+  spawns the child (`native-entry-required`, `worker-transport-unsupported`,
+  `extension-readiness-refused`, `plugin-child-termination-unverified`); other
+  factory and start errors keep the generic Doctor text, since a start failure
+  is a child RPC error and may carry paths. A quarantined MCP server's row
+  (`McpServerState.containedQuarantined`) says reconnect is blocked until Ave
+  restarts. A quarantined plugin's card (`lifecycleQuarantined`) says it cannot
+  restart until Ave restarts, and adds that its contained process keeps the
+  folder access it started with only when `grantsRetained` is true, i.e. a
+  quarantined sandbox grant incarnation is still registered (stop, drain and
+  startup quarantines hold no grants). A folder removal whose revocation did not
+  finish (`cleanupPending`) reports that as status text, never a confirmation,
+  because the user performed the removal. The MCP tab re-reads server state
+  when the window regains focus or becomes visible.
 
 Not covered: plugin workers stay on srt-win. MXC's proxy mode forbids direct
 egress rules, so the TCP worker control channel cannot reach a container; a

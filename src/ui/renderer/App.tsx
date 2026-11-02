@@ -905,7 +905,7 @@ export function App() {
   const handleProjectNotice = useCallback((message: string) => {
     statusPushToast({ severity: "info", message, ttlMs: 10_000 });
   }, [statusPushToast]);
-    const handleProjectError = useCallback<ProjectErrorReporter>((operation, error, message) => {
+  const handleProjectError = useCallback<ProjectErrorReporter>((operation, error, message) => {
     statusPushToast({
       severity: "error",
       message: formatIpcError(error, message, {

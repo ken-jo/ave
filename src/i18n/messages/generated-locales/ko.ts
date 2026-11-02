@@ -54,6 +54,7 @@ import { ko as ko_be_routineEngine } from "../generated/be_routineEngine.js";
 import { ko as ko_be_routineSchedule } from "../generated/be_routineSchedule.js";
 import { ko as ko_be_runtimeIndex } from "../generated/be_runtimeIndex.js";
 import { ko as ko_be_sandboxCapability } from "../generated/be_sandboxCapability.js";
+import { ko as ko_be_scriptHookRunner } from "../generated/be_scriptHookRunner.js";
 import { ko as ko_be_sessionGoal } from "../generated/be_sessionGoal.js";
 import { ko as ko_be_sessionGoalRevival } from "../generated/be_sessionGoalRevival.js";
 import { ko as ko_be_sessionTasks } from "../generated/be_sessionTasks.js";
@@ -244,6 +245,7 @@ export const koMessages: Record<string, string> = {
   ...ko_be_routineSchedule,
   ...ko_be_runtimeIndex,
   ...ko_be_sandboxCapability,
+  ...ko_be_scriptHookRunner,
   ...ko_be_sessionGoal,
   ...ko_be_sessionGoalRevival,
   ...ko_be_sessionTasks,
