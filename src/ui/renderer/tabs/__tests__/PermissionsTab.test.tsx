@@ -1325,6 +1325,67 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
+  it("explains an AVE_HOME privacy degrade with available-but-unused MXC on the Permissions tab (native peer snapshot)", async () => {
+    // The exact snapshot a Windows peer recorded: AVE_HOME on another drive keeps inherited principals, the gate degrades before
+    // ASRT starts, the MXC start probe still reports available, and no shell or extension uses a sandbox this session.
+    const homePrivacyError = {
+      path: "D:/ave-home", category: "extra-principals" as const, approvedForSession: false,
+      extraPrincipals: [{ sid: "S-1-5-11", account: "NT AUTHORITY\\Authenticated Users" }, { sid: "S-1-5-32-545" }],
+    };
+    const extensionPlan: SandboxWindowsExtensionPlan = {
+      requestedBackend: "mxc", selectedBackend: "none", fallbackVersion: null, uiPolicy: "ui-enabled", egressIdentity: "shared",
+      proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall", dnsProtection: "host-resolver",
+      ancestorAccess: "query-enumerate-only", ancestorNameExposure: true, readiness: "unavailable", reason: "native-validation-required",
+    };
+    assertSandboxWindowsExtensionPlan(extensionPlan);
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus: vi.fn(async () => ({
+      applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "", homePrivacyError,
+    })) });
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      homePrivacyError,
+      boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
+        shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared", extensionPlan,
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    // The OS sandbox section is mounted (the toggle always renders there; the composer badge pair alone does not prove it).
+    expect(screen.getByTestId("os-sandbox-toggle")).toBeTruthy();
+
+    const reason = t("permissionsTab.homePrivacyExtraPrincipals", {
+      principals: "S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545",
+    });
+    expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeTruthy();
+    const detail = screen.getByTestId("os-sandbox-boot-degraded-detail");
+    expect(detail.textContent).toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason }));
+    // The generic dependency hint is false for a folder-permission failure.
+    expect(detail.textContent).not.toBe(t("permissionsTab.osSandboxDiagnosticHint"));
+    expect(t("permissionsTab.osSandboxBootDegradedHomePrivacy")).not.toBe("permissionsTab.osSandboxBootDegradedHomePrivacy");
+
+    const substrate = screen.getByTestId("os-sandbox-windows-substrate");
+    expect(substrate).toHaveAttribute("data-shells", "none");
+    expect(substrate).toHaveAttribute("data-extensions", "none");
+    expect(substrate).toHaveAttribute("data-mxc", "available");
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsNone"));
+    expect(screen.getByTestId("os-sandbox-windows-mxc-unused").textContent).toBe(t("permissionsTab.osSandboxWindowsMxcUnused", { build: "10.0.26300.9711" }));
+    const extensions = screen.getByTestId("os-sandbox-windows-substrate-extensions");
+    expect(extensions).toHaveAttribute("data-readiness", "unavailable");
+    expect(extensions).toHaveAttribute("data-selected-backend", "none");
+    expect(extensions).toHaveAttribute("data-reason", "native-validation-required");
+    expect(extensions.textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsUnavailable", {
+      reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"),
+    }));
+    expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
+
+    const privacy = screen.getByTestId("os-sandbox-windows-home-privacy-error");
+    expect(privacy.textContent).toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason }));
+  });
+
   describe("extension backend plan (row 6 disclosure)", () => {
     const POSTURE = {
       uiPolicy: "ui-enabled", proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall",

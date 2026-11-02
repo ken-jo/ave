@@ -213,6 +213,24 @@ const WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS = [
 
 /** The extension backend this session selected, from the shared plan: a checking or rejected plan refuses starts, so it
  * is never described as unconfined. Snapshots without a plan keep the substrate-only wording. */
+/** The localized cause of an AVE_HOME privacy failure; shared by the boot-degraded card and the Windows privacy panel so both say the same thing. */
+function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
+  switch (error.category) {
+    case "directory-failed": return t("permissionsTab.homePrivacyDirectoryFailed");
+    case "system-root-missing": return t("permissionsTab.homePrivacySystemRootMissing");
+    case "identity-failed": return t("permissionsTab.homePrivacyIdentityFailed");
+    case "icacls-failed": return t("permissionsTab.homePrivacyIcaclsFailed");
+    case "read-back-failed": return t("permissionsTab.homePrivacyReadBackFailed");
+    case "not-protected": return t("permissionsTab.homePrivacyNotProtected");
+    case "invalid-owner-grant": return t("permissionsTab.homePrivacyInvalidOwnerGrant");
+    case "owner-claim-failed": return t("permissionsTab.homePrivacyOwnerClaimFailed");
+    case "reparse-point": return t("permissionsTab.homePrivacyReparsePoint");
+    case "extra-principals": return t("permissionsTab.homePrivacyExtraPrincipals", {
+      principals: (error.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+    });
+  }
+}
+
 function WindowsExtensionStatus({ substrate }: { substrate: SandboxWindowsSubstrateInfo }) {
   const { t } = useTranslation();
   const plan = substrate.extensionPlan;
@@ -1404,7 +1422,14 @@ export function PermissionsTab({
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
+                  {sandboxBoot.causes.includes("ave-home-privacy-failed")
+                    ? sandboxCapability?.homePrivacyError
+                      ? t("permissionsTab.osSandboxBootDegradedHomePrivacy", {
+                          path: sandboxCapability.homePrivacyError.path,
+                          reason: homePrivacyReasonText(sandboxCapability.homePrivacyError),
+                        })
+                      : t("permissionsTab.homePrivacyBootFailed")
+                    : sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
                     ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
                     : sandboxBoot.causes.includes("windows-sandbox-missing")
                     ? t("inputActionBar.sandboxCauseWindowsSandboxMissing")
@@ -1498,20 +1523,7 @@ export function PermissionsTab({
               >
                 {t("permissionsTab.osSandboxWindowsHomePrivacyError", {
                   path: windowsStatus.homePrivacyError.path,
-                  reason: {
-                    "directory-failed": t("permissionsTab.homePrivacyDirectoryFailed"),
-                    "system-root-missing": t("permissionsTab.homePrivacySystemRootMissing"),
-                    "identity-failed": t("permissionsTab.homePrivacyIdentityFailed"),
-                    "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
-                    "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
-                    "not-protected": t("permissionsTab.homePrivacyNotProtected"),
-                    "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
-                    "owner-claim-failed": t("permissionsTab.homePrivacyOwnerClaimFailed"),
-                    "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
-                    "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
-                      principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
-                    }),
-                  }[windowsStatus.homePrivacyError.category],
+                  reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
                 })}
                 {windowsStatus.homePrivacyError.approvedForSession ? (
                   <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
