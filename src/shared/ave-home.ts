@@ -18,8 +18,9 @@ export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
 export const AVE_HOME_CONFIGURATION_MARKER_CONTENT = "ave-home-boundary-v1";
 
 let refusedConfigurationHome: string | undefined;
-/** Where a refused home's configuration lives, decided by its first read in this run and kept for the run. */
-let refusedConfigurationLocation: string | undefined;
+/** Whether a refused home's configuration is its committed `config/`, decided by its first read in this run and kept for the run.
+ * Only the decision is kept: each caller gets the path in its own spelling of the home. */
+let refusedConfigurationCommitted: boolean | undefined;
 const verifiedConfigurationIdentities = new Map<string, string>();
 const configurationHomes = new Set<string>();
 const committedConfigurationHomes = new Set<string>();
@@ -43,7 +44,7 @@ function configurationKey(home: string): string {
 
 /** Only a refused home bypasses protected storage. */
 export function setAveHomeConfigurationRefusedAtBoot(home: string): void {
-  if (refusedConfigurationHome !== configurationKey(home)) refusedConfigurationLocation = undefined;
+  if (refusedConfigurationHome !== configurationKey(home)) refusedConfigurationCommitted = undefined;
   refusedConfigurationHome = configurationKey(home);
 }
 
@@ -57,7 +58,9 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const key = configurationKey(root);
   const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
-    if (isAveHomeConfigurationRefused(root)) return refusedConfigurationLocation ??= refusedConfigurationDirectory(root, config);
+    if (isAveHomeConfigurationRefused(root)) {
+      return (refusedConfigurationCommitted ??= refusedConfigurationDirectory(root, config) === config) ? config : root;
+    }
     if (process.platform === "win32") return windowsConfigurationDirectory(root, config, key);
     let directory;
     try { directory = lstatSync(config, { bigint: true }); }
@@ -593,7 +596,7 @@ export function assertAveHomePrivacyForConfinement(): void {
 /** Test teardown only; production seals the result during boot. */
 export function _resetAveHomePrivacyForTest(): void {
   refusedConfigurationHome = undefined;
-  refusedConfigurationLocation = undefined;
+  refusedConfigurationCommitted = undefined;
   verifiedConfigurationIdentities.clear();
   configurationHomes.clear();
   committedConfigurationHomes.clear();
