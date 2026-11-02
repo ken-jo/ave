@@ -1916,6 +1916,16 @@ async function verifyAsrtRuntime(
   }
 }
 
+// srt-win dropped these rows without releasing them (`mismatch`: the path now names another object, whose ACE is left as it was, so a deny stays
+// fail-closed; `missing`: the path is gone). Retrying changes nothing, so the reset still succeeds; the next boot's ACL recovery handles leftovers.
+// Counts only, never paths. A test double's reset() may resolve with nothing.
+function logUnreleasedWindowsAces(report: Awaited<ReturnType<Awaited<ReturnType<typeof loadSandboxManager>>["reset"]>> | undefined): void {
+  const unreleased = report?.windowsAclUnreleased ?? [];
+  if (unreleased.length === 0) return;
+  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); next-boot ACL recovery handles leftovers",
+    unreleased.map(({ step, status, count }) => `${step} ${status} x${count}`).join(", "));
+}
+
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.
 async function discardFailedAsrtInitialization(
   SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
@@ -1928,7 +1938,7 @@ async function discardFailedAsrtInitialization(
   sandboxSession = undefined;
   _workerUnixSocketDirs.clear();
   try {
-    await SandboxManager.reset();
+    logUnreleasedWindowsAces(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } catch (error) {
     // The caller must still receive the probe error and boot must remain degraded; a reset failure cannot make the capability verified.
@@ -2700,7 +2710,7 @@ export async function resetAsrtSandbox(): Promise<void> {
   try {
     // A failed Windows ACL release rejects (carried patch part 12) after the rest of the teardown; the release then stays pending, so the private
     // helper copy is kept for the runtime's exit handler and the next boot's recovery to retry.
-    await SandboxManager.reset();
+    logUnreleasedWindowsAces(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } finally {
     // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).

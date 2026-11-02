@@ -21,7 +21,7 @@ useVerifiedAveHomePrivacy();
 
 // The release-pending lifecycle only: a mocked runtime records whether the private helper copy still exists when its reset runs.
 const manager = vi.hoisted(() => ({
-  reset: vi.fn<() => Promise<void>>(),
+  reset: vi.fn<() => Promise<unknown>>(),
   initialize: vi.fn<() => Promise<void>>(async () => undefined),
   setSignalCleanupOwnedByHost: vi.fn<(owned: boolean) => void>(),
 }));
@@ -108,11 +108,30 @@ describe("sandbox runtime release at exit", () => {
     await expect(releaseAsrtSandboxForExit()).rejects.toMatchObject({
       code: "acl_release_failed", message: "Windows sandbox ACL release incomplete: grant revoke did not run",
     });
-    expect(revoke).toHaveBeenCalledWith({ sandboxUserSid: "S-1-5-21-1", srtWin: executable });
+    expect(revoke).toHaveBeenCalledWith(expect.objectContaining({ sandboxUserSid: "S-1-5-21-1", srtWin: executable }));
     expect(isAsrtSandboxActive()).toBe(false);
     // Still pending, so the copy's exit handler keeps the image for the runtime's own exit-time retry.
     expect(isSrtWinRuntimeReleasePending()).toBe(true);
     expect(existsSync(executable)).toBe(true);
+  });
+
+  it("completes the release when srt-win dropped rows it cannot release, and logs their counts without paths", async () => {
+    const dropped = (status: string) => ({ path: "D:\\work\\private-target", status });
+    setWindowsAclReleaseForTesting({
+      sandboxUserSid: "S-1-5-21-1", srtWin: executable,
+      revoke: ({ onExit }) => { onExit(true); return [dropped("missing"), dropped("revoked")]; },
+      restore: ({ onExit }) => { onExit(true); return [dropped("mismatch")]; },
+    });
+    manager.reset.mockImplementation(() => RealSandboxManager.reset());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await releaseAsrtSandboxForExit();
+      expect(isSrtWinRuntimeReleasePending()).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"), "grant revoke missing x1, deny restore mismatch x1");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("private-target");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("does nothing once the runtime is already reset", async () => {

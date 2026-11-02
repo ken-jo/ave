@@ -83,4 +83,26 @@ describe("headless --serve", () => {
     expect(stdout.join("")).toContain("server-ready");
     expect(stderr).toEqual([]);
   });
+
+  it("holds a repeated signal while shutdown cleanup runs, and releases the signals once it ends", async () => {
+    startTailnetSurface.mockResolvedValue(null);
+    const { runAppShutdownCleanup } = await import("../main/app-shutdown.js");
+    let finishCleanup!: () => void;
+    vi.mocked(runAppShutdownCleanup).mockImplementationOnce(() => new Promise((resolve) => { finishCleanup = () => resolve("completed"); }));
+    const baseline = { int: process.listenerCount("SIGINT"), term: process.listenerCount("SIGTERM") };
+    const { main } = await import("../headless-host.js");
+    const exit = main();
+    await vi.waitFor(() => expect(stdout.join("")).toContain("server-ready"));
+    process.emit("SIGTERM");
+    await vi.waitFor(() => expect(runAppShutdownCleanup).toHaveBeenCalled());
+    // A second Ctrl+C during the drain finds a listener, so it cannot end the process before the runtime is released.
+    expect(process.listenerCount("SIGINT")).toBe(baseline.int + 1);
+    expect(process.listenerCount("SIGTERM")).toBe(baseline.term + 1);
+    process.emit("SIGINT");
+    expect(stderr.join("")).toContain("headless: shutdown already in progress\n");
+    finishCleanup();
+    expect(await exit).toBe(0);
+    expect(process.listenerCount("SIGINT")).toBe(baseline.int);
+    expect(process.listenerCount("SIGTERM")).toBe(baseline.term);
+  });
 });

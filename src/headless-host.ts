@@ -161,12 +161,22 @@ export async function main(): Promise<number> {
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
-    runShutdownHooks();
-    const outcome = runtime
-      ? await runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
-      : await runIncompleteBootShutdown(host);
-    if (outcome === "failed" || outcome === "timed-out") process.exitCode = EXEC_FAILURE_EXIT_CODE;
-    runtime?.conversationSurfaceRuntime.sharedProjection.stop();
+    // Hold the signals until cleanup ends. With no listener a repeated signal ends the process at once, without an 'exit' event, so neither this
+    // cleanup nor the sandbox runtime's exit handler (whose own signal reset this host claimed) would release the runtime.
+    const onSignalDuringShutdown = () => { process.stderr.write("headless: shutdown already in progress\n"); };
+    process.on("SIGINT", onSignalDuringShutdown);
+    process.on("SIGTERM", onSignalDuringShutdown);
+    try {
+      runShutdownHooks();
+      const outcome = runtime
+        ? await runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
+        : await runIncompleteBootShutdown(host);
+      if (outcome === "failed" || outcome === "timed-out") process.exitCode = EXEC_FAILURE_EXIT_CODE;
+      runtime?.conversationSurfaceRuntime.sharedProjection.stop();
+    } finally {
+      process.removeListener("SIGINT", onSignalDuringShutdown);
+      process.removeListener("SIGTERM", onSignalDuringShutdown);
+    }
   }
 }
 
