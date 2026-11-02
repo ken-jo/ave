@@ -58,9 +58,10 @@ export type AveScratchRemoval =
 
 /** On exit the scratch directory is removed only while it is still empty; anything the agent, a tool or the user left in it stays. */
 export function removeAveScratchDirIfEmpty(path = aveScratchDir()): AveScratchRemoval {
-  // Windows cannot remove a process's current directory.
-  if (resolve(process.cwd()) === resolve(path)) process.chdir(tmpdir());
   try {
+    // Windows cannot remove a process's current directory; its paths compare without case.
+    const fold = (value: string) => process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value);
+    if (fold(process.cwd()) === fold(path)) process.chdir(tmpdir());
     rmdirSync(path);
     return { status: "removed" };
   } catch (error) {

@@ -2379,7 +2379,7 @@ real directory (not a symlink) that this account owns and no other account can
 read. The check is a per-call `lstat` at each offer, not a guarantee across the
 gap to the write itself. The name is keyed by uid and a digest of the
 application home, so an isolated `AVE_HOME` gets its own scratch directory.
-At exit boot removes it only while it is still empty, with a non-recursive
+At exit, boot removes it only while it is still empty, with a non-recursive
 `rmdir`; anything left in it stays. A
 directory another local account planted first under a shared `/tmp` fails the
 check and is reported at boot; the prompt then says no scratch directory is

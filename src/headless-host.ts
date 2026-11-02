@@ -10,6 +10,7 @@ import { createWindowlessHost } from "./main/windowless-host.js";
 import { probeHostRuntimeResources } from "./main/host-runtime-probe.js";
 import { runAppShutdownCleanup, runIncompleteBootShutdown, runShutdownHooks } from "./main/app-shutdown.js";
 import { sealManagedChildProcessAdmission } from "./main/managed-child-processes.js";
+import { claimAsrtSignalRelease } from "./permissions/asrt-signal-ownership.js";
 import { setAppShutdownStarted } from "./main/app-state.js";
 import { errorMessage } from "./shared/error-message.js";
 import { AveHomeConfigurationNotOwnerError } from "./shared/ave-home-configuration-access.js";
@@ -92,6 +93,9 @@ export async function main(): Promise<number> {
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  // These handlers lead to the quit sequence, which drains confined children before it resets the sandbox runtime; the runtime must not reset
+  // itself on the same signal first.
+  claimAsrtSignalRelease();
   try {
     await Promise.race([(async () => {
       const createHost = () => createNodeBootHost({

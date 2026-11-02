@@ -10,6 +10,7 @@ import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatt
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths } from "./windows-stamp-targets.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
@@ -1929,8 +1930,9 @@ async function discardFailedAsrtInitialization(
   try {
     await SandboxManager.reset();
     markSrtWinRuntimeReleased();
-  } catch {
+  } catch (error) {
     // The caller must still receive the probe error and boot must remain degraded; a reset failure cannot make the capability verified.
+    log.error("discarding a failed initialization: sandbox runtime reset failed: %s", errorMessage(error));
   }
 }
 
@@ -1976,6 +1978,9 @@ export async function initializeAsrtSandbox(
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
     // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
     SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
+    // A host that claimed its signals (asrt-signal-ownership.ts) drains confined children before it resets the runtime; the runtime's own signal
+    // handler would reset it, and revoke its ACEs, while they still run (carried patch part 12).
+    if (readAsrtSignalReleaseClaim()) SandboxManager.setSignalCleanupOwnedByHost(true);
     checkWindowsSandboxStampTargets(config.filesystem);
     // From here the runtime may stamp ACEs that only its reset, spawning the private helper copy, releases.
     markSrtWinRuntimeReleasePending();
@@ -2692,14 +2697,19 @@ export async function resetAsrtSandbox(): Promise<void> {
   // Invalidate admission before the first await; pending wraps must not reach
   // the native runtime once teardown has been requested.
   const SandboxManager = await loadSandboxManager();
-  await SandboxManager.reset();
-  markSrtWinRuntimeReleased();
-  // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
-  const { clearWrappedMcpServers, clearWrappedPluginWorkers, clearConfinedPluginChildren } =
-    await import("./sandbox-capability.js");
-  clearWrappedMcpServers();
-  clearWrappedPluginWorkers();
-  clearConfinedPluginChildren();
+  try {
+    // A failed Windows ACL release rejects (carried patch part 12) after the rest of the teardown; the release then stays pending, so the private
+    // helper copy is kept for the runtime's exit handler and the next boot's recovery to retry.
+    await SandboxManager.reset();
+    markSrtWinRuntimeReleased();
+  } finally {
+    // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
+    const { clearWrappedMcpServers, clearWrappedPluginWorkers, clearConfinedPluginChildren } =
+      await import("./sandbox-capability.js");
+    clearWrappedMcpServers();
+    clearWrappedPluginWorkers();
+    clearConfinedPluginChildren();
+  }
 }
 
 // The quit sequence's release: after every confined child is down, reset an initialized runtime while its private helper copy still exists, so on

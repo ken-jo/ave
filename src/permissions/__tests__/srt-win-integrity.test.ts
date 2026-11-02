@@ -527,7 +527,7 @@ describe("Windows helper integrity", () => {
   describe("exit order with the sandbox runtime's release", () => {
     const exitOrderChild = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/srt-win-exit-order-child.ts");
     const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-    function runChild(mode: "runtime-pending" | "runtime-reset" | "no-runtime"): { executable: string; presentAtRuntimeRelease?: boolean } {
+    function runChild(mode: "runtime-pending" | "runtime-reset" | "no-runtime"): { executable: string; presentAtRuntimeRelease?: boolean; stderr: string } {
       const { source } = fixture();
       const resultPath = join(dirname(source), "result.json");
       const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode], {
@@ -537,18 +537,22 @@ describe("Windows helper integrity", () => {
       expect(child.status, child.stderr).toBe(0);
       const result = JSON.parse(readFileSync(resultPath, "utf8")) as { executable: string; presentAtRuntimeRelease?: boolean };
       directories.push(dirname(dirname(result.executable)));
-      return result;
+      return { ...result, stderr: child.stderr };
     }
 
     it("keeps the private copy for a runtime release still pending at exit, which runs after this module's handler", () => {
-      const { executable, presentAtRuntimeRelease } = runChild("runtime-pending");
+      const { executable, presentAtRuntimeRelease, stderr } = runChild("runtime-pending");
       expect(presentAtRuntimeRelease).toBe(true);
+      // Written synchronously: the file log is closed by the time 'exit' handlers run.
+      expect(stderr).toContain("ave: srt-win: sandbox session was not released before exit");
       // Left for the next boot's stale-copy sweep.
       expect(existsSync(executable)).toBe(true);
     });
 
     it("removes the private copy at exit once the quit sequence has reset the runtime", () => {
-      expect(existsSync(runChild("runtime-reset").executable)).toBe(false);
+      const { executable, stderr } = runChild("runtime-reset");
+      expect(existsSync(executable)).toBe(false);
+      expect(stderr).not.toContain("srt-win: sandbox session");
     });
 
     it("removes the private copy at exit when no runtime was initialized", () => {

@@ -1,5 +1,5 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -99,6 +99,22 @@ describe("removeAveScratchDirIfEmpty", () => {
     writeFileSync(staged, "kept");
     expect(removeAveScratchDirIfEmpty(path)).toEqual({ status: "kept" });
     expect(readFileSync(staged, "utf8")).toBe("kept");
+  });
+
+  it("leaves the directory first when it is the process's working directory", () => {
+    const path = join(freshRoot(), "scratch");
+    expect(ensureAveScratchDir(path).ok).toBe(true);
+    const previous = process.cwd();
+    process.chdir(path);
+    try {
+      // Windows compares the working directory without case.
+      const spelled = process.platform === "win32" ? path.toUpperCase() : path;
+      expect(removeAveScratchDirIfEmpty(spelled)).toEqual({ status: "removed" });
+      expect(realpathSync(process.cwd())).toBe(realpathSync(tmpdir()));
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      process.chdir(previous);
+    }
   });
 
   it("treats an already-absent directory as nothing to remove", () => {

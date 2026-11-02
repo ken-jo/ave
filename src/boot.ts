@@ -45,7 +45,7 @@ import { configureHostResources } from "./main/host-resources.js";
  */
 import type { BrowserWindow } from "electron";
 import { CHANNELS } from "./contract/app-contract.js";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
 import { agentPluginDataRoot } from "./marketplace/content/agent-plugin-data.js";
 import { migratePluginHostStorage, sweepPluginSocketDiscardDirs } from "./plugins/plugin-storage-layout.js";
@@ -80,6 +80,7 @@ import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
 import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler.js";
 import { createLogger } from "./lib/logger.js";
+import { writeExitDiagnostic } from "./shared/exit-diagnostic.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
@@ -212,7 +213,8 @@ export async function bootstrap(
     // A fresh application home creates its own scratch directory; one left empty is removed at exit so temp does not collect them.
     process.once("exit", () => {
       const removal = removeAveScratchDirIfEmpty(scratch.path);
-      if (removal.status === "failed") log.warn(`boot: scratch directory ${scratch.path} was not removed on exit (${removal.code})`);
+      // The file log sink is closed by now.
+      if (removal.status === "failed") writeExitDiagnostic(`scratch directory ${basename(scratch.path)} was not removed on exit (${removal.code})`);
     });
   }
 

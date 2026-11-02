@@ -170,11 +170,11 @@ describe("OS sandbox release at quit", () => {
   it("reports a failed reset as a failed shutdown rather than a clean one", async () => {
     getServices.mockReturnValue(makeServices());
     // The production retry finds the runtime already inactive and does nothing.
-    releaseAsrtSandboxForExit.mockRejectedValueOnce(new Error("srt-win acl: release failed"));
+    releaseAsrtSandboxForExit.mockRejectedValueOnce(Object.assign(new Error("Windows sandbox ACL release incomplete: grant revoke did not run"), { code: "acl_release_failed" }));
     vi.resetModules();
     const shutdown = await configuredShutdown();
     expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("failed");
-    expect(logError).toHaveBeenCalledWith(expect.anything(), "%s: shutdown cleanup failed: %s", "before-quit", "srt-win acl: release failed");
+    expect(logError).toHaveBeenCalledWith(expect.anything(), "%s: shutdown cleanup failed: %s", "before-quit", "Windows sandbox ACL release incomplete: grant revoke did not run");
   });
 
   it("still resets the runtime when an earlier stage fails, after the force-kill backstop", async () => {

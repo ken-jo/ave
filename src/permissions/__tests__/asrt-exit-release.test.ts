@@ -6,6 +6,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { EventEmitter } from "node:events";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+// The real patched manager module (the mock above replaces only the package entry): its reset() releases a seam-provided ACL session.
+import { SandboxManager as RealSandboxManager, setWindowsAclReleaseForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, releaseAsrtSandboxForExit, resetAsrtSandbox } from "../asrt-sandbox.js";
 import {
   getSrtWinArchitecture,
@@ -20,10 +22,13 @@ useVerifiedAveHomePrivacy();
 // The release-pending lifecycle only: a mocked runtime records whether the private helper copy still exists when its reset runs.
 const manager = vi.hoisted(() => ({
   reset: vi.fn<() => Promise<void>>(),
+  initialize: vi.fn<() => Promise<void>>(async () => undefined),
+  setSignalCleanupOwnedByHost: vi.fn<(owned: boolean) => void>(),
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   setParentProxyRouter: () => undefined,
-  initialize: async () => undefined,
+  initialize: () => manager.initialize(),
+  setSignalCleanupOwnedByHost: (owned: boolean) => manager.setSignalCleanupOwnedByHost(owned),
   updateConfig: () => undefined,
   reset: () => manager.reset(),
   wrapWithSandboxArgv: async () => ({
@@ -34,6 +39,9 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   openInvocationListener: async () => ({ socketPath: "/configured/proxy.sock" }),
   closeInvocationListener: () => undefined,
 } }));
+// The host's signal claim (asrt-signal-ownership.test.ts covers the module itself).
+const signalClaim = vi.hoisted(() => ({ claimed: false }));
+vi.mock("../asrt-signal-ownership.js", () => ({ readAsrtSignalReleaseClaim: () => signalClaim.claimed }));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   spawn: () => {
@@ -73,6 +81,7 @@ describe("sandbox runtime release at exit", () => {
     try {
       if (isAsrtSandboxActive()) await resetAsrtSandbox();
     } finally {
+      setWindowsAclReleaseForTesting(undefined);
       markSrtWinRuntimeReleased();
       setProcessPlatform(originalPlatform);
     }
@@ -92,10 +101,57 @@ describe("sandbox runtime release at exit", () => {
     expect(isSrtWinRuntimeReleasePending()).toBe(true);
   });
 
+  it("fails the quit release when the runtime could not run its ACL revoke, and keeps the copy for a retry", async () => {
+    const revoke = vi.fn(() => undefined);
+    setWindowsAclReleaseForTesting({ sandboxUserSid: "S-1-5-21-1", srtWin: executable, revoke, restore: () => [] });
+    manager.reset.mockImplementation(() => RealSandboxManager.reset());
+    await expect(releaseAsrtSandboxForExit()).rejects.toMatchObject({
+      code: "acl_release_failed", message: "Windows sandbox ACL release incomplete: grant revoke did not run",
+    });
+    expect(revoke).toHaveBeenCalledWith({ sandboxUserSid: "S-1-5-21-1", srtWin: executable });
+    expect(isAsrtSandboxActive()).toBe(false);
+    // Still pending, so the copy's exit handler keeps the image for the runtime's own exit-time retry.
+    expect(isSrtWinRuntimeReleasePending()).toBe(true);
+    expect(existsSync(executable)).toBe(true);
+  });
+
   it("does nothing once the runtime is already reset", async () => {
     await resetAsrtSandbox();
     manager.reset.mockClear();
     await releaseAsrtSandboxForExit();
     expect(manager.reset).not.toHaveBeenCalled();
+  });
+});
+
+describe("signal release owned by the host", () => {
+  const originalPlatform = process.platform;
+  afterEach(async () => {
+    try {
+      if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    } finally {
+      markSrtWinRuntimeReleased();
+      setProcessPlatform(originalPlatform);
+    }
+  });
+
+  it("tells the runtime before it initializes that the host's signal handling releases it", async () => {
+    setProcessPlatform("linux");
+    manager.reset.mockReset().mockResolvedValue(undefined);
+    manager.setSignalCleanupOwnedByHost.mockClear();
+    const order: string[] = [];
+    manager.setSignalCleanupOwnedByHost.mockImplementation(() => { order.push("owned"); });
+    manager.initialize.mockImplementation(async () => { order.push("initialize"); });
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    expect(manager.setSignalCleanupOwnedByHost).not.toHaveBeenCalled();
+    await resetAsrtSandbox();
+    order.length = 0;
+    signalClaim.claimed = true;
+    try {
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    } finally {
+      signalClaim.claimed = false;
+    }
+    expect(manager.setSignalCleanupOwnedByHost).toHaveBeenCalledWith(true);
+    expect(order).toEqual(["owned", "initialize"]);
   });
 });
