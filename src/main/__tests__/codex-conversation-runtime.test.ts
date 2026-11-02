@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../host-resources.js";
 import sharp from "sharp";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeRecordedSpawn } from "../../__tests__/test-helpers.js";
 import { buildImagePreparationEntry } from "../../__tests__/support/image-preparation-runtime.js";
 import {
@@ -40,9 +40,9 @@ import * as managedChildProcesses from "../managed-child-processes.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { createTracer, type TraceEntry } from "../../observability/conversation-trace.js";
-import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, NATIVE_PROBE_HEAVY_TIMEOUT_MS, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../codex-executable-location.js";
-import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
+import { verifyCodexExecutableArtifact, type CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
@@ -190,6 +190,9 @@ async function createServiceForRuntimes(harness: Harness, runtimes: CodexConvers
 }
 
 afterEach(async () => {
+  // The clock is restored here rather than in a test body. A body that outlives its timeout keeps running, and its own restore would
+  // remove the next test's fake clock.
+  vi.useRealTimers();
   for (const harness of harnesses.splice(0)) {
     harness.runtime.stop();
     harness.child.stdin.destroy();
@@ -255,58 +258,64 @@ describe("isCodexAppServerRequestId", () => {
 });
 
 describe("native RPC timeout context", () => {
+  // The first native admission in a file starts the memoized system-directory and current-account lookups as real processes.
+  // On a loaded Windows runner that cold start has outlasted a whole test budget. Pay it here on the real clock with the native budget,
+  // so no test below spends its budget on it under a fake clock.
+  beforeAll(async () => {
+    const home = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-native-admission-"));
+    try {
+      if (process.platform !== "win32") normalizeFixtureAncestorPermissions(home);
+      await verifyCodexExecutableArtifact(await codexExecutableArtifactFixture(home));
+    } finally {
+      await cleanupTmpDir(home);
+    }
+  }, NATIVE_PROBE_HEAVY_TIMEOUT_MS);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
   it.each(["initialize", "account/read", "thread/start", "turn/start"] as const)(
     "retains the actual unacknowledged %s operation and closes its transport",
     async (operation) => {
-      vi.useFakeTimers();
-      try {
-        const harness = await createHarness((message, current) => {
-          if (message.method === operation) return;
-          if (message.method === "initialize") reply(current.child, requestId(message), {});
-          if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        });
-        const pending = (operation === "account/read"
-          ? harness.runtime.verifyIsolation()
-          : harness.runtime.startTurn({ text: "private request" })
-        ).catch((error: unknown) => error);
-        await vi.waitFor(() => expect(methodMessages(harness, operation)).toHaveLength(1), NATIVE_LOCATION_WAIT);
-        await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
-        const failure = await pending;
-        expect(failure).toMatchObject({ providerError: {
-          transport: { phase: "rpc-timeout", kind: "timeout", operation },
-        } });
-        expect(JSON.stringify(failure)).not.toMatch(/private|requestId|params/);
-        expect(harness.child.kill).toHaveBeenCalledWith("SIGKILL");
-        expect(harness.runtime.isTurnActive()).toBe(false);
-      } finally {
-        vi.useRealTimers();
-      }
+      const harness = await createHarness((message, current) => {
+        if (message.method === operation) return;
+        if (message.method === "initialize") reply(current.child, requestId(message), {});
+        if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
+      });
+      const pending = (operation === "account/read"
+        ? harness.runtime.verifyIsolation()
+        : harness.runtime.startTurn({ text: "private request" })
+      ).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(methodMessages(harness, operation)).toHaveLength(1), NATIVE_LOCATION_WAIT);
+      await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
+      const failure = await pending;
+      expect(failure).toMatchObject({ providerError: {
+        transport: { phase: "rpc-timeout", kind: "timeout", operation },
+      } });
+      expect(JSON.stringify(failure)).not.toMatch(/private|requestId|params/);
+      expect(harness.child.kill).toHaveBeenCalledWith("SIGKILL");
+      expect(harness.runtime.isTurnActive()).toBe(false);
     },
   );
 
   it("does not apply the RPC response deadline to an acknowledged running turn", async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = await createHarness((message, current) => {
-        if (message.method === "initialize") reply(current.child, requestId(message), {});
-        if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        if (message.method === "turn/start") reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
-      });
-      const settled = vi.fn();
-      const pending = harness.runtime.startTurn({ text: "continue normally" }).then((result) => { settled(); return result; });
-      await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), NATIVE_LOCATION_WAIT);
-      await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS * 2);
-      expect(settled).not.toHaveBeenCalled();
-      expect(harness.child.kill).not.toHaveBeenCalled();
-      notify(harness.child, "turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } });
-      await expect(pending).resolves.toMatchObject({ status: "completed", turnId: "turn-1" });
-    } finally {
-      vi.useRealTimers();
-    }
+    const harness = await createHarness((message, current) => {
+      if (message.method === "initialize") reply(current.child, requestId(message), {});
+      if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
+      if (message.method === "turn/start") reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
+    });
+    const settled = vi.fn();
+    const pending = harness.runtime.startTurn({ text: "continue normally" }).then((result) => { settled(); return result; });
+    await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), NATIVE_LOCATION_WAIT);
+    await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS * 2);
+    expect(settled).not.toHaveBeenCalled();
+    expect(harness.child.kill).not.toHaveBeenCalled();
+    notify(harness.child, "turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } });
+    await expect(pending).resolves.toMatchObject({ status: "completed", turnId: "turn-1" });
   });
 
   it("writes an actual missing RPC response through the provider and collector to the error trace", async () => {
-    vi.useFakeTimers();
     const verification = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
@@ -343,7 +352,6 @@ describe("native RPC timeout context", () => {
       expect(harness.child.kill).toHaveBeenCalledWith("SIGKILL");
     } finally {
       await service.stop();
-      vi.useRealTimers();
     }
   });
 });
