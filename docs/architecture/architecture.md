@@ -2851,6 +2851,12 @@ with its own owner rule:
   `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
   `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
   `OBJ_DONT_REPARSE` relative to a pinned directory handle.
+  That helper must be the first writer of the home. A plain `mkdir` would leave
+  an inherited DACL that the helper's create-or-open keeps and RootSafe refuses.
+  Each entry point therefore establishes and seals home privacy
+  (`establishAveHomePrivacyAtBoot`) inside `ensureWorkspaceCwd`, its first home
+  write. This covers desktop module load and the headless host. `bootstrap()`
+  reuses the sealed result.
   The boundary list is checked against the sensitive-path table. Permission
   settings, user policy and legacy root secrets migrate into `config` by
   copying into a fresh staged file, publishing it inside the protected directory,

@@ -539,6 +539,22 @@ export function _resetAveHomePrivacyForTest(): void {
   reportPrivacyRefusal = undefined;
 }
 
+/**
+ * The first AVE_HOME write of a process. On Windows the protection helper must be the one that creates the home: a plain `mkdir`
+ * there leaves an inherited DACL (SYSTEM, Administrators), the helper's create-or-open then keeps that DACL, and RootSafe refuses
+ * the home for good. Every entry point (desktop module load, headless host, `bootstrap()`) calls this before anything else touches
+ * the home; the result is sealed once and later calls for the same home reuse it.
+ */
+export function establishAveHomePrivacyAtBoot(
+  home = aveHome(),
+  runtime: AveHomePrivacyRuntime = DEFAULT_PRIVACY_RUNTIME,
+): AveHomePrivacy {
+  if (bootHomePrivacy !== undefined && configurationKey(bootHomePrivacy.home) === configurationKey(home)) return bootHomePrivacy;
+  const privacy = ensureAveHomePrivate(home, runtime);
+  setAveHomePrivacyAtBoot(privacy);
+  return privacy;
+}
+
 /** Windows needs an explicit owner-only inheritable DACL; report failure so confinement refuses unprotected storage. */
 export function ensureAveHomePrivate(
   home = aveHome(),
