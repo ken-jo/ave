@@ -1,6 +1,7 @@
 // Dispatch reverse calls through the complete effect-instrumented host table; unknown, local-only, and non-JSON calls fail explicitly.
 // Bind caller and generation identity to the connection, never request fields.
 // Host error classification stays here; children import only the wire contract.
+import { workerOutputFlowOf } from "../../permissions/worker-flow.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute } from "node:path";
@@ -25,6 +26,7 @@ import {
   type PluginWorkerSpec,
   type StorageEncoding,
   WorkerControlError,
+  WORKER_CONTROL_FRAME_BYTES_MAX,
   type SpawnedPluginWorker,
   type StdioControlPluginWorker,
   type WorkerControlRemoteError,
@@ -135,6 +137,10 @@ export interface SubscriptionScope<Event = unknown> {
   shutdown(subscriptionId: string): Promise<void>;
   /** Route `notifications/ave/subscription/send` for this registration to `receive` until it closes. */
   accept(subscriptionId: string, receive: (payload: unknown) => void): void;
+  /** Bytes queued toward the child, where the wire can report them. */
+  backlogBytes(): number | undefined;
+  /** See {@link ChildNotificationSink.whenDrained}; false where the wire cannot pace. */
+  whenDrained(ready: () => void): boolean;
 }
 
 type WireResultFor<C extends HostApiPathContract> = C["result"] extends "void"
@@ -792,6 +798,32 @@ function relayStdioControlWorker(
   const workerRequests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   let nextRelayId = 0;
   let open = true;
+  // A malformed send still settles what it names: a call the child is waiting on gets an error event, a worker request
+  // the child was answering gets an error response. A send whose id cannot be read names nothing, so the handle is
+  // revoked and the child settles every call on it.
+  const refuseMalformedSend = (payload: unknown, error: unknown): void => {
+    const record = payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : {};
+    const id = record.id;
+    const message = `the plugin sent a malformed worker send: ${errorMessage(error)}`;
+    if (Number.isSafeInteger(id) && (id as number) >= 0) {
+      if (record.kind === "request" || record.kind === "notification") {
+        push({ kind: "error", id: id as number, error: { code: "worker-request-failed", message } });
+        return;
+      }
+      if (record.kind === "response") {
+        const pending = workerRequests.get(id as number);
+        if (pending) {
+          workerRequests.delete(id as number);
+          pending.reject(new WorkerControlError("worker-request-failed", message, { code: -32603, message }));
+          return;
+        }
+      }
+    }
+    log.warn(`[host-api-dispatcher] revoking worker handle '${handleId}': ${message}`);
+    scope.release(handleId);
+  };
   const answer = (id: number, outcome: Promise<unknown>): void => {
     outcome.then(
       (result) => push({ kind: "result", id, result: result === undefined ? null : result }),
@@ -825,7 +857,13 @@ function relayStdioControlWorker(
     workerRequests.clear();
   });
   scope.accept(handleId, (payload) => {
-    const send: WireWorkerSend = asWireWorkerSend(payload, "spawnWorker(send)");
+    let send: WireWorkerSend;
+    try {
+      send = asWireWorkerSend(payload, "spawnWorker(send)");
+    } catch (error) {
+      refuseMalformedSend(payload, error);
+      return;
+    }
     switch (send.kind) {
       case "request": {
         if (childRequests.has(send.id)) {
@@ -861,6 +899,10 @@ function relayStdioControlWorker(
   });
 }
 
+/** Bytes a worker's relayed traffic may leave queued toward the child before its incarnation ends: two maximal worker
+ * frames, well under the wire's own bound, so a flooding worker ends before it can end its plugin's whole channel. */
+export const WORKER_RELAY_BACKLOG_BYTES_MAX = 2 * (WORKER_CONTROL_FRAME_BYTES_MAX + 1);
+
 /** Worker handles carry IDs and notifications; the host retains process ownership. */
 function spawnWorkerPath(
   hostApi: ServiceHostApi,
@@ -877,9 +919,34 @@ function spawnWorkerPath(
       // Never signal an already-reaped PID; it may belong to another process.
       if (!exited) worker.stop();
     });
+    // Pace the worker against the child's wire: while it must drain, the worker's output pipes are not read, so the
+    // worker blocks on its own writes instead of the host buffering for it. A worker the relay cannot pause, or a backlog
+    // that grows past the bound anyway, ends the incarnation with `output-overflow`.
+    const flow = workerOutputFlowOf(worker);
+    let paused = false;
+    const regulate = (): void => {
+      if (!live || exited) return;
+      const backlog = scope.backlogBytes();
+      if (backlog !== undefined && backlog > WORKER_RELAY_BACKLOG_BYTES_MAX) {
+        if (flow) flow.end("output-overflow");
+        else worker.stop();
+        return;
+      }
+      if (!flow || paused) return;
+      const deferred = scope.whenDrained(() => {
+        paused = false;
+        if (live && !exited) flow.resume();
+      });
+      if (deferred) {
+        paused = true;
+        flow.pause();
+      }
+    };
     // Stop notifications at release to tolerate chunks arriving while worker pipes drain.
     const push = (payload: WireWorkerEvent): void => {
-      if (live) scope.deliver(handleId, payload);
+      if (!live) return;
+      scope.deliver(handleId, payload);
+      if (payload.kind !== "exit") regulate();
     };
     try {
       if (worker.control === "output-only-v1") {
@@ -1766,6 +1833,8 @@ export class HostApiDispatcher {
         }
         this.receivers.set(subscriptionId, receive);
       },
+      backlogBytes: () => this.options.notifications.backlogBytes?.(),
+      whenDrained: (ready) => this.options.notifications.whenDrained?.(ready) ?? false,
       deliver: (subscriptionId, payload) => {
         if (!this.subscriptions.get(subscriptionId)) {
           throw new HostApiBoundaryError(

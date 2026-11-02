@@ -116,6 +116,24 @@ export class FramedMessageStream {
     this.write(frameMessage(refuseOversizedFrame(message, frame.length - 1)));
   }
 
+  /** Bytes queued on the output and not yet taken by the peer. */
+  get queuedBytes(): number {
+    return this.output.writableLength;
+  }
+
+  /** If the output needs to drain, call `ready` once it has (or closed) and return true; otherwise return false. */
+  whenDrained(ready: () => void): boolean {
+    if (this.violated || !this.output.writableNeedDrain || this.output.destroyed) return false;
+    const resume = (): void => {
+      this.output.off("drain", resume);
+      this.output.off("close", resume);
+      ready();
+    };
+    this.output.on("drain", resume);
+    this.output.on("close", resume);
+    return true;
+  }
+
   /** Forward a prebuilt frame, then call `ready` only once the output has drained (or closed). A caller that
    * awaits `ready` before its next frame keeps at most one of its frames queued, so a burst of large results
    * waits upstream instead of reaching {@link OUTBOUND_QUEUE_BYTES_MAX}; the bound itself is unchanged. */

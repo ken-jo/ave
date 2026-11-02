@@ -2,6 +2,8 @@
 // Windows uses a dedicated per-worker holder grant and cleanup, never a shared all-plugin grant. Worker-confinement off preserves exact argv/secret-stripped env with no wrap. Production tools require a host-owned routing contract; manifest worker routing is not accepted.
 
 import { errorMessage } from "../shared/error-message.js";
+import { createLogger } from "../lib/logger.js";
+import { registerWorkerOutputFlow } from "./worker-flow.js";
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { chmodSync, lstatSync } from "node:fs";
@@ -79,6 +81,8 @@ export interface SpawnWorkerSpec {
 
 // Names the worker's state directory in its environment.
 export const WORKER_STATE_DIR_ENV = "AVE_WORKER_STATE_DIR";
+
+const log = createLogger("worker-spawn");
 
 const activeWrappedWorkerKeys = new Set<string>();
 const workerExitWaiters = new Map<string, Promise<void>>();
@@ -164,12 +168,28 @@ async function prepareWorkerStateDirectory(pluginId: string, workerId: string): 
   const pluginRoot = pathResolve(aveHome(), "plugins", pluginId);
   const parent = pathResolve(pluginRoot, PLUGIN_WORKER_STATE_DIR_NAME);
   const dir = pathResolve(parent, workerId);
+  const refuseLink = (path: string): void => {
+    let isLink: boolean;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (isLink) throw new Error(`[worker-spawn] refusing symlinked worker state directory: ${path}`);
+  };
   await withPluginRuntimeDirQueue(pluginRoot, async () => {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await mkdir(pluginRoot, { recursive: true, mode: 0o700 });
+    // One component at a time, each checked before anything is created through it: a recursive mkdir would follow a
+    // symlinked `workers/` and create the leaf wherever it points.
     for (const path of [parent, dir]) {
-      if (lstatSync(path).isSymbolicLink()) {
-        throw new Error(`[worker-spawn] refusing symlinked worker state directory: ${path}`);
+      refuseLink(path);
+      try {
+        await mkdir(path, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
+      refuseLink(path);
     }
     // `mkdir({recursive,mode})` only applies `mode` to dirs it creates.
     if (process.platform !== "win32") chmodSync(dir, 0o700);
@@ -203,7 +223,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     );
   }
   const control = spec.control;
-  if (spec.env !== undefined && Object.prototype.hasOwnProperty.call(spec.env, WORKER_STATE_DIR_ENV)) {
+  // Windows environment names are case-insensitive, so any spelling of the name is the host's.
+  const namesStateDir = (key: string): boolean =>
+    process.platform === "win32" ? key.toUpperCase() === WORKER_STATE_DIR_ENV : key === WORKER_STATE_DIR_ENV;
+  if (spec.env !== undefined && Object.keys(spec.env).some(namesStateDir)) {
     throw new Error(`[worker-spawn] worker ${safePlugin}/${safeWorker} may not set ${WORKER_STATE_DIR_ENV}; the host names the state directory`);
   }
   const label = `worker:${safePlugin}:${safeWorker}`;
@@ -476,7 +499,14 @@ async function openHandle(
     if (replayFailure || state.overflowed) return;
     const text = chunk.toString("utf-8");
     if (state.listeners.length > 0) {
-      for (const listener of state.listeners) listener(text);
+      for (const listener of state.listeners) {
+        // A plugin listener that throws must not become an uncaught exception in the host.
+        try {
+          listener(text);
+        } catch (error) {
+          log.warn(`[worker-spawn] ${label}: an output listener threw: ${errorMessage(error)}`);
+        }
+      }
       return;
     }
     const bytes = text.length * 2;
@@ -563,12 +593,27 @@ async function openHandle(
       stopOnce();
     },
   };
+  const outputPipes = [io.stdout, child.stderr].filter((stream): stream is Readable => stream !== null);
+  const flowOf = (pauseControl?: () => void, resumeControl?: () => void) => ({
+    pause: () => {
+      if (terminalExit) return;
+      if (pauseControl) pauseControl();
+      for (const stream of outputPipes) if (stream !== io.stdout || !pauseControl) stream.pause();
+    },
+    resume: () => {
+      if (resumeControl) resumeControl();
+      for (const stream of outputPipes) if (stream !== io.stdout || !resumeControl) stream.resume();
+    },
+    end: (reason: "output-overflow") => stopOnce(reason),
+  });
   if (control === "output-only-v1") {
-    return {
+    const handle: OutputOnlyWorker = {
       ...base,
       control,
       onStdout: (listener) => subscribeOutput(stdout, "stdout", listener),
     };
+    registerWorkerOutputFlow(handle, flowOf());
+    return handle;
   }
   if (!io.stdin || !io.stdout) {
     stopOnce();
@@ -593,7 +638,7 @@ async function openHandle(
   }
   if (terminalExit) channel.processEnded();
   const opened = channel;
-  return {
+  const handle: StdioControlWorker = {
     ...base,
     control,
     request: (method, params, options) => opened.request(method, params, options),
@@ -601,4 +646,6 @@ async function openHandle(
     onRequest: (handler) => opened.onRequest(handler),
     onNotification: (listener) => opened.onNotification(listener),
   };
+  registerWorkerOutputFlow(handle, flowOf(() => opened.pauseInput(), () => opened.resumeInput()));
+  return handle;
 }

@@ -10,6 +10,7 @@ import {
   resetAsrtSandbox,
 } from "../asrt-sandbox.js";
 import { spawnWorker, WORKER_STATE_DIR_ENV, type StdioControlWorker } from "../worker-spawn.js";
+import { workerOutputFlowOf } from "../worker-flow.js";
 import {
   __resetSandboxRequestedAtBootForTest,
   __resetWrappedPluginWorkersForTest,
@@ -64,6 +65,11 @@ function handle(frame) {
     }
     case "fail": return send({ id, error: { code: -32000, message: "the worker refused" } });
     case "hang": return;
+    case "stall_and_ask":
+      // Stop reading stdin, then ask the plugin for more than the host may queue toward a worker that does not read.
+      process.stdin.pause();
+      for (let index = 0; index < 64; index += 1) send({ id: "blob-" + index, method: "fetch_blob" });
+      return;
     case "break": return process.stdout.write("this is a log line, not a frame\n");
     default: return send({ id, error: { code: -32601, message: "no method " + method } });
   }
@@ -188,6 +194,63 @@ describe("worker stdio control v1 with a real worker (unconfined)", () => {
 
     const second = await start(workerFile);
     await expect(second.request("echo", { incarnation: 2 })).resolves.toEqual({ incarnation: 2 });
+  }, 30_000);
+
+  it("ends as a control violation when the worker stops reading while it is owed more than the queue bound", async () => {
+    const worker = await start(writeWorker());
+    const exited = exitOf(worker);
+    const blob = "x".repeat(8 * 1024 * 1024);
+    worker.onRequest(async () => ({ blob }));
+    const pending = worker.request("stall_and_ask").catch((error: unknown) => error);
+    await expect(exited).resolves.toMatchObject({ reason: "control-violation" });
+    await expect(pending).resolves.toMatchObject({ code: "worker-incarnation-ended" });
+  }, 30_000);
+
+  it("stops reading the worker's stdout while the host flow is paused, and ends it as output-overflow", async () => {
+    const worker = await start(writeWorker());
+    const flow = workerOutputFlowOf(worker);
+    expect(flow).toBeDefined();
+    flow!.pause();
+    let answered = false;
+    const echoed = worker.request("echo", { n: 1 }).then((value) => {
+      answered = true;
+      return value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(answered).toBe(false);
+    flow!.resume();
+    await expect(echoed).resolves.toEqual({ n: 1 });
+    const exited = exitOf(worker);
+    flow!.end("output-overflow");
+    await expect(exited).resolves.toMatchObject({ reason: "output-overflow" });
+  }, 30_000);
+
+  it("stops reading an output-only worker's stdout while paused, and delivers what waited on resume", async () => {
+    const workerFile = writeWorker();
+    writeFileSync(workerFile, "let n = 0; setInterval(() => process.stdout.write(`tick ${n++}\\n`), 20);\n", "utf8");
+    const worker = await spawnWorker({
+      pluginId: "stdio-smoke-plugin",
+      workerId: "ticker",
+      command: NODE_COMMAND,
+      args: [workerFile],
+      env: NODE_ENV,
+      control: "output-only-v1",
+      allowReadPaths: [NODE_COMMAND, workerFile],
+    });
+    workers.push(worker as unknown as StdioControlWorker);
+    let received = "";
+    worker.onStdout((chunk) => {
+      received += chunk;
+    });
+    await vi.waitFor(() => expect(received).toContain("tick 1"), { timeout: 10_000 });
+    const flow = workerOutputFlowOf(worker)!;
+    flow.pause();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const atPause = received.length;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(received.length).toBe(atPause);
+    flow.resume();
+    await vi.waitFor(() => expect(received.length).toBeGreaterThan(atPause), { timeout: 10_000 });
   }, 30_000);
 
   it("rejects a worker whose first stdout line is not the hello answer as worker-control-failed once it is gone", async () => {

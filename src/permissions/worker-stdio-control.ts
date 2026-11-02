@@ -13,6 +13,7 @@ import {
   type WorkerControlRequestHandler,
   type WorkerControlRequestOptions,
 } from "../plugins/public-contract.js";
+import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { describeNonJson } from "../shared/json-representable.js";
 
@@ -24,6 +25,9 @@ export const WORKER_CONTROL_IN_FLIGHT_MAX = 64;
 const WORKER_CONTROL_QUEUE_BYTES_MAX = 2 * (WORKER_CONTROL_FRAME_BYTES_MAX + 1);
 /** Worker notifications held until the plugin registers a listener; beyond this the worker is stopped. */
 export const WORKER_CONTROL_UNCLAIMED_NOTIFICATIONS_MAX = 256;
+/** Bytes of worker requests and notifications waiting for the plugin's handler or first listener; beyond this the worker is stopped with `output-overflow`. */
+export const WORKER_CONTROL_UNCLAIMED_BYTES_MAX = WORKER_CONTROL_QUEUE_BYTES_MAX;
+const log = createLogger("worker-stdio-control");
 const WORKER_CONTROL_HOST_METHODS = {
   hello: "$/ave/hello",
   cancel: "$/ave/cancel",
@@ -62,6 +66,20 @@ interface UnclaimedRequest {
   readonly id: FrameId;
   readonly method: string;
   readonly params: unknown;
+  readonly bytes: number;
+}
+
+function unclaimedBytesOf(method: string, params: unknown): number {
+  return method.length + (params === undefined ? 0 : JSON.stringify(params).length);
+}
+
+/** A plugin listener that throws must not become an uncaught exception in the host; the worker is not at fault. */
+function deliverNotification(listener: (method: string, params: unknown) => void, method: string, params: unknown): void {
+  try {
+    listener(method, params);
+  } catch (error) {
+    log.warn(`[worker-stdio-control] a notification listener threw on '${method}': ${errorMessage(error)}`);
+  }
 }
 
 function isFrameId(value: unknown): value is FrameId {
@@ -105,7 +123,9 @@ export class WorkerStdioControl {
   private readonly outgoing = new Map<string, PendingRequest>();
   private readonly incoming = new Map<string, AbortController>();
   private readonly unclaimedRequests: UnclaimedRequest[] = [];
-  private unclaimedNotifications: Array<{ method: string; params: unknown }> = [];
+  private unclaimedNotifications: Array<{ method: string; params: unknown; bytes: number }> = [];
+  /** Approximate JSON bytes held in the two unclaimed queues. */
+  private unclaimedBytes = 0;
   private requestHandler: WorkerControlRequestHandler | undefined;
   private readonly notificationListeners: Array<(method: string, params: unknown) => void> = [];
   private hello: { resolve: () => void; reject: (error: Error) => void } | undefined;
@@ -167,7 +187,7 @@ export class WorkerStdioControl {
           if (pending.cancelled || !this.outgoing.has(idKey(id))) return;
           pending.cancelled = true;
           reject(cancelled(method));
-          void this.write({ jsonrpc: "2.0", method: WORKER_CONTROL_HOST_METHODS.cancel, params: { id } }).catch(() => {});
+          this.writeBounded({ jsonrpc: "2.0", method: WORKER_CONTROL_HOST_METHODS.cancel, params: { id } });
         };
         signal.addEventListener("abort", onAbort, { once: true });
         pending.detach = () => signal.removeEventListener("abort", onAbort);
@@ -193,7 +213,10 @@ export class WorkerStdioControl {
     if (typeof handler !== "function") throw new TypeError("[worker-stdio-control] onRequest needs a function");
     if (this.requestHandler) throw new Error("[worker-stdio-control] a request handler is already registered");
     this.requestHandler = handler;
-    for (const request of this.unclaimedRequests.splice(0)) this.runHandler(request);
+    for (const request of this.unclaimedRequests.splice(0)) {
+      this.unclaimedBytes -= request.bytes;
+      this.runHandler(request);
+    }
   }
 
   onNotification(listener: (method: string, params: unknown) => void): void {
@@ -201,13 +224,24 @@ export class WorkerStdioControl {
     this.notificationListeners.push(listener);
     const queued = this.unclaimedNotifications;
     this.unclaimedNotifications = [];
-    for (const { method, params } of queued) listener(method, params);
+    for (const { method, params, bytes } of queued) {
+      this.unclaimedBytes -= bytes;
+      deliverNotification(listener, method, params);
+    }
   }
 
   /** Orderly stop: tell the worker, then close its stdin. Every pending call settles now; none is replayed. */
   close(): void {
     if (this.ended) return;
-    void this.write({ jsonrpc: "2.0", method: WORKER_CONTROL_HOST_METHODS.shutdown }).catch(() => {});
+    // The shutdown frame is a courtesy: a worker that stopped reading gets no frame queued behind its backlog, only the EOF and the kill that follow.
+    const shutdown = frameMessage({ jsonrpc: "2.0", method: WORKER_CONTROL_HOST_METHODS.shutdown });
+    if (this.stdin.writableLength + shutdown.length <= WORKER_CONTROL_QUEUE_BYTES_MAX) {
+      try {
+        this.stdin.write(shutdown, () => {});
+      } catch {
+        // The pipe may already be gone with the process.
+      }
+    }
     this.finish(ended());
     try {
       this.stdin.end();
@@ -219,6 +253,15 @@ export class WorkerStdioControl {
   /** The process is gone: settle what remains. */
   processEnded(): void {
     this.finish(ended());
+  }
+
+  /** Stop reading the worker's stdout until {@link resumeInput}: the pipe fills and the worker blocks on its own writes. */
+  pauseInput(): void {
+    if (!this.ended) this.stdout.pause();
+  }
+
+  resumeInput(): void {
+    if (!this.ended) this.stdout.resume();
   }
 
   private finish(error: Error): void {
@@ -238,6 +281,7 @@ export class WorkerStdioControl {
     this.incoming.clear();
     this.unclaimedRequests.length = 0;
     this.unclaimedNotifications = [];
+    this.unclaimedBytes = 0;
   }
 
   private violate(detail: string, reason: WorkerControlEndReason = "control-violation"): void {
@@ -272,6 +316,17 @@ export class WorkerStdioControl {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  /** Write a frame the host owes the worker (a response or a cancel). A worker that has stopped reading its stdin cannot be
+   * owed more than the queue bound: the channel ends instead of buffering in the host. */
+  private writeBounded(frame: JsonRecord): void {
+    const bytes = frameMessage(frame).length;
+    if (this.stdin.writableLength + bytes > WORKER_CONTROL_QUEUE_BYTES_MAX) {
+      this.violate("the worker is not reading its stdin");
+      return;
+    }
+    void this.write(frame).catch(() => {});
   }
 
   private readonly onData = (chunk: Buffer): void => {
@@ -325,11 +380,15 @@ export class WorkerStdioControl {
     if (this.incoming.size >= WORKER_CONTROL_IN_FLIGHT_MAX) {
       return this.violate(`more than ${WORKER_CONTROL_IN_FLIGHT_MAX} requests outstanding toward the plugin`);
     }
-    const request = { id, method, params };
     // Count it now so the in-flight bound covers requests waiting for a handler too.
     this.incoming.set(idKey(id), new AbortController());
-    if (this.requestHandler) this.runHandler(request);
-    else this.unclaimedRequests.push(request);
+    if (this.requestHandler) {
+      this.runHandler({ id, method, params, bytes: 0 });
+      return;
+    }
+    const bytes = unclaimedBytesOf(method, params);
+    if (!this.holdUnclaimed(bytes)) return;
+    this.unclaimedRequests.push({ id, method, params, bytes });
   }
 
   private runHandler(request: UnclaimedRequest): void {
@@ -358,7 +417,7 @@ export class WorkerStdioControl {
     if (frameMessage(frame).length - 1 > WORKER_CONTROL_FRAME_BYTES_MAX) {
       frame = { jsonrpc: "2.0", id, error: { code: RPC_INTERNAL_ERROR, message: "the plugin's answer exceeds the frame limit" } };
     }
-    void this.write(frame).catch(() => {});
+    this.writeBounded(frame);
   }
 
   private receiveNotification(frame: JsonRecord): void {
@@ -381,10 +440,21 @@ export class WorkerStdioControl {
           "output-overflow",
         );
       }
-      this.unclaimedNotifications.push({ method, params });
+      const bytes = unclaimedBytesOf(method, params);
+      if (!this.holdUnclaimed(bytes)) return;
+      this.unclaimedNotifications.push({ method, params, bytes });
       return;
     }
-    for (const listener of this.notificationListeners) listener(method, params);
+    for (const listener of this.notificationListeners) deliverNotification(listener, method, params);
+  }
+
+  private holdUnclaimed(bytes: number): boolean {
+    if (this.unclaimedBytes + bytes > WORKER_CONTROL_UNCLAIMED_BYTES_MAX) {
+      this.violate(`more than ${WORKER_CONTROL_UNCLAIMED_BYTES_MAX} bytes arrived before the plugin claimed them`, "output-overflow");
+      return false;
+    }
+    this.unclaimedBytes += bytes;
+    return true;
   }
 
   private receiveResponse(frame: JsonRecord): void {

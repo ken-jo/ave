@@ -1,5 +1,6 @@
 import { requireDesktopHost, type BootHost } from "../../host-runtime.js";
 /** Resolve runtime bindings lazily; effect-wrapper order and the single HTTP-verb read are security invariants. */
+import { registerWorkerOutputFlow, workerOutputFlowOf } from "../../../permissions/worker-flow.js";
 import type { BrowserWindow } from "electron";
 import { randomUUID } from "node:crypto";
 import { normalizeAllowedHosts, urlHostMatchesAllowList } from "../../../main/host-allow-list.js";
@@ -473,8 +474,14 @@ export function createHostApiFactory(
           });
         },
       };
+      const bound = <T extends object>(handle: T): T => {
+        // The relay toward a child paces the worker it actually holds: the wrapper forwards to the host handle's flow.
+        const flow = workerOutputFlowOf(worker);
+        if (flow) registerWorkerOutputFlow(handle, flow);
+        return handle;
+      };
       if (worker.control === "output-only-v1") {
-        return {
+        return bound({
           ...base,
           control: worker.control,
           onStdout: (listener) => {
@@ -483,13 +490,13 @@ export function createHostApiFactory(
               if (hostIncarnation.isActive()) listener(chunk);
             });
           },
-        };
+        });
       }
       if ((worker as { control: unknown }).control !== "stdio-control-v1") {
         throw new Error(`[host-api-factory] spawnWorker returned a handle with control '${String((worker as { control: unknown }).control)}'`);
       }
       // Control traffic is the worker's own channel, admitted with the spawn; an inactive incarnation can neither send nor receive.
-      return {
+      return bound({
         ...base,
         control: worker.control,
         request: (method, params, options) => {
@@ -515,7 +522,7 @@ export function createHostApiFactory(
             if (hostIncarnation.isActive()) listener(method, params);
           });
         },
-      };
+      });
     };
       const pluginStorage = createPluginStorage(
         pluginId,

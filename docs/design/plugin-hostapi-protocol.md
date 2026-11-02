@@ -800,10 +800,30 @@ match `^[a-zA-Z_][a-zA-Z0-9_]{0,127}$`; names under `$/` are the host's.
 `$/ave/cancel { id }` withdraws a request in either direction; the receiver still
 answers it, and a cancelled request counts toward the limit until that answer
 arrives. `$/ave/shutdown` precedes an orderly stop, after which the host closes
-stdin; a worker must exit on stdin EOF in either case. Each direction allows 64
-outstanding requests (`worker-backpressure` beyond that), the host queues at most
-two frames' worth of bytes toward stdin, and at most 256 worker notifications wait
-for the plugin's first listener. The worker is stopped, with the exit reason named,
+stdin; a worker must exit on stdin EOF in either case. If the shutdown frame cannot
+be queued because the worker stopped reading, the host goes straight to EOF and
+termination.
+
+Bounds, each enforced by the host:
+
+- Host to worker: at most 64 outstanding requests; the 65th is refused to the
+  plugin with `worker-backpressure` and the worker keeps running.
+- Worker to host: at most 64 outstanding requests; the 65th is a
+  `control-violation` and stops the worker.
+- At most two frames' worth of bytes (2 × (16 MiB + 1)) queued toward the worker's
+  stdin. A new plugin request or notification past it is refused with
+  `worker-backpressure`; a response or cancel the host owes a worker that has
+  stopped reading ends the incarnation as a `control-violation`.
+- At most 256 worker notifications, and 2 × (16 MiB + 1) bytes of unclaimed worker
+  requests and notifications, wait for the plugin's handler or first listener;
+  beyond either the worker stops with `output-overflow`.
+- Toward a plugin child, the relay stops reading the worker's stdout and stderr
+  while the child's wire must drain and resumes once it has, so a worker that writes
+  faster than its plugin reads blocks on its own pipe. If the queue toward the child
+  still passes 2 × (16 MiB + 1) bytes, the incarnation ends with `output-overflow`.
+
+A listener the plugin registered that throws is logged; it never surfaces as an
+uncaught exception in the host. The worker is stopped, with the exit reason named,
 when it breaks these rules:
 
 | Exit `reason` | Cause |
@@ -823,7 +843,11 @@ Control traffic between the plugin process and the host crosses the plugin
 session as the child notification `notifications/ave/subscription/send`
 (`{ subscriptionId, payload }`), scoped to the worker's handle. The host answers
 with the worker's subscription events: `result`, `error`, `request`,
-`notification`, `cancel`, and `exit` with its reason. These frames are not new
+`notification`, `cancel`, and `exit` with its reason. A malformed send still settles
+what it names: a request or notification gets an `error` event for its id, and a
+response settles the worker request it answers with an error. A send whose id cannot
+be read revokes the handle, and the child settles every call on it. A send that races
+the handle's close is dropped. These frames are not new
 `ave/host/*` methods and pass no effect gate of their own: the effect boundary
 decided `spawnWorker` once, and the handle carries no authority beyond the worker it
 names.

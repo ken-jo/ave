@@ -1,6 +1,6 @@
 // The host end of worker stdio control v1, driven over in-memory pipes: hello, framing, correlation, cancellation, bounds and teardown.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Ajv2020Module from "ajv/dist/2020.js";
@@ -11,6 +11,7 @@ import {
   WORKER_CONTROL_ID_STRING_MAX,
   WORKER_CONTROL_IN_FLIGHT_MAX,
   WORKER_CONTROL_PROTOCOL,
+  WORKER_CONTROL_UNCLAIMED_BYTES_MAX,
   WORKER_CONTROL_UNCLAIMED_NOTIFICATIONS_MAX,
   WORKER_CONTROL_VERSION,
   type WorkerControlEndReason,
@@ -78,6 +79,32 @@ async function opened(io = pipes()): Promise<{ io: Pipes; control: WorkerStdioCo
   io.reply(HELLO_ANSWER);
   return { io, control: await opening };
 }
+
+
+/** A worker that reads the hello and then never reads its stdin again: every later write stays queued in the host. */
+async function openedStalled(): Promise<{ io: Pipes; stdin: Writable; control: WorkerStdioControl }> {
+  const io = pipes();
+  let reading = true;
+  const stdin = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      if (!reading) return;
+      io.stdin.write(chunk);
+      callback();
+    },
+  });
+  const opening = openWorkerStdioControl({
+    stdin,
+    stdout: io.stdout,
+    helloMs: 5_000,
+    onEnd: (reason, detail) => io.ends.push({ reason, detail }),
+  });
+  await io.nextSent((frame) => frame.method === "$/ave/hello");
+  reading = false;
+  io.reply(HELLO_ANSWER);
+  return { io, stdin, control: await opening };
+}
+
+const QUEUE_BYTES_MAX = 2 * (WORKER_CONTROL_FRAME_BYTES_MAX + 1);
 
 
 afterEach(() => {
@@ -283,6 +310,51 @@ describe("worker stdio control v1 — worker to host", () => {
     await expect(control.request("work")).rejects.toMatchObject({ code: "worker-incarnation-ended" });
   });
 
+  it("ends as output-overflow when unclaimed notifications pass the byte bound", async () => {
+    const { io } = await opened();
+    const blob = "x".repeat(12 * 1024 * 1024);
+    for (let index = 0; index < 3; index += 1) io.reply({ method: "progress", params: { blob } });
+    await settle();
+    expect(3 * blob.length).toBeGreaterThan(WORKER_CONTROL_UNCLAIMED_BYTES_MAX);
+    expect(io.ends.map((end) => end.reason)).toEqual(["output-overflow"]);
+    expect(io.ends[0]?.detail).toMatch(/before the plugin claimed them/);
+  });
+
+  it("logs a throwing notification listener and keeps delivering to the others", async () => {
+    const { io, control } = await opened();
+    const seen: unknown[] = [];
+    control.onNotification(() => {
+      throw new Error("listener bug");
+    });
+    control.onNotification((method) => seen.push(method));
+    io.reply({ method: "progress", params: { done: 1 } });
+    io.reply({ method: "progress", params: { done: 2 } });
+    await settle();
+    expect(seen).toEqual(["progress", "progress"]);
+    expect(control.isEnded).toBe(false);
+    expect(io.ends).toEqual([]);
+  });
+
+  it("ends the channel when the worker stops reading and the answers it is owed pass the queue bound", async () => {
+    const { io, stdin, control } = await openedStalled();
+    const blob = "x".repeat(8 * 1024 * 1024);
+    control.onRequest(async () => ({ blob }));
+    for (let index = 0; index < WORKER_CONTROL_IN_FLIGHT_MAX; index += 1) io.reply({ id: `w-${index}`, method: "fetch_blob" });
+    await settle();
+    expect(io.ends.map((end) => end.reason)).toEqual(["control-violation"]);
+    expect(io.ends[0]?.detail).toBe("the worker is not reading its stdin");
+    expect(control.isEnded).toBe(true);
+    expect(stdin.writableLength).toBeLessThanOrEqual(QUEUE_BYTES_MAX);
+  });
+
+  it("pauses and resumes reading the worker's stdout", async () => {
+    const { io, control } = await opened();
+    control.pauseInput();
+    expect(io.stdout.isPaused()).toBe(true);
+    control.resumeInput();
+    expect(io.stdout.isPaused()).toBe(false);
+  });
+
   it("ends on a line that is not JSON after the hello", async () => {
     const { io } = await opened();
     io.raw("Traceback (most recent call last):\n");
@@ -303,6 +375,22 @@ describe("worker stdio control v1 — teardown", () => {
     await ended;
     await expect(control.notify("work")).rejects.toMatchObject({ code: "worker-incarnation-ended" });
     expect(io.ends).toEqual([]);
+  });
+
+  it("close skips the shutdown frame when the worker's stdin is already full, and still ends stdin", async () => {
+    const { stdin, control } = await openedStalled();
+    const blob = "x".repeat(WORKER_CONTROL_FRAME_BYTES_MAX - 64);
+    const first = control.request("work", { blob }).catch((error: unknown) => error);
+    const second = control.request("work", { blob }).catch((error: unknown) => error);
+    await settle();
+    const queued = stdin.writableLength;
+    expect(queued + `${JSON.stringify({ jsonrpc: "2.0", method: "$/ave/shutdown" })}\n`.length).toBeGreaterThan(QUEUE_BYTES_MAX);
+    control.close();
+    expect(stdin.writableLength).toBe(queued);
+    expect(stdin.writableEnded).toBe(true);
+    expect(control.isEnded).toBe(true);
+    await expect(first).resolves.toMatchObject({ code: "worker-incarnation-ended" });
+    await expect(second).resolves.toMatchObject({ code: "worker-incarnation-ended" });
   });
 
   it("processEnded settles pending calls and aborts handlers in flight", async () => {

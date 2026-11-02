@@ -8,7 +8,7 @@ import { egressInvocationOwner } from "../egress-invocations.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 // Lifecycle fixtures intercept the launch; real image verification has native tests.
 vi.mock("../srt-win-integrity.js", async (original) => ({
@@ -411,7 +411,7 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(egressInvocationOwner(commandId)).toEqual({ kind: "worker", role: "worker", pluginId: "local-indexer", instanceId: "embed" });
     // The state dir is a sibling of the plugin's data dir, created 0o700 by the host and named to the worker.
     const stateDir = join(aveHome(), "plugins", "local-indexer", "workers", "embed");
-    expect(mkdirMock).toHaveBeenCalledWith(stateDir, { recursive: true, mode: 0o700 });
+    expect(mkdirMock).toHaveBeenCalledWith(stateDir, { mode: 0o700 });
     expect(chmodSyncMock).toHaveBeenCalledWith(stateDir, 0o700);
     expect(capturedEnv[WORKER_STATE_DIR_ENV]).toBe(stateDir);
     expect(capturedEnv.HOME).toBe(SANDBOX_HOME);
@@ -498,9 +498,32 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(mkdirMock).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
   });
+
+  it("refuses any spelling of the state-dir variable on Windows, whose environment names ignore case", async () => {
+    setProcessPlatform("win32");
+    await expect(spawnWorker(workerOptions({ env: { [WORKER_STATE_DIR_ENV.toLowerCase()]: "C:\\forged" }, stateDirectory: true })))
+      .rejects.toThrow(/may not set AVE_WORKER_STATE_DIR/);
+    expect(mkdirMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("spawnWorker — a symlinked state directory", () => {
+  it("refuses a symlinked workers directory before creating anything through it", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    lstatSyncMock.mockImplementation((path) => ({ isSymbolicLink: () => String(path).endsWith(`${sep}workers`) }));
+    try {
+      await expect(spawnWorker(workerOptions({ stateDirectory: true })))
+        .rejects.toThrow(/refusing symlinked worker state directory: .*workers$/);
+    } finally {
+      lstatSyncMock.mockImplementation(() => ({ isSymbolicLink: () => false }));
+    }
+    const created = mkdirMock.mock.calls.map(([path]) => String(path));
+    expect(created.some((path) => path.endsWith(`${sep}workers`) || path.includes(`${sep}workers${sep}`))).toBe(false);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   // `chmod` follows a link, so the refusal must come before the mode is forced: the other order would change the mode of whatever the link points at.
   it("refuses it before forcing any mode or spawning, so the host never chmods a link target", async () => {
     setProcessPlatform("darwin");
@@ -764,6 +787,23 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     expect(late).toHaveBeenCalledExactlyOnceWith({ code: 7, signal: null, reason: "exited" });
   });
 
+  it("logs a live output listener that throws, keeps the worker and still delivers to the other listeners", async () => {
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "throwing", command: "/opt/worker", control: "output-only-v1" as const });
+    const seen: string[] = [];
+    worker.onStdout(() => {
+      throw new Error("listener bug");
+    });
+    worker.onStdout((chunk) => seen.push(chunk));
+    child.stdout.write("one");
+    await new Promise((resolve) => setImmediate(resolve));
+    child.stdout.write("two");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(seen).toEqual(["one", "two"]);
+    expect(child.killCalls).toEqual([]);
+  });
+
   it("stops and clears both output queues when a replay listener throws", async () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
@@ -927,7 +967,7 @@ describe("spawnWorker — Windows with gate ON", () => {
     })();
 
     const stateDir = join(aveHome(), "plugins", "local-indexer", "workers", "embed");
-    expect(mkdirMock).toHaveBeenCalledWith(stateDir, { recursive: true, mode: 0o700 });
+    expect(mkdirMock).toHaveBeenCalledWith(stateDir, { mode: 0o700 });
     expect(registerUdsMock).not.toHaveBeenCalled();
     expect(unregisterUdsMock).not.toHaveBeenCalled();
     expect(grantWindowsWorkerFilesystemAccessMock).toHaveBeenCalledWith({

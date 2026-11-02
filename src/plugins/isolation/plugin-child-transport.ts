@@ -153,6 +153,8 @@ export class PluginChildTransport {
       },
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
+        backlogBytes: () => this.stream.queuedBytes,
+        whenDrained: (ready) => this.closedReason === undefined && this.stream.whenDrained(ready),
       },
       // Apply the shutdown-handler bound with grace so the host reports timeout before child termination.
       shutdownChild: async (subscriptionId) => {

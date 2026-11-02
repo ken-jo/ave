@@ -4,7 +4,8 @@ vi.mock("node:fs", async original => (await import("../../../__tests__/support/s
 
 /** Exercise service marshalling through real child and host components, including bytes that cannot survive UTF-8. */
 import { describe, expect, it, vi } from "vitest";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
+import { registerWorkerOutputFlow, type WorkerOutputFlow } from "../../../permissions/worker-flow.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import type {
   PluginHostApi,
@@ -21,6 +22,7 @@ import type { PluginRuntimeContext } from "../../public-contract.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
   HostApiDispatcher,
+  WORKER_RELAY_BACKLOG_BYTES_MAX,
   createServiceHostApiPaths,
   type DelegatedWorkerConfinement,
 } from "../host-api-dispatcher.js";
@@ -29,6 +31,7 @@ import {
   PluginHostApiError,
   SERVICE_HOSTAPI_PATHS,
   WIRE_BYTES_MAX,
+  type ChildNotificationSink,
   type HostApiNotification,
   type HostApiReply,
   type HostApiRequest,
@@ -118,6 +121,7 @@ async function createServiceHarness(
   hostApi: Partial<PluginHostApi> = {},
   manifest: PluginManifest = MANIFEST,
   onMalformedCredentialSelector?: () => void,
+  pacing: Pick<ChildNotificationSink, "backlogBytes" | "whenDrained"> = {},
 ): Promise<ServiceHarness> {
   const requests: HostApiRequest[] = [];
   const notifications: HostApiNotification[] = [];
@@ -153,6 +157,7 @@ async function createServiceHarness(
         pushed.push(notification);
         child.deliver(notification);
       },
+      ...pacing,
     },
     // Compose bound entries over the static table only where the child incarnation is owned.
     table: {
@@ -1312,10 +1317,153 @@ function makeFakeControlWorker(): StdioControlPluginWorker & {
   };
 }
 
+function sendFromChild(harness: ServiceHarness, subscriptionId: string, payload: unknown): void {
+  harness.host.handleNotification({
+    jsonrpc: "2.0",
+    method: "notifications/ave/subscription/send",
+    params: { subscriptionId, payload },
+  } as HostApiNotification);
+}
+
+function workerEventsTo(harness: ServiceHarness, handleId: string): unknown[] {
+  return harness.pushed.flatMap((frame) => frame.method === "notifications/ave/subscription"
+    && (frame.params as { subscriptionId?: string }).subscriptionId === handleId
+    ? [(frame.params as { payload?: unknown }).payload]
+    : []);
+}
+
 function stdioControl(worker: SpawnedPluginWorker): StdioControlPluginWorker {
   if (worker.control !== "stdio-control-v1") throw new Error("expected a stdio-control worker");
   return worker;
 }
+
+describe("a worker's relayed output is paced by the child's wire", () => {
+  const CHUNK = "x".repeat(1024 * 1024);
+
+  function flowSpy(): WorkerOutputFlow & { readonly calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      pause: () => void calls.push("pause"),
+      resume: () => void calls.push("resume"),
+      end: (reason) => void calls.push(`end:${reason}`),
+    };
+  }
+
+  it("pauses the worker while the wire must drain, once, and resumes it on drain", async () => {
+    const worker = makeFakeWorker();
+    const flow = flowSpy();
+    registerWorkerOutputFlow(worker, flow);
+    let congested = false;
+    let drained: (() => void) | undefined;
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, {
+      backlogBytes: () => 0,
+      whenDrained: (ready) => {
+        if (!congested) return false;
+        drained = ready;
+        return true;
+      },
+    });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    worker.emitStdout("a");
+    expect(flow.calls).toEqual([]);
+    congested = true;
+    worker.emitStdout("b");
+    worker.emitStderr("c");
+    expect(flow.calls).toEqual(["pause"]);
+    drained!();
+    expect(flow.calls).toEqual(["pause", "resume"]);
+  });
+
+  it("ends the incarnation as output-overflow once the backlog passes the bound, or stops a worker it cannot pace", async () => {
+    const paced = makeFakeWorker();
+    const flow = flowSpy();
+    registerWorkerOutputFlow(paced, flow);
+    let backlog = 0;
+    const pacing = { backlogBytes: () => backlog, whenDrained: () => false };
+    const harness = await createServiceHarness({ spawnWorker: async () => paced }, MANIFEST, undefined, pacing);
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    backlog = WORKER_RELAY_BACKLOG_BYTES_MAX;
+    paced.emitStdout("at the bound");
+    expect(flow.calls).toEqual([]);
+    backlog = WORKER_RELAY_BACKLOG_BYTES_MAX + 1;
+    paced.emitStdout("past the bound");
+    expect(flow.calls).toEqual(["end:output-overflow"]);
+
+    const unpaced = makeFakeWorker();
+    backlog = 0;
+    const second = await createServiceHarness({ spawnWorker: async () => unpaced }, MANIFEST, undefined, pacing);
+    await second.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    backlog = WORKER_RELAY_BACKLOG_BYTES_MAX + 1;
+    unpaced.emitStdout("past the bound");
+    expect(unpaced.stopped()).toBe(1);
+  });
+
+  it("keeps a fast worker under the bound against a slow child, delivering everything", async () => {
+    const wire = new Writable({
+      highWaterMark: 1024 * 1024,
+      write(_chunk, _encoding, callback) {
+        setImmediate(callback);
+      },
+    });
+    let paused = false;
+    let produced = 0;
+    let pauses = 0;
+    let resumes = 0;
+    let maxBacklog = 0;
+    const ends: string[] = [];
+    const worker = makeFakeWorker();
+    const pump = (): void => {
+      while (!paused && produced < 64) {
+        produced += 1;
+        worker.emitStdout(CHUNK);
+      }
+    };
+    registerWorkerOutputFlow(worker, {
+      pause: () => {
+        paused = true;
+        pauses += 1;
+      },
+      resume: () => {
+        paused = false;
+        resumes += 1;
+        setImmediate(pump);
+      },
+      end: (reason) => void ends.push(reason),
+    });
+    const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, {
+      backlogBytes: () => {
+        maxBacklog = Math.max(maxBacklog, wire.writableLength);
+        return wire.writableLength;
+      },
+      whenDrained: (ready) => {
+        if (!wire.writableNeedDrain) return false;
+        wire.once("drain", ready);
+        return true;
+      },
+    });
+    harness.pushed.length = 0;
+    const deliverToWire = (): void => {
+      for (const frame of harness.pushed.splice(0)) wire.write(JSON.stringify(frame));
+    };
+    // The harness sink records frames; move each to the slow wire as soon as it is recorded.
+    const recorded = harness.pushed.push.bind(harness.pushed);
+    harness.pushed.push = (...frames) => {
+      const count = recorded(...frames);
+      deliverToWire();
+      return count;
+    };
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    pump();
+    for (let turn = 0; turn < 2_000 && (produced < 64 || wire.writableLength > 0); turn += 1) await settle();
+    expect(produced).toBe(64);
+    expect(wire.writableLength).toBe(0);
+    expect(pauses).toBeGreaterThan(0);
+    expect(resumes).toBe(pauses);
+    expect(ends).toEqual([]);
+    expect(maxBacklog).toBeLessThanOrEqual(WORKER_RELAY_BACKLOG_BYTES_MAX);
+  });
+});
 
 describe("a stdio-control worker relays control traffic, never a socket", () => {
   it("carries requests, notifications and worker-sent requests in both directions", async () => {
@@ -1422,7 +1570,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     expect(harness.host.openSubscriptionCount).toBe(0);
   });
 
-  it("drops a send for a handle this plugin does not hold, and a malformed send for one it does", async () => {
+  it("drops a send for a handle this plugin does not hold", async () => {
     const worker = makeFakeControlWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
     stdioControl(await harness.child.hostApi.spawnWorker!({
@@ -1431,24 +1579,53 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
       command: "/usr/bin/python3",
     }));
     const handleId = handleIdOf(harness, "spawnWorker");
-    const send = (subscriptionId: string, payload: unknown): void => harness.host.handleNotification({
-      jsonrpc: "2.0",
-      method: "notifications/ave/subscription/send",
-      params: { subscriptionId, payload },
-    } as HostApiNotification);
-
     // Only the dispatcher of the plugin that spawned a worker holds its handle: another id reaches no worker.
-    send(`${handleId}_forged`, { kind: "request", id: 0, method: "search_bm25", params: {} });
-    send("worker_0", { kind: "notification", id: 1, method: "set_allowed_roots", params: { roots: ["/"] } });
-    // The handle exists, but the payload is not a send: it is logged and dropped, never half-applied.
-    send(handleId, { kind: "request", id: "not-a-number", method: "search_bm25" });
-    send(handleId, { kind: "request", id: 2, method: "search.bm25" });
+    sendFromChild(harness, `${handleId}_forged`, { kind: "request", id: 0, method: "search_bm25", params: {} });
+    sendFromChild(harness, "worker_0", { kind: "notification", id: 1, method: "set_allowed_roots", params: { roots: ["/"] } });
     await settle();
     expect(worker.requests).toEqual([]);
     expect(worker.notified).toEqual([]);
-    expect(harness.pushed.filter((frame) => frame.method === "notifications/ave/subscription"
-      && (frame.params as { subscriptionId?: string }).subscriptionId === handleId
-      && ((frame.params as { payload?: { kind?: string } }).payload?.kind === "result"))).toEqual([]);
+    expect(harness.host.openSubscriptionCount).toBe(1);
+  });
+
+  it("answers a malformed send whose id it can read with an error event for that id, and keeps the handle", async () => {
+    const worker = makeFakeControlWorker();
+    const harness = await createServiceHarness({ spawnWorker: async () => worker });
+    const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
+      workerId: "indexer",
+      control: "stdio-control-v1",
+      command: "/usr/bin/python3",
+    }));
+    const handleId = handleIdOf(harness, "spawnWorker");
+    sendFromChild(harness, handleId, { kind: "request", id: 41, method: "search.bm25" });
+    await settle();
+    expect(worker.requests).toEqual([]);
+    expect(workerEventsTo(harness, handleId)).toEqual([{
+      kind: "error",
+      id: 41,
+      error: { code: "worker-request-failed", message: expect.stringMatching(/malformed worker send/) },
+    }]);
+    const answered = handle.request("search_bm25", { query: "q" });
+    await settle();
+    worker.answer({ result: [] });
+    await expect(answered).resolves.toEqual([]);
+  });
+
+  it("revokes the handle on a send whose id it cannot read, settling the child's pending calls", async () => {
+    const worker = makeFakeControlWorker();
+    const harness = await createServiceHarness({ spawnWorker: async () => worker });
+    const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
+      workerId: "indexer",
+      control: "stdio-control-v1",
+      command: "/usr/bin/python3",
+    }));
+    const handleId = handleIdOf(harness, "spawnWorker");
+    const pending = handle.request("reindex", {});
+    await settle();
+    sendFromChild(harness, handleId, { kind: "request", id: "not-a-number", method: "search_bm25" });
+    await expect(pending).rejects.toMatchObject({ code: "worker-incarnation-ended" });
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(worker.stopped()).toBe(1);
   });
 
   it("refuses a spec without a declared control mode before the host spawns anything", async () => {

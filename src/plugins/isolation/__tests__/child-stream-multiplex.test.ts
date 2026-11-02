@@ -144,6 +144,32 @@ describe("the frame bound", () => {
   });
 });
 
+describe("pacing a producer against the output", () => {
+  it("reports queued bytes and calls back once the output drains, and only when it must", async () => {
+    const input = new PassThrough();
+    let release: (() => void) | undefined;
+    const output = new Writable({
+      highWaterMark: 1024,
+      write(_chunk, _encoding, callback) {
+        release = callback;
+      },
+    });
+    const stream = new FramedMessageStream(input, output, () => {}, () => {}, () => {});
+    stream.start();
+    expect(stream.whenDrained(() => {})).toBe(false);
+    stream.forward(lineOf(4096));
+    expect(stream.queuedBytes).toBe(4096 + 1);
+    let drained = 0;
+    expect(stream.whenDrained(() => { drained += 1; })).toBe(true);
+    release!();
+    await settle();
+    expect(drained).toBe(1);
+    expect(stream.queuedBytes).toBe(0);
+    expect(stream.whenDrained(() => { drained += 1; })).toBe(false);
+    input.destroy(); output.destroy();
+  });
+});
+
 describe("the host, reading a child that breaks the bound", () => {
   it("kills the child and fails what was waiting on it", async () => {
     const childStdout = new PassThrough();
