@@ -2883,15 +2883,27 @@ with its own owner rule:
     (an inherited Users, Authenticated Users, Everyone, CREATOR OWNER, domain
     group or other-user entry is refused)
   - the user has an entry
-  Setting the DACL writes the root first, then re-propagates inheritance below
-  it. If that runs past the request timeout, this boot is refused and no repair
-  is reported. The root may already be `D:P` owner-only. In that case the next
-  boot passes it as win32-dacl, with no repair line and no notice. Children the
-  propagation did not reach keep their inherited SYSTEM and Administrators
-  entries. They are not re-propagated: the repair admits only those two
-  principals, which hold backup and take-ownership rights over the volume
-  anyway. The boundary subdirectories are protected and are checked on every
-  boot by Repair and OwnerOnly.
+  The handle-based root write does not re-propagate to existing children.
+  Native run 3 found 20,200 pre-existing entries that kept their inherited
+  SYSTEM, Administrators and user entries. Ave leaves them: the repair
+  admits only those two principals, which hold backup and take-ownership
+  rights over the volume anyway. A tree walk would cost boot time in
+  proportion to the home's size. The boundary subdirectories are protected
+  and checked on every boot by Repair and OwnerOnly. The one exception is
+  `workspace`, the cwd and default workspace root. The start may have
+  created it under the old root. In native run 3 its stale inherited entries
+  later appeared as explicit SYSTEM and Administrators entries. That is
+  consistent with a DACL write that recomputes inheritance, most likely the
+  extension grant, but the writer is not confirmed. After the root is
+  verified, the repair rewrites
+  only that directory's own DACL on a no-reparse handle: its explicit
+  entries in order, then the single entry the repaired root passes down.
+  It then reads the result back. A link, a protected DACL, a foreign owner
+  or a workspace that cannot be opened or read is left as it is, and the
+  boot keeps the verified root. If the request times out, this boot is refused and no
+  repair is reported. The root may already be `D:P` owner-only. In that
+  case the next boot passes it as win32-dacl, with no repair line and no
+  notice, and the workspace may keep its stale entries.
   Any other root is refused. Settings then shows the exact `icacls` command. It
   drops inheritance, then removes every grant and deny of each explicit extra
   principal (`/remove *<sid>`).
@@ -2960,11 +2972,15 @@ with its own owner rule:
   rewritten, and its children are never inspected. Traverse bypass does
   not grant access through a child's own protected DACL, so a foreign
   read grant on the root cannot open a boundary.
-  The root retains its protected user FullControl rule. Foreign root
-  grants contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
-  (`0x1200a9`, including SYNCHRONIZE) emit diagnostics without disabling
-  confinement. Any write, delete, WRITE_DAC, WRITE_OWNER or other wider
-  right refuses confinement before boundary repair.
+  The root retains its protected user FullControl rule. A foreign root
+  allow contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
+  (`0x1200a9`, including SYNCHRONIZE) that applies to the root alone (no
+  object or container inheritance) emits a diagnostic without disabling
+  confinement; that is the traversal case. An inheritable foreign entry of
+  any rights would flow into every unprotected child (workspace, logs,
+  extension data), so it is an extra principal. The refusal names it and the
+  `icacls` command removes it. Any write, delete, WRITE_DAC, WRITE_OWNER or
+  other wider right refuses confinement before boundary repair.
   A nonconforming boundary is renamed to `<name>.unprotected-recovery`,
   replaced with a freshly protected directory, and copied without carrying
   its ACLs or read-only attributes. Links and junctions are skipped and logged.

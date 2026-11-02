@@ -474,14 +474,25 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     notifyHomeBoundaryRepairs(clean, ctx);
     expect(show).toHaveBeenCalledOnce();
   });
-  it("warns for a foreign root READ grant while keeping confinement enabled", () => {
-    const dir = fixture(); grant(dir, "(OI)(CI)RX");
+  it("warns for a root-only foreign READ grant while keeping confinement enabled", () => {
+    const dir = fixture(); grant(dir, "RX");
     const result = ensureAveHomePrivate(dir);
     expect(result).toMatchObject({ enforcement: "win32-dacl",
       diagnostics: [expect.stringContaining("foreign read-only access")] });
     setAveHomePrivacyAtBoot(result);
     expect(() => assertAveHomePrivacyForConfinement()).not.toThrow();
     expectBoundary(join(dir, "secrets"));
+  });
+  it("refuses an inheritable foreign root READ grant and names it as an explicit extra principal", () => {
+    // Native run 3: an (OI)(CI) read entry on the root flows into every unprotected child (workspace, logs), so only a root-only
+    // read entry is accepted (lead decision 2026-11-02, stricter only).
+    const dir = fixture(); grant(dir, "(OI)(CI)R");
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals",
+      extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0", explicit: true })] });
+  });
+  it("maps a native inheritable generic read root grant to a refusal", () => {
+    const dir = fixture();
+    expect(native("$s=[System.Security.AccessControl.DirectorySecurity]::new(); $s.SetSecurityDescriptorSddlForm('O:'+$u.Value+'D:P(A;OICI;FA;;;'+$u.Value+')(A;OICI;GR;;;WD)'); [HomeDirectoryDacl]::RootSafe($s,$u,$false,0x1200a9)", dir)).toBe("False");
   });
   it("refuses a foreign root WRITE grant before touching a damaged boundary", () => {
     const dir = fixture(); const boundary = join(dir, "secrets"); damage(boundary);
@@ -514,19 +525,25 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     } finally { rmdirSync(aside); }
   });
   describe("narrow root repair (owner decision 2026-11-02)", () => {
-    // A home made by a plain mkdir under the temp profile: owned by the user, unprotected, every entry inherited from the parent.
+    // A home made by a plain mkdir under a user profile: owned by the user, unprotected, every entry inherited from the parent.
+    // The parent is given its own protected DACL of exactly SYSTEM, Administrators and the user, so the home's inherited shape
+    // never depends on the host's test folder (native run 3: the peer's carried an explicit sandbox-group entry).
     function inheritedHome(): string {
       const dir = home();
-      const parent = dirname(dir);
+      const parent = join(dirname(dir), "profile");
       mkdirSync(parent, { recursive: true });
       setFixtureOwner(parent);
-      execFileSync(win32SystemBinary("icacls"), [parent, "/grant", "*S-1-5-18:(OI)(CI)F", "/q"], { windowsHide: true, stdio: "pipe" });
-      mkdirSync(dir);
-      setFixtureOwner(dir);
-      const before = readWindowsDirectoryDacls([dir])[0]!;
+      const user = readWindowsDirectoryDacls([parent])[0]!.currentUserSid;
+      execFileSync(win32SystemBinary("icacls"), [parent, "/inheritance:r", "/grant:r",
+        "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", `*${user}:(OI)(CI)F`, "/q"], { windowsHide: true, stdio: "pipe" });
+      const homeDir = join(parent, "home");
+      mkdirSync(homeDir);
+      setFixtureOwner(homeDir);
+      const before = readWindowsDirectoryDacls([homeDir])[0]!;
       expect(before).toMatchObject({ protected: false });
       expect(before.rules?.every((rule) => rule.isInherited)).toBe(true);
-      return dir;
+      expect(new Set(before.rules?.map((rule) => rule.sid))).toEqual(new Set(["S-1-5-18", "S-1-5-32-544", user]));
+      return homeDir;
     }
     const rootOf = (dir: string) => readWindowsDirectoryDacls([dir])[0]!;
 
@@ -536,9 +553,30 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
       expect(privacy, JSON.stringify(privacy)).toMatchObject({ enforcement: "win32-dacl", repairs: expect.arrayContaining([dir]) });
       expectBoundary(dir);
     });
-    it("refuses an explicit foreign allow and leaves the root as it was", () => {
+    it("re-inherits the workspace from the repaired root, keeping its explicit entries; other children keep their stale entries", () => {
+      // Native run 3: SetSecurityInfo on the pinned root did not reach existing children, and the workspace (created before the
+      // lock under the old root) later showed explicit SYSTEM and Administrators entries. Only the workspace is rewritten.
       const dir = inheritedHome();
-      grant(dir, "R");
+      const workspace = join(dir, "workspace");
+      const logs = join(dir, "logs");
+      mkdirSync(workspace); setFixtureOwner(workspace);
+      mkdirSync(logs); setFixtureOwner(logs);
+      execFileSync(win32SystemBinary("icacls"), [workspace, "/grant", "*S-1-5-32-546:(RX)", "/q"], { windowsHide: true, stdio: "pipe" });
+      const privacy = ensureAveHomePrivate(dir);
+      expect(privacy, JSON.stringify(privacy)).toMatchObject({ enforcement: "win32-dacl", repairs: expect.arrayContaining([dir]) });
+      const user = rootOf(dir).currentUserSid;
+      const after = rootOf(workspace);
+      expect(after).toMatchObject({ protected: false });
+      expect(after.rules?.filter((rule) => rule.isInherited).map((rule) => rule.sid)).toEqual([user]);
+      expect(after.rules?.filter((rule) => !rule.isInherited).map((rule) => rule.sid)).toEqual(["S-1-5-32-546"]);
+      // The documented limit: no tree re-propagation. Whatever other children keep is at most the old SYSTEM/Administrators/user set.
+      for (const rule of rootOf(logs).rules?.filter((entry) => entry.isInherited) ?? []) {
+        expect(["S-1-5-18", "S-1-5-32-544", user]).toContain(rule.sid);
+      }
+    });
+    it("refuses an explicit inheritable foreign allow, names it, and leaves the root as it was", () => {
+      const dir = inheritedHome();
+      grant(dir, "(OI)(CI)R");
       const privacy = ensureAveHomePrivate(dir);
       expect(privacy).toMatchObject({ enforcement: "none", category: "extra-principals",
         extraPrincipals: expect.arrayContaining([expect.objectContaining({ sid: "S-1-1-0", explicit: true })]) });
@@ -546,8 +584,10 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     });
     it("refuses an explicit deny and leaves the root as it was", () => {
       const dir = inheritedHome();
-      execFileSync(win32SystemBinary("icacls"), [dir, "/deny", "*S-1-5-32-545:(R)", "/q"], { windowsHide: true, stdio: "pipe" });
-      expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none" });
+      // Guests: a SID the test user is not a member of, so the deny never blocks the user's own read-back (native run 3: Users did).
+      execFileSync(win32SystemBinary("icacls"), [dir, "/deny", "*S-1-5-32-546:(R)", "/q"], { windowsHide: true, stdio: "pipe" });
+      expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none", category: "extra-principals",
+        extraPrincipals: expect.arrayContaining([expect.objectContaining({ sid: "S-1-5-32-546", explicit: true })]) });
       expect(rootOf(dir)).toMatchObject({ protected: false });
     });
     it("refuses a junction home without touching its target", () => {

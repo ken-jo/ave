@@ -2,14 +2,22 @@ import { isOwnerOnlyDacl, mapWindowsGenericRights, windowsOwnerRules, type Windo
 
 export const WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS = 0x1200a9;
 
-/** Root traversal may be shared; all mutating rights remain exclusive to the owner. */
+/**
+ * A foreign root entry Ave accepts (with a diagnostic): an allow of read-only rights that applies to the root alone. Traversal into the
+ * home may be shared; an inheritable entry (OI or CI) of any rights flows into every unprotected child (workspace, logs, plugin data),
+ * so it is an extra principal. All mutating rights remain exclusive to the owner.
+ */
+export function isWindowsHomeRootForeignTraversal(rule: { accessControlType: number; fileSystemRights: number; inheritanceFlags: number }): boolean {
+  return rule.accessControlType === 0 && rule.inheritanceFlags === 0
+    && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0;
+}
+
 export function isWindowsHomeRootSafe(facts: WindowsDaclFacts): boolean {
   if (!facts.dacl?.protected) return false;
   const rules = windowsOwnerRules(facts.dacl);
   return isOwnerOnlyDacl({ ownerSid: facts.dacl.owner, elevated: facts.elevated,
     rules: rules.filter(rule => rule.sid === facts.currentUserSid) }, facts.currentUserSid)
-    && rules.every(rule => rule.sid === facts.currentUserSid || (rule.accessControlType === 0
-      && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0));
+    && rules.every(rule => rule.sid === facts.currentUserSid || isWindowsHomeRootForeignTraversal(rule));
 }
 
 /**
@@ -173,7 +181,8 @@ public static class HomeDirectoryDacl {
         ownRules++;
         if (rule.AccessControlType != AccessControlType.Allow || (int)rule.FileSystemRights != 2032127 ||
           (int)rule.InheritanceFlags != 3 || (int)rule.PropagationFlags != 0 || rule.IsInherited) return false;
-      } else if (rule.AccessControlType != AccessControlType.Allow || (MapFileGenericRights((int)rule.FileSystemRights) & ~readMask) != 0) return false;
+      } else if (rule.AccessControlType != AccessControlType.Allow || (int)rule.InheritanceFlags != 0 ||
+        (MapFileGenericRights((int)rule.FileSystemRights) & ~readMask) != 0) return false;
     }
     return ownRules == 1;
   }
@@ -465,7 +474,55 @@ public static class HomeDirectoryDacl {
     if (result != 0) throw new Win32Exception((int)result, "Home root repair failed");
     var repaired = Read(home);
     if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated)) throw new InvalidOperationException("Home root repair protection is unverified");
+    ReinheritWorkspace(home, user);
     return true;
+  }
+  [DllImport("ntdll.dll")]
+  private static extern int NtSetSecurityObject(SafeFileHandle handle, uint info, byte[] descriptor);
+  // The handle-based root write does not reach existing children (native run 3: 20,200 kept their inherited entries), so the
+  // workspace the start anchored under the old root keeps its stale inherited SYSTEM and Administrators entries. A later DACL write on
+  // it that recomputes inheritance (most likely the extension grant) carries them over as explicit ones. Only this one directory, the
+  // cwd and default workspace root, is rewritten: its explicit entries in order, then the single entry the repaired root passes down.
+  // NtSetSecurityObject computes no inheritance, so the result is exactly this, and it is read back. A link, a non-directory, a
+  // protected DACL, a foreign owner, or a workspace that cannot be opened or read is left as it is: the root repair has already been
+  // written and verified, so a failure here must not refuse the boot. Other children keep their stale SYSTEM and Administrators entries.
+  public static bool ReinheritWorkspace(SafeFileHandle home, SecurityIdentifier user) {
+    SafeFileHandle handle;
+    try { handle = OpenRelative(home, "workspace", user, 1, true, true, false); }
+    catch (InvalidOperationException) { return false; }
+    catch (Win32Exception) { return false; }
+    if (handle == null) return false;
+    using (handle) {
+      RawSecurityDescriptor raw;
+      try { raw = new RawSecurityDescriptor(ReadDescriptor(handle), 0); }
+      catch (Win32Exception) { return false; }
+      if ((raw.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0 || raw.DiscretionaryAcl == null) return false;
+      if (raw.Owner == null || raw.Owner.Value != user.Value) return false;
+      var acl = new RawAcl(GenericAcl.AclRevision, raw.DiscretionaryAcl.Count + 1);
+      int index = 0;
+      foreach (GenericAce ace in raw.DiscretionaryAcl) {
+        if ((ace.AceFlags & AceFlags.Inherited) == 0) acl.InsertAce(index++, ace.Copy());
+      }
+      acl.InsertAce(index, new CommonAce(AceFlags.ObjectInherit | AceFlags.ContainerInherit | AceFlags.Inherited,
+        AceQualifier.AccessAllowed, 0x1f01ff, user, false, null));
+      var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclAutoInherited |
+        ControlFlags.SelfRelative, null, null, null, acl);
+      byte[] bytes = new byte[descriptor.BinaryLength];
+      descriptor.GetBinaryForm(bytes, 0);
+      Check(NtSetSecurityObject(handle, 4u, bytes), "Workspace inheritance reset failed");
+      var after = new RawSecurityDescriptor(ReadDescriptor(handle), 0);
+      int inherited = 0;
+      foreach (GenericAce ace in after.DiscretionaryAcl) {
+        if ((ace.AceFlags & AceFlags.Inherited) == 0) continue;
+        var known = ace as CommonAce;
+        if (known == null || known.SecurityIdentifier.Value != user.Value || known.AceQualifier != AceQualifier.AccessAllowed) {
+          throw new InvalidOperationException("Workspace inheritance reset is unverified");
+        }
+        inherited++;
+      }
+      if (inherited != 1) throw new InvalidOperationException("Workspace inheritance reset is unverified");
+      return true;
+    }
   }
   public static int Repair(SafeFileHandle home, string name, SecurityIdentifier user, bool elevated, string path = "") {
     CleanupWarnings.Clear();

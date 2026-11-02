@@ -5,11 +5,11 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
-import { admitWindowsReparse, isOwnerOnlyDacl, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
+import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
-import { isWindowsHomeRootRepairable, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
+import { isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
 import { fileIdentityKey } from "../lib/file-identity.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandleEntry } from "./windows-configuration-handles.js";
 
@@ -653,8 +653,7 @@ export function ensureAveHomePrivate(
       }
       const rules = descriptor.rules;
       const extraPrincipals = [...new Map(rules
-        .filter((rule) => rule.sid !== sid && (path !== home || rule.accessControlType !== 0 ||
-          (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_ROOT_READ_ONLY_RIGHTS) !== 0))
+        .filter((rule) => rule.sid !== sid && (path !== home || !isWindowsHomeRootForeignTraversal(rule)))
         .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}),
           ...(rules.some((entry) => entry.sid === sid && !entry.isInherited) ? { explicit: true as const } : {}) }])).values()];
       if (extraPrincipals.length > 0) {

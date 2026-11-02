@@ -1129,6 +1129,20 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(screen.queryByTestId("os-sandbox-forced")).toBeNull();
   });
 
+  it("shows forced extension confinement as on and not clickable, whatever is stored", async () => {
+    // Native run 3: with AVE_PLUGIN_WORKER_CONFINEMENT=1 the row read "disabled" under a notice saying the variable forces it on.
+    installApi([[]], ["features.pluginWorkerConfinement"]);
+
+    await renderPermissionsTab();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-confinement-toggle")).toHaveAttribute("aria-checked", "true");
+    });
+    const toggle = screen.getByTestId("worker-confinement-toggle");
+    expect(toggle).toBeDisabled();
+    expect(toggle.parentElement).toHaveTextContent(t("permissionsTab.osSandboxEnabled"));
+  });
+
   it("renders platform and runtime status without a restart action when unchanged", async () => {
     const api = installApi([[]]);
     api.permission.sandboxCapability.mockResolvedValueOnce({

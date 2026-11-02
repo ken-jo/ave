@@ -181,45 +181,56 @@ describe("ensureAveHomePrivate", () => {
     const { result, dir } = check((entry, at) => at === index ? { path: entry.path, error: "read failed" } : entry);
     expect(result).toMatchObject({ enforcement: "none", failedPath: index ? join(dir, "secrets") : dir, category: "read-back-failed" });
   });
+  // Lead decision 2026-11-02 (stricter only): a foreign read-only root entry is accepted only when it applies to the root alone.
+  it.each([
+    ["object inherit", 1],
+    ["container inherit", 2],
+    ["object and container inherit", 3],
+  ])("refuses an inheritable (%s) foreign read-only root grant as an explicit extra principal", (_name, inheritanceFlags) => {
+    const { result, dir } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 0x1200a9, inheritanceFlags }] } : entry);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals",
+      extraPrincipals: [{ sid: "S-1-1-0", explicit: true }] });
+  });
   it("warns when a foreign root grant contains read data", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read extended attributes", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 8 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 8, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains execute", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 32 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 32, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read attributes", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 128 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 128, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read control", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 131072 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 131072, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains synchronize", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1048576 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1048576, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
   it("warns when a foreign root grant contains read and execute", () => {
     const { result } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1179817 }] } : entry);
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 1179817, inheritanceFlags: 0 }] } : entry);
     expect(result).toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
     expect(result.enforcement).toBe("win32-dacl");
   });
@@ -270,7 +281,7 @@ describe("ensureAveHomePrivate", () => {
   });
   it("warns when a foreign root grant contains generic read", () => {
     expect(check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
-      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: -2147483648 }] } : entry).result)
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: -2147483648, inheritanceFlags: 0 }] } : entry).result)
       .toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
   });
   it("refuses when a foreign root grant contains generic write", () => {

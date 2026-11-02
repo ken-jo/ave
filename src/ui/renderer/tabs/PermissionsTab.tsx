@@ -532,6 +532,10 @@ export function PermissionsTab({
   // and this one never confines shells. `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
   const [workerConfinementEnabled, setWorkerConfinementEnabled] = useState(false);
   const [workerConfinementBusy, setWorkerConfinementBusy] = useState(false);
+  // With the variable set, extension confinement is on for this run whatever is stored, so the row shows the effective state, checked
+  // and not clickable (native run 3: it read "disabled" under a notice saying the environment forces it on).
+  const workerConfinementForced = envForcedPaths.includes("features.pluginWorkerConfinement");
+  const workerConfinementEffective = workerConfinementEnabled || workerConfinementForced;
   // Windows srt-win repair flow (the OS sandbox is normally provisioned at app-install time; this panel is the re-provision/repair fallback). `windowsStatus` holds the latest readiness snapshot once the user opts in on win32; the panel renders off it.
   // `windowsInstallPhase` is where a click is: "installing" (main checks status, then may raise the UAC prompt) or "refreshing" (re-reading status afterwards); while it is set the "Re-provision" button is disabled. `windowsInstallOutcome` is what the last click led to, shown until the next.
   const [windowsStatus, setWindowsStatus] = useState<SandboxWindowsStatusInfo | null>(null);
@@ -651,7 +655,7 @@ export function PermissionsTab({
     // On win32 with either setting ON (or a reported home-privacy / helper failure), surface the consent/setup state so
     // the panel persists across navigations until ready. Extension provisioning is separate from MXC shell readiness.
     // Unread settings are not "not requested": the read-only status is fetched so the setup panel can say it is waiting on them.
-    const windowsSetupRelevant = panelLoad.settings !== "ready" || sandboxEnabled || workerConfinementEnabled ||
+    const windowsSetupRelevant = panelLoad.settings !== "ready" || sandboxEnabled || workerConfinementEffective ||
       sandboxCapability?.homePrivacyError !== undefined || bootReportsWindowsHelperFailure(sandboxCapability?.boot);
     if (sandboxCapability?.platform !== "win32" || !windowsSetupRelevant) {
       setWindowsStatus(null);
@@ -663,7 +667,7 @@ export function PermissionsTab({
       if (!cancelled) setWindowsStatus(status);
     }).catch(() => { /* The explicit setup action reports repair errors. */ });
     return () => { cancelled = true; };
-  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEnabled, panelLoad.settings]);
+  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEffective, panelLoad.settings]);
 
   const fetchApprovals = useCallback(async () => {
     if (!window.ave?.userApproval) return;
@@ -1107,7 +1111,7 @@ export function PermissionsTab({
   // "Requested" needs the stored settings; until they are read, only a boot-reported helper failure can say so.
   const settingsRead = panelLoad.settings === "ready";
   const windowsHelperRequested =
-    (settingsRead && (sandboxEnabled || workerConfinementEnabled)) || bootReportsWindowsHelperFailure(sandboxBoot);
+    (settingsRead && (sandboxEnabled || workerConfinementEffective)) || bootReportsWindowsHelperFailure(sandboxBoot);
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
@@ -1159,10 +1163,10 @@ export function PermissionsTab({
           />
           <div className="mt-3 flex items-start gap-3">
             <Checkbox
-              checked={workerConfinementEnabled}
+              checked={workerConfinementEffective}
               data-testid="worker-confinement-toggle"
               aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
-              disabled={workerConfinementBusy || !(sandboxCapability?.available ?? false)}
+              disabled={workerConfinementForced || workerConfinementBusy || !(sandboxCapability?.available ?? false)}
               className="mt-0.5 size-5"
               onCheckedChange={() => void handleWorkerConfinementToggle()}
             />
@@ -1170,7 +1174,7 @@ export function PermissionsTab({
               <p className="text-sm">
                 {t("permissionsTab.workerConfinementLabel")}
                 {" — "}
-                {workerConfinementEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+                {workerConfinementEffective ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
               </p>
               <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
             </div>

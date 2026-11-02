@@ -11,7 +11,12 @@ it.runIf(process.platform === "win32")("keeps transaction and native-fact owners
   const own = `(A;OICI;FA;;;${sid})`;
   const fixtures = [
     { name: "owner-only", sddl: `O:${sid}D:P${own}`, ownerOnly: true, rootSafe: true, rootRepairable: false },
-    { name: "inherited Users read", sddl: `O:${sid}D:P${own}(A;OICIID;FR;;;BU)`, ownerOnly: false, rootSafe: true, rootRepairable: false },
+    // A foreign read-only root entry is accepted only when it applies to the root alone (lead decision 2026-11-02, native run 3).
+    { name: "inherited Users read", sddl: `O:${sid}D:P${own}(A;OICIID;FR;;;BU)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
+    { name: "root-only foreign read", sddl: `O:${sid}D:P${own}(A;;FR;;;WD)`, ownerOnly: false, rootSafe: true, rootRepairable: false },
+    { name: "inheritable foreign read", sddl: `O:${sid}D:P${own}(A;OICI;FR;;;WD)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
+    { name: "container-inherit foreign traverse", sddl: `O:${sid}D:P${own}(A;CI;0x1200a9;;;WD)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
+    { name: "object-inherit foreign traverse", sddl: `O:${sid}D:P${own}(A;OI;0x1200a9;;;WD)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "foreign owner", sddl: `O:S-1-5-18D:P${own}`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "deny ACE", sddl: `O:${sid}D:P(D;;FR;;;BU)${own}`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "generic read", sddl: `O:${sid}D:P${own}(A;;GR;;;BU)`, ownerOnly: false, rootSafe: true, rootRepairable: false },

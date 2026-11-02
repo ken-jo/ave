@@ -1,7 +1,7 @@
 // The narrow root repair (owner decision 2026-11-02): Ave repairs only the root shape its own pre-fix mkdir produced.
 // The native helper re-checks this predicate on the pinned handle; the SDDL parity test runs both on Windows.
 import { describe, expect, it } from "vitest";
-import { isWindowsHomeRootRepairable } from "../windows-home-boundary.js";
+import { isWindowsHomeRootRepairable, isWindowsHomeRootSafe } from "../windows-home-boundary.js";
 import type { WindowsDaclFacts } from "../windows-path-facts.js";
 
 const USER = "S-1-5-21-1004336348-11-77-1417";
@@ -56,5 +56,23 @@ describe("isWindowsHomeRootRepairable", () => {
   });
   it("keeps an explicit owner-only entry for the user eligible", () => {
     expect(isWindowsHomeRootRepairable(root([ace(USER, 0x3), ace("S-1-5-18", INHERITED)]))).toBe(true);
+  });
+});
+
+// Native run 3: an inheritable foreign read entry on the root flows into every unprotected child, so the root accepts a foreign
+// read-only entry only when it applies to the root alone (lead decision 2026-11-02, stricter only).
+describe("isWindowsHomeRootSafe and foreign read-only root entries", () => {
+  const OWNER_ONLY = ace(USER, 0x3);
+  it.each([
+    ["root-only read", 0, true],
+    ["object inherit", 0x1, false],
+    ["container inherit", 0x2, false],
+    ["object and container inherit", 0x3, false],
+    ["inherit-only container", 0x2 | 0x8, false],
+  ])("Everyone read-only, %s: accepted=%s", (_name, flags, accepted) => {
+    expect(isWindowsHomeRootSafe(root([OWNER_ONLY, ace("S-1-1-0", flags, 0, 0x1200a9)], { protected: true }))).toBe(accepted);
+  });
+  it("still refuses a root-only foreign write", () => {
+    expect(isWindowsHomeRootSafe(root([OWNER_ONLY, ace("S-1-1-0", 0, 0, 0x2)], { protected: true }))).toBe(false);
   });
 });
