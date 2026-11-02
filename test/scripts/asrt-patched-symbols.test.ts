@@ -153,7 +153,22 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       expect(stub.calls()).toEqual(["revoke", "restore"]);
     });
 
-    it("reports srt-win's crash-recovery counts to the embedder's listener (part 13)", async () => {
+    it("lets an embedder that drains on its own signals keep the runtime's signal reset out", () => {
+      const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+      expect(functionBody(manager, /\nfunction registerCleanup\(/u)).toMatch(
+        /if \(!signalCleanupOwnedByHost\) \{\s*process\.once\('SIGINT', cleanupHandler\);\s*process\.once\('SIGTERM', cleanupHandler\);\s*\}/u);
+      expect(manager).toMatch(/\n {4}setSignalCleanupOwnedByHost,\n/u);
+      expect(readInstalled("dist/sandbox/sandbox-manager.d.ts")).toContain("setSignalCleanupOwnedByHost(owned: boolean): void;");
+    });
+  });
+
+  describe("ACL recovery report (part 13)", () => {
+    const stubDirs: string[] = [];
+    afterEach(() => {
+      for (const dir of stubDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("reports srt-win's crash-recovery counts to the embedder's listener", async () => {
       const utils = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js");
       const dir = mkdtempSync(join(tmpdir(), "ave-srt-win-stub-"));
       stubDirs.push(dir);
@@ -179,14 +194,6 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       const sessionGrant = manager.indexOf("grantWindowsAcl({\n                    sandboxUserSid: sb,");
       expect(recover).toBeGreaterThan(0);
       expect(sessionGrant).toBeGreaterThan(recover);
-    });
-
-    it("lets an embedder that drains on its own signals keep the runtime's signal reset out", () => {
-      const manager = readInstalled("dist/sandbox/sandbox-manager.js");
-      expect(functionBody(manager, /\nfunction registerCleanup\(/u)).toMatch(
-        /if \(!signalCleanupOwnedByHost\) \{\s*process\.once\('SIGINT', cleanupHandler\);\s*process\.once\('SIGTERM', cleanupHandler\);\s*\}/u);
-      expect(manager).toMatch(/\n {4}setSignalCleanupOwnedByHost,\n/u);
-      expect(readInstalled("dist/sandbox/sandbox-manager.d.ts")).toContain("setSignalCleanupOwnedByHost(owned: boolean): void;");
     });
   });
 
