@@ -76,6 +76,13 @@ describe("runEarlyBootEnv", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it("makes ensureWorkspaceCwd (the create-only home write) its first step", () => {
+    runEarlyBootEnv();
+    const first = mockedElectron.ensureWorkspaceCwd.mock.invocationCallOrder.at(-1)!;
+    expect(first).toBeLessThan(mockedElectron.protocol.registerSchemesAsPrivileged.mock.invocationCallOrder.at(-1)!);
+    expect(first).toBeLessThan(mockedElectron.app.setName.mock.invocationCallOrder.at(-1)!);
+  });
+
   it("anchors the workspace cwd, registers protocol schemes, and pins the app identity", () => {
     runEarlyBootEnv();
 

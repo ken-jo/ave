@@ -30,6 +30,16 @@ export function notifyHomeBoundaryRepairs(
 ): void {
   if (privacy.enforcement === "posix-mode") return;
   for (const path of privacy.repairs ?? []) {
+    // The home root itself: a one-time repair of the inherited DACL. Its path names the user's profile, so the log names the role
+    // instead, and nothing is acknowledged — a repaired root passes RootSafe on the next boot and is not reported again.
+    if (path === privacy.home) {
+      const body = t("homePrivacy.rootRepaired");
+      log.warn("boot: AVE_HOME root repaired: %s", body);
+      if (ctx.host.desktop) {
+        ctx.notificationService.deliver({ kind: "system", title: t("homePrivacy.boundaryRepairedTitle"), body, bypassFocusGate: true });
+      }
+      continue;
+    }
     const body = t("homePrivacy.boundaryRepaired");
     log.warn("boot: %s: %s", path, body);
     if (ctx.host.desktop) {

@@ -1450,6 +1450,48 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
   });
 
+  describe("copyable fix command for a home Ave does not repair", () => {
+    async function renderPrivacy(homePrivacyError: Record<string, unknown>) {
+      const { ave } = installApiWithWindows({ sandboxWindowsStatus: vi.fn(async () => ({
+        applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "", homePrivacyError,
+      })) });
+      ave.permission.sandboxCapability.mockResolvedValueOnce({
+        platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+        runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
+        homePrivacyError,
+        boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
+      } as never);
+      await act(async () => { render(<PermissionsTab />); });
+    }
+
+    it("gives the exact icacls lines, removing only explicit extra principals, and copies them", async () => {
+      const writeText = vi.fn(async () => undefined);
+      vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+      try {
+        await renderPrivacy({ path: "D:\\ave-home", category: "extra-principals", approvedForSession: false,
+          extraPrincipals: [{ sid: "S-1-1-0", explicit: true }, { sid: "S-1-5-18" }] });
+        const block = await screen.findByTestId("os-sandbox-windows-home-privacy-command");
+        const expected = 'icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"\r\nicacls "D:\\ave-home" /remove:g *S-1-1-0';
+        expect(block.querySelector("pre")?.textContent).toBe(expected);
+        await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-windows-home-privacy-command-copy")); });
+        expect(writeText).toHaveBeenCalledWith(expected);
+        await waitFor(() => expect(screen.getByTestId("os-sandbox-windows-home-privacy-command-copy")).toHaveTextContent(t("permissionsTab.homePrivacyCommandCopied")));
+      } finally { vi.unstubAllGlobals(); }
+    });
+
+    it("gives only the inheritance line for an unprotected DACL", async () => {
+      await renderPrivacy({ path: "D:\\ave-home", category: "not-protected", approvedForSession: false });
+      expect((await screen.findByTestId("os-sandbox-windows-home-privacy-command")).querySelector("pre")?.textContent)
+        .toBe('icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"');
+    });
+
+    it.each(["reparse-point", "invalid-owner-grant", "identity-failed"])("offers no permission command for %s", async (category) => {
+      await renderPrivacy({ path: "D:\\ave-home", category, approvedForSession: false });
+      await screen.findByTestId("os-sandbox-windows-home-privacy-error");
+      expect(screen.queryByTestId("os-sandbox-windows-home-privacy-command")).toBeNull();
+    });
+  });
+
   describe("srt-win setup panel before the stored settings are read", () => {
     async function renderWithSettings(settingsRead: "hang" | "reject") {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

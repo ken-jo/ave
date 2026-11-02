@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
+import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { SandboxRestartDialog } from "../components/SandboxRestartDialog.js";
 import { Badge } from "../../../components/ui/badge.js";
@@ -249,6 +250,34 @@ const HOME_PRIVACY_FIX_KEY = {
 function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
   const fix = HOME_PRIVACY_FIX_KEY[error.category];
   return fix === null ? sentence : `${sentence} ${t(fix)}`;
+}
+
+/**
+ * The exact repair for a home Ave would not repair itself: drop inheritance and keep one owner-only entry, then remove each explicit
+ * foreign entry (inheritance removal does not touch those). Command Prompt syntax, so `%USERNAME%` stays a literal here.
+ */
+function homePrivacyFixCommand(error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string | null {
+  if (error.category !== "extra-principals" && error.category !== "not-protected") return null;
+  const target = `"${error.path}"`;
+  return [
+    `icacls ${target} /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"`,
+    ...(error.extraPrincipals ?? []).filter((principal) => principal.explicit === true).map(({ sid }) => `icacls ${target} /remove:g *${sid}`),
+  ].join("\r\n");
+}
+
+function HomePrivacyFixCommand({ error }: { error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]> }) {
+  const { copied, copy } = useCopyFlash();
+  const command = homePrivacyFixCommand(error);
+  if (command === null) return null;
+  return (
+    <div data-testid="os-sandbox-windows-home-privacy-command" className="mt-2 space-y-1">
+      <p>{t("permissionsTab.homePrivacyCommandIntro")}</p>
+      <pre className="whitespace-pre-wrap break-all rounded bg-background/(--opacity-stronger) px-2 py-1 font-mono text-[11px] text-foreground">{command}</pre>
+      <Button type="button" size="sm" variant="outline" data-testid="os-sandbox-windows-home-privacy-command-copy" onClick={() => copy(command)}>
+        {copied ? t("permissionsTab.homePrivacyCommandCopied") : t("permissionsTab.homePrivacyCommandCopy")}
+      </Button>
+    </div>
+  );
 }
 
 function WindowsExtensionStatus({ substrate }: { substrate: SandboxWindowsSubstrateInfo }) {
@@ -1312,6 +1341,7 @@ export function PermissionsTab({
                   reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
                 }), windowsStatus.homePrivacyError)}
                 {windowsStatus.homePrivacyError.approvedForSession ? null : ` ${t("permissionsTab.homePrivacyApproveHint")}`}
+                <HomePrivacyFixCommand error={windowsStatus.homePrivacyError} />
                 {windowsStatus.homePrivacyError.approvedForSession ? (
                   <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
                 ) : (

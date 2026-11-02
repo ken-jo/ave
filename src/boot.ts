@@ -82,7 +82,7 @@ import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler
 import { createLogger } from "./lib/logger.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
-import { establishAveHomePrivacyAtBoot, aveHome, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
+import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
 import { migrateAveHomeConfiguration } from "./shared/ave-home-configuration.js";
 import { isAveHomeConfigurationOwner } from "./shared/ave-home-configuration-access.js";
 import { ensureAveScratchDir } from "./shared/ave-scratch.js";
@@ -182,8 +182,10 @@ export async function bootstrap(
   await setupNetworkFetch(ctx);
 
   // Create protected storage boundaries before any feature writes.
-  // Normally sealed already by the entry point's first home write (ensureWorkspaceCwd); a direct bootstrap() establishes it here.
-  const homePrivacy = establishAveHomePrivacyAtBoot();
+  // Under the host-instance lock: the full protection (subdirectory repair, runtime-root claim, the narrow root repair) and the
+  // sealed result. The pre-lock phase (createAveHomeIfAbsent, in ensureWorkspaceCwd) only ever creates a missing home.
+  const homePrivacy = ensureAveHomePrivate();
+  setAveHomePrivacyAtBoot(homePrivacy);
   if (homePrivacy.enforcement !== "posix-mode") {
     for (const diagnostic of homePrivacy.diagnostics ?? []) log.warn(`boot: ${diagnostic}`);
   }

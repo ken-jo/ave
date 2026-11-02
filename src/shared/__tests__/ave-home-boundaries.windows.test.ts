@@ -513,4 +513,57 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
       expect(existsSync(target)).toBe(true);
     } finally { rmdirSync(aside); }
   });
+  describe("narrow root repair (owner decision 2026-11-02)", () => {
+    // A home made by a plain mkdir under the temp profile: owned by the user, unprotected, every entry inherited from the parent.
+    function inheritedHome(): string {
+      const dir = home();
+      const parent = dirname(dir);
+      mkdirSync(parent, { recursive: true });
+      setFixtureOwner(parent);
+      execFileSync(win32SystemBinary("icacls"), [parent, "/grant", "*S-1-5-18:(OI)(CI)F", "/q"], { windowsHide: true, stdio: "pipe" });
+      mkdirSync(dir);
+      setFixtureOwner(dir);
+      const before = readWindowsDirectoryDacls([dir])[0]!;
+      expect(before).toMatchObject({ protected: false });
+      expect(before.rules?.every((rule) => rule.isInherited)).toBe(true);
+      return dir;
+    }
+    const rootOf = (dir: string) => readWindowsDirectoryDacls([dir])[0]!;
+
+    it("repairs an inherited-only root to the owner-only descriptor and records it", () => {
+      const dir = inheritedHome();
+      const privacy = ensureAveHomePrivate(dir);
+      expect(privacy, JSON.stringify(privacy)).toMatchObject({ enforcement: "win32-dacl", repairs: expect.arrayContaining([dir]) });
+      expectBoundary(dir);
+    });
+    it("refuses an explicit foreign allow and leaves the root as it was", () => {
+      const dir = inheritedHome();
+      grant(dir, "R");
+      const privacy = ensureAveHomePrivate(dir);
+      expect(privacy).toMatchObject({ enforcement: "none", category: "extra-principals",
+        extraPrincipals: expect.arrayContaining([expect.objectContaining({ sid: "S-1-1-0", explicit: true })]) });
+      expect(rootOf(dir)).toMatchObject({ protected: false });
+    });
+    it("refuses an explicit deny and leaves the root as it was", () => {
+      const dir = inheritedHome();
+      execFileSync(win32SystemBinary("icacls"), [dir, "/deny", "*S-1-5-32-545:(R)", "/q"], { windowsHide: true, stdio: "pipe" });
+      expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none" });
+      expect(rootOf(dir)).toMatchObject({ protected: false });
+    });
+    it("refuses a junction home without touching its target", () => {
+      const target = inheritedHome();
+      const link = `${target}-link`;
+      symlinkSync(target, link, "junction");
+      try {
+        expect(ensureAveHomePrivate(link)).toMatchObject({ enforcement: "none", category: "reparse-point" });
+        expect(rootOf(target)).toMatchObject({ protected: false });
+      } finally { rmdirSync(link); }
+    });
+    it("leaves an already protected root untouched", () => {
+      const dir = fixture();
+      const privacy = ensureAveHomePrivate(dir);
+      expect(privacy).toMatchObject({ enforcement: "win32-dacl" });
+      expect("repairs" in privacy ? privacy.repairs ?? [] : []).not.toContain(dir);
+    });
+  });
 });

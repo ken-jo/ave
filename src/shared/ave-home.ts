@@ -9,7 +9,7 @@ import { admitWindowsReparse, isOwnerOnlyDacl, mapWindowsGenericRights, pinWindo
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
-import { isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
+import { isWindowsHomeRootRepairable, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
 import { fileIdentityKey } from "../lib/file-identity.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandleEntry } from "./windows-configuration-handles.js";
 
@@ -315,6 +315,8 @@ export type AveHomePrivacyFailureCategory =
 export interface AveHomePrincipal {
   sid: string;
   account?: string;
+  /** At least one of its entries is set on the directory itself rather than inherited; `icacls /inheritance:r` does not remove it. */
+  explicit?: true;
 }
 
 export interface WindowsDirectoryDacl {
@@ -358,15 +360,17 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   try { windowsSystemRoot(); } catch {
     return paths.map(path => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
   }
+  let repairRoot = false;
   if (protect && paths[0]) {
     const root = readWindowsDacls([resolve(paths[0])])[0]!;
+    repairRoot = isWindowsHomeRootRepairable(root);
     if (!admitWindowsReparse(root, "evidence") || (root.exists && root.dacl?.owner !== root.currentUserSid
       && !(root.elevated && root.dacl?.owner === "S-1-5-32-544"))) {
       const category = !admitWindowsReparse(root, "evidence") ? "reparse-point" : "invalid-owner-grant";
       return paths.map(path => ({ path, category, error: "Home protection was refused before writing" }));
     }
   }
-  const writes: WindowsDirectoryDacl[] = protect ? protectWindowsDirectories(paths, claimableRuntimeRoot) : paths.map(path => ({ path }));
+  const writes: WindowsDirectoryDacl[] = protect ? protectWindowsDirectories(paths, claimableRuntimeRoot, repairRoot) : paths.map(path => ({ path }));
   return paths.map((path, index) => {
     const write = writes[index]!;
     if ("error" in write) return write;
@@ -380,7 +384,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   });
 }
 
-export function windowsDirectoryProtectionRequest(paths: readonly string[], claimableRuntimeRoot?: string) {
+export function windowsDirectoryProtectionRequest(paths: readonly string[], claimableRuntimeRoot?: string, repairRoot = false) {
   const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
     $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
@@ -400,6 +404,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
           if ($null -eq $homeHandle) {
             $homeHandle = [HomeDirectoryDacl]::OpenHome($path, $identity.User, $true);
             $handle = $homeHandle;
+            if ($request.repairRoot -and [HomeDirectoryDacl]::RepairInheritedRoot($handle, $identity.User, $elevated, $request.readOnlyRights)) { $repaired = 0 }
             $refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle), $identity.User, $elevated, $request.readOnlyRights);
           } else {
             if ([System.IO.Path]::GetDirectoryName($path) -ne [System.IO.Path]::GetFullPath($request.paths[0])) { throw 'Directory is outside the pinned home' }
@@ -435,15 +440,15 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
   // A one-shot process cannot separate cold startup from its directory operation.
   ], options: { input: script, encoding: "utf-8" as const, windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs, env: windowsPowerShellEnv({ ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ paths, claimableRuntimeRoot, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) } };
+    AVE_DACL_REQUEST: JSON.stringify({ paths, claimableRuntimeRoot, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS, repairRoot }) }) } };
 }
 
-function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoot?: string): WindowsDirectoryDacl[] {
+function protectWindowsDirectories(paths: readonly string[], claimableRuntimeRoot?: string, repairRoot = false): WindowsDirectoryDacl[] {
   if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
     return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
   }
   const output = runWindowsNative(() => {
-    const { file, args, options } = windowsDirectoryProtectionRequest(paths, claimableRuntimeRoot);
+    const { file, args, options } = windowsDirectoryProtectionRequest(paths, claimableRuntimeRoot, repairRoot);
     return execFileSync(file, args, options);
   });
   const results: unknown = JSON.parse(output);
@@ -539,20 +544,57 @@ export function _resetAveHomePrivacyForTest(): void {
   reportPrivacyRefusal = undefined;
 }
 
+/** Injected for tests; production uses the real filesystem and the native helper. */
+export interface AveHomeCreateRuntime {
+  platform: NodeJS.Platform;
+  exists(path: string): boolean;
+  create(home: string): void;
+}
+
+const DEFAULT_CREATE_RUNTIME: AveHomeCreateRuntime = {
+  platform: process.platform,
+  exists: (path) => { try { lstatSync(path); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } },
+  create: (home) => {
+    mkdirSync(dirname(home), { recursive: true });
+    const { file, args, options } = windowsHomeCreateRequest(home);
+    runWindowsNative(() => execFileSync(file, args, options));
+  },
+};
+
 /**
- * The first AVE_HOME write of a process. On Windows the protection helper must be the one that creates the home: a plain `mkdir`
- * there leaves an inherited DACL (SYSTEM, Administrators), the helper's create-or-open then keeps that DACL, and RootSafe refuses
- * the home for good. Every entry point (desktop module load, headless host, `bootstrap()`) calls this before anything else touches
- * the home; the result is sealed once and later calls for the same home reuse it.
+ * The pre-lock phase, run by every process start before the host-instance lock: on Windows, if AVE_HOME does not exist yet, the
+ * protection helper creates it with the owner-only descriptor and reads RootSafe back. Nothing else: no subdirectory repair, no
+ * runtime-root claim, no root repair and no sealed boot result. Those run only in bootstrap() under the lock, where a second
+ * instance cannot race a rename. A plain mkdir here would leave an inherited DACL that the later create-or-open keeps and RootSafe
+ * refuses for good. A home that exists is not touched, so later starts spawn nothing. POSIX keeps creating the home with mode 0700
+ * through the caller's mkdir.
  */
-export function establishAveHomePrivacyAtBoot(
-  home = aveHome(),
-  runtime: AveHomePrivacyRuntime = DEFAULT_PRIVACY_RUNTIME,
-): AveHomePrivacy {
-  if (bootHomePrivacy !== undefined && configurationKey(bootHomePrivacy.home) === configurationKey(home)) return bootHomePrivacy;
-  const privacy = ensureAveHomePrivate(home, runtime);
-  setAveHomePrivacyAtBoot(privacy);
-  return privacy;
+export function createAveHomeIfAbsent(home = aveHome(), runtime: AveHomeCreateRuntime = DEFAULT_CREATE_RUNTIME): "created" | "exists" | "not-applicable" {
+  if (runtime.platform !== "win32") return "not-applicable";
+  if (runtime.exists(home)) return "exists";
+  runtime.create(home);
+  return "created";
+}
+
+/** Create-only: OpenHome with the create disposition and the owner-only descriptor, then a read-only RootSafe check. */
+function windowsHomeCreateRequest(home: string) {
+  const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
+    $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
+    $elevated = ([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
+    Add-Type -TypeDefinition @'
+${WINDOWS_HOME_BOUNDARY_SOURCE}
+'@;
+    $homeHandle = [HomeDirectoryDacl]::OpenHome($request.home, $identity.User, $true);
+    try {
+      if (-not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($homeHandle), $identity.User, $elevated, $request.readOnlyRights)) { throw 'Home protection is unverified after create' }
+    } finally { $homeHandle.Dispose() }`;
+  const bootstrap = "$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))";
+  return { file: win32SystemBinary("WindowsPowerShell/v1.0/powershell"), args: [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
+  ], options: { input: script, encoding: "utf-8" as const, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+    timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+    env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({ home, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) } };
 }
 
 /** Windows needs an explicit owner-only inheritable DACL; report failure so confinement refuses unprotected storage. */
@@ -609,10 +651,12 @@ export function ensureAveHomePrivate(
       if (descriptor.ownerSid !== sid && !(descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544")) {
         return { enforcement: "none", home, failedPath: path, category: "invalid-owner-grant", reason: "Directory is owned by another account" };
       }
-      const extraPrincipals = [...new Map(descriptor.rules
+      const rules = descriptor.rules;
+      const extraPrincipals = [...new Map(rules
         .filter((rule) => rule.sid !== sid && (path !== home || rule.accessControlType !== 0 ||
           (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_ROOT_READ_ONLY_RIGHTS) !== 0))
-        .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}) }])).values()];
+        .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}),
+          ...(rules.some((entry) => entry.sid === sid && !entry.isInherited) ? { explicit: true as const } : {}) }])).values()];
       if (extraPrincipals.length > 0) {
         return { enforcement: "none", home, failedPath: path, category: "extra-principals", extraPrincipals,
           reason: "Remove the extra principal entries or move AVE_HOME" };

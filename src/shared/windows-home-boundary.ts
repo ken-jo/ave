@@ -12,6 +12,27 @@ export function isWindowsHomeRootSafe(facts: WindowsDaclFacts): boolean {
       && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0));
 }
 
+/**
+ * Mirrors HomeDirectoryDacl.RepairInheritedRoot: the only root shape Ave repairs, the one its own plain mkdir produced before the
+ * protection helper created homes. The native helper re-checks it on the pinned handle it repairs through; this decides whether to ask.
+ */
+export function isWindowsHomeRootRepairable(facts: WindowsDaclFacts): boolean {
+  const dacl = facts.dacl;
+  if (facts.exists !== true || !facts.directory || facts.reparseTag !== 0 || (facts.attributes & 0x400) !== 0) return false;
+  if (!dacl || dacl.nullDacl) return false;
+  // Owned by the token user (an Administrators-owned root never qualifies, elevated or not), and never a protected DACL:
+  // a protected root, safe or not, is left exactly as it is.
+  if (dacl.owner !== facts.currentUserSid || dacl.protected) return false;
+  let userEntry = false;
+  for (const ace of dacl.aces) {
+    const own = ace.sid === facts.currentUserSid;
+    const inherited = (ace.flags & 0x10) !== 0;
+    if (!inherited && (!own || ace.type !== 0)) return false;
+    if (own) userEntry = true;
+  }
+  return userEntry;
+}
+
 export const WINDOWS_HOME_BOUNDARY_SOURCE = `using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -412,6 +433,33 @@ public static class HomeDirectoryDacl {
       if (result != 0) throw new Win32Exception((int)result);
       if (!OwnerOnly(Read(handle), user, false)) throw new InvalidOperationException("Runtime ownership claim protection is unverified");
     }
+  }
+  // The one root shape Ave repairs: what a plain mkdir under a user profile produced before the protection helper created the home.
+  // Owned by the current user (an Administrators-owned root never qualifies, even elevated), not a link, an unprotected DACL whose
+  // every non-owner entry is inherited, and an entry for the user. Checked and repaired on the pinned home handle, then read back
+  // through RootSafe and OwnerOnly unchanged. Any other shape is left exactly as it is and refused by the caller.
+  public static bool RootRepairable(DirectorySecurity security, SecurityIdentifier user) {
+    if (security.GetOwner(typeof(SecurityIdentifier)).Value != user.Value) return false;
+    if (security.AreAccessRulesProtected) return false;
+    bool userEntry = false;
+    foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      bool own = rule.IdentityReference.Value == user.Value;
+      if (!rule.IsInherited && (!own || rule.AccessControlType != AccessControlType.Allow)) return false;
+      if (own) userEntry = true;
+    }
+    return userEntry;
+  }
+  public static bool RepairInheritedRoot(SafeFileHandle home, SecurityIdentifier user, bool elevated, int readMask) {
+    // Read() refuses a link or a non-directory on this same handle.
+    if (!RootRepairable(Read(home), user)) return false;
+    RawAcl acl = new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")").DiscretionaryAcl;
+    byte[] access = new byte[acl.BinaryLength];
+    acl.GetBinaryForm(access, 0);
+    uint result = SetSecurityInfo(home, 1, 0x80000004u, null, IntPtr.Zero, access, IntPtr.Zero);
+    if (result != 0) throw new Win32Exception((int)result, "Home root repair failed");
+    var repaired = Read(home);
+    if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated)) throw new InvalidOperationException("Home root repair protection is unverified");
+    return true;
   }
   public static int Repair(SafeFileHandle home, string name, SecurityIdentifier user, bool elevated, string path = "") {
     CleanupWarnings.Clear();

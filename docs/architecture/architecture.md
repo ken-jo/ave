@@ -2851,12 +2851,28 @@ with its own owner rule:
   `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
   `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
   `OBJ_DONT_REPARSE` relative to a pinned directory handle.
-  That helper must be the first writer of the home. A plain `mkdir` would leave
-  an inherited DACL that the helper's create-or-open keeps and RootSafe refuses.
-  Each entry point therefore establishes and seals home privacy
-  (`establishAveHomePrivacyAtBoot`) inside `ensureWorkspaceCwd`, its first home
-  write. This covers desktop module load and the headless host. `bootstrap()`
-  reuses the sealed result.
+  The helper is the first creator of the home. A plain `mkdir` would leave an
+  inherited DACL, which the helper's create-or-open keeps and RootSafe refuses.
+  Mutation and repair happen only under the host-instance lock.
+  Every process start runs `createAveHomeIfAbsent` in `ensureWorkspaceCwd`, its
+  first home write, before the lock. If the home is missing, that step only
+  creates it, with the owner-only descriptor, then reads RootSafe back.
+  It does no repair and no runtime-root claim, and it seals nothing.
+  An existing home spawns nothing. If the create fails, the start anchors in the
+  OS temp directory and writes nothing under AVE_HOME.
+  `bootstrap()`, under the lock, runs the full protection and seals the result.
+  Under the lock, a root is repaired only in one narrow shape: the shape a plain
+  mkdir under a profile left before homes were created this way. The repair sets
+  `D:P(A;OICI;FA;;;<user>)` on the pinned home handle and verifies it through the
+  unchanged RootSafe and OwnerOnly checks. Every one of these must hold:
+  - the root is owned by the token user (an Administrators-owned root never
+    qualifies, even elevated)
+  - it is not a link
+  - its DACL is unprotected
+  - every non-owner entry is inherited
+  - the user has an entry
+  Any other root is refused. Settings then shows the exact `icacls` command,
+  which drops inheritance and removes each explicit extra principal.
   The boundary list is checked against the sensitive-path table. Permission
   settings, user policy and legacy root secrets migrate into `config` by
   copying into a fresh staged file, publishing it inside the protected directory,

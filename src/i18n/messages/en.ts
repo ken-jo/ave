@@ -103,6 +103,7 @@ export const en = {
   "homePrivacy.configurationUntrusted": "Ave stopped because its configuration boundary could not be verified.\n\nPath: {path}\nCause: {reason}\n\nRestore this account's ownership of the home and config directories. Remove other accounts' write and delete access to the home and all access to config. Restore the migration marker from a trusted backup if it is missing or damaged, then restart Ave.",
   "homePrivacy.boundaryRepairedTitle": "Private storage repaired",
   "homePrivacy.boundaryRepaired": "Credentials may have been readable. Sign out and sign in again.",
+  "homePrivacy.rootRepaired": "Ave's data folder is now limited to your account.",
   "documentEngine.title": "Install document engine",
   "documentEngine.optional": "(optional)",
   "documentEngine.description": "Render document pages and recalculate spreadsheet formulas in the read-only preview. Existing viewers remain available without this download.",

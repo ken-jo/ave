@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
+import { createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
@@ -11,6 +11,7 @@ import { permissionSettingsPath } from "../../permissions/permission-settings-st
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
+import * as windowsNativeHost from "../windows-native-host.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
@@ -321,7 +322,7 @@ describe("ensureAveHomePrivate", () => {
     const { args, options } = windowsDirectoryProtectionRequest(paths);
     expect(args!.join(" ")).not.toContain(paths[0]);
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, readOnlyRights: 0x1200a9 });
+    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, readOnlyRights: 0x1200a9, repairRoot: false });
     // The system root reaches the child only inside the request, never as a second variable.
     expect(Object.keys(env).filter((name) => name.startsWith("AVE_DACL_"))).toEqual(["AVE_DACL_REQUEST"]);
   });
@@ -355,6 +356,62 @@ describe("ensureAveHomePrivate", () => {
       { path: dir, category: "invalid-owner-grant", error: "Home protection was refused before writing" },
     ]);
     expect(vi.mocked(execFileSync).mock.calls).toHaveLength(before);
+  });
+  describe("narrow root repair request", () => {
+    // The pre-write facts decide whether the helper is asked to repair; the helper re-checks on its pinned handle.
+    function inheritedRoot(path: string, extra: Array<{ type: number; flags: number; mask: number; sid: string }> = []): windowsPathFacts.WindowsDaclFacts {
+      const base = nativeDescriptor(path);
+      return { ...base, dacl: { ...base.dacl!, protected: false, aces: [
+        { type: 0, flags: 0x13, mask: 0x1f01ff, sid: OWNER_SID }, { type: 0, flags: 0x13, mask: 0x1f01ff, sid: "S-1-5-18" },
+        { type: 0, flags: 0x13, mask: 0x1f01ff, sid: "S-1-5-32-544" }, ...extra] } };
+    }
+    function requestFor(facts: (path: string) => windowsPathFacts.WindowsDaclFacts): { repairRoot: boolean } {
+      const dir = home();
+      vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths) => paths.map(facts));
+      // The helper itself is native; only its request is under test here.
+      vi.spyOn(windowsNativeHost, "runWindowsNative").mockImplementation((operation) => operation());
+      vi.mocked(execFileSync).mockImplementationOnce(() => JSON.stringify([{ path: dir }]));
+      readWindowsDirectoryDacls([dir], true);
+      const call = vi.mocked(execFileSync).mock.calls.at(-1)!;
+      return JSON.parse((call[2] as { env: Record<string, string> }).env.AVE_DACL_REQUEST!) as { repairRoot: boolean };
+    }
+    it("asks for the repair on the inherited-only root", () => {
+      expect(requestFor((path) => inheritedRoot(path)).repairRoot).toBe(true);
+    });
+    it("does not ask with an explicit foreign entry", () => {
+      expect(requestFor((path) => inheritedRoot(path, [{ type: 0, flags: 0, mask: 0x1200a9, sid: "S-1-1-0" }])).repairRoot).toBe(false);
+    });
+    it("does not ask for an already protected root", () => {
+      expect(requestFor((path) => nativeDescriptor(path)).repairRoot).toBe(false);
+    });
+  });
+  it("repairs the root only on request, on the pinned home handle, before RootSafe reads it back", () => {
+    const script = (windowsDirectoryProtectionRequest([home()], undefined, true).options as { input: string }).input;
+    const repair = script.indexOf("$request.repairRoot -and [HomeDirectoryDacl]::RepairInheritedRoot($handle,");
+    expect(repair).toBeGreaterThan(script.indexOf("$handle = $homeHandle;"));
+    expect(repair).toBeLessThan(script.indexOf("$refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle)"));
+    // The native repair re-checks the shape, writes only the DACL, and verifies through the unchanged predicates.
+    expect(script).toContain("if (!RootRepairable(Read(home), user)) return false;");
+    expect(script).toContain("SetSecurityInfo(home, 1, 0x80000004u, null, IntPtr.Zero, access, IntPtr.Zero)");
+    expect(script).toContain("if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated))");
+  });
+  it("keeps the pre-lock create a no-op off Windows, so a POSIX start cannot fail before bootstrap", () => {
+    const refuse = () => { throw new Error("must not run"); };
+    expect(createAveHomeIfAbsent(home(), { platform: "darwin", exists: refuse, create: refuse })).toBe("not-applicable");
+  });
+  it("records the repaired root in repairs and keeps the boot checks unchanged", () => {
+    const dir = home();
+    const readDacls = vi.fn((paths: readonly string[], _protect?: boolean) => paths.map((path) => ({ ...descriptor(path), ...(path === dir ? { repaired: true, skippedLinks: 0 } : {}) })));
+    expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls })).toEqual({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID, repairs: [dir] });
+  });
+  it("still refuses an explicit extra principal and marks it explicit for the fix command", () => {
+    const dir = home();
+    const readDacls = vi.fn((paths: readonly string[], _protect?: boolean) => paths.map((path) => path === dir
+      ? { ...descriptor(path), rules: [{ ...OWNER_RULE }, { sid: "S-1-1-0", accessControlType: 0, fileSystemRights: 2032127, inheritanceFlags: 3, propagationFlags: 0, isInherited: false },
+        { sid: "S-1-5-18", accessControlType: 0, fileSystemRights: 2032127, inheritanceFlags: 3, propagationFlags: 0, isInherited: true }] }
+      : descriptor(path)));
+    expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls })).toMatchObject({ enforcement: "none", category: "extra-principals",
+      extraPrincipals: [{ sid: "S-1-1-0", explicit: true }, { sid: "S-1-5-18" }] });
   });
   it("rejects a malformed native read-back result set", () => {
     vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(() => windowsPathFacts.decodeWindowsPathFacts("{}", 1, "--dacl") as windowsPathFacts.WindowsDaclFacts[]);
@@ -414,9 +471,9 @@ describe("ensureAveHomePrivate", () => {
     expect(options).toMatchObject({ timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
     const request = JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_REQUEST!);
     const script = (options as { input: string }).input;
-    expect(request).toEqual({ paths, claimableRuntimeRoot: runtimeRoot, readOnlyRights: 0x1200a9 });
+    expect(request).toEqual({ paths, claimableRuntimeRoot: runtimeRoot, readOnlyRights: 0x1200a9, repairRoot: false });
     expect(script).toContain('$path -eq $request.claimableRuntimeRoot');
-    expect(script.indexOf("[HomeDirectoryDacl]::ClaimRuntimeRoot")).toBeLessThan(script.indexOf("[HomeDirectoryDacl]::Repair"));
+    expect(script.indexOf("[HomeDirectoryDacl]::ClaimRuntimeRoot")).toBeLessThan(script.indexOf("[HomeDirectoryDacl]::Repair($homeHandle"));
     expect(script).toContain('string owner = Read(handle).GetOwner(typeof(SecurityIdentifier)).Value');
     expect(script.indexOf('owner != "S-1-5-32-544"')).toBeLessThan(script.indexOf("SetSecurityInfo(handle, 1, 0x80000005u"));
   });
