@@ -23,7 +23,14 @@ import {
   type WrapOptions,
 } from "./asrt-sandbox.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "./egress-invocations.js";
-import { getWindowsExtensionBackendPlan } from "./sandbox-capability.js";
+import {
+  getHostShellExecutionPlan,
+  getIssuedHostShellExecutionPlanGeneration,
+  getSandboxGeneration,
+  getWindowsExtensionBackendPlan,
+  isIssuedHostShellExecutionPlan,
+} from "./sandbox-capability.js";
+import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 import { openMxcEgressLease } from "./egress-host-listener.js";
 import { buildMxcConfinedChildRequest } from "./mxc-confined-child-request.js";
 import { isWindowsPathAtOrUnder, rankMxcFilesystem, strictlyUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
@@ -127,6 +134,11 @@ export interface ConfinedChildSpec {
   readonly windowsStdio?: "relay";
   // The child's working directory; on the relay, the program's.
   readonly cwd?: string;
+  // A user hook follows the host-shell plan it was admitted under, not the extension backend. The script-hook runner
+  // passes the host-issued plan object its command authorization returned; only that issued, current, srt-win (`asrt`
+  // substrate) plan of a plugin-less hook owner exempts the spawn from the extension-backend guard. A plugin holder can never
+  // qualify: its egress owner names its plugin. See `isAdmittedUserHookShellRoute`.
+  readonly userHookShellPlan?: HostShellExecutionPlan;
 }
 
 // The wrap a spawn actually applied — never the `features.pluginWorkerConfinement` setting. A child spawned unwrapped is `unconfined` whatever the setting says, because "confined" is a claim about this process, and only the wrap makes it true. One value per substrate ASRT wraps with.
@@ -145,6 +157,8 @@ export interface ConfinedChildSpawn {
 /** Native holders use owned streams and completion, never a fabricated ChildProcess. */
 export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
   "command" | "args" | "label" | "egressOwner" | "allowRead" | "allowWrite" | "floorPierces" | "assertStillValid" | "baseEnv"> {
+  /** Host-owned variables the holder kind receives on its legacy path; see `MxcConfinedChildRequestInput.holderEnv`. */
+  readonly holderEnv?: Readonly<Record<string, string>>;
   readonly cwd: string;
   readonly home: string;
   readonly temp: string;
@@ -222,6 +236,13 @@ interface LiveHolderFootprint {
 }
 const liveHolderFootprints = new Set<LiveHolderFootprint>();
 
+/** Every spelling of every writable root of an extension holder that is admitted or still owned (pending, live or
+ * quarantined). Holder adapters (row 5) use it to name an executable or workspace refusal before admission; the nesting
+ * check in `spawnMxcConfinedChild` remains the authority. A snapshot: the registry can change after it is taken. */
+export function liveMxcHolderWritableRoots(): readonly string[] {
+  return Object.freeze([...new Set([...liveHolderFootprints].flatMap((holder) => holder.writable))]);
+}
+
 /** A confined co-holder (the parent included) that can write above a path can swap a reparse point there between the
  * host's final identity check and the SDK's native string-path open. Refuse such nesting in BOTH directions, so the
  * outcome does not depend on admission order: a new holder's paths inside a live holder's writable root, and a live
@@ -259,6 +280,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   }
   spec = Object.freeze({ ...spec, args: Object.freeze([...spec.args]),
     baseEnv: Object.freeze({ ...spec.baseEnv }), egressOwner: Object.freeze({ ...spec.egressOwner }),
+    holderEnv: Object.freeze({ ...(spec.holderEnv ?? {}) }),
     allowRead: Object.freeze([...(spec.allowRead ?? [])]), allowWrite: Object.freeze([...(spec.allowWrite ?? [])]),
     floorPierces: Object.freeze([...(spec.floorPierces ?? [])]),
     filesystemOwnership: Object.freeze({ readRoots: Object.freeze([...spec.filesystemOwnership.readRoots]),
@@ -378,8 +400,25 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
 }
 
 // Only active confinement wraps and marks a child; inactive spawn leaves no confinement marker. If failure follows onWrapped, caller cleanup owns the already-incremented runtime state.
+/** A user hook admitted under an issued, current srt-win host-shell plan is not an extension holder, so the extension
+ * backend guard does not apply to it. Classification comes from host state only: the plan object must be one the host
+ * issued (`isIssuedHostShellExecutionPlan`), of the live generation and identity, and the egress owner must be a hook of
+ * no plugin. A plugin hook, MCP server or child never carries such a plan and names its plugin or role otherwise. */
+function isAdmittedUserHookShellRoute(spec: ConfinedChildSpec): boolean {
+  const plan = spec.userHookShellPlan;
+  if (plan === undefined) return false;
+  if (spec.egressOwner.role !== "hook" || spec.egressOwner.pluginId !== undefined) {
+    throw new MxcProcessContractError("Only a plugin-less user hook may follow its admitted shell plan");
+  }
+  if (!isIssuedHostShellExecutionPlan(plan) || getIssuedHostShellExecutionPlanGeneration(plan) !== getSandboxGeneration()
+    || plan.identity !== getHostShellExecutionPlan().identity || plan.mode !== "asrt" || plan.substrate !== "asrt") {
+    throw new MxcProcessContractError("User hook shell plan is not the current issued srt-win plan");
+  }
+  return true;
+}
+
 export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<ConfinedChildSpawn> {
-  const extensionPlan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
+  const extensionPlan = process.platform === "win32" && !isAdmittedUserHookShellRoute(spec) ? getWindowsExtensionBackendPlan() : undefined;
   if (extensionPlan?.readiness === "checking" || extensionPlan?.readiness === "rejected") {
     throw new MxcProcessContractError("Extension backend readiness has not admitted this start");
   }
