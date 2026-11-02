@@ -1469,6 +1469,26 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     expect(screen.getByTestId("plugin-config:row-arm:meeting")).toHaveTextContent("별도 프로세스 · OS 샌드박스 없음");
   });
 
+  it.each([
+    ["failed", true],
+    ["disabled", false],
+  ] as const)("tells a %s quarantined plugin it keeps its folder access and cannot restart until Ave restarts", async (loadStatus, doctor) => {
+    showCards([{ ...base, id: "meeting", loadStatus, lifecycleQuarantined: true as const }]);
+    render(<PluginConfigTab />);
+    const line = await screen.findByTestId("plugin-config:lifecycle-quarantined:meeting");
+    expect(line).toHaveTextContent("이 플러그인 프로세스가 멈췄는지 확인하지 못했습니다");
+    expect(line).toHaveTextContent("다시 시작할 수 없습니다");
+    expect(line).toHaveAttribute("role", "status");
+    expect(screen.queryByTestId("plugin-config:doctor-panel:meeting") !== null).toBe(doctor);
+  });
+
+  it("shows no quarantine line for a plugin that is not quarantined", async () => {
+    showCards([{ ...base, id: "meeting", loadStatus: "failed" as const }]);
+    render(<PluginConfigTab />);
+    await screen.findByTestId("plugin-config:doctor-panel:meeting");
+    expect(screen.queryByTestId("plugin-config:lifecycle-quarantined:meeting")).toBeNull();
+  });
+
   it("names the arm and that no child existed in the Doctor panel of a plugin that failed after routing", async () => {
     showCards([{
       ...base,
@@ -1491,7 +1511,7 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     ["macos-sandbox", "macOS 샌드박스"],
     ["linux-bubblewrap", "Linux 샌드박스(bubblewrap)"],
     ["windows-srt", "Windows 샌드박스"],
-    ["windows-mxc", "Windows MXC 컨테이너"],
+    ["windows-mxc", "Windows 컨테이너(MXC)"],
     ["unconfined", "OS 샌드박스 없음"],
   ] as const)("names a child spawned under %s in the Doctor panel", async (confinement, text) => {
     showCards([{

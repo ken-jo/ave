@@ -513,9 +513,12 @@ function ProjectRootsBrowser({
     }
     // Surface the extra revocation when path-scoped grants under the removed
     // root were pruned, so the widened effect of "Remove folder" is visible.
-    if (res.prunedGrants && res.prunedGrants > 0) {
-      setOpInfo(t("chatPreviewRail.removeRootPruned", { count: res.prunedGrants }));
-    }
+    // The user removed the folder; a revocation that could not finish is reported, never asked about.
+    const notices = [
+      ...(res.prunedGrants && res.prunedGrants > 0 ? [t("chatPreviewRail.removeRootPruned", { count: res.prunedGrants })] : []),
+      ...(res.cleanupPending ? [t("chatPreviewRail.removeRootCleanupPending")] : []),
+    ];
+    if (notices.length > 0) setOpInfo(notices.join(" "));
     if (!res.roots) return;
     // Drop cached children/expansion for the removed subtree so a re-add reloads.
     // Boundary-safe + cross-platform: `isPathWithinRoot` matches on a full

@@ -114,6 +114,9 @@ export interface PluginCard {
   lastAttemptRefusal?: PluginAttemptRefusal;
   /** Registry hints, manifest ids, and deployment aliases address one canonical catalog card. */
   installAliases?: string[];
+  /** An unverified child termination quarantined this plugin until host restart: its grant incarnation keeps the folder
+   * access it started with, even past a narrowed ceiling, and the plugin cannot restart until then. */
+  lifecycleQuarantined?: true;
 }
 
 export interface PluginPreparationStatus {
@@ -7106,6 +7109,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       // A refused replacement is attempt state; the incumbent stays loaded.
       const refusal = this.lastAttemptRefusal.get(pluginId);
       if (loadStatus === "loaded" && refusal) card.lastAttemptRefusal = { ...refusal };
+      if (this.isPluginLifecycleQuarantined(pluginId)) card.lifecycleQuarantined = true;
       cards.set(pluginId, card);
     }
     for (const [pluginId, stub] of this.failedPluginStubs) {

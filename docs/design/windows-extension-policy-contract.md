@@ -370,7 +370,7 @@ nesting and the lifetime registry stay row 2's.
     `NODE_OPTIONS` and prepends its preserve-symlinks flags. The container
     route instead refuses any configured `NODE_OPTIONS`. A server that depends
     on one starts on srt-win and is refused under a selected container plan;
-    row 6 discloses this.
+    the Permissions disclosure for a selected container plan says so.
 - **Readiness probe.** The exact-request probe is registered by the native
   release gate through `registerMxcHolderReadinessProbe`. Until then every
   holder start fails closed with `MxcCapabilityUnavailableError`.
@@ -381,8 +381,9 @@ nesting and the lifetime registry stay row 2's.
     is withdrawn at close or exit.
   - A reconnect waits for the previous incarnation's release.
   - An unverified termination quarantines that server id. Its reconnect is
-    refused with `MxcHolderQuarantinedError` until the host restarts; row 6 must
-    disclose this.
+    refused with `MxcHolderQuarantinedError` until the host restarts. The server
+    state carries `containedQuarantined`, and its MCP row says so before any
+    reconnect attempt.
   - A hook's timeout or cancellation disposes the container. An unverified
     termination denies the hook and keeps its lease.
   - The hook's wait on completion is bounded by its timeout plus the

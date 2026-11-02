@@ -36,7 +36,9 @@ import type {
 import type {
   SandboxCapabilityInfo,
   SandboxMxcUnavailableReason,
+  SandboxWindowsExtensionReason,
   SandboxWindowsStatusInfo,
+  SandboxWindowsSubstrateInfo,
 } from "../../../shared/sandbox-capability-info.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { RecentlyDeniedPanel } from "../components/permissions/RecentlyDeniedPanel.js";
@@ -179,6 +181,95 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",
   "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
 } as const satisfies Record<SandboxMxcUnavailableReason, string>;
+
+/** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
+const WINDOWS_EXTENSION_REASON_KEY = {
+  ...MXC_UNAVAILABLE_REASON_KEY,
+  "not-requested": "permissionsTab.osSandboxWindowsExtensionReasonNotRequested",
+  "native-validation-required": "permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired",
+  checking: "permissionsTab.osSandboxWindowsExtensionReasonChecking",
+  ready: "permissionsTab.osSandboxWindowsExtensionReasonReady",
+  "readiness-deadline": "permissionsTab.osSandboxWindowsExtensionReasonReadinessDeadline",
+  "ancestor-policy-unsupported": "permissionsTab.osSandboxWindowsExtensionReasonAncestorPolicyUnsupported",
+  "runtime-start-failed": "permissionsTab.osSandboxWindowsExtensionReasonRuntimeStartFailed",
+  "endpoint-isolation-unverified": "permissionsTab.osSandboxWindowsExtensionReasonEndpointIsolationUnverified",
+  "bash-incompatible": "permissionsTab.osSandboxWindowsExtensionReasonBashIncompatible",
+  "ancestor-already-admitted": "permissionsTab.osSandboxWindowsExtensionReasonAncestorAlreadyAdmitted",
+  "runtime-unavailable": "permissionsTab.osSandboxWindowsExtensionReasonRuntimeUnavailable",
+} as const satisfies Record<SandboxWindowsExtensionReason, string>;
+
+/** What a selected container does not hide or block (design D2/D3 and the contract's measured residuals). Shown only
+ * for a selected MXC plan: these describe the container request, never the srt-win fallback or an unconfined process. */
+const WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS = [
+  ["network", "permissionsTab.osSandboxWindowsExtensionsNetwork"],
+  ["windows", "permissionsTab.osSandboxWindowsExtensionsWindows"],
+  ["folder-names", "permissionsTab.osSandboxWindowsExtensionsFolderNames"],
+  ["temp", "permissionsTab.osSandboxWindowsExtensionsTemp"],
+  ["dll", "permissionsTab.osSandboxWindowsExtensionsDll"],
+  ["bash-hooks", "permissionsTab.osSandboxWindowsExtensionsBashHooks"],
+  ["environment", "permissionsTab.osSandboxWindowsExtensionsEnvironment"],
+  ["reviewer", "permissionsTab.osSandboxWindowsExtensionsReviewer"],
+] as const;
+
+/** The extension backend this session selected, from the shared plan: a checking or rejected plan refuses starts, so it
+ * is never described as unconfined. Snapshots without a plan keep the substrate-only wording. */
+function WindowsExtensionStatus({ substrate }: { substrate: SandboxWindowsSubstrateInfo }) {
+  const { t } = useTranslation();
+  const plan = substrate.extensionPlan;
+  if (!plan) {
+    return (
+      <p data-testid="os-sandbox-windows-substrate-extensions">
+        {substrate.extensions === "srt-win"
+          ? t("permissionsTab.osSandboxWindowsExtensionsSrtWin")
+          : t("permissionsTab.osSandboxWindowsExtensionsNone")}
+      </p>
+    );
+  }
+  const reason = t(WINDOWS_EXTENSION_REASON_KEY[plan.reason]);
+  const selectedMxc = plan.readiness === "ready" && plan.selectedBackend === "mxc";
+  const text = plan.readiness === "off"
+    ? t("permissionsTab.osSandboxWindowsExtensionsOff")
+    : selectedMxc
+      ? t("permissionsTab.osSandboxWindowsExtensionsMxcSelected")
+      : plan.readiness === "checking"
+        ? t("permissionsTab.osSandboxWindowsExtensionsChecking")
+        : plan.readiness === "rejected"
+          ? t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason })
+          : plan.readiness === "fallback"
+            ? t("permissionsTab.osSandboxWindowsExtensionsFallback", { reason })
+            : t("permissionsTab.osSandboxWindowsExtensionsUnavailable", { reason });
+  return (
+    <>
+      <p
+        data-testid="os-sandbox-windows-substrate-extensions"
+        data-readiness={plan.readiness}
+        data-selected-backend={plan.selectedBackend}
+        data-reason={plan.reason}
+      >
+        {text}
+      </p>
+      {selectedMxc ? (
+        <div
+          data-testid="os-sandbox-windows-extension-disclosure"
+          data-egress-identity={plan.egressIdentity}
+          data-proxy-owner-verified={String(plan.proxyOwnerVerified)}
+          data-host-loopback={plan.hostLoopback}
+          data-ancestor-access={plan.ancestorAccess}
+          className="space-y-1 border-t pt-1"
+        >
+          <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsExtensionsDisclosureHeading")}</p>
+          <ul className="list-disc space-y-0.5 pl-4">
+            {WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS.map(([id, key]) => (
+              <li key={id} data-testid={`os-sandbox-windows-extension-disclosure-${id}`} className="[overflow-wrap:anywhere]">
+                {t(key)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
   success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
@@ -1360,11 +1451,7 @@ export function PermissionsTab({
                   {t("permissionsTab.osSandboxWindowsMxcUnused", { build: windowsSubstrate.windowsBuild ?? "?" })}
                 </p>
               ) : null}
-              <p data-testid="os-sandbox-windows-substrate-extensions">
-                {windowsSubstrate.extensions === "srt-win"
-                  ? t("permissionsTab.osSandboxWindowsExtensionsSrtWin")
-                  : t("permissionsTab.osSandboxWindowsExtensionsNone")}
-              </p>
+              <WindowsExtensionStatus substrate={windowsSubstrate} />
               {windowsSubstrate.extensionEgressIdentity === "shared" && windowsSubstrate.extensions === "srt-win" ? (
                 <p data-testid="os-sandbox-windows-shared-identity">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
               ) : null}

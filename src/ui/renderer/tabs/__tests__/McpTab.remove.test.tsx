@@ -84,3 +84,29 @@ describe("McpTab remove flow", () => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+describe("McpTab contained quarantine (row 6 disclosure)", () => {
+  function installServerState(state: Record<string, unknown>): void {
+    vi.stubGlobal("ave", { mcp: {
+      servers: vi.fn(async () => [{ id: "srv-a", status: "error", registeredTools: [], ...state }]),
+      getConfigs: vi.fn(async () => [{ id: "srv-a", transport: "stdio" as const, command: "server.exe" }]),
+      getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
+    } });
+  }
+
+  it("says the server cannot reconnect until Ave restarts, before any reconnect attempt", async () => {
+    installServerState({ containedQuarantined: true });
+    render(<McpTab />);
+    const line = await screen.findByTestId("mcp-contained-quarantined-srv-a");
+    expect(line).toHaveTextContent("이 서버의 이전 컨테이너 프로세스가 멈췄는지 확인하지 못했습니다");
+    expect(line).toHaveTextContent("Ave 를 재시작할 때까지 다시 연결할 수 없습니다");
+    expect(line).toHaveAttribute("role", "status");
+  });
+
+  it("shows no quarantine line otherwise", async () => {
+    installServerState({});
+    render(<McpTab />);
+    await screen.findByText("srv-a");
+    expect(screen.queryByTestId("mcp-contained-quarantined-srv-a")).toBeNull();
+  });
+});

@@ -923,6 +923,16 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
 
                 <PluginPreparationStatusPanel plugin={selectedPlugin} />
 
+                {selectedPlugin.lifecycleQuarantined ? (
+                  <p
+                    data-testid={`plugin-config:lifecycle-quarantined:${selectedPlugin.id}`}
+                    role="status"
+                    className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+                  >
+                    {t("pluginConfigTab.doctorLifecycleQuarantined")}
+                  </p>
+                ) : null}
+
                 {selectedPlugin.loadStatus === "failed" && (
                   <div
                     data-testid={`plugin-config:doctor-panel:${selectedPlugin.id}`}

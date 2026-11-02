@@ -3,6 +3,7 @@
  * route and the 0.0.80 fallback. The holder adapter is mocked; its layout has its own tests. */
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/runtime.js";
 
 const state = vi.hoisted(() => ({
   selected: true,
@@ -218,15 +219,18 @@ describe("contained MCP stdio server", () => {
     state.holderSpawn.mockResolvedValue(server.holder);
     const mcp = client({ id: "fs-q" });
     await mcp.connect().catch(() => undefined);
+    expect(mcp.getState().containedQuarantined).toBeUndefined();
     await mcp.disconnect();
+    // The row discloses the quarantine before any reconnect attempt.
+    await vi.waitFor(() => expect(mcp.getState().containedQuarantined).toBe(true));
     await expect(mcp.connect()).rejects.toBeInstanceOf(MxcHolderQuarantinedError);
-    await expect(mcp.connect()).rejects.toThrow(/could not be confirmed stopped/u);
+    await expect(mcp.connect()).rejects.toThrow(t("be_wrapBundledCommand.holderQuarantined", { label: "mcp:fs-q", code: "holder-quarantined" }));
     expect(state.holderSpawn).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a bash-form server before admission", async () => {
     const mcp = client({ command: "bash" });
-    await expect(mcp.connect()).rejects.toThrow(/Git Bash cannot start/u);
+    await expect(mcp.connect()).rejects.toThrow(t("be_wrapBundledCommand.bashIncompatible", { code: "bash-incompatible" }));
     expect(state.holderSpawn).not.toHaveBeenCalled();
   });
 

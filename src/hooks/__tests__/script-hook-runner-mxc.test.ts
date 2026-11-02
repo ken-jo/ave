@@ -2,6 +2,7 @@
  * stdout/status out, admitted cwd/env and teardown. The holder adapter is mocked; its layout has its own tests. */
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/runtime.js";
 import type { RunnableHook } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
@@ -224,7 +225,8 @@ describe("plugin hook under a selected container backend", () => {
     "refuses a bash-form command %s before admission", async (...command) => {
       const result = await runOneHookScript(pluginHook(command), PAYLOAD);
       expect(result).toMatchObject({ decision: "deny" });
-      expect(result.reason).toMatch(/^sandbox unavailable \(bash-incompatible\): Git Bash cannot start/u);
+      expect(result.reason).toBe(`sandbox unavailable: ${t("be_wrapBundledCommand.bashIncompatible", { code: "bash-incompatible" })}`);
+      expect(result.reason.endsWith("(bash-incompatible)")).toBe(true);
       expect(state.holderSpawn).not.toHaveBeenCalled();
       expect(state.legacySpawn).not.toHaveBeenCalled();
     });

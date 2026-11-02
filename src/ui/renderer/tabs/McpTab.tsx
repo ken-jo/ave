@@ -570,6 +570,11 @@ export function McpTab() {
                               : authStatus === "error" ? t("mcpTab.authFailedMessage") : st.lastError
                           }</p>
                         )}
+                        {st?.containedQuarantined && (
+                          <p data-testid={`mcp-contained-quarantined-${id}`} role="status" className="mt-1 text-[11px] text-warning">
+                            {t("mcpTab.containedQuarantined")}
+                          </p>
+                        )}
                         {st?.authError && (
                           <p className="mt-1 text-[11px] text-destructive line-clamp-2">{getAuthErrorMessage(st.authError)}</p>
                         )}

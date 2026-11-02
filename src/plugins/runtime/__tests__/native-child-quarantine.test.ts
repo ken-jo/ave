@@ -122,6 +122,10 @@ describe("native plugin child quarantine through the runtime", () => {
     await expect(runtime.addPlugin(PLUGIN_ID)).rejects.toMatchObject({ code: "plugin-lifecycle-quarantined" });
     expect(spawnNativeChild).toHaveBeenCalledOnce();
     expect(release).not.toHaveBeenCalled();
+    // The settings card says so per plugin (row 6 disclosure), and never reports the quarantined plugin as loaded.
+    const card = runtime.listPluginCards().find((entry) => entry.id === PLUGIN_ID);
+    expect(card?.lifecycleQuarantined).toBe(true);
+    expect(card?.loadStatus).toBe("failed");
   });
 
   it("refuses a make-before-break replacement while a faulted incumbent is terminating, then quarantines", async () => {
@@ -168,6 +172,7 @@ describe("native plugin child quarantine through the runtime", () => {
     expect(children[0]!.dispose).toHaveBeenCalledOnce();
     expect(spawnNativeChild).toHaveBeenCalledTimes(2);
     // Its record is gone, so a second restart is neither pending nor quarantined.
+    expect(runtime.listPluginCards().find((entry) => entry.id === PLUGIN_ID)?.lifecycleQuarantined).toBeUndefined();
     await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
     expect(spawnNativeChild).toHaveBeenCalledTimes(3);
     await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2));

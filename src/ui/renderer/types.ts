@@ -209,6 +209,8 @@ export type PluginCardSummary = {
   confinement?: PluginConfinementReport;
   /** The last refused update or restart of this running plugin. */
   lastAttemptRefusal?: PluginAttemptRefusal;
+  /** Quarantined until host restart after an unverified child termination; keeps its folder access and cannot restart. */
+  lifecycleQuarantined?: true;
   /** Marketplace request slugs that should collapse onto this installed plugin. */
   installAliases?: string[];
 };
@@ -2031,6 +2033,8 @@ export interface AveWorkspaceApi {
      * the removal toast so the user knows saved grants were revoked too.
      */
     prunedGrants?: number;
+    /** Some revocation did not finish, e.g. a quarantined process keeps its access until Ave restarts. Informational only. */
+    cleanupPending?: boolean;
     error?: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "lifecycle-failed";
     message?: string;
   }>;

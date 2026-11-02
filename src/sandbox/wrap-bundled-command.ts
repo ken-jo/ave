@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
 import {
   liveMxcHolderWritableRoots,
@@ -232,7 +233,7 @@ export function isMxcExtensionBackendSelected(): boolean {
 export class MxcExecutableNotAdmissibleError extends Error {
   readonly code = "executable-not-admissible";
   constructor(detail: string) {
-    super(`This program cannot run in an extension container: ${detail}`);
+    super(t("be_wrapBundledCommand.executableNotAdmissible", { detail, code: "executable-not-admissible" }));
     this.name = "MxcExecutableNotAdmissibleError";
   }
 }
@@ -241,7 +242,7 @@ export class MxcExecutableNotAdmissibleError extends Error {
 export class MxcHolderWorkspaceBusyError extends Error {
   readonly code = "holder-workspace-busy";
   constructor() {
-    super("Another contained extension process is writing this workspace; this one did not start. Retry after it ends");
+    super(t("be_wrapBundledCommand.workspaceBusy", { code: "holder-workspace-busy" }));
     this.name = "MxcHolderWorkspaceBusyError";
   }
 }
@@ -250,7 +251,7 @@ export class MxcHolderWorkspaceBusyError extends Error {
 export class MxcBashIncompatibleError extends Error {
   readonly code = "bash-incompatible";
   constructor(readonly plan: SandboxWindowsExtensionPlan) {
-    super("Git Bash cannot start inside a Windows extension container on this host; run this command through PowerShell or a Windows executable");
+    super(t("be_wrapBundledCommand.bashIncompatible", { code: "bash-incompatible" }));
     this.name = "MxcBashIncompatibleError";
   }
 }
@@ -259,7 +260,7 @@ export class MxcBashIncompatibleError extends Error {
 export class MxcHolderQuarantinedError extends Error {
   readonly code = "holder-quarantined";
   constructor(label: string) {
-    super(`${label}: the previous contained process could not be confirmed stopped, so it was not restarted. Restart Ave to clear it`);
+    super(t("be_wrapBundledCommand.holderQuarantined", { label, code: "holder-quarantined" }));
     this.name = "MxcHolderQuarantinedError";
   }
 }
@@ -282,7 +283,7 @@ const CONTAINER_REFUSED_ENV = /^(?:NODE_OPTIONS|NODE_PATH|MXC_FFI_DIR|MXC_BIN_DI
 export class MxcHolderEnvironmentRefusedError extends Error {
   readonly code = "holder-environment-refused";
   constructor(readonly keys: readonly string[]) {
-    super(`An extension container cannot receive these environment variables: ${keys.join(", ")}`);
+    super(t("be_wrapBundledCommand.environmentRefused", { keys: keys.join(", "), code: "holder-environment-refused" }));
     this.name = "MxcHolderEnvironmentRefusedError";
   }
 }
@@ -359,7 +360,7 @@ function resolveHolderExecutable(command: string, env: NodeJS.ProcessEnv): strin
   if (winPath.isAbsolute(command)) {
     candidate = command;
   } else if (/[\\/]/u.test(command)) {
-    throw new MxcExecutableNotAdmissibleError(`"${command}" is a relative path, which would resolve inside the working directory`);
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableRelative", { command }));
   } else {
     const names = winPath.extname(command) === "" ? [`${command}.exe`] : [command];
     const pathValue = env.PATH ?? env.Path ?? process.env.PATH ?? "";
@@ -372,15 +373,15 @@ function resolveHolderExecutable(command: string, env: NodeJS.ProcessEnv): strin
       }
     }
   }
-  if (candidate === undefined) throw new MxcExecutableNotAdmissibleError(`"${command}" was not found as a Windows executable on PATH`);
+  if (candidate === undefined) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotFound", { command }));
   let canonical: string;
   try {
     canonical = winPath.normalize(stripExtendedPrefix(realpathSync.native(candidate)));
   } catch (error) {
-    throw new MxcExecutableNotAdmissibleError(`"${candidate}" cannot be resolved (${(error as Error).message})`);
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableUnresolvable", { path: candidate, reason: (error as Error).message }));
   }
   if (!/\.exe$/iu.test(canonical)) {
-    throw new MxcExecutableNotAdmissibleError(`"${canonical}" is not a Windows executable (.exe); run its interpreter directly`);
+    throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableNotExe", { path: canonical }));
   }
   return canonical;
 }
@@ -393,7 +394,7 @@ function assertExecutableAdmissible(executable: string, ownWriteRoots: readonly 
     ...liveMxcHolderWritableRoots(),
   ];
   const hit = forbidden.find((root) => isWindowsPathAtOrUnder(executable, root));
-  if (hit !== undefined) throw new MxcExecutableNotAdmissibleError(`"${executable}" lies inside a workspace or a writable root of a contained process`);
+  if (hit !== undefined) throw new MxcExecutableNotAdmissibleError(t("be_wrapBundledCommand.executableInsideWorkspace", { path: executable }));
 }
 
 /** Two holders writing one workspace cannot both be live. Refuse only that concurrency, never queue it. */

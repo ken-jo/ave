@@ -1280,6 +1280,33 @@ describe("ChatSidePanel", () => {
     await waitFor(() => expect(screen.queryByTestId("chat-side-panel-op-info")).toBeNull());
   });
 
+  it("reports unfinished cleanup after a user-initiated folder removal as status text, never a confirmation", async () => {
+    stubRichWorkspace({
+      removeRoot: vi.fn(async () => ({
+        ok: true as const,
+        removed: "/ws/proj",
+        roots: [{ path: "/ws", isDefault: true }],
+        prunedGrants: 1,
+        cleanupPending: true,
+      })),
+    });
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const select = (await screen.findByTestId("chat-side-panel-root-select")) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "/ws/proj" } });
+    fireEvent.click(await screen.findByTestId("chat-side-panel-remove-root"));
+    const info = await screen.findByTestId("chat-side-panel-op-info");
+    expect(info.getAttribute("role")).toBe("status");
+    // Both outcomes are reported: the pruned count and the unfinished cleanup.
+    expect(info.textContent).toContain(t("chatPreviewRail.removeRootPruned", { count: 1 }));
+    expect(info.textContent).toContain(t("chatPreviewRail.removeRootCleanupPending"));
+    expect(info.textContent).not.toContain("removeRootCleanupPending");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
   it("#1494 shows no op-info status when removeRoot pruned zero grants", async () => {
     // prunedGrants:0 → no transient info surface (only non-zero counts warrant the
     // extra disclosure). Guards against a "0 saved grants revoked" false alarm.

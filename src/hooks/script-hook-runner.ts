@@ -259,7 +259,7 @@ export async function runOneHookScript(
       assertMxcHolderNotBashForm(spawnCmd, shellFlavor);
     } catch (error) {
       if (!(error instanceof MxcBashIncompatibleError)) throw error;
-      return deny(`sandbox unavailable (${error.plan.reason}): ${error.message}`);
+      return deny(`sandbox unavailable: ${error.message}`);
     }
   }
   if (confinement && !containedRoute) {
@@ -620,10 +620,12 @@ function hookOutcome(forensics: HookResultForensics, deny: HookDeny, run: Observ
     timedOut: false, durationMs, ...(parsed.block ? { blockFeedback: parsed.reason } : {}) };
 }
 
-/** A stable reason code, when the refusal has one, so the deny names it. */
+/** A stable reason code, when the refusal has one, so the deny names it. A localized container refusal already ends
+ * with its code, so it is not repeated. */
 function errorCode(error: unknown): string {
   const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === "string" ? ` (${code})` : "";
+  if (typeof code !== "string") return "";
+  return (error as Error).message?.endsWith(`(${code})`) ? "" : ` (${code})`;
 }
 
 /** Bounded capture shared by both output streams. */

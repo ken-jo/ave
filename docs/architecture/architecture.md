@@ -2707,6 +2707,39 @@ in its directory.
 - **Settings.** Permissions shows the substrate chosen for shells and
   extensions, the MXC unavailable reason with the Windows build, the Bash
   limit, the DNS channel, and that extensions share one proxy identity.
+- **Extension disclosure (row 6).** The Permissions card renders the
+  extension state from `SandboxWindowsSubstrateInfo.extensionPlan`, never from
+  `extensions` alone: `checking` and `rejected` say starts are refused and that
+  nothing runs unconfined; `fallback` names srt-win 0.0.80 under one shared
+  account and its reason; `unavailable` and `off` say extensions are not
+  confined. Every closed reason maps to a catalog key. A ready MXC plan is
+  described as a selection, not proof that a process runs contained (a
+  plugin's Doctor card shows its own `windows-mxc` confinement, labelled
+  "Windows container (MXC)"). Only that selection lists what a container does
+  not hide or block: egress only through the holder's own proxy endpoint, whose
+  owner Windows does not verify (D2); loopback requested in both directions,
+  inbound left to Windows Firewall, DNS through the host resolver; untrusted
+  windows with clipboard and input injection off (D3); ancestor
+  query/enumerate grants that expose names and metadata, cascading into nested
+  folders, including profile and `AVE_HOME` sibling names and other plugin IDs
+  (peer-measured `descendantEnumeration: visible`); the effective temp in the
+  AppContainer profile under the staging home; DLL search from cwd/PATH and
+  holder-writable folders that the host does not harden; Bash hooks refused in
+  a container (D4); `NODE_OPTIONS`/`NODE_PATH` configurations refused; and the
+  binary MCP reviewer marker that does not name the backend. The chat input's
+  sandbox badge adds an extension warning when extension confinement was
+  requested and the plan is not `ready`, even while shells are healthy; it
+  shows nothing for a ready or unrequested plan. Holder refusals
+  (`executable-not-admissible`, `holder-workspace-busy`, `bash-incompatible`,
+  `holder-environment-refused`, `holder-quarantined`,
+  `worker-transport-unsupported`, `native-entry-required`,
+  `plugin-child-termination-unverified`) are localized on the host and end with
+  their stable code, so hook denies, MCP rows and plugin Doctor details carry
+  the same text. A quarantined MCP server's row (`McpServerState.containedQuarantined`)
+  and a quarantined plugin's card (`lifecycleQuarantined`) say the process keeps
+  its access and cannot restart until Ave restarts; a folder removal whose
+  revocation did not finish (`cleanupPending`) reports that as status text,
+  never a confirmation, because the user performed the removal.
 
 Not covered: plugin workers stay on srt-win. MXC's proxy mode forbids direct
 egress rules, so the TCP worker control channel cannot reach a container; a

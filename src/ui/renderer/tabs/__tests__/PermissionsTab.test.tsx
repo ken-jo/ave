@@ -34,6 +34,7 @@ import { buildInternalApiSurface } from "../../../../preload/internal-api-surfac
 import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
 import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
+import { assertSandboxWindowsExtensionPlan, type SandboxWindowsExtensionPlan, type SandboxWindowsExtensionReason } from "../../../../shared/sandbox-capability-info.js";
 
 /** Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable` from the real predicate.
  * Built here the same way so a renderer that goes back to reading `managed` directly fails these tests. */
@@ -1322,6 +1323,128 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
     expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
+  });
+
+  describe("extension backend plan (row 6 disclosure)", () => {
+    const POSTURE = {
+      uiPolicy: "ui-enabled", proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall",
+      dnsProtection: "host-resolver", ancestorAccess: "query-enumerate-only", ancestorNameExposure: true,
+    } as const;
+    function plan(readiness: SandboxWindowsExtensionPlan["readiness"], reason: SandboxWindowsExtensionReason): SandboxWindowsExtensionPlan {
+      const selectedBackend = readiness === "ready" ? "mxc" : readiness === "fallback" ? "srt-win" : "none";
+      return {
+        requestedBackend: readiness === "off" ? "none" : "mxc", selectedBackend, readiness, reason,
+        fallbackVersion: selectedBackend === "srt-win" ? "0.0.80" : null,
+        egressIdentity: selectedBackend === "mxc" ? "kernel-channel" : "shared", ...POSTURE,
+      };
+    }
+    async function renderWithPlan(extensionPlan: SandboxWindowsExtensionPlan, shells: "mxc" | "approved-host" = "mxc"): Promise<void> {
+      const { ave } = installApiWithWindows();
+      ave.permission.sandboxCapability.mockResolvedValueOnce({
+        platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+        runtime: { available: true, kind: "none", reason: "r" },
+        confines: { filesystem: true, process: false, network: true },
+        boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
+        windowsSubstrate: {
+          mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: extensionPlan.selectedBackend === "srt-win",
+          shells, extensions: extensionPlan.selectedBackend, extensionPlan,
+          shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared", extensionEgressIdentity: extensionPlan.egressIdentity,
+        },
+      } as never);
+      await act(async () => { render(<PermissionsTab />); });
+    }
+    const extensions = () => screen.getByTestId("os-sandbox-windows-substrate-extensions");
+
+    it.each([
+      ["checking", "checking"],
+      ["rejected", "readiness-deadline"],
+      ["rejected", "ancestor-already-admitted"],
+    ] as const)("says a %s plan (%s) refuses starts and never calls extensions unconfined", async (readiness, reason) => {
+      const fixture = plan(readiness, reason);
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture);
+      expect(extensions()).toHaveAttribute("data-readiness", readiness);
+      expect(extensions().textContent).toBe(readiness === "checking"
+        ? t("permissionsTab.osSandboxWindowsExtensionsChecking")
+        : t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason: t(`permissionsTab.osSandboxWindowsExtensionReason${reason === "readiness-deadline" ? "ReadinessDeadline" : "AncestorAlreadyAdmitted"}`) }));
+      // The pre-row-6 copy said "not confined: srt-win is not ready", which is false for a refusing plan.
+      expect(extensions().textContent).not.toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+      expect(extensions().textContent).not.toMatch(/not confined/u);
+      expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    });
+
+    it("shows the MXC selection with every D2/D3 and measured disclosure, even while shells are healthy", async () => {
+      const fixture = plan("ready", "ready");
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture, "mxc");
+      expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
+      expect(extensions().textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsMxcSelected"));
+      const disclosure = screen.getByTestId("os-sandbox-windows-extension-disclosure");
+      expect(disclosure).toHaveAttribute("data-egress-identity", "kernel-channel");
+      expect(disclosure).toHaveAttribute("data-proxy-owner-verified", "false");
+      expect(disclosure).toHaveAttribute("data-host-loopback", "bidirectional");
+      expect(disclosure).toHaveAttribute("data-ancestor-access", "query-enumerate-only");
+      for (const [id, key] of [
+        ["network", "permissionsTab.osSandboxWindowsExtensionsNetwork"],
+        ["windows", "permissionsTab.osSandboxWindowsExtensionsWindows"],
+        ["folder-names", "permissionsTab.osSandboxWindowsExtensionsFolderNames"],
+        ["temp", "permissionsTab.osSandboxWindowsExtensionsTemp"],
+        ["dll", "permissionsTab.osSandboxWindowsExtensionsDll"],
+        ["bash-hooks", "permissionsTab.osSandboxWindowsExtensionsBashHooks"],
+        ["environment", "permissionsTab.osSandboxWindowsExtensionsEnvironment"],
+        ["reviewer", "permissionsTab.osSandboxWindowsExtensionsReviewer"],
+      ] as const) {
+        expect(t(key)).not.toBe(key);
+        expect(screen.getByTestId(`os-sandbox-windows-extension-disclosure-${id}`).textContent).toBe(t(key));
+      }
+      expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
+    });
+
+    it("keeps container disclosures off the srt-win fallback and names its shared account and reason", async () => {
+      const fixture = plan("fallback", "native-validation-required");
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture, "approved-host");
+      expect(extensions().textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsFallback", {
+        reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"),
+      }));
+      expect(screen.getByTestId("os-sandbox-windows-shared-identity")).toBeTruthy();
+      expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    });
+
+    it.each([
+      ["off", "not-requested", "permissionsTab.osSandboxWindowsExtensionsOff"],
+      ["unavailable", "native-validation-required", "permissionsTab.osSandboxWindowsExtensionsUnavailable"],
+    ] as const)("reports a settled %s plan without container disclosures", async (readiness, reason, key) => {
+      const fixture = plan(readiness, reason);
+      assertSandboxWindowsExtensionPlan(fixture);
+      await renderWithPlan(fixture);
+      expect(extensions().textContent).toBe(t(key, { reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired") }));
+      expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
+    });
+
+    // The catalog parity check cannot see a key the code names but no catalog defines; every reason must resolve in both locales.
+    const EVERY_REASON = {
+      "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true, "tier-unsupported": true,
+      "request-rejected": true, "launcher-mismatch": true, "powershell-start-failed": true, "unverified-session": true,
+      "not-requested": true, "native-validation-required": true, checking: true, ready: true, "readiness-deadline": true,
+      "ancestor-policy-unsupported": true, "runtime-start-failed": true, "endpoint-isolation-unverified": true,
+      "bash-incompatible": true, "ancestor-already-admitted": true, "runtime-unavailable": true,
+    } as const satisfies Record<SandboxWindowsExtensionReason, true>;
+    it.each(["en", "ko"] as const)("renders every extension reason from a real %s catalog key", async (locale) => {
+      const previous = getLocale();
+      setLocale(locale);
+      try {
+        for (const reason of Object.keys(EVERY_REASON) as SandboxWindowsExtensionReason[]) {
+          await renderWithPlan({ ...plan("unavailable", "native-validation-required"), reason });
+          const text = extensions().textContent ?? "";
+          expect(text).not.toContain("permissionsTab.");
+          expect(text).not.toContain("{reason}");
+          cleanup();
+        }
+      } finally {
+        setLocale(previous);
+      }
+    });
   });
 
   it.each([
