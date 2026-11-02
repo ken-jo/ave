@@ -1,4 +1,4 @@
-Two backports and nine Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and ten Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -222,6 +222,16 @@ the installed package.
     children first and then calls reset(); the 'exit' handler is kept.
     `setWindowsAclReleaseForTesting` (manager module only, test runner only)
     gives reset() an ACL session with stand-ins for srt-win's revoke/restore.
+
+13. Recovery report (Ave): srt-win's crash recovery (dead holders pruned,
+    orphan sandbox-user ACEs revoked) was reported only in the stderr of the
+    first acl command, which reaches the embedder only under SRT_DEBUG.
+    initialize() now runs `srt-win acl recover --json` on its own before the
+    session's first grant (its `{deadBrokers, acesRevoked}` output,
+    vendor/srt-win-src/src/cli.rs AclCmd::Recover at v0.0.80) and hands the
+    counts to the listener set with `setWindowsAclRecoveryListener` (a
+    named export of dist/sandbox/windows-sandbox-utils.js). A failed recover
+    fails initialize, as a failed grant or stamp does.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -1896,7 +1906,8 @@ index 810b0aa54..bf01699a7 100644
 -import { wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
 +import { assertPtySlavePaths, wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
  import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
- import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
+-import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
++import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, recoverWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
  import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
  import { ownInstallWarning } from './own-files.js';
  import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredCommandKey, shouldIgnoreViolation, } from './sandbox-violation-store.js';
@@ -3413,7 +3424,17 @@ index 810b0aa54..bf01699a7 100644
          // Resolve once (stats disk); captured module-level for wrap/reset.
          srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
          const srtWin = srtWinSpawn;
-@@ -992,6 +2281,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -820,6 +2109,9 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+             // catch's best-effort revoke/restore can address whatever
+             // partially landed.
+             windowsFsSbUserSid = sb;
++            // Ave patch (recovery report): recover a dead session's ACEs
++            // first, on its own, so the embedder gets the counts.
++            recoverWindowsAcl({ srtWin });
+             // Grant FIRST so the sandbox user has working-tree access by
+             // the time the deny stamp runs. The two are independent
+             // refcounted state-DB sets keyed on the same holder PID.
+@@ -992,6 +2284,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -3426,7 +3447,7 @@ index 810b0aa54..bf01699a7 100644
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +2810,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2813,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -3436,7 +3457,7 @@ index 810b0aa54..bf01699a7 100644
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +3008,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3011,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -3458,7 +3479,7 @@ index 810b0aa54..bf01699a7 100644
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3029,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3032,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -3501,7 +3522,7 @@ index 810b0aa54..bf01699a7 100644
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3078,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3081,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -3510,7 +3531,7 @@ index 810b0aa54..bf01699a7 100644
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3095,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3098,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -3518,7 +3539,7 @@ index 810b0aa54..bf01699a7 100644
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3131,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3134,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -3535,7 +3556,7 @@ index 810b0aa54..bf01699a7 100644
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1950,7 +3269,7 @@ function getConfig() {
+@@ -1950,7 +3272,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -3544,7 +3565,7 @@ index 810b0aa54..bf01699a7 100644
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3308,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3311,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -3552,7 +3573,7 @@ index 810b0aa54..bf01699a7 100644
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2114,6 +3434,8 @@ function forceCloseHttpServer(server) {
+@@ -2114,6 +3437,8 @@ function forceCloseHttpServer(server) {
      });
  }
  async function reset() {
@@ -3561,7 +3582,7 @@ index 810b0aa54..bf01699a7 100644
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3445,55 @@ async function reset() {
+@@ -2123,28 +3448,55 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -3634,7 +3655,7 @@ index 810b0aa54..bf01699a7 100644
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3571,8 @@ async function reset() {
+@@ -2222,6 +3574,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -3643,7 +3664,7 @@ index 810b0aa54..bf01699a7 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3580,36 @@ async function reset() {
+@@ -2229,7 +3583,36 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -3680,7 +3701,7 @@ index 810b0aa54..bf01699a7 100644
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2336,6 +3716,12 @@ export const SandboxManager = {
+@@ -2336,6 +3719,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -3988,7 +4009,27 @@ diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sand
 index 65b8eef..9cff654 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
-@@ -884,6 +884,8 @@ export declare function restoreWindowsAcl(opts: {
+@@ -861,6 +861,19 @@ export interface WindowsAclStampOptions {
+  *   to release whatever WAS stamped.
+  */
+ export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
++/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
++export interface WindowsAclRecoveryReport {
++    /** Dead holder processes whose holds were pruned. */
++    deadBrokers: number;
++    /** Orphaned sandbox-user ACEs revoked. */
++    acesRevoked: number;
++}
++/** Ave patch (recovery report): receive each recoverWindowsAcl() result (undefined removes it). */
++export declare function setWindowsAclRecoveryListener(listener: ((report: WindowsAclRecoveryReport) => void) | undefined): void;
++/** Ave patch (recovery report): run srt-win's crash recovery and report its counts. @throws on exit ≠ 0. */
++export declare function recoverWindowsAcl(opts: {
++    srtWin?: SrtWinSpawn;
++}): WindowsAclRecoveryReport;
+ /**
+  * Per-path outcome from `srt-win acl restore --json` /
+  * `revoke --json`. The status set is intentionally loose: the
+@@ -884,6 +897,8 @@ export declare function restoreWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -3997,7 +4038,7 @@ index 65b8eef..9cff654 100644
  }): WindowsAclAceOutcome[] | undefined;
  export interface WindowsAclGrantOptions {
      /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
-@@ -918,6 +920,8 @@ export declare function revokeWindowsAcl(opts: {
+@@ -918,6 +933,8 @@ export declare function revokeWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -4010,7 +4051,42 @@ diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbo
 index 540c566..1108c1c 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
-@@ -1221,6 +1221,9 @@ export function restoreWindowsAcl(opts) {
+@@ -1197,6 +1197,34 @@ export function stampWindowsAcl(opts) {
+             `: ${r.stderr || r.stdout}`);
+     }
+ }
++// Ave patch (recovery report): the embedder's listener for crash-recovery
++// counts, set with setWindowsAclRecoveryListener.
++let windowsAclRecoveryListener;
++/**
++ * Ave patch (recovery report): receive the counts of each
++ * recoverWindowsAcl() run (undefined removes the listener).
++ */
++export function setWindowsAclRecoveryListener(listener) {
++    windowsAclRecoveryListener = listener;
++}
++/**
++ * Ave patch (recovery report): run srt-win's crash recovery on its own
++ * (`acl recover --json`, which prints `{deadBrokers, acesRevoked}`;
++ * vendor/srt-win-src/src/cli.rs AclCmd::Recover at v0.0.80) and hand the
++ * counts to the embedder's listener. Without it, recovery is reported
++ * only in the stderr of whichever acl command ran it first.
++ *
++ * @throws on exit ≠ 0 or unparseable output.
++ */
++export function recoverWindowsAcl(opts) {
++    const report = runSrtWinJson(['acl', 'recover', '--json'], { timeoutMs: 60000, srtWin: opts.srtWin });
++    const counts = { deadBrokers: Number(report.deadBrokers), acesRevoked: Number(report.acesRevoked) };
++    if (!Number.isInteger(counts.deadBrokers) || !Number.isInteger(counts.acesRevoked)) {
++        throw new WindowsSandboxError('srt_win_bad_json', `srt-win acl recover: unexpected report ${JSON.stringify(report)}`, 'acl');
++    }
++    windowsAclRecoveryListener?.(counts);
++    return counts;
++}
+ /**
+  * Release this holder's deny ACEs and remove the sandbox-user ACE
+  * on any path whose refcount falls to zero. Best-effort (does not
+@@ -1221,6 +1249,9 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -4020,7 +4096,7 @@ index 540c566..1108c1c 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1283,6 +1286,8 @@ export function revokeWindowsAcl(opts) {
+@@ -1283,6 +1314,8 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
