@@ -4,9 +4,12 @@ import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writ
 import { tmpdir, type } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
+
+const log = createLogger("srt-win-integrity");
 
 export class SrtWinIntegrityError extends Error {
   constructor(readonly code: "srt-win-integrity-mismatch" | "srt-win-not-found", options?: ErrorOptions) {
@@ -246,7 +249,30 @@ function removePrivateCopy(directory: string): void {
   rmdirSync(directory);
 }
 
+// The sandbox runtime spawns this copy again when its session reset revokes and restores the session's ACEs. The quit sequence awaits that reset
+// before the process exits; until it has finished, the copy must survive this module's exit handler, which Node runs before the runtime's own
+// (registered later, at initialize).
+let runtimeReleasePending = false;
+
+export function markSrtWinRuntimeReleasePending(): void {
+  if (copies.size > 0) runtimeReleasePending = true;
+}
+
+export function markSrtWinRuntimeReleased(): void {
+  runtimeReleasePending = false;
+}
+
+export function isSrtWinRuntimeReleasePending(): boolean {
+  return runtimeReleasePending;
+}
+
 process.once("exit", () => {
+  if (copies.size === 0) return;
+  if (runtimeReleasePending) {
+    // The runtime's exit handler runs next and still finds the copy; the next boot's stale-copy sweep removes it, and its ACL recovery covers a crash.
+    log.warn("srt-win: sandbox session was not reset before exit; the private helper copy is left for the next boot's sweep and ACL recovery");
+    return;
+  }
   for (const { directory } of copies.values()) {
     try { removePrivateCopy(directory); } catch { /* An active helper may still hold the image. */ }
   }

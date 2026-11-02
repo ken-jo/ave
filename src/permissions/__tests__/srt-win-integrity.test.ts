@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameS
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -521,5 +522,37 @@ describe("Windows helper integrity", () => {
     expect(result.stdout).toContain("Usage:");
     expect(readFileSync(executable)).toEqual(bytes);
     expect(() => prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ code: "srt-win-integrity-mismatch" }));
+  });
+
+  describe("exit order with the sandbox runtime's release", () => {
+    const exitOrderChild = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/srt-win-exit-order-child.ts");
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+    function runChild(mode: "runtime-pending" | "runtime-reset" | "no-runtime"): { executable: string; presentAtRuntimeRelease?: boolean } {
+      const { source } = fixture();
+      const resultPath = join(dirname(source), "result.json");
+      const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode], {
+        cwd: repoRoot, env: process.env, encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(readFileSync(resultPath, "utf8")) as { executable: string; presentAtRuntimeRelease?: boolean };
+      directories.push(dirname(dirname(result.executable)));
+      return result;
+    }
+
+    it("keeps the private copy for a runtime release still pending at exit, which runs after this module's handler", () => {
+      const { executable, presentAtRuntimeRelease } = runChild("runtime-pending");
+      expect(presentAtRuntimeRelease).toBe(true);
+      // Left for the next boot's stale-copy sweep.
+      expect(existsSync(executable)).toBe(true);
+    });
+
+    it("removes the private copy at exit once the quit sequence has reset the runtime", () => {
+      expect(existsSync(runChild("runtime-reset").executable)).toBe(false);
+    });
+
+    it("removes the private copy at exit when no runtime was initialized", () => {
+      expect(existsSync(runChild("no-runtime").executable)).toBe(false);
+    });
   });
 });

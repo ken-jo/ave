@@ -1,9 +1,9 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensureAveScratchDir, aveScratchDir, verifyAveScratchDir } from "../ave-scratch.js";
+import { ensureAveScratchDir, aveScratchDir, removeAveScratchDirIfEmpty, verifyAveScratchDir } from "../ave-scratch.js";
 
 const posix = process.platform !== "win32";
 const roots: string[] = [];
@@ -80,5 +80,35 @@ describe("verifyAveScratchDir", () => {
     const state = verifyAveScratchDir(path);
     expect(state.ok).toBe(false);
     expect((state as { reason: string }).reason).toMatch(/not present/);
+  });
+});
+
+describe("removeAveScratchDirIfEmpty", () => {
+  it("removes a scratch directory nothing was left in", () => {
+    const path = join(freshRoot(), "scratch");
+    expect(ensureAveScratchDir(path).ok).toBe(true);
+    expect(removeAveScratchDirIfEmpty(path)).toEqual({ status: "removed" });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("keeps a scratch directory holding a file, and the file with it", () => {
+    const path = join(freshRoot(), "scratch");
+    expect(ensureAveScratchDir(path).ok).toBe(true);
+    const staged = join(path, "build", "out.txt");
+    mkdirSync(dirname(staged));
+    writeFileSync(staged, "kept");
+    expect(removeAveScratchDirIfEmpty(path)).toEqual({ status: "kept" });
+    expect(readFileSync(staged, "utf8")).toBe("kept");
+  });
+
+  it("treats an already-absent directory as nothing to remove", () => {
+    expect(removeAveScratchDirIfEmpty(join(freshRoot(), "never-created"))).toEqual({ status: "kept" });
+  });
+
+  it("reports any other failure instead of hiding it", () => {
+    const path = join(freshRoot(), "scratch");
+    writeFileSync(path, "");
+    expect(removeAveScratchDirIfEmpty(path)).toEqual({ status: "failed", code: expect.stringMatching(/^E[A-Z]+$/) });
+    expect(existsSync(path)).toBe(true);
   });
 });

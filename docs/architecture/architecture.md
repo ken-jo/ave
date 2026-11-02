@@ -2798,6 +2798,14 @@ with its own owner rule:
   grants covering that outer directory are refused. Session reset or holder
   release removes the deny when its final hold ends. A dead holder leaves its
   ACE until a later native ACL operation prunes its tracked hold.
+  The session reset spawns this copy to revoke and restore the session's ACEs,
+  so every quit path (`runAppShutdownCleanup` on a clean, failed or timed-out
+  quit, and `runIncompleteBootShutdown`) awaits `releaseAsrtSandboxForExit`
+  after its confined children are down and before the host closes. The copy's
+  `exit` handler, registered at import and so run before the runtime's own,
+  removes the copy only once that reset has finished; a reset still pending at
+  exit leaves the copy for the runtime's handler and the next boot's sweep, with
+  ACL recovery as the fallback for a crash.
   The stale-copy sweep checks both directory owners and DACLs for the new layout,
   and also accepts the old single-level layout with its original marker checks.
   It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
