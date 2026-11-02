@@ -23,6 +23,7 @@ import {
   type CodexConversationRuntimeOptions,
 } from "../codex-conversation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { advanceFakeClock, waitOnRealClock } from "../../__tests__/support/fake-clock-wait.js";
 beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
   configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
@@ -275,9 +276,11 @@ describe("native RPC timeout context", () => {
     vi.useFakeTimers();
   });
 
-  it.each(["initialize", "account/read", "thread/start", "turn/start"] as const)(
+  // Waits below poll on the real clock and advances stop once the test's signal aborts: a body that outlives its timeout must not
+  // move the fake clock the next test installs.
+  it.for(["initialize", "account/read", "thread/start", "turn/start"] as const)(
     "retains the actual unacknowledged %s operation and closes its transport",
-    async (operation) => {
+    async (operation, { signal }) => {
       const harness = await createHarness((message, current) => {
         if (message.method === operation) return;
         if (message.method === "initialize") reply(current.child, requestId(message), {});
@@ -287,8 +290,8 @@ describe("native RPC timeout context", () => {
         ? harness.runtime.verifyIsolation()
         : harness.runtime.startTurn({ text: "private request" })
       ).catch((error: unknown) => error);
-      await vi.waitFor(() => expect(methodMessages(harness, operation)).toHaveLength(1), NATIVE_LOCATION_WAIT);
-      await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
+      await waitOnRealClock(() => expect(methodMessages(harness, operation)).toHaveLength(1), { signal, ...NATIVE_LOCATION_WAIT });
+      await advanceFakeClock(CODEX_RPC_REQUEST_TIMEOUT_MS, signal);
       const failure = await pending;
       expect(failure).toMatchObject({ providerError: {
         transport: { phase: "rpc-timeout", kind: "timeout", operation },
@@ -299,7 +302,7 @@ describe("native RPC timeout context", () => {
     },
   );
 
-  it("does not apply the RPC response deadline to an acknowledged running turn", async () => {
+  it("does not apply the RPC response deadline to an acknowledged running turn", async ({ signal }) => {
     const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
@@ -307,15 +310,15 @@ describe("native RPC timeout context", () => {
     });
     const settled = vi.fn();
     const pending = harness.runtime.startTurn({ text: "continue normally" }).then((result) => { settled(); return result; });
-    await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), NATIVE_LOCATION_WAIT);
-    await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS * 2);
+    await waitOnRealClock(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), { signal, ...NATIVE_LOCATION_WAIT });
+    await advanceFakeClock(CODEX_RPC_REQUEST_TIMEOUT_MS * 2, signal);
     expect(settled).not.toHaveBeenCalled();
     expect(harness.child.kill).not.toHaveBeenCalled();
     notify(harness.child, "turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } });
     await expect(pending).resolves.toMatchObject({ status: "completed", turnId: "turn-1" });
   });
 
-  it("writes an actual missing RPC response through the provider and collector to the error trace", async () => {
+  it("writes an actual missing RPC response through the provider and collector to the error trace", async ({ signal }) => {
     const verification = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
@@ -337,8 +340,8 @@ describe("native RPC timeout context", () => {
       const tracer = createTracer("rpc-timeout", { enabled: true, traceDir: join(harness.runtimeRoot, "traces") });
       loop.setTracer(tracer);
       const pending = loop.runTurn("private-user-input", undefined, undefined, { ...userKeyboardTurn() });
-      await vi.waitFor(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), NATIVE_LOCATION_WAIT);
-      await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
+      await waitOnRealClock(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), { signal, ...NATIVE_LOCATION_WAIT });
+      await advanceFakeClock(CODEX_RPC_REQUEST_TIMEOUT_MS, signal);
       await expect(pending).resolves.toMatchObject({ stopReason: "stream-error" });
       const raw = readFileSync(tracer.filePath!, "utf8");
       const entries = raw.trim().split("\n").map((line) => JSON.parse(line) as TraceEntry);
