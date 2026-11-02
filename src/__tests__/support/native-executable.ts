@@ -122,8 +122,9 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
 /** Windows ACL host startup can exceed the default wait budget. */
 export const NATIVE_LOCATION_WAIT = { timeout: process.platform === "win32" ? 15_000 : 1_000 } as const;
 
-/** Serial ACL requests need a larger Windows test budget under parallel load. */
-export const NATIVE_PROBE_HEAVY_TEST = process.platform === "win32" ? { timeout: 240_000 } : {};
+/** Serial ACL requests need a larger Windows test budget under parallel load. Hooks take the bare value. */
+export const NATIVE_PROBE_HEAVY_TIMEOUT_MS = process.platform === "win32" ? 240_000 : undefined;
+export const NATIVE_PROBE_HEAVY_TEST = NATIVE_PROBE_HEAVY_TIMEOUT_MS === undefined ? {} : { timeout: NATIVE_PROBE_HEAVY_TIMEOUT_MS };
 
 export function installFixtureAclTransport(transport: WindowsAclTransport): void {
   _setWindowsAclTransportForTest(transport);
