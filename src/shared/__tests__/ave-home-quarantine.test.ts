@@ -258,6 +258,45 @@ describe.runIf(process.platform !== "win32")("root configuration of a home with 
     expect(getAveHomeConfigurationNotice(home)).toEqual({ sealed: "migration-interrupted" });
   });
 
+  it("finishes an interrupted migration of a refused home at the next trusted start, setting its uncommitted copies aside too", () => {
+    mkdirSync(config, { recursive: true, mode: 0o700 });
+    writeFileSync(join(config, ".ave-config-sources.json"), "{}");
+    writeFileSync(join(config, "settings.json"), '{"interrupted":true}');
+    writeFileSync(join(home, "settings.json"), '{"legacy":true}');
+    refusedStart();
+    expect(aveHomeConfigurationSeal(home)).toBe("migration-interrupted");
+
+    const diagnostics = trustedStart();
+    expect(aveHomeConfigurationSeal(home)).toBeUndefined();
+    expect(diagnostics.some((line) => line.includes("config/settings.json"))).toBe(true);
+    expect(readFileSync(join(config, "settings.json"), "utf8")).toBe("{}\n");
+    expect(existsSync(join(config, ".ave-config-migrated"))).toBe(true);
+    const [folder] = quarantineFolders();
+    expect(readFileSync(join(home, "quarantine", folder!, "settings.json"), "utf8")).toBe('{"legacy":true}');
+    expect(readFileSync(join(home, "quarantine", folder!, "config", "settings.json"), "utf8")).toBe('{"interrupted":true}');
+    expect(existsSync(join(home, "quarantine", folder!, "config", ".ave-config-sources.json"))).toBe(true);
+    expect(statSync(join(home, "quarantine", folder!, "config")).mode & 0o077).toBe(0);
+    expect(getAveHomeConfigurationNotice(home)?.quarantine?.files).toEqual([
+      { folder, name: "settings.json", restorable: true, restoreRequested: false },
+      { folder: `${folder}/config`, name: "settings.json", restorable: true, restoreRequested: false },
+    ]);
+    expect(readAveHomeTrustRecord(home).refused).toBeUndefined();
+  });
+
+  it("starts fresh after the commit marker alone went missing, setting the uncommitted config/ files aside", () => {
+    expect(trustedStart()).toEqual([]);
+    writeFileSync(join(config, "settings.json"), '{"mine":true}');
+    unlinkSync(join(config, ".ave-config-migrated"));
+    trustedStart();
+    expect(aveHomeConfigurationSeal(home)).toBe("configuration-missing");
+    resolveAveHomeConfigurationNotice({ action: "start-fresh" }, home);
+    trustedStart();
+    expect(aveHomeConfigurationSeal(home)).toBeUndefined();
+    expect(readFileSync(join(config, "settings.json"), "utf8")).toBe("{}\n");
+    const [folder] = quarantineFolders();
+    expect(readFileSync(join(home, "quarantine", folder!, "config", "settings.json"), "utf8")).toBe('{"mine":true}');
+  });
+
   it("seals the configuration when the home's trust record cannot be verified", () => {
     refusedStart();
     const record = join(aveHomeTrustDirectory()!, `${createHash("sha256").update(resolve(home)).digest("hex")}.json`);

@@ -3008,6 +3008,10 @@ with its own owner rule:
   created on pinned handles with the owner-only `D:P` descriptor. Each entry
   is opened relative to the pinned root without following a reparse point,
   then renamed into the folder, so a link is moved and never followed.
+  When `config/` is not committed, its copies of those files and its
+  `.ave-config-sources.json` move into the folder's `config` subfolder the
+  same way. An interrupted migration, or a lost commit marker, then
+  finishes from an empty boundary instead of refusing to overwrite them.
   The start then migrates with no root sources: fresh defaults, including
   `requireExplicitApproval: true`. `refused` is cleared only after the
   fresh `config/` commits. A committed home with `refused` sets its root

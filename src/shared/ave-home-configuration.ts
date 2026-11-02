@@ -127,7 +127,9 @@ function migrateTrustedConfiguration(home: string, record: AveHomeTrustRecord): 
   const diagnostics: string[] = [];
   let current = record;
   if (history) {
-    const result = quarantineRootConfiguration(home);
+    // An uncommitted config/ of such a home (interrupted copies, a commit marker that is gone) is set aside with the root files,
+    // so the fresh migration below starts from an empty boundary instead of refusing to overwrite them.
+    const result = quarantineRootConfiguration(home, !committed);
     diagnostics.push(...result.diagnostics);
     if (result.files.length > 0) {
       const next = { ...current, quarantined: [...current.quarantined ?? [], ...result.files] };
@@ -169,13 +171,16 @@ function quarantineFolderName(): string {
  * under `<home>/quarantine/`, whose directories are this account's protected owner-only directories. Nothing moved is read as
  * configuration; the notice lists it for review and a gesture-checked restore.
  */
-function quarantineRootConfiguration(home: string): { files: AveHomeQuarantinedFile[]; failed: boolean; diagnostics: string[] } {
+const QUARANTINED_CONFIG_ENTRIES = [...CONFIGURATION_FILES, ".ave-config-sources.json"] as const;
+
+function quarantineRootConfiguration(home: string, uncommittedConfig: boolean): { files: AveHomeQuarantinedFile[]; failed: boolean; diagnostics: string[] } {
   const folder = quarantineFolderName();
   const diagnostics: string[] = [];
   let moved: string[] = [];
   let failed = false;
   try {
-    const outcome = process.platform === "win32" ? quarantineWindowsConfiguration(home, folder) : quarantinePosixConfiguration(home, folder);
+    const configNames = uncommittedConfig ? [...QUARANTINED_CONFIG_ENTRIES] : [];
+    const outcome = process.platform === "win32" ? quarantineWindowsConfiguration(home, folder, configNames) : quarantinePosixConfiguration(home, folder, configNames);
     for (const line of outcome) {
       if (line.startsWith("+")) moved.push(line.slice(1));
       else { failed = true; diagnostics.push(`Root configuration could not be set aside: ${line.slice(1)}`); }
@@ -185,15 +190,17 @@ function quarantineRootConfiguration(home: string): { files: AveHomeQuarantinedF
     moved = [];
     diagnostics.push(`Root configuration could not be set aside: ${(error as Error).message}`);
   }
-  const files = moved.filter((name): name is AveHomeQuarantinedFile["name"] => (CONFIGURATION_FILES as readonly string[]).includes(name)).map((name) => {
-    const bytes = readQuarantinedFile(home, folder, name);
-    return { folder, name, ...(bytes ? { sha256: createHash("sha256").update(bytes).digest("hex") } : {}) };
+  const files = moved.flatMap((entry): AveHomeQuarantinedFile[] => {
+    const [location, name] = entry.startsWith("config/") ? [`${folder}/config`, entry.slice("config/".length)] : [folder, entry];
+    if (!(CONFIGURATION_FILES as readonly string[]).includes(name)) return [];
+    const bytes = readQuarantinedFile(home, location, name);
+    return [{ folder: location, name: name as AveHomeQuarantinedFile["name"], ...(bytes ? { sha256: createHash("sha256").update(bytes).digest("hex") } : {}) }];
   });
-  if (files.length > 0) diagnostics.push(`Root configuration set aside in ${join(home, AVE_HOME_QUARANTINE_DIRECTORY, folder)}: ${files.map((file) => file.name).join(", ")}`);
+  if (moved.length > 0) diagnostics.push(`Root configuration set aside in ${join(home, AVE_HOME_QUARANTINE_DIRECTORY, folder)}: ${moved.join(", ")}`);
   return { files, failed, diagnostics };
 }
 
-function quarantinePosixConfiguration(home: string, folder: string): string[] {
+function quarantinePosixConfiguration(home: string, folder: string, configNames: readonly string[]): string[] {
   const parent = join(home, AVE_HOME_QUARANTINE_DIRECTORY);
   try { mkdirSync(parent, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
@@ -216,10 +223,27 @@ function quarantinePosixConfiguration(home: string, folder: string): string[] {
       results.push(`+${name}`);
     } catch (error) { results.push(`!${name}: ${(error as Error).message}`); }
   }
+  const config = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
+  let aside: string | undefined;
+  for (const name of configNames) {
+    try {
+      if (entry(join(config, name)) === undefined) continue;
+      if (target === undefined) {
+        target = join(parent, folder);
+        mkdirSync(target, { mode: 0o700 });
+      }
+      if (aside === undefined) {
+        aside = join(target, AVE_HOME_CONFIGURATION_DIRECTORY);
+        mkdirSync(aside, { mode: 0o700 });
+      }
+      replaceStagedFile(join(config, name), join(aside, name));
+      results.push(`+config/${name}`);
+    } catch (error) { results.push(`!config/${name}: ${(error as Error).message}`); }
+  }
   return results;
 }
 
-function quarantineWindowsConfiguration(home: string, folder: string): string[] {
+function quarantineWindowsConfiguration(home: string, folder: string, configNames: readonly string[]): string[] {
   const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
     $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
@@ -227,11 +251,11 @@ function quarantineWindowsConfiguration(home: string, folder: string): string[] 
     Add-Type -TypeDefinition @'
 ${WINDOWS_HOME_BOUNDARY_SOURCE}
 '@;
-    ConvertTo-Json -InputObject @([HomeDirectoryDacl]::QuarantineConfiguration($request.home, $request.folder, [string[]]$request.names, $identity.User, $elevated)) -Compress`;
+    ConvertTo-Json -InputObject @([HomeDirectoryDacl]::QuarantineConfiguration($request.home, $request.folder, [string[]]$request.names, $identity.User, $elevated, [string[]]@($request.configNames))) -Compress`;
   const output = runWindowsNative(() => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64"),
   ], { input: script, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ home, folder, names: CONFIGURATION_FILES }) }) }));
+    AVE_DACL_REQUEST: JSON.stringify({ home, folder, names: CONFIGURATION_FILES, configNames }) }) }));
   const result: unknown = JSON.parse(output);
   if (!Array.isArray(result) || result.some((value) => typeof value !== "string" || !/^[+!]/.test(value))) throw new Error("Configuration quarantine returned an invalid result");
   return result as string[];

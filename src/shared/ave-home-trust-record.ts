@@ -14,7 +14,7 @@ import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 /** A configuration file a trusted boot moved out of the home root, kept until the user restores it or dismisses the notice. */
 export interface AveHomeQuarantinedFile {
-  /** The timestamped folder under `<home>/quarantine/`. */
+  /** The timestamped folder under `<home>/quarantine/`, or its `config` subfolder for files set aside from an uncommitted `config/`. */
   readonly folder: string;
   readonly name: (typeof AVE_HOME_CONFIGURATION_FILES)[number];
   /** SHA-256 (hex) of the bytes moved; absent when they could not be read safely, so the file cannot be restored by Ave. */
@@ -44,7 +44,7 @@ class AveHomeTrustRecordError extends Error {
 }
 
 export const AVE_HOME_QUARANTINE_DIRECTORY = "quarantine";
-const QUARANTINE_FOLDER = /^\d{8}T\d{6,9}Z$/;
+const QUARANTINE_FOLDER = /^\d{8}T\d{6,9}Z(?:\/config)?$/;
 
 /** Where records live: the run's directory in tests, `%LOCALAPPDATA%\Ave\home-trust` on Windows, nowhere on POSIX (see below). */
 export function aveHomeTrustDirectory(): string | undefined {
