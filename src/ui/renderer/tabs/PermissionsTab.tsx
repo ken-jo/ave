@@ -35,6 +35,9 @@ import type {
   ScopedPermissionRuleError,
 } from "../types.js";
 import type {
+  HomeConfigurationNoticeChoice,
+  HomeConfigurationNoticeInfo,
+  HomeConfigurationSealReason,
   SandboxCapabilityInfo,
   SandboxMxcUnavailableReason,
   SandboxWindowsExtensionReason,
@@ -283,6 +286,68 @@ function HomePrivacyFixCommand({ error }: { error: NonNullable<SandboxWindowsSta
       <Button type="button" size="sm" variant="outline" data-testid="os-sandbox-windows-home-privacy-command-copy" onClick={() => copy(command)}>
         {copied ? t("permissionsTab.homePrivacyCommandCopied") : t("permissionsTab.homePrivacyCommandCopy")}
       </Button>
+    </div>
+  );
+}
+
+const HOME_CONFIGURATION_SEAL_KEY = {
+  "trust-record-unverified": "permissionsTab.homeConfigurationSealedTrustRecord",
+  "configuration-missing": "permissionsTab.homeConfigurationSealedMissing",
+  "configuration-unverified": "permissionsTab.homeConfigurationSealedUnverified",
+  "migration-interrupted": "permissionsTab.homeConfigurationSealedMigrationInterrupted",
+  "quarantine-failed": "permissionsTab.homeConfigurationSealedQuarantineFailed",
+} as const satisfies Record<HomeConfigurationSealReason, string>;
+
+/** Why this run's configuration is sealed, and the root files a trusted start set aside; every choice is a click and applies at the next start. */
+function HomeConfigurationNotice({ notice, busy, freshRequested, onChoice }: {
+  notice: HomeConfigurationNoticeInfo;
+  busy: boolean;
+  freshRequested: boolean;
+  onChoice: (choice: HomeConfigurationNoticeChoice) => void;
+}) {
+  const quarantine = notice.quarantine;
+  return (
+    <div data-testid="home-configuration-notice" role="alert"
+      className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
+      {notice.sealed ? (
+        <div data-testid="home-configuration-sealed" data-reason={notice.sealed} className="space-y-1">
+          <p className="font-medium">{t("permissionsTab.homeConfigurationSealedHeading")}</p>
+          <p>{t("permissionsTab.homeConfigurationSealedBody")}</p>
+          <p>{t(HOME_CONFIGURATION_SEAL_KEY[notice.sealed])}</p>
+          {notice.sealed === "configuration-missing" ? (
+            freshRequested ? <p data-testid="home-configuration-fresh-requested">{t("permissionsTab.homeConfigurationStartFreshRequested")}</p> : (
+              <Button type="button" size="sm" variant="outline" disabled={busy} data-testid="home-configuration-start-fresh"
+                onClick={() => onChoice({ action: "start-fresh" })}>
+                {t("permissionsTab.homeConfigurationStartFresh")}
+              </Button>
+            )
+          ) : null}
+        </div>
+      ) : null}
+      {quarantine ? (
+        <div data-testid="home-configuration-quarantine" className="space-y-1">
+          <p className="font-medium">{t("permissionsTab.homeConfigurationQuarantineHeading")}</p>
+          <p>{t("permissionsTab.homeConfigurationQuarantineBody", { files: [...new Set(quarantine.files.map((file) => file.name))].join(", ") })}</p>
+          <p>{t("permissionsTab.homeConfigurationQuarantineReview", { directory: quarantine.directory })}</p>
+          <ul className="space-y-1">
+            {quarantine.files.map((file) => (
+              <li key={`${file.folder}/${file.name}`} data-testid="home-configuration-quarantined-file" data-name={file.name}>
+                {file.restoreRequested ? t("permissionsTab.homeConfigurationRestoreRequested", { name: `${file.folder}/${file.name}` })
+                  : file.restorable ? (
+                    <Button type="button" size="sm" variant="outline" disabled={busy} data-testid="home-configuration-restore"
+                      onClick={() => onChoice({ action: "restore", folder: file.folder, name: file.name })}>
+                      {t("permissionsTab.homeConfigurationRestore", { name: `${file.folder}/${file.name}` })}
+                    </Button>
+                  ) : t("permissionsTab.homeConfigurationNotRestorable", { name: `${file.folder}/${file.name}` })}
+              </li>
+            ))}
+          </ul>
+          <Button type="button" size="sm" variant="outline" disabled={busy} data-testid="home-configuration-dismiss"
+            onClick={() => onChoice({ action: "dismiss" })}>
+            {t("permissionsTab.homeConfigurationDismiss")}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -968,6 +1033,27 @@ export function PermissionsTab({
     }
   };
 
+  const [homeConfigurationBusy, setHomeConfigurationBusy] = useState(false);
+  const [freshConfigurationRequested, setFreshConfigurationRequested] = useState(false);
+  const handleHomeConfigurationChoice = async (choice: HomeConfigurationNoticeChoice) => {
+    if (homeConfigurationBusy) return;
+    setHomeConfigurationBusy(true);
+    try {
+      const result = await window.ave.permission.resolveHomeConfigurationNotice(choice);
+      if (!result.ok) {
+        showBanner("error", t("permissionsTab.homeConfigurationActionFailed"));
+        return;
+      }
+      if (choice.action === "start-fresh") setFreshConfigurationRequested(true);
+      await refreshSandboxCapability();
+    } catch (error) {
+      showBanner("error", t("permissionsTab.homeConfigurationActionFailed"));
+      console.warn("[ave] home configuration notice choice failed:", errorMessage(error));
+    } finally {
+      setHomeConfigurationBusy(false);
+    }
+  };
+
   // The ONLY user-consented privilege-escalation trigger. The OS sandbox is normally provisioned at app-install time (NSIS customInstall), so this is the manual REPAIR
   // / re-provision path; invoked from an explicit "Re-provision" click inside the win32 panel, never automatically. Triggers ASRT's single self-elevating UAC prompt.
   const handleWindowsInstall = async () => {
@@ -1133,6 +1219,10 @@ export function PermissionsTab({
         >
           <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
           <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
+          {sandboxCapability?.homeConfiguration ? (
+            <HomeConfigurationNotice notice={sandboxCapability.homeConfiguration} busy={homeConfigurationBusy}
+              freshRequested={freshConfigurationRequested} onChoice={(choice) => { void handleHomeConfigurationChoice(choice); }} />
+          ) : null}
           {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
           {/* The two rows read the stored settings that the panel load returns; until it has, they would state a setting nobody read. */}
           {panelStaleNotice("os-sandbox-settings", ["settings"])}

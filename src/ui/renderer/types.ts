@@ -86,6 +86,7 @@ import type {
   SandboxCapabilityInfo,
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
+  HomeConfigurationNoticeChoice,
 } from "../../shared/sandbox-capability-info.js";
 import type { EgressDenialRow } from "../../shared/egress-denials.js";
 import type { ListedEgressGrant, RevocableEgressGrant } from "../../shared/egress-grant-scopes.js";
@@ -1577,6 +1578,8 @@ export type AvePermissionApi = {
    */
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
   approveExtensionsWithoutIsolation: () => Promise<{ ok: true } | IpcErrorResult>;
+  /** The user's choice on the home configuration notice; it is recorded for the next start, never applied in this run. */
+  resolveHomeConfigurationNotice: (choice: HomeConfigurationNoticeChoice) => Promise<{ ok: true } | IpcErrorResult>;
   /** Subscribe to default-mode repeated-approval hints for LLM permission review. */
   onReviewSuggestion: (cb: (payload: PermissionReviewSuggestionPayload) => void) => () => void;
   /** Permission policy — `/permission reviewer ...` slash dispatch. */

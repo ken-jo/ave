@@ -795,6 +795,9 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(PERMISSIONS.sandboxWindowsInstall, { intent: ipcUserKeyboardIntent() }),
     approveExtensionsWithoutIsolation: async () =>
       ipcRenderer.invoke(PERMISSIONS.approveExtensionsWithoutIsolation, { intent: ipcUserKeyboardIntent() }),
+    /** MUTATING: only from an explicit click on the home configuration notice; the choice applies at the next start. */
+    resolveHomeConfigurationNotice: async (choice: import("../shared/sandbox-capability-info.js").HomeConfigurationNoticeChoice) =>
+      ipcRenderer.invoke(PERMISSIONS.resolveHomeConfigurationNotice, { ...choice, intent: ipcUserKeyboardIntent() }),
     listRules: async () => ipcRenderer.invoke(PERMISSIONS.listRules),
     listScopedRules: async () => ipcRenderer.invoke(PERMISSIONS.listScopedRules),
     removeScopedRule: async (rule: import("../shared/permissions-events.js").ScopedPermissionRule) =>

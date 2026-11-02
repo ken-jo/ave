@@ -1836,6 +1836,56 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
   });
 
+  it("names the set-aside configuration files and restores one only from a click, at the next start", async () => {
+    const { ave } = installApiWithWindows({ togglesOff: true });
+    const capability = await ave.permission.sandboxCapability();
+    const files = [
+      { folder: "20261103T010203456Z", name: "settings.json", restorable: true, restoreRequested: false },
+      { folder: "20261103T010203456Z", name: "policy.json", restorable: false, restoreRequested: false },
+    ];
+    const directory = "D:/ave-home/quarantine";
+    ave.permission.sandboxCapability.mockResolvedValue({ ...capability, homeConfiguration: { quarantine: { directory, files } } } as never);
+    const resolveNotice = vi.fn(async () => {
+      files[0] = { ...files[0]!, restoreRequested: true };
+      ave.permission.sandboxCapability.mockResolvedValue({ ...capability, homeConfiguration: { quarantine: { directory, files } } } as never);
+      return { ok: true as const };
+    });
+    Object.assign(ave.permission, { resolveHomeConfigurationNotice: resolveNotice });
+    await act(async () => { render(<PermissionsTab />); });
+    const notice = screen.getByTestId("home-configuration-notice");
+    // File names only, why, and where to review them.
+    expect(notice).toHaveTextContent(t("permissionsTab.homeConfigurationQuarantineBody", { files: "settings.json, policy.json" }));
+    expect(notice).toHaveTextContent(t("permissionsTab.homeConfigurationQuarantineReview", { directory }));
+    expect(notice).toHaveTextContent(t("permissionsTab.homeConfigurationNotRestorable", { name: "20261103T010203456Z/policy.json" }));
+    // Rendering restores nothing; only the click asks main, and it asks for that one file.
+    expect(resolveNotice).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByTestId("home-configuration-restore")); });
+    expect(resolveNotice).toHaveBeenCalledTimes(1);
+    expect(resolveNotice).toHaveBeenCalledWith({ action: "restore", folder: "20261103T010203456Z", name: "settings.json" });
+    expect(screen.getByTestId("home-configuration-notice")).toHaveTextContent(
+      t("permissionsTab.homeConfigurationRestoreRequested", { name: "20261103T010203456Z/settings.json" }));
+    expect(screen.queryByTestId("home-configuration-restore")).toBeNull();
+  });
+
+  it("explains a sealed configuration and offers start-fresh only when committed configuration is missing", async () => {
+    const { ave } = installApiWithWindows({ togglesOff: true });
+    const capability = await ave.permission.sandboxCapability();
+    ave.permission.sandboxCapability.mockResolvedValue({ ...capability, homeConfiguration: { sealed: "migration-interrupted" } } as never);
+    const resolveNotice = vi.fn(async () => ({ ok: true as const }));
+    Object.assign(ave.permission, { resolveHomeConfigurationNotice: resolveNotice });
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("home-configuration-sealed")).toHaveTextContent(t("permissionsTab.homeConfigurationSealedMigrationInterrupted"));
+    expect(screen.queryByTestId("home-configuration-start-fresh")).toBeNull();
+    cleanup();
+    ave.permission.sandboxCapability.mockResolvedValue({ ...capability, homeConfiguration: { sealed: "configuration-missing" } } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("home-configuration-sealed")).toHaveTextContent(t("permissionsTab.homeConfigurationSealedMissing"));
+    expect(resolveNotice).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByTestId("home-configuration-start-fresh")); });
+    expect(resolveNotice).toHaveBeenCalledWith({ action: "start-fresh" });
+    expect(screen.getByTestId("home-configuration-fresh-requested")).toHaveTextContent(t("permissionsTab.homeConfigurationStartFreshRequested"));
+  });
+
   it.each([
     ["srt-win-not-found", "windows-sandbox-missing"],
     ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],

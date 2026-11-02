@@ -67,6 +67,15 @@ export function testSandboxPrivateBase(): string | undefined {
   return base;
 }
 
+/** Home trust records stay in the run's sandbox base, never the account's local application data. */
+export function testHomeTrustDirectory(): string | undefined {
+  const base = process.env.AVE_TEST_SANDBOX_BASE;
+  if (base === undefined || base === "") {
+    throw new Error("home trust records need AVE_TEST_SANDBOX_BASE, which vitest.globalSetup.ts sets, so no test writes the account's records");
+  }
+  return join(base, "home-trust");
+}
+
 function accountAveHome(): string {
   let accountHome: string;
   try {
@@ -133,5 +142,5 @@ export function canonicalPath(path: string): string {
 }
 
 type Seam = typeof import("../../shared/ave-home-test-guard.js");
-const conforms: Seam = { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkResolvedAveHome, checkSandboxSweepRoot, checkAdminPolicyPath, checkSandboxStampTargets, testSandboxPrivateBase };
+const conforms: Seam = { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkResolvedAveHome, checkSandboxSweepRoot, checkAdminPolicyPath, checkSandboxStampTargets, testSandboxPrivateBase, testHomeTrustDirectory };
 void conforms;

@@ -441,6 +441,32 @@ public static class HomeDirectoryDacl {
     }
     return diagnostics.ToArray();
   }
+  public static string[] QuarantineConfiguration(string path, string folder, string[] names, SecurityIdentifier user, bool elevated) {
+    var results = new System.Collections.Generic.List<string>();
+    using (var home = OpenHome(path, user, false)) {
+      if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
+      using (var parent = OpenRelative(home, "quarantine", user, 3, true, true, true)) {
+        if (parent == null || !OwnerOnly(Read(parent), user, elevated)) throw new InvalidOperationException("Quarantine protection is unverified");
+        SafeFileHandle target = null;
+        try {
+          foreach (string name in names) {
+            try {
+              using (var source = OpenRelative(home, name, user, 1, false, false, false, false, 7u, 0x00110080u)) {
+                if (source == null) continue;
+                if (target == null) {
+                  target = OpenRelative(parent, folder, user, 2, true, true, true);
+                  if (target == null || !OwnerOnly(Read(target), user, elevated)) throw new InvalidOperationException("Quarantine protection is unverified");
+                }
+                Rename(source, target, name, false);
+                results.Add("+" + name);
+              }
+            } catch (Exception error) { results.Add("!" + name + ": " + error.Message); }
+          }
+        } finally { if (target != null) target.Dispose(); }
+      }
+    }
+    return results.ToArray();
+  }
   [DllImport("advapi32.dll", SetLastError = true)]
   private static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint info, byte[] owner, IntPtr group, byte[] dacl, IntPtr sacl);
   public static void ClaimRuntimeRoot(SafeFileHandle home, string name, SecurityIdentifier user) {

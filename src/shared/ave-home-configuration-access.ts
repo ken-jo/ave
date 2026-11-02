@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import { createSerialQueue, type SerialQueue } from "../lib/with-file-lock.js";
 import { withDirectoryMutationObserver } from "../lib/directory-mutation-observer.js";
-import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, aveHomeConfigurationSeal, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
 import { isWindowsHomeRootSafe } from "./windows-home-boundary.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts, type WindowsPathFacts } from "./windows-path-facts.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandles } from "./windows-configuration-handles.js";
@@ -51,6 +51,8 @@ function writeHome(path: string): string {
 }
 
 function verifyWriteBoundary(home: string): void {
+  const seal = aveHomeConfigurationSeal(home);
+  if (seal !== undefined) throw new AveHomeConfigurationUntrustedError(home, `Configuration is sealed for this run (${seal})`);
   // A refused home's root is not verified; a write into its committed `config/` still verifies that directory's own DACL.
   const refused = isAveHomeConfigurationRefused(home);
   if (refused && resolveConfigurationFile(join(home, "settings.json")) === join(resolve(home), "settings.json")) return;
@@ -304,6 +306,8 @@ function readOpenedFile(path: string, seen: { present: boolean }): Buffer | unde
 
 export function readAveHomeConfigurationFile(path: string): Buffer | undefined {
   const home = configurationHomeForFile(path);
+  // A sealed home has no trusted configuration this run: every file reads as absent, so the strict defaults apply.
+  if (home !== undefined && aveHomeConfigurationSeal(home) !== undefined) return undefined;
   const seen = { present: false };
   try {
     for (let attempt = 0; attempt < 2; attempt++) {

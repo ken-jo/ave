@@ -15,7 +15,8 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__
 import { NotificationService } from "../../main/notification-service.js";
 import { notifyHomeBoundaryRepairs } from "../../boot/steps/home-privacy-notice.js";
 import { windowsPowerShellEnv } from "../windows-powershell-env.js";
-import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
+import { _resetAveHomeConfigurationNoticeForTest, migrateAveHomeConfiguration } from "../ave-home-configuration.js";
+import { aveHomeTrustDirectory, readAveHomeTrustRecord } from "../ave-home-trust-record.js";
 import { permissionSettingsPath, readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { loadPolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -640,6 +641,60 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
       expect(userPolicyPath()).toBe(join(dir, "config", "policy.json"));
       expect(await loadPolicy(undefined, join(dirname(dir), "absent-admin.json"))).toMatchObject({ source: "user", requireExplicitApproval: true });
       expect(() => readPermissionSettings()).not.toThrow();
+    });
+    it("sets aside root files written during a refusal at the next trusted start, in owner-only folders (owner decision 2026-11-03)", async () => {
+      const dir = fixture();
+      vi.stubEnv("AVE_HOME", dir);
+      grant(dir, "W");
+      const refused = ensureAveHomePrivate(dir);
+      expect(refused).toMatchObject({ enforcement: "none" });
+      setAveHomePrivacyAtBoot(refused);
+      expect(migrateAveHomeConfiguration(dir, refused)).toEqual([]);
+      // The refusal is recorded outside the home, in this account's protected owner-only directory.
+      expectBoundary(aveHomeTrustDirectory()!);
+      expect(readAveHomeTrustRecord(dir)).toEqual({ refused: true });
+      const weak = '{"version":1,"requireExplicitApproval":false,"managed":false}\n';
+      writeFileSync(join(dir, "policy.json"), weak);
+      writeFileSync(join(dir, "settings.json"), '{"planted":true}');
+      execFileSync(win32SystemBinary("icacls"), [dir, "/remove", "*S-1-1-0", "/q"], { windowsHide: true, stdio: "pipe" });
+      _resetAveHomePrivacyForTest();
+      _resetAveHomeConfigurationNoticeForTest();
+      const trusted = ensureAveHomePrivate(dir);
+      expect(trusted, JSON.stringify(trusted)).toMatchObject({ enforcement: "win32-dacl" });
+      setAveHomePrivacyAtBoot(trusted);
+      const diagnostics = migrateAveHomeConfiguration(dir, trusted);
+      expect(diagnostics.some((line) => line.startsWith("Root configuration set aside in "))).toBe(true);
+      expect(existsSync(join(dir, "policy.json"))).toBe(false);
+      expect(existsSync(join(dir, "settings.json"))).toBe(false);
+      expect(readFileSync(join(dir, "config", "policy.json"), "utf8")).toBe('{"version":1,"requireExplicitApproval":true,"managed":false}\n');
+      expect(await loadPolicy(undefined, join(dirname(dir), "absent-admin.json"))).toMatchObject({ requireExplicitApproval: true });
+      const folders = readdirSync(join(dir, "quarantine"));
+      expect(folders).toHaveLength(1);
+      expectBoundary(join(dir, "quarantine"));
+      expectBoundary(join(dir, "quarantine", folders[0]!));
+      expect(readFileSync(join(dir, "quarantine", folders[0]!, "policy.json"), "utf8")).toBe(weak);
+      expect(readAveHomeTrustRecord(dir)).toMatchObject({ committed: true, quarantined: [
+        { folder: folders[0], name: "settings.json", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+        { folder: folders[0], name: "policy.json", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      ] });
+      expect(readAveHomeTrustRecord(dir).refused).toBeUndefined();
+    });
+    it("seals a refused start whose committed config/ was renamed away, instead of reading the root", async () => {
+      const dir = fixture();
+      vi.stubEnv("AVE_HOME", dir);
+      expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+      expect(readAveHomeTrustRecord(dir)).toEqual({ committed: true });
+      _resetAveHomePrivacyForTest();
+      grant(dir, "(OI)(CI)R");
+      renameSync(join(dir, "config"), join(dir, "config-moved"));
+      writeFileSync(join(dir, "policy.json"), '{"version":1,"requireExplicitApproval":false,"managed":false}\n');
+      const refused = ensureAveHomePrivate(dir);
+      expect(refused).toMatchObject({ enforcement: "none" });
+      setAveHomePrivacyAtBoot(refused);
+      expect(migrateAveHomeConfiguration(dir, refused)).toEqual([
+        `Configuration is sealed (configuration-missing): ${join(dir, "config")} was committed before and is now missing or uncommitted`]);
+      expect(userPolicyPath()).toBe(join(dir, "config", "policy.json"));
+      expect(await loadPolicy(undefined, join(dirname(dir), "absent-admin.json"))).toMatchObject({ source: "defaults", requireExplicitApproval: true });
     });
     it("refuses an explicit inheritable foreign allow, names it, and leaves the root as it was", () => {
       const dir = inheritedHome();
