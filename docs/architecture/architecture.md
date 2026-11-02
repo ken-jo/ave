@@ -2858,8 +2858,10 @@ with its own owner rule:
   first home write, before the lock. If the home is missing, that step only
   creates it, with the owner-only descriptor, then reads RootSafe back.
   It does no repair and no runtime-root claim, and it seals nothing.
-  An existing home spawns nothing. If the create fails, the start anchors in the
-  OS temp directory and writes nothing under AVE_HOME.
+  An existing home spawns nothing. If the create fails, the start writes nothing
+  under AVE_HOME. It anchors cwd, which is the default workspace root, in a fresh
+  empty `ave-workspace-*` directory under the OS temp directory. That is never the
+  temp root itself and never AVE_HOME. Boot then degrades as for any home failure.
   `bootstrap()`, under the lock, runs the full protection and seals the result.
   Under the lock, a root is repaired only in one narrow shape: the shape a plain
   mkdir under a profile left before homes were created this way. The repair sets
@@ -2869,10 +2871,16 @@ with its own owner rule:
     qualifies, even elevated)
   - it is not a link
   - its DACL is unprotected
-  - every non-owner entry is inherited
+  - every non-owner entry is inherited, and is for SYSTEM or Administrators
+    (an inherited Users, Authenticated Users, Everyone, CREATOR OWNER, domain
+    group or other-user entry is refused)
   - the user has an entry
-  Any other root is refused. Settings then shows the exact `icacls` command,
-  which drops inheritance and removes each explicit extra principal.
+  Setting the DACL re-propagates inheritance below the root. If that runs past
+  the request timeout, the boot is refused, no repair is reported, and the next
+  boot reads the root again from scratch.
+  Any other root is refused. Settings then shows the exact `icacls` command. It
+  drops inheritance, then removes every grant and deny of each explicit extra
+  principal (`/remove *<sid>`).
   The boundary list is checked against the sensitive-path table. Permission
   settings, user policy and legacy root secrets migrate into `config` by
   copying into a fresh staged file, publishing it inside the protected directory,

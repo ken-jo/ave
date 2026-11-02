@@ -3,9 +3,9 @@
 // its inherited DACL. The fix has two phases: before the host-instance lock a start only creates a missing home through the
 // helper; repair and sealing stay in bootstrap() under the lock. This models the helper's create-or-open on a real temp directory.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { AveHomeCreateRuntime, AveHomePrivacyRuntime, WindowsDirectoryDacl } from "../../shared/ave-home.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
@@ -73,7 +73,9 @@ describe("the pre-lock AVE_HOME write of a process start", () => {
   });
 
   afterEach(async () => {
+    const leftCwd = process.cwd();
     process.chdir(prevCwd);
+    if (basename(leftCwd).startsWith("ave-workspace-")) await cleanupTmpDir(leftCwd);
     vi.unstubAllEnvs();
     const { _resetAveHomePrivacyForTest } = await import("../../shared/ave-home.js");
     _resetAveHomePrivacyForTest();
@@ -125,8 +127,17 @@ describe("the pre-lock AVE_HOME write of a process start", () => {
     const cwd = ensureWorkspaceCwd();
     expect(existsSync(home)).toBe(false);
     expect(order.filter((entry) => entry.startsWith(`mkdir ${home}`))).toEqual([]);
-    expect(cwd).toBe(tmpdir());
-    expect(realpathSync(process.cwd())).toBe(realpathSync(tmpdir()));
+    // A fresh, empty directory of its own: the cwd is the default workspace root, so the shared temp root must never be it.
+    expect(cwd).not.toBe(tmpdir());
+    expect(dirname(cwd)).toBe(tmpdir());
+    expect(basename(cwd)).toMatch(/^ave-workspace-/);
+    expect(readdirSync(cwd)).toEqual([]);
+    expect(realpathSync(process.cwd())).toBe(realpathSync(cwd));
+    const { buildAllowedScope } = await import("../../permissions/allowed-directories.js");
+    const { directories } = buildAllowedScope([]);
+    const fold = (path: string) => realpathSync(path).toLowerCase();
+    expect(directories.map((dir) => dir.toLowerCase())).toContain(fold(cwd));
+    expect(directories.map((dir) => dir.toLowerCase())).not.toContain(fold(tmpdir()));
   });
 
   it("is the defect it fixes: a plain mkdir before the helper leaves a home the lock holder refuses", async () => {

@@ -16,6 +16,8 @@ export function isWindowsHomeRootSafe(facts: WindowsDaclFacts): boolean {
  * Mirrors HomeDirectoryDacl.RepairInheritedRoot: the only root shape Ave repairs, the one its own plain mkdir produced before the
  * protection helper created homes. The native helper re-checks it on the pinned handle it repairs through; this decides whether to ask.
  */
+const ROOT_REPAIR_REMOVABLE = new Set(["S-1-5-18", "S-1-5-32-544"]);
+
 export function isWindowsHomeRootRepairable(facts: WindowsDaclFacts): boolean {
   const dacl = facts.dacl;
   if (facts.exists !== true || !facts.directory || facts.reparseTag !== 0 || (facts.attributes & 0x400) !== 0) return false;
@@ -28,6 +30,9 @@ export function isWindowsHomeRootRepairable(facts: WindowsDaclFacts): boolean {
     const own = ace.sid === facts.currentUserSid;
     const inherited = (ace.flags & 0x10) !== 0;
     if (!inherited && (!own || ace.type !== 0)) return false;
+    // The repair may drop only inherited SYSTEM and Administrators entries (owner decision 2026-11-02); any other inherited
+    // principal (Users, Authenticated Users, Everyone, CREATOR OWNER, a domain group, another user) is refused with the command.
+    if (!own && (ace.sid === null || !ROOT_REPAIR_REMOVABLE.has(ace.sid))) return false;
     if (own) userEntry = true;
   }
   return userEntry;
@@ -445,6 +450,7 @@ public static class HomeDirectoryDacl {
     foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
       bool own = rule.IdentityReference.Value == user.Value;
       if (!rule.IsInherited && (!own || rule.AccessControlType != AccessControlType.Allow)) return false;
+      if (!own && rule.IdentityReference.Value != "S-1-5-18" && rule.IdentityReference.Value != "S-1-5-32-544") return false;
       if (own) userEntry = true;
     }
     return userEntry;

@@ -254,14 +254,14 @@ function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsS
 
 /**
  * The exact repair for a home Ave would not repair itself: drop inheritance and keep one owner-only entry, then remove each explicit
- * foreign entry (inheritance removal does not touch those). Command Prompt syntax, so `%USERNAME%` stays a literal here.
+ * foreign principal's grants and denies (`/remove` without `:g`; inheritance removal does not touch explicit entries). Command Prompt syntax, so `%USERNAME%` stays a literal here.
  */
 function homePrivacyFixCommand(error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string | null {
   if (error.category !== "extra-principals" && error.category !== "not-protected") return null;
   const target = `"${error.path}"`;
   return [
     `icacls ${target} /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"`,
-    ...(error.extraPrincipals ?? []).filter((principal) => principal.explicit === true).map(({ sid }) => `icacls ${target} /remove:g *${sid}`),
+    ...(error.extraPrincipals ?? []).filter((principal) => principal.explicit === true).map(({ sid }) => `icacls ${target} /remove *${sid}`),
   ].join("\r\n");
 }
 

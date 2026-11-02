@@ -1471,7 +1471,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         await renderPrivacy({ path: "D:\\ave-home", category: "extra-principals", approvedForSession: false,
           extraPrincipals: [{ sid: "S-1-1-0", explicit: true }, { sid: "S-1-5-18" }] });
         const block = await screen.findByTestId("os-sandbox-windows-home-privacy-command");
-        const expected = 'icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"\r\nicacls "D:\\ave-home" /remove:g *S-1-1-0';
+        const expected = 'icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"\r\nicacls "D:\\ave-home" /remove *S-1-1-0';
         expect(block.querySelector("pre")?.textContent).toBe(expected);
         await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-windows-home-privacy-command-copy")); });
         expect(writeText).toHaveBeenCalledWith(expected);

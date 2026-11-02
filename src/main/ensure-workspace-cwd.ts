@@ -1,9 +1,8 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import { aveHome, createAveHomeIfAbsent } from "../shared/ave-home.js";
-import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
 
@@ -16,9 +15,12 @@ export function ensureWorkspaceCwd(): string {
     createAveHomeIfAbsent(home);
   } catch (error) {
     // The helper could not create the home. A plain mkdir would give it an inherited DACL that is refused for good, so this start
-    // anchors in the OS temp directory instead and writes nothing under AVE_HOME; bootstrap() reports the home failure as usual.
-    const fallback = tmpdir();
-    log.error("main: AVE_HOME could not be created with its protected descriptor (%s); cwd anchored to the OS temp directory", errorMessage(error));
+    // writes nothing under AVE_HOME. The cwd becomes the default workspace root (allowed directory, in-project write scope, terminal
+    // jail base), so it is a fresh, empty directory of its own, never the shared temp root. bootstrap() reports the home failure as usual.
+    const fallback = mkdtempSync(join(tmpdir(), "ave-workspace-"));
+    // The temp path names the user's profile; the warning names only the directory's own name and the error class.
+    log.warn("main: AVE_HOME could not be created with its protected descriptor (%s); cwd anchored to a dedicated temporary directory %s",
+      error instanceof Error ? error.name : typeof error, basename(fallback));
     process.chdir(fallback);
     return fallback;
   }

@@ -23,6 +23,9 @@ it.runIf(process.platform === "win32")("keeps transaction and native-fact owners
     { name: "explicit deny", sddl: `O:${sid}D:(D;;FR;;;BU)(A;OICIID;FA;;;${sid})`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "inherited, other owner", sddl: `O:S-1-5-18D:(A;OICIID;FA;;;${sid})(A;OICIID;FA;;;SY)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "inherited, no user entry", sddl: `O:${sid}D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
+    { name: "inherited Users", sddl: `O:${sid}D:(A;OICIID;FA;;;${sid})(A;OICIID;FA;;;SY)(A;OICIID;0x1200a9;;;BU)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
+    { name: "inherited Everyone", sddl: `O:${sid}D:(A;OICIID;FA;;;${sid})(A;OICIID;0x1200a9;;;WD)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
+    { name: "inherited CREATOR OWNER", sddl: `O:${sid}D:(A;OICIID;FA;;;${sid})(A;OICIIOID;FA;;;CO)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "protected with a foreign entry", sddl: `O:${sid}D:P${own}(A;OICI;FA;;;SY)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
   ];
   const script = `$ErrorActionPreference='Stop';

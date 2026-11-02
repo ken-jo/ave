@@ -399,6 +399,18 @@ describe("ensureAveHomePrivate", () => {
     const refuse = () => { throw new Error("must not run"); };
     expect(createAveHomeIfAbsent(home(), { platform: "darwin", exists: refuse, create: refuse })).toBe("not-applicable");
   });
+  it("refuses the home when the protect request times out mid-repair; nothing is reported repaired", () => {
+    // A root repair re-propagates inheritance over the existing tree, so a large home can hit the request timeout. The killed
+    // helper is a failure: no win32-dacl and no repairs this boot. The next boot reads the root again from scratch.
+    const dir = home();
+    const readDacls = vi.fn((_paths: readonly string[], protect?: boolean): WindowsDirectoryDacl[] => {
+      if (protect) throw Object.assign(new Error("spawnSync powershell ETIMEDOUT"), { code: "ETIMEDOUT" });
+      return [];
+    });
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls });
+    expect(result).toMatchObject({ enforcement: "none", home: dir });
+    expect(result).not.toHaveProperty("repairs");
+  });
   it("records the repaired root in repairs and keeps the boot checks unchanged", () => {
     const dir = home();
     const readDacls = vi.fn((paths: readonly string[], _protect?: boolean) => paths.map((path) => ({ ...descriptor(path), ...(path === dir ? { repaired: true, skippedLinks: 0 } : {}) })));

@@ -41,6 +41,16 @@ describe("isWindowsHomeRootRepairable", () => {
     expect(isWindowsHomeRootRepairable(root([ace(USER, 0x3), ace("S-1-5-18", 0x3)], { protected: true }))).toBe(false);
     expect(isWindowsHomeRootRepairable(root(profileInherited, { protected: true }))).toBe(false);
   });
+  it.each([
+    ["Users", "S-1-5-32-545"],
+    ["Authenticated Users", "S-1-5-11"],
+    ["Everyone", "S-1-1-0"],
+    ["CREATOR OWNER", "S-1-3-0"],
+    ["a domain group", "S-1-5-21-1004336348-11-77-513"],
+    ["another user", "S-1-5-21-1004336348-11-77-1500"],
+  ])("refuses an inherited %s entry: only SYSTEM and Administrators may be dropped", (_name, sid) => {
+    expect(isWindowsHomeRootRepairable(root([...profileInherited, ace(sid, INHERITED, 0, 0x1200a9)]))).toBe(false);
+  });
   it("refuses a root with no entry for the user", () => {
     expect(isWindowsHomeRootRepairable(root([ace("S-1-5-18", INHERITED), ace("S-1-5-32-544", INHERITED)]))).toBe(false);
   });
