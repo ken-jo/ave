@@ -121,6 +121,7 @@ describe("real sandbox ceiling withdrawal", () => {
         worker = await spawnWorker({
           pluginId: PLUGIN_ID,
           workerId: "hold",
+          control: "output-only-v1",
           command: process.execPath,
           args: [workerEntryPath],
           env: { ELECTRON_RUN_AS_NODE: "1" },

@@ -40,7 +40,13 @@ import {
   describeNonJson,
 } from "../../shared/json-representable.js";
 import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
-import type { PluginLifecycleEvent } from "../public-contract.js";
+import type {
+  PluginLifecycleEvent,
+  PluginWorkerControl,
+  PluginWorkerExitReason,
+  WorkerControlErrorCode,
+  WorkerControlRemoteError,
+} from "../public-contract.js";
 import { randomBytes } from "node:crypto";
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -53,7 +59,7 @@ import { randomBytes } from "node:crypto";
  * the previous version after its announced boundary (§3.2). The same value
  * governs both directions of the connection.
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["4"] as const;
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["5"] as const;
 
 /** One served version, as it travels: an integer written as a string. */
 export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
@@ -65,7 +71,7 @@ export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number]
  * preparation records the actual first version when that protocol ships.
  */
 export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string | undefined>> = {
-  "4": undefined,
+  "5": undefined,
 };
 
 /** Whether `value` names a version this build serves. */
@@ -305,6 +311,7 @@ export const HOST_PROTOCOL_NOTIFICATIONS = {
   subscription: "notifications/ave/subscription",
   subscriptionClosed: "notifications/ave/subscription/closed",
   subscriptionRelease: "notifications/ave/subscription/release",
+  subscriptionSend: "notifications/ave/subscription/send",
   cancelled: "notifications/cancelled",
   log: "notifications/ave/log",
   installedPluginsSnapshot: "notifications/ave/installedPlugins/snapshot",
@@ -349,6 +356,17 @@ export type HostApiNotification =
   | HostProtocolNotification<
       typeof HOST_PROTOCOL_NOTIFICATIONS.subscriptionRelease,
       { readonly subscriptionId: string }
+    >
+  /**
+   * child → host: traffic for a handle that accepts it, today only a
+   * `stdio-control-v1` worker (`WireWorkerSend`). Every `request` and
+   * `notification` is answered by one `result` or `error` worker event naming
+   * its `id`; a `response` or `cancel` is not. A send for a handle that is gone
+   * is dropped: its pending calls were already settled by the `exit` event.
+   */
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.subscriptionSend,
+      { readonly subscriptionId: string; readonly payload: WireWorkerSend }
     >
   /**
    * child → host: cancel an in-flight `ave/host/*` request.
@@ -573,6 +591,8 @@ export const HOST_API_WIRE_ERROR_CODES = [
   "lease-unavailable",
   "lease-audience-denied",
   "credential-conflict",
+  "worker-transport-unsupported",
+  "worker-control-failed",
   // ── Anything the host threw that is none of the above. Deliberately last and
   //    deliberately opaque: a host internal is not a contract.
   "host-internal",
@@ -1142,8 +1162,9 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // The host KEEPS OWNING the worker process — the sandbox grant machinery, the
   // wrapped-worker registry, the Windows holder-PID ACL lifecycle and the
   // managed-child registry all live in main. The child receives
-  // `{ workerHandleId, socketPath, pid }` and registers child-local
-  // stdout/stderr/exit listeners fed by host notifications. The isolated plugin
+  // `{ handleId, control, pid }`, registers child-local listeners fed by host
+  // notifications, and sends stdio-control traffic with
+  // `notifications/ave/subscription/send`. The isolated plugin
   // must NOT be permitted to spawn its own worker: a grandchild would sit
   // outside the grants keyed to host-allocated paths.
   spawnWorker: {
@@ -1151,7 +1172,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "plain-json",
     result: "handle",
     lifetime: "child-disposable",
-    errors: ["effect-boundary-denied"],
+    errors: ["effect-boundary-denied", "worker-transport-unsupported", "worker-control-failed"],
   },
   openExternalUrl: {
     params: ["url"],
@@ -1542,7 +1563,7 @@ export interface HostApiEventPayloads {
   readonly onEvent: HostEventDelivery;
   /** One per plugin installed, updated, enabled, disabled or removed. */
   readonly onPluginsChanged: PluginLifecycleDelivery;
-  /** Output as it is written, then one `exit`. */
+  /** Output and control traffic as it arrives, then one `exit`. */
   readonly spawnWorker: WireWorkerEvent;
   /** PCM frames in order, then one `end`. */
   readonly startAudioCapture: WireAudioCaptureEvent;
@@ -2125,19 +2146,49 @@ export function workerSubscriptionIdOfRequest(id: JsonRpcRequestId): string {
 /** The reply behind the `handle` `spawnWorker` declares. The process stays host-side. */
 export interface WireWorkerHandle {
   readonly handleId: string;
-  readonly socketPath: string | null;
+  readonly control: PluginWorkerControl;
   readonly pid: number | undefined;
 }
 
-/** One host→child push for a live worker, keyed by the worker's `handleId`. */
+/** A failed worker control call, as it crosses. */
+export interface WireWorkerError {
+  readonly code: WorkerControlErrorCode;
+  readonly message: string;
+  readonly remote?: WorkerControlRemoteError;
+}
+
+/**
+ * One host→child push for a live worker, keyed by the worker's `handleId`.
+ * `stdout` comes only from an `output-only-v1` worker; `result` and `error`
+ * answer a `WireWorkerSend` by its `id`; `request`, `notification` and `cancel`
+ * come from a `stdio-control-v1` worker, with `id` the host's relay id.
+ */
 export type WireWorkerEvent =
   | { readonly kind: "stdout"; readonly chunk: string }
   | { readonly kind: "stderr"; readonly chunk: string }
+  | { readonly kind: "result"; readonly id: number; readonly result: unknown }
+  | { readonly kind: "error"; readonly id: number; readonly error: WireWorkerError }
+  | { readonly kind: "request"; readonly id: number; readonly method: string; readonly params?: unknown }
+  | { readonly kind: "notification"; readonly method: string; readonly params?: unknown }
+  | { readonly kind: "cancel"; readonly id: number }
   | {
       readonly kind: "exit";
       readonly code: number | null;
       readonly signal: string | null;
+      readonly reason: PluginWorkerExitReason;
     };
+
+/**
+ * One child→host send for a `stdio-control-v1` worker. `id` on `request` and
+ * `notification` is the child's own counter, echoed by the answering event;
+ * `response` and `cancel` name the relay id of a worker-sent `request`.
+ */
+export type WireWorkerSend =
+  | { readonly kind: "request"; readonly id: number; readonly method: string; readonly params?: unknown }
+  | { readonly kind: "notification"; readonly id: number; readonly method: string; readonly params?: unknown }
+  | { readonly kind: "response"; readonly id: number; readonly result: unknown }
+  | { readonly kind: "response"; readonly id: number; readonly error: WorkerControlRemoteError }
+  | { readonly kind: "cancel"; readonly id: number };
 
 /** What `startAudioCapture` puts on the wire in place of the handle. */
 export interface WireAudioCaptureHandle {
@@ -2228,27 +2279,104 @@ export function asWireAudioCaptureEvent(payload: unknown, label: string): WireAu
   );
 }
 
+const WORKER_EXIT_REASONS: ReadonlySet<string> = new Set<PluginWorkerExitReason>([
+  "exited", "stopped", "control-violation", "output-overflow",
+]);
+const WORKER_ERROR_CODES: ReadonlySet<string> = new Set<WorkerControlErrorCode>([
+  "worker-request-failed", "worker-request-cancelled", "worker-backpressure",
+  "worker-incarnation-ended", "payload-too-large",
+]);
+
+function isRelayId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function hasOnlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(record).every((key) => allowed.includes(key));
+}
+
+/** A JSON-RPC error object a worker or plugin handler produced. */
+function isWorkerControlRemoteError(value: unknown): value is WorkerControlRemoteError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return hasOnlyKeys(record, ["code", "message", "data"])
+    && Number.isSafeInteger(record.code) && typeof record.message === "string";
+}
+
+function isWireWorkerError(value: unknown): value is WireWorkerError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return hasOnlyKeys(record, ["code", "message", "remote"])
+    && typeof record.code === "string" && WORKER_ERROR_CODES.has(record.code)
+    && typeof record.message === "string"
+    && (record.remote === undefined || isWorkerControlRemoteError(record.remote));
+}
+
 /** Child side: read a worker push, refusing anything that is not one. */
 export function asWireWorkerEvent(payload: unknown, label: string): WireWorkerEvent {
-  const event = payload as WireWorkerEvent | null;
-  if (event === null || typeof event !== "object") {
-    throw new HostApiBoundaryError(
-      "result-marshalling-rejected",
-      `[host-api-wire] ${label}: not a worker event`,
-    );
+  const refuse = (why: string): never => {
+    throw new HostApiBoundaryError("result-marshalling-rejected", `[host-api-wire] ${label}: ${why}`);
+  };
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) refuse("not a worker event");
+  const event = payload as Record<string, unknown>;
+  switch (event.kind) {
+    case "stdout":
+    case "stderr":
+      if (typeof event.chunk !== "string") refuse(`${event.kind} carries no chunk`);
+      break;
+    case "result":
+      if (!isRelayId(event.id) || !("result" in event)) refuse("result carries no id or result");
+      break;
+    case "error":
+      if (!isRelayId(event.id) || !isWireWorkerError(event.error)) refuse("error carries no id or a malformed error");
+      break;
+    case "request":
+      if (!isRelayId(event.id) || typeof event.method !== "string") refuse("request carries no id or method");
+      break;
+    case "notification":
+      if (typeof event.method !== "string") refuse("notification carries no method");
+      break;
+    case "cancel":
+      if (!isRelayId(event.id)) refuse("cancel carries no id");
+      break;
+    case "exit":
+      if (typeof event.reason !== "string" || !WORKER_EXIT_REASONS.has(event.reason)) refuse("exit carries no reason");
+      break;
+    default:
+      refuse("unknown worker event kind");
   }
-  if (event.kind === "stdout" || event.kind === "stderr") {
-    if (typeof event.chunk !== "string") {
-      throw new HostApiBoundaryError(
-        "result-marshalling-rejected",
-        `[host-api-wire] ${label}: ${event.kind} carries no chunk`,
-      );
+  return event as unknown as WireWorkerEvent;
+}
+
+/** Host side: read a worker send from the child, refusing anything that is not one. */
+export function asWireWorkerSend(payload: unknown, label: string): WireWorkerSend {
+  const refuse = (why: string): never => {
+    throw new HostApiBoundaryError("argument-marshalling-rejected", `[host-api-wire] ${label}: ${why}`);
+  };
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) refuse("not a worker send");
+  const send = payload as Record<string, unknown>;
+  if (!isRelayId(send.id)) refuse("a worker send names no id");
+  switch (send.kind) {
+    case "request":
+    case "notification":
+      if (!hasOnlyKeys(send, ["kind", "id", "method", "params"]) || typeof send.method !== "string") {
+        refuse(`${String(send.kind)} carries no method or an unknown field`);
+      }
+      break;
+    case "response": {
+      const hasResult = "result" in send;
+      const hasError = "error" in send;
+      if (hasResult === hasError || !hasOnlyKeys(send, ["kind", "id", "result", "error"])
+        || (hasError && !isWorkerControlRemoteError(send.error))) {
+        refuse("response must carry exactly one of result and a well-formed error");
+      }
+      break;
     }
-    return event;
+    case "cancel":
+      if (!hasOnlyKeys(send, ["kind", "id"])) refuse("cancel carries an unknown field");
+      break;
+    default:
+      refuse("unknown worker send kind");
   }
-  if (event.kind === "exit") return event;
-  throw new HostApiBoundaryError(
-    "result-marshalling-rejected",
-    `[host-api-wire] ${label}: unknown worker event kind`,
-  );
+  return send as unknown as WireWorkerSend;
 }

@@ -9,23 +9,28 @@ The code packages described here are called extensions in user-facing copy.
 0.14.0 on the `ave/*` wire. Published plugins continue to declare
 `requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`.
 
-**Unreleased contract.** This development build serves protocol `"4"` only
+**Unreleased contract.** This development build serves protocol `"5"` only
 (`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts`).
-It requires host-generated state on plugin loopback OAuth callbacks (§3.3.1).
-The app release version is selected by release preparation, independently of the
-protocol major. No first published app version is recorded for protocol 4;
-`requires.hostProtocol` negotiation determines support, and released protocol-3
-hosts reject protocol-4 packages before activation regardless of `minAppVersion`.
-Its schema/client and wire fixtures live under `schemas/plugin-host-protocol/4/`
-and `src/plugins/isolation/__tests__/fixtures/host-protocol/4/`.
+Protocol 5 keeps protocol 4's host-generated state on plugin loopback OAuth
+callbacks (§3.3.1) and replaces delegated-worker control sockets with worker stdio
+control v1 (§3.3.2). Protocol 4 was never released. The owner decision of
+2026-11-02 holds the next app release for this change, so released hosts move
+from protocol 3 straight to protocol 5 in one cutover; protocol 4 is not served
+beside it. The app release version is selected by release preparation,
+independently of the protocol major. No first published app version is recorded
+for protocol 5; `requires.hostProtocol` negotiation determines support, and
+released protocol-3 hosts reject protocol-5 packages before activation regardless
+of `minAppVersion`. Its schema/client and wire fixtures live under
+`schemas/plugin-host-protocol/5/` and
+`src/plugins/isolation/__tests__/fixtures/host-protocol/5/`.
 
 The existing unreleased-candidate convention (§6.1) stores the new schema under
-`web/public/schemas/plugin-host-protocol/4/v0.14.2/`, with
+`web/public/schemas/plugin-host-protocol/5/v0.14.2/`, with
 `publishedTag: null`. That version segment identifies the open schema candidate,
-not an announcement that 0.14.2 has shipped protocol 4. The previous 0.14.1
-protocol-4 candidate is retained byte-for-byte with its original hash and generation
-commit as a superseded, unpublished copy. Historical protocol-3 schema copies
-remain unchanged. Publish protocol-4 plugin replacements only with
+not an announcement that 0.14.2 has shipped protocol 5. The protocol-4 candidates
+(0.14.1 and 0.14.2) are retained byte-for-byte with their original hashes and
+generation commits as superseded, unpublished copies. Historical protocol-3 schema
+copies remain unchanged. Publish protocol-5 plugin replacements only with
 the coordinated app release; use its actual release tag and minimum version.
 Numbers in the historical plans below describe those steps, not this candidate.
 
@@ -753,8 +758,8 @@ pending waiters. Explicit close does the same. After close, cached results are
 unavailable and the next `open()` mints a new state.
 
 This changes an existing method's required behavior: a plugin-generated state
-that protocol 3 accepted now fails. Under §3.2 and §3.3 this is **protocol 4**,
-not an optional capability on 3. A capability list names methods and does not
+that protocol 3 accepted now fails. Under §3.2 and §3.3 this was **protocol 4**,
+not an optional capability on 3; protocol 5 (§3.3.2) carries it unchanged. A capability list names methods and does not
 select different state semantics for the same method. No state-free branch or
 compatibility shim is served. An unreleased protocol has no numeric app-version
 floor; negotiation of `requires.hostProtocol` is authoritative. Candidate schema
@@ -765,6 +770,69 @@ The replacement testing and publication gates in §9.3 and §9.5 still apply bef
 an app release is published: test candidates against the boundary commit, vendor
 the contract from its app release tag, and publish replacement plugin packages
 before publishing the app draft. See the [author migration and PKCE example](../guides/plugin-development.md#loopback-oauth-with-pkce).
+
+### 3.3.2 Worker stdio control v1
+
+A worker that `spawnWorker` starts talks to its plugin only over its own stdin,
+stdout and stderr. No platform allocates a socket, a port or a loopback address
+for it, and the spec has no `udsArgName`. Each spec names one `control` mode; a
+missing or unknown mode is refused before anything is created:
+
+- `"output-only-v1"`: stdout and stderr are text, delivered to `onStdout` and
+  `onStderr`. stdin is never written; its EOF is the liveness signal.
+- `"stdio-control-v1"`: stdout carries frames only and stderr carries the
+  worker's diagnostics. The handle offers `request`, `notify`, `onRequest` and
+  `onNotification` instead of `onStdout`.
+
+A frame is one line of UTF-8 JSON-RPC 2.0, at most 16 MiB
+(`WORKER_CONTROL_FRAME_BYTES_MAX`) before its newline. The host's first frame is
+the request `$/ave/hello` with id `0` and params
+`{ protocol: "ave-worker-stdio-control", versions: ["1"], frameBytesMax }`. The
+worker's first frame must answer it with
+`{ protocol: "ave-worker-stdio-control", version: "1" }`. `spawnWorker` resolves
+only after that answer. A worker that answers wrongly, writes anything else first
+or does not answer within `TOOL_TIMEOUT_POLICY.workerControlHelloMs` is stopped,
+its exit is awaited, and the call rejects with `worker-control-failed`.
+
+After the hello, either side may send requests and notifications. Method names
+match `^[a-zA-Z_][a-zA-Z0-9_]{0,127}$`; names under `$/` are the host's.
+`$/ave/cancel { id }` withdraws a request in either direction; the receiver still
+answers it, and a cancelled request counts toward the limit until that answer
+arrives. `$/ave/shutdown` precedes an orderly stop, after which the host closes
+stdin; a worker must exit on stdin EOF in either case. Each direction allows 64
+outstanding requests (`worker-backpressure` beyond that), the host queues at most
+two frames' worth of bytes toward stdin, and at most 256 worker notifications wait
+for the plugin's first listener. The worker is stopped, with the exit reason named,
+when it breaks these rules:
+
+| Exit `reason` | Cause |
+| --- | --- |
+| `exited` | the worker exited by itself |
+| `stopped` | the plugin or the host stopped it |
+| `control-violation` | a line that is not a frame, a malformed frame, a reserved or invalid method, a duplicate or unknown id |
+| `output-overflow` | an output-only worker filled the pre-listener buffer, or too many notifications waited for a listener |
+
+Pending calls of an incarnation that ends reject with `worker-incarnation-ended`.
+Nothing is replayed: the host ends the incarnation and the plugin decides whether
+to start another one. A worker that needs network access asks its plugin over this
+channel, and the plugin performs the call with `hostFetch` under its own
+declarations; the worker holds no keys and opens no listener.
+
+Control traffic between the plugin process and the host crosses the plugin
+session as the child notification `notifications/ave/subscription/send`
+(`{ subscriptionId, payload }`), scoped to the worker's handle. The host answers
+with the worker's subscription events: `result`, `error`, `request`,
+`notification`, `cancel`, and `exit` with its reason. These frames are not new
+`ave/host/*` methods and pass no effect gate of their own: the effect boundary
+decided `spawnWorker` once, and the handle carries no authority beyond the worker it
+names.
+
+`stateDirectory: true` asks the host for `~/.ave/plugins/<id>/workers/<workerId>/`,
+created with mode `0700`, granted read and write to that worker only and named in
+its `AVE_WORKER_STATE_DIR`. It is a sibling of the plugin's `data/` directory, so
+the plugin process itself holds no write grant on it. A spec may not set
+`AVE_WORKER_STATE_DIR` itself. The frame schema is published as
+`schemas/worker-stdio-control/1/worker-control.schema.json`.
 
 ### 3.4 Streaming and notifications
 
@@ -914,7 +982,7 @@ column names the chokepoint that stays host-side. "Wire today" is from
 | `withdrawAlert` (:1893 at `f1a8d191e`) | req | plain-json → plain-json | caller's own alert kinds only | unchanged; golden fixture `.../withdrawAlert.json` |
 | `logEvent` (:1377) | notif | plain-json → void | tagged `plugin:<id>` by host | none |
 | `onShutdown` (:1388) | sub | handler-registration, host-terminated | 5 s per handler (`:1384-1386`) | becomes `ave/instance/shutdown` request (§3.4) |
-| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, socketPath, pid }` cross; the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
+| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, control, pid }` cross; control traffic is the child notification `notifications/ave/subscription/send` (§3.3.2); the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
 | `openAuthWindow` (:1437) | UI | plain-json → plain-json | host-owned BrowserWindow, cookie host allow-list (`auth-window-service.ts:10-16`) | with `retainCookies` the values stay in the partition; the reply carries names or the final URL only |
 | `authRedirect.open/wait/close` (:1474-1484) | req | plain-json | host loopback listener, one per plugin | host-issued state required before callback delivery (§3.3.1) |
 | `pickFolders` (:1510) | UI | plain-json | OS dialog, user consent is the dialog | unchanged; the chosen paths do not widen the envelope unless declared (§2.2) |

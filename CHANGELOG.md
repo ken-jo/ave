@@ -8,11 +8,25 @@
 
 - **익스텐션의 루프백 로그인 state를 호스트가 검증합니다.** `authRedirect.open()`은
   호스트가 발급한 일회용 `state`를 돌려주며, 플러그인은 PKCE S256과 함께 그대로
-  보내야 합니다. 잘못되거나 누락된 state와 재전송은 거부됩니다. 프로토콜 4는 아직 출시
-  전이며 앱 버전은 릴리스 준비에서 정합니다. 출시된 앱용 패키지는 프로토콜 3을
+  보내야 합니다. 잘못되거나 누락된 state와 재전송은 거부됩니다. 이 변경은 프로토콜 5에
+  포함되며, 프로토콜 5는 아직 출시 전이고 앱 버전은 릴리스 준비에서 정합니다. 출시된 앱용 패키지는 프로토콜 3을
   유지하세요. 새 프로토콜이 출시되면 해당 릴리스 태그에서 계약을 벤더링하고
-  `hostProtocol`을 `"4"`로, `minAppVersion`을 실제 지원 릴리스로 갱신해야 합니다.
+  `hostProtocol`을 `"5"`로, `minAppVersion`을 실제 지원 릴리스로 갱신해야 합니다.
   호환되지 않는 계약은 프로토콜 협상으로 활성화 전에 거부됩니다. [이전 방법](docs/guides/plugin-development.md#loopback-oauth-with-pkce)
+
+- **익스텐션 워커가 소켓 대신 표준 입출력으로 통신합니다 (호스트 프로토콜 5).**
+  `spawnWorker`의 워커는 이제 어느 플랫폼에서도 소켓·포트·루프백 주소를 받지 않습니다.
+  워커마다 `control`을 선언해야 합니다. `"output-only-v1"`은 stdout을 텍스트로 읽고,
+  `"stdio-control-v1"`은 stdout을 JSON-RPC 프레임 전용으로 쓰며 요청·알림을 양방향으로
+  주고받습니다(`request`, `notify`, `onRequest`, `onNotification`). `udsArgName`과
+  `socketPath`는 별칭 없이 제거됐습니다. 워커가 네트워크를 쓰려면 같은 채널로
+  플러그인에 요청하고, 플러그인이 `hostFetch`로 처리합니다. `stateDirectory: true`를
+  주면 호스트가 `~/.ave/plugins/<id>/workers/<workerId>/`를 만들어 그 워커에게만 쓰기를
+  허용하고 `AVE_WORKER_STATE_DIR`로 알려 줍니다. 워커가 종료되면 대기 중인 호출은
+  `worker-incarnation-ended`로 끝나고 재전송되지 않으며, 종료 이유(`exited`, `stopped`,
+  `control-violation`, `output-overflow`)가 함께 전달됩니다. 출시되지 않은 프로토콜 4는
+  제공하지 않으며, 출시된 호스트는 3에서 5로 한 번에 넘어갑니다.
+  [워커 작성 방법](docs/guides/plugin-development.md#delegated-workers)
 
 - **창 폭에 맞춰 작업 화면이 바뀝니다.** 별도 화면 전환 설정을 없애고 하나의 반응형
   화면으로 통합했습니다. 창은 중앙에 1243×768로 열리며 최소 너비는 360px입니다.

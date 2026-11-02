@@ -34,14 +34,14 @@ import {
 } from "../../../../scripts/lib/plugin-host-protocol-schema.js";
 
 import type { AuthRedirectOpenResult } from "../../public-contract.js";
-import type { HostAuthRedirectOpenResult } from "../../../../schemas/plugin-host-protocol/4/protocol-client.js";
+import type { HostAuthRedirectOpenResult } from "../../../../schemas/plugin-host-protocol/5/protocol-client.js";
 
 type JsonSchema = Record<string, unknown>;
 type Frame = Record<string, unknown>;
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SCHEMA = JSON.parse(
-  readFileSync(join(REPO_ROOT, "schemas/plugin-host-protocol/4/protocol.schema.json"), "utf-8"),
+  readFileSync(join(REPO_ROOT, "schemas/plugin-host-protocol/5/protocol.schema.json"), "utf-8"),
 ) as {
   $id: string;
   $defs: {
@@ -53,7 +53,7 @@ const SCHEMA = JSON.parse(
     types: Record<string, JsonSchema>;
   };
 };
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/4/", import.meta.url));
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/5/", import.meta.url));
 
 const Ajv2020 = (Ajv2020Module as unknown as { default?: unknown }).default ?? Ajv2020Module;
 // Configured the way the plugin guide tells a consumer to: strict, with union
@@ -118,7 +118,7 @@ describe("the schema names what the host serves, and nothing else", () => {
       version: string;
     };
     expect(SCHEMA.$id).toBe(
-      `https://ave.agent-connector.ai/schemas/plugin-host-protocol/4/v${version}/protocol.schema.json`,
+      `https://ave.agent-connector.ai/schemas/plugin-host-protocol/5/v${version}/protocol.schema.json`,
     );
   });
 
@@ -319,7 +319,7 @@ describe("the manifest construct carries is exactly one of entry and process", (
     version: "1.0.0",
     description: "declares one way to produce its process",
     tools: [],
-    requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
+    requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
   };
   const process = { command: "./bin/plugin", args: ["--stdio"], env: { PLUGIN_LOG_LEVEL: "info" } };
 
@@ -354,7 +354,7 @@ describe("the manifest construct carries is exactly one of entry and process", (
 describe("the generator writes the same bytes on every checkout", () => {
   it("reads CRLF sources to exactly what it reads LF sources to, and to the committed file", () => {
     const committed = readFileSync(
-      join(REPO_ROOT, "schemas/plugin-host-protocol/4/protocol.schema.json"),
+      join(REPO_ROOT, "schemas/plugin-host-protocol/5/protocol.schema.json"),
       "utf-8",
     );
     const fromLf = generateHostProtocolSchema().text;
@@ -407,7 +407,7 @@ describe("the command line always reports an outcome", () => {
       symlinkSync(join(REPO_ROOT, "scripts"), linked, "junction");
       const result = runCli(linked, ["--check"]);
       expect(result.stdout).toBe(
-        `${HOST_PROTOCOL_SCHEMA_LABEL} schemas/plugin-host-protocol/4/protocol.schema.json matches its sources\n`,
+        `${HOST_PROTOCOL_SCHEMA_LABEL} schemas/plugin-host-protocol/5/protocol.schema.json matches its sources\n`,
       );
       expect(result.status, result.stderr).toBe(0);
     } finally {

@@ -308,6 +308,13 @@ export async function startPluginChildRuntime(
       call: caller,
       adoptSubscription,
       report: log,
+      send: (subscriptionId, payload) => {
+        channel.notify({
+          jsonrpc: "2.0",
+          method: HOST_PROTOCOL_NOTIFICATIONS.subscriptionSend,
+          params: { subscriptionId, payload },
+        });
+      },
     }),
     ...createConfigSubscriptionChildMembers({
       pluginId,

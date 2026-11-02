@@ -29,7 +29,7 @@ const MANIFEST: PluginManifest = {
   name: "Session Probe",
   version: "1.0.0",
   entry: "plugin.mjs",
-  requires: { hostProtocol: "4" },
+  requires: { hostProtocol: "5" },
   description: "a plugin the protocol session is measured on",
   tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
 };
@@ -79,8 +79,8 @@ function watchedHostApi(): {
       live -= 1;
     };
   };
-  const spawnWorker = vi.fn(async (spec: { workerId: string }) => ({
-    socketPath: `/run/${spec.workerId}.sock`,
+  const spawnWorker = vi.fn(async (_spec: { workerId: string }) => ({
+    control: "output-only-v1" as const,
     pid: 4242,
     stop: () => undefined,
     onStdout: () => undefined,
@@ -175,7 +175,7 @@ function sessionSpec(
   return {
     pluginId: PLUGIN_ID,
     manifest: MANIFEST,
-    hostProtocolVersion: "4",
+    hostProtocolVersion: "5",
     link,
     context: contextFor(hostApi),
     entryPath,
@@ -363,7 +363,7 @@ describe("the bound table is the session's whole authority", () => {
         jsonrpc: "2.0",
         id,
         method: "ave/host/spawnWorker",
-        params: { spec: { workerId: id, command: "/usr/bin/true", allowWritePaths } },
+        params: { spec: { workerId: id, command: "/usr/bin/true", control: "output-only-v1", allowWritePaths } },
       });
     const replyTo = (id: string): Frame | undefined => child.sent.find((frame) => frame.id === id);
 

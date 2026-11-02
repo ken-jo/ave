@@ -52,13 +52,15 @@ vi.mock("../sandbox-process-home.js", () => ({
 }));
 
 describe("worker allocation during runtime-directory carry", () => {
-  it.skipIf(process.platform === "win32")("queues a worker mkdir requested between preflight and the entry move", async () => {
+  it.skipIf(process.platform === "win32")("queues a worker state-dir mkdir requested between preflight and the entry move", async () => {
     const root = await mkdtemp("/tmp/lwsc-");
     vi.stubEnv("AVE_HOME", root);
     const pluginId = "socket-carry-allocation";
     const live = join(aveHome(), "plugins", pluginId);
     const backup = join(root, "backup");
-    const workerDir = join(live, "run", "worker");
+    // The carry moves a run/ entry that an older host created; the worker asks for its state dir meanwhile.
+    const carriedDir = join(live, "run", "worker");
+    const stateDir = join(live, "workers", "worker");
     await mkdir(join(live, "run"), { recursive: true });
     await mkdir(join(backup, "run", "worker"), { recursive: true });
     const runtimeInode = statSync(join(live, "run")).ino;
@@ -71,14 +73,14 @@ describe("worker allocation during runtime-directory carry", () => {
     const workerReady = new Promise<void>((resolve) => { allocation.ready = resolve; });
     allocation.finishSpawn = new Promise<never>((_, reject) => { rejectSpawn = reject; });
     allocation.finishSpawn.catch(() => {});
-    allocation.workerDir = workerDir;
+    allocation.workerDir = stateDir;
     allocation.mkdirEntered = false;
-    allocation.beforeMove = { to: workerDir, wait: async () => { reachedMove(); await moveResumed; } };
+    allocation.beforeMove = { to: carriedDir, wait: async () => { reachedMove(); await moveResumed; } };
     const carry = carryPluginSocketDirs(live, backup, { onConflict: "reject" });
     let worker: Promise<unknown> | undefined;
     try {
       await moveReached;
-      worker = spawnWorker({ pluginId, workerId: "worker", command: process.execPath }).catch((error: Error) => error);
+      worker = spawnWorker({ pluginId, workerId: "worker", control: "output-only-v1", stateDirectory: true, command: process.execPath }).catch((error: Error) => error);
       // Let the independently requested host operation reach its queue. Without exclusion it calls the real mkdir before the paused rename resumes.
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(allocation.mkdirEntered).toBe(false);

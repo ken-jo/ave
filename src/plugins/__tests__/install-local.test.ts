@@ -142,7 +142,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       name: "test-plugin", version: "1.2.3", description: "Process extension",
       extensions: { "ai.agent-connector.ave": {
         process: { command: "./bin/plugin" },
-        requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
         tools: [],
       } },
     }), "utf8");

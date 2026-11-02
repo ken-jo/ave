@@ -84,7 +84,7 @@ describe("private-home refusal at extension spawn boundaries", () => {
     let client: McpClient | undefined;
     const start = async () => {
       if (kind === "plugin worker") {
-        return spawnWorker({ pluginId: "privacy", workerId: "worker", command: "privacy-worker.exe" });
+        return spawnWorker({ pluginId: "privacy", workerId: "worker", control: "output-only-v1", command: "privacy-worker.exe" });
       }
       if (kind === "plugin child") {
         return spawnConfinedChild({ command: "privacy-child.exe", args: [], label: "plugin-child:privacy",

@@ -196,7 +196,7 @@ export function makeTestManifest(
     description: "test fixture",
     entry: "dist/hostPlugin.js",
     ...(rest as Partial<PluginManifest>),
-    requires: { hostProtocol: "4", ...overrides.requires },
+    requires: { hostProtocol: "5", ...overrides.requires },
     tools,
   };
 }

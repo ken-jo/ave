@@ -174,7 +174,7 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
           await expect(sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite })).rejects.toThrow(/contains machine root/);
         } else if (producer === "worker-spawn") {
           const { spawnWorker } = await import("../worker-spawn.js");
-          await expect(spawnWorker({ pluginId: "fixture", workerId: "fixture", command: "fixture.exe", allowWritePaths: allowWrite }))
+          await expect(spawnWorker({ pluginId: "fixture", workerId: "fixture", control: "output-only-v1", command: "fixture.exe", allowWritePaths: allowWrite }))
             .rejects.toThrow(/contains machine root/);
         } else if (producer === "holder") {
           const { holdWindowsFilesystemGrant } = await import("../windows-acl-grant-holder.js");

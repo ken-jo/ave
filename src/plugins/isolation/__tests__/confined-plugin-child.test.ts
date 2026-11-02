@@ -113,7 +113,7 @@ const CANDIDATE_MANIFEST: PluginManifest = {
   name: "Sample Assistant",
   version: "1.0.0",
   entry: "index.js",
-  requires: { hostProtocol: "4" },
+  requires: { hostProtocol: "5" },
   description: "Exercises declared filesystem authority",
   tools: [],
   sandbox: {
@@ -1459,7 +1459,7 @@ export const createPlugin = async (context) => ({
           name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the pilot, confined",
           tools: [
             {
@@ -1511,7 +1511,7 @@ export const createPlugin = async (context) => ({
 describe("the host protocol, spoken by a real confined child", () => {
   /** A complete plugin: its manifest, its entry and its recorded transcript. */
   const MEETING_GOLDEN = fileURLToPath(
-    new URL("./fixtures/host-protocol/4/plugins/meeting/", import.meta.url),
+    new URL("./fixtures/host-protocol/5/plugins/meeting/", import.meta.url),
   );
 
   /** The plugin's own tool results in a recorded transcript, by tool name. */
@@ -1563,7 +1563,7 @@ describe("the host protocol, spoken by a real confined child", () => {
         name: pluginId,
         version: "1.0.0",
         entry: "entry.mjs",
-        requires: { hostProtocol: "4" },
+        requires: { hostProtocol: "5" },
         description: "a child the protocol's process rules are measured on",
         tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
       },
@@ -1783,17 +1783,19 @@ export const createPlugin = async (context) => {
       probe_worker_escape: async () => await attempt(() => api.spawnWorker({
         workerId: "escape",
         command: "/bin/sh",
+        control: "output-only-v1",
         allowWritePaths: ["/"],
       })),
       probe_worker_allowed: async () => {
         const worker = await api.spawnWorker({
           workerId: "indexer",
           command: "/usr/bin/true",
+          control: "output-only-v1",
           allowReadPaths: [context.pluginRoot],
           allowWritePaths: [context.pluginDataDir],
         });
         return {
-          socketPath: worker.socketPath,
+          control: worker.control,
           pid: worker.pid,
           // A live handle would carry these. An id carries none of them.
           fields: Object.keys(worker).sort(),
@@ -1803,6 +1805,7 @@ export const createPlugin = async (context) => {
         const worker = await api.spawnWorker({
           workerId: "chosen",
           command: "/usr/bin/true",
+          control: "output-only-v1",
           allowWritePaths: [api.config.get("workspace")],
         });
         return { pid: worker.pid };
@@ -1810,6 +1813,7 @@ export const createPlugin = async (context) => {
       probe_worker_sibling: async () => await attempt(() => api.spawnWorker({
         workerId: "sibling",
         command: "/usr/bin/true",
+        control: "output-only-v1",
         allowWritePaths: [${JSON.stringify(fx.userRootSibling)}],
       })),
       probe_config: async () => api.config.get("watched") ?? null,
@@ -1824,7 +1828,7 @@ export const createPlugin = async (context) => {
 
       const release = vi.fn();
       const spawnWorker = vi.fn(async () => ({
-        socketPath: "/run/indexer.sock",
+        control: "output-only-v1" as const,
         pid: 31337,
         stop: () => undefined,
         onStdout: () => undefined,
@@ -1868,7 +1872,7 @@ export const createPlugin = async (context) => {
           name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the lossy members, confined",
           configSchema: { type: "object", properties: { watched: { type: "string" }, workspace: { type: "string" } } },
           sandbox: CANDIDATE_MANIFEST.sandbox,
@@ -1952,20 +1956,20 @@ export const createPlugin = async (context) => {
         expect(spawnWorker).not.toHaveBeenCalled();
 
         const spawned = (await instance.handlers.probe_worker_allowed!()) as {
-          socketPath: string;
+          control: string;
           pid: number;
           fields: string[];
         };
         expect(spawnWorker).toHaveBeenCalledTimes(1);
-        expect(spawned.socketPath).toBe("/run/indexer.sock");
+        expect(spawned.control).toBe("output-only-v1");
         expect(spawned.pid).toBe(31337);
         // The plugin holds an id and two scalars behind four local methods; nothing that could be a `ChildProcess`.
         expect(spawned.fields).toEqual([
+          "control",
           "onExit",
           "onStderr",
           "onStdout",
           "pid",
-          "socketPath",
           "stop",
         ]);
 
@@ -2188,7 +2192,7 @@ export const createPlugin = async (context) => {
           name: "Meeting",
           version: "0.5.42",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the recorder, confined",
           configSchema: {
             type: "object",
@@ -2716,7 +2720,7 @@ export default async function createPlugin(context) {
           name: "Local Indexer",
           version: "0.5.40",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the indexer's host-supplied answers",
           tools: ["indexer_home_probe", "indexer_drive_probe"].map((name) => ({
             name,
@@ -2836,7 +2840,7 @@ process.stdin.on("end", () => process.exit(0));
         name: plugin.pluginId,
         version: "1.0.0",
         process: { command: "./bin/plugin", env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
-        requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
         description: "a process entry whose environment is measured",
         tools: [],
       },
@@ -3018,6 +3022,7 @@ process.stdin.on("end", () => process.exit(0));
         const worker = await spawnWorker({
           pluginId: "rs",
           workerId: "w",
+          control: "output-only-v1",
           command: "/bin/sh",
           args: [script],
           env: { PLUGIN_DATA: dataDir, ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: join(elsewhere, "report"), ROOT_ENTRIES_REPORT: inventoryReport },
@@ -3503,6 +3508,7 @@ describe("the sandbox temp directories", () => {
             const worker = await spawnWorker({
               pluginId: "temp-b",
               workerId: "w",
+              control: "output-only-v1",
               command: process.execPath,
               args: [probe],
               env: { ELECTRON_RUN_AS_NODE: "1" },

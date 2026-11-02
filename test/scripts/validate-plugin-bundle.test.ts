@@ -36,7 +36,7 @@ function helloWorld(name: string, minAppVersion: string | undefined): string {
         "ai.agent-connector.ave": {
           displayName: "Hello World",
           entry: "dist/index.js",
-          requires: { minAppVersion, hostProtocol: "4" },
+          requires: { minAppVersion, hostProtocol: "5" },
           tools: [
             {
               name: "hello_world",

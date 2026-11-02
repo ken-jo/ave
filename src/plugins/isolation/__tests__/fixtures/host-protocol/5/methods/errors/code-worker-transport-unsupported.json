@@ -1,0 +1,33 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/spawnWorker",
+    "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
+      "spec": {
+        "args": [
+          "--version"
+        ],
+        "command": "/usr/bin/true",
+        "control": "stdio-control-v1",
+        "workerId": "golden"
+      }
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "worker-transport-unsupported",
+        "name": "WorkerTransportUnsupportedError"
+      },
+      "message": "Selected container backend requires native streams; workers require stdio control v1. Update the process adapter and its client before starting it"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a container backend that cannot carry the worker"
+}
