@@ -37,6 +37,7 @@ import {
 } from "../permissions/windows-acl-grant-holder.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { aveHome } from "../shared/ave-home.js";
+import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
@@ -413,9 +414,11 @@ function createHolderStaging(): HolderStaging {
   mkdirSync(parent, { recursive: true });
   // A link at the staging parent would place every holder's HOME/temp, and later its removal, somewhere else.
   if (lstatSync(parent).isSymbolicLink()) throw new MxcProcessContractError("Holder staging parent is a link");
-  const root = winPath.join(parent, randomBytes(16).toString("hex"));
-  const home = winPath.join(root, "home");
-  const temp = winPath.join(root, "temp");
+  const dir = winPath.join(parent, randomBytes(16).toString("hex"));
+  const home = winPath.join(dir, "home");
+  const temp = winPath.join(dir, "temp");
+  // The shared staging-shape check (also the plugin-child adapter's): exactly <AVE_HOME>\mxc-staging\<32-hex>\{home,temp}.
+  const root = assertMxcHolderStaging({ aveHome: aveHome(), home, temp });
   mkdirSync(home, { recursive: true });
   mkdirSync(temp, { recursive: true });
   if (lstatSync(root).isSymbolicLink()) throw new MxcProcessContractError("Holder staging root is a link");

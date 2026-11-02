@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   removed: [] as string[],
   readonly: new Set<string>(),
   ops: [] as string[],
+  stagingRefusal: undefined as Error | undefined,
 }));
 
 vi.mock("../../permissions/confined-child.js", () => ({
@@ -31,6 +32,17 @@ vi.mock("../../shared/ave-home.js", async (original) => ({
   ...await original<typeof import("../../shared/ave-home.js")>(),
   aveHome: () => "C:\\ave",
 }));
+// The shared staging-shape check runs for real; a test can make it refuse to prove the adapter defers to it.
+vi.mock("../../permissions/mxc-filesystem-ownership.js", async (original) => {
+  const actual = await original<typeof import("../../permissions/mxc-filesystem-ownership.js")>();
+  return {
+    ...actual,
+    assertMxcHolderStaging: (input: Parameters<typeof actual.assertMxcHolderStaging>[0]) => {
+      if (state.stagingRefusal) throw state.stagingRefusal;
+      return actual.assertMxcHolderStaging(input);
+    },
+  };
+});
 // A small in-memory Windows drive for drive-letter paths; every other path reaches the real filesystem.
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -183,6 +195,7 @@ beforeEach(() => {
   state.removed = [];
   state.readonly = new Set();
   state.ops = [];
+  state.stagingRefusal = undefined;
   state.spawn.mockReset();
   state.spawn.mockResolvedValue(spawned);
   spawned.release.mockReset();
@@ -437,6 +450,13 @@ describe("teardown", () => {
     expect(state.ops.some((op) => /^chmod .*\\escape$/u.test(op))).toBe(false);
     expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
     expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
+  });
+
+  it("forms staging through the shared staging-shape check, before creating a holder directory", async () => {
+    state.stagingRefusal = new MxcProcessContractError("shape refused");
+    await expect(spawnMxcBundledHolder(input())).rejects.toThrow("shape refused");
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect([...state.dirs].some((dir) => /mxc-staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
   });
 
   it("refuses a staging parent that is a link before creating any holder directory or starting anything", async () => {
