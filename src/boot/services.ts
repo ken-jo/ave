@@ -157,6 +157,8 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   const memoryCaptureService = new MemoryCaptureService({
     memoryManager,
     getMode: () => settingsService.get("features")?.memoryCaptureMode,
+    // Only main-store loops (primary and chat groups) receive this service; side chat and sub-agents do not.
+    sessionStore: "main",
   });
 
   const inputClassifier = new InputClassifier();

@@ -60,7 +60,8 @@ function makeMemoryReviewer(raw = reviewedCapture()) {
 
 function enqueueTrustedAutomatic(service: MemoryCaptureService, input = SOURCE): void {
   service.enqueueAutomatic({
-    sessionId: "session-1",
+    sessionId: SESSION_ID,
+    turnMessageId: TURN_MESSAGE_ID,
     input,
     inputOrigin: "user-keyboard",
     stopReason: "end_turn",
@@ -72,8 +73,11 @@ function createCaptureService(
   memoryReviewer: MemoryCaptureReviewer,
   mode: "auto" | "off" | "review",
 ) {
-  return new MemoryCaptureService({ memoryManager, memoryReviewer, getMode: () => mode });
+  return new MemoryCaptureService({ memoryManager, memoryReviewer, getMode: () => mode, sessionStore: "main" });
 }
+
+const SESSION_ID = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
+const TURN_MESSAGE_ID = "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f";
 
 describe("MemoryCaptureService", () => {
   it("host-validates a trusted automatic capture before saving it as active", async () => {
@@ -82,6 +86,7 @@ describe("MemoryCaptureService", () => {
     const service = new MemoryCaptureService({
       memoryManager: manager,
       getMode: () => "auto",
+      sessionStore: "main",
     });
     service.setMemoryReviewer(memoryReviewer);
 
@@ -110,8 +115,22 @@ describe("MemoryCaptureService", () => {
           trigger: "automatic",
           sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         }),
+        origin: { v: 1, sessionId: SESSION_ID, messageId: TURN_MESSAGE_ID, store: "main" },
       }), "capture",
     );
+  });
+
+  it("records the conversation an explicit save came from, and nothing for a direct UI save", async () => {
+    const { manager, saveMemory } = makeMemoryManager();
+    const { memoryReviewer } = makeMemoryReviewer();
+    const service = createCaptureService(manager, memoryReviewer, "auto");
+
+    await service.captureExplicit({ title: "Status preference", content: SOURCE, sessionId: SESSION_ID });
+    await service.captureExplicit({ title: "Status preference", content: SOURCE });
+
+    expect(saveMemory.mock.calls[0]![2]).toMatchObject({ origin: { v: 1, sessionId: SESSION_ID, store: "main" } });
+    expect(saveMemory.mock.calls[0]![2]!.origin).not.toHaveProperty("messageId");
+    expect(saveMemory.mock.calls[1]![2]).not.toHaveProperty("origin");
   });
 
   it("keeps unattended captures as candidates in review mode", async () => {

@@ -87,6 +87,36 @@ describe("memory_write — happy path", () => {
   });
 });
 
+describe("memory_write — provenance", () => {
+  it("records the conversation and the user row that opened the turn, taken from host metadata", async () => {
+    const { store, saveMemory } = makeStore();
+    await run(
+      { title: "stack", content: "Alpha uses pnpm." },
+      store,
+      {
+        cwd: "",
+        extraAllowedDirectories: [],
+        metadata: { sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10", turnMessageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f" },
+      },
+    );
+    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", {
+      source: "assistant",
+      state: "candidate",
+      origin: {
+        v: 1,
+        sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10",
+        messageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f",
+      },
+    });
+  });
+
+  it("ignores provenance the model puts in its arguments", async () => {
+    const { store, saveMemory } = makeStore();
+    await run({ title: "stack", content: "Alpha uses pnpm.", origin: { sessionId: "forged" }, sessionId: "forged" }, store);
+    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", { source: "assistant", state: "candidate" });
+  });
+});
+
 describe("memory_write — required-field guards", () => {
   it.each([
     ["missing title", { content: "x" }],

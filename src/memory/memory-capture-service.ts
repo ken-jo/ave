@@ -10,8 +10,10 @@ import { hasControlChars } from "../shared/display-safe-text.js";
 import type {
   MemoryKind,
   MemoryManager,
+  MemoryOriginV1,
   NoteEntry,
   ProjectScopedMemoryOptions,
+  SessionNamespace,
 } from "./memory-manager.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { MAX_MEMORY_SOURCE_CHARS, MEMORY_KINDS } from "./memory-manager.js";
@@ -33,6 +35,8 @@ export type MemoryCaptureTaintReason =
 
 export interface AutomaticMemoryCaptureRequest extends ProjectScopedMemoryOptions {
   sessionId: string;
+  /** The user row that opened the turn; recorded as where the memory was learned. */
+  turnMessageId?: string;
   input: string;
   inputOrigin: ChatInputOrigin;
   stopReason?: string;
@@ -42,6 +46,8 @@ export interface AutomaticMemoryCaptureRequest extends ProjectScopedMemoryOption
 export interface ExplicitMemoryCaptureRequest extends ProjectScopedMemoryOptions {
   content: string;
   title?: string;
+  /** The conversation the save was asked from; absent for a direct save from the memory UI. */
+  sessionId?: string;
 }
 
 export interface MemoryCaptureReviewer {
@@ -69,6 +75,7 @@ interface PendingCapture {
   sourceDigest: string;
   trigger: MemoryCaptureTrigger;
   sessionId?: string;
+  origin?: MemoryOriginV1;
   requestedTitle?: string;
 }
 
@@ -95,6 +102,8 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     getMode: () => MemoryCaptureMode | undefined;
     memoryReviewer?: MemoryCaptureReviewer;
     maxPending?: number;
+    /** The session store every request's sessionId belongs to; boot serves only main-store conversations. */
+    sessionStore: SessionNamespace;
   }) {
     this.memoryReviewer = deps.memoryReviewer;
   }
@@ -129,6 +138,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     this.pending.push({
       scope: copyProjectScope(request),
       sessionId: request.sessionId,
+      origin: this.originFor(request.sessionId, request.turnMessageId),
       source,
       sourceDigest,
       trigger: "automatic",
@@ -152,8 +162,18 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
       source,
       sourceDigest: sha256Hex(source),
       trigger: "explicit",
+      ...(request.sessionId !== undefined ? { origin: this.originFor(request.sessionId, undefined) } : {}),
       ...(requestedTitle ? { requestedTitle } : {}),
     });
+  }
+
+  private originFor(sessionId: string, messageId: string | undefined): MemoryOriginV1 {
+    return {
+      v: 1,
+      sessionId,
+      ...(messageId !== undefined ? { messageId } : {}),
+      store: this.deps.sessionStore,
+    };
   }
 
   async runOnIdle(): Promise<void> {
@@ -241,6 +261,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
         sourceDigest: pending.sourceDigest,
         capturedAt,
       },
+      ...(pending.origin ? { origin: pending.origin } : {}),
     }, pending.trigger === "automatic" ? "capture" : "user");
     return state === "active"
       ? { status: "saved", entry }

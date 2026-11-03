@@ -1583,6 +1583,8 @@ export async function queryLoop(
           // Carry spawn depth so execution refuses recursive agent_spawn calls.
           spawnDepth: bounds?.spawnDepth,
           memoryIncludeUnscoped: self.getSessionMemoryProjectContext?.()?.includeUnscoped === true,
+          // memory_write records the row that opened the turn as where a memory was learned.
+          ...(bounds.turnMessageId !== undefined ? { turnMessageId: bounds.turnMessageId } : {}),
           supportsA2AParentDelivery: self.deps.supportsA2AParentDelivery === true,
           approvalReasonPrefix: activeApprovalReasonPrefix,
           // Pass the turn abort signal so blocking tools honor user stop.

@@ -186,6 +186,7 @@ export interface NoteEntry {
   pinned?: boolean;
   derivation?: MemoryDerivationV1;
   capture?: MemoryCaptureV1;
+  origin?: MemoryOriginV1;
 }
 
 export interface ProjectScopedMemoryOptions {
@@ -223,6 +224,19 @@ interface MemoryCaptureV1 {
   capturedAt: string;
 }
 
+/**
+ * Where a memory was learned: the conversation and, when known, the user row that opened the turn. Ids only; the quote is
+ * read from the session at display time so the memory store never duplicates conversation text. `store` is recorded where
+ * the writer knows it structurally; a reader resolves a missing store by probing main, side-chat, then sub-agent sessions.
+ * A direct UI save has no origin. Kept separate from `capture` because assistant candidates carry no capture block.
+ */
+export interface MemoryOriginV1 {
+  v: 1;
+  sessionId: string;
+  messageId?: string;
+  store?: SessionNamespace;
+}
+
 export interface MemoryConsolidationSnapshot {
   scope: MemoryScope;
   sources: readonly NoteEntry[];
@@ -246,6 +260,7 @@ export interface MemoryMetadataV1 {
   pinned?: true;
   derivation?: MemoryDerivationV1;
   capture?: MemoryCaptureV1;
+  origin?: MemoryOriginV1;
 }
 
 // Omitted projectRoot explicitly selects global long-term memory.
@@ -257,6 +272,7 @@ export interface MemorySaveOptions extends ProjectScopedMemoryOptions {
   expiresAt?: string;
   pinned?: boolean;
   capture?: MemoryCaptureV1;
+  origin?: MemoryOriginV1;
 }
 
 export interface MemoryReadOptions extends ProjectScopedMemoryOptions {
@@ -774,6 +790,24 @@ function normalizeMemoryCapture(value: unknown): MemoryCaptureV1 | null {
   };
 }
 
+const SESSION_NAMESPACES = new Set<SessionNamespace>(["main", "side-chat", "subagent"]);
+
+// Strict: an origin with an unknown key or a malformed id is invalid, never trimmed into a valid one.
+function normalizeMemoryOrigin(value: unknown): MemoryOriginV1 | null {
+  if (!isRecord(value) || value.v !== 1 || !isValidSessionId(value.sessionId)) return null;
+  for (const key of Object.keys(value)) {
+    if (key !== "v" && key !== "sessionId" && key !== "messageId" && key !== "store") return null;
+  }
+  if (value.messageId !== undefined && !isSafeStructuralId(value.messageId)) return null;
+  if (value.store !== undefined && !SESSION_NAMESPACES.has(value.store as SessionNamespace)) return null;
+  return {
+    v: 1,
+    sessionId: value.sessionId,
+    ...(value.messageId !== undefined ? { messageId: value.messageId as string } : {}),
+    ...(value.store !== undefined ? { store: value.store as SessionNamespace } : {}),
+  };
+}
+
 // Capture provenance belongs only to its owning write path; manual records cannot impersonate reviewed captures.
 function hasValidCaptureSourceCombination(
   source: MemorySourceKind,
@@ -829,6 +863,8 @@ function decodeMemoryMetadata(encoded: string): MemoryMetadataV1 | null {
   if (raw.capture !== undefined && !decodedCapture) return null;
   const capture = decodedCapture ?? undefined;
   if (!hasValidCaptureSourceCombination(raw.source as MemorySourceKind, capture, derivation)) return null;
+  const origin = raw.origin === undefined ? undefined : normalizeMemoryOrigin(raw.origin);
+  if (origin === null) return null;
 
   let scope: MemoryScope;
   if (raw.scope.type === "global") {
@@ -858,6 +894,7 @@ function decodeMemoryMetadata(encoded: string): MemoryMetadataV1 | null {
     ...(raw.pinned === true ? { pinned: true } : {}),
     ...(derivation ? { derivation } : {}),
     ...(capture ? { capture } : {}),
+    ...(origin ? { origin } : {}),
   };
 }
 
@@ -3476,6 +3513,8 @@ export class MemoryManager implements PromptMemorySource {
     if (!hasValidCaptureSourceCombination(source, capture)) {
       throw new Error("saveMemory: capture provenance does not match the memory source");
     }
+    const origin = options.origin === undefined ? undefined : normalizeMemoryOrigin(options.origin);
+    if (origin === null) throw new Error("saveMemory: invalid origin");
 
     const projectRoot = normalizeMetadataString(options.projectRoot, MAX_PROJECT_ROOT_CHARS);
     const projectName = normalizeMetadataString(options.projectName, MAX_PROJECT_NAME_CHARS);
@@ -3501,6 +3540,7 @@ export class MemoryManager implements PromptMemorySource {
       ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
       ...(options.pinned === true ? { pinned: true } : {}),
       ...(capture ? { capture: { ...capture } } : {}),
+      ...(origin ? { origin } : {}),
     };
   }
 
@@ -3529,6 +3569,8 @@ export class MemoryManager implements PromptMemorySource {
       ...(expiresAt ? { expiresAt } : {}),
       ...(pinned ? { pinned: true } : {}),
       ...(requested.capture ?? existing.capture ? { capture: { ...(requested.capture ?? existing.capture)! } } : {}),
+      // Where a memory was learned is its first origin; later edits are in the change history.
+      ...(existing.origin ?? requested.origin ? { origin: { ...(existing.origin ?? requested.origin)! } } : {}),
     };
   }
 
@@ -3555,6 +3597,7 @@ export class MemoryManager implements PromptMemorySource {
       ...(metadata.pinned ? { pinned: true } : {}),
       ...(metadata.derivation ? { derivation: { ...metadata.derivation } } : {}),
       ...(metadata.capture ? { capture: { ...metadata.capture } } : {}),
+      ...(metadata.origin ? { origin: { ...metadata.origin } } : {}),
       ...(project?.projectRoot ? { projectRoot: project.projectRoot } : {}),
       ...(project?.projectName ? { projectName: project.projectName } : {}),
     };
@@ -3657,6 +3700,7 @@ export class MemoryManager implements PromptMemorySource {
       ...entry,
       ...(entry.derivation ? { derivation: { ...entry.derivation } } : {}),
       ...(entry.capture ? { capture: { ...entry.capture } } : {}),
+      ...(entry.origin ? { origin: { ...entry.origin } } : {}),
     };
   }
 
