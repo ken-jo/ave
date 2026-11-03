@@ -16,7 +16,7 @@ import {
 } from "./oauth.js";
 import type { ChatGptPlanCallbackListener } from "./loopback.js";
 import type { SubscriptionRuntimeNotice } from "../../shared/subscription-runtime.js";
-import type { OpenOAuthLogin } from "../oauth-login.js";
+import type { OAuthLoginEndReason, OpenOAuthLogin } from "../oauth-login.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 /** The settings-store surface the session needs: encrypted secrets only. */
@@ -108,7 +108,7 @@ export interface ChatGptPlanSessionOptions {
   readonly openAuthorizationUrl: OpenOAuthLogin;
   /** Starts the loopback listener for one attempt; it completes only on a callback carrying `expectedState`. */
   readonly startListener: (expectedState: string) => Promise<ChatGptPlanCallbackListener>;
-  readonly verifier: Pick<ChatGptPlanIdTokenVerifier, "verify">;
+  readonly verifier: Pick<ChatGptPlanIdTokenVerifier, "verify" | "prefetchKeys">;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly onEvent?: (event: ChatGptPlanSessionEvent) => void;
@@ -205,11 +205,14 @@ export class ChatGptPlanSession {
     const hostId = await this.options.hostId();
     try {
       await verifyDiscoveryDocument(this.options.fetch);
+      // The keys that will check the ID token are fetched now: once the user has finished in the browser, the
+      // code is spent, so a key set that cannot be reached must fail here, not after.
+      await this.options.verifier.prefetchKeys();
     } catch (error) {
       this.emit({ event: "sign-in-failed", failure: failureCode(error) });
-      throw new ChatGptPlanSessionError(
-        error instanceof ChatGptPlanOAuthError && error.failure === "transient" ? "temporarily-unavailable" : "sign-in-failed",
-      );
+      const transient = (error instanceof ChatGptPlanOAuthError && error.failure === "transient")
+        || (error instanceof ChatGptPlanIdTokenError && error.failure === "jwks-unavailable");
+      throw new ChatGptPlanSessionError(transient ? "temporarily-unavailable" : "sign-in-failed");
     }
     const target: ChatGptPlanAuthorizationTarget = record
       ? {
@@ -223,6 +226,8 @@ export class ChatGptPlanSession {
     const attempt = createAuthorizationAttempt();
     const listener = await this.options.startListener(attempt.state);
     const url = buildAuthorizationUrl({ attempt, redirectUri: listener.redirectUri, hostId, target });
+    // Set when the login window ends first; its reason, not the listener teardown it causes, explains the failure.
+    let windowEnd: OAuthLoginEndReason | null = null;
     const completion = (async () => {
       try {
         const callbackUrl = await listener.callback;
@@ -268,7 +273,7 @@ export class ChatGptPlanSession {
         this.notice = planEnabled && !welcomed ? "welcome" : null;
         this.emit({ event: "sign-in-succeeded" });
       } catch (error) {
-        this.emit({ event: "sign-in-failed", failure: failureCode(error) });
+        this.emit({ event: "sign-in-failed", failure: windowEnd ? windowEndFailure(windowEnd) : failureCode(error) });
         // A cancelled attempt needs no explanation; any other ending says why it did not finish.
         this.notice = this.cancelRequested ? null : signInFailureNotice(error);
         throw error instanceof ChatGptPlanSessionError ? error : new ChatGptPlanSessionError("sign-in-failed");
@@ -285,7 +290,10 @@ export class ChatGptPlanSession {
     const openWindow = async () => {
       await this.options.openAuthorizationUrl(url, {
         completion: listener.callback,
-        onCancel: () => listener.close(),
+        onCancel: (reason = "failed") => {
+          windowEnd = reason;
+          listener.close();
+        },
         timeoutMs: TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
       });
     };
@@ -487,11 +495,13 @@ function signInFailureNotice(error: unknown): ChatGptPlanNotice {
   return "sign-in-failed";
 }
 
+function windowEndFailure(reason: OAuthLoginEndReason): string {
+  return reason === "window-closed" ? reason : `window-${reason}`;
+}
+
 function failureCode(error: unknown): string {
   if (error instanceof ChatGptPlanOAuthError) return `oauth-${error.failure}`;
   if (error instanceof ChatGptPlanSessionError) return error.failure;
-  if (error instanceof Error && error.name === "ChatGptPlanIdTokenError") {
-    return `id-token-${(error as Error & { failure?: string }).failure ?? "rejected"}`;
-  }
+  if (error instanceof ChatGptPlanIdTokenError) return `id-token-${error.failure}${error.detail ? `:${error.detail}` : ""}`;
   return "unexpected";
 }

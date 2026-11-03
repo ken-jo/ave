@@ -30,7 +30,6 @@ const log = createLogger("ave");
 
 // Re-export the shared type boundary so callers that import from work-board-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
 export {
-  MAX_ITEMS,
   type WorkItemStatusStored,
   type WorkItemRunStatus,
   type WorkItemResolved,
@@ -50,7 +49,6 @@ export {
 } from "../shared/work-board-types.js";
 
 import {
-  MAX_ITEMS,
   type WorkItem,
   type WorkItemResolved,
   type WorkItemStatusStored,
@@ -332,12 +330,6 @@ export class WorkBoardStore {
 
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await readFileOrEmpty(this.filePath);
-      if (board.items.length >= MAX_ITEMS) {
-        return {
-          status: "invalid" as const,
-          reason: `item cap reached (${MAX_ITEMS}); complete or remove old items first`,
-        };
-      }
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
@@ -886,7 +878,7 @@ export class WorkBoardStore {
     });
   }
 
-  // Turn an accepted proposal into a work item through the ORDINARY create path — same validation, same activity row, same MAX_ITEMS budget as a card the
+  // Turn an accepted proposal into a work item through the ORDINARY create path — same validation and the same activity row as a card the
   // user typed. The proposal keeps `acceptedItemId` so the card stops showing and the item it became stays traceable to its source.
   async acceptProposal(
     id: string,

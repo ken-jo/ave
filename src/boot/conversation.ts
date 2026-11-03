@@ -1,5 +1,6 @@
 import type { SettingsService } from "../data/settings-store.js";
 import type { MemoryManager, PromptMemorySource } from "../memory/memory-manager.js";
+import type { MemoryUsageRecorder } from "../memory/memory-usage-log.js";
 import type {
   AutomaticMemoryCaptureSubmitter,
   MemoryCaptureService,
@@ -55,12 +56,16 @@ export function createSystemPromptBuilder(opts: {
   getAppModelContext?: (sessionId: string) => string;
   /** Discovery instructions are inert, untrusted context; only main chat wires them. */
   mcpServerGuidanceProvider?: () => Array<{ serverId: string; instructions: string }>;
+  /** Only builders on the user's memory store (main, routine) record injected memories; side chat has its own store. */
+  memoryUsageLog?: MemoryUsageRecorder;
 }): SystemPromptBuilder {
   const { memoryManager, toolRegistry, pluginRuntime, getAvailableSkills, getActivatablePluginIds, getAppModelContext, mcpServerGuidanceProvider,
+    memoryUsageLog,
   } = opts;
   return new SystemPromptBuilder({
     memoryManager,
     toolRegistry,
+    ...(memoryUsageLog ? { memoryUsageLog } : {}),
 
     // Use the builder’s scoped registry so child prompts advertise only callable tools.
     getPluginCards: (registry) => pluginRuntime.listPluginCards(registry),
@@ -247,6 +252,8 @@ export function createRoutineConversationLoop(
     memoryManager: deps.memoryManager,
     toolRegistry: deps.toolRegistry,
     pluginRuntime: deps.pluginRuntime,
+    // Routines read the same user memory store as the main builder, so they share its use log.
+    memoryUsageLog: deps.systemPromptBuilder.memoryUsageRecorder,
     // Routine activation is session-local; persisted plugin enablement stays unchanged.
     getActivatablePluginIds: () => allowedPluginIds,
     // Skill overlay is interactive-only — routine sessions are headless.

@@ -8,23 +8,26 @@ test('first-run model setup reveals credentials only after an explicit choice', 
   await expect(mainWindow.getByTestId('iab-status-model')).toHaveCount(0);
   const settings = await openInlineSettings(app, mainWindow, 'llm');
 
-  for (const provider of ['codex', 'claude-code']) {
+  // A subscription row holds only its sign-in; the company's API key is its own API row.
+  for (const [provider, apiVendor] of [['codex', 'openai'], ['claude-code', 'claude']] as const) {
     await settings.getByTestId('llm-tab:add-provider').click();
     const choice = settings.getByTestId(`llm-tab:add-provider-item:${provider}`);
     await expect(choice).not.toContainText(/Codex|Claude Code/);
     await choice.click();
     const card = settings.getByTestId(`llm-tab:connection:${provider}`);
-    const key = card.getByTestId('llm-api-key-input');
-    await expect(key).toHaveCount(0);
-    await expect(card.getByTestId(`llm-tab:sign-in-method:${provider}:api`)).toBeVisible();
-    await card.getByTestId(`llm-tab:sign-in-method:${provider}:api`).click();
-    await expect(key).toBeVisible();
-    await card.getByTestId(`llm-tab:sign-in-method:${provider}:subscription`).click();
-    await expect(key).toHaveCount(0);
+    await expect(card.getByTestId('llm-api-key-input')).toHaveCount(0);
+    await expect(card.getByTestId(`llm-tab:sign-in-method:${provider}:api`)).toHaveCount(0);
     for (const action of ["configure-runtime", "change-runtime", "forget-runtime"]) {
       await expect(card.getByTestId(`subscription-provider:${provider}:${action}`)).toHaveCount(0);
     }
     await settings.screenshot({ path: testInfo.outputPath(`${provider}-sign-in.png`) });
+
+    await settings.getByTestId('llm-tab:add-provider').click();
+    await settings.getByTestId(`llm-tab:add-provider-item:${apiVendor}`).click();
+    const apiRow = settings.getByTestId(`llm-tab:connection:${apiVendor}`);
+    await expect(apiRow.getByTestId('llm-api-key-input')).toBeVisible();
+    await apiRow.getByTestId('llm-tab:save-providers-cancel').click();
+    await expect(apiRow.getByTestId('llm-api-key-input')).toHaveCount(0);
   }
 
   await settings.getByTestId('llm-tab:add-provider').click();

@@ -1,5 +1,6 @@
 import { createLocalJWKSet, errors as joseErrors, jwtVerify, type JSONWebKeySet } from "jose";
 import { CHATGPT_PLAN_ISSUER, CHATGPT_PLAN_JWKS_URL } from "./endpoints.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 /** Allowed difference between this machine's clock and the issuer's. */
 const CLOCK_TOLERANCE_SECONDS = 5;
@@ -16,9 +17,22 @@ export type ChatGptPlanIdTokenFailure =
   | "malformed"
   | "jwks-unavailable";
 
+/** Error names a failed fetch may report verbatim; any other name could carry unvetted text. */
+const REPORTED_NETWORK_ERRORS = new Set(["TypeError", "AbortError", "TimeoutError", "ChatGptPlanEgressError"]);
+
+function networkFailureDetail(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  return REPORTED_NETWORK_ERRORS.has(name) ? `network-${name}` : "network-other";
+}
+
+/** A key-set fetch is retried once on a network error or a server-side status. */
+const JWKS_FETCH_ATTEMPTS = 2;
+const JWKS_RETRY_DELAY_MS = 500;
+
 export class ChatGptPlanIdTokenError extends Error {
-  constructor(readonly failure: ChatGptPlanIdTokenFailure) {
-    super(`chatgpt-plan id token rejected: ${failure}`);
+  /** `detail` names why the key set was unavailable (a status or error name), never a token or body. */
+  constructor(readonly failure: ChatGptPlanIdTokenFailure, readonly detail?: string) {
+    super(`chatgpt-plan id token rejected: ${failure}${detail ? ` (${detail})` : ""}`);
     this.name = "ChatGptPlanIdTokenError";
   }
 }
@@ -48,7 +62,17 @@ export class ChatGptPlanIdTokenVerifier {
   constructor(
     private readonly fetchImpl: typeof fetch,
     private readonly now: () => number = Date.now,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   ) {}
+
+  /** Fetch the key set ahead of a sign-in, so an unreachable key set fails before the browser opens. */
+  async prefetchKeys(): Promise<void> {
+    try {
+      await this.keys(false);
+    } catch (error) {
+      throw this.mapError(error);
+    }
+  }
 
   /**
    * Check signature, issuer, audience (the issued client id), expiry and, for
@@ -117,21 +141,46 @@ export class ChatGptPlanIdTokenVerifier {
   }
 
   private async fetchKeySet(): Promise<ReturnType<typeof createLocalJWKSet>> {
-    let body: unknown;
-    try {
-      const response = await this.fetchImpl(CHATGPT_PLAN_JWKS_URL, {
-        method: "GET",
-        headers: { accept: "application/json" },
-      });
-      if (response.status !== 200) throw new ChatGptPlanIdTokenError("jwks-unavailable");
-      body = await response.json();
-    } catch (error) {
-      if (error instanceof ChatGptPlanIdTokenError) throw error;
-      throw new ChatGptPlanIdTokenError("jwks-unavailable");
+    let detail = "unknown";
+    for (let attempt = 1; attempt <= JWKS_FETCH_ATTEMPTS; attempt += 1) {
+      if (attempt > 1) await this.sleep(JWKS_RETRY_DELAY_MS);
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), TOOL_TIMEOUT_POLICY.networkFetchDefaultMs);
+      try {
+        let response: Response;
+        try {
+          response = await this.fetchImpl(CHATGPT_PLAN_JWKS_URL, {
+            method: "GET",
+            headers: { accept: "application/json" },
+            signal: controller.signal,
+          });
+        } catch (error) {
+          detail = controller.signal.aborted ? "network-timeout" : networkFailureDetail(error);
+          continue;
+        }
+        if (response.status !== 200) {
+          detail = `status-${response.status}`;
+          if (response.status >= 500 || response.status === 429) continue;
+          throw new ChatGptPlanIdTokenError("jwks-unavailable", detail);
+        }
+        let body: unknown;
+        try {
+          body = await response.json();
+        } catch {
+          if (controller.signal.aborted) {
+            detail = "network-timeout";
+            continue;
+          }
+          throw new ChatGptPlanIdTokenError("jwks-unavailable", "invalid-body");
+        }
+        if (!isJsonWebKeySet(body)) throw new ChatGptPlanIdTokenError("jwks-unavailable", "invalid-body");
+        this.keySet = createLocalJWKSet(body);
+        return this.keySet;
+      } finally {
+        clearTimeout(deadline);
+      }
     }
-    if (!isJsonWebKeySet(body)) throw new ChatGptPlanIdTokenError("jwks-unavailable");
-    this.keySet = createLocalJWKSet(body);
-    return this.keySet;
+    throw new ChatGptPlanIdTokenError("jwks-unavailable", detail);
   }
 
   private mapError(error: unknown): ChatGptPlanIdTokenError {

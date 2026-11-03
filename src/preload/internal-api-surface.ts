@@ -771,6 +771,13 @@ export function buildInternalApiSurface() {
     },
     /** Read-only: honest OS sandbox capability for the current platform. */
     sandboxCapability: async () => ipcRenderer.invoke(PERMISSIONS.sandboxCapability),
+    /** Hint event; the sandbox status snapshot changed in main (for example the Windows MXC check settled). Listeners re-read `sandboxCapability`. */
+    onSandboxCapabilityChanged: (cb: () => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(PERMISSIONS.sandboxCapabilityChanged, listener);
+      return () =>
+        ipcRenderer.removeListener(PERMISSIONS.sandboxCapabilityChanged, listener);
+    },
     /** Read-only: Windows srt-win install readiness (group + WFP + instructions). */
     sandboxWindowsStatus: async () => ipcRenderer.invoke(PERMISSIONS.sandboxWindowsStatus),
     /** Read-only: the ASRT proxy denies of the last 24 h, newest first. */

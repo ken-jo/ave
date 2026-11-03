@@ -248,7 +248,7 @@ describe("host OAuth auth window", () => {
         setSecret: async (key, value) => { values.set(key, value); }, deleteSecret: async key => { values.delete(key); } },
       hostId: async () => "urn:uuid:6bdc3791-aab4-4ce0-b8ad-36a5950d279c",
       startListener: startChatGptPlanCallbackListener,
-      verifier: { verify: async () => ({ issuer: endpoints.CHATGPT_PLAN_ISSUER, subject: "fixture-subject", email: null }) },
+      verifier: { prefetchKeys: async () => undefined, verify: async () => ({ issuer: endpoints.CHATGPT_PLAN_ISSUER, subject: "fixture-subject", email: null }) },
       fetch: (async (input, init) => {
         const body = new URLSearchParams(String(init?.body ?? ""));
         if (String(input) === endpoints.CHATGPT_PLAN_TOKEN_URL) {

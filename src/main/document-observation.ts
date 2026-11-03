@@ -60,6 +60,7 @@ export class DocumentObservationRuntime {
   private readonly knownTargets = new Map<string, { identity: ObservationIdentity; path: string }>();
   private readonly previewSessions = new Map<string, number>();
   private readonly previewReader = createTableObservationEngine();
+  private readonly readableVerdicts = new Map<string, boolean>();
   private disposed = false;
 
   constructor(private readonly deps: IpcDeps, private readonly engine: DocumentObservationEngine | null = createHostDocumentObservationEngine()) {
@@ -103,10 +104,24 @@ export class DocumentObservationRuntime {
   private isCurrent(view: Pick<ViewOwner, "event" | "sessionId" | "path">): boolean {
     if (this.disposed || !validateAppWindowMainFrameSender(view.event, this.deps)
       || findSessionMainWindowContents(view.sessionId) !== view.event.sender) return false;
+    return this.isReadablePath(view.path);
+  }
+
+  // The read policy walks the filesystem for the path and for every protected floor entry, and a journal
+  // chunk asks it twice per record (the adapter, then the daemon's publish), all in one synchronous run. A
+  // verdict is reused until the clearing microtask queued with its first evaluation runs. The rest of that
+  // run, and microtasks queued before that evaluation, see the same verdict; that is harmless because the
+  // daemon re-checks before delivery in a later macrotask, and every later task evaluates the policy afresh.
+  private isReadablePath(path: string): boolean {
+    const known = this.readableVerdicts.get(path);
+    if (known !== undefined) return known;
+    if (this.readableVerdicts.size === 0) queueMicrotask(() => this.readableVerdicts.clear());
     const additional = readPermissionSettings().permissions.additionalDirectories;
-    const verdict = assertReadableFilePath(view.path, process.cwd(), buildRuntimeAllowedDirectories(additional));
-    return verdict.ok && verdict.resolved === view.path
-      && protectedReadDenyCovering(view.path, getProtectedReadDenyFloor()) === undefined;
+    const verdict = assertReadableFilePath(path, process.cwd(), buildRuntimeAllowedDirectories(additional));
+    const readable = verdict.ok && verdict.resolved === path
+      && protectedReadDenyCovering(path, getProtectedReadDenyFloor()) === undefined;
+    this.readableVerdicts.set(path, readable);
+    return readable;
   }
 
   private prune(): void {

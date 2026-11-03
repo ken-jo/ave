@@ -635,6 +635,7 @@ async function runTurnInSpan(
           onMemoryCaptureTaint: (reason) => memoryCaptureTaint.add(reason),
           onPermissionProvenanceChanged: (provenance) => { lifecycleProvenance = provenance; },
           memoryQuery: input,
+          turnMessageId: turnUserMessage.meta.messageId,
           ...(onStopHook ? { onStopHook } : {}),
         },
       ),

@@ -9,6 +9,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { makeConversationLoopMemoryManager } from "../../engine/__tests__/conversation-loop-test-helpers.js";
+import { makeSystemPromptBuilder } from "../../prompts/__tests__/test-helpers.js";
 
 class RecordingProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -50,6 +51,8 @@ describe("createRoutineConversationLoop — tool-level deferral", () => {
       routeEngine,
       toolRegistry,
       memoryManager: makeConversationLoopMemoryManager(),
+      // The routine builder takes the main builder's memory use recorder.
+      systemPromptBuilder: makeSystemPromptBuilder(),
       pluginRuntime: {
         listPluginCards: () => [],
       },

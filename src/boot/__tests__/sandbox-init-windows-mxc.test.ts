@@ -68,6 +68,7 @@ import {
   getHostShellExecutionPlan,
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
+  setSandboxStatusChangeListener,
 } from "../../permissions/sandbox-capability.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -96,6 +97,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setSandboxStatusChangeListener(undefined);
   _resetAveHomePrivacyForTest();
   vi.unstubAllEnvs();
   __resetActiveSandboxCapabilityForTest();
@@ -278,6 +280,27 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "available" }, shells: "mxc" }));
     expect(detectSandboxCapability().reason).toContain("agent shell commands run in containers");
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false });
+  });
+
+  it("reports a status change once the start probe settles, with the settled plan already readable", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    let finishProbe!: (value: unknown) => void;
+    h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
+
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", requiresExplicitUserApproval: true });
+
+    // A renderer that read the checking-phase plan learns of the settle only through this notification.
+    const observed: { mxc: string | undefined; mode: string }[] = [];
+    setSandboxStatusChangeListener(() => {
+      observed.push({ mxc: getWindowsSandboxSubstrate()?.mxc.state, mode: getHostShellExecutionPlan().mode });
+    });
+    finishProbe({ state: "available", windowsBuild: "10.0.26300.9711" });
+
+    await vi.waitFor(() => expect(observed).toContainEqual({ mxc: "available", mode: "asrt" }));
+    expect(observed.every((entry) => entry.mxc === "available")).toBe(true);
   });
 
   it("keeps the approved route and records the reason when PowerShell cannot start in a container", async () => {

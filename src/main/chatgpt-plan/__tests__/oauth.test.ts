@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { classifyChatGptPlanError } from "../../../shared/chatgpt-plan.js";
 import { ChatGptPlanEgressError, createChatGptPlanFetch, isAllowedChatGptPlanRequest } from "../egress.js";
 import {
@@ -234,6 +235,25 @@ describe("plan-usage token endpoint", () => {
     await expect(verifyDiscoveryDocument(fetchReturning(jsonResponse(200, {
       ...document, token_endpoint: "https://auth.example.com/token",
     })).fetch)).rejects.toMatchObject({ failure: "discovery-mismatch" });
+  });
+
+  it("bounds the discovery request and treats a stalled one as transient", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const stalled = (async (_url: string, init?: RequestInit) => {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+      }) as typeof fetch;
+      const pending = expect(verifyDiscoveryDocument(stalled)).rejects.toMatchObject({ failure: "transient" });
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.networkFetchDefaultMs);
+      await pending;
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
