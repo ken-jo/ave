@@ -1182,7 +1182,10 @@ owns storage, approvals, and audit.
 
 Item runs execute as sub-agent sessions whose origin names the item
 (`work-board:<itemId>`), so their conversations live in the isolated sub-agent
-namespace, never in the main chat store. Briefing runs
+namespace, never in the main chat store. While a plan awaits approval the
+item's `runSessionId` names the plan child; the engine replaces it with the
+execute child's id, and emits an `executing` progress event carrying that id,
+as soon as the execute child links (before its first round). Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
 
 ## Conversation List

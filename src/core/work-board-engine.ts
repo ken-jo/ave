@@ -110,6 +110,9 @@ export interface WorkBoardEngine {
   /** Combine in-process and persisted active-status guards per item; finished reruns start clean while preserving history. */
   runItem(itemId: number, opts?: RunItemOptions): Promise<RunItemResult>;
 
+  /** The execute child's session id while that child is linked and the run is still in flight; undefined in every other phase. */
+  executingChildSessionId(itemId: number): string | undefined;
+
   /** A read-only survey files proposals for user review without plan approval; individual tools remain gated. Allow only one survey per briefing window. */
   runBriefing(
     kind: WorkBoardBriefingKind,
@@ -341,6 +344,9 @@ export function createWorkBoardEngine(
   /** Set the in-process guard before awaiting persisted status to close the duplicate-run race. */
   const inFlight = new Set<number>();
 
+  /** Host-recorded execute child per item, set when the child links and removed when the run settles. Steer and stop resolve the child here, never from a renderer payload. */
+  const executingChildByItem = new Map<number, string>();
+
   /** Allow one survey per window so duplicate clicks cannot incur duplicate child runs. */
   const briefingInFlight = new Set<WorkBoardBriefingKind>();
 
@@ -370,6 +376,7 @@ export function createWorkBoardEngine(
     try {
       return await runItemGuarded(itemId, item, opts);
     } finally {
+      executingChildByItem.delete(itemId);
       inFlight.delete(itemId);
       updateApprovalSurface({ kind: "release", sessionId: originSessionId });
     }
@@ -499,6 +506,10 @@ export function createWorkBoardEngine(
       await store.setRunStatus(itemId, "executing");
       emit({ itemId, phase: "executing" });
 
+      // The plan child's id is stored until the execute child links; replace it then so an in-flight "open session" opens the execute session.
+      // The store serializes writes per file, so this lands before the terminal result write below.
+      // The write settles into a captured outcome so a rejection is never left unhandled while the child runs.
+      let linkedPersist: Promise<{ failed: false } | { failed: true; error: unknown }> = Promise.resolve({ failed: false });
       const execResult = await runner.spawn(
         {
           title: `Execute: ${item.title}`,
@@ -510,6 +521,16 @@ export function createWorkBoardEngine(
           profileModel: profile?.model,
         },
         {
+          onLinked: ({ childSessionId }) => {
+            executingChildByItem.set(itemId, childSessionId);
+            emit({ itemId, phase: "executing", runSessionId: childSessionId });
+            linkedPersist = store
+              .setRunResult(itemId, { runStatus: "executing", runSessionId: childSessionId })
+              .then(
+                () => ({ failed: false as const }),
+                (error: unknown) => ({ failed: true as const, error }),
+              );
+          },
           onActivity: makeTurnRecorder((turn, text) => {
             emit({ itemId, phase: "executing", turn, text });
             record({ phase: "executing", kind: "turn", turn, text });
@@ -517,6 +538,9 @@ export function createWorkBoardEngine(
           onError: (message) => emit({ itemId, phase: "error", message }),
         },
       );
+      // A failed link write is a store failure; surface it through the run's error path rather than dropping it.
+      const linkOutcome = await linkedPersist;
+      if (linkOutcome.failed) throw linkOutcome.error;
       // Treat ok:false as error, never as completed output containing the error summary.
       if (execResult.ok === false) {
         const reason = execResult.error ?? execResult.summary;
@@ -650,5 +674,9 @@ export function createWorkBoardEngine(
     }
   }
 
-  return { runItem, runBriefing };
+  return {
+    runItem,
+    runBriefing,
+    executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
+  };
 }

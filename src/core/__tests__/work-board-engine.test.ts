@@ -1,5 +1,5 @@
 /** Use a real temporary board with an injected runner and real approval gate to test orchestration without model calls. */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createWorkBoardEngine } from "../work-board-engine.js";
@@ -378,6 +378,103 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       }
       const recordedKeys = recordedTurns.map((e) => `${e.phase}:${e.turn}`);
       expect(new Set(recordedKeys).size).toBe(recordedKeys.length); // no dupes
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+/** The execute child links before its first round; the runner holds the run open until the test releases it. */
+function linkingRunner(execOk = true): {
+  runner: SubAgentRunner;
+  release: () => void;
+  linked: Promise<string>;
+} {
+  const registry = boardParentToolRegistry();
+  let release!: () => void;
+  const released = new Promise<void>((r) => { release = r; });
+  let onLinkedFired!: (id: string) => void;
+  const linked = new Promise<string>((r) => { onLinkedFired = r; });
+  const runner = {
+    async spawn(
+      input: { profileMode?: string; originSessionId?: string },
+      callbacks?: SubAgentSpawnCallbacks,
+    ) {
+      const isPlan = input.profileMode === "plan";
+      const childSessionId = `${input.originSessionId}::${isPlan ? "plan" : "exec"}`;
+      callbacks?.onLinked?.({ childSessionId });
+      if (!isPlan) {
+        onLinkedFired(childSessionId);
+        await released;
+      }
+      if (!isPlan && !execOk) {
+        return { summary: "boom", error: "boom", toolCallCount: 0, turnCount: 1, childSessionId, entries: [], ok: false };
+      }
+      return {
+        summary: isPlan ? "PLAN" : "OUTPUT",
+        toolCallCount: 0,
+        turnCount: 1,
+        childSessionId,
+        entries: [],
+        ok: true,
+      };
+    },
+    parentToolRegistry: () => registry,
+  } as unknown as SubAgentRunner;
+  return { runner, release, linked };
+}
+
+describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)", () => {
+  it("emits the execute child id on an executing event and persists it while the run is still executing", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "live session" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, release, linked } = linkingRunner();
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const events: WorkBoardRunEvent[] = [];
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e) });
+
+      const run = engine.runItem(id, { approvalSurface: owner });
+      const execChild = await linked;
+      expect(execChild).toBe(`work-board:${id}::exec`);
+
+      const linkedEvent = events.find((e) => e.phase === "executing" && e.runSessionId !== undefined);
+      expect(linkedEvent?.runSessionId).toBe(execChild);
+      expect(engine.executingChildSessionId(id)).toBe(execChild);
+      // The plan child id stored at approval time must be replaced by the execute child id mid-run.
+      await vi.waitFor(async () => {
+        const got = await store.get(id);
+        if (got.status !== "found") throw new Error("missing item");
+        expect(got.item.runStatus).toBe("executing");
+        expect(got.item.runSessionId).toBe(execChild);
+      });
+
+      release();
+      expect((await run).status).toBe("completed");
+      expect(engine.executingChildSessionId(id)).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("clears the executing-child record when execution fails", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "fails" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, release, linked } = linkingRunner(false);
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+
+      const run = engine.runItem(id, { approvalSurface: owner });
+      await linked;
+      expect(engine.executingChildSessionId(id)).toBe(`work-board:${id}::exec`);
+      release();
+      expect((await run).status).toBe("error");
+      expect(engine.executingChildSessionId(id)).toBeUndefined();
     } finally {
       await cleanup();
     }
