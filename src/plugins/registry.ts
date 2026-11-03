@@ -4,7 +4,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, resolve } from "node:path";
 import type { PluginAccessSpec, PluginRegistry, PluginRegistryEntry, PluginRegistryEntryInstallSource } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "./lifecycle-log.js";
-import { isCommittedAtomicWriteError, isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { withInstalledStateMutation } from "../main/installed-state-mutation.js";
 import { FileLockReleaseError, withFileLock, withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
@@ -88,23 +89,24 @@ function migrateLegacyEntry(
 export async function vouchedInstalledPluginIds(registryPath: string): Promise<ReadonlySet<string> | undefined> {
   if (!existsSync(registryPath)) return undefined;
   const registry = await readPluginRegistry(registryPath);
-  if (registry.plugins.some((entry) => entry.pendingUpdate)) return undefined;
+  if (registry.pendingReview || registry.plugins.some((entry) => entry.pendingUpdate)) return undefined;
   return new Set(registry.plugins.map((entry) => entry.id));
 }
 
 export async function readPluginRegistry(registryPath: string): Promise<PluginRegistry> {
   logPluginLifecycle("debug", { pluginId: "<registry>", phase: PluginPhase.DISCOVERY_START, registryPath }, "registry read");
-  let raw: string;
-  try {
-    raw = await readFile(registryPath, "utf-8");
-  } catch (err) {
-    // An absent first-boot registry means empty state; other read failures remain errors.
-    if (isMissingPathError(err)) {
-      logPluginLifecycle("info", { pluginId: "<registry>", phase: PluginPhase.DISCOVERY_SKIP, reason: "first_boot_no_registry" }, "no registry — first boot");
-      return { version: 1, plugins: [] };
-    }
-    throw err;
+  // One verified buffer. An absent first-boot registry means empty state; other read failures remain errors. A registry pending
+  // review activates nothing and vouches for nothing, so no sweep prunes what it names.
+  const input = await readAveHomeInput(registryPath);
+  if (input.status === "absent") {
+    logPluginLifecycle("info", { pluginId: "<registry>", phase: PluginPhase.DISCOVERY_SKIP, reason: "first_boot_no_registry" }, "no registry — first boot");
+    return { version: 1, plugins: [] };
   }
+  if (input.status === "untrusted") {
+    logPluginLifecycle("warn", { pluginId: "<registry>", phase: PluginPhase.DISCOVERY_SKIP, reason: "registry_pending_review", registryPath }, "registry is waiting for review");
+    return { version: 1, plugins: [], pendingReview: true };
+  }
+  const raw = input.bytes.toString("utf-8");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -415,6 +417,8 @@ async function withRegistryTransaction<T>(
       const committed = await withFileLock(
         `${key}.lock-anchor`,
         async () => {
+          // A registry pending review is never rewritten from its empty view.
+          assertAveHomeInputWritable(key);
           const registry = await readPluginRegistry(key);
           const inherited = registryMutationContext.getStore() ?? new Set<string>();
           const result = registryMutationContext.run(

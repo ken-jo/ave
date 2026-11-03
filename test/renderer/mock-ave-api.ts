@@ -515,6 +515,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       onManifestViolation: vi.fn(() => () => undefined),
       onUserApprovalHit: vi.fn(() => () => undefined),
       onReviewSuggestion: vi.fn(() => () => undefined),
+      // No home content pending review unless a test says so.
+      homeTrustReview: vi.fn(async () => null),
+      homeTrustApprove: vi.fn(async () => ({ ok: true, approved: 0 })),
+      homeTrustRemove: vi.fn(async () => ({ ok: true })),
     },
     policy: {
       get: vi.fn(async () => ({
@@ -1036,6 +1040,9 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         addRule: vi.fn(async () => ({ ok: true })),
         removeRule: vi.fn(async () => ({ ok: true })),
         onReviewSuggestion: vi.fn(() => () => undefined),
+        homeTrustReview: vi.fn(async () => null),
+        homeTrustApprove: vi.fn(async () => ({ ok: true, approved: 0 })),
+        homeTrustRemove: vi.fn(async () => ({ ok: true })),
       },
       approval: {
         onRequest: vi.fn((cb: (r: unknown) => void) => {

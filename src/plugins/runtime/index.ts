@@ -21,7 +21,7 @@ import { isTrustedRegistryManifestPath } from "../registry-manifest-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import { isDevModeUnlocked } from "../../boot/dev-flags.js";
 import {
-  installReceiptPath,
+  readInstallReceiptText,
   verifyInstallReceipt,
   verifyInstallReceiptRaw,
   type GitInstallRecord,
@@ -2909,10 +2909,7 @@ abstract class PluginRuntimeState {
       throw new Error("plugin generation lifecycle requires installReceiptCacheRoot");
     }
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf8");
-    const receiptRaw = await readFile(
-      installReceiptPath(this.installReceiptCacheRoot, receiptPluginId),
-      "utf8",
-    );
+    const receiptRaw = await readInstallReceiptText(this.installReceiptCacheRoot, receiptPluginId);
     const artifactGenerationId = pluginArtifactGenerationId(manifestRaw, receiptRaw);
     const generationId = createHash("sha256")
       .update(artifactGenerationId)
@@ -6996,10 +6993,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
               );
             }
             this.assertEnabledCapabilityDependencies(manifest);
-            const receiptRaw = await readFile(
-              installReceiptPath(this.installReceiptCacheRoot, receiptPluginId),
-              "utf8",
-            );
+            const receiptRaw = await readInstallReceiptText(this.installReceiptCacheRoot, receiptPluginId);
             await this.activatePreparedArtifact({
               installId: receiptPluginId,
               pluginRoot,

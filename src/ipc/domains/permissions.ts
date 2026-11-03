@@ -18,6 +18,9 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
+import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
+import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
+import type { AuditLogger } from "../../audit/audit-logger.js";
 import { getWindowsProfileReadDenyWarnings } from "../../permissions/asrt-sandbox.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
@@ -121,6 +124,26 @@ function requireUserKeyboardIntent(payload: unknown): { ok: true } | { ok: false
     error: "user-keyboard-required",
     message: "permission change requires active user gesture (keyboard intent)",
   };
+}
+
+/** Run one review action; its known refusals reach the card as their own message, and every success is audited. */
+function homeTrustAction<T extends { ok: true; detail: Record<string, unknown> }>(
+  auditLogger: AuditLogger,
+  action: string,
+  run: () => T,
+): Omit<T, "detail"> | { ok: false; error: string; message: string } {
+  let result: T;
+  try {
+    result = run();
+  } catch (error) {
+    if (error instanceof AveHomeTrustReviewError) return { ok: false, error: error.code, message: error.message };
+    if (error instanceof AveHomeConfigurationNotOwnerError) return { ok: false, error: "not-owner", message: error.message };
+    throw error;
+  }
+  const { detail, ...reply } = result;
+  auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+    output: JSON.stringify({ action, who: "user-ui", ...detail }) });
+  return reply;
 }
 
 function payloadRecord(value: unknown): Record<string, unknown> {
@@ -569,6 +592,45 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       approveExtensionsWithoutIsolation();
     }
     return { ok: true };
+  });
+
+  ipcMain.handle(PERMISSIONS.homeTrustReview, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.homeTrustReview, e); return UNAUTHORIZED_FRAME; }
+    const review = getAveHomeTrustReview();
+    if (review === undefined) return null;
+    // Forced confinement needs a backend: without one, extensions run unconfined and the card must not claim otherwise.
+    const extensionsConfined = getWindowsSandboxSubstrate()?.extensions === "mxc" || detectPluginWorkerSandboxCapability().kind !== "none";
+    return { ...review, extensionsConfined } satisfies AveHomeTrustReviewView;
+  });
+
+  ipcMain.handle(PERMISSIONS.homeTrustApprove, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.homeTrustApprove, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const keys = body.keys;
+    if (typeof body.snapshotId !== "string"
+      || (keys !== undefined && (!Array.isArray(keys) || keys.length === 0 || !keys.every((key) => typeof key === "string")))) {
+      return { ok: false, error: "invalid-payload", message: "snapshotId and an optional non-empty keys list are required" };
+    }
+    return homeTrustAction(auditLogger, "home_content_approved", () => {
+      const approved = approveAveHomeTrustItems(body.snapshotId as string, keys as string[] | undefined);
+      return { ok: true as const, approved, detail: { keys: keys ?? "all", approved } };
+    });
+  });
+
+  ipcMain.handle(PERMISSIONS.homeTrustRemove, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.homeTrustRemove, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    if (typeof body.snapshotId !== "string" || typeof body.key !== "string") {
+      return { ok: false, error: "invalid-payload", message: "snapshotId and key are required" };
+    }
+    return homeTrustAction(auditLogger, "home_content_removed", () => {
+      removeAveHomeTrustItem(body.snapshotId as string, body.key as string);
+      return { ok: true as const, detail: { key: body.key } };
+    });
   });
 
   ipcMain.handle(PERMISSIONS.setMode, async (e, payload: unknown) => {

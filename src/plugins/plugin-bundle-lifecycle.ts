@@ -22,7 +22,7 @@ import {
 import {
   isCommittedPluginGenerationPublicationError,
 } from "./committed-generation-publication-error.js";
-import { installReceiptPath } from "./plugin-install-receipt.js";
+import { readInstallReceiptText } from "./plugin-install-receipt.js";
 import {
   materializePluginContributions,
   materializePluginGenerationRoot,
@@ -660,10 +660,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     const pluginId = manifest.id;
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf8");
     const receiptRaw = receiptRawOverride
-      ?? await readFile(
-        installReceiptPath(this.deps.receiptCacheRoot, runtime.installId ?? pluginId),
-        "utf8",
-      );
+      ?? await readInstallReceiptText(this.deps.receiptCacheRoot, runtime.installId ?? pluginId);
     const artifactGenerationId = pluginArtifactGenerationId(manifestRaw, receiptRaw);
     const generationId = createHash("sha256")
       .update(artifactGenerationId)

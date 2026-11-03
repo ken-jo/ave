@@ -3,7 +3,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import { createSerialQueue, type SerialQueue } from "../lib/with-file-lock.js";
 import { withDirectoryMutationObserver } from "../lib/directory-mutation-observer.js";
-import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationRefusedWriteError, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationAuthorityAbsent, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_TRUST_MANIFEST, AveHomeConfigurationRefusedWriteError, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationAuthorityAbsent, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { isWindowsHomeRootSafe } from "./windows-home-boundary.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts, type WindowsPathFacts } from "./windows-path-facts.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandles } from "./windows-configuration-handles.js";
@@ -107,6 +108,45 @@ export async function withAveHomeConfigurationWrite<T>(path: string, callback: (
     const remaining = busyHomes.get(key)! - 1;
     if (remaining === 0) busyHomes.delete(key); else busyHomes.set(key, remaining);
   }
+}
+
+/** The trust manifest's path in a home: always inside `config/`, never at the root. */
+export function aveHomeTrustManifestPath(home: string): string {
+  return join(resolve(home), AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_TRUST_MANIFEST);
+}
+
+/**
+ * The trust manifest's bytes, read on the verified `config/` boundary; undefined when the home is refused, has not committed
+ * `config/` (a manifest in an uncommitted `config/` is never adopted, R3), or has no manifest yet.
+ */
+export function readAveHomeTrustManifestBytes(home: string): Buffer | undefined {
+  const path = aveHomeTrustManifestPath(home);
+  try {
+    if (isAveHomeConfigurationRefused(home)) return undefined;
+    if (aveHomeConfigurationDirectory(home) !== dirname(path)) return undefined;
+    if (!configurationEntryExists(path)) return undefined;
+    return readOpenedFile(path, { present: false });
+  } catch (error) {
+    if (error instanceof AveHomeConfigurationUntrustedError) throw error;
+    throw new AveHomeConfigurationUntrustedError(path, (error as Error).message);
+  }
+}
+
+/**
+ * Replace the trust manifest. Only the host-instance lock owner writes it, only into a committed and verified `config/`, and the
+ * write is synchronous so a recorded input write can stage its intent before its own bytes land.
+ */
+export function writeAveHomeTrustManifestSync(home: string, content: string): void {
+  assertOwner();
+  const path = aveHomeTrustManifestPath(home);
+  if (isAveHomeConfigurationRefused(home)) throw new AveHomeConfigurationRefusedWriteError(path, "record the review of your Ave folder");
+  if (aveHomeConfigurationDirectory(home) !== dirname(path)) throw new AveHomeConfigurationUntrustedError(path, "Configuration directory is not committed");
+  verifyWriteBoundary(home, path);
+  let active = true;
+  try {
+    withDirectoryMutationObserver((directory) => active ? observeOwnerDirectoryMutation(directory) : () => {},
+      () => writeUtf8FileAtomicSync(path, content, 0o600));
+  } finally { active = false; }
 }
 
 interface WindowsReadBoundary {

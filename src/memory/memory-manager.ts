@@ -14,6 +14,7 @@ import { stat } from "node:fs/promises";
 import { join, resolve, basename } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf, isMissingPathError } from "../lib/atomic-file.js";
+import { readAveHomeInputSync, recordAveHomeInputWriteSync } from "../shared/ave-home-trust.js";
 import { isSessionTaskItem, type SessionTaskItem } from "../shared/session-tasks.js";
 import { isSessionGoal, type SessionGoal } from "../shared/session-goal.js";
 import { createLogger } from "../lib/logger.js";
@@ -89,6 +90,18 @@ function readUtf8FileIfPresent(path: string): string | null {
     if (isMissingPathError(err)) return null;
     throw err;
   }
+}
+
+/** A home document (AGENTS.md, agents.custom.md, user-preferences.md, memories/MEMORY.md) is read as one verified buffer: one
+ * pending review in the home content trust manifest is not injected and reads as absent. Other paths read as before. */
+function readHomeDocIfPresent(path: string): string | null {
+  const input = readAveHomeInputSync(path);
+  return input.status === "trusted" ? input.bytes.toString("utf-8") : null;
+}
+
+/** Every whole-file write of a home document is recorded in the trust manifest; a write over one pending review is refused. */
+function writeHomeDocSync(path: string, content: string): void {
+  recordAveHomeInputWriteSync(path, content, () => writeFileSync(path, content, "utf-8"));
 }
 
 function readUtf8FileSnapshotIfPresent(path: string, maxBytes = Number.POSITIVE_INFINITY): FileSnapshot | null {
@@ -1626,7 +1639,7 @@ export class MemoryManager implements PromptMemorySource {
   async updateMemoryIndex(content: string): Promise<void> {
     const targetPath = join(this.memoryDir, "MEMORY.md");
     await withFileLock(targetPath, async () => {
-      writeFileSync(targetPath, content, "utf-8");
+      writeHomeDocSync(targetPath, content);
     });
     this.memoryIndex = this.readMemoryIndex();
   }
@@ -1635,9 +1648,9 @@ export class MemoryManager implements PromptMemorySource {
     const targetPath = join(this.memoryDir, "MEMORY.md");
     let didUpdate = false;
     await withFileLock(targetPath, async () => {
-      const current = readUtf8FileIfPresent(targetPath) ?? "";
+      const current = readHomeDocIfPresent(targetPath) ?? "";
       if (current !== expectedContent) return;
-      writeFileSync(targetPath, nextContent, "utf-8");
+      writeHomeDocSync(targetPath, nextContent);
       didUpdate = true;
     });
     this.memoryIndex = this.readMemoryIndex();
@@ -1647,8 +1660,8 @@ export class MemoryManager implements PromptMemorySource {
   async updateMemoryIndexSections(sections: MemoryIndexSectionsPatch): Promise<void> {
     const targetPath = join(this.memoryDir, "MEMORY.md");
     await withFileLock(targetPath, async () => {
-      const current = readUtf8FileIfPresent(targetPath) ?? getDefaultMemoryIndex();
-      writeFileSync(targetPath, this.patchMemoryIndexSections(current, sections), "utf-8");
+      const current = readHomeDocIfPresent(targetPath) ?? getDefaultMemoryIndex();
+      writeHomeDocSync(targetPath, this.patchMemoryIndexSections(current, sections));
     });
     this.memoryIndex = this.readMemoryIndex();
   }
@@ -1691,7 +1704,7 @@ export class MemoryManager implements PromptMemorySource {
   async updateAgentsMd(content: string): Promise<void> {
     const targetPath = join(this.aveDir, AGENTS_DOC_NAME);
     await withFileLock(targetPath, async () => {
-      writeFileSync(targetPath, content, "utf-8");
+      writeHomeDocSync(targetPath, content);
     });
     this.agentsMd = content;
   }
@@ -1699,7 +1712,7 @@ export class MemoryManager implements PromptMemorySource {
   async updateAgentsCustomMd(content: string): Promise<void> {
     const targetPath = join(this.aveDir, AGENTS_CUSTOM_DOC_NAME);
     await withFileLock(targetPath, async () => {
-      writeFileSync(targetPath, content, "utf-8");
+      writeHomeDocSync(targetPath, content);
     });
     this.agentsCustomMd = content;
   }
@@ -1740,7 +1753,7 @@ export class MemoryManager implements PromptMemorySource {
       didWrite = replaceUtf8FileAtomicSyncIf(
         targetPath,
         nextContent,
-        () => (readUtf8FileIfPresent(targetPath) ?? "") === expectedContent,
+        () => (readHomeDocIfPresent(targetPath) ?? "") === expectedContent,
       );
     });
     return didWrite;
@@ -1749,7 +1762,7 @@ export class MemoryManager implements PromptMemorySource {
   async updateUserPreferences(content: string): Promise<void> {
     const targetPath = join(this.aveDir, "user-preferences.md");
     await withFileLock(targetPath, async () => {
-      writeFileSync(targetPath, content, "utf-8");
+      writeHomeDocSync(targetPath, content);
     });
     this.userPreferences = content;
   }
@@ -3102,8 +3115,10 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   private writeDefaultIfAbsent(path: string, content: string): void {
+    // An existing document, trusted or pending review, is never touched.
+    if (existsSync(path)) return;
     try {
-      writeFileSync(path, content, { encoding: "utf-8", flag: "wx" });
+      recordAveHomeInputWriteSync(path, content, () => writeFileSync(path, content, { encoding: "utf-8", flag: "wx" }));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
@@ -3111,12 +3126,12 @@ export class MemoryManager implements PromptMemorySource {
 
   private readFile(name: string): string {
     const path = join(this.aveDir, name);
-    return readUtf8FileIfPresent(path) ?? "";
+    return readHomeDocIfPresent(path) ?? "";
   }
 
   private readMemoryIndex(): string {
     const path = join(this.memoryDir, "MEMORY.md");
-    const raw = readUtf8FileIfPresent(path);
+    const raw = readHomeDocIfPresent(path);
     return raw === null ? "" : this.truncateMemoryIndex(raw);
   }
 
@@ -3743,7 +3758,7 @@ export class MemoryManager implements PromptMemorySource {
     const safeTitle = title.replace(/[\r\n\[\]]/g, " ").trim() || filename.replace(".md", "");
     const excerpt = content.replace(/\s+/g, " ").trim().slice(0, 140);
     const line = `- [${safeTitle}](./${filename}) — ${excerpt}`;
-    const existing = readUtf8FileIfPresent(targetPath) ?? getDefaultMemoryIndex();
+    const existing = readHomeDocIfPresent(targetPath) ?? getDefaultMemoryIndex();
     const lines = existing.split(/\r?\n/);
     const linkNeedle = `](./${filename})`;
     const idx = lines.findIndex((l) => l.includes(linkNeedle));
@@ -3755,7 +3770,7 @@ export class MemoryManager implements PromptMemorySource {
       }
       lines.push(line);
     }
-    writeFileSync(targetPath, lines.join("\n").replace(/\n{4,}/g, "\n\n\n"), "utf-8");
+    writeHomeDocSync(targetPath, lines.join("\n").replace(/\n{4,}/g, "\n\n\n"));
   }
 
   private patchMemoryIndexSections(markdown: string, sections: MemoryIndexSectionsPatch): string {
@@ -3817,14 +3832,14 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   private removeMemoryIndexEntryLocked(filename: string, targetPath: string): void {
-    const existing = readUtf8FileIfPresent(targetPath);
+    const existing = readHomeDocIfPresent(targetPath);
     if (existing === null) {
       this.memoryIndex = "";
       return;
     }
     const linkNeedle = `](./${filename})`;
     const lines = existing.split(/\r?\n/).filter((line) => !line.includes(linkNeedle));
-    writeFileSync(targetPath, lines.join("\n"), "utf-8");
+    writeHomeDocSync(targetPath, lines.join("\n"));
   }
 
   private validateDeletableMemoryFilename(filename: string): string {

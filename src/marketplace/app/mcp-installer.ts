@@ -1,9 +1,10 @@
 /** Owns recorded servers only; unreadable provenance stops changes.
  * Config and file swaps roll back on failure; updates retain the separate data directory. */
-import { assertAveHomeAcceptsInstalls } from "../../shared/ave-home.js";
+import { assertAveHomeAcceptsInstalls, AveHomeConfigurationRefusedWriteError } from "../../shared/ave-home.js";
+import { aveHomeTreeDigest, readAveHomeInput, readAveHomeTreeDigestSync } from "../../shared/ave-home-trust.js";
 import AdmZip from "adm-zip";
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
-import { chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
@@ -33,6 +34,12 @@ interface McpOrigin {
   from: ResolvedMcpServer["from"];
   /** Tree digest of the installed `server/` files; null when the server runs no package files. */
   filesDigest: string | null;
+  /**
+   * The home content tree digest of the installed `server/` directory, from the verified archive bytes (paths relative to it).
+   * Checked before every launch, so files changed on disk never run. Absent on records written before it existed: such a server
+   * does not launch until it is reinstalled.
+   */
+  filesTree?: string | null;
   installedAt: string;
 }
 
@@ -54,7 +61,7 @@ interface RecordFile {
 
 const SOURCE_ORIGINS = new Set<SourceOrigin>(["official", "managed", "custom", "direct"]);
 const RECORD_KEYS = new Set(["name", "version", "runtime", "hasFiles", "origin", "consent"]);
-const ORIGIN_KEYS = new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "from", "filesDigest", "installedAt"]);
+const ORIGIN_KEYS = new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "from", "filesDigest", "filesTree", "installedAt"]);
 
 function parseRecords(text: string, path: string): McpRecord[] {
   const fail = (why: string): never => {
@@ -86,6 +93,7 @@ function parseRecords(text: string, path: string): McpRecord[] {
         || typeof origin.packagePath !== "string"
         || (origin.from !== "descriptor" && origin.from !== "server.json")
         || (origin.filesDigest !== null && (typeof origin.filesDigest !== "string" || !/^[0-9a-f]{64}$/u.test(origin.filesDigest)))
+        || (origin.filesTree !== undefined && origin.filesTree !== null && (typeof origin.filesTree !== "string" || !/^[0-9a-f]{64}$/u.test(origin.filesTree)))
         || typeof origin.installedAt !== "string") {
         fail(`${at}.origin is malformed`);
       }
@@ -102,14 +110,82 @@ function parseRecords(text: string, path: string): McpRecord[] {
 }
 
 async function readRecords(path: string): Promise<McpRecord[]> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) return [];
+  // Install records bind installed MCP artifacts: a file pending review in the home content trust manifest is refused.
+  const input = await readAveHomeInput(path);
+  if (input.status === "absent") return [];
+  if (input.status === "untrusted") throw new AveHomeConfigurationRefusedWriteError(path, "use the MCP install records", "pending");
+  return parseRecords(input.bytes.toString("utf8"), path);
+}
+
+const SERVER_FILES_DIRECTORY = "server";
+
+/** The home content tree digest of the archive's `server/` files, keyed relative to `server/`: what the install puts on disk. */
+function mcpServerFilesTree(zipBuffer: Buffer): string {
+  const files = new Map<string, Buffer>();
+  for (const entry of new AdmZip(zipBuffer).getEntries()) {
+    if (entry.isDirectory) continue;
+    const path = entry.entryName.split("\\").join("/");
+    if (!path.startsWith(`${SERVER_FILES_DIRECTORY}/`)) throw new Error(`MCP server archive entry ${JSON.stringify(path)} is outside ${SERVER_FILES_DIRECTORY}/`);
+    files.set(path.slice(SERVER_FILES_DIRECTORY.length + 1), entry.getData());
+  }
+  return aveHomeTreeDigest(files);
+}
+
+/**
+ * Trees an install in progress is putting in place, by server: its connection runs before the record that vouches for the new
+ * files is written (so a failed connection can roll back), and those files come from the verified archive in this process.
+ */
+const installingTrees = new Map<string, string>();
+
+/** Thrown when an installed MCP server's package files are not the ones its install record vouches for. */
+class McpInstalledFilesError extends Error {
+  constructor(readonly serverId: string, reason: string) {
+    super(`MCP server ${serverId} was not started: ${reason}`);
+    this.name = "McpInstalledFilesError";
+  }
+}
+
+/**
+ * Before an MCP server is launched: when the marketplace installed it with package files under `mcp/<id>/server`, those files
+ * must hash to the tree its install record holds (the record is a home content trust input), read without following links.
+ * Anything else in `mcp/<id>/` besides `server` and the host's own `sandbox` refuses too, since a launch could load it. A server
+ * with no install record, or one installed without files, is vouched for by its configuration alone.
+ */
+export async function assertInstalledMcpFilesIntact(home: string, serverId: string): Promise<void> {
+  let installDir: string;
+  try { installDir = join(home, "mcp", assertSafeArtifactSlug(serverId)); }
+  catch { return; }
+  const serverFiles = join(installDir, SERVER_FILES_DIRECTORY);
+  const recordsPath = join(home, "packages", "mcp-installs.json");
+  const input = await readAveHomeInput(recordsPath);
+  if (input.status === "untrusted") {
+    if (await exists(serverFiles)) throw new McpInstalledFilesError(serverId, "its install record is waiting for review in Settings > Permissions");
+    return;
+  }
+  if (input.status === "absent") return;
+  let records: McpRecord[];
+  try { records = parseRecords(input.bytes.toString("utf8"), recordsPath); }
+  catch (error) {
+    throw new McpInstalledFilesError(serverId, `the MCP install record file ${recordsPath} is damaged (${(error as Error).message}). `
+      + "Restore that file from a backup, or delete it and reinstall your marketplace MCP servers, then restart Ave");
+  }
+  const record = records.find((candidate) => candidate.name === serverId);
+  if (!record?.hasFiles) return;
+  const expected = record.origin?.filesTree ?? installingTrees.get(serverId);
+  if (typeof expected !== "string") throw new McpInstalledFilesError(serverId, "its install record has no file digest; reinstall it");
+  let names: string[];
+  try { names = await readdir(installDir); }
+  catch (error) {
+    if (isMissingPathError(error)) throw new McpInstalledFilesError(serverId, "its installed files are missing; reinstall it");
     throw error;
   }
-  return parseRecords(text, path);
+  for (const name of names) {
+    if (name !== SERVER_FILES_DIRECTORY && name !== "sandbox") throw new McpInstalledFilesError(serverId, `unexpected ${name} in its install folder`);
+  }
+  let actual: string;
+  try { actual = readAveHomeTreeDigestSync(serverFiles); }
+  catch (error) { throw new McpInstalledFilesError(serverId, `its files cannot be verified (${(error as Error).message})`); }
+  if (actual !== expected && actual !== installingTrees.get(serverId)) throw new McpInstalledFilesError(serverId, "its files changed after install; reinstall it");
 }
 
 export function mcpInstallOrigins(recordsPath: string): OriginReader {
@@ -239,7 +315,11 @@ export class McpInstaller implements McpInstallerPort {
   private async register(records: McpRecord[], previous: McpRecord | null, record: McpRecord, zipBuffer: Buffer | null): Promise<string | null> {
     const next = records.filter((item) => item.name !== record.name).concat(record);
     const register = async (): Promise<string | null> => {
-      const connectionWarning = await this.swapConfig(previous, this.configFor(record));
+      const tree = record.origin?.filesTree;
+      if (typeof tree === "string") installingTrees.set(record.name, tree);
+      let connectionWarning: string | null;
+      try { connectionWarning = await this.swapConfig(previous, this.configFor(record)); }
+      finally { installingTrees.delete(record.name); }
       try {
         await this.write(next);
       } catch (error) {
@@ -305,6 +385,7 @@ export class McpInstaller implements McpInstallerPort {
           packagePath: plan.packagePath,
           from: resolved.from,
           filesDigest: resolved.packageFiles?.digest ?? null,
+          filesTree: resolved.packageFiles ? mcpServerFilesTree(resolved.packageFiles.zipBuffer) : null,
           installedAt: (this.deps.now?.() ?? new Date()).toISOString(),
         },
       };

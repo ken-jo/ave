@@ -5,6 +5,7 @@ import type { Dirent } from "node:fs";
 import { createLogger } from "../lib/logger.js";
 import type { InstalledAgentPlugin } from "../marketplace/content/service.js";
 import { aveHome } from "../shared/ave-home.js";
+import { readAveHomeEntrySync } from "../shared/ave-home-trust.js";
 import {
   parseFrontmatterBlock,
   parseFrontmatterStringList,
@@ -105,8 +106,8 @@ export class AgentProfileStore {
     this.agentPluginProfiles = next;
   }
 
-  private async readProfile(realFile: string, baseName: string): Promise<LoadedAgentProfile | null> {
-    const raw = await readFile(realFile, "utf-8");
+  private async readProfile(realFile: string, baseName: string, verifiedText?: string): Promise<LoadedAgentProfile | null> {
+    const raw = verifiedText ?? await readFile(realFile, "utf-8");
     const { fm, body } = parseAgentFrontmatter(raw);
     const name = fm.name || baseName;
     if (!AGENT_NAME_ALLOWLIST.test(name)) {
@@ -209,8 +210,19 @@ export class AgentProfileStore {
         continue;
       }
 
+      // One verified read of the item (the first-level entry of the agents root) in the home content trust manifest: an agent
+      // pending review is not listed.
+      let entryRead: ReturnType<typeof readAveHomeEntrySync>;
+      try { entryRead = readAveHomeEntrySync(join(this.userDir, entry.name)); }
+      catch (err) { log.warn(`agent profile ${entry.name} unreadable: %s`, (err as Error).message); continue; }
+      if (entryRead.status !== "trusted") {
+        if (entryRead.status === "untrusted") log.warn(`agent profile ${entry.name} is waiting for review and is not loaded`);
+        continue;
+      }
+      const verified = entryRead.kind === "file" ? entryRead.bytes : entryRead.files.get("AGENTS.md");
+      if (verified === undefined) continue;
       try {
-        const profile = await this.readProfile(realFile, baseName);
+        const profile = await this.readProfile(realFile, baseName, verified.toString("utf-8"));
         if (profile) profiles.push(profile);
       } catch (err) {
         log.warn(

@@ -36,8 +36,9 @@ function fixture(): { home: string; path: string } {
   setFixtureOwner(dirname(home));
   vi.stubEnv("AVE_HOME", home);
   expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
-  writeFileSync(join(home, "settings.json"), '{"permissions":{}}');
   migrateAveHomeConfiguration(home);
+  // A commit writes defaults and never imports root bytes, so the owner's later save is what these reads observe.
+  writeFileSync(join(home, "config", "settings.json"), '{"permissions":{}}');
   return { home, path: join(home, "settings.json") };
 }
 
@@ -275,8 +276,10 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
     const path = join(home, "settings.json");
     writeFileSync(path, "{}");
-    if (layout === "migrated") migrateAveHomeConfiguration(home);
-    else rmdirSync(join(home, "config"));
+    if (layout === "migrated") {
+      migrateAveHomeConfiguration(home);
+      writeFileSync(join(home, "config", "settings.json"), "{}");
+    } else rmdirSync(join(home, "config"));
     expect(readAveHomeConfigurationFile(path)?.toString()).toBe("{}");
     const file = layout === "migrated" ? join(home, "config", "settings.json") : path;
     const inode = lstatSync(file, { bigint: true }).ino;

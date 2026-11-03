@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { runWindowsNative } from "./windows-native-host.js";
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
@@ -9,15 +9,22 @@ import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
-import { AVE_HOME_RUNTIME_DIRECTORY, isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsWorkspaceForeignWriter, WINDOWS_WORKSPACE_TRUSTED_WRITERS, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
+import { AVE_HOME_CONFIGURATION_SOURCES_NAME, AVE_HOME_RUNTIME_DIRECTORY, AVE_HOME_TRUST_MANIFEST_NAME, isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsWorkspaceForeignWriter, WINDOWS_WORKSPACE_TRUSTED_WRITERS, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
 import { fileIdentityKey } from "../lib/file-identity.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandleEntry } from "./windows-configuration-handles.js";
 
 export const AVE_HOME_CONFIGURATION_DIRECTORY = "config";
 export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
 export const AVE_HOME_CONFIGURATION_MARKER_CONTENT = "ave-home-boundary-v1";
+/** Trust-state files inside `config/`. Each commit writes them fresh; none is ever adopted from an uncommitted `config/` (R3). */
+export const AVE_HOME_TRUST_MANIFEST = AVE_HOME_TRUST_MANIFEST_NAME;
+export const AVE_HOME_CONFIGURATION_SOURCES = AVE_HOME_CONFIGURATION_SOURCES_NAME;
+
+/** Why boot refused the home's stores: its folder permissions, or a `config/` that holds user files but was never committed. */
+export type AveHomeRefusalReason = "permissions" | "recovery";
 
 let refusedConfigurationHome: string | undefined;
+let refusalReason: AveHomeRefusalReason = "permissions";
 /** Whether a refused home's configuration is its committed `config/`, decided by its first read in this run and kept for the run.
  * Only the decision is kept: each caller gets the path in its own spelling of the home. */
 let refusedConfigurationCommitted: boolean | undefined;
@@ -42,10 +49,17 @@ function configurationKey(home: string): string {
   return process.platform === "win32" ? root.toLowerCase() : root;
 }
 
-/** Only a refused home bypasses protected storage. */
-export function setAveHomeConfigurationRefusedAtBoot(home: string): void {
+/** Only a refused home bypasses protected storage. A home that needs recovery is refused the same way: its uncommitted `config/`
+ * is neither read nor overwritten, so its configuration reads as absent and every write to it is refused. */
+export function setAveHomeConfigurationRefusedAtBoot(home: string, reason: AveHomeRefusalReason = "permissions"): void {
   if (refusedConfigurationHome !== configurationKey(home)) refusedConfigurationCommitted = undefined;
   refusedConfigurationHome = configurationKey(home);
+  refusalReason = reason;
+}
+
+/** The reason boot refused `home`, or undefined when it did not. */
+export function aveHomeRefusalReason(home = aveHome()): AveHomeRefusalReason | undefined {
+  return isAveHomeConfigurationRefused(home) ? refusalReason : undefined;
 }
 
 export function isAveHomeConfigurationRefused(home: string): boolean {
@@ -58,10 +72,23 @@ export function isAveHomeConfigurationRefused(home: string): boolean {
  * the refused boot keeps running so the user can reach the refusal notice and its fix.
  */
 export class AveHomeConfigurationRefusedWriteError extends Error {
-  constructor(readonly path: string, action = `change ${path}`) {
-    super(`Ave did not ${action}: Ave could not verify that only your account can change its folder, so its permission, configuration and extension files are not trusted. Fix the folder permissions first (Settings > Permissions shows the fix), then restart Ave.`);
+  /** `pending`: the file changed outside Ave, or Ave cannot vouch for it, and it waits for the user's review. */
+  readonly reason: AveHomeRefusalReason | "pending";
+  constructor(readonly path: string, action = `change ${path}`, reason: AveHomeRefusalReason | "pending" = refusalReasonFor(path)) {
+    super(`Ave did not ${action}: ${REFUSED_WRITE_CAUSE[reason]}`);
     this.name = "AveHomeConfigurationRefusedWriteError";
+    this.reason = reason;
   }
+}
+
+const REFUSED_WRITE_CAUSE = {
+  permissions: "Ave could not verify that only your account can change its folder, so its permission, configuration and extension files are not trusted. Fix the folder permissions first (Settings > Permissions shows the fix), then restart Ave.",
+  recovery: "Ave's configuration folder is incomplete, so its configuration is not read or changed. Move the config folder aside and restart Ave to start fresh (Settings > Permissions shows the folder).",
+  pending: "this file was changed outside Ave, or Ave cannot vouch for it. Review it first in Settings > Permissions.",
+} as const satisfies Record<AveHomeRefusalReason | "pending", string>;
+
+function refusalReasonFor(path: string): AveHomeRefusalReason {
+  return isInRefusedAveHome(path) ? refusalReason : "permissions";
 }
 
 /**
@@ -236,7 +263,7 @@ function windowsConfigurationDirectory(root: string, config: string, key: string
 export function configurationHomeForFile(path: string): string | undefined {
   const candidate = configurationKey(path);
   for (const home of new Set([aveHome(), ...configurationHomes])) {
-    for (const name of ["settings.json", "policy.json", "ave-secrets.json"]) {
+    for (const name of ["settings.json", "policy.json", "ave-secrets.json", AVE_HOME_TRUST_MANIFEST]) {
       if (candidate === configurationKey(join(home, name)) || candidate === configurationKey(join(home, "config", name))) return home;
     }
   }
@@ -435,7 +462,9 @@ export type AveHomePrivacyFailureCategory =
   | "not-protected"
   | "invalid-owner-grant"
   | "owner-claim-failed"
-  | "reparse-point";
+  | "reparse-point"
+  // POSIX: the home, or a directory above it, is owned by another account or writable by group or others.
+  | "posix-root-unsafe";
 
 export interface AveHomePrincipal {
   sid: string;
@@ -611,6 +640,23 @@ function directoryDescriptor(path: string, row: WindowsDaclFacts): WindowsDirect
     protected: row.dacl.protected, rules: windowsOwnerRules(row.dacl) };
 }
 
+/** Remove `segments` below `anchor` through Windows handles that never follow a link or junction (the boundary's own Delete). */
+export function removeWindowsItemNoFollow(anchor: string, segments: readonly string[]): void {
+  if (process.platform !== "win32") throw new Error("Windows item removal runs on Windows only");
+  const script = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';
+    $request=ConvertFrom-Json $env:AVE_DACL_REQUEST;
+    Add-Type -TypeDefinition @'
+${WINDOWS_HOME_BOUNDARY_SOURCE}
+'@;
+    $identity=[System.Security.Principal.WindowsIdentity]::GetCurrent();
+    [void][HomeDirectoryDacl]::RemoveItem($request.anchor,[string[]]$request.segments,$identity.User);`;
+  runWindowsNative(() => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")], {
+    input: script, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({ anchor, segments }) }),
+  }));
+}
+
 export function acknowledgeHomeBoundaryRepair(home: string, path: string): void {
   if (process.platform !== "win32") return;
   const name = AVE_HOME_PROTECTED_DIRECTORIES.find((entry) => join(home, entry) === path);
@@ -657,9 +703,7 @@ export function setAveHomePrivacyAtBoot(privacy: AveHomePrivacy): void {
 
 /** The failed path is safe to show; command diagnostics stay in the host log. */
 export function getAveHomePrivacyFailure(): Extract<AveHomePrivacy, { enforcement: "none" }> | undefined {
-  return process.platform === "win32" && bootHomePrivacy?.enforcement === "none"
-    ? bootHomePrivacy
-    : undefined;
+  return bootHomePrivacy?.enforcement === "none" ? bootHomePrivacy : undefined;
 }
 
 /** Guard initialization and each confined extension effect boundary. */
@@ -680,6 +724,7 @@ export function assertAveHomePrivacyForConfinement(): void {
 /** Test teardown only; production seals the result during boot. */
 export function _resetAveHomePrivacyForTest(): void {
   refusedConfigurationHome = undefined;
+  refusalReason = "permissions";
   refusedConfigurationCommitted = undefined;
   verifiedConfigurationIdentities.clear();
   configurationHomes.clear();
@@ -743,6 +788,72 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({ home, readOnlyRights: WINDOWS_ROOT_READ_ONLY_RIGHTS }) }) } };
 }
 
+/**
+ * Why a POSIX home is not private to this account, or undefined when it is: the home must be a real directory owned by this
+ * account that group and others cannot write, and every directory above it must be owned by root or this account and not
+ * writable by group or others, except a root-owned sticky directory such as `/tmp`. Per-child modes are not checked, so a
+ * umask-002 system does not refuse every home. The macOS extended ACL (`chmod +a`) is not covered by mode bits.
+ */
+export function posixHomeProtectionFailure(home: string): { failedPath: string; reason: string } | undefined {
+  // Production reaches the POSIX branch only on a POSIX host. A test that simulates POSIX on a Windows host has no POSIX
+  // ownership to read; a real Windows home is checked by its DACL instead.
+  if (process.platform === "win32") return undefined;
+  const uid = process.geteuid!();
+  const root = lstatSync(home);
+  if (!root.isDirectory()) return { failedPath: home, reason: "The Ave folder is a link or not a directory" };
+  if (root.uid !== uid) {
+    return { failedPath: home, reason: `The Ave folder is owned by another account. Fix it with: sudo chown "$(id -u)" ${posixShellQuote(home)}` };
+  }
+  if ((root.mode & 0o022) !== 0) {
+    return { failedPath: home, reason: `Group or others can write to the Ave folder. Fix it with: chmod go-w ${posixShellQuote(home)}` };
+  }
+  for (const ancestor of directoriesResolving(dirname(resolve(home)))) {
+    const entry = lstatSync(ancestor);
+    const sticky = (entry.mode & 0o1000) !== 0;
+    if (entry.uid !== 0 && entry.uid !== uid) {
+      return { failedPath: ancestor, reason: "A folder above the Ave folder is owned by another account" };
+    }
+    if ((entry.mode & 0o022) !== 0 && !(entry.uid === 0 && sticky)) {
+      return { failedPath: ancestor, reason: `Group or others can write to a folder above the Ave folder. Fix it with: chmod go-w ${posixShellQuote(ancestor)}` };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Every real directory the resolution of `path` passes through, nearest first: the folders of its real path and also each folder
+ * that holds a symbolic link on the way (a link can be repointed by whoever can write the folder holding it), followed link by
+ * link, so a link's own parents are checked too.
+ */
+function directoriesResolving(path: string): string[] {
+  const visited: string[] = [];
+  const seen = new Set<string>();
+  const visit = (directory: string) => { if (!seen.has(directory)) { seen.add(directory); visited.push(directory); } };
+  const pending = path.split(sep).filter((part) => part !== "");
+  let current: string = sep;
+  visit(current);
+  let links = 0;
+  while (pending.length > 0) {
+    const part = pending.shift()!;
+    if (part === ".") continue;
+    if (part === "..") { current = dirname(current); visit(current); continue; }
+    const next = join(current, part);
+    let target: string | undefined;
+    // readlink answers EINVAL for anything that is not a symbolic link.
+    try { target = readlinkSync(next); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error; }
+    if (target !== undefined) {
+      if (++links > 40) throw new Error(`Too many links while resolving ${path}`);
+      if (target.startsWith(sep)) current = sep;
+      pending.unshift(...target.split(sep).filter((piece) => piece !== ""));
+      continue;
+    }
+    current = next;
+    visit(current);
+  }
+  return visited.reverse();
+}
+
 /** Windows needs an explicit owner-only inheritable DACL; report failure so confinement refuses unprotected storage. */
 export function ensureAveHomePrivate(
   home = aveHome(),
@@ -750,6 +861,15 @@ export function ensureAveHomePrivate(
 ): AveHomePrivacy {
   if (runtime.platform !== "win32") {
     mkdirSync(home, { recursive: true, mode: 0o700 });
+    // The check reads the evidence before anything changes a mode: a chmod first would erase it.
+    const unsafe = posixHomeProtectionFailure(home);
+    if (unsafe !== undefined) return { enforcement: "none", home, ...unsafe, category: "posix-root-unsafe" };
+    if (process.platform !== "win32") {
+      // A simulated POSIX runtime on a Windows host has no POSIX mode to set (as for the children below).
+      const root = openSync(home, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { fchmodSync(root, 0o700); }
+      finally { closeSync(root); }
+    }
     // Every boot: an existing 0755 child would otherwise stay group/other-readable under a root the fatal check admits.
     for (const name of [AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_RUNTIME_DIRECTORY]) {
       const directory = join(home, name);

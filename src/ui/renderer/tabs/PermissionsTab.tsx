@@ -49,6 +49,7 @@ import { PermissionJudgeContent } from "../components/permissions/PermissionJudg
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
 import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
+import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -226,6 +227,7 @@ function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["home
     case "invalid-owner-grant": return t("permissionsTab.homePrivacyInvalidOwnerGrant");
     case "owner-claim-failed": return t("permissionsTab.homePrivacyOwnerClaimFailed");
     case "reparse-point": return t("permissionsTab.homePrivacyReparsePoint");
+    case "posix-root-unsafe": return t("permissionsTab.homePrivacyPosixRootUnsafe");
     case "extra-principals": return t("permissionsTab.homePrivacyExtraPrincipals", {
       principals: (error.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
     });
@@ -246,6 +248,7 @@ const HOME_PRIVACY_FIX_KEY = {
   "invalid-owner-grant": "permissionsTab.homePrivacyFixPermissions",
   "owner-claim-failed": null,
   "reparse-point": "permissionsTab.homePrivacyFixReparsePoint",
+  "posix-root-unsafe": "permissionsTab.homePrivacyFixPosixRoot",
   "extra-principals": null,
   "workspace-extra-principals": null,
 } as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;
@@ -1436,6 +1439,8 @@ export function PermissionsTab({
           title={t("permissionsTab.pageTitle")}
           description={t("permissionsTab.pageDescription")}
         />
+
+        <HomeContentReview />
 
         {/* ── 인라인 배너 (§F9 — alert 대체) ── */}
         {banner && (

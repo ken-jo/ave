@@ -2,9 +2,10 @@
  * Unreadable user registries block writes while built-in sources remain available. */
 import { randomBytes } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rmdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, readdir, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
+import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { createMarketplaceLogger } from "../log.js";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
@@ -340,28 +341,44 @@ export interface SourceRegistryOptions {
   platform?: NodeJS.Platform;
 }
 
+/**
+ * How a reader treats source data the home content trust manifest has not approved. Pins, installs and sync use only approved
+ * data ("trusted"); revocation enforcement may read unapproved data ("restriction"), because a revocation only withdraws.
+ */
+export type SourceDataUse = "trusted" | "restriction";
+
 /** Missing state is fresh only without synced data; unusable state requires repair rather than losing history. */
-export async function readSourceState(root: string, id: string, platform: NodeJS.Platform = process.platform): Promise<SourceState> {
+export async function readSourceState(
+  root: string,
+  id: string,
+  platform: NodeJS.Platform = process.platform,
+  use: SourceDataUse = "trusted",
+): Promise<SourceState> {
   const dir = join(root, id);
-  let text: string;
+  let input: Awaited<ReturnType<typeof readAveHomeInput>>;
   try {
-    text = await readFile(join(dir, "state.json"), "utf8");
+    input = await readAveHomeInput(join(dir, "state.json"));
   } catch (error) {
-    if (isMissingPathError(error)) {
-      // Synced data without state has lost its pin; accepting fresh state would bypass history review.
-      if (existsSync(join(dir, "repo.git")) || existsSync(join(dir, "snapshots"))) {
-        throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} is missing while its synced data remains`, {
-          cause: error,
-          detail: { reason: "state-missing", sourceId: id },
-        });
-      }
-      return { ...FRESH_STATE };
-    }
     throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} cannot be read (${fsErrorCode(error)})`, {
       cause: error,
       detail: { reason: "state-unreadable", sourceId: id },
     });
   }
+  if (input.status === "absent") {
+    // Synced data without state has lost its pin; accepting fresh state would bypass history review.
+    if (existsSync(join(dir, "repo.git")) || existsSync(join(dir, "snapshots"))) {
+      throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} is missing while its synced data remains`, {
+        detail: { reason: "state-missing", sourceId: id },
+      });
+    }
+    return { ...FRESH_STATE };
+  }
+  if (input.status === "untrusted" && use === "trusted") {
+    throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} is waiting for review`, {
+      detail: { reason: "state-unreadable", sourceId: id },
+    });
+  }
+  const text = input.bytes.toString("utf8");
   try {
     return checkState(parseStrictJson(text), platform);
   } catch (error) {
@@ -524,7 +541,12 @@ export class SourceRegistry {
     this.rawEntries = [];
     let text: string | null = null;
     try {
-      text = await readFile(this.sourcesPath, "utf8");
+      const input = await readAveHomeInput(this.sourcesPath);
+      if (input.status === "untrusted") {
+        this.fileProblem = { message: "sources.json is waiting for review", detail: { reason: "unreadable", fsCode: "PENDING_REVIEW" } };
+      } else if (input.status === "trusted") {
+        text = input.bytes.toString("utf8");
+      }
     } catch (error) {
       if (!isMissingPathError(error)) {
         const fsCode = fsErrorCode(error);

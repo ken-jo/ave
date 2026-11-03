@@ -127,6 +127,10 @@ export const PERMISSIONS = {
   // triggers ASRT installWindowsSandbox's single self-elevating UAC prompt. Never auto-triggered.
   sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
   approveExtensionsWithoutIsolation: "ave:permissions:approve-extensions-without-isolation",
+  // Home content review: the read serves one snapshot; approve and remove act only on its rows and need a user gesture.
+  homeTrustReview: "ave:permissions:home-trust-review",
+  homeTrustApprove: "ave:permissions:home-trust-approve",
+  homeTrustRemove: "ave:permissions:home-trust-remove",
   // `/allow <sentence>`; resolve a user sentence onto one of the PENDING approval's own scopes. Gesture-gated because only a keyboard-origin submission
   // may speak for the user, but it grants nothing on its own: the reply names a button the card already renders, and that button still has to be pressed.
   approvalSentenceSelect: "ave:permissions:approval-sentence-select",
