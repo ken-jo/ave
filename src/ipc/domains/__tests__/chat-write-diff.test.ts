@@ -416,7 +416,7 @@ describe("ave:memory:candidates lifecycle", () => {
     );
 
     expect(result).toEqual({ ok: true, entry: activated });
-    expect(deps.memoryManager.activateMemoryCandidate).toHaveBeenCalledWith(CANDIDATE_ID, {});
+    expect(deps.memoryManager.activateMemoryCandidate).toHaveBeenCalledWith(CANDIDATE_ID, {}, "user");
   });
 
   it("rejects candidate actions from plugin frames before they reach storage", async () => {
@@ -475,7 +475,7 @@ describe("ave:memory:candidates lifecycle", () => {
     expect(rejected).toEqual({ ok: false, error: "project-not-allowed" });
     expect(deleted).toEqual({ ok: true });
     expect(deps.memoryManager.deleteMemory).toHaveBeenCalledTimes(1);
-    expect(deps.memoryManager.deleteMemory).toHaveBeenCalledWith("proposal.md", {});
+    expect(deps.memoryManager.deleteMemory).toHaveBeenCalledWith("proposal.md", {}, "user");
   });
 });
 

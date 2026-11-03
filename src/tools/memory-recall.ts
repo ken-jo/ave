@@ -246,7 +246,7 @@ function createMemoryDeleteTool(deps: MemoryRecallToolDeps): Tool {
             isError: true,
           };
         }
-        await deps.memoryManager.deleteMemoryCandidate(id, memoryProjectScope(ctx));
+        await deps.memoryManager.deleteMemoryCandidate(id, memoryProjectScope(ctx), "assistant");
         return { output: JSON.stringify({ deleted: true, id, state: "candidate" }), isError: false };
       } catch (error) {
         return { output: `memory_delete failed: ${errorMessage(error)}`, isError: true };

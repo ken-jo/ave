@@ -1827,7 +1827,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     try {
-      await memoryManager.deleteMemory(filename, project.options);
+      await memoryManager.deleteMemory(filename, project.options, "user");
       return { ok: true };
     } catch {
       // Do not disclose a path, title, or another project's memory scope to the renderer.
@@ -1841,7 +1841,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const project = parseMemoryProjectOptions(candidate.options);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     try {
-      const entry = await memoryManager.activateMemoryCandidate(candidate.id, project.options);
+      const entry = await memoryManager.activateMemoryCandidate(candidate.id, project.options, "user");
       return { ok: true, entry };
     } catch (error) {
       return candidateMemoryActionFailure(error);
@@ -1854,7 +1854,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const project = parseMemoryProjectOptions(candidate.options);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     try {
-      await memoryManager.deleteMemoryCandidate(candidate.id, project.options);
+      await memoryManager.deleteMemoryCandidate(candidate.id, project.options, "user");
       return { ok: true };
     } catch (error) {
       return candidateMemoryActionFailure(error);

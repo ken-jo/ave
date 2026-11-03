@@ -51,6 +51,7 @@ import { isRecord } from "../shared/is-record.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
 import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
+import { MemoryHistory, historyText, type MemoryHistoryActor, type MemoryHistoryRead } from "./memory-history.js";
 import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 import {
@@ -1100,6 +1101,7 @@ export class MemoryManager implements PromptMemorySource {
   private readonly sessionsDir: string;
   private readonly toolOutputArtifacts: ToolOutputArtifactStore;
   private readonly unpublishedOutputCaptures: Map<string, Set<string>>;
+  private readonly history: MemoryHistory;
   // Keep one search index per manager namespace, never a global singleton.
   private readonly searchIndex: SessionSearchIndex;
   // Root guards block stale writers until re-add; only newly created sessions may bind again.
@@ -1129,6 +1131,7 @@ export class MemoryManager implements PromptMemorySource {
     this.memoryDir = join(this.aveDir, "memories");
     this.sessionsDir = sessionStorePath(this.aveDir);
     this.toolOutputArtifacts = new ToolOutputArtifactStore(this.sessionsDir);
+    this.history = new MemoryHistory(this.memoryDir);
     this.searchIndex = new SessionSearchIndex(this.aveDir);
     this.ensureStructure();
     const captureOwnerKey = realpathSync(this.sessionsDir);
@@ -1516,6 +1519,7 @@ export class MemoryManager implements PromptMemorySource {
     const visibleContent = `# ${input.title}\n\n${input.content}\n`;
     const indexPath = join(this.memoryDir, "MEMORY.md");
     let filename = "";
+    let previousBody: string | undefined;
 
     await withFileLock(indexPath, async () => {
       const existing = this.findExistingManagedMemory(
@@ -1536,6 +1540,10 @@ export class MemoryManager implements PromptMemorySource {
         } else {
           filename = existing.filename;
           metadata = this.mergeExistingMemoryMetadata(existing.metadata, metadata, options);
+          const previous = readUtf8FileSnapshotIfPresent(join(this.memoryDir, filename), MAX_MANAGED_MEMORY_FILE_BYTES);
+          previousBody = previous && !previous.tooLarge
+            ? this.memoryBodyForPrompt({ filename, title: input.title, content: this.parseMemoryNote(previous.content).content })
+            : "";
         }
       } else {
         filename = this.allocateMemoryFilename(input.title, metadata.id);
@@ -1555,13 +1563,25 @@ export class MemoryManager implements PromptMemorySource {
     });
 
     this.memoryIndex = this.readMemoryIndex();
+    await this.history.record({
+      memoryId: metadata.id,
+      op: previousBody === undefined ? "created" : "updated",
+      actor: metadata.source,
+      fields: {
+        title: input.title,
+        contentDigest: sha256Text(input.content),
+        scope: metadata.scope.type,
+      },
+      ...(previousBody !== undefined ? { before: historyText(previousBody), after: historyText(input.content) } : {}),
+    });
     return this.entryFromMemoryMetadata(filename, input.title, visibleContent, metadata, new Date().toISOString());
   }
 
   // Approve by immutable identity and recheck review scope under the write lock.
   async activateMemoryCandidate(
     id: string,
-    options: ProjectScopedMemoryOptions = {},
+    options: ProjectScopedMemoryOptions,
+    actor: MemoryHistoryActor,
   ): Promise<NoteEntry> {
     const safeId = this.validateManagedMemoryId(id, "activateMemoryCandidate");
     const indexPath = join(this.memoryDir, "MEMORY.md");
@@ -1609,10 +1629,11 @@ export class MemoryManager implements PromptMemorySource {
     });
 
     this.memoryIndex = this.readMemoryIndex();
+    await this.history.record({ memoryId: safeId, op: "activated", actor });
     return activated!;
   }
 
-  async deleteMemoryCandidate(id: string, options: ProjectScopedMemoryOptions = {}): Promise<void> {
+  async deleteMemoryCandidate(id: string, options: ProjectScopedMemoryOptions, actor: MemoryHistoryActor): Promise<void> {
     const safeId = this.validateManagedMemoryId(id, "deleteMemoryCandidate");
     const indexPath = join(this.memoryDir, "MEMORY.md");
     await withFileLock(indexPath, async () => {
@@ -1628,6 +1649,20 @@ export class MemoryManager implements PromptMemorySource {
       this.removeMemoryIndexEntryLocked(found.filename, indexPath);
     });
     this.memoryIndex = this.readMemoryIndex();
+    await this.history.record({ memoryId: safeId, op: "discarded", actor });
+  }
+
+  /** One memory's change history; the memory must exist in the caller's scope, like any id-based operation. */
+  async getMemoryHistory(id: string, options: ProjectScopedMemoryOptions): Promise<MemoryHistoryRead> {
+    const safeId = this.validateManagedMemoryId(id, "getMemoryHistory");
+    const found = this.findManagedMemoryById(safeId);
+    const scopeEntry = found
+      ? this.entryFromMemoryMetadata(found.filename, found.title, found.content, found.metadata, "")
+      : undefined;
+    if (!scopeEntry || !this.memoryScopeVisibleForMutation(scopeEntry, options)) {
+      throw new Error("getMemoryHistory: memory not found");
+    }
+    return this.history.read(safeId);
   }
 
   async updateMemoryIndex(content: string): Promise<void> {
@@ -1660,8 +1695,9 @@ export class MemoryManager implements PromptMemorySource {
     this.memoryIndex = this.readMemoryIndex();
   }
 
-  async deleteMemory(filename: string, options: ProjectScopedMemoryOptions = {}): Promise<void> {
+  async deleteMemory(filename: string, options: ProjectScopedMemoryOptions, actor: MemoryHistoryActor): Promise<void> {
     const safeFilename = this.validateDeletableMemoryFilename(filename);
+    let deletedId: string | undefined;
     const path = join(this.memoryDir, safeFilename);
     const indexPath = join(this.memoryDir, "MEMORY.md");
     await withFileLock(indexPath, async () => {
@@ -1688,11 +1724,14 @@ export class MemoryManager implements PromptMemorySource {
         if (!this.memoryScopeVisibleForMutation(entry, options)) {
           throw new Error("deleteMemory: memory does not belong to the selected scope");
         }
+        deletedId = entry.id;
       }
       unlinkIfPresent(path);
       this.removeMemoryIndexEntryLocked(safeFilename, indexPath);
     });
     this.memoryIndex = this.readMemoryIndex();
+    // Legacy notes have no id, and the id is a memory's identity, so only managed deletions are recorded.
+    if (deletedId) await this.history.record({ memoryId: deletedId, op: "deleted", actor });
   }
 
   async updateAgentsMd(content: string): Promise<void> {

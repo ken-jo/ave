@@ -178,7 +178,7 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   it("removes deleted memories from MEMORY.md and the cached index", async () => {
     await mm.saveMemory("Meeting Notes", "weekly sync discussion");
 
-    await mm.deleteMemory("meeting-notes.md");
+    await mm.deleteMemory("meeting-notes.md", {}, "user");
 
     expect(existsSync(join(dir, "memories", "meeting-notes.md"))).toBe(false);
     const index = readFileSync(join(dir, "memories", "MEMORY.md"), "utf-8");
@@ -187,7 +187,7 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   });
 
   it("does not allow MEMORY.md to be deleted as a normal memory entry", async () => {
-    await expect(mm.deleteMemory("MEMORY.md")).rejects.toThrow(/MEMORY\.md is an index file/);
+    await expect(mm.deleteMemory("MEMORY.md", {}, "user")).rejects.toThrow(/MEMORY\.md is an index file/);
     expect(existsSync(join(dir, "memories", "MEMORY.md"))).toBe(true);
   });
 

@@ -143,10 +143,10 @@ describe("MemoryManager — scoped long-term memory governance", () => {
       .toEqual(expect.arrayContaining([global.id, alpha.id]));
     expect(memoryManager.listMemoryCandidates({ projectRoot: "C:\\workspace\\alpha" }).map((entry) => entry.id))
       .not.toContain(beta.id);
-    await expect(memoryManager.activateMemoryCandidate(beta.id!, { projectRoot: "C:\\workspace\\alpha" }))
+    await expect(memoryManager.activateMemoryCandidate(beta.id!, { projectRoot: "C:\\workspace\\alpha" }, "user"))
       .rejects.toThrow(/not found/);
 
-    const activated = await memoryManager.activateMemoryCandidate(alpha.id!, { projectRoot: "C:\\workspace\\alpha" });
+    const activated = await memoryManager.activateMemoryCandidate(alpha.id!, { projectRoot: "C:\\workspace\\alpha" }, "user");
     expect(activated.state).toBe("active");
     expect(activated.confirmedAt).toEqual(expect.any(String));
     expect(memoryManager.listMemoryCandidates({ projectRoot: "C:\\workspace\\alpha" }).map((entry) => entry.id))
@@ -200,7 +200,7 @@ describe("MemoryManager — scoped long-term memory governance", () => {
 
   it("rejects cross-project deletion and preserves legacy notes above the V1 write ceiling", async () => {
     const alpha = await memoryManager.saveMemory("Alpha private", "alpha-only", { projectRoot: "C:\\workspace\\alpha" });
-    await expect(memoryManager.deleteMemory(alpha.filename, { projectRoot: "C:\\workspace\\beta" }))
+    await expect(memoryManager.deleteMemory(alpha.filename, { projectRoot: "C:\\workspace\\beta" }, "user"))
       .rejects.toThrow(/selected scope/);
     expect(existsSync(join(dir, "memories", alpha.filename))).toBe(true);
 
@@ -255,7 +255,7 @@ describe("MemoryManager — scoped long-term memory governance", () => {
       state: "candidate",
       capture: automaticCapture,
     });
-    const activated = await memoryManager.activateMemoryCandidate(candidate.id!);
+    const activated = await memoryManager.activateMemoryCandidate(candidate.id!, {}, "user");
     const ordinary = await memoryManager.saveMemory("Ordinary user note", "Keep the original user wording.");
 
     expect(explicit.filename).not.toBe(automatic.filename);
