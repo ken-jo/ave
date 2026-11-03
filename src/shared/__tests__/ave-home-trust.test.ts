@@ -478,23 +478,6 @@ describe("item digests and listing", () => {
     expect(readAveHomeEntrySync(join(dir, "skills", "notes"))).toMatchObject({ status: "untrusted", reason: "changed" });
   });
 
-  // A case-sensitive file system lets two names fold to one Windows key; only Linux test hosts can make both names.
-  it.runIf(process.platform === "linux")("refuses approval of two items whose names fold to one key on Windows", () => {
-    const dir = home();
-    put(dir, "skills/Notes/SKILL.md", "upper");
-    put(dir, "skills/notes/SKILL.md", "lower");
-    boot(dir);
-    const platform = process.platform;
-    try {
-      setProcessPlatform("win32");
-      const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key === "skills/notes");
-      expect(rows).toHaveLength(2);
-      for (const entry of rows) expect(entry).toMatchObject({ reason: "unreadable", approvable: false });
-    } finally {
-      setProcessPlatform(platform);
-    }
-  });
-
   it("shows an item directory that is itself a link, and removes only the link", () => {
     const dir = home();
     const outside = join(dirname(dir), "outside-skills");
@@ -578,6 +561,25 @@ describe("Windows owner and ACL overlay", () => {
       expect(review.rows.every((entry) => entry.approvable)).toBe(true);
       expect(review.approveAllOffered).toBe(false);
       expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
+    } finally {
+      setProcessPlatform(platform);
+      dacls.override = undefined;
+    }
+  });
+
+  // A case-sensitive file system lets two names fold to one Windows key; only Linux test hosts can make both names.
+  it.runIf(process.platform === "linux")("refuses approval of two items whose names fold to one key on Windows", () => {
+    const dir = home();
+    put(dir, "skills/Notes/SKILL.md", "upper");
+    put(dir, "skills/notes/SKILL.md", "lower");
+    boot(dir);
+    const platform = process.platform;
+    dacls.override = (paths) => paths.map(() => row(user, [{ sid: user, allow: true }]));
+    try {
+      setProcessPlatform("win32");
+      const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key === "skills/notes");
+      expect(rows).toHaveLength(2);
+      for (const entry of rows) expect(entry).toMatchObject({ reason: "unreadable", approvable: false });
     } finally {
       setProcessPlatform(platform);
       dacls.override = undefined;
