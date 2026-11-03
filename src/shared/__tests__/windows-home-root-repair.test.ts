@@ -2,7 +2,7 @@
 // The native helper re-checks this predicate on the pinned handle; the SDDL parity test runs both on Windows.
 import { describe, expect, it } from "vitest";
 import { isWindowsHomeRootRepairable, isWindowsHomeRootSafe, isWindowsWorkspaceForeignWriter } from "../windows-home-boundary.js";
-import type { WindowsDaclFacts } from "../windows-path-facts.js";
+import { isOwnerOnlyDacl, windowsOwnerRules, type WindowsDaclFacts } from "../windows-path-facts.js";
 
 const USER = "S-1-5-21-1004336348-11-77-1417";
 const INHERITED = 0x10 | 0x3;
@@ -93,5 +93,44 @@ describe("isWindowsWorkspaceForeignWriter", () => {
     ["another user generic all", true, writer("S-1-5-21-1-2-3-1001", 0x10000000)],
   ])("%s: foreign writer %s", (_name, expected, rule) => {
     expect(isWindowsWorkspaceForeignWriter(rule, USER)).toBe(expected);
+  });
+});
+
+// srt-win's per-session file deny stamps `(D;OICI;FILE_DELETE_CHILD;;;<srt-sandbox>)` on the home root (the parent of every denied
+// home path) and `(D;OICI;<mask>;;;<srt-sandbox>)` on the denied paths themselves, config/ among them. A deny never grants, so it
+// cannot make a location writable or readable by anyone else: the shape checks evaluate the allow entries alone.
+describe("deny entries in the root and owner-only shapes", () => {
+  const SANDBOX = "S-1-5-21-1004336348-11-77-1005";
+  const OWNER_ONLY = ace(USER, 0x3);
+  const SRT_PARENT_DENY = ace(SANDBOX, 0x3, 1, 0x40);
+  const ownerRules = (aces: ReturnType<typeof ace>[]) => windowsOwnerRules(root(aces, { protected: true }).dacl!);
+  it("keeps a root with srt-win's object and container inherit DELETE_CHILD deny safe", () => {
+    expect(isWindowsHomeRootSafe(root([SRT_PARENT_DENY, OWNER_ONLY], { protected: true }))).toBe(true);
+  });
+  it("keeps a root with any foreign deny, inheritable or not, safe", () => {
+    for (const flags of [0, 0x1, 0x2, 0x3, 0x3 | 0x8]) {
+      expect(isWindowsHomeRootSafe(root([ace("S-1-5-32-545", flags, 1, 0x1f01ff), OWNER_ONLY], { protected: true }))).toBe(true);
+    }
+  });
+  it("keeps a protected directory with a write deny on it owner-only", () => {
+    const rules = ownerRules([ace(SANDBOX, 0x3, 1, 0x116 | 0x10000 | 0x40), OWNER_ONLY]);
+    expect(isOwnerOnlyDacl({ ownerSid: USER, rules }, USER)).toBe(true);
+  });
+  it("still refuses a foreign allow beside a deny, in either order", () => {
+    for (const aces of [[SRT_PARENT_DENY, OWNER_ONLY, ace(SANDBOX, 0x3, 0, 0x1301bf)], [ace(SANDBOX, 0, 0, 0x2), SRT_PARENT_DENY, OWNER_ONLY]]) {
+      expect(isWindowsHomeRootSafe(root(aces, { protected: true }))).toBe(false);
+      expect(isOwnerOnlyDacl({ ownerSid: USER, rules: ownerRules(aces) }, USER)).toBe(false);
+    }
+    // A deny of the same principal does not hide its inheritable read allow on the root.
+    expect(isWindowsHomeRootSafe(root([ace("S-1-1-0", 0x3, 1, 0x2), OWNER_ONLY, ace("S-1-1-0", 0x3, 0, 0x1200a9)], { protected: true }))).toBe(false);
+  });
+  it("still requires the user's own FullControl entry, an unprotected DACL is still refused, and a deny alone is not owner-only", () => {
+    expect(isWindowsHomeRootSafe(root([SRT_PARENT_DENY], { protected: true }))).toBe(false);
+    expect(isWindowsHomeRootSafe(root([SRT_PARENT_DENY, OWNER_ONLY]))).toBe(false);
+    expect(isOwnerOnlyDacl({ ownerSid: USER, rules: ownerRules([SRT_PARENT_DENY]) }, USER)).toBe(false);
+    expect(isOwnerOnlyDacl({ ownerSid: USER, rules: ownerRules([SRT_PARENT_DENY, ace(USER, 0x3, 0, 0x1200a9)]) }, USER)).toBe(false);
+  });
+  it("still keeps an explicitly denied root out of the narrow repair, so the repair never rewrites over srt-win's entry", () => {
+    expect(isWindowsHomeRootRepairable(root([SRT_PARENT_DENY, ...profileInherited]))).toBe(false);
   });
 });

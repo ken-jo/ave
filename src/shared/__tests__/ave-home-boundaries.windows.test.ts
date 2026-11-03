@@ -561,6 +561,40 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(() => assertAveHomePrivacyForConfinement()).not.toThrow();
     expectBoundary(join(dir, "secrets"));
   });
+  it("keeps a home protected under srt-win's sandbox deny entries and never strips or names them", () => {
+    // srt-win's file deny stamp: (D;OICI;FILE_DELETE_CHILD) for its sandbox account on the parent of each denied path (the home
+    // root) and (D;OICI;<write>) on the denied path (config/). Guests stands in for the srt-sandbox account.
+    const dir = fixture();
+    const workspace = join(dir, "workspace");
+    if (!existsSync(workspace)) { mkdirSync(workspace); setFixtureOwner(workspace); }
+    const sandbox = "S-1-5-32-546";
+    execFileSync(win32SystemBinary("icacls"), [dir, "/deny", `*${sandbox}:(OI)(CI)(DC)`, "/q"], { windowsHide: true, stdio: "pipe" });
+    execFileSync(win32SystemBinary("icacls"), [join(dir, "config"), "/deny", `*${sandbox}:(OI)(CI)(WD,AD,WEA,WA,DE,DC)`, "/q"], { windowsHide: true, stdio: "pipe" });
+    const denies = (path: string) => readWindowsDirectoryDacls([path])[0]!.rules!
+      .filter((rule) => rule.sid === sandbox && rule.accessControlType === 1).map((rule) => rule.isInherited);
+    expect(denies(dir)).toEqual([false]);
+    expect(denies(join(dir, "config"))).toEqual([false]);
+    expect(denies(workspace)).toEqual([true]);
+    const result = ensureAveHomePrivate(dir);
+    expect(result, JSON.stringify(result)).toMatchObject({ enforcement: "win32-dacl" });
+    expect(result).not.toHaveProperty("repairs");
+    expect(JSON.stringify(result)).not.toContain(sandbox);
+    expect(JSON.stringify(result)).not.toContain("re-inherited");
+    // Nothing was rewritten: the root and config/ keep their stamps, the workspace keeps the deny it inherits from the root.
+    expect(denies(dir)).toEqual([false]);
+    expect(denies(join(dir, "config"))).toEqual([false]);
+    expect(denies(workspace)).toEqual([true]);
+    expect(existsSync(join(dir, "config.unprotected-recovery"))).toBe(false);
+    setAveHomePrivacyAtBoot(result);
+    expect(() => assertAveHomePrivacyForConfinement()).not.toThrow();
+  });
+  it("still refuses a foreign root WRITE grant beside srt-win's sandbox deny", () => {
+    const dir = fixture();
+    execFileSync(win32SystemBinary("icacls"), [dir, "/deny", "*S-1-5-32-546:(OI)(CI)(DC)", "/q"], { windowsHide: true, stdio: "pipe" });
+    grant(dir, "W");
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals",
+      extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0" })] });
+  });
   it("refuses an inheritable foreign root READ grant and names it as an explicit extra principal", () => {
     // Native run 3: an (OI)(CI) read entry on the root flows into every unprotected child (workspace, logs), so only a root-only
     // read entry is accepted (lead decision 2026-11-02, stricter only).

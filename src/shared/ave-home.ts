@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
-import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
+import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsGrantingRules, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
@@ -929,7 +929,8 @@ export function ensureAveHomePrivate(
       if (descriptor.ownerSid !== sid && !(descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544")) {
         return { enforcement: "none", home, failedPath: path, category: "invalid-owner-grant", reason: "Directory is owned by another account" };
       }
-      const rules = descriptor.rules;
+      // Deny entries never grant access: neither an extra principal nor a `/remove` target (srt-win's sandbox deny on the root).
+      const rules = windowsGrantingRules(descriptor.rules);
       const extraPrincipals = [...new Map(rules
         .filter((rule) => rule.sid !== sid && (path !== home || !isWindowsHomeRootForeignTraversal(rule)))
         .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}),
@@ -941,7 +942,7 @@ export function ensureAveHomePrivate(
       if (descriptor.protected !== true) {
         return { enforcement: "none", home, failedPath: path, category: "not-protected", reason: "Directory DACL is not protected against inheritance" };
       }
-      const readOnlyPrincipals = path === home ? descriptor.rules.filter((rule) => rule.sid !== sid) : [];
+      const readOnlyPrincipals = path === home ? rules.filter((rule) => rule.sid !== sid) : [];
       const ownerDescriptor = path === home ? { ...descriptor, rules: descriptor.rules.filter((rule) => rule.sid === sid) } : descriptor;
       if (!isOwnerOnlyDacl(ownerDescriptor, sid)) {
         return { enforcement: "none", home, failedPath: path, category: "invalid-owner-grant", reason: "Directory DACL is not owner-only FullControl with object and container inheritance" };
