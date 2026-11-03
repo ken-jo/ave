@@ -113,7 +113,7 @@ describe("ConversationLoop permission mode slash events", () => {
 
   it("says in the slash output that a refused home folder kept a durable mode change to this session", async () => {
     const { loop, permissionManager } = makeLoop();
-    permissionManager.setModePersist.mockRejectedValueOnce(new AveHomeConfigurationRefusedWriteError("/home/permissions.json"));
+    permissionManager.setModePersist.mockRejectedValueOnce(new AveHomeConfigurationRefusedWriteError("permissions.json"));
 
     const result = await loop.runTurn("/permission mode auto --durable", {}, undefined, { ...userKeyboardTurn() });
 
