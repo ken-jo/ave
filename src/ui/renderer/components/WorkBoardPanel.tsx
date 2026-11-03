@@ -21,7 +21,6 @@ import {
 } from "../../../components/ui/dialog.js";
 import type { AveApi } from "../types.js";
 import type {
-  RunProgressEventPayload,
   RunTranscriptEvent,
   WorkBoardBriefingKind,
   WorkBoardBriefingResult,
@@ -39,6 +38,19 @@ import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { usePaneActions } from "./PaneFrame.js";
+import {
+  currentPhaseTurn,
+  formatElapsed,
+  isRunInFlight,
+  latestTurn,
+  liveTextOf,
+  runStartedAt,
+  useNowTick,
+  useWorkBoardRun,
+  type RunPhase,
+  type RunStateMap,
+  type WorkItemRunState,
+} from "../hooks/use-work-board-run.js";
 
 export interface WorkBoardPanelProps {
   api: AveApi;
@@ -110,143 +122,6 @@ function formatDue(iso: string | undefined): string {
   return date ? t("workBoard.dueLabel", { date }) : t("workBoard.noDueDate");
 }
 
-// Derive run state only from host events; awaiting-approval is informational because the shared host gate owns the
-// decision.
-
-type RunPhase = RunProgressEventPayload["phase"];
-
-interface WorkItemRunState {
-  /** A run is in flight (between runStarted and runFinished/runFailed). */
-  busy: boolean;
-  /** Latest phase from the engine progress stream. Undefined until the first event. */
-  phase?: RunPhase;
-  /** Latest child-agent turn text for the active (planning/executing) phase. */
-  liveText?: string;
-  /** Terminal failure / denial reason (error / denied phase or runFailed). */
-  reason?: string;
-  /** Execute child's session id, set on the terminal `done` event. */
-  runSessionId?: string;
-}
-
-type RunStateMap = Record<number, WorkItemRunState | undefined>;
-
-/** Phases that should show an active spinner. */
-function isActivePhase(phase: RunPhase | undefined): boolean {
-  return phase === "planning" || phase === "executing";
-}
-
-/** True while the run is in flight (no terminal phase reached yet). */
-function isRunInFlight(run: WorkItemRunState | undefined): boolean {
-  if (!run) return false;
-  if (run.phase === "done" || run.phase === "denied" || run.phase === "error") return false;
-  return run.busy || run.phase !== undefined;
-}
-
-/**
- * Subscribe to the four host run channels in ONE effect with a single cleanup.
- * Returns the per-item run state map plus a `runItem` launcher. The launcher
- * optimistically seeds `busy` so the card shows a starting indicator instantly,
- * even before the `runStarted` broadcast lands.
- */
-function useWorkBoardRun(api: AveApi): {
-  runState: RunStateMap;
-  runItem: (id: number) => void;
-} {
-  const [runState, setRunState] = useState<RunStateMap>({});
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
-
-  const patch = useCallback((id: number, next: Partial<WorkItemRunState>) => {
-    if (!mountedRef.current) return;
-    setRunState((prev) => {
-      const cur = prev[id] ?? { busy: false };
-      return { ...prev, [id]: { ...cur, ...next } };
-    });
-  }, []);
-
-  useEffect(() => {
-    const unsubs: Array<() => void> = [];
-    if (typeof api.onWorkBoardRunProgress === "function") {
-      unsubs.push(
-        api.onWorkBoardRunProgress((ev: RunProgressEventPayload) => {
-          patch(ev.itemId, {
-            phase: ev.phase,
-            // Only active phases carry live turn text; clear it on transition.
-            liveText: ev.phase === "planning" || ev.phase === "executing" ? ev.text : undefined,
-            reason: ev.phase === "error" || ev.phase === "denied" ? ev.message : undefined,
-            runSessionId: ev.runSessionId,
-            // A terminal phase ends the in-flight window even if runFinished is late.
-            busy: ev.phase !== "done" && ev.phase !== "denied" && ev.phase !== "error",
-          });
-        }),
-      );
-    }
-    if (typeof api.onWorkBoardRunStarted === "function") {
-      unsubs.push(
-        api.onWorkBoardRunStarted(({ itemId }) => {
-          patch(itemId, { busy: true, phase: undefined, liveText: undefined, reason: undefined });
-        }),
-      );
-    }
-    if (typeof api.onWorkBoardRunFinished === "function") {
-      unsubs.push(
-        api.onWorkBoardRunFinished(({ itemId, status }) => {
-          patch(itemId, {
-            busy: false,
-            phase: status === "completed" ? "done" : status === "denied" ? "denied" : status === "error" ? "error" : undefined,
-          });
-        }),
-      );
-    }
-    if (typeof api.onWorkBoardRunFailed === "function") {
-      unsubs.push(
-        api.onWorkBoardRunFailed(({ itemId, reason }) => {
-          patch(itemId, { busy: false, phase: "error", reason });
-        }),
-      );
-    }
-    return () => {
-      for (const u of unsubs) u();
-    };
-  }, [api, patch]);
-
-  const runItem = useCallback(
-    (id: number) => {
-      if (typeof api.runWorkBoardItem !== "function") return;
-      // Optimistic: show a starting indicator before runStarted lands.
-      patch(id, { busy: true, phase: undefined, liveText: undefined, reason: undefined, runSessionId: undefined });
-      void api.runWorkBoardItem(id).then((result) => {
-        if (!mountedRef.current) return;
-        if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: result.error });
-          return;
-        }
-        if (result && "status" in result) {
-          patch(id, {
-            busy: false,
-            phase:
-              result.status === "completed"
-                ? "done"
-                : result.status === "denied"
-                  ? "denied"
-                  : result.status === "error" || result.status === "not_found"
-                    ? "error"
-                    : undefined,
-            reason: result.reason,
-            runSessionId: result.runSessionId,
-          });
-        }
-      }).catch((err: unknown) => {
-        if (!mountedRef.current) return;
-        patch(id, { busy: false, phase: "error", reason: errorMessage(err) });
-      });
-    },
-    [api, patch],
-  );
-
-  return { runState, runItem };
-}
-
 function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
   if (!run) return null;
   const inFlight = isRunInFlight(run);
@@ -313,6 +188,66 @@ function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
   );
 }
 
+/** The compact card's phase word; null for a run that is not in flight. Exhaustive over the run phases so a new phase must
+ * decide how its card reads. */
+function liveChipLabel(phase: RunPhase | undefined): string | null {
+  switch (phase) {
+    case undefined:
+      return t("workBoard.liveChipStarting");
+    case "planning":
+      return t("workBoard.liveChipPlanning");
+    case "awaiting_approval":
+      return t("workBoard.liveChipAwaitingApproval");
+    case "executing":
+      return t("workBoard.liveChipExecuting");
+    case "done":
+    case "denied":
+    case "error":
+      return null;
+    default: {
+      const unhandled: never = phase;
+      throw new Error(`unhandled work board run phase: ${String(unhandled)}`);
+    }
+  }
+}
+
+/** "실행 중 · N턴째 · m:ss" — phase, the current phase's turn (once it took one), and the time since the run began (once the
+ * listed item carries this run's start). The chip owns the 1s clock, so the tick re-renders only the chip, not the board or an
+ * open detail dialog. */
+function LiveRunChip({ run, startedAt }: { run: WorkItemRunState; startedAt: string | undefined }) {
+  const now = useNowTick(true);
+  const label = liveChipLabel(run.phase);
+  if (label === null) return null;
+  const turn = currentPhaseTurn(run);
+  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+  const parts = [label];
+  if (turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
+  if (Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
+  const awaiting = run.phase === "awaiting_approval";
+  return (
+    <span
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
+        awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
+      }`}
+      data-testid="work-board-live-chip"
+      data-phase={run.phase ?? "starting"}
+    >
+      {awaiting ? (
+        <CheckCircle2 className="h-3 w-3 shrink-0" />
+      ) : (
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      )}
+      <span className="min-w-0 truncate">{parts.join(" · ")}</span>
+    </span>
+  );
+}
+
+function localClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 interface WorkItemCardProps {
   item: WorkItemResolved;
   run: WorkItemRunState | undefined;
@@ -323,10 +258,31 @@ interface WorkItemCardProps {
   onOpenDetail: (id: number) => void;
 }
 
-function WorkItemCard({ item, run, onStart, onComplete, onReopen, onRun, onOpenDetail }: WorkItemCardProps) {
+function WorkItemCard({
+  item,
+  run,
+  onStart,
+  onComplete,
+  onReopen,
+  onRun,
+  onOpenDetail,
+}: WorkItemCardProps) {
   const overdue = item.status_resolved === "overdue";
   const isCompleted = item.status === "completed";
-  const busy = isRunInFlight(run);
+  const live = run !== undefined && isRunInFlight(run) ? run : undefined;
+  const narration = latestTurn(live);
+  const narrationLine = (className: string) => (
+    <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
+      {narration ? (
+        <>
+          <span className="tabular-nums">{localClock(narration.at)}</span>
+          {` · ${narration.text}`}
+        </>
+      ) : (
+        t("workBoard.liveNarrationWaiting")
+      )}
+    </p>
+  );
   return (
     <button
       type="button"
@@ -344,41 +300,73 @@ function WorkItemCard({ item, run, onStart, onComplete, onReopen, onRun, onOpenD
               {item.title}
             </span>
           </div>
-          {item.detail && (
-            <p className="mt-1.5 line-clamp-2 break-words text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</p>
+          {live ? (
+            // A running card keeps its footprint. The chip takes the due line's row, and one line of narration takes the
+            // description's place: the description stays in the layout, invisible, so the block is exactly as tall as it was
+            // before the run. A card without a description has no line to give, so its narration shares the chip's row.
+            // Turns streaming in never resize the card. `contain: inline-size` keeps the unwrapped narration and chip from
+            // widening the card past its column (the scroll area sizes its content to fit).
+            <>
+              <div
+                className="mt-2 flex min-w-0 items-center gap-1.5 overflow-hidden [contain:inline-size]"
+                data-testid="work-board-live-row"
+              >
+                {overdue && (
+                  <Badge variant="outline" className="shrink-0 border-destructive/(--opacity-half) text-destructive">
+                    {t("workBoard.overdueBadge")}
+                  </Badge>
+                )}
+                <LiveRunChip run={live} startedAt={runStartedAt(item)} />
+                {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
+                <span aria-hidden="true" className="invisible w-0 text-[11px]">{"\u200b"}</span>
+                {!item.detail && narrationLine("min-w-0 flex-1 truncate text-[11px] text-muted-foreground")}
+              </div>
+              {item.detail && (
+                <div className="mt-1.5 grid [contain:inline-size]">
+                  <p
+                    aria-hidden="true"
+                    className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-[11px] leading-relaxed [overflow-wrap:anywhere]"
+                  >
+                    {item.detail}
+                  </p>
+                  {narrationLine("col-start-1 row-start-1 truncate text-[11px] leading-relaxed text-muted-foreground")}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {item.detail && (
+                <p className="mt-1.5 line-clamp-2 break-words text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</p>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {overdue && (
+                  <Badge variant="outline" className="border-destructive/(--opacity-half) text-destructive">
+                    {t("workBoard.overdueBadge")}
+                  </Badge>
+                )}
+                <span className="text-[11px] text-muted-foreground">{formatDue(item.due_at)}</span>
+                <RunIndicator run={run} />
+              </div>
+            </>
           )}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {overdue && (
-              <Badge variant="outline" className="border-destructive/(--opacity-half) text-destructive">
-                {t("workBoard.overdueBadge")}
-              </Badge>
-            )}
-            <span className="text-[11px] text-muted-foreground">{formatDue(item.due_at)}</span>
-            <RunIndicator run={run} />
-          </div>
         </div>
       </div>
       {/* Inline lifecycle actions. stopPropagation so the card's open-detail
           click does not also fire when the user only wanted to transition. */}
       <div className="mt-2.5 flex flex-wrap justify-end gap-1">
-        {!isCompleted && (
+        {!isCompleted && !live && (
           <Button
             size="sm"
             variant="ghost"
             className="h-6 px-2 text-[11px]"
-            disabled={busy}
             onClick={(e) => {
               e.stopPropagation();
               onRun(item.id);
             }}
             data-testid="work-board-run"
           >
-            {busy ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <Play className="mr-1 h-3 w-3" />
-            )}
-            {busy ? t("workBoard.runBusyShort") : t("workBoard.runButton")}
+            <Play className="mr-1 h-3 w-3" />
+            {t("workBoard.runButton")}
           </Button>
         )}
         {item.status === "planned" && (
@@ -689,7 +677,7 @@ function RunOutputPanel({
   const inFlight = isRunInFlight(run);
   const plan = item.plan;
   const output = item.output;
-  const liveText = inFlight && isActivePhase(run?.phase) ? run?.liveText : undefined;
+  const liveText = inFlight ? liveTextOf(run) : undefined;
   const sessionId = run?.runSessionId ?? item.runSessionId;
 
   // Nothing to show: never run AND no live activity.
@@ -1600,7 +1588,9 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
 
   // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
   // the hook).
-  const { runState, runItem } = useWorkBoardRun(api);
+  // A run entering a phase has just written its run fields (runId, runHistory, runStatus) to the item. Re-list so the card's elapsed
+  // time reads this run's start rather than the previous run's; turn events do not re-list.
+  const { runState, runItem } = useWorkBoardRun(api, items, refresh);
 
   // A finished run may have written engine fields (plan/output/runStatus) onto
   // the item; re-list so the board view reflects the persisted run result.
