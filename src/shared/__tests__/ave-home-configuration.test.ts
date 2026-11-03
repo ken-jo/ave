@@ -9,14 +9,15 @@ import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
-import { ensureAveHomePrivate, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
+import { AVE_HOME_PROTECTED_DIRECTORIES, ensureAveHomePrivate, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { permissionSettingsPath, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import { loadPolicy, savePolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { isPathAllowed } from "../../permissions/allowed-directories.js";
 import { buildMandatorySandboxWritePolicy } from "../../permissions/sandbox-write-policy.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../../permissions/sensitive-paths.js";
-import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
+import { getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
+import { hostRuntimeReads } from "../../sandbox/wrap-bundled-command.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
@@ -325,6 +326,17 @@ describe("protected home configuration", () => {
     }
     expect(getDefaultSensitiveWriteDenyPaths().map((path) => path.replace(/\\/g, "/").replace(/\/$/, "")))
       .toContain(join(dir, "config").replace(/\\/g, "/"));
+    // `runtime` is a protected boundary whose venvs sandboxed plugins must still read. It has no sensitive row yet: a plain row would
+    // read-deny every venv, and on Windows a grant into it would stamp a deny entry onto the boundary's own DACL.
+    expect(AVE_HOME_PROTECTED_DIRECTORIES).toContain("runtime");
+    const runtime = join(dir, "runtime");
+    expect(lstatSync(runtime).isDirectory()).toBe(true);
+    const folded = (path: string) => caseFoldForMatch(path.replace(/\\/g, "/").replace(/\/$/, ""));
+    const runtimeKey = folded(runtime);
+    expect(getDefaultSensitiveReadDenyPaths().map(folded).filter((path) => path === runtimeKey || path.startsWith(`${runtimeKey}/`))).toEqual([]);
+    expect(isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(join(runtime, "uv", "target", "sha", "uv"))), "read")).toBeNull();
+    // A sandboxed runtime program is granted the child it needs, never the boundary.
+    expect(hostRuntimeReads(join(runtime, "uv", "target", "sha", "uv"))).toEqual([join(runtime, "uv")]);
   });
 
   it("resolves marker presence after boot while other homes resolve independently", () => {

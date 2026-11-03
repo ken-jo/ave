@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
@@ -118,7 +118,7 @@ describe("ensureAveHomePrivate", () => {
   it("accepts alias-free numeric JSON rules and requests protection in one read-back", () => {
     const { dir, result, readDacls } = check();
     expect(result).toEqual({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID });
-    expect(readDacls.mock.calls).toEqual([[[dir, join(dir, "secrets"), join(dir, "subscription-runtimes"), join(dir, "keys"), join(dir, "certs"), join(dir, "config")], true]]);
+    expect(readDacls.mock.calls).toEqual([[[dir, join(dir, "secrets"), join(dir, "subscription-runtimes"), join(dir, "keys"), join(dir, "certs"), join(dir, "config"), join(dir, "runtime")], true]]);
   });
   it("protects the default home with only mocked profile and filesystem access", () => {
     vi.stubEnv("AVE_HOME", undefined);
@@ -368,6 +368,26 @@ describe("ensureAveHomePrivate", () => {
     const dir = home();
     ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] });
     expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+  it.skipIf(process.platform === "win32")("re-tightens an existing POSIX runtime directory to 0700 on every boot", () => {
+    const dir = home();
+    mkdirSync(join(dir, "runtime"), { recursive: true, mode: 0o755 });
+    chmodSync(join(dir, "runtime"), 0o755);
+    ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] });
+    expect(statSync(join(dir, "runtime")).mode & 0o777).toBe(0o700);
+    chmodSync(join(dir, "runtime"), 0o750);
+    ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] });
+    expect(statSync(join(dir, "runtime")).mode & 0o777).toBe(0o700);
+  });
+  it.skipIf(process.platform === "win32")("refuses a POSIX runtime link instead of changing its target's mode", () => {
+    const dir = home();
+    const target = join(dirname(dir), "runtime-target");
+    mkdirSync(target, { mode: 0o755 });
+    chmodSync(target, 0o755);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    symlinkSync(target, join(dir, "runtime"), "dir");
+    expect(() => ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] })).toThrow();
+    expect(statSync(target).mode & 0o777).toBe(0o755);
   });
   it("passes untrusted paths only through one JSON environment value", () => {
     const paths = ["odd’; Write-Output x; 'path", "secret"];

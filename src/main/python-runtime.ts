@@ -11,7 +11,7 @@ import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 import { readPluginRegistry, resolveManifestPathsFromRegistry } from "../plugins/registry.js";
 import type { PluginManifest } from "../plugins/types.js";
 import { resolveUvTarget, type UvTarget } from "../../scripts/uv-targets.mjs";
-import { aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome, isAveHomeRuntimeBoundaryPresent } from "../shared/ave-home.js";
 import { proxyUrlFromPacEntry } from "../shared/pac-proxy.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -46,7 +46,7 @@ interface ReadySentinel {
   pythonVersion: string;
 }
 
-const aveRuntimeDir = (): string => path.join(aveHome(), "runtime");
+const aveRuntimeDir = (): string => path.join(aveHome(), AVE_HOME_RUNTIME_DIRECTORY);
 const UV_STDERR_TAIL_LIMIT_CHARS = 12_000;
 // Keep the cache beside the venv: hardlinks fail across volumes, including junctions and redirected profiles.
 
@@ -147,11 +147,11 @@ export class PythonRuntimeBootstrapper {
   }
 
   private venvDir(): string {
-    return path.join(this.runtimeDir(), "venv");
+    return path.join(this.runtimeDir(), AVE_RUNTIME_LAYOUT.venv);
   }
 
   private pythonInstallDir(): string {
-    return path.join(this.runtimeDir(), "python");
+    return path.join(this.runtimeDir(), AVE_RUNTIME_LAYOUT.python);
   }
 
   private uvCacheDir(): string {
@@ -262,7 +262,12 @@ export class PythonRuntimeBootstrapper {
       return result;
     }
 
-    await this.setup();
+    // No ready runtime exists and nothing older is reused: a reset or moved runtime folder is only ever rebuilt from the lockfile.
+    try {
+      await this.setup();
+    } catch (error) {
+      throw new Error(t("be_pythonRuntime.errRebuildNeeded", { message: (error as Error).message }), { cause: error });
+    }
     return result;
   }
 
@@ -423,7 +428,7 @@ export class PythonRuntimeBootstrapper {
     const lockBytes = Buffer.isBuffer(lockFile) ? lockFile : Buffer.from(lockFile);
     const lockHash = sha256Hex(lockBytes).slice(0, 24);
     const uvTarget = this.getCurrentUvTarget();
-    return path.join(aveRuntimeDir(), "python-envs", `${uvTarget.dir}-py312-${lockHash}`);
+    return path.join(aveRuntimeDir(), AVE_RUNTIME_LAYOUT.pythonEnvs, `${uvTarget.dir}-py312-${lockHash}`);
   }
 
   // Provision dependencies before worker confinement; persistent workers use the governed spawn path.
@@ -630,6 +635,10 @@ export class PythonRuntimeBootstrapper {
   }
 
   private async ensureDirs(): Promise<void> {
+    // The runtime folder is a protected boundary only boot creates; recreating a moved one here would leave it unprotected.
+    if (isResolvedPathWithin(aveRuntimeDir(), this.runtimeDir()) && !isAveHomeRuntimeBoundaryPresent()) {
+      throw new Error(`Ave runtime folder ${aveRuntimeDir()} is missing or not a plain directory; restart Ave to recreate it`);
+    }
     // ~/.ave/<feature>/ namespace rule: directories owner-only (0o700).
     await fs.mkdir(this.runtimeDir(), { recursive: true, mode: 0o700 });
     await fs.mkdir(this.logsDir(), { recursive: true, mode: 0o700 });

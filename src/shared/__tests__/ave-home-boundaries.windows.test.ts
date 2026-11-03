@@ -77,7 +77,7 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
       { input, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env, AVE_TEST_TARGET: path }) }).trim();
   }
 
-  it("creates all five boundaries with the exact owner-only descriptor", () => {
+  it("creates all six boundaries with the exact owner-only descriptor", () => {
     const dir = fixture();
     expectBoundary(dir);
     expectBoundary(join(dir, "secrets"));
@@ -85,6 +85,36 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expectBoundary(join(dir, "keys"));
     expectBoundary(join(dir, "certs"));
     expectBoundary(join(dir, "config"));
+    expectBoundary(join(dir, "runtime"));
+  });
+  it("recreates a nonconforming runtime boundary empty and never copies its contents", () => {
+    const dir = fixture();
+    const boundary = join(dir, "runtime");
+    // A venv whose site-packages another principal could change while the folder was open, its uv cache and a uv binary.
+    const sitePackages = join(boundary, "python-envs", "env", "venv", "Lib", "site-packages");
+    mkdirSync(sitePackages, { recursive: true });
+    mkdirSync(join(boundary, "python-envs", "env", "uv-cache"), { recursive: true });
+    mkdirSync(join(boundary, "uv"), { recursive: true });
+    writeFileSync(join(sitePackages, "planted.py"), "import os");
+    writeFileSync(join(boundary, "python-envs", "env", "uv-cache", "wheel"), "cached");
+    writeFileSync(join(boundary, "uv", "uv.exe"), "binary");
+    for (const path of [join(boundary, "python-envs"), join(boundary, "python-envs", "env"), join(boundary, "python-envs", "env", "venv"),
+      join(boundary, "python-envs", "env", "venv", "Lib"), sitePackages, join(sitePackages, "planted.py"),
+      join(boundary, "python-envs", "env", "uv-cache"), join(boundary, "python-envs", "env", "uv-cache", "wheel"),
+      join(boundary, "uv"), join(boundary, "uv", "uv.exe")]) setFixtureOwner(path);
+    damage(boundary);
+    const result = ensureAveHomePrivate(dir);
+    expect(result).toMatchObject({ enforcement: "win32-dacl", repairs: [boundary] });
+    expectBoundary(boundary);
+    // Only the repair markers remain; the notice marker clears when the user is told the runtime will be rebuilt.
+    expect(readdirSync(boundary).filter((name) => !name.startsWith(".ave-"))).toEqual([]);
+    expect(existsSync(`${boundary}.unprotected-recovery`)).toBe(false);
+    expect(existsSync(`${boundary}.unprotected-complete`)).toBe(false);
+    // Unchanged on the next boot: a conforming runtime boundary is neither repaired nor emptied again.
+    mkdirSync(join(boundary, "uv"));
+    writeFileSync(join(boundary, "uv", "uv.exe"), "rebuilt");
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    expect(readFileSync(join(boundary, "uv", "uv.exe"), "utf8")).toBe("rebuilt");
   });
   it("keeps root policy and deny rules active during a refused boot without migrating", async () => {
     const dir = fixture();

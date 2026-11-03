@@ -7,7 +7,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
 import type { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
@@ -139,6 +139,7 @@ import {
   uvProxyEnvFromPacResolutions,
 } from "../python-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { t } from "../../i18n/index.js";
 
 function makeBrowserWindow() {
   return {
@@ -236,6 +237,8 @@ describe("PythonRuntimeBootstrapper", () => {
       Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
     );
     configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false });
+    // Boot creates the runtime boundary; Windows runtime setup refuses to recreate it.
+    mkdirSync(path.join(process.env.AVE_HOME!, "runtime"), { recursive: true });
   });
 
   afterEach(async () => {
@@ -884,6 +887,42 @@ describe("PythonRuntimeBootstrapper", () => {
     const win = makeBrowserWindow();
 
     await expect(bootstrapper.ensureReady(win)).rejects.toThrow();
+  });
+
+  it("reports a rebuild-needed error and writes no ready sentinel when an empty runtime cannot be rebuilt offline", async () => {
+    mockedAccess
+      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // no ready sentinel: the runtime folder was reset
+      .mockResolvedValueOnce(undefined); // uv binary materialized from the app bundle
+    mockedSpawn.mockReturnValueOnce(makeSpawnFailMock(2, "error: Failed to fetch: https://github.com/astral-sh/python-build-standalone"));
+    const writes = vi.mocked(fsMock.writeFile).mock.calls.length;
+
+    const failure = await new PythonRuntimeBootstrapper().ensureReady(makeBrowserWindow()).then(() => undefined, (error: Error) => error);
+
+    const [headline] = t("be_pythonRuntime.errRebuildNeeded", { message: "" }).split("\n");
+    expect(failure?.message.startsWith(headline!)).toBe(true);
+    expect(failure?.message).toContain("Failed to fetch");
+    expect(mockedSpawn).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fsMock.writeFile).mock.calls.slice(writes).map(([target]) => String(target)).filter((target) => target.endsWith(".ready"))).toEqual([]);
+  });
+
+  it("on Windows refuses to recreate a missing runtime boundary and reports a rebuild instead", async () => {
+    rmSync(path.join(process.env.AVE_HOME!, "runtime"), { recursive: true, force: true });
+    const originalPlatform = process.platform;
+    const originalArch = process.arch;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    Object.defineProperty(process, "arch", { value: "x64", configurable: true });
+    mockedAccess.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+    try {
+      const failure = await new PythonRuntimeBootstrapper().ensureReady(makeBrowserWindow()).then(() => undefined, (error: Error) => error);
+      const [headline] = t("be_pythonRuntime.errRebuildNeeded", { message: "" }).split("\n");
+      expect(failure?.message.startsWith(headline!)).toBe(true);
+      expect(failure?.message).toContain("restart Ave to recreate it");
+      expect(vi.mocked(fsMock.mkdir)).not.toHaveBeenCalled();
+      expect(mockedSpawn).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      Object.defineProperty(process, "arch", { value: originalArch, configurable: true });
+    }
   });
 
   it("두 번째 ensureReady 호출은 .ready sentinel을 확인하고 즉시 resolve한다", async () => {

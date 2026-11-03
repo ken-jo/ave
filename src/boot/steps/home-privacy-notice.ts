@@ -1,7 +1,7 @@
 import { t } from "../../i18n/index.js";
 import { basename } from "node:path";
 import { createLogger } from "../../lib/logger.js";
-import { acknowledgeHomeBoundaryRepair, type AveHomePrivacy } from "../../shared/ave-home.js";
+import { acknowledgeHomeBoundaryRepair, AVE_HOME_RUNTIME_DIRECTORY, type AveHomePrivacy } from "../../shared/ave-home.js";
 import type { BootContext } from "../context.js";
 
 const log = createLogger("ave");
@@ -40,7 +40,8 @@ export function notifyHomeBoundaryRepairs(
       }
       continue;
     }
-    const body = t("homePrivacy.boundaryRepaired");
+    // The runtime boundary is recreated empty rather than copied, so its notice says it will be rebuilt; it holds no credentials.
+    const body = basename(path) === AVE_HOME_RUNTIME_DIRECTORY ? t("homePrivacy.runtimeReset") : t("homePrivacy.boundaryRepaired");
     log.warn("boot: %s: %s", path, body);
     if (ctx.host.desktop) {
       const delivery = ctx.notificationService.deliver({

@@ -99,3 +99,17 @@ it("reports a repaired home root once, without its path in the log and without a
   for (const locale of ["en", "ko"] as const) expect([...translate(locale, "homePrivacy.rootRepaired")].length).toBeLessThanOrEqual(80);
   expect(isModelFacingKey("homePrivacy.rootRepaired")).toBe(false);
 });
+
+it("tells the user a reset runtime boundary will be rebuilt instead of asking them to sign in again", () => {
+  const { present, notificationService } = notificationFixture();
+  const host = createBootHostFixture({ desktop: createDesktopHostFixture() });
+  notifyHomeBoundaryRepairs({ enforcement: "win32-dacl", home: "/fixture", sid: "fixture",
+    repairs: ["/fixture/runtime"] }, { host, notificationService });
+  expect(present).toHaveBeenCalledOnce();
+  expect(present).toHaveBeenCalledWith(expect.objectContaining({
+    title: translate("ko", "homePrivacy.boundaryRepairedTitle"),
+    body: translate("ko", "homePrivacy.runtimeReset"),
+  }));
+  expect(translate("en", "homePrivacy.runtimeReset")).toContain("rebuilt");
+  expect(translate("en", "homePrivacy.runtimeReset")).not.toContain("Sign out");
+});

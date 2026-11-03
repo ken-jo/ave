@@ -297,9 +297,25 @@ function inspectWindowsConfiguration(home: string, boundaryOnly: boolean): boole
   return true;
 }
 
+/** Host-managed executables (uv, Python installs, venvs, the uv cache). A protected boundary that Repair never copies into: a
+ * nonconforming one is set aside and created empty, and its contents are rebuilt on demand. */
+export const AVE_HOME_RUNTIME_DIRECTORY = "runtime";
+
+/** Children of the runtime boundary. An env root is the boundary itself or `python-envs/<id>`; each holds `venv` and the `python`
+ * installs its venv was created from. A sandboxed spawn is granted these children, never the boundary itself. */
+export const AVE_RUNTIME_LAYOUT = Object.freeze({ uv: "uv", pythonEnvs: "python-envs", venv: "venv", python: "python" });
+
 export const AVE_HOME_PROTECTED_DIRECTORIES: readonly string[] = Object.freeze([
-  "secrets", "subscription-runtimes", "keys", "certs", AVE_HOME_CONFIGURATION_DIRECTORY,
+  "secrets", "subscription-runtimes", "keys", "certs", AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_RUNTIME_DIRECTORY,
 ]);
+
+/** Windows: only boot creates the runtime boundary, owner-only. A recursive mkdir would recreate a moved one unprotected mid-run,
+ * so runtime writers require it to be present, a directory and not a link; a restart recreates it. */
+export function isAveHomeRuntimeBoundaryPresent(home = aveHome()): boolean {
+  if (process.platform !== "win32") return true;
+  const entry = readWindowsDacls([resolve(home, AVE_HOME_RUNTIME_DIRECTORY)])[0]!;
+  return entry.exists === true && entry.directory === true && admitWindowsReparse(entry, "evidence") === true;
+}
 
 /** All user-data paths must use this resolver so AVE_HOME isolates every store, including secrets. */
 export function aveHome(): string {
@@ -666,12 +682,15 @@ export function ensureAveHomePrivate(
 ): AveHomePrivacy {
   if (runtime.platform !== "win32") {
     mkdirSync(home, { recursive: true, mode: 0o700 });
-    const config = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
-    mkdirSync(config, { mode: 0o700, recursive: true });
-    if (process.platform !== "win32") {
-      const handle = openSync(config, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      try { fchmodSync(handle, 0o700); }
-      finally { closeSync(handle); }
+    // Every boot: an existing 0755 child would otherwise stay group/other-readable under a root the fatal check admits.
+    for (const name of [AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_RUNTIME_DIRECTORY]) {
+      const directory = join(home, name);
+      mkdirSync(directory, { mode: 0o700, recursive: true });
+      if (process.platform !== "win32") {
+        const handle = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { fchmodSync(handle, 0o700); }
+        finally { closeSync(handle); }
+      }
     }
     return { enforcement: "posix-mode", home };
   }

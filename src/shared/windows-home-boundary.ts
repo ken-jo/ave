@@ -587,8 +587,10 @@ public static class HomeDirectoryDacl {
         live = OpenRelative(home, name, user, 2, true, true, true);
       }
       EnsureMarker(live, RepairMarker, user);
+      // The runtime boundary holds executables another principal may have changed while it was unprotected. Copying would launder
+      // them into the protected directory, so it starts empty and its contents are rebuilt; the aside is deleted below.
       step = "copy";
-      int skipped = Copy(aside, live, user);
+      int skipped = name == "runtime" ? 0 : Copy(aside, live, user);
       step = "verify";
       if (!OwnerOnly(Read(live), user, elevated)) throw new InvalidOperationException("Fresh boundary protection failed verification");
       EnsureMarker(live, NoticeMarker, user);

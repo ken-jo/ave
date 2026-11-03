@@ -3,12 +3,12 @@ import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 
 import { resolveUvTarget, type UvTarget } from "../../scripts/uv-targets.mjs";
-import { aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { projectRoot } from "./main-paths.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { getHostResources } from "./host-resources.js";
 
-const defaultRuntimeUvDir = (): string => path.join(aveHome(), "runtime", "uv");
+const defaultRuntimeUvDir = (): string => path.join(aveHome(), AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT.uv);
 
 export interface BundledUvRuntimeOptions {
   defaultApp?: boolean;

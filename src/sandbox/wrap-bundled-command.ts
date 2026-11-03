@@ -37,7 +37,7 @@ import {
   type HeldWindowsGrant,
 } from "../permissions/windows-acl-grant-holder.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
-import { aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
@@ -210,10 +210,22 @@ export async function spawnWindowsBundledProcess(input: {
   }
 }
 
-/** `<AVE_HOME>/runtime`, when the command is a program inside it. */
-function hostRuntimeReads(command: string): string[] {
-  const runtime = join(aveHome(), "runtime");
-  return isPathWithin(runtime, command) ? [runtime] : [];
+/** The runtime-boundary children a program inside `<AVE_HOME>/runtime` needs, never the boundary itself: a grant entry left by a
+ * crash then sits on a child, and boot reads only the boundary's own DACL. uv gets `uv`; a venv or Python-install program gets its
+ * env root's `venv` and `python` (the base interpreter its venv was created from). The sandbox account crosses the owner-only
+ * boundary through bypass-traverse. A program elsewhere in the boundary is outside the layout and refused. */
+export function hostRuntimeReads(command: string): string[] {
+  const runtime = join(aveHome(), AVE_HOME_RUNTIME_DIRECTORY);
+  if (!isPathWithin(runtime, command)) return [];
+  const segments = command.slice(runtime.length).split(/[\\/]+/).filter((segment) => segment !== "");
+  if (segments[0] === AVE_RUNTIME_LAYOUT.uv && segments.length > 1) return [join(runtime, AVE_RUNTIME_LAYOUT.uv)];
+  const pythonEnv = segments[0] === AVE_RUNTIME_LAYOUT.pythonEnvs;
+  const envRoot = pythonEnv && segments.length > 1 ? join(runtime, AVE_RUNTIME_LAYOUT.pythonEnvs, segments[1]!) : runtime;
+  const rest = pythonEnv ? segments.slice(2) : segments;
+  if (rest.length > 1 && (rest[0] === AVE_RUNTIME_LAYOUT.venv || rest[0] === AVE_RUNTIME_LAYOUT.python)) {
+    return [join(envRoot, AVE_RUNTIME_LAYOUT.venv), join(envRoot, AVE_RUNTIME_LAYOUT.python)];
+  }
+  throw new Error(`[wrap-bundled-command] ${command} is inside the Ave runtime folder but not in its uv or Python environment layout`);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
