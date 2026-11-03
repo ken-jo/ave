@@ -3,9 +3,9 @@
  * `~/.ave/skills/`. New skill packages arrive through the git marketplace
  * (design §16.2); these installs stay removable.
  */
-import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isResolvedPathWithin } from "../plugins/plugin-storage-containment.js";
+import { forgetAveHomeInputSync, removeNoFollow } from "../shared/ave-home-trust.js";
 import { SKILL_NAME_ALLOWLIST } from "../main/skill-store.js";
 import { updateSkillRegistry } from "./skill-registry.js";
 
@@ -27,6 +27,8 @@ export async function uninstallSkillPackage(
   if (!isResolvedPathWithin(opts.installRoot, target)) {
     throw new Error(`refusing to remove outside skill install root: ${target}`);
   }
-  await rm(target, { recursive: true, force: true });
+  // No-follow removal: a link or junction inside the package is unlinked, never followed into its target.
+  removeNoFollow(target);
+  forgetAveHomeInputSync(target);
   return { skillId: slug, slug, uninstalled: true };
 }

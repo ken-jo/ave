@@ -1,9 +1,10 @@
 /** Owns recorded servers only; unreadable provenance stops changes.
  * Config and file swaps roll back on failure; updates retain the separate data directory. */
-import { assertAveHomeAcceptsInstalls } from "../../shared/ave-home.js";
+import { assertAveHomeAcceptsInstalls, AveHomeConfigurationRefusedWriteError } from "../../shared/ave-home.js";
+import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import AdmZip from "adm-zip";
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
-import { chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
@@ -102,14 +103,11 @@ function parseRecords(text: string, path: string): McpRecord[] {
 }
 
 async function readRecords(path: string): Promise<McpRecord[]> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) return [];
-    throw error;
-  }
-  return parseRecords(text, path);
+  // Install records bind installed MCP artifacts: a file pending review in the home content trust manifest is refused.
+  const input = await readAveHomeInput(path);
+  if (input.status === "absent") return [];
+  if (input.status === "untrusted") throw new AveHomeConfigurationRefusedWriteError(path, "use the MCP install records", "pending");
+  return parseRecords(input.bytes.toString("utf8"), path);
 }
 
 export function mcpInstallOrigins(recordsPath: string): OriginReader {

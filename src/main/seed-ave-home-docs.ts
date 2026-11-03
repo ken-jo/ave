@@ -3,12 +3,12 @@ import {
   existsSync,
   fstatSync,
   mkdirSync,
-  copyFileSync,
   chmodSync,
   openSync,
   readFileSync,
   readdirSync,
   unlinkSync,
+  writeFileSync,
   constants as fsConstants,
 } from "node:fs";
 import { basename, join, dirname, parse as parsePath } from "node:path";
@@ -18,6 +18,7 @@ import * as atomicFile from "../lib/atomic-file.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { getConfiguredHostResources } from "./host-resources.js";
+import { recordAveHomeInputWriteSync } from "../shared/ave-home-trust.js";
 
 export interface AveHomeDocUpgradeMarker {
   sourcePath: string;
@@ -256,7 +257,8 @@ function seedOne(
     try {
       // COPYFILE_EXCL closes the TOCTOU window between existsSync and the write: if another process (concurrent boot from a second app instance, background
       // sync agent) lands a file in the gap, this throws EEXIST and we honor their write rather than clobbering it.
-      copyFileSync(packagedSource, target, fsConstants.COPYFILE_EXCL);
+      // The exclusive write of the packaged bytes read above is recorded in the home content trust manifest with their hash.
+      recordAveHomeInputWriteSync(target, packagedBuf, () => writeFileSync(target, packagedBuf, { flag: "wx", mode: 0o600 }));
       enforceUserFileMode(target);
       result.seeded.push(filename);
     } catch (err) {
@@ -306,7 +308,7 @@ function seedOne(
     const offerTarget = markerPaths.includes(upgradeTarget)
       ? join(home, `${filename}.new.${new Date().toISOString().replace(/[:.]/g, "-")}`)
       : upgradeTarget;
-    copyFileSync(packagedSource, offerTarget);
+    recordAveHomeInputWriteSync(offerTarget, packagedBuf, () => writeFileSync(offerTarget, packagedBuf, { mode: 0o600 }));
     enforceUserFileMode(offerTarget);
     result.upgraded.push(filename);
     pruneSupersededMarkers(markerPaths, upgradeTarget, replaceableHashes);
