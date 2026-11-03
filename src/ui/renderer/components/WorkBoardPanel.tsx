@@ -33,7 +33,7 @@ import type {
   WorkItemUpdateInput,
   WorkProposal,
 } from "../../../shared/work-board-types.js";
-import { BRIEFING_PROPOSAL_SOURCE_ID, MAX_ITEMS } from "../../../shared/work-board-types.js";
+import { BRIEFING_PROPOSAL_SOURCE_ID } from "../../../shared/work-board-types.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -1595,8 +1595,6 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   const inProgress = useMemo(() => items.filter((i) => i.status === "in_progress"), [items]);
   const completed = useMemo(() => items.filter((i) => i.status === "completed"), [items]);
 
-  const capReached = items.length >= MAX_ITEMS;
-
   // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
   // the hook).
   const { runState, runItem } = useWorkBoardRun(api);
@@ -1668,13 +1666,12 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   const onOpenDetail = useCallback((id: number) => setDetailId(id), []);
 
   // The board's own global controls. They sat beside the heading this panel no longer draws; the pane's header carries them
-  // now. What is left in the body is the state they act on — the count and the cap warning — not a control.
+  // now. What is left in the body is the state they act on — the count — not a control.
   usePaneActions(useMemo(() => [
     {
       id: "work-board-add",
       label: t("workBoard.addItemButton"),
       icon: <Plus className="h-4 w-4" />,
-      disabled: capReached,
       onSelect: () => setShowCreate(true),
     },
     {
@@ -1683,7 +1680,7 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
       icon: <RefreshCw className="h-4 w-4" />,
       onSelect: () => void refresh(),
     },
-  ], [capReached, refresh]));
+  ], [refresh]));
 
   const renderColumn = (heading: string, columnItems: WorkItemResolved[], emptyLabel: string, testId: string) => (
     <BoardColumn
@@ -1711,11 +1708,8 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
           <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
           <div className="flex shrink-0 items-center gap-2">
             <Badge variant="outline" title={t("workBoard.panelTitle")}>
-              {items.length}/{MAX_ITEMS}
+              {items.length}
             </Badge>
-            {capReached && (
-              <span className="text-xs text-destructive">{t("workBoard.capReachedLabel")}</span>
-            )}
           </div>
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
