@@ -308,7 +308,7 @@ describe("document observation desktop ownership", () => {
 
   it("drains more than one journal read before the actual shell HOME is removed", async () => {
     baseline();
-    state.policyReads = 0;
+    let drainPolicyReads = -1;
     await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity, async () => {
       const home = createSandboxProcessHome();
       try {
@@ -322,13 +322,19 @@ describe("document observation desktop ownership", () => {
         expect(Buffer.byteLength(journal)).toBeGreaterThan(65_536);
         writeFileSync(home.env.AVE_DOCUMENT_JOURNAL!, journal);
         writeFileSync(path, "agent value");
-      } finally { home.cleanup(); }
+      } finally {
+        // The cleanup drains all 102 records synchronously, before any journal poll timer can run.
+        const before = state.policyReads;
+        home.cleanup();
+        drainPolicyReads = state.policyReads - before;
+      }
     }));
     await vi.waitFor(() => expect(events().some((entry) => entry.kind === "snapshot")).toBe(true));
     expect(events().findLast((entry) => entry.kind === "snapshot")).toMatchObject({ after: { sheet: { rows: [["agent value"]] } } });
     expect(events().filter((entry) => entry.kind === "status").map((entry) => entry.after.code)).not.toContain("observation-error");
-    // 102 records publish ~200 events; the filesystem-backed read policy runs per task, not per record or event.
-    expect(state.policyReads).toBeLessThan(20);
+    // The drain publishes ~200 events in one task; the filesystem-backed read policy runs at most once for that task
+    // (here the baseline earlier in the same task already decided it), never once per record or event.
+    expect(drainPolicyReads).toBeLessThanOrEqual(1);
   });
 
   it("revokes an existing journal when its model turn ends before the tool settles", async () => {
