@@ -323,4 +323,83 @@ describe("MemoryManager — scoped long-term memory governance", () => {
 
     expect(memoryManager.listMemoryEntries({ includeCandidates: true }).some((entry) => entry.id === valid.id)).toBe(false);
   });
+  it("promotes a project memory to global by id so other projects see it, without moving its file", async () => {
+    const alpha = "C:\\workspace\\alpha";
+    const beta = "C:\\workspace\\beta";
+    const local = await memoryManager.saveMemory("Review style", "Prefer small diffs.", {
+      projectRoot: alpha, projectName: "alpha", kind: "preference",
+    });
+    expect(memoryManager.selectRelevantMemories("small diffs", { projectRoot: beta }).entries).toHaveLength(0);
+
+    await expect(memoryManager.promoteToGlobal(local.id!, { projectRoot: beta }))
+      .rejects.toThrow(/memory not found/);
+
+    const promoted = await memoryManager.promoteToGlobal(local.id!, { projectRoot: alpha });
+    expect(promoted).toMatchObject({ id: local.id, filename: local.filename });
+    expect(promoted.projectRoot).toBeUndefined();
+    expect(memoryManager.selectRelevantMemories("small diffs", { projectRoot: beta }).entries.map((entry) => entry.id))
+      .toEqual([local.id]);
+    expect(memoryManager.getMemoryIndex()).toContain(local.filename);
+
+    await expect(memoryManager.promoteToGlobal(local.id!, { projectRoot: alpha }))
+      .rejects.toThrow(/already global/);
+  });
+
+  it("refuses to promote over an existing global memory with the same title", async () => {
+    await memoryManager.saveMemory("Review style", "Global wording.", { kind: "preference" });
+    const local = await memoryManager.saveMemory("Review style", "Project wording.", {
+      projectRoot: "C:\\workspace\\alpha", projectName: "alpha", kind: "preference",
+    });
+
+    await expect(memoryManager.promoteToGlobal(local.id!, { projectRoot: "C:\\workspace\\alpha" }))
+      .rejects.toThrow(/global-title-conflict/);
+    expect(memoryManager.listMemoryEntries({ projectRoot: "C:\\workspace\\alpha" })
+      .find((entry) => entry.id === local.id)?.projectRoot).toBe("C:\\workspace\\alpha");
+  });
+
+  it("disables a memory out of prompts, model search and consolidation while keeping it listed", async () => {
+    const alpha = "C:\\workspace\\alpha";
+    const global = await memoryManager.saveMemory("Deploy rule", "Never deploy on Friday.", { kind: "constraint" });
+    const local = await memoryManager.saveMemory("Alpha rule", "Alpha uses pnpm.", {
+      projectRoot: alpha, projectName: "alpha", kind: "fact",
+    });
+
+    await expect(memoryManager.setMemoryActive(local.id!, false, { projectRoot: "C:\\workspace\\beta" }))
+      .rejects.toThrow(/memory not found/);
+
+    const disabled = await memoryManager.setMemoryActive(global.id!, false, { projectRoot: alpha });
+    await memoryManager.setMemoryActive(local.id!, false, { projectRoot: alpha });
+    expect(disabled.disabled).toBe(true);
+
+    expect(memoryManager.selectRelevantMemories("deploy friday alpha pnpm", { projectRoot: alpha }).entries).toHaveLength(0);
+    expect(memoryManager.searchModelVisibleMemories("", { projectRoot: alpha })).toHaveLength(0);
+    expect(memoryManager.getConsolidationSnapshot().sources).toHaveLength(0);
+    expect(memoryManager.getConsolidationSnapshot({ projectRoot: alpha }).sources).toHaveLength(0);
+    expect(memoryManager.getMemoryIndex()).not.toContain(global.filename);
+    const listed = memoryManager.listMemoryEntries({ projectRoot: alpha });
+    expect(listed.filter((entry) => entry.disabled === true).map((entry) => entry.id).sort())
+      .toEqual([global.id, local.id].sort());
+
+    const restored = await memoryManager.setMemoryActive(global.id!, true, { projectRoot: alpha });
+    expect(restored.disabled).toBeUndefined();
+    expect(memoryManager.selectRelevantMemories("deploy friday", { projectRoot: alpha }).entries.map((entry) => entry.id))
+      .toEqual([global.id]);
+    expect(memoryManager.getMemoryIndex()).toContain(global.filename);
+  });
+
+  it("keeps a re-saved disabled memory disabled and rejects a malformed persisted disabled flag", async () => {
+    const entry = await memoryManager.saveMemory("Deploy rule", "Never deploy on Friday.", { kind: "constraint" });
+    await memoryManager.setMemoryActive(entry.id!, false);
+    const resaved = await memoryManager.saveMemory("Deploy rule", "Never deploy on Friday or Saturday.", { kind: "constraint" });
+    expect(resaved).toMatchObject({ id: entry.id, disabled: true });
+
+    const filePath = join(dir, "memories", entry.filename);
+    const stored = readFileSync(filePath, "utf-8");
+    const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
+    const metadata = JSON.parse(Buffer.from(header[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+    expect(metadata.disabled).toBe(true);
+    metadata.disabled = false;
+    writeFileSync(filePath, stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")), "utf-8");
+    expect(memoryManager.listMemoryEntries().some((candidate) => candidate.id === entry.id)).toBe(false);
+  });
 });

@@ -123,6 +123,15 @@ describe("PreferenceRefreshService", () => {
         source: "user",
       },
       {
+        filename: "disabled.md",
+        title: "Disabled",
+        content: "disabled source must not be included",
+        updatedAt: "2026-05-09T12:00:00Z",
+        state: "active",
+        source: "user",
+        disabled: true,
+      },
+      {
         filename: "project.md",
         title: "Project",
         content: "project source must not be included",
@@ -155,6 +164,7 @@ describe("PreferenceRefreshService", () => {
     expect(prompt).not.toContain("import source must not be included");
     expect(prompt).not.toContain("candidate source must not be included");
     expect(prompt).not.toContain("project source must not be included");
+    expect(prompt).not.toContain("disabled source must not be included");
     expect(prompt).not.toContain("~/.ave");
     expect(prompt).not.toContain("AGENTS.md");
     expect(prompt).not.toContain("user-preferences.md");

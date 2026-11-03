@@ -350,6 +350,11 @@ export type ProjectQueryOptions = {
   includeUnscoped?: boolean;
 };
 
+/** Where an explicit memory save lands; the default project's memory and global memory are separate scopes. */
+type MemorySaveScope =
+  | { scope: "global" }
+  | { scope: "project"; projectRoot: string; projectName?: string };
+
 /** Host-owned metadata attached to a managed long-term memory. */
 type MemoryEntry = {
   filename: string;
@@ -890,7 +895,7 @@ export type AveApi = {
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
   memoryListEntries: (opts?: ProjectQueryOptions) => Promise<Array<{ filename: string; title: string; content: string; updatedAt?: string; projectRoot?: string; projectName?: string }>>;
   memoryListCandidates: (opts?: ProjectQueryOptions) => Promise<MemoryCandidate[]>;
-  memorySaveEntry: (t: string, c: string, opts?: ProjectQueryOptions) => Promise<unknown>;
+  memorySaveEntry: (t: string, c: string, scope: MemorySaveScope) => Promise<unknown>;
   memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryMutationResult>;
   memoryActivateCandidate: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryMutationResult>;
   memoryDeleteCandidate: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryMutationResult>;

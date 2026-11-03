@@ -407,6 +407,22 @@ function parseMemoryProjectOptions(raw: unknown): MemoryProjectOptionsResolution
   };
 }
 
+// Explicit saves name their scope: the default project has its own memory and global memory is a separate choice.
+function parseMemorySaveScope(raw: unknown): MemoryProjectOptionsResolution | { ok: false; error: "invalid-input" } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "invalid-input" };
+  const record = raw as Record<string, unknown>;
+  if (record.scope === "global") {
+    return hasOnlyKeys(record, ["scope"]) ? { ok: true, options: {} } : { ok: false, error: "invalid-input" };
+  }
+  if (record.scope !== "project" || !hasOnlyKeys(record, ["scope", "projectRoot", "projectName"])) {
+    return { ok: false, error: "invalid-input" };
+  }
+  if (!normalizeMemoryProjectString(record.projectRoot, MAX_MEMORY_PROJECT_ROOT_CHARS)) {
+    return { ok: false, error: "invalid-input" };
+  }
+  return parseMemoryProjectOptions({ projectRoot: record.projectRoot, projectName: record.projectName });
+}
+
 type MemoryCandidateActionPayload =
   | { ok: true; id: string; options: unknown }
   | { ok: false };
@@ -1781,8 +1797,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.memory.entriesSave, async (e, title: string, content: string, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesSave, e); return UNAUTHORIZED_FRAME; }
-    const project = parseMemoryProjectOptions(opts);
-    if (!project.ok) return PROJECT_NOT_ALLOWED;
+    const project = parseMemorySaveScope(opts);
+    if (!project.ok) return project.error === "invalid-input" ? { ok: false, error: "invalid-input" } : PROJECT_NOT_ALLOWED;
     if (!memoryCaptureService) {
       throw new Error("memory-reviewer-unavailable");
     }
