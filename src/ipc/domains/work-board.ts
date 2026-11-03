@@ -13,6 +13,7 @@ import type {
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
 import { sanitizeOutgoingInput } from "../handlers/chat.js";
+import { PARENT_DIRECTIVE_MAX_CHARS } from "../../engine/parent-directive.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
 import { createDirStorage } from "../../work-board/storage.js";
@@ -252,13 +253,16 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     if (!workBoardEngine) return NO_ENGINE;
     if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
-    if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
-    // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents.
+    // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents. It precedes
+    // the item lookup so a non-owner frame learns nothing about which items exist.
     if (!isBoardOwnerFrame(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
     }
+    if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
     if (typeof text !== "string" || text.trim().length === 0) return { ok: false, reason: "empty-text" };
+    // Bound the input before redaction and file-reference parsing do any work on it; the runner applies the same cap after masking.
+    if (text.length > PARENT_DIRECTIVE_MAX_CHARS) return { ok: false, reason: "message-too-long" };
     // The execute child cannot open a composer file reference mid-run, exactly as a chat guide cannot.
     try {
       if (parseFileMentionReferences(text).length > 0) return { ok: false, reason: "file-reference-while-running" };
@@ -283,12 +287,13 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     if (!workBoardEngine) return NO_ENGINE;
     if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
-    if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
-    // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents.
+    // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents. It precedes
+    // the item lookup so a non-owner frame learns nothing about which items exist.
     if (!isBoardOwnerFrame(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.cancelRun, e);
       return UNAUTHORIZED_FRAME;
     }
+    if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
     return workBoardEngine.cancelRun(id);
   });
 

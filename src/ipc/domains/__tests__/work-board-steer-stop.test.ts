@@ -7,6 +7,7 @@ import { WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
+import { PARENT_DIRECTIVE_MAX_CHARS } from "../../../engine/parent-directive.js";
 
 const ipc = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -127,5 +128,20 @@ describe("work-board steer and stop IPC", () => {
     const sent = (steerRun.mock.calls[0] as unknown as [number, string])[1];
     expect(sent).not.toContain("someone@example.com");
     expect(result).toEqual({ ok: true, redactedCount: 1 });
+  });
+  it("answers a non-main frame UNAUTHORIZED before saying whether the item exists", async () => {
+    const { event, steerRun, cancelRun } = setup();
+    const subframe = { ...event, senderFrame: { url: "file:///index.html" } };
+    await expect(handler(WORK_BOARD.steerRun)(subframe, 8, "go", GESTURE)).resolves.toEqual(UNAUTHORIZED_FRAME);
+    await expect(handler(WORK_BOARD.cancelRun)(subframe, 8, GESTURE)).resolves.toEqual(UNAUTHORIZED_FRAME);
+    expect(steerRun).not.toHaveBeenCalled();
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("refuses oversized text before redaction or file-reference parsing", async () => {
+    const { event, steerRun } = setup({ piiRedactEnabled: true });
+    const oversized = `someone@example.com [File #1 — path: ${"x".repeat(PARENT_DIRECTIVE_MAX_CHARS)}`;
+    await expect(handler(WORK_BOARD.steerRun)(event, 7, oversized, GESTURE)).resolves.toEqual({ ok: false, reason: "message-too-long" });
+    expect(steerRun).not.toHaveBeenCalled();
   });
 });

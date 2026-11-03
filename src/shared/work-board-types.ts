@@ -273,7 +273,8 @@ export interface WorkItemRunResult {
   reason?: string;
 }
 
-/** Steering a running execution (permission-decision-tree.md S→T): accepted means queued for the execute child's next round boundary.
+/** Steering a running execution (permission-decision-tree.md S→T): accepted means queued for the execute child's next round boundary,
+ * not delivered; a steer still queued when the child's turn ends is dropped and recorded only in the audit.
  * not-executing covers every phase but a linked execute child, planning and plan approval included. The other reasons are the runner's
  * live-delivery refusals; nothing is stored for later. */
 type WorkBoardSteerRefusal =

@@ -718,6 +718,9 @@ export function createWorkBoardEngine(
   function cancelRun(itemId: number): WorkBoardCancelResult {
     const child = executingChildByItem.get(itemId);
     if (child === undefined) return { ok: false, reason: "not-executing" };
+    // A second stop while the first is unwinding is the same stop. The runner already marked the run interrupted and would refuse a
+    // second interrupt; clearing the first call's mark on that refusal would turn the user's stop into an error.
+    if (cancelRequested.has(itemId)) return { ok: true };
     // Mark before interrupting: the runner may unwind and report synchronously inside interruptRun.
     cancelRequested.add(itemId);
     // "Ordinary parent/child cancellation … remain effective" (permission-decision-tree.md, Delegated work): the existing interrupt path,

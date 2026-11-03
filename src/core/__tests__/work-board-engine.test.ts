@@ -525,6 +525,8 @@ function controllableRunner(): {
   interruptCalls: Array<[string, string]>;
   steerCalls: Array<[string, string, string]>;
   interruptAccepted: { value: boolean };
+  /** An interrupt nobody on the board asked for (workspace revocation, shutdown). */
+  interruptFromElsewhere: () => void;
 } {
   const registry = boardParentToolRegistry();
   let release!: () => void;
@@ -560,6 +562,8 @@ function controllableRunner(): {
     interruptRun(id: string, origin: string) {
       interruptCalls.push([id, origin]);
       if (!interruptAccepted.value) return { ok: false, message: `sub-agent run is not running: ${id}` };
+      // Like the real runner, the run is marked interrupted synchronously; a second interrupt during unwind is refused.
+      interruptAccepted.value = false;
       interrupt();
       return { ok: true, message: `interrupt requested for sub-agent run: ${id}` };
     },
@@ -569,7 +573,7 @@ function controllableRunner(): {
     },
     parentToolRegistry: () => registry,
   } as unknown as SubAgentRunner;
-  return { runner, linked, release, interruptCalls, steerCalls, interruptAccepted };
+  return { runner, linked, release, interruptCalls, steerCalls, interruptAccepted, interruptFromElsewhere: () => interrupt() };
 }
 
 describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => {
@@ -699,6 +703,54 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-running" });
       release();
       expect((await run).status).toBe("completed");
+    } finally {
+      await cleanup();
+    }
+  });
+  it("treats a second stop during unwind as the same stop: one interrupt, still cancelled, no error", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "double stop" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, linked, interruptCalls } = controllableRunner();
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const events: WorkBoardRunEvent[] = [];
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e) });
+      const run = engine.runItem(id, { approvalSurface: owner });
+      await linked;
+      expect(engine.cancelRun(id)).toEqual({ ok: true });
+      expect(engine.cancelRun(id)).toEqual({ ok: true });
+      expect(interruptCalls).toHaveLength(1);
+      expect((await run).status).toBe("cancelled");
+      expect(events.filter((e) => e.phase === "error")).toEqual([]);
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing item");
+      expect(got.item.runStatus).toBe("cancelled");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps an interrupt the user did not request an error, never cancelled", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "interrupted elsewhere" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, linked, interruptFromElsewhere } = controllableRunner();
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const events: WorkBoardRunEvent[] = [];
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e) });
+      const run = engine.runItem(id, { approvalSurface: owner });
+      await linked;
+      interruptFromElsewhere();
+      expect((await run).status).toBe("error");
+      expect(events.some((e) => e.phase === "cancelled")).toBe(false);
+      expect(events.at(-1)?.phase).toBe("error");
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing item");
+      expect(got.item.runStatus).toBe("error");
     } finally {
       await cleanup();
     }

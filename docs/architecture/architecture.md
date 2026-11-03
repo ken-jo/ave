@@ -1198,7 +1198,11 @@ is refused, not downgraded. The engine resolves the child from its own record
 of the item's execute child, never from renderer input. A steer is queued for
 the child's next round boundary as host-fenced guidance with no principal and
 no sender prefix, so it neither grants the child user-keyboard capabilities nor
-raises an other-principal floor; nothing is stored for a later resume. A stop
+raises an other-principal floor; nothing is stored for a later resume.
+Acceptance (`ok: true`) means queued, not delivered: if the child's turn ends
+before its next round boundary, the steer is dropped and only the audit records
+it (`work-board:steer:deferred:<reason>`); the board receives no event for that
+case yet. A second stop while the first is unwinding is the same stop. A stop
 uses the ordinary sub-agent interrupt, and a run the user stopped settles as
 `cancelled` (shown as stopped, not as an error). Planning and plan approval
 are not steerable or stoppable here. See
