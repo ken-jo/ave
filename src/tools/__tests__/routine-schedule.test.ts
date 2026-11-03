@@ -134,3 +134,16 @@ describe("routine_schedule tool — validation bounds shared with the store", ()
     }
   });
 });
+
+describe("routine_schedule tool — owner fields", () => {
+  it("lists the item under the calling chat's project and records the agent as creator", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const tool = createRoutineScheduleTool(store);
+      const result = await tool.execute({ execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p" },
+        { ...ctx(), cwd: "/work/checkout" });
+      expect(result.isError).toBe(false);
+      expect(store.list()[0]).toMatchObject({ projectRoot: "/work/checkout", createdBy: "agent" });
+    } finally { await cleanup(); }
+  });
+});

@@ -283,14 +283,13 @@ describe("schedule panel IPC", () => {
       { id: "s1", routineId: "routine-w", routineFiredAt: "2026-11-03T00:00:00.000Z", preview: "" },
       { id: "s0", routineId: "routine-w", routineFiredAt: "2026-10-01T00:00:00.000Z", preview: "" },
     ]);
-    (deps.routinesStore.listForDisplay as ReturnType<typeof vi.fn>).mockReturnValue({
-      routines: [{
+    const weekly = {
         id: "routine-w", trigger: "schedule", execution: "llm-session", prePrompt: "p", createdAt: "2026-10-01T00:00:00.000Z",
         schedule: { at: "2026-11-05T00:00:00.000Z", repeat: { kind: "weekly" } }, lastFiredAt: "2026-11-03T00:00:00.000Z",
         lastFailure: { kind: "error", reason: "429", firedAt: "2026-11-03T00:00:00.000Z", at: "2026-11-03T00:01:00.000Z" },
-      }],
-      invalid: [],
-    });
+      };
+    (deps.routinesStore.listForDisplay as ReturnType<typeof vi.fn>).mockReturnValue({ routines: [weekly], invalid: [] });
+    (deps.routinesStore.list as ReturnType<typeof vi.fn>).mockReturnValue([weekly]);
     const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-04T02:20:00.000Z"));
     const result = await invoke(ROUTINES.listOccurrences, { projectRoot: "/p/a", from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
     now.mockRestore();
@@ -302,5 +301,28 @@ describe("schedule panel IPC", () => {
     });
     expect(await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2027-11-02T00:00:00.000Z" })).toEqual({ ok: false, error: "invalid-range" });
     expect(await invoke(ROUTINES.listOccurrences, { from: "x", to: "y" })).toEqual({ ok: false, error: "invalid-range" });
+  });
+});
+
+describe("schedule panel IPC — review fixes", () => {
+  it("rejects an add without a project", async () => {
+    const deps = await setup([]);
+    expect(await invoke(ROUTINES.add, { trigger: "schedule", execution: "notification-only", notificationTitle: "n" }))
+      .toEqual({ ok: false, error: "project-required" });
+    expect(deps.routinesStore.add).not.toHaveBeenCalled();
+  });
+
+  it("keeps a completed one-shot's run in the grid after it was dismissed", async () => {
+    const deps = await setup([]);
+    const done = {
+      id: "once", trigger: "schedule", execution: "notification-only", notificationTitle: "n", createdAt: "2026-10-01T00:00:00.000Z",
+      projectRoot: "/p/a", schedule: { at: "2026-11-03T00:00:00.000Z" }, lastFiredAt: "2026-11-03T00:00:00.000Z", dismissedAt: "2026-11-03T00:00:00.000Z",
+    };
+    const other = { ...done, id: "elsewhere", projectRoot: "/p/b" };
+    (deps.routinesStore.list as ReturnType<typeof vi.fn>).mockImplementation((filter?: { projectRoot: string }) =>
+      [done, other].filter((r) => !filter || r.projectRoot === filter.projectRoot));
+    (deps.routinesStore.listForDisplay as ReturnType<typeof vi.fn>).mockReturnValue({ routines: [], invalid: [] });
+    const result = await invoke(ROUTINES.listOccurrences, { projectRoot: "/p/a", from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+    expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "once", firedAt: "2026-11-03T00:00:00.000Z", status: "done" }] });
   });
 });

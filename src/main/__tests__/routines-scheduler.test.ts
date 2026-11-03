@@ -1,3 +1,4 @@
+import { TEST_OWNER } from "./routines-fixture.js";
 import { withRoutinesStore } from "./support/routines-store.js";
 import { describe, it, expect, vi } from "vitest";
 import { RoutinesScheduler } from "../routines-scheduler.js";
@@ -5,7 +6,7 @@ import { futureIso, tempRoutinesStore, pastIso } from "./routines-fixture.js";
 
 describe("RoutinesScheduler — llm-session dispatch", () => {
   it("fires onLlmSession handler when llm-session routine is due", withRoutinesStore(async ({ store }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: pastIso() },
@@ -22,7 +23,7 @@ describe("RoutinesScheduler — llm-session dispatch", () => {
   }));
 
   it("does not fire onNotification for llm-session routine", withRoutinesStore(async ({ store }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: pastIso() },
@@ -40,7 +41,7 @@ describe("RoutinesScheduler — llm-session dispatch", () => {
 
 describe("RoutinesScheduler — notification-only dispatch", () => {
   it("fires onNotification handler for notification-only routine", withRoutinesStore(async ({ store }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: pastIso() },
@@ -56,7 +57,7 @@ describe("RoutinesScheduler — notification-only dispatch", () => {
   }));
 
   it("does not fire onLlmSession for notification-only routine", withRoutinesStore(async ({ store }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: pastIso() },
@@ -74,7 +75,7 @@ describe("RoutinesScheduler — notification-only dispatch", () => {
 
 describe("RoutinesScheduler — future routine not fired", () => {
   it("does not fire routines scheduled in the future", withRoutinesStore(async ({ store }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -92,7 +93,7 @@ describe("RoutinesScheduler — future routine not fired", () => {
 
 describe("RoutinesScheduler — markFired persistence", () => {
   it("updates lastFiredAt and dismisses one-shot routine after fire", withRoutinesStore(async ({ store }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: pastIso(), repeat: { kind: "none" } },
@@ -110,7 +111,7 @@ describe("RoutinesScheduler — markFired persistence", () => {
 
 describe("RoutinesScheduler — dispatchNow (trigger-now IPC)", () => {
   it("dispatches routine immediately via dispatchNow", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() }, // future — would not fire via normal tick
@@ -133,7 +134,7 @@ describe("RoutinesScheduler — dispatchNow (trigger-now IPC)", () => {
   }));
 
   it("dispatchNow updates lastFiredAt", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso(), repeat: { kind: "daily" } },
@@ -151,7 +152,7 @@ describe("RoutinesScheduler — dispatchNow (trigger-now IPC)", () => {
 
 describe("RoutinesScheduler — per-tick error isolation", () => {
   it("checkAndFire resolves even when a handler throws", withRoutinesStore(async ({ store }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: pastIso() },
@@ -174,7 +175,7 @@ describe("scheduled routine plugin availability", () => {
   const scope = (ids: string[]) => ({ pluginIds: { mode: "allow" as const, ids }, forcedPluginIds: [], directories: [] });
 
   it("keeps a missing one-shot pending across reload, then fires after installation", withRoutinesStore(async ({ store }) => {
-    const routine = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, scope: scope(["absent-plugin"]) });
+    const routine = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, scope: scope(["absent-plugin"]) });
     let installed: string[] = [];
     const scheduler = new RoutinesScheduler(store, async () => installed);
     const fired = vi.fn();
@@ -196,7 +197,7 @@ describe("scheduled routine plugin availability", () => {
   }));
 
   it("runs a partial one-shot once and leaves its missing ids visible and removable", withRoutinesStore(async ({ store }) => {
-    const routine = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, scope: scope(["installed-plugin", "absent-plugin"]) });
+    const routine = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, scope: scope(["installed-plugin", "absent-plugin"]) });
     const scheduler = new RoutinesScheduler(store, async () => ["installed-plugin"]);
     const fired = vi.fn();
     scheduler.onLlmSession(fired);
@@ -219,7 +220,7 @@ describe("scheduled routine plugin availability", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-26T09:00:00Z"));
     try {
-      const routine = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: new Date().toISOString(), repeat: { kind: "daily" } }, scope: scope(["absent-plugin"]) });
+      const routine = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: new Date().toISOString(), repeat: { kind: "daily" } }, scope: scope(["absent-plugin"]) });
       await store.update(routine.id, { lastFiredAt: "2026-09-25T09:00:00.000Z", lastRoutineSessionId: "previous-session" });
       const scheduler = new RoutinesScheduler(store, async () => []);
       await scheduler.checkAndFire();
@@ -238,7 +239,7 @@ describe("scheduled routine plugin availability", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-26T09:00:00Z"));
     try {
-      await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { repeat: { kind: "cron", expression: "* * * * *" } }, scope: scope(["installed-later"]) });
+      await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { repeat: { kind: "cron", expression: "* * * * *" } }, scope: scope(["installed-later"]) });
       let installed: string[] = [];
       const readInstalled = vi.fn(async () => installed);
       const scheduler = new RoutinesScheduler(store, readInstalled);
@@ -263,7 +264,7 @@ describe("scheduled routine plugin availability", () => {
   it.each([undefined, { mode: "deny-all" as const }, { mode: "inherit" as const }, { mode: "allow" as const, ids: [] }])("does not require plugins for scope %j", async (pluginIds) => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, ...(pluginIds ? { scope: { pluginIds, forcedPluginIds: [], directories: [] } } : {}) });
+      await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, ...(pluginIds ? { scope: { pluginIds, forcedPluginIds: [], directories: [] } } : {}) });
       const readInstalled = vi.fn(async () => []);
       const scheduler = new RoutinesScheduler(store, readInstalled);
       const fired = vi.fn(); scheduler.onLlmSession(fired);
@@ -274,7 +275,7 @@ describe("scheduled routine plugin availability", () => {
   });
 
   it("does not gate notification-only routines on plugin availability", withRoutinesStore(async ({ store }) => {
-    await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Notice", schedule: { at: pastIso() }, scope: scope(["absent-plugin"]) });
+    await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "Notice", schedule: { at: pastIso() }, scope: scope(["absent-plugin"]) });
     const readInstalled = vi.fn(async () => []);
     const scheduler = new RoutinesScheduler(store, readInstalled);
     const fired = vi.fn(); scheduler.onNotification(fired);
@@ -284,7 +285,7 @@ describe("scheduled routine plugin availability", () => {
   }));
 
   it("does not invent missing-plugin state or consume an occurrence on registry read failure", withRoutinesStore(async ({ store }) => {
-    await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, scope: scope(["unknown-plugin"]) });
+    await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "summarize", schedule: { at: pastIso() }, scope: scope(["unknown-plugin"]) });
     const scheduler = new RoutinesScheduler(store, async () => { throw new Error("registry unavailable"); });
     const before = store.list(); const fired = vi.fn(); scheduler.onLlmSession(fired);
     await scheduler.checkAndFire();

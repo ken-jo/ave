@@ -1,7 +1,7 @@
 // Future occurrences of schedule items for the schedule panel's day, week and month grids. Expansion reuses the scheduler's own
 // next-fire arithmetic (advanceRepeatAt, the cron evaluator) so the grid never draws a time the scheduler would not fire.
 import type { RoutineOccurrence, RoutineRecord } from "../shared/routines-types.js";
-import { advanceRepeatAt } from "./schedule-advance.js";
+import { advanceRepeatAt, isMissedWhilePaused } from "./schedule-advance.js";
 import { parseCronExpression, nextCronFire } from "./cron-evaluator.js";
 
 /** A one-minute interval over a month would otherwise produce tens of thousands of chips. */
@@ -21,6 +21,12 @@ export function listRoutineOccurrences(records: readonly RoutineRecord[], range:
   const start = Math.max(range.from, range.now);
   for (const record of records) {
     if (record.dismissedAt || record.trigger !== "schedule" || !record.schedule) continue;
+    if (isMissedWhilePaused(record)) {
+      // Missed while paused: drawn where it was due, even in the past, so the user sees it and can run it now.
+      const missedAt = Date.parse(record.schedule.at!);
+      if (missedAt >= range.from && missedAt < range.to) out.push({ routineId: record.id, at: record.schedule.at!, status: "missed" });
+      continue;
+    }
     const status = record.pausedAt ? "paused" : "scheduled";
     for (const at of expand(record, start, range.to, range.now)) out.push({ routineId: record.id, at, status });
   }

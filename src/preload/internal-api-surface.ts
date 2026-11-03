@@ -1018,7 +1018,7 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(ROUTINES.acknowledgeResult, routineId, firedAt) as Promise<{ ok: boolean; error?: string }>,
   acknowledgeRoutineFailure: async (routineId: string, failureFiredAt: string) =>
     ipcRenderer.invoke(ROUTINES.acknowledgeFailure, routineId, failureFiredAt) as Promise<{ ok: true } | { ok: false; error: string }>,
-  addRoutine: async (input: import("../shared/routines-types.js").AddRoutineInput) =>
+  addRoutine: async (input: Omit<import("../shared/routines-types.js").AddRoutineInput, "createdBy">) =>
     ipcRenderer.invoke(ROUTINES.add, input) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
     >,

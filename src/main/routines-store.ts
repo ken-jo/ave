@@ -7,7 +7,7 @@ import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
-import { advanceRepeatAt } from "../routines/schedule-advance.js";
+import { advanceRepeatAt, isMissedWhilePaused } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 const log = createLogger("ave");
 
@@ -121,6 +121,7 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (x.createdBy !== undefined && !isActor(x.createdBy)) return false;
   if (x.pausedAt !== undefined && typeof x.pausedAt !== "string") return false;
   if ((x.pausedAt === undefined) !== (x.pausedBy === undefined) || (x.pausedBy !== undefined && !isActor(x.pausedBy))) return false;
+  if (x.resumedAt !== undefined && typeof x.resumedAt !== "string") return false;
   return true;
 }
 
@@ -322,18 +323,16 @@ export class RoutinesStore {
     this.loaded = true;
   }
 
-  list(): RoutineRecord[] {
+  // With a project, only that project's items and the unscoped ones stored before projects existed. The filter is for display only;
+  // it is not an authorization boundary.
+  list(filter?: { projectRoot?: string }): RoutineRecord[] {
     // Clone deeply so callers cannot mutate the cached state.
-    return this.cache.map(cloneRecord);
+    return this.cache.filter((r) => inProject(r, filter?.projectRoot)).map(cloneRecord);
   }
 
-  // Active routines = not dismissed. With a project, only that project's items and the unscoped ones stored before projects existed.
+  // Active routines = not dismissed.
   listActive(filter?: { projectRoot?: string }): RoutineRecord[] {
-    const projectRoot = filter?.projectRoot;
-    return this.cache
-      .filter((r) => !r.dismissedAt)
-      .filter((r) => projectRoot === undefined || r.projectRoot === undefined || projectRootEquals(r.projectRoot, projectRoot))
-      .map(cloneRecord);
+    return this.cache.filter((r) => !r.dismissedAt && inProject(r, filter?.projectRoot)).map(cloneRecord);
   }
 
   // Stored routines held back because they name a plugin id the contract rejects.
@@ -350,15 +349,12 @@ export class RoutinesStore {
     if (!this.loaded) await this.load();
 
     const normalizedSchedule = validateRoutineContent("add", input);
-    let normalizedProjectRoot: string | undefined;
-    if (input.projectRoot !== undefined) {
-      if (typeof input.projectRoot !== "string" || input.projectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
-        throw new Error(`RoutinesStore.add: projectRoot must be a string of at most ${MAX_PROJECT_ROOT_LENGTH} characters`);
-      }
-      normalizedProjectRoot = input.projectRoot.trim() || undefined;
+    const normalizedProjectRoot = typeof input.projectRoot === "string" ? input.projectRoot.trim() : "";
+    if (!normalizedProjectRoot || normalizedProjectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
+      throw new Error(`RoutinesStore.add: projectRoot is required (a non-empty string of at most ${MAX_PROJECT_ROOT_LENGTH} characters)`);
     }
-    if (input.createdBy !== undefined && !isActor(input.createdBy)) {
-      throw new Error("RoutinesStore.add: createdBy must be 'user' or 'agent'");
+    if (!isActor(input.createdBy)) {
+      throw new Error("RoutinesStore.add: createdBy is required and must be 'user' or 'agent'");
     }
 
     // Idempotency identity — validate the optional `source` marker length cap (SOT). Empty/whitespace-only collapses to unset so it never matches a real
@@ -415,8 +411,8 @@ export class RoutinesStore {
       scope: normalizedScope,
       createdAt: new Date().toISOString(),
       ...(normalizedSource !== undefined ? { source: normalizedSource } : {}),
-      ...(normalizedProjectRoot !== undefined ? { projectRoot: normalizedProjectRoot } : {}),
-      createdBy: input.createdBy ?? "user",
+      projectRoot: normalizedProjectRoot,
+      createdBy: input.createdBy,
     };
 
     return withInProcessFileQueue(this.filePath, async () => {
@@ -616,11 +612,13 @@ export class RoutinesStore {
       if (patch.prePrompt !== undefined) r.prePrompt = patch.prePrompt;
       if (patch.notificationTitle !== undefined) r.notificationTitle = patch.notificationTitle;
       if (patch.notificationBody !== undefined) r.notificationBody = patch.notificationBody;
-      if (patch.schedule !== undefined) {
+      if (patch.schedule !== undefined && JSON.stringify(schedule) !== JSON.stringify(r.schedule)) {
         r.schedule = schedule;
-        // A new schedule is a new series: the previous cron minute keys and skip markers belong to the old one.
+        // A new schedule is a new series: the previous cron minute keys and skip markers belong to the old one, and a one-shot
+        // given a new time is due again. Re-saving the same schedule keeps them, so the same cron minute cannot fire twice.
         delete r.lastFiredMinuteUTC;
         delete r.lastSkippedMinuteUTC;
+        if (isOneShot(r)) delete r.lastFiredAt;
       }
       return true;
     }, { skipDismissed: true });
@@ -635,14 +633,16 @@ export class RoutinesStore {
     }, { skipDismissed: true });
   }
 
-  // Resuming does not replay what was paused: a repeating item's next fire moves past now. A one-shot whose time passed stays due and runs
-  // once, as an item missed while the app was off does.
+  // Resuming does not replay what was paused: a repeating item's next fire moves past now, and a one-shot whose time passed is
+  // missed (isMissedWhilePaused) until the user runs it now or gives it a new time.
   async resume(id: string): Promise<RoutineRecord | null> {
     return this.mutate(id, (r) => {
       if (!r.pausedAt) return false;
+      const now = new Date().toISOString();
       delete r.pausedAt;
       delete r.pausedBy;
-      advanceRepeatingSchedule(r, new Date().toISOString());
+      r.resumedAt = now;
+      advanceRepeatingSchedule(r, now);
       return true;
     }, { skipDismissed: true });
   }
@@ -667,17 +667,26 @@ export class RoutinesStore {
 
   // Mark a routine as fired. Completed one-shots without attention are dismissed. For repeating routines, advances the next-fire time using the cron
   // evaluator. Returns the updated record.
-  async markFired(id: string, missingPluginIds: string[] = []): Promise<RoutineRecord | null> {
+  // `scheduled` marks a scheduler pass: the scan decided due-ness from a snapshot taken before an await, so the item is re-checked
+  // here inside the file queue. A paused item never fires, on either path.
+  async markFired(id: string, missingPluginIds: string[] = [], options?: { scheduled?: boolean }): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       const r = file.routines.find((x) => x.id === id);
-      if (!r) {
+      const nowMs = Date.now();
+      const stale = r !== undefined && options?.scheduled === true && (
+        Boolean(r.dismissedAt)
+        || (isOneShot(r) && Boolean(r.lastFiredAt))
+        || isMissedWhilePaused(r)
+        || (r.schedule?.repeat?.kind !== "cron" && r.schedule?.at !== undefined && Date.parse(r.schedule.at) > nowMs)
+      );
+      if (!r || r.pausedAt || stale) {
         this.cache = file.routines;
-      this.invalidCache = file.invalid;
+        this.invalidCache = file.invalid;
         return null;
       }
-      const firedAt = new Date().toISOString();
+      const firedAt = new Date(nowMs).toISOString();
       r.lastFiredAt = firedAt;
       delete r.lastSkippedReason;
       delete r.lastSkippedMinuteUTC;
@@ -710,6 +719,15 @@ export class RoutinesStore {
       if (JSON.stringify(r) !== previous) await this.persist(file);
     });
   }
+}
+
+function inProject(record: RoutineRecord, projectRoot: string | undefined): boolean {
+  return projectRoot === undefined || record.projectRoot === undefined || projectRootEquals(record.projectRoot, projectRoot);
+}
+
+function isOneShot(record: RoutineRecord): boolean {
+  const repeat = record.schedule?.repeat;
+  return !repeat || repeat.kind === "none";
 }
 
 function advanceRepeatingSchedule(routine: RoutineRecord, now: string): void {

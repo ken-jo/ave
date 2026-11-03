@@ -1,6 +1,6 @@
 // Next-fire arithmetic for at-based repeats. The store advances a fired item with it and the schedule panel expands occurrences with it,
 // so the grid draws exactly the times the scheduler will fire. Each function returns the first fire strictly after `nowMs`.
-import type { RoutineRepeat } from "../shared/routines-types.js";
+import type { RoutineRecord, RoutineRepeat } from "../shared/routines-types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -36,4 +36,10 @@ export function advanceRepeatAt(atIso: string, repeat: RoutineRepeat | undefined
     case "interval": return advanceFixed(atIso, repeat.intervalMs, nowMs);
     default: return null;
   }
+}
+
+/** A one-shot whose time passed while it was paused was missed; resuming does not catch it up. */
+export function isMissedWhilePaused(record: RoutineRecord): boolean {
+  if (!(!record.schedule?.repeat || record.schedule.repeat.kind === "none") || !record.resumedAt || !record.schedule?.at) return false;
+  return Date.parse(record.schedule.at) <= Date.parse(record.resumedAt);
 }

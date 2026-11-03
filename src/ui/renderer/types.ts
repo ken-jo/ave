@@ -1009,7 +1009,7 @@ export type AveApi = {
   /** Clear the failure of the fire at `failureFiredAt`; `routine-failure-stale` when a newer failure replaced it. */
   acknowledgeRoutineFailure: (routineId: string, failureFiredAt: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   addRoutine: (
-    input: import("../../shared/routines-types.js").AddRoutineInput,
+    input: Omit<import("../../shared/routines-types.js").AddRoutineInput, "createdBy">,
   ) => Promise<
     | { ok: true; routine: import("../../shared/routines-types.js").RoutineRecord }
     | { ok: false; error: string }

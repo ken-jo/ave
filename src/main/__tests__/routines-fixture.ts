@@ -30,3 +30,6 @@ export function futureIso(offsetMs = 60_000): string {
 export function pastIso(offsetMs = -1000): string {
   return isoFromNow(offsetMs);
 }
+
+// The owner fields every add now names: the project it is listed under and who added it.
+export const TEST_OWNER = { projectRoot: "/work/project", createdBy: "user" } as const;

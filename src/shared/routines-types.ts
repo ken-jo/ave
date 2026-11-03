@@ -106,6 +106,9 @@ export interface RoutineRecord {
   /** Pause is reversible, unlike dismissedAt: a paused item is never due and does not catch up when resumed. */
   pausedAt?: string;
   pausedBy?: RoutineActor;
+  /** When the item was last resumed. A one-shot whose time is at or before it was missed while paused: it is not due, the grid
+   * shows it as missed, and only 지금 실행 or a new time runs it. */
+  resumedAt?: string;
 }
 
 export type RoutineActor = "user" | "agent";
@@ -123,7 +126,7 @@ export interface RoutineEditPatch {
 export interface RoutineOccurrence {
   routineId: string;
   at: string;
-  status: "scheduled" | "paused";
+  status: "scheduled" | "paused" | "missed";
 }
 
 /** One past fire for the schedule grids; `failed` when the item's lastFailure names this fire. */
@@ -149,9 +152,10 @@ export interface AddRoutineInput {
   /** Omitted scope defaults to deny-all with empty forced plugins and directories; inheritance requires explicit opt-in. */
   scope?: RoutineScope;
   source?: string;
-  projectRoot?: string;
-  /** Omitted means the user; the renderer path always forces "user". */
-  createdBy?: RoutineActor;
+  /** Required on every new item; only records stored before projects existed have none. */
+  projectRoot: string;
+  /** The renderer path always records "user"; the routine_schedule tool records "agent". */
+  createdBy: RoutineActor;
 }
 
 /** Allow-list renderer payload fields; spreading the record could expose prePrompt and other private data. */

@@ -1740,6 +1740,7 @@ export function App() {
           api={api}
           focusRoutineId={routineFocusId}
           onFocusConsumed={() => setRoutineFocusId(null)}
+          projectRoot={(activeProject ?? defaultWorkspaceProject)?.projectRoot}
           onOpenSession={(sessionId) => {
             void (async () => {
               const loaded = await handleLoadSessionAndRefresh(sessionId);

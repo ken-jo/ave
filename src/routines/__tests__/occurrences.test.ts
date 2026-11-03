@@ -61,6 +61,11 @@ describe("listRoutineOccurrences", () => {
     expect(occ[1]?.at).toBe("2026-11-05T00:00:00.000Z");
   });
 
+  it("draws a one-shot missed while paused at its time, even in the past", () => {
+    const occ = listRoutineOccurrences([record({ schedule: { at: "2026-11-03T00:00:00.000Z" }, resumedAt: "2026-11-04T00:00:00.000Z" })], { from: FROM, to: TO, now: NOW });
+    expect(occ).toEqual([{ routineId: "r1", at: "2026-11-03T00:00:00.000Z", status: "missed" }]);
+  });
+
   it("bounds a one-minute interval", () => {
     const occ = listRoutineOccurrences([record({ schedule: { at: "2026-11-05T00:00:00.000Z", repeat: { kind: "interval", intervalMs: 60_000 } } })], { from: FROM, to: TO, now: NOW });
     expect(occ).toHaveLength(MAX_OCCURRENCES_PER_ROUTINE);

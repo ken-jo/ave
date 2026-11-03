@@ -1,3 +1,4 @@
+import { TEST_OWNER } from "./routines-fixture.js";
 import { describe, expect, it, vi } from "vitest";
 import { runShutdownRoutines } from "../shutdown-routines.js";
 import type { RoutineRecord } from "../../shared/routines-types.js";
@@ -129,7 +130,7 @@ describe("runShutdownRoutines", () => {
     try {
       const routinesStore = new RoutinesStore(join(dir, "routines.json"));
       await routinesStore.load();
-      const r = await routinesStore.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
+      const r = await routinesStore.add({ ...TEST_OWNER, trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
       const routineEngine = { runRoutine: vi.fn(async () => { throw new Error("provider down"); }) };
 
       await runShutdownRoutines({ routinesStore, routineEngine });

@@ -152,6 +152,8 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
         return UNAUTHORIZED_FRAME;
       }
       if (!routinesStore) return { ok: false, error: "no-store" };
+      // Every new item belongs to a project; the panel passes the active one.
+      if (!input || typeof input.projectRoot !== "string" || !input.projectRoot.trim()) return { ok: false, error: "project-required" };
       try {
         // The renderer form is the user's own action; only the host's tool path may record an agent as creator.
         const record = await routinesStore.add({ ...input, createdBy: "user" });
@@ -207,9 +209,11 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     }
     if (!routinesStore) return { ok: true, occurrences: [], runs: [] };
     const projectRoot = projectRootFilter(q);
-    const { routines } = projectRoot === undefined ? routinesStore.listForDisplay() : routinesStore.listForDisplay({ projectRoot });
+    const filter = projectRoot === undefined ? undefined : { projectRoot };
+    const { routines } = filter ? routinesStore.listForDisplay(filter) : routinesStore.listForDisplay();
     const runs: RoutineRun[] = [];
-    for (const routine of routines) {
+    // Past runs include dismissed items: a completed one-shot is dismissed by its own fire and must stay on the grid.
+    for (const routine of filter ? routinesStore.list(filter) : routinesStore.list()) {
       const inRange = (iso: string | undefined): iso is string => {
         const t = iso ? Date.parse(iso) : Number.NaN;
         return Number.isFinite(t) && t >= from && t < to;

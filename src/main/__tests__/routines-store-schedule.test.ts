@@ -1,3 +1,4 @@
+import { TEST_OWNER } from "./routines-fixture.js";
 // Schedule panel store contract: project scope, creator, user edits, pause and resume.
 import { withRoutinesStore } from "./support/routines-store.js";
 import { describe, it, expect } from "vitest";
@@ -10,33 +11,41 @@ import { futureIso, pastIso } from "./routines-fixture.js";
 const HOUR = 60 * 60 * 1000;
 
 describe("RoutinesStore — project scope and creator", () => {
-  it("persists projectRoot and createdBy, and defaults createdBy to user", withRoutinesStore(async ({ store, dir }) => {
+  it("persists projectRoot and createdBy, and requires both on add", withRoutinesStore(async ({ store, dir }) => {
     const scoped = await store.add({
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
       notificationTitle: "n",
       projectRoot: "/work/checkout",
+      createdBy: "agent",
     });
-    const plain = await store.add({ trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "m" });
     expect(scoped.projectRoot).toBe("/work/checkout");
-    expect(scoped.createdBy).toBe("user");
-    expect(plain.projectRoot).toBeUndefined();
+    expect(scoped.createdBy).toBe("agent");
+    const base = { trigger: "schedule" as const, execution: "notification-only" as const, schedule: { at: futureIso() }, notificationTitle: "m" };
+    await expect(store.add({ ...base, createdBy: "user" } as never)).rejects.toThrow(/projectRoot/);
+    await expect(store.add({ ...base, projectRoot: "  ", createdBy: "user" })).rejects.toThrow(/projectRoot/);
+    await expect(store.add({ ...base, projectRoot: "/p" } as never)).rejects.toThrow(/createdBy/);
     const reloaded = new RoutinesStore(join(dir, "routines.json"));
     await reloaded.load();
-    expect(reloaded.list().find((r) => r.id === scoped.id)?.projectRoot).toBe("/work/checkout");
+    expect(reloaded.list().find((r) => r.id === scoped.id)).toMatchObject({ projectRoot: "/work/checkout", createdBy: "agent" });
   }));
 
-  it("filters by project and keeps unscoped items visible in every project", withRoutinesStore(async ({ store }) => {
-    const a = await store.add({ trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "a", projectRoot: "/p/a" });
-    await store.add({ trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "b", projectRoot: "/p/b" });
-    const legacy = await store.add({ trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "legacy" });
-    const ids = store.listForDisplay({ projectRoot: "/p/a/" }).routines.map((r) => r.id).sort();
-    expect(ids).toEqual([a.id, legacy.id].sort());
+  it("filters by project; only records stored before projects existed show in every project", withRoutinesStore(async ({ store, dir }) => {
+    const a = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "a", projectRoot: "/p/a" });
+    await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "b", projectRoot: "/p/b" });
+    const file = join(dir, "routines.json");
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    raw.routines.push({ id: "legacy", trigger: "schedule", execution: "notification-only", notificationTitle: "legacy", schedule: { at: futureIso() }, createdAt: new Date().toISOString() });
+    writeFileSync(file, JSON.stringify(raw));
+    const reloaded = new RoutinesStore(file);
+    await reloaded.load();
+    const ids = reloaded.listForDisplay({ projectRoot: "/p/a/" }).routines.map((r) => r.id).sort();
+    expect(ids).toEqual([a.id, "legacy"].sort());
   }));
 
   it("rejects a stored record with an unknown pausedBy", withRoutinesStore(async ({ store, dir }) => {
-    const r = await store.add({ trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "x" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", schedule: { at: futureIso() }, notificationTitle: "x" });
     const file = join(dir, "routines.json");
     const raw = JSON.parse(readFileSync(file, "utf8"));
     raw.routines[0].pausedAt = new Date().toISOString();
@@ -50,7 +59,7 @@ describe("RoutinesStore — project scope and creator", () => {
 
 describe("RoutinesStore — edit", () => {
   it("changes title, prompt and schedule with the same validation as add", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({ trigger: "schedule", execution: "llm-session", schedule: { at: futureIso(), repeat: { kind: "daily" } }, prePrompt: "old", title: "Old" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: futureIso(), repeat: { kind: "daily" } }, prePrompt: "old", title: "Old" });
     const at = futureIso(3 * HOUR);
     const edited = await store.edit(r.id, { title: "New", prePrompt: "new prompt", schedule: { at, repeat: { kind: "weekly" } } });
     expect(edited).toMatchObject({ title: "New", prePrompt: "new prompt", schedule: { at, repeat: { kind: "weekly" } } });
@@ -61,23 +70,92 @@ describe("RoutinesStore — edit", () => {
   }));
 
   it("clears the title with null and refuses a shutdown item's schedule", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({ trigger: "schedule", execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p", title: "T" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p", title: "T" });
     expect((await store.edit(r.id, { title: null }))?.title).toBeUndefined();
-    const s = await store.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "p" });
+    const s = await store.add({ ...TEST_OWNER, trigger: "shutdown", execution: "llm-session", prePrompt: "p" });
     await expect(store.edit(s.id, { schedule: { at: futureIso() } })).rejects.toThrow(/shutdown/);
   }));
 
   it("returns null for an unknown or dismissed item", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({ trigger: "schedule", execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p" });
     await store.dismiss(r.id);
     expect(await store.edit(r.id, { title: "x" })).toBeNull();
     expect(await store.edit("missing", { title: "x" })).toBeNull();
   }));
 });
 
+describe("RoutinesStore — edit keeps the series honest", () => {
+  it("a fired one-shot whose time is edited can fire again", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: pastIso() }, prePrompt: "p" });
+    await store.update(r.id, { lastFiredAt: pastIso(-60_000) });
+    await store.edit(r.id, { schedule: { at: pastIso(), repeat: { kind: "none" } } });
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const fired: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { fired.push(routine.id); });
+    await scheduler.checkAndFire();
+    expect(fired).toEqual([r.id]);
+  }));
+
+  it("re-saving the same cron keeps its minute key; a new cron drops it", withRoutinesStore(async ({ store }) => {
+    const schedule = { repeat: { kind: "cron" as const, expression: "0 9 * * *" } };
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule, prePrompt: "p" });
+    await store.update(r.id, { lastFiredMinuteUTC: "2026-11-04T00:00Z" });
+    expect((await store.edit(r.id, { title: "t", schedule }))?.lastFiredMinuteUTC).toBe("2026-11-04T00:00Z");
+    expect((await store.edit(r.id, { schedule: { repeat: { kind: "cron", expression: "0 10 * * *" } } }))?.lastFiredMinuteUTC).toBeUndefined();
+  }));
+});
+
+describe("RoutinesScheduler — state changed during a scan", () => {
+  function gate() {
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => { open = resolve; });
+    return { opened, open };
+  }
+
+  it("does not fire an item paused while the plugin check was in flight", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: pastIso() }, prePrompt: "p",
+      scope: { pluginIds: { mode: "allow", ids: ["calendar"] }, forcedPluginIds: [], directories: [] } });
+    const g = gate();
+    const scheduler = new RoutinesScheduler(store, async () => { await g.opened; return ["calendar"]; });
+    const fired: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { fired.push(routine.id); });
+    const scan = scheduler.checkAndFire();
+    await store.pause(r.id, "user");
+    g.open();
+    await scan;
+    expect(fired).toEqual([]);
+    expect(store.list()[0]?.lastFiredAt).toBeUndefined();
+  }));
+
+  it("does not fire a one-shot edited to a later time while the scan was in flight", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: pastIso() }, prePrompt: "p",
+      scope: { pluginIds: { mode: "allow", ids: ["calendar"] }, forcedPluginIds: [], directories: [] } });
+    const g = gate();
+    const scheduler = new RoutinesScheduler(store, async () => { await g.opened; return ["calendar"]; });
+    const fired: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { fired.push(routine.id); });
+    const scan = scheduler.checkAndFire();
+    await store.edit(r.id, { schedule: { at: futureIso(HOUR) } });
+    g.open();
+    await scan;
+    expect(fired).toEqual([]);
+    expect(store.listActive().map((x) => x.id)).toEqual([r.id]);
+  }));
+
+  it("does not fire a one-shot twice when two passes overlap", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: pastIso() }, prePrompt: "p" });
+    const fired = await store.markFired(r.id, [], { scheduled: true });
+    expect(fired).not.toBeNull();
+    // A failed one-shot is restored from dismissal for review; it must still not be due again.
+    await store.recordRunOutcome(r.id, fired!.lastFiredAt!, { ok: false, kind: "error", reason: "429" });
+    expect(store.listActive().map((x) => x.id)).toEqual([r.id]);
+    expect(await store.markFired(r.id, [], { scheduled: true })).toBeNull();
+  }));
+});
+
 describe("RoutinesStore — pause and resume", () => {
   it("pause records who paused it; a paused item is not due and cannot be run now", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({ trigger: "schedule", execution: "llm-session", schedule: { at: pastIso() }, prePrompt: "p" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: pastIso() }, prePrompt: "p" });
     const paused = await store.pause(r.id, "user");
     expect(paused?.pausedBy).toBe("user");
     expect(paused?.pausedAt).toBeTruthy();
@@ -92,7 +170,7 @@ describe("RoutinesStore — pause and resume", () => {
 
   it("resume advances a repeating item past now so paused occurrences do not catch up", withRoutinesStore(async ({ store }) => {
     const at = new Date(Date.now() - 3 * 24 * HOUR).toISOString();
-    const r = await store.add({ trigger: "schedule", execution: "llm-session", schedule: { at, repeat: { kind: "daily" } }, prePrompt: "p" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at, repeat: { kind: "daily" } }, prePrompt: "p" });
     await store.pause(r.id, "user");
     const resumed = await store.resume(r.id);
     expect(resumed?.pausedAt).toBeUndefined();
@@ -102,12 +180,28 @@ describe("RoutinesStore — pause and resume", () => {
     expect(Date.parse(resumed!.schedule!.at!) - Date.parse(at)).toBe(4 * 24 * HOUR);
   }));
 
-  it("resume keeps a past one-shot due once, as the app-off catch-up rule does", withRoutinesStore(async ({ store }) => {
+  it("resume does not catch up an overdue one-shot; run-now still runs it", withRoutinesStore(async ({ store }) => {
     const at = pastIso();
-    const r = await store.add({ trigger: "schedule", execution: "llm-session", schedule: { at }, prePrompt: "p" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at }, prePrompt: "p" });
     await store.pause(r.id, "user");
     const resumed = await store.resume(r.id);
     expect(resumed?.schedule?.at).toBe(new Date(at).toISOString());
+    expect(resumed?.resumedAt).toBeTruthy();
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const fired: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { fired.push(routine.id); });
+    await scheduler.checkAndFire();
+    expect(fired).toEqual([]);
+    expect(await scheduler.dispatchNow(r.id)).toBe(true);
+    expect(fired).toEqual([r.id]);
+  }));
+
+  it("a one-shot rescheduled after resume fires at its new time", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: pastIso(-5_000) }, prePrompt: "p" });
+    await store.pause(r.id, "user");
+    await store.resume(r.id);
+    await store.edit(r.id, { schedule: { at: new Date(Date.now() + 50).toISOString() } });
+    await new Promise((resolve) => setTimeout(resolve, 80));
     const scheduler = new RoutinesScheduler(store, async () => []);
     const fired: string[] = [];
     scheduler.onLlmSession(({ routine }) => { fired.push(routine.id); });
