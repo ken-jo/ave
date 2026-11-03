@@ -130,6 +130,48 @@ describe("plan-usage ID token validation", () => {
     expect(calls).toBe(1);
   });
 
+  it("retries a rate-limited key set, then verifies", async () => {
+    const statuses = [429, 200];
+    let calls = 0;
+    const v = new ChatGptPlanIdTokenVerifier((async () => {
+      const status = statuses[calls++]!;
+      return new Response(status === 200 ? JSON.stringify({ keys: [primaryJwk] }) : "", { status });
+    }) as typeof fetch, () => NOW_SECONDS * 1000, async () => undefined);
+    await expect(v.verify(await idToken(), { clientId: CLIENT_ID, nonce: "n1" })).resolves.toMatchObject({ subject: "user-sub" });
+    expect(calls).toBe(2);
+  });
+
+  it("gives up after two network failures and reports only an allow-listed error name", async () => {
+    let calls = 0;
+    const named = new ChatGptPlanIdTokenVerifier((async () => { calls += 1; throw new TypeError("fetch failed"); }) as typeof fetch,
+      () => NOW_SECONDS * 1000, async () => undefined);
+    await expect(named.prefetchKeys()).rejects.toMatchObject({ failure: "jwks-unavailable", detail: "network-TypeError" });
+    expect(calls).toBe(2);
+    class SecretBearingError extends Error { override name = "token=abc"; }
+    const unnamed = new ChatGptPlanIdTokenVerifier((async () => { throw new SecretBearingError(); }) as typeof fetch,
+      () => NOW_SECONDS * 1000, async () => undefined);
+    await expect(unnamed.prefetchKeys()).rejects.toMatchObject({ detail: "network-other" });
+  });
+
+  it.each([
+    ["not json", "{"],
+    ["not a key set", JSON.stringify({ keys: "nope" })],
+  ])("rejects a key set body that is %s without retrying", async (_label, body) => {
+    let calls = 0;
+    const v = new ChatGptPlanIdTokenVerifier((async () => { calls += 1; return new Response(body, { status: 200 }); }) as typeof fetch,
+      () => NOW_SECONDS * 1000, async () => undefined);
+    await expect(v.prefetchKeys()).rejects.toMatchObject({ failure: "jwks-unavailable", detail: "invalid-body" });
+    expect(calls).toBe(1);
+  });
+
+  it("refetches once when a token names a key rotated in after the prefetch", async () => {
+    const { verifier: v, urls } = verifier([[primaryJwk], [primaryJwk, rotatedJwk]]);
+    await v.prefetchKeys();
+    await expect(v.verify(await idToken({ kid: "k2", key: rotated }), { clientId: CLIENT_ID, nonce: "n1" }))
+      .resolves.toMatchObject({ subject: "user-sub" });
+    expect(urls).toEqual([CHATGPT_PLAN_JWKS_URL, CHATGPT_PLAN_JWKS_URL]);
+  });
+
   it("verifies from prefetched keys without fetching again", async () => {
     const { verifier: v, urls } = verifier([[primaryJwk]]);
     await v.prefetchKeys();

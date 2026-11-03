@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { BrowserWindow, dialog, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
 import { attachAuthWindowContent, authWindowChromeOptions, buildAuthWindowShellHtml, installAuthSessionPermissions, type AuthNavigationFailure } from "./auth-window-content.js";
 export { buildAuthWindowShellHtml } from "./auth-window-content.js";
-import { isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
+import { AuthWindowEndedError, isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import { configureAuthWebviewAttach } from "./plugin-webview-attach.js";
 import {
@@ -241,7 +241,7 @@ export async function openOAuthInAuthWindow(
       windowTitle: t("oauthWindow.title"),
     }, options);
   } catch (error) {
-    options.onCancel();
+    options.onCancel(error instanceof AuthWindowEndedError ? error.reason : "failed");
     throw error;
   }
 }
@@ -259,7 +259,7 @@ async function openSystemBrowserLogin(parent: BrowserWindow, url: string, option
     await Promise.race([
       options.completion,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("OAuth login timeout")), options.timeoutMs);
+        timer = setTimeout(() => reject(new AuthWindowEndedError("timeout", "OAuth login timeout")), options.timeoutMs);
       }),
       announceSystemBrowserLogin(parent, url).then(() => options.completion),
     ]);
@@ -458,7 +458,7 @@ async function openAuthWindowInternal(
       }, () => {
         finish(() => {
           clearTimeout(timer);
-          reject(new Error("Unable to open the system browser"));
+          reject(new AuthWindowEndedError("browser-unavailable", "Unable to open the system browser"));
         });
       });
     };
@@ -496,7 +496,7 @@ async function openAuthWindowInternal(
           },
           `[auth-window:timeout] url=${sanitizedOpenUrl} elapsedMs=${sinceCreated()} lastSeenUrl=${lastSeenUrl ? sanitizeUrlForLog(lastSeenUrl) : "none"} webviewAttached=${webviewAttached}`,
         );
-        reject(new Error(`openAuthWindow: login timeout after ${timeoutMs}ms`));
+        reject(new AuthWindowEndedError("timeout", `openAuthWindow: login timeout after ${timeoutMs}ms`));
         if (!authWindow.isDestroyed()) authWindow.close();
       });
     }, timeoutMs);
@@ -647,7 +647,7 @@ async function openAuthWindowInternal(
           },
           `[auth-window:render-process-gone] reason=${details.reason} elapsedMs=${sinceCreated()} url=${sanitizedOpenUrl}`,
         );
-        reject(new Error(`openAuthWindow: render process gone (${details.reason})`));
+        reject(new AuthWindowEndedError("crashed", `openAuthWindow: render process gone (${details.reason})`));
         if (!authWindow.isDestroyed()) authWindow.close();
       });
     });
@@ -710,7 +710,7 @@ async function openAuthWindowInternal(
                 },
                 `[auth-window:closed-grace-failed] err=${errMsg} elapsedMs=${sinceCreated()}`,
               );
-              reject(new Error(`openAuthWindow: window closed before login completed (grace fetch failed: ${errMsg})`));
+              reject(new AuthWindowEndedError("window-closed", `openAuthWindow: window closed before login completed (grace fetch failed: ${errMsg})`));
             });
           }
         })();
@@ -730,7 +730,7 @@ async function openAuthWindowInternal(
           },
           `[auth-window:closed-before-completion] url=${sanitizedOpenUrl} lastSeenUrl=${lastUrlSanitized ?? "none"} committed=${lastCommittedSanitized ?? "none"} webviewAttached=${webviewAttached} elapsedMs=${sinceCreated()}`,
         );
-        reject(new Error("openAuthWindow: window closed before login completed"));
+        reject(new AuthWindowEndedError("window-closed", "openAuthWindow: window closed before login completed"));
       });
     });
 
@@ -755,7 +755,7 @@ async function openAuthWindowInternal(
           },
           `[auth-window:load-url-failed] url=${sanitizedOpenUrl} err=${errName} elapsedMs=${sinceCreated()}`,
         );
-        reject(new Error(`openAuthWindow: load failed for ${sanitizeUrlForLog(url)} (${errName})`));
+        reject(new AuthWindowEndedError("load-failed", `openAuthWindow: load failed for ${sanitizeUrlForLog(url)} (${errName})`));
         if (!authWindow.isDestroyed()) authWindow.close();
       });
     });

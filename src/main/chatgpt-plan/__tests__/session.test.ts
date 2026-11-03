@@ -100,7 +100,9 @@ function harness(options: {
       };
     }),
     verifier: {
-      ...(options.prefetchFails ? { prefetchKeys: async () => { throw new ChatGptPlanIdTokenError("jwks-unavailable", "status-503"); } } : {}),
+      prefetchKeys: async () => {
+        if (options.prefetchFails) throw new ChatGptPlanIdTokenError("jwks-unavailable", "status-503");
+      },
       verify: async (idToken, expected) => {
         if (options.verifyFails) throw new ChatGptPlanIdTokenError("signature");
         if (expected.nonce === undefined && options.refreshVerify?.failure) {
@@ -177,12 +179,17 @@ describe("plan-usage sign-in state machine", () => {
     expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "sign-in-failed" });
   });
 
-  it("records a closed login window as such, not as an unexpected failure", async () => {
+  it.each([
+    ["window-closed", "window-closed"],
+    ["timeout", "window-timeout"],
+    ["crashed", "window-crashed"],
+    [undefined, "window-failed"],
+  ] as const)("records how the login window ended (%s), not an unexpected failure", async (reason, failure) => {
     const h = harness();
     const { completion } = await h.session.startSignIn();
-    h.loginWindows[0].onCancel();
+    h.loginWindows[0].onCancel(reason);
     await completion.catch(() => undefined);
-    expect(h.events.at(-1)).toEqual({ event: "sign-in-failed", failure: "window-closed" });
+    expect(h.events.at(-1)).toEqual({ event: "sign-in-failed", failure });
   });
 
   it("fails before the browser opens when the issuer's keys cannot be fetched", async () => {

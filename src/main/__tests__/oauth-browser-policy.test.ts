@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SYSTEM_BROWSER_OAUTH_ENDPOINTS } from "../oauth-browser-policy.js";
-import { isOAuthBrowserRefusal, requiresSystemBrowser } from "../oauth-login.js";
+import { AuthWindowEndedError, OAuthLoginAttempt, isOAuthBrowserRefusal, requiresSystemBrowser, type OAuthLoginEndReason } from "../oauth-login.js";
 
 describe("authorization browser routing", () => {
   it("ships an empty secure-browser endpoint table", () => {
@@ -35,5 +35,16 @@ describe("authorization browser routing", () => {
     "javascript:alert(1)",
   ])("keeps other URLs outside the secure-browser endpoint table: %s", url => {
     expect(requiresSystemBrowser(url)).toBe(false);
+  });
+});
+
+describe("OAuthLoginAttempt end reasons", () => {
+  it("passes the window's own end reason to the attempt's cancel handler", async () => {
+    const reasons: OAuthLoginEndReason[] = [];
+    new OAuthLoginAttempt().open("https://auth.example.test/", (_url, options) => options.onCancel("timeout"), 1000, (reason) => reasons.push(reason));
+    new OAuthLoginAttempt().open("https://auth.example.test/", async () => { throw new AuthWindowEndedError("crashed", "gone"); }, 1000, (reason) => reasons.push(reason));
+    new OAuthLoginAttempt().open("https://auth.example.test/", async () => { throw new Error("other"); }, 1000, (reason) => reasons.push(reason));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reasons).toEqual(["timeout", "crashed", "failed"]);
   });
 });
