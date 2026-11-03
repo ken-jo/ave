@@ -3,8 +3,8 @@ import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { platform } from "node:os";
-import { RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH } from "../routines-store.js";
+import { homedir, platform } from "node:os";
+import { RoutinesStore, MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_CRON_EXPR_LENGTH, MAX_ROUTINE_SOURCE_LENGTH, MAX_ROUTINE_FAILURE_REASON_LENGTH } from "../routines-store.js";
 import { futureIso, tempRoutinesStore } from "./routines-fixture.js";
 
 describe("RoutinesStore v2 — basic persistence", () => {
@@ -764,5 +764,146 @@ describe("persisted missing-plugin status validation", () => {
       value: "../private",
       reason: "invalid-plugin-id",
     }]);
+  }));
+});
+
+describe("RoutinesStore v2 — run failure persistence", () => {
+  const dailyInput = {
+    trigger: "schedule" as const,
+    execution: "llm-session" as const,
+    schedule: { at: futureIso(), repeat: { kind: "daily" as const } },
+    prePrompt: "daily briefing",
+    title: "Daily",
+  };
+
+  it("persists a failure for the fire and a fresh store reads it back", withRoutinesStore(async ({ store, dir }) => {
+    const r = await store.add(dailyInput);
+    const fired = await store.markFired(r.id);
+    const firedAt = fired!.lastFiredAt!;
+
+    const failed = await store.recordRunOutcome(r.id, firedAt, { ok: false, kind: "error", reason: "provider down" });
+    expect(failed?.lastFailure).toMatchObject({ kind: "error", firedAt, reason: "provider down" });
+    expect(failed?.lastFailure?.acknowledgedAt).toBeUndefined();
+
+    const reopened = new RoutinesStore(join(dir, "routines.json"));
+    await reopened.load();
+    expect(reopened.list()[0].lastFailure).toMatchObject({ kind: "error", firedAt, reason: "provider down" });
+  }));
+
+  it("clears the failure on the next successful run", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const first = await store.markFired(r.id);
+    await store.recordRunOutcome(r.id, first!.lastFiredAt!, { ok: false, kind: "error", reason: "boom" });
+    const second = await store.markFired(r.id);
+    expect(store.list()[0].lastFailure).toMatchObject({ reason: "boom" });
+
+    await store.recordRunOutcome(r.id, second!.lastFiredAt!, { ok: true });
+    expect(store.list()[0].lastFailure).toBeUndefined();
+  }));
+
+  it("bounds the stored reason", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const fired = await store.markFired(r.id);
+    await store.recordRunOutcome(r.id, fired!.lastFiredAt!, { ok: false, kind: "error", reason: "x".repeat(MAX_ROUTINE_FAILURE_REASON_LENGTH + 50) });
+    const bounded = store.list()[0].lastFailure;
+    expect(bounded?.kind === "error" && bounded.reason).toHaveLength(MAX_ROUTINE_FAILURE_REASON_LENGTH);
+  }));
+
+  it("acknowledging that fire's result marks the failure seen; acknowledging an older fire does not", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const fired = await store.markFired(r.id);
+    const firedAt = fired!.lastFiredAt!;
+    await store.recordRunOutcome(r.id, firedAt, { ok: false, kind: "error", reason: "boom" });
+
+    await store.acknowledgeResult(r.id, "2000-01-01T00:00:00.000Z");
+    expect(store.list()[0].lastFailure?.acknowledgedAt).toBeUndefined();
+
+    const acked = await store.acknowledgeResult(r.id, firedAt);
+    expect(acked?.lastResultAcknowledgedAt).toBe(firedAt);
+    expect(acked?.lastFailure?.acknowledgedAt).toEqual(expect.any(String));
+    expect(acked?.lastFailure).toMatchObject({ reason: "boom" });
+  }));
+
+  it("keeps a failed one-shot visible without making it due again", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...dailyInput, schedule: { at: futureIso() } });
+    const fired = await store.markFired(r.id);
+    expect(store.listActive()).toHaveLength(0);
+
+    await store.recordRunOutcome(r.id, fired!.lastFiredAt!, { ok: false, kind: "error", reason: "boom" });
+    const active = store.listActive();
+    expect(active).toHaveLength(1);
+    expect(active[0].lastFiredAt).toBe(fired!.lastFiredAt);
+  }));
+
+  it("returns null for an unknown routine", withRoutinesStore(async ({ store }) => {
+    expect(await store.recordRunOutcome("missing", "2026-11-04T00:00:00.000Z", { ok: true })).toBeNull();
+    expect(await store.acknowledgeResult("missing", "2026-11-04T00:00:00.000Z")).toBeNull();
+  }));
+
+  it("keeps a routine whose stored failure is unreadable and drops only that field", withRoutinesStore(async ({ dir }) => {
+    writeFileSync(join(dir, "routines.json"), JSON.stringify({
+      version: 2,
+      routines: [{
+        id: "bad-failure",
+        trigger: "schedule",
+        execution: "llm-session",
+        createdAt: "2026-11-04T00:00:00.000Z",
+        lastFailure: { kind: "error", firedAt: "2026-11-04T00:00:00.000Z", at: "2026-11-04T00:00:01.000Z", reason: 42 },
+      }],
+    }));
+    const reopened = new RoutinesStore(join(dir, "routines.json"));
+    await reopened.load();
+    expect(reopened.list().map((r) => r.id)).toEqual(["bad-failure"]);
+    expect(reopened.list()[0].lastFailure).toBeUndefined();
+  }));
+
+  it("ignores a stale outcome from an overlapping older run", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const t1 = (await store.markFired(r.id))!.lastFiredAt!;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const t2 = (await store.markFired(r.id))!.lastFiredAt!;
+    expect(t2).not.toBe(t1);
+
+    // T2 fails, then the older T1 run succeeds: the newer failure stays.
+    await store.recordRunOutcome(r.id, t2, { ok: false, kind: "error", reason: "t2 failed" });
+    await store.recordRunOutcome(r.id, t1, { ok: true });
+    expect(store.list()[0].lastFailure).toMatchObject({ firedAt: t2, reason: "t2 failed" });
+
+    // The older T1 run fails while T2 is current: it does not overwrite T2's state.
+    await store.recordRunOutcome(r.id, t2, { ok: true });
+    await store.recordRunOutcome(r.id, t1, { ok: false, kind: "error", reason: "t1 failed" });
+    expect(store.list()[0].lastFailure).toBeUndefined();
+  }));
+
+  it("does not acknowledge an older fire's result over the current one", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const t1 = (await store.markFired(r.id))!.lastFiredAt!;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const t2 = (await store.markFired(r.id))!.lastFiredAt!;
+    await store.acknowledgeResult(r.id, t1);
+    expect(store.list()[0].lastResultAcknowledgedAt).toBeUndefined();
+    await store.acknowledgeResult(r.id, t2);
+    expect(store.list()[0].lastResultAcknowledgedAt).toBe(t2);
+  }));
+
+  it("masks secrets and redacts the home path before bounding the stored reason", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const firedAt = (await store.markFired(r.id))!.lastFiredAt!;
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    const home = homedir();
+    await store.recordRunOutcome(r.id, firedAt, { ok: false, kind: "error", reason: `auth ${secret} at ${join(home, "secret-dir", "x.txt")}` });
+    const stored = JSON.stringify(store.list()[0].lastFailure);
+    expect(stored).not.toContain(secret);
+    expect(stored).not.toContain(home);
+    expect(stored).toContain("secret-dir");
+  }));
+
+  it("records a shutdown timeout as its own kind and does not re-enable the shutdown routine", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
+    const firedAt = (await store.markFired(r.id))!.lastFiredAt!;
+    expect(store.listActive()).toHaveLength(0);
+    await store.recordRunOutcome(r.id, firedAt, { ok: false, kind: "shutdown-timeout" });
+    expect(store.listActive()).toHaveLength(0);
+    expect(store.list()[0].lastFailure).toMatchObject({ kind: "shutdown-timeout", firedAt });
   }));
 });
