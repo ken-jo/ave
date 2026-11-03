@@ -108,7 +108,15 @@ describe("judge configured provider wiring", () => {
       }));
       expect(context.subscriptionProviderFactory).not.toHaveBeenCalled();
       settingsService.getSecret.mockReturnValue(null);
-      expect(judgeDeps.providerForModel({ vendor: "openai", model: "selected-unavailable-model" })).toBeNull();
+      writeFileSync(join(directory, "settings.json"), JSON.stringify({ permissions: { judge: {
+        chain: [{ id: "selected", provider: "builtin-llm", model: "openai/gpt-5.4" }],
+        mode: "active",
+      } } }));
+      await rewire();
+      writeFileSync(join(directory, "settings.json"), originalJudgeSettings);
+      const keylessDeps = wireJudgeAgent.mock.lastCall![0] as typeof initialDeps;
+      expect(settingsService.getSecret).toHaveBeenCalledWith("llm.apiKey.openai");
+      expect(keylessDeps.providerForModel({ vendor: "openai", model: "gpt-5.4" })).toBeNull();
       expect(createProvider).toHaveBeenCalledOnce();
       const model = { vendor: "openai-compatible" as const, model: "selected-judge-model" };
       const initialScope = judgeDeps.selectedModelCacheScope(model);
