@@ -9,7 +9,8 @@ import {
 } from "../../../i18n/index.js";
 import { I18nProvider } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
-import { ensureInstalledContent } from "../installed-content.js";
+import { ensureInstalledContent, subscribeInstalledContent } from "../installed-content.js";
+import { BootSettingsUnavailableError } from "../model-catalog-bootstrap.js";
 import type { AveApi } from "../types.js";
 
 /** `getApi()` throws when the preload bridge is absent; degrade gracefully. */
@@ -28,13 +29,19 @@ function tryGetApi(): AveApi | null {
  * boot, and the provider's hydration below still applies an installed-package language once it registers.
  */
 export async function resolveBootLocale(api: Pick<AveApi, "getSettings">): Promise<Locale> {
-  const locale = normalizeLocale((await api.getSettings()).appearance?.language);
+  // An unreadable snapshot is an internal failure: the boot-failure panel names it rather than mounting a guessed language.
+  const settings = await api.getSettings().catch((cause: unknown) => { throw new BootSettingsUnavailableError(cause); });
+  const locale = normalizeLocale(settings.appearance?.language);
   return (await tryLoadLocaleMessages(locale)) ? locale : DEFAULT_LOCALE;
 }
 
 export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE }: { children: ReactNode; initialLocale?: Locale }) {
   const api = useMemo(() => tryGetApi(), []);
-  const [locale, setLocaleState] = useState<Locale>(initialLocale);
+  // `revision` counts applied catalogs: re-applying the same locale after an installed package replaced its catalog changes the
+  // context value, so consumers re-render with the package's strings.
+  const [active, setActive] = useState<{ locale: Locale; revision: number }>({ locale: initialLocale, revision: 0 });
+  const renderedLocaleRef = useRef<Locale>(initialLocale);
+  const hydratedRef = useRef(false);
   const mountedRef = useRef(true);
   const localeRequestRef = useRef(0);
   useEffect(() => () => { mountedRef.current = false; }, []);
@@ -44,7 +51,8 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
     const loaded = await tryLoadLocaleMessages(next);
     if (!mountedRef.current || requestId !== localeRequestRef.current) return;
     if (!loaded) return;
-    setLocaleState(next);
+    renderedLocaleRef.current = next;
+    setActive((previous) => ({ locale: next, revision: previous.revision + 1 }));
   }, []);
 
   // Hydrate from persisted settings on mount.
@@ -61,10 +69,18 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
         await applyLocale(normalizeLocale(settings.appearance?.language));
       } catch {
         /* ignore — render continues at the English default */
+      } finally {
+        hydratedRef.current = true;
       }
     })();
     return () => { cancelled = true; };
   }, [api, applyLocale]);
+
+  // A package installed, updated or removed later replaces the catalog of the language on screen; apply its strings. The boot
+  // hydration above applies the first installed set itself.
+  useEffect(() => subscribeInstalledContent(() => {
+    if (hydratedRef.current) void applyLocale(renderedLocaleRef.current);
+  }), [applyLocale]);
 
   // Cross-window sync: a language change in the settings window broadcasts to every renderer so the main window re-localizes
   // without a restart.
@@ -89,7 +105,7 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
   );
 
   return (
-    <I18nProvider locale={locale} setLocale={setLocale}>
+    <I18nProvider locale={active.locale} revision={active.revision} setLocale={setLocale}>
       {children}
     </I18nProvider>
   );

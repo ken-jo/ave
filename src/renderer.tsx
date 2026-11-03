@@ -3,7 +3,7 @@ import { App } from "./ui/renderer/App.js";
 import { primeHostMarketplaceApi } from "./ui/renderer/host-marketplace-api.js";
 import { I18nSettingsProvider, resolveBootLocale } from "./ui/renderer/context/I18nSettingsProvider.js";
 import { getApi } from "./ui/renderer/api-client.js";
-import { installRendererModelCatalog, renderModelCatalogUnavailable } from "./ui/renderer/model-catalog-bootstrap.js";
+import { installRendererModelCatalog, renderBootFailure } from "./ui/renderer/model-catalog-bootstrap.js";
 
 export { App } from "./ui/renderer/App.js";
 
@@ -17,9 +17,8 @@ if (typeof document !== "undefined") {
     // Mount only once the catalog is in: the first settings snapshot resolves
     // the context window against it (model-catalog-bootstrap.ts). The saved
     // language resolves alongside, so the first paint is already localized.
-    const bootLocale = resolveBootLocale(api);
-    void installRendererModelCatalog(api).then(async () => {
-      const initialLocale = await bootLocale;
+    // Either step failing shows the boot-failure panel instead of a blank root.
+    void Promise.all([installRendererModelCatalog(api), resolveBootLocale(api)]).then(([, initialLocale]) => {
       createRoot(root).render(
         <I18nSettingsProvider initialLocale={initialLocale}>
           <App />
@@ -27,7 +26,7 @@ if (typeof document !== "undefined") {
       );
     }, (error: unknown) => {
       // Main logged the refusal it answered; the window says why it is empty.
-      return renderModelCatalogUnavailable(root, error, api);
+      return renderBootFailure(root, error, api);
     });
   }
 }

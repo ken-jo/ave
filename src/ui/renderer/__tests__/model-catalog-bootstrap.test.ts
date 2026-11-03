@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitFor } from "@testing-library/react";
-import { installRendererModelCatalog, renderModelCatalogUnavailable } from "../model-catalog-bootstrap.js";
+import { installRendererModelCatalog, renderBootFailure } from "../model-catalog-bootstrap.js";
 import { activeModelCatalog, installModelCatalog } from "../../../shared/model-catalog/active.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
 import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
@@ -32,14 +32,14 @@ describe("installRendererModelCatalog", () => {
   });
 });
 
-describe("renderModelCatalogUnavailable", () => {
+describe("renderBootFailure", () => {
   it("hydrates the persisted locale and localizes a host frame refusal before the application mounts", async () => {
     setLocale("en");
     document.documentElement.lang = "en";
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
     const getSettings = vi.fn(async () => ({ appearance: { language: "ko" } }) as AppSettings);
-    await renderModelCatalogUnavailable(root, new Error("unauthorized-frame"), { getSettings });
+    await renderBootFailure(root, new Error("unauthorized-frame"), { getSettings });
     expect(root.textContent).toContain("인증되지 않은 프레임");
     expect(document.documentElement.lang).toBe("ko");
     expect(getSettings).toHaveBeenCalledOnce();
@@ -52,7 +52,7 @@ describe("renderModelCatalogUnavailable", () => {
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
     const getSettings = vi.fn(async () => { throw new Error("settings unavailable"); });
-    await renderModelCatalogUnavailable(root, new Error("catalog-unavailable"), { getSettings });
+    await renderBootFailure(root, new Error("catalog-unavailable"), { getSettings });
     expect(getSettings).toHaveBeenCalledOnce();
     expect(getLocale()).toBe("en");
     expect(document.documentElement.lang).toBe("en");
@@ -65,7 +65,7 @@ describe("renderModelCatalogUnavailable", () => {
     document.documentElement.lang = locale === "en" ? "ko" : "en";
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
-    await renderModelCatalogUnavailable(root, new Error("catalog fixture diagnostic"), {
+    await renderBootFailure(root, new Error("catalog fixture diagnostic"), {
       getSettings: async () => ({ appearance: { language: locale } }) as AppSettings,
     });
     expect(document.documentElement.lang).toBe(locale);
@@ -80,7 +80,7 @@ describe("renderModelCatalogUnavailable", () => {
     const getSettings = failure === "rejected"
       ? vi.fn().mockRejectedValue(new Error("unreadable settings fixture"))
       : vi.fn(() => { throw new Error("unreadable settings fixture"); });
-    await expect(renderModelCatalogUnavailable(root, new Error("catalog fixture diagnostic"), { getSettings })).resolves.toBeUndefined();
+    await expect(renderBootFailure(root, new Error("catalog fixture diagnostic"), { getSettings })).resolves.toBeUndefined();
     expect(getLocale()).toBe("en");
     expect(document.documentElement.lang).toBe("en");
     expect(root.querySelector("p")?.textContent).toContain("Ave could not load its model catalog, so the app cannot start.");
@@ -92,7 +92,7 @@ describe("renderModelCatalogUnavailable", () => {
     setLocale("ko");
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(renderModelCatalogUnavailable(root, new Error("catalog fixture diagnostic"), {
+    await expect(renderBootFailure(root, new Error("catalog fixture diagnostic"), {
       getSettings: async () => settings as AppSettings,
     })).resolves.toBeUndefined();
     expect(getLocale()).toBe("en");
@@ -105,7 +105,7 @@ describe("renderModelCatalogUnavailable", () => {
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await renderModelCatalogUnavailable(root, new Error("catalog fixture diagnostic"), {
+      await renderBootFailure(root, new Error("catalog fixture diagnostic"), {
         getSettings: async () => ({ appearance: { language: "ko" } }) as AppSettings,
       });
       expect(getLocale()).toBe("en");
@@ -123,7 +123,7 @@ describe("renderModelCatalogUnavailable", () => {
     const error = new Error("Error invoking remote method 'ave:llm:get-model-catalog': No handler registered");
     const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
     const getSettings = vi.fn(async () => ({ appearance: { language: locale } }) as AppSettings);
-    await renderModelCatalogUnavailable(root, error, { getSettings });
+    await renderBootFailure(root, error, { getSettings });
     const panel = root.querySelector('[data-testid="model-catalog-unavailable"]');
     expect(panel?.getAttribute("role")).toBe("alert");
     expect(root.children).toHaveLength(1);
@@ -142,7 +142,7 @@ describe("renderModelCatalogUnavailable", () => {
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
     const getSettings = vi.fn(async () => { throw new Error("settings channel unavailable"); });
-    const rendered = renderModelCatalogUnavailable(root, new Error("catalog unavailable"), { getSettings });
+    const rendered = renderBootFailure(root, new Error("catalog unavailable"), { getSettings });
     expect(root.querySelector("button")).not.toBeNull();
     await rendered;
     expect(root.textContent).toContain(t("app.modelCatalogUnavailable"));
@@ -153,7 +153,7 @@ describe("renderModelCatalogUnavailable", () => {
     const root = document.createElement("div");
     root.append(document.createElement("span"));
     vi.spyOn(console, "error").mockImplementation(() => {});
-    await renderModelCatalogUnavailable(root, new Error("catalog-unavailable"));
+    await renderBootFailure(root, new Error("catalog-unavailable"));
     const panel = root.querySelector('[data-testid="model-catalog-unavailable"]');
     expect(panel?.getAttribute("role")).toBe("alert");
     expect(root.children).toHaveLength(1);
@@ -166,7 +166,7 @@ describe("renderModelCatalogUnavailable", () => {
   it("keeps transport diagnostics out of the startup panel", async () => {
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
-    await renderModelCatalogUnavailable(root, new Error("invoke failed at a private transport"));
+    await renderBootFailure(root, new Error("invoke failed at a private transport"));
     expect(root.textContent).toContain(t("formatIpcError.catalogUnavailable"));
     expect(root.textContent).not.toContain("invoke failed at a private transport");
   });
@@ -177,7 +177,7 @@ describe("renderModelCatalogUnavailable", () => {
     const failure = await installRendererModelCatalog({
       getModelCatalog: async () => ({ ok: false, error: "unauthorized-frame" }),
     }).catch((error: unknown) => error);
-    await renderModelCatalogUnavailable(root, failure);
+    await renderBootFailure(root, failure);
     expect(root.textContent).toContain(t("formatIpcError.unauthorizedFrame"));
     expect(root.textContent).not.toContain("unauthorized-frame");
   });
@@ -188,7 +188,7 @@ describe("renderModelCatalogUnavailable", () => {
       : { toString() { throw new Error("unprintable diagnostic fixture"); } };
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(renderModelCatalogUnavailable(root, error)).resolves.toBeUndefined();
+    await expect(renderBootFailure(root, error)).resolves.toBeUndefined();
     expect(root.textContent).toContain(t("formatIpcError.catalogUnavailable"));
     expect(root.querySelector("button")?.textContent).toBe("Reload");
     expect(root.outerHTML).not.toContain("diagnostic fixture");
