@@ -1,4 +1,4 @@
-// A turn records the memories it actually sent once, anchored on its user message, however many rounds it runs.
+// A turn records the memories in context it assembled for send once, anchored on its user message, however many rounds it runs.
 import { describe, expect, it, vi } from "vitest";
 
 import { ConversationLoop } from "../conversation-loop.js";
@@ -24,7 +24,7 @@ function toolThenAnswer(): StreamEvent[][] {
   ];
 }
 
-function makeLoop(scripts: StreamEvent[][]) {
+function makeLoop(scripts: StreamEvent[][], options: { persistSession?: boolean; onToolRun?: () => void } = {}) {
   const events: MemoryUseEvent[] = [];
   const selectRelevantMemories = vi.fn(() => ({
     entries: [
@@ -47,12 +47,15 @@ function makeLoop(scripts: StreamEvent[][]) {
     category: "read",
     jsonSchema: { type: "object", properties: {} },
     isReadOnly: () => true,
-    execute: async () => ({ output: "thing", isError: false }),
+    execute: async () => {
+      options.onToolRun?.();
+      return { output: "thing", isError: false };
+    },
   }));
   const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     systemPromptBuilder: builder,
     toolRegistry,
-    disableSessionPersistence: true,
+    disableSessionPersistence: options.persistSession !== true,
   }));
   (loop as unknown as { provider: LLMProvider | null }).provider = new ScriptedTurnProvider(scripts);
   return { loop, events, selectRelevantMemories };
@@ -69,7 +72,7 @@ describe("ConversationLoop memory use", () => {
     ]);
 
     await loop.runTurn("which package manager", undefined, undefined, { ...userKeyboardTurn() });
-    // A tool round and an answer round ran; the sent context is recorded once for the turn.
+    // A tool round and an answer round ran; the context assembled for send is recorded once for the turn.
     expect(selectRelevantMemories).toHaveBeenCalled();
     const userRows = loop.history.getMessages().filter((row) => row.role === "user" && typeof row.content === "string");
     expect(events).toEqual([{
@@ -85,5 +88,68 @@ describe("ConversationLoop memory use", () => {
     expect(events).toHaveLength(2);
     expect(events[1]!.anchorMessageId).toBe(userRowsAfter.at(-1)!.meta!.messageId);
     expect(events[1]!.anchorMessageId).not.toBe(events[0]!.anchorMessageId);
+  });
+
+  it("records once when a guidance round reattaches the turn context", async () => {
+    const rounds: number[] = [];
+    // The tool queues guidance, so the next round's last row is a user message and the turn context is rebuilt with the turn's record.
+    let queueGuidance = (): void => {};
+    const { loop, events, selectRelevantMemories } = makeLoop(toolThenAnswer(), {
+      onToolRun: () => queueGuidance(),
+    });
+    queueGuidance = () => { expect(loop.queueGuidance("use the lockfile too")).toBe("queued"); };
+    selectRelevantMemories.mockImplementation(() => {
+      rounds.push(rounds.length);
+      return {
+        entries: [{ filename: "a.md", title: "Package manager", content: "# Package manager\nUse bun.", id: "mem-a" }],
+        context: "remembered notes",
+        usedTokens: 0,
+      };
+    });
+
+    await loop.runTurn("which package manager", undefined, undefined, { ...userKeyboardTurn() });
+
+    const guidanceRow = loop.history.getMessages().find((row) =>
+      row.role === "user" && typeof row.content === "string" && row.content.includes("use the lockfile too"));
+    expect(guidanceRow).toBeDefined();
+    // Both the opening round and the guidance round assembled turn context.
+    expect(rounds.length).toBeGreaterThanOrEqual(2);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.memoryIds).toEqual(["mem-a"]);
+  });
+
+  it("never records from the guidance preflight's token estimate", async () => {
+    let queueGuidance = (): void => {};
+    const { loop, events, selectRelevantMemories } = makeLoop(toolThenAnswer(), {
+      persistSession: true,
+      onToolRun: () => queueGuidance(),
+    });
+    queueGuidance = () => { expect(loop.queueGuidance("use the lockfile too")).toBe("queued"); };
+    // A fresh id per selection, so a record from the estimate cannot hide behind the turn's dedupe.
+    let selections = 0;
+    selectRelevantMemories.mockImplementation(() => {
+      selections += 1;
+      return {
+        entries: [{ filename: `m${selections}.md`, title: "Note", content: "# Note\nbody", id: `mem-${selections}` }],
+        context: "remembered notes",
+        usedTokens: 0,
+      };
+    });
+    const estimateIds: string[] = [];
+    vi.spyOn(loop, "runPreflightGuard").mockImplementation(async (ctx) => {
+      // The guidance preflight measures with a turn-context build; run it as the real guard would.
+      const before = selections;
+      ctx.estimateCurrent?.();
+      if (selections > before) estimateIds.push(`mem-${selections}`);
+      return false;
+    });
+
+    await loop.runTurn("which package manager", undefined, undefined, { ...userKeyboardTurn() });
+
+    expect(estimateIds.length).toBeGreaterThan(0);
+    const recordedIds = events.flatMap((event) => event.memoryIds);
+    // The assembled rounds still record their selections.
+    expect(recordedIds.length).toBeGreaterThan(0);
+    for (const id of estimateIds) expect(recordedIds).not.toContain(id);
   });
 });

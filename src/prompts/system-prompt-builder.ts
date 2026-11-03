@@ -153,7 +153,7 @@ export class SystemPromptBuilder {
     return this.deps.memoryUsageLog;
   }
 
-  /** Pass `memoryUse` only for context that is sent; estimation builds omit it so they never record use. */
+  /** Pass `memoryUse` only for context assembled for send; estimation builds omit it so they never record use. */
   buildTurnContext(memoryQuery: string, originSource: string | null, memoryUse?: TurnMemoryUse): string {
     // Compute the user-local offset from the same instant so clock text remains correct across DST.
     const parts = [

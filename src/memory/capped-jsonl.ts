@@ -3,6 +3,10 @@ import { writeUtf8FileAtomic } from "../lib/atomic-file.js";
 import { appendJsonlRecords } from "./session-turn-journal.js";
 
 // Shared size cap for the memory side's append-only JSONL logs (use log, change history). One owner keeps rotation identical across them.
+//
+// Reader contract: a crash mid-append can leave a torn fragment at the tail. The next append starts on a fresh line, so until a
+// rotation drops it the fragment stays in the file as a standalone broken line. Readers must skip any line that fails JSON parsing
+// (and blank lines) instead of failing the whole file.
 
 export interface CappedJsonlAppendResult {
   /** True when older rows were dropped to keep the file under its cap. */

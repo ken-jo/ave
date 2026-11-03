@@ -332,7 +332,7 @@ export async function queryLoop(
     let toolSearches = 0;
     const promotedToolNamesForTurn: string[] = [];
     let roundIndex = 0;
-    // Every round rebuilds the same memory selection; record its injected ids once for the turn.
+    // Every round assembled for send rebuilds the same memory selection; record its injected ids once for the turn.
     const turnMemoryUse: TurnMemoryUse = {
       sessionId: bounds.sessionIdOverride ?? self.sessionId,
       ...(bounds.turnMessageId !== undefined ? { anchorMessageId: bounds.turnMessageId } : {}),
@@ -638,6 +638,7 @@ export async function queryLoop(
         roundIndexAtLastProgressNudge = roundIndex;
       }
       // Build once so measured and sent assemblies share identical text and current staged origin.
+      // The first build records injected memory use: it happens when the round is assembled for send, before the provider is called.
       let roundTurnContext: string | undefined;
       const turnContextForRound = (): string =>
         (roundTurnContext ??= self.buildTurnContext(bounds.memoryQuery ?? "", stagedOrigin, turnMemoryUse));
@@ -672,7 +673,7 @@ export async function queryLoop(
           break;
         }
         const appendedUserText: string[] = [];
-        // Attach turn context only inside user input or guidance, never tool-result rows.
+        // Attach turn context only inside user input or guidance, never tool-result rows; attaching it is what records memory use.
         if (rows[rows.length - 1]?.role === "user") appendedUserText.push(turnContextForRound());
         if (nudgeTextForRound !== undefined) appendedUserText.push(nudgeTextForRound);
         if (progressNudgeText !== undefined) appendedUserText.push(progressNudgeText);
