@@ -1,13 +1,13 @@
 import { isRecord } from "./is-record.js";
 
-/** Which git the marketplace would run. `missing` means no usable bundled copy (none ships for this system, or it is broken) and no usable system git. */
+/** Which git the marketplace would run. `missing` means no usable installer copy (none is provided for this system, or the install-time download did not complete) and no usable system git. */
 export interface GitRuntimeStatus {
   state: "ready" | "missing";
-  active: { kind: "bundled" | "system"; version: string } | null;
+  active: { kind: "installer" | "system"; version: string } | null;
   /** A system git that was found but is older than the minimum. */
   systemTooOld: { version: string } | null;
-  /** The installer ships a copy for this system (not on macOS), so a `missing` state means that copy is broken. */
-  bundledShipped: boolean;
+  /** The installer provides git for this system (packaged Windows), so a `missing` state means its copy is absent or broken. */
+  installerProvides: boolean;
 }
 
 export type GitRuntimeResult =

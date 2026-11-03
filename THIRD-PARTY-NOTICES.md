@@ -179,22 +179,6 @@ THE SOFTWARE.
 
 ---
 
-## git (Windows and Linux installers)
-
-- **Version:** 2.53.0, from the dugite-native v2.53.0-4 release archives
-  (https://github.com/desktop/dugite-native/releases/tag/v2.53.0-4)
-- **License:** GNU General Public License, version 2
-- **Source:** https://github.com/git/git/tree/v2.53.0
-- **Full license text:** `resources/licenses/git/COPYING`, packaged as
-  `licenses/git/COPYING`
-
-The marketplace reads its sources with this copy, installed under
-`git-runtime/<platform>-<arch>` in the app resources. Ave runs it as a separate
-program. The archive sizes and sha256 values are pinned in
-`scripts/git-runtime-targets.mjs`. macOS installers do not include it.
-
----
-
 ## @microsoft/mxc-sdk runtime dependency inventory
 
 - **Version:** 1.0.1 (MIT), including `mxc_ffi.dll` and `wslcsdk.dll`.

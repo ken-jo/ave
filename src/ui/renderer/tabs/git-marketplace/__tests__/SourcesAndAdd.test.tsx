@@ -314,11 +314,11 @@ describe("AddSourceDialog", () => {
     addDialog(fake);
 
     expect(await screen.findByTestId("git-runtime:missing")).toHaveTextContent(
-      "Ave에 포함된 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다.",
+      "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다.",
     );
     expect(screen.queryByTestId("git-marketplace:add:url")).toBeNull();
     const reads = fake.gitRuntime.status.mock.calls.length;
-    fake.gitRuntime.status.mockResolvedValue({ ok: true, status: { state: "ready", active: { kind: "system", version: "2.47.0" }, systemTooOld: null, bundledShipped: true } });
+    fake.gitRuntime.status.mockResolvedValue({ ok: true, status: { state: "ready", active: { kind: "system", version: "2.47.0" }, systemTooOld: null, installerProvides: true } });
     fireEvent.click(screen.getByTestId("git-runtime:check-again"));
     expect(await screen.findByTestId("git-marketplace:add:url")).toBeInTheDocument();
     expect(fake.gitRuntime.status).toHaveBeenCalledTimes(reads + 1);
@@ -326,7 +326,7 @@ describe("AddSourceDialog", () => {
 });
 
 function missingStatus(overrides: Partial<GitRuntimeStatus>): GitRuntimeStatus {
-  return { state: "missing", active: null, systemTooOld: null, bundledShipped: true, ...overrides };
+  return { state: "missing", active: null, systemTooOld: null, installerProvides: true, ...overrides };
 }
 
 describe("GitUnavailable", () => {
@@ -349,10 +349,10 @@ describe("GitUnavailable", () => {
   });
 
   it.each([
-    [missingStatus({}), "Ave에 포함된 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다."],
-    [missingStatus({ bundledShipped: false }), "이 컴퓨터에서 git을 찾지 못했습니다."],
-    [missingStatus({ systemTooOld: { version: "2.39.5" } }), "Ave에 포함된 git을 사용할 수 없고, 이 컴퓨터의 git(2.39.5)은 너무 오래되었습니다."],
-    [missingStatus({ bundledShipped: false, systemTooOld: { version: "2.39.5" } }), "이 컴퓨터의 git(2.39.5)은 마켓플레이스에 쓰기에 너무 오래되었습니다."],
+    [missingStatus({}), "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다."],
+    [missingStatus({ installerProvides: false }), "이 컴퓨터에서 git을 찾지 못했습니다."],
+    [missingStatus({ systemTooOld: { version: "2.39.5" } }), "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터의 git(2.39.5)은 너무 오래되었습니다."],
+    [missingStatus({ installerProvides: false, systemTooOld: { version: "2.39.5" } }), "이 컴퓨터의 git(2.39.5)은 마켓플레이스에 쓰기에 너무 오래되었습니다."],
   ])("says why no git is usable: %j", async (status, text) => {
     const fake = fakeMarketplace();
     fake.gitRuntime.status.mockResolvedValue({ ok: true, status });

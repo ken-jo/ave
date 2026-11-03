@@ -9,7 +9,7 @@ import {
   nodeGitDetectionDeps,
   systemGitCandidates,
 } from "../detect.js";
-import type { BundledGitInstall } from "../bundled-git.js";
+import type { InstallerGitInstall } from "../installer-git.js";
 import { parseGitVersion } from "../git-version.js";
 
 describe("parseGitVersion", () => {
@@ -49,42 +49,42 @@ function fakeDeps(overrides: Partial<GitDetectionDeps> & { versions: Record<stri
     isExecutableFile: async (path) => path in overrides.versions,
     readVersion: async (path) => overrides.versions[path] ?? null,
     commandLineToolsInstalled: async () => true,
-    findBundledGit: async () => null,
+    findInstallerGit: async () => null,
     ...overrides,
   };
 }
 
-const BUNDLED: BundledGitInstall = {
+const INSTALLED: InstallerGitInstall = {
   path: "/opt/Ave/resources/git-runtime/linux-x64/bin/git",
   root: "/opt/Ave/resources/git-runtime/linux-x64",
 };
 
 describe("detectGitRuntime", () => {
-  it("prefers the bundled copy over a usable system git", async () => {
+  it("prefers the installer's copy over a usable system git", async () => {
     const detection = await detectGitRuntime(
       fakeDeps({
-        versions: { "/a/git": "git version 2.50.1", [BUNDLED.path]: "git version 2.53.0" },
-        findBundledGit: async () => BUNDLED,
+        versions: { "/a/git": "git version 2.50.1", [INSTALLED.path]: "git version 2.53.0" },
+        findInstallerGit: async () => INSTALLED,
       }),
     );
     expect(detection).toEqual({
       state: "ready",
-      git: { kind: "bundled", path: BUNDLED.path, bundledRoot: BUNDLED.root, version: { major: 2, minor: 53, patch: 0, text: "2.53.0" } },
+      git: { kind: "installer", path: INSTALLED.path, installerRoot: INSTALLED.root, version: { major: 2, minor: 53, patch: 0, text: "2.53.0" } },
     });
   });
 
-  it("falls back to the system git when the bundled copy does not run", async () => {
+  it("falls back to the system git when the installer's copy does not run", async () => {
     const detection = await detectGitRuntime(
-      fakeDeps({ versions: { "/b/git": "git version 2.50.1" }, findBundledGit: async () => BUNDLED }),
+      fakeDeps({ versions: { "/b/git": "git version 2.50.1" }, findInstallerGit: async () => INSTALLED }),
     );
     expect(detection).toMatchObject({ state: "ready", git: { kind: "system", path: "/b/git" } });
   });
 
-  it("falls back to the system git when the bundled copy reports too old a version", async () => {
+  it("falls back to the system git when the installer's copy reports too old a version", async () => {
     const detection = await detectGitRuntime(
       fakeDeps({
-        versions: { "/b/git": "git version 2.50.1", [BUNDLED.path]: "git version 2.40.0" },
-        findBundledGit: async () => BUNDLED,
+        versions: { "/b/git": "git version 2.50.1", [INSTALLED.path]: "git version 2.40.0" },
+        findInstallerGit: async () => INSTALLED,
       }),
     );
     expect(detection).toMatchObject({ state: "ready", git: { kind: "system", path: "/b/git" } });
@@ -112,7 +112,7 @@ describe("detectGitRuntime", () => {
   it("keeps paths out of the renderer status", () => {
     expect(
       gitRuntimeStatus({ state: "missing", systemTooOld: { path: "/a/git", version: "2.45.0" } }, true),
-    ).toEqual({ state: "missing", active: null, systemTooOld: { version: "2.45.0" }, bundledShipped: true });
+    ).toEqual({ state: "missing", active: null, systemTooOld: { version: "2.45.0" }, installerProvides: true });
   });
 
   it("never runs the macOS /usr/bin/git shim without the Command Line Tools", async () => {

@@ -1,4 +1,4 @@
-/** The Add dialog's blocking step when no git is usable: git ships with the installer, so this only says why it cannot be used. */
+/** The Add dialog's blocking step when no git is usable: the Windows installer downloads git, so this only says why none can be used. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -12,8 +12,8 @@ export interface GitUnavailableProps {
 }
 
 function problemKey(status: GitRuntimeStatus) {
-  if (status.systemTooOld) return status.bundledShipped ? "gitMarketplace.git.tooOldBundled" : "gitMarketplace.git.tooOld";
-  return status.bundledShipped ? "gitMarketplace.git.missingBundled" : "gitMarketplace.git.missing";
+  if (status.systemTooOld) return status.installerProvides ? "gitMarketplace.git.tooOldInstaller" : "gitMarketplace.git.tooOld";
+  return status.installerProvides ? "gitMarketplace.git.missingInstaller" : "gitMarketplace.git.missing";
 }
 
 export function GitUnavailable({ api, onReady }: GitUnavailableProps) {

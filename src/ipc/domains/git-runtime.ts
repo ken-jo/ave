@@ -1,9 +1,8 @@
-// Read-only: which git the marketplace would run. The copy ships with the installer, so nothing is installed here.
-import { ipcMain } from "electron";
+// Read-only: which git the marketplace would run. The installer provides it, so nothing is installed here.
+import { app, ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
-import { getHostResources } from "../../main/host-resources.js";
 import { scrubMarketplaceStrings } from "../../marketplace/errors.js";
-import { bundledGitRoot } from "../../marketplace/git/bundled-git.js";
+import { installerGitRoot } from "../../marketplace/git/installer-git.js";
 import { detectGitRuntime, gitRuntimeStatus, nodeGitDetectionDeps } from "../../marketplace/git/detect.js";
 import type { GitRuntimeResult, GitRuntimeStatus } from "../../shared/git-runtime.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
@@ -12,7 +11,7 @@ import type { IpcDeps } from "../types.js";
 type ReadGitRuntimeStatus = () => Promise<GitRuntimeStatus>;
 
 async function readGitRuntimeStatus(): Promise<GitRuntimeStatus> {
-  const root = bundledGitRoot(getHostResources().resourcePath);
+  const root = installerGitRoot(app.isPackaged);
   return gitRuntimeStatus(await detectGitRuntime(nodeGitDetectionDeps(root)), root !== null);
 }
 

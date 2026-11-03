@@ -1613,69 +1613,58 @@ with `blob:none`, `rev-list --missing=print`, protocol v2 and
 `protocol.file.allow` behave as §9.3 relies on well before that.
 
 ```
-bundled: <resources>/git-runtime/<platform>-<arch>/ (Windows and Linux installers),
-         its marker names the pinned version and `git --version` >= 2.45.1
-system:  first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
-         C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.45.1
-order:   bundled if usable, else system if usable, else state "missing"
-         (a system git older than 2.45.1 is reported as too old)
+installer: <install dir>\git\cmd\git.exe (packaged Windows), placed by the
+           installer; require `git --version` >= 2.45.1
+system:    first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
+           C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.45.1
+order:     installer if usable, else system if usable, else state "missing"
+           (a system git older than 2.45.1 is reported as too old)
 ```
 
-There is no setting and nothing to install from the app. A bundled copy that
-is missing, fails to run or reports an older version falls back to the system
-git. macOS installers ship no copy: a signed, notarized app would need every
-nested binary signed, so macOS uses the system git. On macOS, `/usr/bin/git`
-without the Command Line Tools is a shim that opens an installer dialog;
-detection runs `xcode-select -p` first and treats a missing CLT as "no system
-git" instead of triggering the dialog.
+There is no setting and nothing to install from the app, and no app package
+contains git. An installer copy that is missing, fails to run or reports an
+older version falls back to the system git. Linux deb/rpm packages depend on
+the distribution's `git`; the AppImage and macOS use the system git. On macOS,
+`/usr/bin/git` without the Command Line Tools is a shim that opens an installer
+dialog; detection runs `xcode-select -p` first and treats a missing CLT as "no
+system git" instead of triggering the dialog.
 
 `GIT_RUNTIME_MISSING` (nothing usable) and `GIT_RUNTIME_TOO_OLD` (only a
 system git older than the minimum) are what a repository source reports when
 neither is usable. A copy left in `~/.ave/runtime/git` by an older release is
 not read.
 
-### 9.2 Bundled copy
+### 9.2 Windows installer copy
 
-```js
-// scripts/git-runtime-targets.mjs — updated deliberately, reviewed like a dependency bump
-const RELEASE = "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283";
-GIT_RUNTIME_TARGETS = {
-  "linux-x64":    { url: `${RELEASE}-ubuntu-x64.tar.gz`,     sha256: "cca76aa3…", size: 65269219 },
-  "linux-arm64":  { url: `${RELEASE}-ubuntu-arm64.tar.gz`,   sha256: "a161f45a…", size: 23223345 },
-  "win32-x64":    { url: `${RELEASE}-windows-x64.tar.gz`,    sha256: "7b76bc5c…", size: 47119821 },
-  "win32-arm64":  { url: `${RELEASE}-windows-arm64.tar.gz`,  sha256: "1abbeb3a…", size: 45084825 },
-};
-```
+The NSIS `customInstall` runs `build/install-windows-git.ps1` (native Windows
+PowerShell, from `$PLUGINSDIR`), modeled on Hermes Agent's installer, which
+fetches a pinned PortableGit at install time instead of shipping it:
 
-`scripts/fetch-git.mjs` stages the target into
-`resources/git-runtime/<platform>-<arch>`: postinstall for the host,
-`electron-before-pack.cjs` for the packaged target. The archive must match its
-exact size and sha256. Extraction accepts only portable paths, regular files,
-directories and symlinks that name a sibling (`git-fetch -> git`). For the host
-target, a smoke test runs the staged copy: `--version` equals the pin,
-`hash-object --stdin` agrees with git's object format, and the https transport
-helper exists. The marker then records the archive digest and a digest of the
-extracted tree; packaging re-hashes the tree against it, restages a copy that
-differs, and fails on an archive that does not match its pin. `afterPack`
-checks that the packaged copy has its marker, binary, https helper and the
-GPLv2 notice (`licenses/git/COPYING`).
+- It downloads the official Git for Windows **MinGit** release for the native
+  architecture (`MinGit-2.56.0.4-64-bit.zip` or `-arm64.zip` from
+  `github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/`).
+  The tag, sizes and sha256 values are pinned in the script and updated
+  together from the release notes' SHA-256 table, reviewed like a dependency
+  bump.
+- A size or sha256 mismatch deletes the download and places nothing (exit 3).
+  A verified archive is extracted to `$INSTDIR\git.partial`, must contain
+  `cmd\git.exe` and `mingw64in\git-remote-https.exe`, and is then renamed
+  to `$INSTDIR\git`. The per-machine install makes that folder
+  administrator-writable only.
+- Failure does not abort the install: a oneClick installer has no retry flow.
+  The installer logs the exit code, the app falls back to a system git, and
+  the Add dialog says what to do (reinstall while online, or install git).
+- Uninstall and update remove it with the rest of `$INSTDIR`
+  (`customRemoveFiles`); an update downloads it again.
 
-Bundled-copy environment, set on every call; nothing is written inside the
-copy, which is read-only in a per-machine install:
-
-- Linux runs `bin/git` with `GIT_EXEC_PATH` = `libexec/git-core`; Windows runs
-  `cmd/git.exe` with `GIT_EXEC_PATH` = `mingw64/libexec/git-core` and `PATH`
-  prefixed with `mingw64/bin` (which holds the https helper) and `usr/bin`
-  (which holds `ssh.exe`). `GIT_TEMPLATE_DIR` = an empty Ave-owned directory
-  everywhere.
-- CA roots, as measured on the pinned build (2026-09-23):
-  - Linux: the copy ships `ssl/cacert.pem` and reads no OS store.
-    `GIT_SSL_CAINFO` = an Ave-built bundle of those roots plus the corporate
-    roots `src/main/corp-ca-extract.ts` finds, written in the marketplace's
-    `.git-env` directory.
-  - Windows: `-c http.sslBackend=schannel`, the Windows certificate store. The
-    copy's own system config says the same, but `GIT_CONFIG_NOSYSTEM=1` keeps
-    that file unread, so the setting is passed on every call.
+Installer-copy environment, set on every call; nothing is written inside the
+copy: `cmd\git.exe` with `GIT_EXEC_PATH` = `mingw64\libexec\git-core` and
+`PATH` prefixed with `mingw64in` (which holds the https helper) and
+`usrin`. `-c http.sslBackend=schannel` makes it trust the Windows
+certificate store, corporate roots included; the copy's own system config says
+the same, but `GIT_CONFIG_NOSYSTEM=1` keeps that file unread, so the setting is
+passed on every call. `GIT_TEMPLATE_DIR` = an empty Ave-owned directory
+everywhere.
 
 ### 9.3 Invocation contract
 
@@ -2478,7 +2467,7 @@ subject in both catalogs.
 | Code | When | Reasons (detail fields) | Sentence key |
 |---|---|---|---|
 | `GIT_RUNTIME_MISSING` | no usable git | — | `gitMarketplace.error.gitMissing` |
-| `GIT_RUNTIME_TOO_OLD` | no usable bundled git, and the system git is older than 2.45.1 | — | `.gitTooOld` |
+| `GIT_RUNTIME_TOO_OLD` | no usable installer git, and the system git is older than 2.45.1 | — | `.gitTooOld` |
 | `SOURCE_URL_REJECTED` | the address refusals of §7.1 and §7.4 that no confirmation passes, a deep link's path, and unsupported input, a folder path included; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`; from a folder path (§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `unc-credentials`, `outside-root`, `folder-options`; from a *Choose folder…* pick main no longer holds: `folder-pick-unknown`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
 | `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `local-sources-blocked` (target, policyPath), `direct-install-blocked` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it), `unencrypted-updates` (source: turning automatic updates on for a plain-http source) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
@@ -2998,7 +2987,7 @@ installs the bytes it showed:
 
 The installer provides git (§9), so Settings shows no git card, selector or
 install button. Only when no git is usable (§9.1) does the Add dialog open on
-a blocking step that says so: the bundled copy is missing or does not run and
+a blocking step that says so: the installer's copy is missing or does not run and
 no system git is installed, or the system git is too old; adding a folder
 still works without git.
 
@@ -3235,7 +3224,7 @@ Where the sections above and the shipped code differ, the code wins:
 | Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys; a manifest with `installPolicy` is rejected by name at install and in the index CI; an installed legacy manifest with it loads with one warning |
 | Version choice | table tests for `minAppVersion`, yank, platform, pre-release opt-in, rollout buckets, per-source revocations |
 | Ladder | each rung used/skipped/failed combination, mismatch of each authority field stops the ladder, plan binds commits, receipts carry rung outcomes |
-| Git runtime | fake `git` binaries for version gates (2.45.0 refused, 2.45.1 accepted); env/flag/global-config contract; askpass ticket host binding; the bundled copy preferred, a broken one falling back to the system git; `fetch-git.test.ts`: wrong size, wrong hash and a changed staged tree refused |
+| Git runtime | fake `git` binaries for version gates (2.45.0 refused, 2.45.1 accepted); env/flag/global-config contract; askpass ticket host binding; the installer's copy preferred, a broken one falling back to the system git; `install-windows-git.test.ts`: a verified archive placed, a hash mismatch or incomplete archive leaving nothing |
 | Update scheduler | fake time (`background.test.ts`): an offline discovery retried an hour later, not an interval later; an offline *Check now* after a recent success retried an hour later; a success not repeated for the interval; the apply check at boot and 24 hours after the last; at exactly 24 hours, and phased apart from discovery, the apply check discovers before it classifies; a due apply check joins a discovery in flight and, after a partial one, classifies only the reached sources and stays due; `resume` after a 30-hour clock jump runs a discovery; *Check now* answers when its discovery and classification end; a successful check that spans a sleep is timed at its end; only reached sources are published, an unreached one's update only as an earlier discovery showed it, `stale`, in the status and the `updates-available` event; a discovery that throws turns what was shown stale and classifies nothing cached since; a stop at any wait of the boot pass, a recheck, *Check now* or a due apply check — the wait then fulfilling or rejecting — publishes, writes, logs, starts and arms nothing more (one table over every wait; `service.test.ts` runs it over the real service, held at its sync and its enforcements, and over the real syncer and installers, held in a sync's pruning and a boot content install, and finds no further progress, stage, publication, write or event of any kind through the boundary, while the install and its record finish; an enforcement queued behind another is cancelled when its signal aborts), and an unreadable file is left as it is, unreported, when the stop comes before its read ends; `git-marketplace.test.ts`: after the stop, Retry and Check now answer with their declared refusals, and a plugin install that lands after the shutdown hook finishes without `plugin.installed` or a bridge refresh; `ave-deep-link.test.ts`: a marketplace link is refused once the lifetime has ended; an unreadable `updates.json` sets `historyReset`. `history.test.ts`: the file's strict shape and the due rules. `service.test.ts`: `ok`, `partial` and `offline`, and a broken source with every other one offline is `partial`. `PluginUpdatesPill.test.tsx`: only states that need the user are counted. `GitMarketplaceTab.test.tsx`: the card's states, "No updates to review", a `stale` row, and an unanswered scheduler in its own words with main's message only behind *Copy details* |
 | Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
 | Network gate | normalization equivalences (scp/ssh/https, case, `.git`); `<helper>::` transports and credentials in a URL refused; block beats allow; `requireHttps` and `blockPrivateNetworks` block acknowledged sources; each address class for entered and catalog-supplied targets (`198.18.0.0/15` is internal, metadata is refused for a listed host, a loopback download on another port is refused, `internal-network` does not imply `internal-downloads`, a listing never implies `token-unencrypted`); redirect to a blocked host refused; no auth header across hosts |

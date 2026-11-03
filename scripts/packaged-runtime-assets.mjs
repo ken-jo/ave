@@ -1,6 +1,5 @@
 // Host-owned runtime assets ship with the installer; plugin payloads belong to plugin artifacts.
 import { installerUvTargetFor, SUPPORTED_UV_TARGET_DIRS } from "./uv-targets.mjs";
-import { GIT_RUNTIME_TARGETS } from "./git-runtime-targets.mjs";
 
 export const HOST_PACKAGED_RUNTIME_ASSETS = Object.freeze([
   Object.freeze({
@@ -19,24 +18,6 @@ export const HOST_PACKAGED_RUNTIME_ASSETS = Object.freeze([
     }),
     stagedBy: "scripts/build-installers.mjs",
     materializedBy: "src/main/uv-runtime.ts",
-  }),
-  Object.freeze({
-    id: "git",
-    owner: "host",
-    reason: "Marketplace sources are git repositories; reading one must not depend on a git the user installs or the app downloads.",
-    targets: Object.freeze(Object.keys(GIT_RUNTIME_TARGETS)),
-    // electron-builder platform keys; macOS uses the system git.
-    platformPackageResources: Object.freeze({
-      win: Object.freeze({ from: "resources/git-runtime/win32-${arch}", to: "git-runtime/win32-${arch}" }),
-      linux: Object.freeze({ from: "resources/git-runtime/linux-${arch}", to: "git-runtime/linux-${arch}" }),
-    }),
-    licenseResource: Object.freeze({
-      from: "resources/licenses/git",
-      to: "licenses/git",
-      requiredFiles: Object.freeze(["COPYING"]),
-    }),
-    stagedBy: "scripts/fetch-git.mjs",
-    materializedBy: "src/marketplace/git/bundled-git.ts",
   }),
   Object.freeze({
     id: "better-sqlite3-native-binding",

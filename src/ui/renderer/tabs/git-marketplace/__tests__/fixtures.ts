@@ -147,9 +147,9 @@ export function installPlan(item: CatalogEntryView, overrides: Partial<InstallPl
 function runtimeStatus(state: GitRuntimeStatus["state"]): GitRuntimeStatus {
   return {
     state,
-    active: state === "ready" ? { kind: "bundled", version: "2.53.0" } : null,
+    active: state === "ready" ? { kind: "installer", version: "2.53.0" } : null,
     systemTooOld: null,
-    bundledShipped: true,
+    installerProvides: true,
   };
 }
 

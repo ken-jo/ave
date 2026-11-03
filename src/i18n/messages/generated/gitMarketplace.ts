@@ -307,9 +307,9 @@ export const en = {
   "gitMarketplace.direct.importFailed": "The servers could not be added. Reopen the marketplace from Ave settings and try again; if it persists, use Copy details to report it.",
 
   "gitMarketplace.git.missing": "No git was found on this computer. Marketplaces are git repositories, so Ave needs git to read them. Install git, then check again.",
-  "gitMarketplace.git.missingBundled": "The git that ships with Ave could not be used, and no git was found on this computer. Reinstall Ave, or install git on this computer.",
+  "gitMarketplace.git.missingInstaller": "The git that Ave's installer downloads is not available, and no git was found on this computer. Install git, or reinstall Ave while connected to the internet so it downloads git again.",
   "gitMarketplace.git.tooOld": "The git on this computer ({version}) is too old for marketplaces. Update git, then check again.",
-  "gitMarketplace.git.tooOldBundled": "The git that ships with Ave could not be used, and the git on this computer ({version}) is too old. Reinstall Ave, or update git on this computer.",
+  "gitMarketplace.git.tooOldInstaller": "The git that Ave's installer downloads is not available, and the git on this computer ({version}) is too old. Update git, or reinstall Ave while connected to the internet so it downloads git again.",
   "gitMarketplace.git.unavailable": "The git status is not available right now.",
   "gitMarketplace.git.checkAgain": "Check again",
 
@@ -360,8 +360,8 @@ export const en = {
   "gitMarketplace.local.exportFailed": "{name} could not be exported. Try again; if it persists, use Copy details to report it.",
 
   "gitMarketplace.error.planExpired": "What you reviewed is no longer valid: it expired after 10 minutes, or a newer review replaced it. Start again to review it fresh.",
-  "gitMarketplace.error.gitMissing": "No usable git was found. Install git on this computer; where Ave ships its own git, reinstalling Ave also restores it.",
-  "gitMarketplace.error.gitTooOld": "The git on this computer is too old, and no other usable git was found. Update git on this computer; where Ave ships its own git, reinstalling Ave also restores it.",
+  "gitMarketplace.error.gitMissing": "No usable git was found. Install git on this computer; on Windows, reinstalling Ave while online also downloads it again.",
+  "gitMarketplace.error.gitTooOld": "The git on this computer is too old, and no other usable git was found. Update git on this computer; on Windows, reinstalling Ave while online also downloads it again.",
   "gitMarketplace.error.urlRejected": "Ave cannot use this address. A source needs an https, http or ssh repository address (or owner/repo for GitHub) that does not lead to a link-local or cloud-metadata address; check the address.",
   "gitMarketplace.error.urlRejected.credentialsInUrl": "The address contains a password or token. Ave never keeps secrets in addresses: remove it from the address, then choose Access token under Sign-in and paste the token there.",
   "gitMarketplace.error.urlRejected.schemeUnsupported": "Ave does not read {scheme}: addresses. Use the https or ssh address of the same repository.",
@@ -979,9 +979,9 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.direct.importFailed": "서버를 추가하지 못했습니다. Ave 설정에서 마켓플레이스를 다시 연 뒤 다시 시도하고, 계속되면 세부 정보를 복사해 알려 주세요.",
 
   "gitMarketplace.git.missing": "이 컴퓨터에서 git을 찾지 못했습니다. 마켓플레이스는 git 저장소이므로 Ave가 읽으려면 git이 필요합니다. git을 설치한 뒤 다시 확인하세요.",
-  "gitMarketplace.git.missingBundled": "Ave에 포함된 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다. Ave를 다시 설치하거나 이 컴퓨터에 git을 설치하세요.",
+  "gitMarketplace.git.missingInstaller": "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다. git을 설치하거나, 인터넷에 연결된 상태에서 Ave를 다시 설치해 git을 다시 내려받으세요.",
   "gitMarketplace.git.tooOld": "이 컴퓨터의 git({version})은 마켓플레이스에 쓰기에 너무 오래되었습니다. git을 업데이트한 뒤 다시 확인하세요.",
-  "gitMarketplace.git.tooOldBundled": "Ave에 포함된 git을 사용할 수 없고, 이 컴퓨터의 git({version})은 너무 오래되었습니다. Ave를 다시 설치하거나 이 컴퓨터의 git을 업데이트하세요.",
+  "gitMarketplace.git.tooOldInstaller": "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터의 git({version})은 너무 오래되었습니다. git을 업데이트하거나, 인터넷에 연결된 상태에서 Ave를 다시 설치해 git을 다시 내려받으세요.",
   "gitMarketplace.git.unavailable": "지금은 git 상태를 확인할 수 없습니다.",
   "gitMarketplace.git.checkAgain": "다시 확인",
 
@@ -1032,8 +1032,8 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.local.exportFailed": "{name}을(를) 내보내지 못했습니다. 다시 시도하고, 계속되면 세부 정보를 복사해 알려 주세요.",
 
   "gitMarketplace.error.planExpired": "검토한 내용이 더 이상 유효하지 않습니다. 10분이 지나 만료되었거나 새 검토로 바뀌었습니다. 다시 시작해 새로 검토하세요.",
-  "gitMarketplace.error.gitMissing": "사용할 수 있는 git을 찾지 못했습니다. 이 컴퓨터에 git을 설치하세요. Ave가 자체 git을 포함하는 시스템에서는 Ave를 다시 설치해도 복구됩니다.",
-  "gitMarketplace.error.gitTooOld": "이 컴퓨터의 git이 너무 오래되었고 사용할 수 있는 다른 git도 없습니다. 이 컴퓨터의 git을 업데이트하세요. Ave가 자체 git을 포함하는 시스템에서는 Ave를 다시 설치해도 복구됩니다.",
+  "gitMarketplace.error.gitMissing": "사용할 수 있는 git을 찾지 못했습니다. 이 컴퓨터에 git을 설치하세요. Windows에서는 인터넷에 연결된 상태에서 Ave를 다시 설치해도 git을 다시 내려받습니다.",
+  "gitMarketplace.error.gitTooOld": "이 컴퓨터의 git이 너무 오래되었고 사용할 수 있는 다른 git도 없습니다. 이 컴퓨터의 git을 업데이트하세요. Windows에서는 인터넷에 연결된 상태에서 Ave를 다시 설치해도 git을 다시 내려받습니다.",
   "gitMarketplace.error.urlRejected": "Ave가 이 주소를 쓸 수 없습니다. 소스는 링크 로컬이나 클라우드 메타데이터 주소로 이어지지 않는 https, http 또는 ssh 저장소 주소(GitHub는 owner/repo)여야 합니다. 주소를 확인하세요.",
   "gitMarketplace.error.urlRejected.credentialsInUrl": "주소에 비밀번호나 토큰이 있습니다. Ave는 주소에 비밀 정보를 저장하지 않습니다. 주소에서 빼고, 로그인에서 액세스 토큰을 골라 그곳에 토큰을 붙여 넣으세요.",
   "gitMarketplace.error.urlRejected.schemeUnsupported": "Ave는 {scheme}: 주소를 읽지 않습니다. 같은 저장소의 https나 ssh 주소를 쓰세요.",

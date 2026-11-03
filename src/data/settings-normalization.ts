@@ -744,7 +744,7 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
     ...DEFAULT_SETTINGS.marketplace,
     ...raw,
   };
-  // Releases before the bundled git stored a git mode here; it no longer selects anything.
+  // Releases before the installer git stored a git mode here; it no longer selects anything.
   delete (merged as { git?: unknown }).git;
   if (raw.installedProviderIds !== undefined && !Array.isArray(raw.installedProviderIds)) {
     throw new LlmProviderSettingsError("marketplace.installedProviderIds", "marketplace.installedProviderIds must be an array");

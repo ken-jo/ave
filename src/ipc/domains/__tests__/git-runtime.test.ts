@@ -18,7 +18,7 @@ const STATUS: GitRuntimeStatus = Object.freeze({
   state: "missing",
   active: null,
   systemTooOld: { version: "2.34.1" },
-  bundledShipped: true,
+  installerProvides: true,
 });
 
 async function setup() {

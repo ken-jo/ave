@@ -3,19 +3,17 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { MarketplaceError } from "../errors.js";
 import { AskpassBroker } from "./askpass.js";
-import { bundledRunnerOptions } from "./bundled-git.js";
+import { installerRunnerOptions } from "./installer-git.js";
 import { detectGitRuntime, nodeGitDetectionDeps, type GitDetectionDeps, type GitExecutable } from "./detect.js";
 import { readCopiedCredentialConfig, writeGeneratedGlobalConfig, type CopiedConfigEntry } from "./global-config.js";
 import { GitRunner, type GitCommands, type GitRemote, type GitRunnerOptions } from "./run-git.js";
 
 export interface MarketplaceGitOptions {
   envRoot: string;
-  /** {@link bundledGitRoot} for the app resources; null on a system that ships no copy. */
-  bundledRoot: string | null;
+  /** {@link installerGitRoot}; null where no installer provides git. */
+  installerRoot: string | null;
   getToken: (host: string, sourceId: string) => string | null;
-  corporateRootsPem: () => Promise<string | null>;
   resolveProxy?: GitRunnerOptions["resolveProxy"];
-  platform?: NodeJS.Platform;
   detectionDeps?: GitDetectionDeps;
 }
 
@@ -35,10 +33,6 @@ export class MarketplaceGit {
 
   constructor(private readonly options: MarketplaceGitOptions) {}
 
-  private get platform(): NodeJS.Platform {
-    return this.options.platform ?? process.platform;
-  }
-
   private askpass(): Promise<AskpassBroker> {
     this.broker ??= AskpassBroker.start({ getToken: this.options.getToken, parentDir: this.options.envRoot }).catch((error: unknown) => {
       this.broker = null;
@@ -48,15 +42,15 @@ export class MarketplaceGit {
   }
 
   private async detect(): Promise<GitExecutable> {
-    const detection = await detectGitRuntime(this.options.detectionDeps ?? nodeGitDetectionDeps(this.options.bundledRoot));
+    const detection = await detectGitRuntime(this.options.detectionDeps ?? nodeGitDetectionDeps(this.options.installerRoot));
     if (detection.state === "ready") return detection.git;
     if (detection.systemTooOld) {
       throw new MarketplaceError(
         "GIT_RUNTIME_TOO_OLD",
-        `system git ${detection.systemTooOld.version} at ${detection.systemTooOld.path} is older than the minimum, and no bundled git is usable`,
+        `system git ${detection.systemTooOld.version} at ${detection.systemTooOld.path} is older than the minimum, and no installer git is usable`,
       );
     }
-    throw new MarketplaceError("GIT_RUNTIME_MISSING", "no usable git was found: no bundled git is usable and no system git is installed");
+    throw new MarketplaceError("GIT_RUNTIME_MISSING", "no usable git was found: no installer git is usable and no system git is installed");
   }
 
   private async build(): Promise<BuiltRunner> {
@@ -67,15 +61,13 @@ export class MarketplaceGit {
     const globalConfigPath = join(this.options.envRoot, "gitconfig");
     const copied = await readCopiedCredentialConfig(git.path);
     await writeGeneratedGlobalConfig(globalConfigPath, copied);
-    const bundled = git.kind === "bundled"
-      ? await bundledRunnerOptions({ path: git.path, root: git.bundledRoot! }, this.platform, await this.options.corporateRootsPem(), this.options.envRoot)
-      : {};
+    const installed = git.kind === "installer" ? installerRunnerOptions({ path: git.path, root: git.installerRoot! }) : {};
     const runner = new GitRunner({
       git,
       globalConfigPath,
       emptyDir,
       askpass: await this.askpass(),
-      ...bundled,
+      ...installed,
       ...(this.options.resolveProxy ? { resolveProxy: this.options.resolveProxy } : {}),
     });
     return { runner, copied };

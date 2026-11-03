@@ -38,7 +38,7 @@
   },
   "main": "dist/src/main/main.js",
   "scripts": {
-    "postinstall": "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/fetch-git.mjs --current && node scripts/fetch-mxc.mjs --current && node scripts/hooks/install.mjs",
+    "postinstall": "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/fetch-mxc.mjs --current && node scripts/hooks/install.mjs",
     "build:main": "node scripts/build-main-esbuild.mjs",
     "build:webpack": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs",
     "build:renderer": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name renderer",
@@ -290,7 +290,6 @@
       "!node_modules/**/tsconfig*.json",
       "!resources/uv{,/**/*}",
       "!resources/uv-runtime{,/**/*}",
-      "!resources/git-runtime{,/**/*}",
       "!node_modules/@koromix/koffi-win32-*/**/*.{lib,exp}",
       "!node_modules/@microsoft/mxc-sdk/node_modules/.bin{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/dotnet{,/**/*}",
@@ -366,10 +365,6 @@
       {
         "from": "resources/licenses/uv",
         "to": "licenses/uv"
-      },
-      {
-        "from": "resources/licenses/git",
-        "to": "licenses/git"
       },
       {
         "from": "resources/licenses/models.dev",
@@ -449,12 +444,6 @@
     "linux": {
       "category": "Office",
       "icon": "build/icons",
-      "extraResources": [
-        {
-          "from": "resources/git-runtime/linux-${arch}",
-          "to": "git-runtime/linux-${arch}"
-        }
-      ],
       "target": [
         "AppImage",
         "deb",
@@ -476,7 +465,8 @@
         "libatspi2.0-0",
         "libuuid1",
         "libsecret-1-0",
-        "libasound2t64 | libasound2"
+        "libasound2t64 | libasound2",
+        "git"
       ]
     },
     "rpm": {
@@ -490,7 +480,8 @@
         "xdg-utils",
         "at-spi2-core",
         "(libuuid or libuuid1)",
-        "alsa-lib"
+        "alsa-lib",
+        "git"
       ]
     },
     "win": {
@@ -519,10 +510,6 @@
         {
           "from": "resources/licenses/mxc",
           "to": "licenses/mxc"
-        },
-        {
-          "from": "resources/git-runtime/win32-${arch}",
-          "to": "git-runtime/win32-${arch}"
         }
       ]
     },

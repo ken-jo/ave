@@ -2,23 +2,9 @@ const { execFileSync } = require("node:child_process");
 const { join } = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { assertSrtWinVendor } = require("./lib/srt-win-integrity.cjs");
-// The installer ships the pinned git; a copy that does not match its archive pin fails the build.
-async function stageBundledGit(context) {
-  const projectRoot = context.packager.projectDir;
-  const { gitRuntimeTargetKey } = await import(pathToFileURL(join(projectRoot, "scripts", "git-runtime-targets.mjs")).href);
-  const arch = { 0: "ia32", 1: "x64", 3: "arm64" }[context.arch];
-  const key = gitRuntimeTargetKey(context.electronPlatformName, arch);
-  if (key === null) return;
-  const { stageGitRuntime, verifyStagedGitRuntime } = await import(pathToFileURL(join(projectRoot, "scripts", "fetch-git.mjs")).href);
-  const { dir } = await stageGitRuntime({ key, projectRoot });
-  await verifyStagedGitRuntime(key, dir);
-  console.log(`fetch-git: ${dir} verified against scripts/git-runtime-targets.mjs`);
-}
-
 module.exports = async function beforePack(context) {
   const { assertMxcVerificationPayload } = await import("./lib/mxc-verification-build.mjs");
   assertMxcVerificationPayload(join(context.packager.projectDir, "dist", "src", "main"));
-  await stageBundledGit(context);
   if (context.electronPlatformName !== "win32") return;
   const { assertMxcSupervisorFuse } = await import("./lib/mxc-sdk-packaging.mjs");
   assertMxcSupervisorFuse(context.packager.config);
