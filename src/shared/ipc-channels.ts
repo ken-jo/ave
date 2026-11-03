@@ -71,6 +71,10 @@ export const WORK_BOARD = {
   // Renderer → main: run the daily / weekly briefing; a read-only sub-agent survey of the user's work whose findings are filed
   // back onto the board as proposals. The opposite direction from generateReport, which summarizes what the board already holds.
   runBriefing: "ave:work-board:run-briefing",
+  // Renderer → main: send the user's text to the item's running execute child (next round boundary), or stop that child. Internal,
+  // sender-validated, board-owner frame, CHANNEL_GESTURE "required"; the engine resolves the child, the renderer never names it.
+  steerRun: "ave:work-board:steer-run",
+  cancelRun: "ave:work-board:cancel-run",
   // Renderer → main: read a past run's persisted transcript (sessions/<itemId>/<runId>.jsonl) for the run-history view.
   runTranscript: "ave:work-board:run-transcript",
   // Renderer → main: list the open proposals, accept one (creating the work item it becomes), or dismiss one.

@@ -1208,6 +1208,24 @@ export type AveApi = {
     | { events: import("../../shared/work-board-types.js").RunTranscriptEvent[] }
     | { ok: false; error: string }
   >;
+  // Steer or stop a running execution (local user only: a consumed keyboard
+  // gesture, permission-decision-tree.md S→T). The host picks the execute child;
+  // the steer text reaches it as host-fenced guidance at its next round boundary.
+  // `userIntent` is captured at the gesture with captureUserKeyboardIntent().
+  steerWorkBoardRun?: (
+    itemId: number,
+    text: string,
+    userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult
+    | { ok: false; error: string }
+  >;
+  cancelWorkBoardRun?: (
+    itemId: number,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").WorkBoardCancelIpcResult
+    | { ok: false; error: string }
+  >;
   // Live per-phase progress for an in-flight run. Payload === the engine's
   // WorkBoardRunEvent (aliased RunProgressEventPayload).
   onWorkBoardRunProgress: (
@@ -1221,7 +1239,7 @@ export type AveApi = {
   onWorkBoardRunFinished: (
     handler: (payload: {
       itemId: number;
-      status: "completed" | "denied" | "not_found" | "error" | "already_running";
+      status: import("../../shared/work-board-types.js").WorkItemRunResult["status"];
       at: string;
     }) => void,
   ) => () => void;

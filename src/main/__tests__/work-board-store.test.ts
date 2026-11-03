@@ -382,3 +382,29 @@ describe("WorkBoardStore — due dates stamped in another zone", () => {
     }
   });
 });
+
+describe("WorkBoardStore — user-stopped runs (cancelled)", () => {
+  it("persists cancelled as a terminal status, logs run-cancelled, survives reload, and is left alone by boot reconcile", async () => {
+    const { store, dir, path, cleanup } = tempBoard(fixedClock);
+    try {
+      const created = await store.create({ title: "stopped by the user" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      await store.beginRun(id, "run-1", new Date(FIXED_NOW).toISOString());
+      await store.setRunStatus(id, "executing");
+      await store.setRunResult(id, { runStatus: "cancelled" });
+
+      const activity = readFileSync(join(dir, "activity.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l) as { kind: string; to?: string });
+      expect(activity.at(-1)).toMatchObject({ kind: "run-cancelled", to: "cancelled" });
+
+      const reloaded = new WorkBoardStore(path, fixedClock);
+      expect(await reloaded.reconcileInterruptedRuns()).toBe(0);
+      const got = await reloaded.get(id);
+      if (got.status !== "found") throw new Error("missing item");
+      expect(got.item.runStatus).toBe("cancelled");
+      expect(got.item.runHistory?.at(-1)).toMatchObject({ runId: "run-1", status: "cancelled", endedAt: expect.any(String) });
+    } finally {
+      await cleanup();
+    }
+  });
+});

@@ -958,6 +958,11 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [CHANNELS.telegramConnection.revokePairing]: "required",
   [CHANNELS.telegramConnection.approveCurrentConversation]: "required",
   [CHANNELS.telegramConnection.revokeApproval]: "required",
+  // Steering or stopping a running work-board execution is the local user's
+  // own action (permission-decision-tree.md S→T): a consumed keyboard gesture,
+  // refused without one rather than downgraded to another principal.
+  [WORK_BOARD.steerRun]: "required",
+  [WORK_BOARD.cancelRun]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────

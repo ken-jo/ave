@@ -69,6 +69,7 @@ import type {
 } from "./a2a-agent-message-bus.js";
 import type { A2AAgentMailboxEntry } from "./a2a-agent-message-mailbox.js";
 import { sanitizeA2ALabel } from "./a2a-subagent-message-codec.js";
+import { parseWorkBoardOriginSessionId } from "../shared/work-board-types.js";
 import { hasControlChars } from "../shared/display-safe-text.js";
 import {
   authorizationRequiredStateForOutput,
@@ -76,10 +77,13 @@ import {
 } from "../shared/authorization-required.js";
 import {
   formatParentDirective,
+  formatUserSteerDirective,
   hasUnsafeDirectiveControlChars,
   PARENT_DIRECTIVE_MAX_CHARS,
   type ParentDirectiveDeliveryResult,
   type ParentDirectiveDropReason,
+  type WorkBoardSteerDeliveryResult,
+  type WorkBoardSteerDropReason,
 } from "./parent-directive.js";
 import type {
   ParentDirectiveEntry,
@@ -1599,6 +1603,73 @@ export class SubAgentRunner {
       return refuse("storage-failed");
     }
     return refuse(queued === "queue-full" ? "pending-cap" : "recipient-unavailable");
+  }
+
+  /** Deliver a local user's steer to a work-board item's live execute child (permission-decision-tree.md S→T, then the child's own tree).
+   * Authority is the host: the origin must be a work-board item origin and the child must be that origin's live child holding a turn; the
+   * caller (the work-board engine) resolves the child from its own record, never from renderer input. The text goes in as host-fenced
+   * guidance with no `principal` and no `approvalReasonPrefix`, so the child gains no user-keyboard capability (host terminal typing,
+   * verified user quotes) and no other-principal floor ("Delegated work": the child inherits no controller authority). Nothing is stored
+   * for resume: a work-board execute child is never resumed, so a child that is not live refuses. Audit records metadata only, never text. */
+  queueHostDirectiveToWorkBoardChild(
+    originSessionId: string,
+    childSessionId: string,
+    text: string,
+  ): WorkBoardSteerDeliveryResult {
+    const messageId = createDlpSafeUuid();
+    const audit = (type: "info" | "warn", outcome: string): void =>
+      this.auditWorkBoardSteer(type, { originSessionId, childSessionId, messageId }, outcome);
+    const refuse = (
+      reason: WorkBoardSteerDropReason,
+    ): Extract<WorkBoardSteerDeliveryResult, { ok: false }> => {
+      audit("warn", "dropped:" + reason);
+      return { ok: false, reason };
+    };
+
+    if (parseWorkBoardOriginSessionId(originSessionId) === null || !isValidSessionId(childSessionId)) {
+      return refuse("unknown-recipient");
+    }
+    if (typeof text !== "string" || text.length > PARENT_DIRECTIVE_MAX_CHARS) {
+      return refuse("message-too-long");
+    }
+    const masked = maskSubAgentText(text).trim();
+    if (masked.length === 0 || hasUnsafeDirectiveControlChars(masked)) {
+      return refuse("invalid-message");
+    }
+    const envelope = formatUserSteerDirective(masked);
+    if (envelope.length > GUIDE_MAX_CHARS) return refuse("message-too-long");
+
+    const active = this.activeChildren.get(childSessionId);
+    if (active?.originSessionId !== originSessionId || !active.loop.hasActiveTurn()) {
+      return refuse("recipient-unavailable");
+    }
+    const queued = active.loop.queueGuidanceWithDisposition(envelope, {
+      onInjected: () => audit("info", "injected"),
+      onDropped: (reason) => audit("warn", "deferred:" + reason),
+    });
+    if (queued === "queued") {
+      audit("info", "queued");
+      return { ok: true, disposition: "queued", childSessionId, messageId };
+    }
+    return refuse(queued === "queue-full" ? "pending-cap" : "recipient-unavailable");
+  }
+
+  private auditWorkBoardSteer(
+    type: "info" | "warn",
+    input: { originSessionId: string; childSessionId: string; messageId: string },
+    outcome: string,
+  ): void {
+    this.deps.parentDeps?.auditLogger?.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "unknown",
+      type,
+      input: [
+        "work-board:steer:", outcome,
+        ":origin=", sanitizeA2ALabel(input.originSessionId),
+        ":child=", sanitizeA2ALabel(input.childSessionId),
+        ":message=", input.messageId,
+      ].join(""),
+    });
   }
 
   private auditParentDirective(

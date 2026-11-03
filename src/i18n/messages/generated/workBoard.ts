@@ -33,6 +33,7 @@ export const en = {
   "workBoard.runDone": "Run complete",
   "workBoard.runDenied": "Plan rejected",
   "workBoard.runError": "Run failed",
+  "workBoard.runCancelled": "Stopped",
   "workBoard.runBusyShort": "Running…",
   "workBoard.runPlanHeading": "Plan",
   "workBoard.runOutputHeading": "Result",
@@ -105,6 +106,7 @@ export const en = {
   "workBoard.run_completed": "Completed",
   "workBoard.run_denied": "Denied",
   "workBoard.run_error": "Error",
+  "workBoard.run_cancelled": "Stopped",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "workBoard.panelTitle": "업무 보드",
@@ -139,6 +141,7 @@ export const ko: Record<keyof typeof en, string> = {
   "workBoard.runDone": "실행 완료",
   "workBoard.runDenied": "계획이 거부되었습니다",
   "workBoard.runError": "실행에 실패했습니다",
+  "workBoard.runCancelled": "중지됨",
   "workBoard.runBusyShort": "실행 중…",
   "workBoard.runPlanHeading": "계획",
   "workBoard.runOutputHeading": "결과",
@@ -209,4 +212,5 @@ export const ko: Record<keyof typeof en, string> = {
   "workBoard.run_completed": "완료",
   "workBoard.run_denied": "거부됨",
   "workBoard.run_error": "오류",
+  "workBoard.run_cancelled": "중지됨",
 };

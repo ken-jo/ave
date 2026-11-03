@@ -211,8 +211,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "the loop's own declarations: runTurn delegates to run-turn, which refuses a keyboard origin without a spent intent; queueUserGuidance marks the user principal, queueGuidance and queueGuidanceWithDisposition do not",
   },
   "engine/subagent-runner.ts": {
-    sites: { queueGuidanceWithDisposition: 1, runTurn: 2 },
-    classification: "sub-agent child turns: llm-tool-arg or agent-message; guidance into a running child: agent-message",
+    sites: { queueGuidanceWithDisposition: 2, runTurn: 2 },
+    classification: "sub-agent child turns: llm-tool-arg or agent-message; guidance into a running child: agent-message; a work-board user steer into its live execute child: host-fenced non-principal guidance (no user-keyboard principal, no sender prefix), admitted only after the IPC verified a consumed gesture",
   },
   "engine/turn/commands.ts": {
     sites: { userKeyboardLiteral: 1 },
@@ -295,8 +295,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "preload gesture tokens: minted only during an active gesture, consumed once",
   },
   "preload/internal-api-surface.ts": {
-    sites: { userKeyboardLiteral: 1 },
-    classification: "side-chat send bridge: reports userActivation from the consumed token only; queue-auto otherwise",
+    sites: { userKeyboardLiteral: 2 },
+    classification: "side-chat send bridge and work-board steer: each reports userActivation from the consumed token only (side-chat: queue-auto otherwise; steer: main refuses without it)",
   },
   "preload/public-surface.ts": {
     sites: { userKeyboardLiteral: 5 },
