@@ -10,7 +10,7 @@ vi.mock("../windows-path-facts.js", async (original) => {
     dacls.override !== undefined ? dacls.override(paths) : (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown)(paths, options) };
 });
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
@@ -410,7 +410,7 @@ describe("approve all stays closed", () => {
     expect(approveAveHomeTrustItems(review.snapshotId, ["AGENTS.md"])).toBe(1);
   });
 
-  it("does not reopen approve all when the manifest is deleted or corrupted", () => {
+  it("does not reopen approve all when the manifest is corrupted", () => {
     const dir = home();
     put(dir, "AGENTS.md", "# instructions");
     boot(dir);
@@ -419,6 +419,19 @@ describe("approve all stays closed", () => {
     boot(dir);
     expect(manifest(dir)).toMatchObject({ state: "bootstrapped:false", oneByOne: true });
     expect(getAveHomeTrustReview()!.approveAllOffered).toBe(false);
+  });
+
+  it("offers approve all for a committed config/ that has no manifest yet, the state of a home from an earlier Ave", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    boot(dir);
+    rmSync(join(dir, "config", ".ave-trust-manifest.json"));
+    expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:false" });
+    expect(manifest(dir)).toEqual({ version: 1, state: "bootstrapped:false", entries: {} });
+    const review = getAveHomeTrustReview()!;
+    expect(review.approveAllOffered).toBe(true);
+    expect(approveAveHomeTrustItems(review.snapshotId)).toBe(1);
+    expect(boot(dir)).toEqual({ pending: false, state: "bootstrapped:true" });
   });
 
   it("writes the one-by-one flag only when the commit saw a moved configuration", () => {

@@ -707,9 +707,12 @@ export function evaluateAveHomeTrustAtBoot(home: string): AveHomeTrustVerdict {
   let manifest = bytes === undefined ? undefined : parseManifest(bytes);
   let changed = false;
   if (manifest === undefined) {
-    // Absent or unreadable after the commit wrote one: never trusted. Every existing item is pending and reviewed one by one, so
-    // deleting or corrupting the manifest never reopens "approve all".
-    manifest = inputs.length > 0 ? { version: 1, state: "bootstrapped:false", oneByOne: true, entries: {} } : { version: 1, state: "fresh", entries: {} };
+    // Absent or unreadable: never trusted, and every existing item is pending. Absent is the expected state of a home whose
+    // config/ was committed before the manifest existed, so it keeps "approve all" (D1, still gated on clean evidence and every
+    // row approvable). Bytes that are present but do not parse are damage: those items are reviewed one by one.
+    const corrupt = bytes !== undefined;
+    manifest = inputs.length === 0 ? { version: 1, state: "fresh", entries: {} }
+      : { version: 1, state: "bootstrapped:false", ...(corrupt ? { oneByOne: true as const } : {}), entries: {} };
     changed = true;
   }
   const byKey = new Map(inputs.map((input) => [input.key, input]));

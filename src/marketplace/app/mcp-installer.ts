@@ -163,7 +163,13 @@ export async function assertInstalledMcpFilesIntact(home: string, serverId: stri
     return;
   }
   if (input.status === "absent") return;
-  const record = parseRecords(input.bytes.toString("utf8"), recordsPath).find((candidate) => candidate.name === serverId);
+  let records: McpRecord[];
+  try { records = parseRecords(input.bytes.toString("utf8"), recordsPath); }
+  catch (error) {
+    throw new McpInstalledFilesError(serverId, `the MCP install record file ${recordsPath} is damaged (${(error as Error).message}). `
+      + "Restore that file from a backup, or delete it and reinstall your marketplace MCP servers, then restart Ave");
+  }
+  const record = records.find((candidate) => candidate.name === serverId);
   if (!record?.hasFiles) return;
   const expected = record.origin?.filesTree ?? installingTrees.get(serverId);
   if (typeof expected !== "string") throw new McpInstalledFilesError(serverId, "its install record has no file digest; reinstall it");

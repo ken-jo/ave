@@ -3125,8 +3125,9 @@ with its own owner rule:
   An item directory that is itself a link is a remove-only row. "Approve all"
   is offered only for a `bootstrapped:false` manifest with clean evidence and
   without `oneByOne: true`, which the commit writes when a moved `config/` sits
-  among the root's siblings and the boot writes when it recreates a missing or
-  unreadable manifest. The card says extensions run isolated only when a
+  among the root's siblings and the boot writes when the manifest bytes do not
+  parse. A committed `config/` with no manifest (a home from an earlier Ave)
+  gets `bootstrapped:false` without it. The card says extensions run isolated only when a
   confinement backend runs them. Approved items load after a restart. A
   marketplace ledger or skill-approval view opened while pending sweeps and
   grants nothing and re-reads the file before its next use; a pruned snapshot

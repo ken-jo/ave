@@ -175,6 +175,14 @@ describe("McpInstaller", () => {
     await expect(assertInstalledMcpFilesIntact(home, "weather")).resolves.toBeUndefined();
   });
 
+  it("names the damaged record file and the fix when the install records do not parse", async () => {
+    await installer.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\necho v1\n") }), { switchSource: false });
+    await writeFile(recordsPath(), "{not json");
+    const refusal = assertInstalledMcpFilesIntact(home, "notes");
+    await expect(refusal).rejects.toThrow(`MCP server notes was not started: the MCP install record file ${recordsPath()} is damaged`);
+    await expect(refusal).rejects.toThrow("Restore that file from a backup, or delete it and reinstall your marketplace MCP servers, then restart Ave");
+  });
+
   it("counts direct server admission before its queue yields and through connection setup", async () => {
     let release!: () => void;
     let entered!: () => void;
