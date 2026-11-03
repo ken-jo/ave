@@ -354,7 +354,7 @@ export interface SandboxGateAuditEntry {
   /** `process.platform` at boot. */
   platform: NodeJS.Platform;
   /** Explicit environment activation fails closed; settings/default activation may degrade; off skips the gate. */
-  onSignal: "explicit-env" | "default-settings" | "off";
+  onSignal: "explicit-env" | "default-settings" | "home-trust-pending" | "off";
   /** Terminal gate outcome; mirrors decideSandboxGate's action. */
   outcome: "activate" | "degrade" | "abort" | "skip";
   /** Stable gate reason; absent when the off path skips decision computation. */

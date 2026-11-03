@@ -1,8 +1,7 @@
 /** Ledger entries bind installed bytes and provenance; unreadable ledgers stop the store.
  * Current installs have unique payload directories; legacy installs use version directories. */
-import { readFile } from "node:fs/promises";
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
-import { isMissingPathError } from "../../lib/atomic-file.js";
+import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName } from "../catalog/types.js";
@@ -107,16 +106,16 @@ export class ContentLedger {
   private constructor(
     private readonly path: string,
     private readonly entries: Map<string, LedgerEntry>,
+    /** The file is pending review in the home content trust manifest: it lists nothing and is never rewritten. */
+    readonly pendingReview = false,
   ) {}
 
   static async open(path: string): Promise<ContentLedger> {
-    let text: string | null = null;
-    try {
-      text = await readFile(path, "utf8");
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-    }
-    const entries = text === null ? [] : parse(text, path);
+    // The ledger's digests vouch for installed packages, like a plugin install receipt: one verified buffer, and a ledger
+    // pending review installs nothing.
+    const input = await readAveHomeInput(path);
+    if (input.status === "untrusted") return new ContentLedger(path, new Map(), true);
+    const entries = input.status === "absent" ? [] : parse(input.bytes.toString("utf8"), path);
     return new ContentLedger(path, new Map(entries.map((entry) => [ledgerKey(entry.kind, entry.name), entry])));
   }
 
@@ -158,7 +157,13 @@ export class ContentLedger {
 }
 
 export function contentLedgerOrigins(ledgerPath: string): OriginReader {
-  return async () => (await ContentLedger.open(ledgerPath)).list()
+  return async () => (await openVouchingLedger(ledgerPath)).list()
     .filter((entry) => entry.origin.sourceId !== null && entry.origin.commit !== null)
     .map((entry) => ({ kind: entry.kind, name: entry.name, sourceId: entry.origin.sourceId!, commit: entry.origin.commit! }));
+}
+
+async function openVouchingLedger(ledgerPath: string): Promise<ContentLedger> {
+  const ledger = await ContentLedger.open(ledgerPath);
+  if (ledger.pendingReview) throw new Error("the installed content ledger is waiting for review");
+  return ledger;
 }

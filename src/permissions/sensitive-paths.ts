@@ -279,6 +279,21 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     kind: "file",
     why: "plugin auth-partition state (OAuth partition mapping)",
   },
+  // Home content trust inputs: a write Ave did not record makes the item pending review, so tools never touch them; Ave's own
+  // host tools (skill resources, memory) read and write them through the verified loaders.
+  // `config/.ave-trust-manifest.json` is covered by the `config` row. `runtime` has no row: see the runtime note in
+  // ave-home-configuration.test.ts (a deny there would land on the boundary's own Windows DACL).
+  { anchor: "ave-home", segments: ["mcp"], kind: "dir", why: "MCP server definitions and their environment (home content trust input)" },
+  { anchor: "ave-home", segments: ["governance"], kind: "dir", why: "MCP governance policy (home content trust input)" },
+  { anchor: "ave-home", segments: ["marketplaces"], kind: "dir", why: "marketplace sources, pins and snapshots (home content trust input)" },
+  { anchor: "ave-home", segments: ["plugins", "registry.json"], kind: "file", why: "installed extension registry (home content trust input)" },
+  { anchor: "ave-home", segments: ["skills"], kind: "dir", why: "user skills and their approvals (home content trust input)" },
+  { anchor: "ave-home", segments: ["agents"], kind: "dir", why: "user agent profiles (home content trust input)" },
+  { anchor: "ave-home", segments: ["commands"], kind: "dir", why: "user commands (home content trust input)" },
+  { anchor: "ave-home", segments: ["AGENTS.md"], kind: "file", why: "global agent instructions (home content trust input)" },
+  { anchor: "ave-home", segments: ["agents.custom.md"], kind: "file", why: "custom agent instructions (home content trust input)" },
+  { anchor: "ave-home", segments: ["user-preferences.md"], kind: "file", why: "user preferences document (home content trust input)" },
+  { anchor: "ave-home", segments: ["memories", "MEMORY.md"], kind: "file", why: "memory index (home content trust input)" },
 ]);
 
 // Host-tool glob projection of SENSITIVE_PATH_ENTRIES. Anchor-free (`**` prefix) for every anchor — see SensitiveAnchor for why the host guard deliberately ignores the anchor. `ave-home` rows keep the literal `.ave` segment to protect copied stores too. `isSensitivePath` also projects those rows onto the current `aveHome`, matching the sandbox floor. A `dir` row needs only the `/**` form: `policyMatchPaths` also tries `<path>/`, so `**\/.ssh/**` already matches the bare directory.

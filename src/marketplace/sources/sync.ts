@@ -3,9 +3,9 @@
 import { admitSnapshotPackages, validateCachedSnapshotText } from "../catalog/validate.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { isMissingPathError } from "../../lib/atomic-file.js";
+import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError, isMarketplaceError, scrubMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
@@ -17,7 +17,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import type { PackageKind } from "../catalog/types.js";
 import type { FolderFs } from "./folder-fs.js";
 import { FolderTree, type FolderCapture } from "./folder-tree.js";
-import { folderIdentityState, fsErrorCode, readSourceState, type FolderSource, type GitSource, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
+import { folderIdentityState, fsErrorCode, readSourceState, type FolderSource, type SourceDataUse, type GitSource, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
 import { pinnedArtifactSha256s, SnapshotBuilder, type SnapshotSubject, type SourceSnapshot } from "./snapshot.js";
 import { GitTree, rootNameOf } from "./source-tree.js";
 
@@ -231,14 +231,10 @@ export class SourceSyncer {
   }
 
   private async hasReusableSnapshot(id: string, commit: string): Promise<boolean> {
-    let text: string;
-    try {
-      text = await readFile(this.snapshotPath(id, commit), "utf8");
-    } catch (error) {
-      if (isMissingPathError(error)) return false;
-      throw error;
-    }
-    const validated = validateCachedSnapshotText(text);
+    // A snapshot the home content trust manifest has not approved is not reused: it is fetched again.
+    const input = await readAveHomeInput(this.snapshotPath(id, commit));
+    if (input.status !== "trusted") return false;
+    const validated = validateCachedSnapshotText(input.bytes.toString("utf8"));
     return validated.ok && validated.value.sourceId === id && validated.value.commit === commit;
   }
 
@@ -436,14 +432,10 @@ export class SourceSyncer {
 
   /** Retained install snapshots reconstruct missing consent fields; pruned commits return null. */
   async readRetainedSnapshot(id: string, commit: string): Promise<SourceSnapshot | null> {
-    let text: string;
-    try {
-      text = await readFile(this.snapshotPath(id, commit), "utf8");
-    } catch (error) {
-      if (isMissingPathError(error)) return null;
-      throw error;
-    }
-    const validated = validateCachedSnapshotText(text);
+    // Consent reconstruction uses approved data only; a snapshot pending review reads as pruned.
+    const input = await readAveHomeInput(this.snapshotPath(id, commit));
+    if (input.status !== "trusted") return null;
+    const validated = validateCachedSnapshotText(input.bytes.toString("utf8"));
     return validated.ok && validated.value.sourceId === id && validated.value.commit === commit ? validated.value : null;
   }
 
@@ -461,15 +453,22 @@ function repositoryDamaged(id: string, error: LocalRepositoryDamagedError): Mark
 }
 
 /** Boot reads pinned snapshots before syncer construction to enforce persisted revocations. */
-async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnapshot | null> {
-  const { pinnedCommit } = await readSourceState(root, id);
+async function readPinnedSnapshot(root: string, id: string, use: SourceDataUse = "trusted"): Promise<SourceSnapshot | null> {
+  const { pinnedCommit } = await readSourceState(root, id, process.platform, use);
   if (pinnedCommit === null) return null;
   const path = join(root, id, "snapshots", `${pinnedCommit}.json`);
   let text: string;
   try {
-    text = await readFile(path, "utf8");
+    const input = await readAveHomeInput(path);
+    if (input.status === "absent") return null;
+    if (input.status === "untrusted" && use === "trusted") {
+      throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `snapshot ${pinnedCommit}.json of source ${id} is waiting for review`, {
+        detail: { reason: "snapshot-unreadable", sourceId: id },
+      });
+    }
+    text = input.bytes.toString("utf8");
   } catch (error) {
-    if (isMissingPathError(error)) return null;
+    if (error instanceof MarketplaceError) throw error;
     throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `snapshot ${pinnedCommit}.json of source ${id} cannot be read (${fsErrorCode(error)})`, {
       cause: error,
       detail: { reason: "snapshot-unreadable", sourceId: id },
@@ -493,11 +492,12 @@ async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnaps
   return admitSnapshotPackages(parsed as SourceSnapshot);
 }
 
-/** Missing pinned snapshots throw rather than silently dropping revocations. */
+/** Missing pinned snapshots throw rather than silently dropping revocations. Revocations only withdraw, so data pending review
+ * still enforces them. */
 export async function readPinnedRevocations(root: string, id: string, appVersion: string): Promise<SourceSnapshot["revocations"]> {
-  const snapshot = await readPinnedSnapshot(root, id);
+  const snapshot = await readPinnedSnapshot(root, id, "restriction");
   if (snapshot) return effectiveRevocations(snapshot, appVersion);
-  const { pinnedCommit } = await readSourceState(root, id);
+  const { pinnedCommit } = await readSourceState(root, id, process.platform, "restriction");
   if (pinnedCommit !== null) throw new Error(`snapshot ${pinnedCommit}.json of ${id} is missing`);
   return [];
 }

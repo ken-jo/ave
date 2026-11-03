@@ -96,6 +96,18 @@ describe("sensitive paths — one table, two projections", () => {
     ["certs", join(FAKE_AVE_HOME, "certs", "ca.pem")],
     ["keys", join(FAKE_AVE_HOME, "keys", "sign.key")],
     ["legacy secrets file", join(FAKE_AVE_HOME, "ave-secrets.json")],
+    ["MCP servers", join(FAKE_AVE_HOME, "mcp", "servers.json")],
+    ["MCP governance", join(FAKE_AVE_HOME, "governance", "mcp-policy.json")],
+    ["marketplace state", join(FAKE_AVE_HOME, "marketplaces", "src", "state.json")],
+    ["extension registry", join(FAKE_AVE_HOME, "plugins", "registry.json")],
+    ["user skill", join(FAKE_AVE_HOME, "skills", "probe", "SKILL.md")],
+    ["user agent", join(FAKE_AVE_HOME, "agents", "probe.md")],
+    ["user command", join(FAKE_AVE_HOME, "commands", "probe.md")],
+    ["global instructions", join(FAKE_AVE_HOME, "AGENTS.md")],
+    ["custom instructions", join(FAKE_AVE_HOME, "agents.custom.md")],
+    ["user preferences", join(FAKE_AVE_HOME, "user-preferences.md")],
+    ["memory index", join(FAKE_AVE_HOME, "memories", "MEMORY.md")],
+    ["trust manifest", join(FAKE_AVE_HOME, "config", ".ave-trust-manifest.json")],
   ])("%s is secret to the host guard and to the sandbox floor", (_label, target) => {
     expect(hostDeniesAsSensitive(target, FAKE_AVE_HOME)).toBe(true);
     expect(sandboxDenies(target)).toBe(true);

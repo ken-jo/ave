@@ -1,9 +1,10 @@
 // Keep durable glob rules separate from exact decision memory. Identity binds tool/source/trust/cwd and canonical args or an opted-in target; changed target-wide args require re-review except explicit per-tool authority, and exact denies block both reviewer and foreground skip paths (docs/research/sandbox-isolation.md).
 // The live gate controls persistence: completed HIGH and mandatory one-shot allows cannot persist, exact denies may. Session decisions stay in memory, persistent decisions use private namespace files and atomic exclusive staging/fsync/rename writes; legacy session rows retain process lifetime.
-import { mkdir, readFile, stat, chmod } from "node:fs/promises";
+import { mkdir, stat, chmod } from "node:fs/promises";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "../main/storage/feature-namespace.js";
-import { aveHome, AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../shared/ave-home.js";
+import { aveHome } from "../shared/ave-home.js";
+import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { matchesMcpToolApprovalMemory, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import type {
@@ -13,7 +14,6 @@ import type {
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
@@ -228,15 +228,10 @@ export class UserApprovalStoreCorruptError extends Error {
 
 async function readApprovalsFile(): Promise<ApprovalsFile> {
   const path = userApprovalFilePath();
-  // Saved approvals grant authority, so a refused home's unverified file reads as absent; no field of it restricts anything.
-  if (isInRefusedAveHome(path)) return { approvals: {} };
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (err) {
-    if (isMissingPathError(err)) return { approvals: {} };
-    throw err;
-  }
+  // Saved approvals grant authority, so an unverified file (a refused home's, or one pending review) reads as absent; no field of it restricts anything.
+  const input = await readAveHomeInput(path);
+  if (input.status !== "trusted") return { approvals: {} };
+  const raw = input.bytes.toString("utf8");
   // An empty file holds no data (e.g. a lock placeholder); nothing is lost.
   if (!raw.trim()) return { approvals: {} };
   let parsed: unknown;
@@ -278,7 +273,7 @@ async function mutatePersistentApprovals(
 ): Promise<void> {
   // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
   const path = userApprovalFilePath();
-  if (isInRefusedAveHome(path)) throw new AveHomeConfigurationRefusedWriteError(path);
+  assertAveHomeInputWritable(path);
   // Probe before the write queue; inside it only the synchronous fence in atomicWrite guards the commit.
   await refreshApprovalPersistence(authority);
   return persistentWrites(async () => {

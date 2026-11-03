@@ -1,6 +1,5 @@
 // Shell grants bind canonical destination, approved network class and origin; spelling/class changes cannot widen them and terminal grants never cover agent shells. Invocation/session/tab grants stay in memory (session grants end with their conversation); project/always persist until revoked. Terminal once means one connection, and tab grants end with the shell.
 // Never consult these grants for workers or add them to runtime allowedDomains. Canonicalize project roots and strictly validate persisted shape; corrupt stores raise an error and the ask denies instead of silently dropping data. The v1 file's `workspace` scope is migrated to `project` explicitly on read (owner 2026-10-25, five-choice network card); no other old value is accepted.
-import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { canonicalizeHost } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
 import {
@@ -13,8 +12,7 @@ import {
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import { BlockList, isIP } from "node:net";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
-import { isMissingPathError } from "../lib/atomic-file.js";
-import { AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../shared/ave-home.js";
+import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { projectRuleRoot } from "./rules/project-rule-files.js";
 import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
@@ -479,18 +477,14 @@ export class EgressGrantStore {
 
   private async loadPersistent(): Promise<readonly PersistentEgressGrant[]> {
     if (this.persistent !== undefined) return this.persistent;
-    // Remembered hosts grant network authority, so a refused home's unverified file reads as absent (R2); none of it restricts.
-    if (isInRefusedAveHome(this.filePath)) return [];
-    let raw: string;
-    try {
-      raw = await readFile(this.filePath, "utf8");
-    } catch (error) {
-      if (isMissingPathError(error)) {
-        this.persistent = [];
-        return this.persistent;
-      }
-      throw error;
+    // Remembered hosts grant network authority, so an unverified file (a refused home's, or one pending review) reads as absent (R2); none of it restricts.
+    const input = await readAveHomeInput(this.filePath);
+    if (input.status === "untrusted") return [];
+    if (input.status === "absent") {
+      this.persistent = [];
+      return this.persistent;
     }
+    const raw = input.bytes.toString("utf8");
     const parsed = parseGrantFile(this.filePath, raw);
     for (const dropped of parsed.droppedLegacy) {
       const key = `${dropped.workspaceRoot}\n${dropped.host}\n${dropped.port}`;
@@ -504,7 +498,8 @@ export class EgressGrantStore {
 
   private mutatePersistent(mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[]): Promise<void> {
     // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
-    if (isInRefusedAveHome(this.filePath)) return Promise.reject(new AveHomeConfigurationRefusedWriteError(this.filePath));
+    try { assertAveHomeInputWritable(this.filePath); }
+    catch (error) { return Promise.reject(error); }
     return this.writes(async () => {
       // Re-read under the queue so a second window's write is not lost.
       this.persistent = undefined;

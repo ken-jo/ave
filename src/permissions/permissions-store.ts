@@ -1,13 +1,13 @@
 
 
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { aveHome, AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../shared/ave-home.js";
 import type { PermissionRule } from "./permission-manager.js";
 import { DEFAULT_EXECUTION_MODE, type ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
-import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf, isMissingPathError } from "../lib/atomic-file.js";
-import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, readUnverifiedStoreText, unverifiedDenyRules, validateRuleList } from "./rules/rule-files.js";
+import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf } from "../lib/atomic-file.js";
+import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, unverifiedDenyRules, validateRuleList } from "./rules/rule-files.js";
+import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { withShellPolicyMutation } from "./shell-policy-handoff.js";
 
 import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
@@ -44,15 +44,12 @@ async function withPermissionsLock<T>(
 
 // Missing or empty lock placeholders return null; corrupt data throws so read-before-write cannot erase saved rules.
 // In a home refused at boot the file is unverified, so it reads as absent apart from its deny rules (R2 restriction overlay).
+// The same holds while the file is pending review in the home content trust manifest: it was changed outside Ave or cannot be vouched for.
 export async function readPermissionsFile(filePath: string): Promise<PermissionsFile | null> {
-  if (isInRefusedAveHome(filePath)) return readUnverifiedPermissionsFile(filePath);
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf-8");
-  } catch (err: unknown) {
-    if (isMissingPathError(err)) return null;
-    throw err;
-  }
+  const input = await readAveHomeInput(filePath);
+  if (input.status === "untrusted") return readUnverifiedPermissionsFile(input.bytes);
+  if (input.status === "absent") return null;
+  const raw = input.bytes.toString("utf-8");
   if (!raw.trim()) return null;
   let parsed: unknown;
   try {
@@ -71,12 +68,10 @@ export async function readPermissionsFile(filePath: string): Promise<Permissions
 
 // The overlay view of an unverified file: its deny rules and nothing else. The mode is the default, and bytes that do not
 // parse read as absent instead of a corrupt store, so planted content can neither widen authority nor stop the boot.
-async function readUnverifiedPermissionsFile(filePath: string): Promise<PermissionsFile | null> {
-  const raw = readUnverifiedStoreText(filePath);
-  if (raw === undefined) return null;
+function readUnverifiedPermissionsFile(bytes: Buffer): PermissionsFile | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(bytes.toString("utf-8"));
   } catch {
     return null;
   }

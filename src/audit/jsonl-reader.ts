@@ -55,6 +55,11 @@ export class JsonlRecordFile<T> {
       this.options.onReadFailure(err);
       return [];
     }
+    return this.parse(raw);
+  }
+
+  /** The accepted records of `raw`, text a caller already read (and, for a trusted store, verified). */
+  parse(raw: string): T[] {
     const records: T[] = [];
     for (const line of parseJsonlLines(raw)) {
       let parsed: unknown;

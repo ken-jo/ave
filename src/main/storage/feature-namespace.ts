@@ -5,6 +5,7 @@ import { join, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { FileHandle } from "node:fs/promises";
 import { platform } from "node:process";
 import { aveHome, AVE_HOME_PROTECTED_DIRECTORIES } from "../../shared/ave-home.js";
+import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { admitWindowsReparse, pinWindowsPaths } from "../../shared/windows-path-facts.js";
 import { createLogger } from "../../lib/logger.js";
 import {
@@ -13,7 +14,7 @@ import {
   transientFsLockDelayMs,
 } from "../../lib/transient-fs-lock-retry.js";
 import { sleep } from "../../shared/abortable-deadline.js";
-import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
+import { guardAtomicWrite, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
 
@@ -85,8 +86,10 @@ async function createExclusiveChild(parent: string, name: string): Promise<void>
  * "read-never-throws" contract every namespace store relied on. Callers that need a security boundary must layer their own validation on top. */
 export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   try {
-    const raw = await fs.readFile(filePath, "utf-8");
-    return JSON.parse(raw) as T;
+    // A covered input pending review in the home content trust manifest reads as absent.
+    const input = await readAveHomeInput(filePath);
+    if (input.status !== "trusted") return fallback;
+    return JSON.parse(input.bytes.toString("utf-8")) as T;
   } catch {
     return fallback;
   }
@@ -99,13 +102,11 @@ export async function readJsonFileOrEmpty<T>(
   empty: () => T,
   hydrate: (parsed: unknown) => T,
 ): Promise<T> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(filePath, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return empty();
-    throw err;
-  }
+  // One verified buffer: a covered input pending review in the home content trust manifest reads as empty and is left in place
+  // (never quarantined), and a later write over it is refused.
+  const input = await readAveHomeInput(filePath);
+  if (input.status !== "trusted") return empty();
+  const raw = input.bytes.toString("utf-8");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -160,6 +161,10 @@ export async function writeFileAtomicAtPath(
   filePath: string,
   body: string | Uint8Array,
 ): Promise<void> {
+  return guardAtomicWrite(filePath, body, () => writeFileAtomicAtPathUnguarded(filePath, body));
+}
+
+async function writeFileAtomicAtPathUnguarded(filePath: string, body: string | Uint8Array): Promise<void> {
   const dir = dirname(filePath);
   await ensureDir(dir);
   const tmp = `${filePath}.${randomBytes(16).toString("hex")}.tmp`;

@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
 import { dirname } from "node:path";
 import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
 
@@ -70,8 +71,11 @@ export class PluginContributionTrustStore {
     private readonly path?: string,
   ) {
     if (!path) return;
+    // One verified buffer: approvals pending review in the home content trust manifest grant nothing, and a write over them is refused.
+    const input = readAveHomeInputSync(path);
+    if (input.status !== "trusted") return;
     try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as TrustFileV2 | TrustFileV3;
+      const parsed = JSON.parse(input.bytes.toString("utf8")) as TrustFileV2 | TrustFileV3;
       if ((parsed.version !== 2 && parsed.version !== 3) || parsed.kind !== kind || !Array.isArray(parsed.approvals)) {
         throw new Error(`invalid ${kind} plugin contribution trust file`);
       }

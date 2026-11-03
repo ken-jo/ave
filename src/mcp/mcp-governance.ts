@@ -2,7 +2,7 @@
 
 
 
-import { readFileSync, existsSync } from "node:fs";
+import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
 import { join } from "node:path";
 import type {
   McpCapability,
@@ -83,12 +83,14 @@ export class McpGovernance {
 
 
   private loadPolicy(): McpGovernancePolicy {
-    if (!existsSync(this.policyPath)) {
-      log.info("Policy file missing — applying deny-by-default");
+    // A policy pending review in the home content trust manifest reads as missing, which is already deny-by-default.
+    const input = readAveHomeInputSync(this.policyPath);
+    if (input.status !== "trusted") {
+      log.info(input.status === "absent" ? "Policy file missing — applying deny-by-default" : "Policy file is waiting for review — applying deny-by-default");
       return DEFAULT_POLICY;
     }
     try {
-      const raw = readFileSync(this.policyPath, "utf-8");
+      const raw = input.bytes.toString("utf-8");
       const parsed = JSON.parse(raw) as McpGovernancePolicy;
 
 

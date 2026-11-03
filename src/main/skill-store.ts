@@ -6,6 +6,7 @@ import { resolve, join, relative, isAbsolute, dirname, basename, sep } from "nod
 import { parse as parseYaml } from "yaml";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
+import { readAveHomeEntrySync } from "../shared/ave-home-trust.js";
 import { AGENT_PLUGIN_SKILL_SELECTOR_PATTERN, parseAgentPluginSkillSelector, PLUGIN_SKILL_SELECTOR_PATTERN } from "../shared/plugin-skill-selector.js";
 import type { InstalledAgentPlugin } from "../marketplace/content/service.js";
 import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
@@ -519,11 +520,11 @@ export class SkillStore {
       canonicalDir = resolve(this.userDir);
     }
     const candidates = [
-      join(this.userDir, name, "SKILL.md"),
-      join(this.userDir, `${name}.md`),
+      { filePath: join(this.userDir, name, "SKILL.md"), entryName: name },
+      { filePath: join(this.userDir, `${name}.md`), entryName: `${name}.md` },
     ];
     const loaded: LoadedSkill[] = [];
-    for (const filePath of candidates) {
+    for (const { filePath, entryName } of candidates) {
       let canonicalFile: string;
       try {
         canonicalFile = await realpath(filePath);
@@ -538,8 +539,10 @@ export class SkillStore {
         log.warn(`skill load: rejected traversal — ${filePath} -> ${canonicalFile} escapes ${canonicalDir}`);
         continue;
       }
+      const raw = this.userSkillText(entryName, filePath);
+      if (raw === undefined) continue;
       try {
-        loaded.push(await this.loadFile(canonicalFile, name));
+        loaded.push(await this.loadFile(canonicalFile, name, raw));
       } catch (err) {
         log.warn(`skill load failed for ${filePath}: %s`, (err as Error).message);
       }
@@ -614,6 +617,13 @@ export class SkillStore {
     }
     if (!(await this.isBundleRoot(canonicalDir, basename(skill.filePath)))) {
       throw new Error("flat skills have no bundled resources");
+    }
+    // A user skill's resources belong to its item in the home content trust manifest: none is read while it is pending review.
+    let userRoot: string;
+    try { userRoot = await realpath(this.userDir); } catch { userRoot = resolve(this.userDir); }
+    const userRel = relative(userRoot, canonicalDir);
+    if (userRel !== "" && !escapesRoot(userRel) && readAveHomeEntrySync(join(this.userDir, userRel.split(sep)[0]!)).status !== "trusted") {
+      throw new Error("this skill is waiting for review in Settings > Permissions");
     }
     let canonicalFile: string;
     try {
@@ -816,8 +826,13 @@ export class SkillStore {
         );
         continue;
       }
+      let raw: string | undefined;
+      if (dir === this.userDir) {
+        raw = this.userSkillText(entry.name, filePath);
+        if (raw === undefined) continue;
+      }
       try {
-        skills.push(await this.loadFile(canonicalFile, baseName));
+        skills.push(await this.loadFile(canonicalFile, baseName, raw));
       } catch (err) {
         log.warn(
           `skill load failed for ${filePath}: %s`,
@@ -828,8 +843,28 @@ export class SkillStore {
     return skills;
   }
 
-  private async loadFile(canonicalFile: string, baseName: string): Promise<LoadedSkill> {
-    const raw = await readFile(canonicalFile, "utf-8");
+  /**
+   * The text of a user skill's SKILL.md or flat file, from the one verified read of its item (the first-level entry of the skills
+   * root) in the home content trust manifest; undefined when the item is pending review, so it is neither listed nor loaded.
+   */
+  private userSkillText(entryName: string, filePath: string): string | undefined {
+    const item = join(this.userDir, entryName);
+    let entry: ReturnType<typeof readAveHomeEntrySync>;
+    try { entry = readAveHomeEntrySync(item); }
+    catch (err) {
+      log.warn(`skill ${entryName} unreadable: %s`, (err as Error).message);
+      return undefined;
+    }
+    if (entry.status !== "trusted") {
+      if (entry.status === "untrusted") log.warn(`skill ${entryName} is waiting for review and is not loaded`);
+      return undefined;
+    }
+    const bytes = entry.kind === "file" ? entry.bytes : entry.files.get(relative(item, filePath).split(sep).join("/"));
+    return bytes?.toString("utf-8");
+  }
+
+  private async loadFile(canonicalFile: string, baseName: string, verifiedText?: string): Promise<LoadedSkill> {
+    const raw = verifiedText ?? await readFile(canonicalFile, "utf-8");
     const { fm, body } = parseFrontmatter(raw);
     const name = resolveSkillName(baseName, fm);
     const trimmedBody = body.trim();
@@ -977,8 +1012,13 @@ export class SkillStore {
         continue;
       }
 
+      let raw: string | undefined;
+      if (dir === this.userDir) {
+        raw = this.userSkillText(entry.name, filePath);
+        if (raw === undefined) continue;
+      }
       try {
-        const fm = readFrontmatterSync(canonicalFile);
+        const fm = raw === undefined ? readFrontmatterSync(canonicalFile) : frontmatterOf(raw.slice(0, SKILL_FRONTMATTER_READ_BYTES));
         const name = resolveSkillName(baseName, fm);
         skills.push({
           name,
@@ -1022,13 +1062,16 @@ function readFrontmatterSync(filePath: string): SkillFrontmatter {
   const fd = openSync(filePath, "r");
   try {
     const bytes = readSync(fd, buf, 0, buf.length, 0);
-    const raw = buf.toString("utf-8", 0, bytes);
-    const match = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/);
-    if (!match) return { name: "" };
-    return parseFrontmatter(`---\n${match[1]}\n---\n`).fm;
+    return frontmatterOf(buf.toString("utf-8", 0, bytes));
   } finally {
     closeSync(fd);
   }
+}
+
+function frontmatterOf(raw: string): SkillFrontmatter {
+  const match = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/);
+  if (!match) return { name: "" };
+  return parseFrontmatter(`---\n${match[1]}\n---\n`).fm;
 }
 
 function resolveSkillName(baseName: string, fm: SkillFrontmatter): string {

@@ -464,22 +464,20 @@ describe("PythonRuntimeBootstrapper", () => {
     mkdirSync(indexerDir, { recursive: true });
     const otherManifest = path.join(otherDir, "plugin.json");
     const indexerManifest = path.join(indexerDir, "plugin.json");
-    writeFileSync(registryPath, "{}", "utf-8");
     writeFileSync(otherManifest, "{}", "utf-8");
     writeFileSync(indexerManifest, "{}", "utf-8");
     const otherLock = path.join(otherDir, "python-requirements.lock");
     const indexerLock = path.join(indexerDir, "python-requirements.lock");
+    // The registry is read through the verified loader (one synchronous no-follow buffer), so it lives on disk.
+    writeFileSync(registryPath, JSON.stringify({
+      plugins: [
+        { id: "other-python", manifestPath: otherManifest, enabled: true },
+        { id: "local-indexer", manifestPath: indexerManifest, enabled: true },
+      ],
+    }), "utf-8");
 
     mockedReadFile.mockImplementation(async (filePath) => {
       const p = path.resolve(String(filePath));
-      if (p === path.resolve(registryPath)) {
-        return JSON.stringify({
-          plugins: [
-            { id: "other-python", manifestPath: otherManifest, enabled: true },
-            { id: "local-indexer", manifestPath: indexerManifest, enabled: true },
-          ],
-        });
-      }
       if (p === path.resolve(otherManifest)) {
         return JSON.stringify({
           id: "other-python",

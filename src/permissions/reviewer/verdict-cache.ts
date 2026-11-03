@@ -5,6 +5,7 @@ import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/type
 import { JsonlRecordFile } from "../../audit/jsonl-reader.js";
 import { createLogger } from "../../lib/logger.js";
 import { aveHome, isInRefusedAveHome } from "../../shared/ave-home.js";
+import { readAveHomeInputSync } from "../../shared/ave-home-trust.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 const log = createLogger("reviewer-cache");
@@ -165,13 +166,19 @@ export class VerdictCache {
   // Ensure the in-memory mirror is populated. Reads the JSONL file once per cache instance (subsequent calls are no-op when entries !== null). Tests call resetForTests to force a re-read.
   private ensureLoaded(): void {
     if (this.entries !== null) return;
-    // Cached verdicts can approve in automatic review, so a refused home's unverified file reads as absent (R2).
-    this.entries = this.unverified() ? [] : this.file.loadSync();
+    // Cached verdicts can approve in automatic review, so an unverified file (a refused home's, or one pending review) reads as
+    // absent (R2), and the cache then lives in memory only for the run: rewriting the file from the absent view would erase it.
+    let input;
+    try { input = readAveHomeInputSync(this.filePath); }
+    catch (err) { log.warn(`failed to read cache: %s`, (err as Error).message); input = { status: "absent" as const }; }
+    this.memoryOnly = input.status === "untrusted";
+    this.entries = input.status === "trusted" ? this.file.parse(input.bytes.toString("utf-8")) : [];
   }
 
-  // In a home refused at boot the cache lives in memory only: rewriting the file from the absent view would erase it.
+  private memoryOnly = false;
+
   private unverified(): boolean {
-    return isInRefusedAveHome(this.filePath);
+    return this.memoryOnly || isInRefusedAveHome(this.filePath);
   }
 
   // Look up a verdict. Returns: - hit:true + verdict — entry matches key + invalidationKey + not expired - hit:false miss-stale — entry found but invalidationKey doesn't match - hit:false miss-expired — entry found but expired - hit:false miss-not-found
@@ -222,13 +229,10 @@ export class VerdictCache {
       invalidationKey: computeInvalidationKey(ctx),
     };
     this.entries!.push(entry);
-    const pruned = this.pruneExpiredAndCap(Date.now());
+    this.pruneExpiredAndCap(Date.now());
     if (this.unverified()) return;
-    if (pruned) {
-      await this.file.rewrite(this.entries!);
-    } else {
-      await this.file.append(entry);
-    }
+    // A whole-file rewrite, never an append: the trust manifest records the hash of exactly the bytes written.
+    await this.file.rewrite(this.entries!);
   }
 
   // Walk cache file and drop entries whose invalidationKey doesn't match the current context. Called when settings change. Returns the count of dropped entries (for audit/UX).

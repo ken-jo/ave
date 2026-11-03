@@ -24,6 +24,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 import { getAveHomePrivacyFailure, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
+import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 
 const log = createLogger("ave");
 
@@ -70,10 +71,13 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
     const features = settingsService.get("features");
     const shellExplicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
     const workerExplicitEnv = process.env["AVE_PLUGIN_WORKER_CONFINEMENT"] === "1";
-    const shellRequested = (features?.osToolSandbox ?? false) || shellExplicitEnv;
-    const workerRequested = (features?.pluginWorkerConfinement ?? false) || workerExplicitEnv;
+    // While any Ave folder input is pending review, both scopes are requested whatever the settings say; the verdict is the
+    // boot's own, never a settings value. Like a settings request, a missing backend degrades visibly instead of aborting.
+    const homeTrustPending = isAveHomeTrustPendingAtBoot();
+    const shellRequested = (features?.osToolSandbox ?? false) || shellExplicitEnv || homeTrustPending;
+    const workerRequested = (features?.pluginWorkerConfinement ?? false) || workerExplicitEnv || homeTrustPending;
     const explicitEnv = shellExplicitEnv || workerExplicitEnv;
-    const settingOn = (features?.osToolSandbox ?? false) || (features?.pluginWorkerConfinement ?? false);
+    const settingOn = (features?.osToolSandbox ?? false) || (features?.pluginWorkerConfinement ?? false) || homeTrustPending;
     const sandboxOptIn = shellRequested || workerRequested;
     // Freeze activation intent per scope at boot; mutable UI settings must not alter worker confinement or hide requested-but-degraded shell plans.
     setShellSandboxRequestedAtBoot(shellRequested);
@@ -94,8 +98,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
     }
 
     // Emit one terminal activation event; explicit environment signals take precedence over settings, then off.
-    const sandboxGateOnSignal: "explicit-env" | "default-settings" | "off" =
-      explicitEnv ? "explicit-env" : settingOn ? "default-settings" : "off";
+    const sandboxGateOnSignal: "explicit-env" | "default-settings" | "home-trust-pending" | "off" =
+      explicitEnv ? "explicit-env" : homeTrustPending ? "home-trust-pending" : settingOn ? "default-settings" : "off";
 
     /** Publish one terminal outcome to audit and renderer together so diagnostics cannot contradict the user-visible state. */
     const recordGate = (

@@ -1,5 +1,5 @@
 // Store project rules under app home, never in the repository; identity uses the eligible repository root or cwd canonical realpath and only rules-language specifiers are persisted.
-import { readFile, mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -9,8 +9,8 @@ import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
 import { caseFoldForMatch } from "../sensitive-paths.js";
 import type { ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, readUnverifiedStoreText, unverifiedDenyRules, validateRuleList } from "./rule-files.js";
-import { AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../../shared/ave-home.js";
+import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, unverifiedDenyRules, validateRuleList } from "./rule-files.js";
+import { assertAveHomeInputWritable, readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 
 import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
@@ -138,15 +138,12 @@ export function projectRulesLocation(baseDir: string, projectCwd: string): Proje
 
 // In a home refused at boot the file is unverified: it reads as absent apart from the deny rules it holds for its own project
 // (R2 restriction overlay), and bytes that do not parse read as absent rather than corrupt.
+// The same holds for a file pending review in the home content trust manifest.
 export async function readProjectRulesFile(location: ProjectRulesLocation): Promise<ProjectRulesFile | null> {
-  if (isInRefusedAveHome(location.filePath)) return readUnverifiedProjectRulesFile(location);
-  let raw: string;
-  try {
-    raw = await readFile(location.filePath, "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) return null;
-    throw error;
-  }
+  const input = await readAveHomeInput(location.filePath);
+  if (input.status === "untrusted") return readUnverifiedProjectRulesFile(location, input.bytes);
+  if (input.status === "absent") return null;
+  const raw = input.bytes.toString("utf8");
   // The lock helper creates an empty placeholder before the first write.
   if (!raw.trim()) return null;
   let parsed: unknown;
@@ -172,12 +169,10 @@ export async function readProjectRulesFile(location: ProjectRulesLocation): Prom
   };
 }
 
-async function readUnverifiedProjectRulesFile(location: ProjectRulesLocation): Promise<ProjectRulesFile | null> {
-  const raw = readUnverifiedStoreText(location.filePath);
-  if (raw === undefined) return null;
+function readUnverifiedProjectRulesFile(location: ProjectRulesLocation, bytes: Buffer): ProjectRulesFile | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(bytes.toString("utf8"));
   } catch {
     return null;
   }
@@ -194,7 +189,7 @@ export async function updateProjectRulesFile(
   authority?: ApprovalPersistenceGuard,
 ): Promise<ProjectRulesFile> {
   // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
-  if (isInRefusedAveHome(location.filePath)) throw new AveHomeConfigurationRefusedWriteError(location.filePath);
+  assertAveHomeInputWritable(location.filePath);
   // Probe before the global policy queue and cross-process lock; inside them only the synchronous fence below guards the commit.
   await refreshApprovalPersistence(authority);
   return withShellPolicyMutation(async () => {
@@ -255,16 +250,18 @@ export async function listStoredProjectRules(baseDir: string): Promise<{
   }
   const files: StoredProjectRulesFile[] = [];
   const errors: ScopedPermissionRuleError[] = [];
-  // A refused home's files read only as their deny rules; unparseable ones are absent, not listing errors.
-  const unverified = isInRefusedAveHome(directory);
   for (const name of names.sort()) {
     if (!name.endsWith(".json")) continue;
     const filePath = resolve(directory, name);
     try {
       if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new PermissionRulesFileCorruptError(filePath, "invalid file identity");
       const identity = name.slice(0, -".json".length);
-      const raw = unverified ? readUnverifiedStoreText(filePath) : await readFile(filePath, "utf8");
-      if (raw === undefined || !raw.trim()) continue;
+      // An unverified file (a refused home's, or one pending review) reads only as its deny rules; unparseable ones are absent, not listing errors.
+      const input = await readAveHomeInput(filePath);
+      if (input.status === "absent") continue;
+      const unverified = input.status === "untrusted";
+      const raw = input.bytes.toString("utf8");
+      if (!raw.trim()) continue;
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch (error) {
         if (unverified) continue;

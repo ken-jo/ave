@@ -2,9 +2,9 @@
 
 
 
-import { readFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import type {
   McpAuthErrorCode,
   McpAuthStatus,
@@ -334,11 +334,15 @@ export class McpManager {
   /** Only a parsed primary config authorizes credential cleanup; fallback or missing data does not. */
   private async loadConfigFile(): Promise<{ servers: McpServerConfig[]; loaded: boolean; primaryInvalid: boolean }> {
     const bakPath = `${this.configPath}.bak`;
-    // Read legacy backups without creating new secret-bearing backups on save.
-    const candidatePaths = [
-      ...(existsSync(this.configPath) ? [this.configPath] : []),
-      ...(existsSync(bakPath) ? [bakPath] : []),
-    ];
+    // Read legacy backups without creating new secret-bearing backups on save. Each candidate is one verified buffer: a file
+    // pending review in the home content trust manifest reads as absent, so its servers neither connect nor survive a rewrite.
+    const candidates = new Map<string, string>();
+    for (const path of [this.configPath, bakPath]) {
+      const input = await readAveHomeInput(path);
+      if (input.status === "trusted") candidates.set(path, input.bytes.toString("utf-8"));
+      else if (input.status === "untrusted") log.warn("MCP server config is waiting for review and is not loaded: %s", path);
+    }
+    const candidatePaths = [...candidates.keys()];
 
     if (candidatePaths.length === 0) {
       log.info("MCP server config file missing: %s", this.configPath);
@@ -349,7 +353,7 @@ export class McpManager {
     let primaryInvalid = false;
     for (const path of candidatePaths) {
       try {
-        const raw = await readFile(path, "utf-8");
+        const raw = candidates.get(path)!;
         if (!raw.trim()) {
           if (path === candidatePaths[candidatePaths.length - 1]) {
             return { servers: [], loaded: false, primaryInvalid };
@@ -381,6 +385,8 @@ export class McpManager {
 
   /** Existing unreadable configuration blocks writes to preserve user contents. */
   private async loadConfigForWrite(): Promise<McpServerConfig[]> {
+    // A primary pending review is never rewritten from its absent view.
+    assertAveHomeInputWritable(this.configPath);
     const { servers, primaryInvalid } = await this.loadConfigFile();
     if (primaryInvalid) {
       throw new McpConfigFileInvalidError(`[mcp-manager] ${t("be_mcpManager.configFileInvalid", { path: this.configPath })}`);

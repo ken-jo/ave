@@ -196,7 +196,7 @@ export interface SandboxBootOutcome {
   readonly action: SandboxGateAction;
   readonly reason: SandboxGateReason;
   /** Which on-signal drove the gate: the env override, the setting, or neither. */
-  readonly onSignal: "explicit-env" | "default-settings" | "off";
+  readonly onSignal: "explicit-env" | "default-settings" | "home-trust-pending" | "off";
   /** Why the sandbox could not activate, verbatim from the dependency check; these carry the install command the user has to run. Empty when the gate did not fail on dependencies. */
   readonly dependencyErrors: readonly string[];
   /** The same failure as stable codes, classified once at the gate. Non-empty exactly when `action` is `degrade` or `abort`. */

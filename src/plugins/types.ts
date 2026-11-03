@@ -51,4 +51,6 @@ export type PluginRegistryTrust = Pick<PluginRegistryEntry, "installSource" | "m
 export interface PluginRegistry {
   version: number;
   plugins: PluginRegistryEntry[];
+  /** The file is pending review in the home content trust manifest: it reads as empty and vouches for nothing. Never written. */
+  pendingReview?: true;
 }

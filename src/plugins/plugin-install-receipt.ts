@@ -1,4 +1,5 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
+import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { PLUGIN_RUNTIME_DIR_NAMES } from "./plugin-storage-layout.js";
@@ -146,9 +147,14 @@ export function installReceiptPath(cacheRoot: string, pluginId: string): string 
   return resolve(cacheRoot, pluginId, "install-receipt.json");
 }
 
+/**
+ * `verified` holds the bytes of the verified source artifact by receipt path. A tree install hashes those in-memory bytes, never a
+ * re-read of what it wrote, so a file swapped after extraction fails the receipt check at activation.
+ */
 export async function hashReceiptFiles(
   pluginRoot: string,
   files: string[],
+  verified?: ReadonlyMap<string, Buffer>,
 ): Promise<InstallReceiptFile[]> {
   const unique = [...new Set(files.map(normalizeReceiptPath).filter(Boolean))].sort();
   const out: InstallReceiptFile[] = [];
@@ -157,7 +163,7 @@ export async function hashReceiptFiles(
     if (!isContained(pluginRoot, absPath)) {
       throw new Error(`receipt file escapes plugin root: ${relPath}`);
     }
-    const bytes = await readFile(absPath);
+    const bytes = verified?.get(relPath) ?? await readFile(absPath);
     out.push({
       path: relPath,
       sha256: sha256Hex(bytes),
@@ -189,6 +195,7 @@ export async function buildInstallReceipt(
     signerKeyId: string | null;
     admission?: PluginAdmissionRecord | null;
     files: string[];
+    verifiedPayload?: ReadonlyMap<string, Buffer>;
     installedAt?: string;
     reviewedAppVersion?: string;
   },
@@ -203,7 +210,7 @@ export async function buildInstallReceipt(
     admission: input.admission ?? null,
     installedAt: input.installedAt ?? new Date().toISOString(),
     ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
-    files: await hashReceiptFiles(pluginRoot, input.files),
+    files: await hashReceiptFiles(pluginRoot, input.files, input.verifiedPayload),
   };
   return { receipt, raw: serializeInstallReceipt(receipt) };
 }
@@ -216,6 +223,7 @@ export async function buildGitInstallReceipt(
     artifactSha256: string;
     git: GitInstallRecord;
     files: string[];
+    verifiedPayload?: ReadonlyMap<string, Buffer>;
     installedAt?: string;
     reviewedAppVersion?: string;
   },
@@ -234,7 +242,7 @@ export async function buildGitInstallReceipt(
     git: input.git,
     installedAt: input.installedAt ?? new Date().toISOString(),
     ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
-    files: await hashReceiptFiles(pluginRoot, input.files),
+    files: await hashReceiptFiles(pluginRoot, input.files, input.verifiedPayload),
   };
   return { receipt, raw: serializeInstallReceipt(receipt) };
 }
@@ -246,6 +254,7 @@ export async function buildFolderInstallReceipt(
     version: string;
     folder: FolderInstallRecord;
     files: string[];
+    verifiedPayload?: ReadonlyMap<string, Buffer>;
     installedAt?: string;
     reviewedAppVersion?: string;
   },
@@ -263,7 +272,7 @@ export async function buildFolderInstallReceipt(
     folder: input.folder,
     installedAt: input.installedAt ?? new Date().toISOString(),
     ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
-    files: await hashReceiptFiles(pluginRoot, input.files),
+    files: await hashReceiptFiles(pluginRoot, input.files, input.verifiedPayload),
   };
   return { receipt, raw: serializeInstallReceipt(receipt) };
 }
@@ -368,6 +377,23 @@ async function writeInstallReceiptContent(
   }
 }
 
+/** A receipt pending review in the home content trust manifest: the plugin it vouches for is not activated. */
+export class InstallReceiptPendingReviewError extends Error {
+  constructor(readonly pluginId: string) {
+    super(`install receipt of ${pluginId} was changed outside Ave or cannot be vouched for; review it in Settings > Permissions`);
+    this.name = "InstallReceiptPendingReviewError";
+  }
+}
+
+/** The exact receipt text activation binds to: one verified buffer. Missing throws ENOENT; a receipt pending review throws. */
+export async function readInstallReceiptText(cacheRoot: string, pluginId: string): Promise<string> {
+  const path = installReceiptPath(cacheRoot, pluginId);
+  const input = await readAveHomeInput(path);
+  if (input.status === "absent") throw Object.assign(new Error(`ENOENT: install receipt missing, open '${path}'`), { code: "ENOENT" });
+  if (input.status === "untrusted") throw new InstallReceiptPendingReviewError(pluginId);
+  return input.bytes.toString("utf-8");
+}
+
 export async function verifyInstallReceipt(
   cacheRoot: string,
   pluginId: string,
@@ -375,8 +401,9 @@ export async function verifyInstallReceipt(
 ): Promise<{ ok: true; receipt: PluginInstallReceipt } | { ok: false; reason: string }> {
   let raw: string;
   try {
-    raw = await readFile(installReceiptPath(cacheRoot, pluginId), "utf-8");
+    raw = await readInstallReceiptText(cacheRoot, pluginId);
   } catch (err) {
+    if (err instanceof InstallReceiptPendingReviewError) return { ok: false, reason: err.message };
     return { ok: false, reason: `install receipt missing or unreadable: ${(err as Error).message}` };
   }
   return verifyInstallReceiptRaw(raw, pluginId, pluginRoot);
