@@ -1,5 +1,5 @@
 // The work-approvals projection over real stores in a temp dir: which decisions a project sees, the all-project badge total, clear failures for
-// a missing source, and the change signal from every write path (IPC, plugin HostApi, scheduler, memory capture).
+// a missing source, and the change signal from every write path (IPC, plugin HostApi, scheduler).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +9,6 @@ import { hostFrameEvent, untrustedEvent } from "../../../__tests__/test-helpers.
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { RoutinesStore } from "../../../main/routines-store.js";
-import { MemoryManager } from "../../../memory/memory-manager.js";
 import type { WorkApprovalListResult, WorkApprovalView } from "../../../shared/work-approvals-types.js";
 import { wireWorkApprovalsChanged } from "../../../boot/steps/work-approvals-wiring.js";
 
@@ -24,7 +23,6 @@ vi.mock("electron", () => ({
 }));
 
 const PROJECT_A = "/work/project-a";
-const PROJECT_B = "/work/project-b";
 const PROJECT_GONE = "/work/project-gone";
 const DEFAULT_ROOT = "/work/default";
 
@@ -38,15 +36,6 @@ vi.mock("../../../main/project-root-authorization.js", () => ({
     }
     return { authorized: false, project: null };
   }),
-  listAuthorizedWorkspaceProjects: vi.fn(() => [
-    { projectRoot: DEFAULT_ROOT, projectName: "default", isDefault: true },
-    { projectRoot: PROJECT_A, projectName: "project-a" },
-    { projectRoot: PROJECT_B, projectName: "project-b" },
-  ]),
-}));
-
-vi.mock("../../../main/default-workspace-root.js", () => ({
-  isDefaultWorkspaceRoot: (root: string) => root === DEFAULT_ROOT,
 }));
 
 const INDEXER = { pluginId: "indexer", pluginLabel: "Indexer", grantedKinds: ["stale-index"] };
@@ -62,7 +51,6 @@ const PROPOSAL = {
 let dir: string;
 let workBoardStore: WorkBoardStore;
 let routinesStore: RoutinesStore;
-let memoryManager: MemoryManager;
 let send: ReturnType<typeof vi.fn>;
 
 function windowStub() {
@@ -77,7 +65,6 @@ async function register(overrides: Record<string, unknown> = {}) {
   registerWorkApprovalsHandlers({
     workBoardStore,
     routinesStore,
-    memoryManager,
     auditLogger: { log: vi.fn() },
     getMainWindow: () => win,
     getAppWindows: () => [win],
@@ -91,7 +78,6 @@ function wire() {
   wireWorkApprovalsChanged({
     workBoardStore,
     routinesStore,
-    memoryManager,
     getMainWindow: () => win,
     host: { desktop: { getAppWindows: () => [win] } },
   } as never);
@@ -116,7 +102,6 @@ beforeEach(async () => {
   workBoardStore = new WorkBoardStore(join(dir, "work-board", "board.json"));
   routinesStore = new RoutinesStore(join(dir, "routine", "routines.json"));
   await routinesStore.load();
-  memoryManager = new MemoryManager({ aveDir: join(dir, "ave") });
 });
 
 afterEach(async () => {
@@ -124,41 +109,15 @@ afterEach(async () => {
 });
 
 describe("work approvals list", () => {
-  it("shows the project's candidates plus unscoped and global items, and totals every authorized project", async () => {
+  it("returns the unscoped and global items in project mode and in all-projects mode, with a matching total", async () => {
     await register();
     await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
-    const global = await memoryManager.saveMemory("Reply language", "Answer in Korean.", { source: "assistant", state: "candidate" });
-    const inA = await memoryManager.saveMemory("Package manager", "Use bun.", { projectRoot: PROJECT_A, source: "assistant", state: "candidate" });
-    await memoryManager.saveMemory("Other tool", "Use pnpm.", { projectRoot: PROJECT_B, source: "assistant", state: "candidate" });
-    await memoryManager.saveMemory("Removed project", "Gone.", { projectRoot: PROJECT_GONE, source: "assistant", state: "candidate" });
-    await memoryManager.saveMemory("Active fact", "Not a candidate.", { projectRoot: PROJECT_A, state: "active" });
-
-    const result = await list({ projectRoot: PROJECT_A });
-    if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
-    expect(keys(result.items)).toEqual(["memory-candidate", "memory-candidate", "proposal"]);
-    const candidates = result.items.filter((item) => item.kind === "memory-candidate");
-    expect(candidates.map((item) => item.memoryId).sort()).toEqual([global.id, inA.id].sort());
-    expect(candidates.find((item) => item.memoryId === inA.id)?.scope).toEqual({ type: "project", projectRoot: PROJECT_A, isDefault: false });
-    expect(candidates.find((item) => item.memoryId === global.id)?.scope).toEqual({ type: "global" });
-    // proposal + global + A + B; the unauthorized project's candidate cannot be acted on, so it is not counted.
-    expect(result.total).toBe(4);
-  });
-
-  it("all-projects mode lists every authorized project's candidates and never an unauthorized or removed project's", async () => {
-    await register();
-    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
-    const global = await memoryManager.saveMemory("Reply language", "Answer in Korean.", { source: "assistant", state: "candidate" });
-    const inA = await memoryManager.saveMemory("Package manager", "Use bun.", { projectRoot: PROJECT_A, source: "assistant", state: "candidate" });
-    const inB = await memoryManager.saveMemory("Other tool", "PRIVATE-MEMORY-BODY", { projectRoot: PROJECT_B, source: "assistant", state: "candidate" });
-    await memoryManager.saveMemory("Removed project", "Gone.", { projectRoot: PROJECT_GONE, source: "assistant", state: "candidate" });
-
-    const result = await list({ allProjects: true });
-    if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
-    const candidates = result.items.filter((item) => item.kind === "memory-candidate");
-    expect(candidates.map((item) => item.memoryId).sort()).toEqual([global.id, inA.id, inB.id].sort());
-    expect(JSON.stringify(result)).not.toContain(PROJECT_GONE);
-    expect(JSON.stringify(result)).not.toContain("PRIVATE-MEMORY-BODY");
-    expect(result.total).toBe(result.items.length);
+    for (const arg of [{ projectRoot: PROJECT_A }, { allProjects: true }]) {
+      const result = await list(arg);
+      if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
+      expect(keys(result.items)).toEqual(["proposal"]);
+      expect(result.total).toBe(1);
+    }
     // allProjects must be exactly true and alone.
     expect(await list({ allProjects: false })).toEqual({ ok: false, error: "invalid-input" });
     expect(await list({ allProjects: true, projectRoot: PROJECT_A })).toEqual({ ok: false, error: "invalid-input" });
@@ -168,11 +127,10 @@ describe("work approvals list", () => {
     await register();
     const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
     await workBoardStore.upsertProposal(INDEXER, { ...PROPOSAL, title: `Rotate ${secret}`, summary: `Leaked ${secret}` });
-    await memoryManager.saveMemory(`Token ${secret}`, "x", { source: "assistant", state: "candidate" });
     for (const arg of [undefined, { allProjects: true }]) {
       const result = await list(arg);
       if (!result.ok) throw new Error("list failed");
-      expect(result.items).toHaveLength(2);
+      expect(result.items).toHaveLength(1);
       expect(JSON.stringify(result)).not.toContain(secret);
     }
   });
@@ -285,14 +243,6 @@ describe("work approvals list", () => {
     }]);
   });
 
-  it("marks the default project's candidates as default", async () => {
-    await register();
-    await memoryManager.saveMemory("Default note", "x", { projectRoot: DEFAULT_ROOT, source: "assistant", state: "candidate" });
-    const result = await list({ projectRoot: DEFAULT_ROOT });
-    if (!result.ok) throw new Error("list failed");
-    expect(result.items.map((item) => item.scope)).toEqual([{ type: "project", projectRoot: DEFAULT_ROOT, isDefault: true }]);
-  });
-
   it("fails clearly when a source store is not wired, instead of dropping it", async () => {
     await register({ workBoardStore: undefined });
     expect(await list()).toEqual({ ok: false, error: "work-approvals-source-unavailable", source: "proposal" });
@@ -319,27 +269,6 @@ describe("work approvals changed signal", () => {
     await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
     expect(changedCount()).toBe(1);
     expect(send).toHaveBeenCalledWith(WORK_APPROVALS.changed, undefined);
-  });
-
-  it("fires when a memory candidate is captured, approved, or discarded, and not for an active memory", async () => {
-    wire();
-    await memoryManager.saveMemory("Active fact", "x", { state: "active" });
-    expect(changedCount()).toBe(0);
-    const first = await memoryManager.saveMemory("Draft one", "x", { source: "assistant", state: "candidate" });
-    const second = await memoryManager.saveMemory("Draft two", "y", { source: "assistant", state: "candidate" });
-    expect(changedCount()).toBe(2);
-    await memoryManager.activateMemoryCandidate(first.id!);
-    expect(changedCount()).toBe(3);
-    await memoryManager.deleteMemoryCandidate(second.id!);
-    expect(changedCount()).toBe(4);
-  });
-
-  it("fires when deleteMemory removes a candidate file", async () => {
-    wire();
-    const draft = await memoryManager.saveMemory("Draft", "x", { source: "assistant", state: "candidate" });
-    const before = changedCount();
-    await memoryManager.deleteMemory(draft.filename);
-    expect(changedCount()).toBe(before + 1);
   });
 
   it("fires when the scheduler records a skipped routine", async () => {

@@ -1215,25 +1215,22 @@ Briefing runs
 Work approvals ("확인 필요" in the UI) are work-level decisions, separate from
 tool-execution approvals, which stay in the conversation's ApprovalDock.
 `ave:work-approvals:list` is a read-only projection over the stores that own
-each decision: open work proposals (`unscoped`), memory review candidates
-(their own `project` or `global` scope), and routines needing attention
-(`global`: missing plugins or a held-back invalid plugin id; a successful or
-notify-only result is not a decision and is never listed).
-It returns the requested project's items plus the unscoped and global ones, and
-a `total` across every authorized project for the title-bar badge. With
-`{ allProjects: true }` it returns every authorized project's items instead (the
-owner-approved all-projects view and badge popover); a removed or unauthorized
-project's items never appear. Titles and summaries are DLP-masked. In project
-mode, candidates in other projects reach the renderer only as part of that
-count. Views are built
-field by field, so a routine prompt, memory body or proposal task brief never
-crosses this channel. A missing source store is a
-`work-approvals-source-unavailable` result, never a silently shorter list. Each
-source store signals after its own write, whichever path made it (IPC, plugin
-HostApi, scheduler, model tool). The boot step `wireWorkApprovalsChanged`
+each decision. It covers open work proposals (`unscoped`) and routines needing
+attention (`global`). A routine needs attention when plugins are missing or a
+held-back plugin id is invalid. A successful or notify-only result is not a
+decision and is never listed. Plan approvals (project-scoped) join with WA-1.
+Memories save without approval, so they are not a source. Project mode returns
+the requested project's items plus the unscoped and global ones, with a `total`
+across every authorized project for the title-bar badge. `{ allProjects: true }`
+returns every authorized project's items for the all-projects view and the badge
+popover. Titles and summaries are DLP-masked. Views are built field by field, so
+a routine prompt or a proposal task brief never crosses this channel. A missing
+source store is a `work-approvals-source-unavailable` result, never a silently
+shorter list. Each source store signals after its own write, whichever path made
+it (IPC, plugin HostApi, scheduler). The boot step `wireWorkApprovalsChanged`
 subscribes to those signals and broadcasts the payload-free
-`ave:work-approvals:changed` so windows re-list.
-Actions stay on each source's own channel.
+`ave:work-approvals:changed` so windows re-list. Actions stay on each source's
+own channel.
 
 ## Conversation List
 

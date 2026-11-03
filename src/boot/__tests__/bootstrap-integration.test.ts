@@ -91,7 +91,7 @@ vi.mock("../services.js", () => ({
         deletePluginConfig: vi.fn(async () => undefined),
         deletePluginSecrets: vi.fn(async () => 0),
       },
-      memoryManager: { candidatesChanged: { subscribe: vi.fn(() => () => {}) } },
+      memoryManager: {},
       // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },
       inputClassifier: {},

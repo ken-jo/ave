@@ -52,7 +52,6 @@ import { escapeRegExp } from "../shared/escape-reg-exp.js";
 import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
-import { ChangeSignal } from "../lib/change-signal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 import {
   appendJsonlRecords,
@@ -1097,8 +1096,6 @@ export interface PromptMemorySource {
 }
 
 export class MemoryManager implements PromptMemorySource {
-  // Fires after a write that adds, approves or removes a review candidate, so the work-approvals list re-reads.
-  readonly candidatesChanged = new ChangeSignal((err) => log.warn("[memory-candidates] change listener threw: %s", (err as Error).message));
   private readonly aveDir: string;
   private readonly memoryDir: string;
   private readonly sessionsDir: string;
@@ -1402,17 +1399,6 @@ export class MemoryManager implements PromptMemorySource {
       .filter((entry) => entry.state === "candidate" && this.matchesCandidateReviewScope(entry, options));
   }
 
-  /**
-   * Main-only: review candidates across global scope and the given project roots. Ordinary review reads stay "global plus the selected
-   * project"; the caller (the work-approvals projection) passes only authorized roots and maps entries field by field, never handing a body
-   * to a renderer.
-   */
-  listMemoryCandidatesForProjects(projectRoots: readonly string[]): NoteEntry[] {
-    return this.readMarkdownEntries(this.memoryDir, { includeCandidates: true, allScopes: true })
-      .filter((entry) => entry.id !== undefined && entry.state === "candidate")
-      .filter((entry) => !entry.projectRoot || projectRoots.some((root) => projectRootEquals(entry.projectRoot, root)));
-  }
-
   searchMemoryEntries(query: string, options: MemoryReadOptions = {}): NoteEntry[] {
     return this.searchEntries(this.listMemoryEntries(options), query);
   }
@@ -1575,7 +1561,6 @@ export class MemoryManager implements PromptMemorySource {
     });
 
     this.memoryIndex = this.readMemoryIndex();
-    if (metadata.state === "candidate") this.candidatesChanged.emit();
     return this.entryFromMemoryMetadata(filename, input.title, visibleContent, metadata, new Date().toISOString());
   }
 
@@ -1630,7 +1615,6 @@ export class MemoryManager implements PromptMemorySource {
     });
 
     this.memoryIndex = this.readMemoryIndex();
-    this.candidatesChanged.emit();
     return activated!;
   }
 
@@ -1650,7 +1634,6 @@ export class MemoryManager implements PromptMemorySource {
       this.removeMemoryIndexEntryLocked(found.filename, indexPath);
     });
     this.memoryIndex = this.readMemoryIndex();
-    this.candidatesChanged.emit();
   }
 
   async updateMemoryIndex(content: string): Promise<void> {
@@ -1687,7 +1670,6 @@ export class MemoryManager implements PromptMemorySource {
     const safeFilename = this.validateDeletableMemoryFilename(filename);
     const path = join(this.memoryDir, safeFilename);
     const indexPath = join(this.memoryDir, "MEMORY.md");
-    let deletedCandidate = false;
     await withFileLock(indexPath, async () => {
       const snapshot = readUtf8FileSnapshotIfPresent(path, MAX_LEGACY_MEMORY_FILE_BYTES);
       if (snapshot?.tooLarge) {
@@ -1712,13 +1694,11 @@ export class MemoryManager implements PromptMemorySource {
         if (!this.memoryScopeVisibleForMutation(entry, options)) {
           throw new Error("deleteMemory: memory does not belong to the selected scope");
         }
-        deletedCandidate = entry.state === "candidate";
       }
       unlinkIfPresent(path);
       this.removeMemoryIndexEntryLocked(safeFilename, indexPath);
     });
     this.memoryIndex = this.readMemoryIndex();
-    if (deletedCandidate) this.candidatesChanged.emit();
   }
 
   async updateAgentsMd(content: string): Promise<void> {
@@ -3242,8 +3222,7 @@ export class MemoryManager implements PromptMemorySource {
 
   private readMarkdownEntries(
     dir: string,
-    // allScopes skips the project visibility filter; only listMemoryCandidatesForProjects uses it, with authorized roots.
-    options: MemoryReadOptions & { excludeMarkedMemory?: boolean; allScopes?: boolean } = {},
+    options: MemoryReadOptions & { excludeMarkedMemory?: boolean } = {},
   ): NoteEntry[] {
     return readdirIfPresent(dir)
       .filter((filename) => filename.endsWith(".md"))
@@ -3271,10 +3250,7 @@ export class MemoryManager implements PromptMemorySource {
               ...(parsed.legacyProject.projectRoot ? { projectRoot: parsed.legacyProject.projectRoot } : {}),
               ...(parsed.legacyProject.projectName ? { projectName: parsed.legacyProject.projectName } : {}),
             };
-        const visible = options.allScopes === true
-          ? (entry.state !== "candidate" || options.includeCandidates === true) && !noteIsExpired(entry)
-          : this.matchesMemoryRead(entry, options);
-        return visible ? [entry] : [];
+        return this.matchesMemoryRead(entry, options) ? [entry] : [];
       })
       .sort((left, right) =>
         new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime()

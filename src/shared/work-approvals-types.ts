@@ -1,7 +1,7 @@
 /**
  * Work-level decisions ("확인 필요"): a read-only projection over the stores that own each decision. Tool-execution approvals are not here; they
  * stay in the chat ApprovalDock. Views are built field by field from each record, never by spreading one, so private record fields (a routine's
- * prePrompt, a memory's body, a proposal's taskBrief) do not reach the renderer through this channel.
+ * prePrompt, a proposal's taskBrief) do not reach the renderer through this channel.
  *
  * Renderer-safe: no Node imports.
  */
@@ -20,17 +20,6 @@ export interface WorkProposalApprovalView {
   pluginLabel: string;
   priority: "high" | "medium" | "low";
   expiresAt: string;
-}
-
-/** A captured memory waiting for the user to approve or discard it. */
-export interface MemoryCandidateApprovalView {
-  kind: "memory-candidate";
-  key: string;
-  scope: { type: "project"; projectRoot: string; isDefault: boolean } | { type: "global" };
-  title: string;
-  /** Null when the stored record carries no creation time. */
-  arrivedAt: string | null;
-  memoryId: string;
 }
 
 /** Why a routine needs the user. One routine yields one view carrying every reason that applies. */
@@ -52,7 +41,6 @@ export interface RoutineAttentionApprovalView {
 
 export type WorkApprovalView =
   | WorkProposalApprovalView
-  | MemoryCandidateApprovalView
   | RoutineAttentionApprovalView;
 
 export type WorkApprovalListResult =

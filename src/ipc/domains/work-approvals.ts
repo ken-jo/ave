@@ -1,22 +1,16 @@
 // Work approvals ("확인 필요"): a read-only projection over the stores that own each work-level decision. The change broadcast is wired at boot
 // (boot/steps/work-approvals-wiring.ts). Every action (accept or dismiss a proposal,
-// approve or discard a memory candidate, open or acknowledge a routine) stays on that source's own channel; this domain only lists and signals.
+// open or acknowledge a routine) stays on that source's own channel; this domain only lists and signals.
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
-import {
-  listAuthorizedWorkspaceProjects,
-  resolveAuthorizedWorkspaceProject,
-} from "../../main/project-root-authorization.js";
-import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
+import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import type { RoutineRecord, InvalidRoutine } from "../../shared/routines-types.js";
 import type { WorkProposal } from "../../shared/work-board-types.js";
-import type { NoteEntry } from "../../memory/memory-manager.js";
 import type {
-  MemoryCandidateApprovalView,
   RoutineAttentionApprovalView,
   WorkApprovalListResult,
   WorkApprovalView,
@@ -59,19 +53,6 @@ function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
   };
 }
 
-function memoryCandidateView(entry: NoteEntry & { id: string }): MemoryCandidateApprovalView {
-  return {
-    kind: "memory-candidate",
-    key: `memory-candidate:${entry.id}`,
-    scope: entry.projectRoot
-      ? { type: "project", projectRoot: entry.projectRoot, isDefault: isDefaultWorkspaceRoot(entry.projectRoot) }
-      : { type: "global" },
-    title: masked(entry.title),
-    arrivedAt: entry.createdAt ?? null,
-    memoryId: entry.id,
-  };
-}
-
 function routineTitle(routine: RoutineRecord): string {
   return routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
 }
@@ -105,12 +86,8 @@ function invalidRoutineView(invalid: InvalidRoutine): RoutineAttentionApprovalVi
   };
 }
 
-function hasMemoryId(entry: NoteEntry): entry is NoteEntry & { id: string } {
-  return typeof entry.id === "string";
-}
-
 export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
-  const { workBoardStore, routinesStore, memoryManager, auditLogger } = deps;
+  const { workBoardStore, routinesStore, auditLogger } = deps;
 
   ipcMain.handle(WORK_APPROVALS.list, async (e, raw?: unknown): Promise<WorkApprovalListResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
@@ -129,29 +106,15 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     if (proposals.status !== "ok") return { ok: false, error: "work-approvals-source-unavailable", source: "proposal" };
     const proposalViews = proposals.proposals.map(proposalView);
 
-    // Only authorized projects: a removed or unauthorized project's candidates never appear, in either mode.
-    const allCandidates = memoryManager
-      .listMemoryCandidatesForProjects(listAuthorizedWorkspaceProjects().map((authorized) => authorized.projectRoot))
-      .filter(hasMemoryId);
-    const visibleCandidates = project?.project
-      ? memoryManager
-          .listMemoryCandidates({
-            projectRoot: project.project.projectRoot,
-            projectName: project.project.projectName,
-            ...(project.project.isDefault === true ? { includeUnscoped: true } : {}),
-          })
-          .filter(hasMemoryId)
-      : allCandidates;
-    const candidateViews = visibleCandidates.map(memoryCandidateView);
-
     const routineViews = [
       ...routinesStore.list().map(routineView).filter((view): view is RoutineAttentionApprovalView => view !== null),
       ...routinesStore.listInvalid().map(invalidRoutineView),
     ];
 
-    const items: WorkApprovalView[] = [...proposalViews, ...candidateViews, ...routineViews];
-    // Proposals and routines are never project-scoped, so only memory candidates differ between the visible list and the total.
-    const total = proposalViews.length + routineViews.length + allCandidates.length;
+    const items: WorkApprovalView[] = [...proposalViews, ...routineViews];
+    // Proposals (unscoped) and routines (global) belong to every project's list, so the project list and the total match today. Plan
+    // approvals (WA-1) are the project-scoped kind that will make the two differ.
+    const total = items.length;
     return { ok: true, items, total };
   });
 }
