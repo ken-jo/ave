@@ -252,6 +252,19 @@ describe("document observation desktop ownership", () => {
     expect(runtime.acknowledge(event, { action: "rendered", ...binding, path: "/outside/other.csv" })).toEqual({ ok: false, error: "bad-request" });
   });
 
+  it("re-evaluates the read policy once the reused verdict's microtask has run", async () => {
+    const binding = baseline();
+    const allowedRoot = state.root;
+    state.root = mkdtempSync(join(tmpdir(), "ave-observation-elsewhere-"));
+    try {
+      await Promise.resolve();
+      expect(runtime.acknowledge(event, { action: "rendered", ...binding })).toEqual({ ok: false, error: "unauthorized" });
+    } finally {
+      await cleanupTmpDir(state.root);
+      state.root = allowedRoot;
+    }
+  });
+
   it("rechecks live registration before delivering a completed parse", async () => {
     runtime.dispose();
     let finish!: () => void;

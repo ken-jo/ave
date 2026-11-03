@@ -108,9 +108,10 @@ export class DocumentObservationRuntime {
   }
 
   // The read policy walks the filesystem for the path and for every protected floor entry, and a journal
-  // chunk asks it twice per record (the adapter, then the daemon's publish). Within one synchronous task
-  // nothing can act between two of those checks, so a repeat evaluation adds syscalls and no decision. A
-  // verdict is reused only until that task's microtasks run; every later task evaluates the policy afresh.
+  // chunk asks it twice per record (the adapter, then the daemon's publish), all in one synchronous run. A
+  // verdict is reused until the clearing microtask queued with its first evaluation runs. The rest of that
+  // run, and microtasks queued before that evaluation, see the same verdict; that is harmless because the
+  // daemon re-checks before delivery in a later macrotask, and every later task evaluates the policy afresh.
   private isReadablePath(path: string): boolean {
     const known = this.readableVerdicts.get(path);
     if (known !== undefined) return known;
