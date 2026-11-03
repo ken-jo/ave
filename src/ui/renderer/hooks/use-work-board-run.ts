@@ -14,7 +14,7 @@ import { errorMessage } from "../../../shared/error-message.js";
 export type RunPhase = RunProgressEventPayload["phase"];
 
 /** A phase in which the child agent takes turns. */
-export type TurnPhase = "planning" | "executing";
+type TurnPhase = "planning" | "executing";
 
 /** One child-agent turn of the run. Turn numbers restart with each phase's child. */
 export interface RunTurn {
@@ -42,7 +42,7 @@ export type RunStateMap = Record<number, WorkItemRunState | undefined>;
 const EMPTY_RUN: WorkItemRunState = { busy: false, turns: [] };
 
 /** Phases that should show an active spinner. */
-export function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
+function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
   return phase === "planning" || phase === "executing";
 }
 
@@ -56,7 +56,7 @@ export function isRunInFlight(run: WorkItemRunState | undefined): boolean {
 const TURN_PHASE_RANK: Record<TurnPhase, number> = { planning: 0, executing: 1 };
 
 /** Union two turn logs: one row per phase+turn (the first seen wins), planning before executing, then by turn number. */
-export function mergeTurns(existing: readonly RunTurn[], incoming: readonly RunTurn[]): RunTurn[] {
+function mergeTurns(existing: readonly RunTurn[], incoming: readonly RunTurn[]): RunTurn[] {
   const byKey = new Map<string, RunTurn>();
   for (const row of [...existing, ...incoming]) {
     const key = `${row.phase}:${row.turn}`;
