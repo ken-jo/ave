@@ -759,4 +759,31 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       await cleanup();
     }
   });
+  it("does not carry one run's stop into the next run of the same item", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "stop then rerun" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const first = controllableRunner();
+      let current = first.runner;
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const engine = createWorkBoardEngine({ store, getRunner: () => current, approvalGate: gate, emitProgress: () => {} });
+
+      const runA = engine.runItem(id, { approvalSurface: owner });
+      await first.linked;
+      expect(engine.cancelRun(id)).toEqual({ ok: true });
+      expect((await runA).status).toBe("cancelled");
+
+      // Run B is interrupted by something other than the user; it must not inherit run A's stop.
+      const second = controllableRunner();
+      current = second.runner;
+      const runB = engine.runItem(id, { approvalSurface: owner });
+      await second.linked;
+      second.interruptFromElsewhere();
+      expect((await runB).status).toBe("error");
+    } finally {
+      await cleanup();
+    }
+  });
 });
