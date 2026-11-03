@@ -17,7 +17,6 @@ import type { NoteEntry } from "../../memory/memory-manager.js";
 import type {
   MemoryCandidateApprovalView,
   RoutineAttentionApprovalView,
-  RoutineAttentionReason,
   WorkApprovalListResult,
   WorkApprovalView,
   WorkProposalApprovalView,
@@ -67,15 +66,11 @@ function routineTitle(routine: RoutineRecord): string {
   return routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
 }
 
-// One view per routine; every reason that applies rides on it, so the badge counts the routine once. Missing plugins come from active routines (the
-// routine list's own rule); an unseen result also counts for a dismissed routine, matching the pending-results rehydration.
+// One view per routine; every reason that applies rides on it, so the badge counts the routine once. A routine counts only for a broken
+// configuration: missing plugins on an active routine (the routine list's own rule) or a held-back invalid plugin id. A successful or
+// notify-only result is not a decision and never enters the list.
 function routineView(routine: RoutineRecord): RoutineAttentionApprovalView | null {
-  const reasons: RoutineAttentionReason[] = [];
-  const pluginsMissing = routine.dismissedAt === undefined && routine.needsAttention !== undefined;
-  if (pluginsMissing) reasons.push("plugins-missing");
-  const resultUnseen = routine.lastFiredAt !== undefined && routine.lastResultAcknowledgedAt !== routine.lastFiredAt;
-  if (resultUnseen) reasons.push("result-unseen");
-  if (reasons.length === 0) return null;
+  if (routine.dismissedAt !== undefined || routine.needsAttention === undefined) return null;
   return {
     kind: "routine-attention",
     key: `routine:${routine.id}`,
@@ -83,9 +78,8 @@ function routineView(routine: RoutineRecord): RoutineAttentionApprovalView | nul
     title: routineTitle(routine),
     arrivedAt: routine.lastFiredAt ?? routine.createdAt,
     routineId: routine.id,
-    reasons,
-    ...(pluginsMissing ? { missingPluginIds: [...routine.needsAttention!.missingPluginIds] } : {}),
-    ...(resultUnseen ? { firedAt: routine.lastFiredAt } : {}),
+    reasons: ["plugins-missing"],
+    missingPluginIds: [...routine.needsAttention.missingPluginIds],
   };
 }
 

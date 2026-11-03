@@ -357,7 +357,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   });
 
   // Resolve the active project when accepting; unscoped proposals do not choose project identity.
-  ipcMain.handle(WORK_BOARD.acceptProposal, async (e, proposalId: string, projectRoot?: string, note?: unknown) => {
+  ipcMain.handle(WORK_BOARD.acceptProposal, async (e, proposalId: string, projectRoot?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.acceptProposal, e);
       return UNAUTHORIZED_FRAME;
@@ -370,13 +370,10 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!resolved.authorized || !resolved.project) {
       return { status: "invalid", reason: PROJECT_NOT_ALLOWED_REASON };
     }
-    if (note !== undefined && typeof note !== "string") {
-      return { status: "invalid", reason: "note must be a string" };
-    }
     const result = await workBoardStore.acceptProposal(proposalId, {
       projectRoot: resolved.project.projectRoot,
       projectName: resolved.project.projectName,
-    }, note);
+    });
     if (result.status === "accepted") {
       broadcastItemChanged(result.itemId, "created");
       broadcastProposalChanged(proposalId, "accepted");

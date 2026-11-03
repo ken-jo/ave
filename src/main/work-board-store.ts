@@ -26,7 +26,6 @@ import { appendActivity } from "../work-board/activity-log.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { ChangeSignal } from "../lib/change-signal.js";
-import { hasInvisibleOrReorderingChars, hasNonWhitespaceControlChars } from "../shared/display-safe-text.js";
 
 const log = createLogger("ave");
 
@@ -82,24 +81,6 @@ import {
 const MAX_TITLE_LENGTH = 512;
 // Max detail length.
 const MAX_DETAIL_LENGTH = 8192;
-const MAX_PROPOSAL_ACCEPT_NOTE_LENGTH = 1000;
-
-// The accept note is optional user prose: tabs and line breaks are allowed, other controls and invisible or reordering characters are refused.
-function normalizeAcceptNote(note: string | undefined):
-  | { ok: true; note: string | undefined }
-  | { ok: false; reason: string } {
-  if (note === undefined) return { ok: true, note: undefined };
-  if (typeof note !== "string") return { ok: false, reason: "note must be a string" };
-  const trimmed = note.trim();
-  if (trimmed.length === 0) return { ok: false, reason: "note is empty" };
-  if (trimmed.length > MAX_PROPOSAL_ACCEPT_NOTE_LENGTH) {
-    return { ok: false, reason: `note exceeds ${MAX_PROPOSAL_ACCEPT_NOTE_LENGTH} chars` };
-  }
-  if (hasNonWhitespaceControlChars(trimmed) || hasInvisibleOrReorderingChars(trimmed)) {
-    return { ok: false, reason: "note contains control or invisible characters" };
-  }
-  return { ok: true, note: trimmed };
-}
 const MAX_PROJECT_ROOT_LENGTH = 2048;
 const MAX_PROJECT_NAME_LENGTH = 120;
 
@@ -946,16 +927,13 @@ export class WorkBoardStore {
   async acceptProposal(
     id: string,
     project?: { projectRoot?: string; projectName?: string },
-    note?: string,
   ): Promise<WorkProposalAcceptResult> {
-    const acceptNote = normalizeAcceptNote(note);
-    if (!acceptNote.ok) return { status: "invalid", reason: acceptNote.reason };
     const nowMs = this.now();
     const file = await this.readProposals(nowMs);
     const proposal = file.proposals.find((p) => p.id === id && isLiveProposal(p, nowMs));
     if (!proposal) return { status: "not_found", proposalId: id };
 
-    const created = await this.create(proposalToWorkItemInput(proposal, project, acceptNote.note));
+    const created = await this.create(proposalToWorkItemInput(proposal, project));
     if (created.status !== "created") {
       return { status: "invalid", reason: created.reason };
     }

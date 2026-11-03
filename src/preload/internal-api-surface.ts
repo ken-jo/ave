@@ -1136,9 +1136,8 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkProposalListResult
       | { ok: false; error: string }
     >,
-  // `note` is the user's optional accept note; the host appends it to the new item's detail.
-  acceptWorkProposal: async (proposalId: string, projectRoot?: string, note?: string) =>
-    ipcRenderer.invoke(WORK_BOARD.acceptProposal, proposalId, projectRoot, note) as Promise<
+  acceptWorkProposal: async (proposalId: string, projectRoot?: string) =>
+    ipcRenderer.invoke(WORK_BOARD.acceptProposal, proposalId, projectRoot) as Promise<
       | import("../shared/work-board-types.js").WorkProposalAcceptResult
       | { ok: false; error: string }
     >,

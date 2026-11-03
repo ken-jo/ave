@@ -1186,7 +1186,6 @@ export type AveApi = {
   acceptWorkProposal?: (
     proposalId: string,
     projectRoot?: string,
-    note?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkProposalAcceptResult
     | { ok: false; error: string }

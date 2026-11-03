@@ -213,20 +213,4 @@ describe("work-board project authorization", () => {
     });
     expect(store.create).not.toHaveBeenCalled();
   });
-
-  it("passes the user's accept note to the store and refuses a non-string note before it", async () => {
-    const acceptProposal = vi.fn(async () => ({ status: "not_found", proposalId: "p" }));
-    registerWorkBoardHandlers({
-      workBoardStore: { acceptProposal },
-      auditLogger: { log: vi.fn() },
-      getMainWindow: () => null,
-      getAppWindows: () => [],
-    } as unknown as IpcDeps);
-    const accept = registeredHandler(WORK_BOARD.acceptProposal);
-    await accept({}, "p", workspace, "Only Q3.");
-    expect(acceptProposal).toHaveBeenCalledWith("p", { projectRoot: workspace, projectName: expect.any(String) }, "Only Q3.");
-    acceptProposal.mockClear();
-    await expect(accept({}, "p", workspace, 42)).resolves.toEqual({ status: "invalid", reason: "note must be a string" });
-    expect(acceptProposal).not.toHaveBeenCalled();
-  });
 });

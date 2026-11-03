@@ -162,7 +162,7 @@ describe("work approvals list", () => {
     expect(result.ok && result.total).toBe(0);
   });
 
-  it("gives one routine one view with every reason, and keeps prePrompt out", async () => {
+  it("lists a routine only for missing plugins, never for an unseen or notify-only result, and keeps prePrompt out", async () => {
     await register();
     const attention = await routinesStore.add({
       trigger: "schedule",
@@ -173,14 +173,22 @@ describe("work approvals list", () => {
       scope: { pluginIds: { mode: "allow", ids: ["calendar", "mail"] }, forcedPluginIds: [], directories: [] },
     });
     const fired = await routinesStore.markFired(attention.id, ["mail"]);
-    const seen = await routinesStore.add({
+    // Fired and never acknowledged: an unseen successful result, which is not a decision.
+    const unseen = await routinesStore.add({
+      trigger: "schedule",
+      execution: "llm-session",
+      schedule: { at: new Date(Date.now() + 60_000).toISOString(), repeat: { kind: "daily" } },
+      prePrompt: "x",
+      title: "Unseen result",
+    });
+    await routinesStore.markFired(unseen.id);
+    const notify = await routinesStore.add({
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: new Date(Date.now() + 60_000).toISOString(), repeat: { kind: "daily" } },
-      notificationTitle: "Seen",
+      notificationTitle: "Notify only",
     });
-    const seenFired = await routinesStore.markFired(seen.id);
-    await routinesStore.update(seen.id, { lastResultAcknowledgedAt: seenFired!.lastFiredAt });
+    await routinesStore.markFired(notify.id);
     await routinesStore.add({
       trigger: "schedule",
       execution: "notification-only",
@@ -197,9 +205,8 @@ describe("work approvals list", () => {
       title: "Morning",
       arrivedAt: fired!.lastFiredAt,
       routineId: attention.id,
-      reasons: ["plugins-missing", "result-unseen"],
+      reasons: ["plugins-missing"],
       missingPluginIds: ["mail"],
-      firedAt: fired!.lastFiredAt,
     }]);
     expect(result.total).toBe(1);
     expect(JSON.stringify(result)).not.toContain("PRIVATE-PRE-PROMPT");

@@ -34,7 +34,8 @@ export interface MemoryCandidateApprovalView {
 }
 
 /** Why a routine needs the user. One routine yields one view carrying every reason that applies. */
-export type RoutineAttentionReason = "plugins-missing" | "invalid-plugin-id" | "result-unseen";
+// Only a broken configuration (or, with routine failure persistence, a failed run) counts; a successful or notify-only result never does.
+type RoutineAttentionReason = "plugins-missing" | "invalid-plugin-id";
 
 export interface RoutineAttentionApprovalView {
   kind: "routine-attention";
@@ -47,8 +48,6 @@ export interface RoutineAttentionApprovalView {
   reasons: RoutineAttentionReason[];
   /** Present with the plugins-missing reason. */
   missingPluginIds?: string[];
-  /** Present with the result-unseen reason: the fire whose result the user has not acknowledged. */
-  firedAt?: string;
 }
 
 export type WorkApprovalView =

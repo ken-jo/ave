@@ -247,7 +247,6 @@ export function composeProposal(args: {
 export function proposalToWorkItemInput(
   proposal: WorkProposal,
   project?: { projectRoot?: string; projectName?: string },
-  acceptNote?: string,
 ): WorkItemCreateInput {
   const sections: string[] = [proposal.summary, "", proposal.state];
   if (proposal.evidence.length > 0) {
@@ -261,8 +260,6 @@ export function proposalToWorkItemInput(
       ),
     );
   }
-  // The user's own accept note closes the detail; it is user input, like a detail the user typed.
-  if (acceptNote !== undefined) sections.push("", acceptNote);
   return {
     title: proposal.title,
     detail: sections.join("\n"),

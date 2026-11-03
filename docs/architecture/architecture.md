@@ -1217,7 +1217,8 @@ tool-execution approvals, which stay in the conversation's ApprovalDock.
 `ave:work-approvals:list` is a read-only projection over the stores that own
 each decision: open work proposals (`unscoped`), memory review candidates
 (their own `project` or `global` scope), and routines needing attention
-(`global`: missing plugins, a held-back invalid plugin id, or an unseen result).
+(`global`: missing plugins or a held-back invalid plugin id; a successful or
+notify-only result is not a decision and is never listed).
 It returns the requested project's items plus the unscoped and global ones, and
 a `total` across every authorized project for the title-bar badge. Candidates in
 other projects reach the renderer only as part of that count. Views are built
@@ -1226,10 +1227,7 @@ crosses this channel. A missing source store is a `source-unavailable` result,
 never a silently shorter list. Each source store signals after its own write,
 whichever path made it (IPC, plugin HostApi, scheduler, model tool), and main
 broadcasts the payload-free `ave:work-approvals:changed` so windows re-list.
-Actions stay on each source's own channel. Accepting a proposal takes an
-optional user note: trimmed, at most 1000 characters, no controls other than
-tab and line breaks, and no invisible or reordering characters. The note is
-appended to the new item's detail.
+Actions stay on each source's own channel.
 
 ## Conversation List
 
