@@ -501,6 +501,9 @@ export function createWorkBoardEngine(
           maxRounds: PLAN_ROUND_BUDGET,
         },
         {
+          // The planning child's session is reported as it links, like the execute child's: the board claims both children's tool
+          // approvals, and a planning child can ask for one too.
+          onLinked: ({ childSessionId }) => emit({ itemId, phase: "planning", runSessionId: childSessionId }),
           onActivity: makeActivityRecorder({
             onTurn: (turn, text) => {
               emit({ itemId, phase: "planning", turn, text });

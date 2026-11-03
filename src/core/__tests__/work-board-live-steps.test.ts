@@ -200,3 +200,24 @@ describe("WorkBoardEngine — tool steps within a turn (LS-2 G2)", () => {
     }
   });
 });
+
+describe("WorkBoardEngine — run session links (LS-2 board approval claim)", () => {
+  it("reports each phase child's session as it links, so the board can claim that child's tool approvals", async () => {
+    const ctx = await startExecuting();
+    try {
+      const links = ctx.events.filter((e) => e.runSessionId !== undefined).map((e) => [e.phase, e.runSessionId]);
+      expect(links).toEqual([
+        ["planning", `work-board:${ctx.id}::plan`],
+        ["executing", `work-board:${ctx.id}::exec`],
+      ]);
+      // A link reports nothing else: it is not a turn.
+      const planLink = ctx.events.find((e) => e.phase === "planning" && e.runSessionId !== undefined)!;
+      expect(planLink.turn).toBeUndefined();
+      expect(planLink.text).toBeUndefined();
+    } finally {
+      ctx.live.release();
+      await ctx.run;
+      await ctx.cleanup();
+    }
+  });
+});

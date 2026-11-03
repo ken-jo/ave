@@ -296,7 +296,8 @@ export interface WorkBoardRunEvent {
   text?: string;
   /** Failure reason (error phase) or denial reason (denied phase). */
   message?: string;
-  /** The execute child's session id: set on the `executing` event fired when that child links (before its first round) and on the terminal `done` event. */
+  /** The phase child's session id: set on the `planning` / `executing` event fired when that phase's child links (before its first round) and on
+   * the terminal `done` event. */
   runSessionId?: string;
   /** The phase's current tool steps (latest {@link WORK_BOARD_TOOL_STEPS_MAX}), sent whenever one starts or changes status. Such an event
    * carries no `turn` and is not a phase entry. */

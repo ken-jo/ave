@@ -3,10 +3,15 @@ import type { AveApi } from "../types.js";
 import type {
   RunProgressEventPayload,
   RunTranscriptEvent,
+  WorkBoardCancelIpcResult,
+  WorkBoardRunToolStep,
+  WorkBoardSteerAck,
+  WorkBoardSteerIpcResult,
   WorkItemResolved,
   WorkItemRunResult,
   WorkItemRunStatus,
 } from "../../../shared/work-board-types.js";
+import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
 // Run state is derived only from host events and the persisted transcript; the shared host gate owns the approval decision,
@@ -25,6 +30,23 @@ export interface RunTurn {
   at: string;
 }
 
+/** One tool step of a phase's child, as the host reported it: a short masked label, never the tool's input. */
+export interface RunToolStep extends WorkBoardRunToolStep {
+  phase: TurnPhase;
+}
+
+/** A steer the user sent this run. The text is the renderer's own copy of what it sent; the status comes only from the host: `sent` is
+ * queued, `delivered` names the turn that took it, `dropped` says the child's turn ended (or its joined limit was reached) first. */
+export interface RunSteer {
+  messageId: string;
+  text: string;
+  sentAt: string;
+  status: "sent" | "delivered" | "dropped";
+  turn?: number;
+  reason?: Extract<WorkBoardSteerAck, { status: "dropped" }>["reason"];
+  redactedCount?: number;
+}
+
 export interface WorkItemRunState {
   /** A run is in flight (between runStarted and runFinished/runFailed). */
   busy: boolean;
@@ -36,11 +58,26 @@ export interface WorkItemRunState {
   reason?: string;
   /** Child session id, once an event or the run result carried it. */
   runSessionId?: string;
+  /** Every phase child's session this run reported, in link order: the sessions whose tool approvals the board draws. */
+  sessionIds: string[];
+  /** Tool steps of both phases, in the order they started. */
+  tools: RunToolStep[];
+  /** Steers sent during this run, oldest first. */
+  steers: RunSteer[];
+  /** The user's stop was accepted and the run has not settled yet. Renderer-local: the host reports nothing between the two (G6). */
+  stopping: boolean;
+  /** The approved-or-pending plan, once the transcript carried it. */
+  plan?: { text: string; at: string };
+  /** When each phase began, from the first event this board saw in it. */
+  phaseAt: Partial<Record<RunPhase, string>>;
 }
 
 export type RunStateMap = Record<number, WorkItemRunState | undefined>;
 
-const EMPTY_RUN: WorkItemRunState = { busy: false, turns: [] };
+const EMPTY_RUN: WorkItemRunState = { busy: false, turns: [], sessionIds: [], tools: [], steers: [], stopping: false, phaseAt: {} };
+
+/** Keep only the last this many tool steps per phase, as the host does. */
+const TOOL_STEPS_PER_PHASE = 40;
 
 /** Phases that should show an active spinner. */
 function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
@@ -126,6 +163,53 @@ export function liveTextOf(run: WorkItemRunState | undefined): string | undefine
   return currentPhaseTurn(run) === undefined ? undefined : run?.turns.at(-1)?.text;
 }
 
+/** Merge tool steps by phase and id: a step already listed is updated in place, a new one is appended; each phase keeps its latest
+ * {@link TOOL_STEPS_PER_PHASE}. */
+function mergeTools(existing: readonly RunToolStep[], incoming: readonly RunToolStep[]): RunToolStep[] {
+  const key = (step: RunToolStep) => `${step.phase}:${step.toolUseId}`;
+  const byKey = new Map(existing.map((step) => [key(step), step]));
+  for (const step of incoming) byKey.set(key(step), step);
+  const merged = [...byKey.values()];
+  const kept: RunToolStep[] = [];
+  for (const phase of ["planning", "executing"] as const) {
+    kept.push(...merged.filter((step) => step.phase === phase).slice(-TOOL_STEPS_PER_PHASE));
+  }
+  return kept;
+}
+
+function withSession(ids: readonly string[], id: string | undefined): string[] {
+  return id === undefined || ids.includes(id) ? [...ids] : [...ids, id];
+}
+
+function applySteerAck(steers: readonly RunSteer[], ack: WorkBoardSteerAck): RunSteer[] {
+  return steers.map((steer) => {
+    if (steer.messageId !== ack.messageId) return steer;
+    return ack.status === "delivered"
+      ? { ...steer, status: "delivered", turn: ack.turn, reason: undefined }
+      : { ...steer, status: "dropped", reason: ack.reason, turn: undefined };
+  });
+}
+
+function transcriptTools(events: readonly RunTranscriptEvent[]): RunToolStep[] {
+  const rows: RunToolStep[] = [];
+  for (const ev of events) {
+    if (ev.kind !== "tool" || ev.tool === undefined || !isActivePhase(ev.phase)) continue;
+    rows.push({ ...ev.tool, phase: ev.phase });
+  }
+  return rows;
+}
+
+function transcriptPlan(events: readonly RunTranscriptEvent[]): { text: string; at: string } | undefined {
+  const plan = events.findLast((ev) => ev.kind === "plan" && typeof ev.text === "string");
+  return plan ? { text: plan.text ?? "", at: plan.ts } : undefined;
+}
+
+function transcriptPhaseAt(events: readonly RunTranscriptEvent[]): Partial<Record<RunPhase, string>> {
+  const at: Partial<Record<RunPhase, string>> = {};
+  for (const ev of events) at[ev.phase] ??= ev.ts;
+  return at;
+}
+
 function transcriptTurns(events: readonly RunTranscriptEvent[]): RunTurn[] {
   const rows: RunTurn[] = [];
   for (const ev of events) {
@@ -201,6 +285,14 @@ export function useWorkBoardRun(
 ): {
   runState: RunStateMap;
   runItem: (id: number) => void;
+  /** Send a steer to the item's execute child. A queued steer is recorded as `sent`; a refusal records nothing. */
+  steer: (
+    id: number,
+    text: string,
+    userIntent: UserKeyboardIntentSnapshot | undefined,
+  ) => Promise<WorkBoardSteerIpcResult | { ok: false; error: string }>;
+  /** Ask the host to stop the item's execution. An accepted stop holds `stopping` until the run settles. */
+  stop: (id: number) => Promise<WorkBoardCancelIpcResult | { ok: false; error: string }>;
 } {
   const [runState, setRunState] = useState<RunStateMap>({});
   const mountedRef = useRef(true);
@@ -211,6 +303,8 @@ export function useWorkBoardRun(
   // Bumped whenever an item's run restarts, so a transcript read for an older run cannot land on the new one.
   const generationRef = useRef(new Map<number, number>());
   const backfilledRef = useRef(new Set<string>());
+  // Acknowledgements that arrived before their steer's own reply, applied when the reply records the steer.
+  const earlyAcksRef = useRef(new Map<string, WorkBoardSteerAck>());
   const onPhaseEnteredRef = useRef(onPhaseEntered);
   useEffect(() => {
     onPhaseEnteredRef.current = onPhaseEntered;
@@ -240,6 +334,26 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunProgress === "function") {
       unsubs.push(
         api.onWorkBoardRunProgress((ev: RunProgressEventPayload) => {
+          // A steer acknowledgement reports nothing else, and may arrive after the run settled: never the run's phase.
+          const ack = ev.steer;
+          if (ack !== undefined) {
+            update(ev.itemId, (cur) => {
+              if (!cur.steers.some((steer) => steer.messageId === ack.messageId)) {
+                earlyAcksRef.current.set(ack.messageId, ack);
+                return cur;
+              }
+              return { ...cur, steers: applySteerAck(cur.steers, ack) };
+            });
+            return;
+          }
+          // A tool step update is not a phase entry either; it only revises that phase's steps.
+          const tools = ev.tools;
+          if (tools !== undefined) {
+            const phase = ev.phase;
+            if (!isActivePhase(phase)) throw new Error(`work-board tool steps reported in phase ${phase}`);
+            update(ev.itemId, (cur) => ({ ...cur, tools: mergeTools(cur.tools, tools.map((step) => ({ ...step, phase }))) }));
+            return;
+          }
           update(ev.itemId, (cur) => {
             const phase = ev.phase;
             const turns =
@@ -252,8 +366,11 @@ export function useWorkBoardRun(
               turns,
               reason: phase === "error" || phase === "denied" ? ev.message : undefined,
               runSessionId: ev.runSessionId ?? cur.runSessionId,
+              sessionIds: withSession(cur.sessionIds, ev.runSessionId),
+              phaseAt: cur.phaseAt[phase] === undefined ? { ...cur.phaseAt, [phase]: ev.at } : cur.phaseAt,
               // A terminal phase ends the in-flight window even if runFinished is late.
               busy: !isTerminalPhase(phase),
+              stopping: isTerminalPhase(phase) ? false : cur.stopping,
             };
           });
           if (ev.turn === undefined && (isActivePhase(ev.phase) || ev.phase === "awaiting_approval")) {
@@ -272,17 +389,14 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunFinished === "function") {
       unsubs.push(
         api.onWorkBoardRunFinished(({ itemId, status }) => {
-          patch(itemId, {
-            busy: false,
-            phase: phaseForRunResult(status),
-          });
+          patch(itemId, { busy: false, stopping: false, phase: phaseForRunResult(status) });
         }),
       );
     }
     if (typeof api.onWorkBoardRunFailed === "function") {
       unsubs.push(
         api.onWorkBoardRunFailed(({ itemId, reason }) => {
-          patch(itemId, { busy: false, phase: "error", reason });
+          patch(itemId, { busy: false, stopping: false, phase: "error", reason });
         }),
       );
     }
@@ -306,10 +420,18 @@ export function useWorkBoardRun(
       void api.getWorkBoardRunTranscript(itemId, item.runId).then(
         (result) => {
           if ((generationRef.current.get(itemId) ?? 0) !== generation) return;
-          const rows = "events" in result ? transcriptTurns(result.events) : [];
+          const events = "events" in result ? result.events : [];
           update(itemId, (cur) => {
             const seeded = cur.phase === undefined ? { busy: true, phase: storedPhase } : {};
-            return { ...cur, ...seeded, turns: mergeTurns(cur.turns, rows) };
+            return {
+              ...cur,
+              ...seeded,
+              turns: mergeTurns(cur.turns, transcriptTurns(events)),
+              // Live steps are newer than the transcript's finished rows, so they win.
+              tools: mergeTools(transcriptTools(events), cur.tools),
+              plan: cur.plan ?? transcriptPlan(events),
+              phaseAt: { ...transcriptPhaseAt(events), ...cur.phaseAt },
+            };
           });
         },
         (err: unknown) => {
@@ -348,5 +470,38 @@ export function useWorkBoardRun(
     [api, patch, resetRun, update],
   );
 
-  return { runState, runItem };
+  const steer = useCallback(
+    async (id: number, text: string, userIntent: UserKeyboardIntentSnapshot | undefined) => {
+      if (typeof api.steerWorkBoardRun !== "function") throw new Error("steerWorkBoardRun is not exposed to this window");
+      const sentAt = new Date().toISOString();
+      const result = await api.steerWorkBoardRun(id, text, userIntent);
+      if (result.ok) {
+        const { messageId } = result;
+        const early = earlyAcksRef.current.get(messageId);
+        earlyAcksRef.current.delete(messageId);
+        update(id, (cur) => {
+          const sent: RunSteer = { messageId, text, sentAt, status: "sent", redactedCount: result.redactedCount };
+          const steers = [...cur.steers, sent];
+          return { ...cur, steers: early ? applySteerAck(steers, early) : steers };
+        });
+      }
+      return result;
+    },
+    [api, update],
+  );
+
+  const stop = useCallback(
+    async (id: number) => {
+      if (typeof api.cancelWorkBoardRun !== "function") throw new Error("cancelWorkBoardRun is not exposed to this window");
+      const result = await api.cancelWorkBoardRun(id);
+      if (result.ok) {
+        // The terminal phase may already have landed while the stop was in flight; only a live run starts stopping.
+        update(id, (cur) => (isRunInFlight(cur) ? { ...cur, stopping: true } : cur));
+      }
+      return result;
+    },
+    [api, update],
+  );
+
+  return { runState, runItem, steer, stop };
 }

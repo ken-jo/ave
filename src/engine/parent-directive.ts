@@ -6,8 +6,7 @@ import { neutralizeFenceClose, type FenceTag } from "../shared/fence-sanitizer.j
 /** Registered in `fence-sanitizer.ts`; the tag is a host constant, never caller text. */
 export const PARENT_DIRECTIVE_FENCE_TAG: FenceTag = "ave-parent-directive";
 
-// Bound the body below half the guidance limit to leave room for localized host framing.
-export const PARENT_DIRECTIVE_MAX_CHARS = 4_000;
+export { PARENT_DIRECTIVE_MAX_CHARS } from "../shared/parent-directive-limits.js";
 
 // Refuse per-child overflow visibly rather than rotate unread directives or grow unbounded.
 export const PARENT_DIRECTIVE_MAX_PENDING = 4;
