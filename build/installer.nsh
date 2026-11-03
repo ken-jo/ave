@@ -51,9 +51,9 @@ Function aveInstallMarketplaceGit
   DetailPrint "Ave: downloading git for marketplaces (official MinGit release, sha256-pinned)…"
   nsExec::ExecToLog '"$R6" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\${AVE_GIT_INSTALL_SCRIPT}" -InstallDir "$INSTDIR" -DownloadDir "$PLUGINSDIR"'
   Pop $R7
-  ${if} $R7 != 0
+  ; Plain StrCmp: this file is included before LogicLib, so ${If} is unavailable inside a Function.
+  StrCmp $R7 "0" ave_git_done
     DetailPrint "Ave: git was not installed (exit $R7); marketplaces will use a system git if one is installed. Reinstall while online to retry."
-  ${endif}
 
   ave_git_done:
   Delete "$PLUGINSDIR\${AVE_GIT_INSTALL_SCRIPT}"
