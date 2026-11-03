@@ -2944,9 +2944,11 @@ with its own owner rule:
   with them: at init it stamps an inheritable FILE_DELETE_CHILD deny on the
   home root (the parent of each denied home path) and a deny on each denied
   path, `config` among them, and removes them at quit. Ave never names such an
-  entry in its `/remove` guidance, and never rewrites one away: the narrow root
-  repair below refuses a root with an explicit deny, Repair leaves an owner-only
-  boundary as it is, and the workspace rewrite keeps an inherited deny.
+  entry in its `/remove` guidance. It does not rewrite one away from a root, an
+  owner-only boundary or the workspace: the narrow root repair below refuses a
+  root with an explicit deny, Repair leaves an owner-only boundary as it is, and
+  the workspace rewrite keeps an inherited deny. A boundary Repair recreates, or
+  a runtime root it claims from Administrators, starts as `D:P` owner-only.
   Under the lock, a root is repaired only in one narrow shape: the shape a plain
   mkdir under a profile left before homes were created this way. The repair sets
   `D:P(A;OICI;FA;;;<user>)` on the pinned home handle and verifies it through the

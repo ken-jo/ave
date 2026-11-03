@@ -219,7 +219,8 @@ function reverifyStaleBoundary(stale: WindowsReadBoundary, directory: string): W
     throw new AveHomeConfigurationUntrustedError(directory, `Configuration boundary changed before owner mutation: ${(error as Error).message}`);
   }
   fresh.handles?.close();
-  if (windowsBoundaryObjects(fresh) !== windowsBoundaryObjects(stale)) {
+  // The key carries the verification mode: a home refused since the certificate would verify without RootSafe.
+  if (fresh.key !== stale.key || windowsBoundaryObjects(fresh) !== windowsBoundaryObjects(stale)) {
     windowsReadCertificates.delete(fresh.key);
     throw new AveHomeConfigurationUntrustedError(directory, "Configuration boundary changed before owner mutation");
   }

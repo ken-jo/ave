@@ -21,9 +21,10 @@ it.runIf(process.platform === "win32")("keeps transaction and native-fact owners
     // A deny never grants access: srt-win's sandbox stamps (FILE_DELETE_CHILD on the root, a write deny on config/) leave the shape.
     { name: "deny ACE", sddl: `O:${sid}D:P(D;;FR;;;BU)${own}`, ownerOnly: true, rootSafe: true, rootRepairable: false },
     { name: "srt-win parent deny", sddl: `O:${sid}D:P(D;OICI;0x40;;;S-1-5-21-1004336348-11-77-1005)${own}`, ownerOnly: true, rootSafe: true, rootRepairable: false },
-    { name: "srt-win write deny", sddl: `O:${sid}D:P(D;OICI;0x50116;;;S-1-5-21-1004336348-11-77-1005)${own}`, ownerOnly: true, rootSafe: true, rootRepairable: false },
+    { name: "srt-win write deny", sddl: `O:${sid}D:P(D;OICI;0x10156;;;S-1-5-21-1004336348-11-77-1005)${own}`, ownerOnly: true, rootSafe: true, rootRepairable: false },
     { name: "deny beside a foreign write", sddl: `O:${sid}D:P(D;OICI;0x40;;;BU)${own}(A;;FW;;;BU)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "deny beside an inheritable foreign read", sddl: `O:${sid}D:P(D;OICI;FW;;;WD)${own}(A;OICI;FR;;;WD)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
+    { name: "deny of the user's own rights", sddl: `O:${sid}D:P(D;;FA;;;${sid})${own}`, ownerOnly: true, rootSafe: true, rootRepairable: false },
     { name: "deny alone", sddl: `O:${sid}D:P(D;OICI;0x40;;;BU)`, ownerOnly: false, rootSafe: false, rootRepairable: false },
     { name: "generic read", sddl: `O:${sid}D:P${own}(A;;GR;;;BU)`, ownerOnly: false, rootSafe: true, rootRepairable: false },
     { name: "generic write", sddl: `O:${sid}D:P${own}(A;;GW;;;BU)`, ownerOnly: false, rootSafe: false, rootRepairable: false },

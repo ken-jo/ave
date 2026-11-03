@@ -693,6 +693,14 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
         expect(["S-1-5-18", "S-1-5-32-544", user]).toContain(rule.sid);
       }
     });
+    it("treats an inherited deny on the workspace as passed down, not stale", () => {
+      // srt-win's (D;OICI;FILE_DELETE_CHILD) on a RootSafe root flows into the workspace; the rewrite keeps it and never runs for it.
+      const stale = (sddl: string) => native(`$raw=[System.Security.AccessControl.RawSecurityDescriptor]::new('${sddl}'.Replace('USER',$u.Value)); [HomeDirectoryDacl]::StaleInheritance($raw.DiscretionaryAcl,$u)`, home());
+      expect(stale("D:AI(D;OICIID;0x40;;;BG)(A;OICIID;FA;;;USER)")).toBe("False");
+      expect(stale("D:AI(A;OICIID;FA;;;USER)")).toBe("False");
+      expect(stale("D:AI(D;OICIID;0x40;;;BG)(A;OICIID;FA;;;SY)(A;OICIID;FA;;;USER)")).toBe("True");
+      expect(stale("D:AI(D;OICIID;0x40;;;BG)")).toBe("True");
+    });
     it("retries the workspace on a later boot whose root is already protected", () => {
       // A boot whose workspace rewrite failed after the root was written leaves a D:P root (not repairable again) and a stale
       // workspace. The workspace check runs on every boot whose root passes RootSafe, so the next boot completes it.
