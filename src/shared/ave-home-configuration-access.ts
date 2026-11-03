@@ -198,19 +198,44 @@ function windowsBoundaryIdentity(boundary: WindowsReadBoundary): string {
   return windowsBoundarySnapshot(boundary, pinWindowsPaths([boundary.root, boundary.directory])).identity;
 }
 
+/** The object keys of a boundary identity: each certified directory without its ChangeTime, then the ancestors. */
+function windowsBoundaryObjects(boundary: Pick<WindowsReadBoundary, "identity" | "protectedDirectory">): string {
+  const parts = boundary.identity.split("|");
+  const directories = boundary.protectedDirectory ? 2 : 1;
+  return parts.map((part, index) => index < directories ? part.slice(0, part.lastIndexOf(":")) : part).join("|");
+}
+
+/**
+ * A certificate goes stale whenever a certified directory's ChangeTime moves, and that is not only a foreign change: the root's
+ * moves when any entry is created in it (a first boot creates logs/, plugins/, workspace/ after configuration is first read), and
+ * when srt-win stamps its sandbox deny on it. A read re-verifies a stale certificate from fresh DACL facts; a write does the same,
+ * and refuses only what that verification refuses, or a boundary whose directories are no longer the certified objects.
+ */
+function reverifyStaleBoundary(stale: WindowsReadBoundary, directory: string): WindowsReadBoundary {
+  windowsReadCertificates.delete(stale.key);
+  let fresh: WindowsReadBoundary;
+  try { fresh = windowsReadBoundary(stale.path, { present: false }); }
+  catch (error) {
+    throw new AveHomeConfigurationUntrustedError(directory, `Configuration boundary changed before owner mutation: ${(error as Error).message}`);
+  }
+  fresh.handles?.close();
+  // The key carries the verification mode: a home refused since the certificate would verify without RootSafe.
+  if (fresh.key !== stale.key || windowsBoundaryObjects(fresh) !== windowsBoundaryObjects(stale)) {
+    windowsReadCertificates.delete(fresh.key);
+    throw new AveHomeConfigurationUntrustedError(directory, "Configuration boundary changed before owner mutation");
+  }
+  return fresh;
+}
+
 function observeOwnerDirectoryMutation(directory: string): () => void {
   if (process.platform !== "win32") return () => {};
   assertOwner();
   const key = homeKey(directory);
   const affected = [...windowsReadCertificates.values()].filter((boundary) =>
     homeKey(boundary.root) === key || (boundary.protectedDirectory && homeKey(boundary.directory) === key));
-  const snapshots = affected.map((boundary) => {
-    const before = windowsBoundaryIdentity(boundary);
-    if (before !== boundary.identity) {
-      windowsReadCertificates.delete(boundary.key);
-      throw new AveHomeConfigurationUntrustedError(directory, "Configuration boundary changed before owner mutation");
-    }
-    return { boundary, before: before.split("|") };
+  const snapshots = affected.map((certified) => {
+    const boundary = windowsBoundaryIdentity(certified) === certified.identity ? certified : reverifyStaleBoundary(certified, directory);
+    return { boundary, before: boundary.identity.split("|") };
   });
   return () => {
     for (const { boundary, before } of snapshots) {

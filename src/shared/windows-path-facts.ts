@@ -244,10 +244,17 @@ export function windowsOwnerRules(dacl: WindowsDacl): WindowsOwnerAccessRule[] {
   });
 }
 
+/** A deny entry never grants access, so it cannot let another principal in: the ownership shapes evaluate allow entries alone. It is
+ * how srt-win confines its sandbox account inside the home (a FILE_DELETE_CHILD deny on the root, a write deny on config/). */
+export function windowsGrantingRules<T extends { accessControlType: number }>(rules: readonly T[]): T[] {
+  return rules.filter(rule => rule.accessControlType !== 1);
+}
+
 export function isOwnerOnlyDacl(descriptor: { ownerSid?: string; elevated?: boolean; rules?: WindowsOwnerAccessRule[] }, sid: string): boolean {
   const ownerValid = descriptor.ownerSid === sid || (descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
-  const rule = descriptor.rules?.[0];
-  return ownerValid && descriptor.rules?.length === 1 && rule?.sid === sid && rule.accessControlType === 0 && rule.fileSystemRights === 2032127
+  const rules = descriptor.rules === undefined ? undefined : windowsGrantingRules(descriptor.rules);
+  const rule = rules?.[0];
+  return ownerValid && rules?.length === 1 && rule?.sid === sid && rule.accessControlType === 0 && rule.fileSystemRights === 2032127
     && rule.inheritanceFlags === 3 && rule.propagationFlags === 0 && rule.isInherited === false;
 }
 
