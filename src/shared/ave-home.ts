@@ -816,9 +816,12 @@ export function ensureAveHomePrivate(
     // The check reads the evidence before anything changes a mode: a chmod first would erase it.
     const unsafe = posixHomeProtectionFailure(home);
     if (unsafe !== undefined) return { enforcement: "none", home, ...unsafe, category: "posix-root-unsafe" };
-    const root = openSync(home, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try { fchmodSync(root, 0o700); }
-    finally { closeSync(root); }
+    if (process.platform !== "win32") {
+      // A simulated POSIX runtime on a Windows host has no POSIX mode to set (as for the children below).
+      const root = openSync(home, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { fchmodSync(root, 0o700); }
+      finally { closeSync(root); }
+    }
     // Every boot: an existing 0755 child would otherwise stay group/other-readable under a root the fatal check admits.
     for (const name of [AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_RUNTIME_DIRECTORY]) {
       const directory = join(home, name);
