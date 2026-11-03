@@ -196,7 +196,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "done":
         return (
           <span
-            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums border border-success/(--opacity-medium) bg-success/(--opacity-subtle) text-success"
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border border-success/(--opacity-medium) bg-success/(--opacity-subtle) text-success"
             data-testid="work-board-run-done"
           >
             <CheckCircle2 className="h-3 w-3" />
@@ -206,7 +206,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "denied":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
             data-testid="work-board-run-denied"
           >
             <XCircle className="h-3 w-3" />
@@ -216,7 +216,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "error":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
             title={run.reason}
             data-testid="work-board-run-error"
           >
@@ -228,7 +228,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "cancelled":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-border bg-muted text-muted-foreground"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-border bg-muted text-muted-foreground"
             data-testid="work-board-run-cancelled"
           >
             <CircleStop className="h-3 w-3" />
@@ -256,7 +256,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
   const awaiting = phase === "awaiting_approval";
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
         awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
       }`}
       data-testid="work-board-run-indicator"
@@ -1657,7 +1657,8 @@ export function WorkBoardPanel({
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
   const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "completed">("in-progress");
-  const [dockPercent, setDockPercent] = useState(55);
+  // The board's share of a narrow pane; the docked panel takes the rest and needs room for its run list, log and composer.
+  const [dockPercent, setDockPercent] = useState(40);
 
   // The board's own global controls. They sat beside the heading this panel no longer draws; the pane's header carries them
   // now. What is left in the body is the state they act on — the count — not a control.

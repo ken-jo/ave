@@ -387,8 +387,7 @@ function PlanRow({ entry }: { entry: LiveRunEntry }) {
         <ChevronRight aria-hidden="true" className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
         <span className="font-semibold text-foreground">{t("workBoard.livePlanRow")}</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground">
-          {t("workBoard.livePlanTurns", { count: planningTurns.length })}
-          {firstLine ? ` · ${firstLine}` : ""}
+          {[planningTurns.length > 0 ? t("workBoard.livePlanTurns", { count: planningTurns.length }) : null, firstLine].filter(Boolean).join(" · ")}
         </span>
         {range && <span className="shrink-0 tabular-nums text-muted-foreground">{range}</span>}
       </button>
