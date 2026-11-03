@@ -84,6 +84,7 @@ import * as ui from "../domains/ui.js";
 import * as usage from "../domains/usage.js";
 import * as window from "../domains/window.js";
 import * as workBoard from "../domains/work-board.js";
+import * as workApprovals from "../domains/work-approvals.js";
 
 const keys = (mod: Record<string, unknown>): string[] => Object.keys(mod).sort();
 
@@ -108,6 +109,7 @@ describe("IPC domain runtime named-export lock", () => {
       usage: keys(usage),
       window: keys(window),
       "work-board": keys(workBoard),
+      "work-approvals": keys(workApprovals),
     };
     expect(exportsByDomain).toMatchInlineSnapshot(`
       {
@@ -179,6 +181,9 @@ describe("IPC domain runtime named-export lock", () => {
         "window": [
           "registerWindowEventListeners",
           "registerWindowHandlers",
+        ],
+        "work-approvals": [
+          "registerWorkApprovalsHandlers",
         ],
         "work-board": [
           "registerWorkBoardHandlers",

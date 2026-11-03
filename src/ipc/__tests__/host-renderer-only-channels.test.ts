@@ -33,7 +33,7 @@ import { hostFrameEvent, pluginShellFrameEvent } from "../../__tests__/test-help
 import { configureHostResources } from "../../main/host-resources.js";
 
 const { CHANNELS } = await import("../../contract/app-contract.js");
-const { ALERTS, ROUTINES, WORK_BOARD } = await import("../../shared/ipc-channels.js");
+const { ALERTS, ROUTINES, WORK_BOARD, WORK_APPROVALS } = await import("../../shared/ipc-channels.js");
 const { setIsPackaged } = await import("../../boot/dev-flags.js");
 const { UNAUTHORIZED_FRAME } = await import("../gated.js");
 
@@ -154,6 +154,8 @@ function makeDeps(): never {
     },
     revokePluginOperationSession: vi.fn(),
     workBoardStore: undefined,
+    // The work-approvals domain subscribes to the candidate signal at registration.
+    memoryManager: { candidatesChanged: { subscribe: vi.fn(() => () => {}) } },
   } as unknown as never;
 }
 
@@ -235,6 +237,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["work-board", WORK_BOARD.run, [{}]],
   ["work-board", WORK_BOARD.steerRun, [{}]],
   ["work-board", WORK_BOARD.cancelRun, [{}]],
+  // Work-level decisions across projects: proposals, memory candidates, routine attention.
+  ["work-approvals", WORK_APPROVALS.list, [{}]],
   // Closing an alert card keeps its identity closed; the staged cards carry
   // host-rendered prompts.
   ["alerts", ALERTS.cardClosed, ["id", "dismissed"]],
@@ -305,6 +309,7 @@ beforeEach(async () => {
     { registerSessionGoalHandlers },
     { registerAppHandlers },
     { registerWorkBoardHandlers },
+    { registerWorkApprovalsHandlers },
     { registerPromptHandlers },
     { registerTourHandlers },
     { registerWorkspaceHandlers },
@@ -326,6 +331,7 @@ beforeEach(async () => {
     import("../domains/session-goal.js"),
     import("../domains/app.js"),
     import("../domains/work-board.js"),
+    import("../domains/work-approvals.js"),
     import("../domains/prompts.js"),
     import("../domains/tour.js"),
     import("../domains/workspace.js"),
@@ -347,6 +353,7 @@ beforeEach(async () => {
   registerSessionGoalHandlers(deps);
   registerAppHandlers(deps);
   registerWorkBoardHandlers(deps);
+  registerWorkApprovalsHandlers(deps);
   registerPromptHandlers(deps);
   registerTourHandlers(deps);
   registerWorkspaceHandlers(deps);

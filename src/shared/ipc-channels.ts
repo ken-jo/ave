@@ -85,6 +85,15 @@ export const WORK_BOARD = {
   proposalChanged: "ave:work-board:proposal-changed",
 } as const;
 
+// Work-level decisions ("확인 필요"), kept apart from tool-execution approvals (the chat ApprovalDock). A read-only projection over the stores
+// that own each decision; every action still goes through that store's own channel.
+export const WORK_APPROVALS = {
+  // Renderer → main: the decisions visible for one project, plus the total across every authorized project for the title-bar badge.
+  list: "ave:work-approvals:list",
+  // Main → renderer: a source store changed. No payload; the renderer re-lists.
+  changed: "ave:work-approvals:changed",
+} as const;
+
 export const PERMISSIONS = {
   getMode: "ave:permission:get-mode",
   setMode: "ave:permission:set-mode",

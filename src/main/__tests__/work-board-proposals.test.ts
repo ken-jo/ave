@@ -294,3 +294,40 @@ describe("WorkBoardStore — accepting a proposal", () => {
     }
   });
 });
+
+describe("WorkBoardStore — accepting a proposal with the user's note", () => {
+  it("appends the trimmed note as the last section of the new item's detail", async () => {
+    const { store, cleanup } = tempStore();
+    try {
+      const posted = await store.upsertProposal(INDEXER, input());
+      if (posted.status !== "ok") throw new Error("expected the post to succeed");
+      const accepted = await store.acceptProposal(posted.proposal.id, undefined, "  Only the Q3 files, please.\nSkip drafts.  ");
+      expect(accepted.status).toBe("accepted");
+      if (accepted.status !== "accepted") return;
+      expect(accepted.item.detail?.endsWith("\n\nOnly the Q3 files, please.\nSkip drafts.")).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it.each([
+    ["an empty note", "   "],
+    ["a note over the limit", "x".repeat(1001)],
+    ["a control character", "fine\u0007"],
+    ["a bidi override", "fine‮"],
+  ])("refuses %s and leaves the card open", async (_label, note) => {
+    const { store, cleanup } = tempStore();
+    try {
+      const posted = await store.upsertProposal(INDEXER, input());
+      if (posted.status !== "ok") throw new Error("expected the post to succeed");
+      const accepted = await store.acceptProposal(posted.proposal.id, undefined, note);
+      expect(accepted.status).toBe("invalid");
+      const listed = await store.listProposals();
+      expect(listed.status === "ok" && listed.proposals).toHaveLength(1);
+      const items = await store.list({});
+      expect(items.status === "ok" && items.items).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+});

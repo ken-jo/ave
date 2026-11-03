@@ -1186,6 +1186,7 @@ export type AveApi = {
   acceptWorkProposal?: (
     proposalId: string,
     projectRoot?: string,
+    note?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkProposalAcceptResult
     | { ok: false; error: string }
@@ -1199,6 +1200,15 @@ export type AveApi = {
   onWorkProposalChanged?: (
     handler: (payload: import("../../shared/work-board-types.js").WorkProposalChangedEventPayload) => void,
   ) => () => void;
+  // Work-level decisions ("확인 필요") for one project plus the all-project badge total. Tool-execution approvals are not included.
+  listWorkApprovals?: (
+    opts?: { projectRoot?: string },
+  ) => Promise<
+    | import("../../shared/work-approvals-types.js").WorkApprovalListResult
+    | { ok: false; error: string }
+  >;
+  // A source of work approvals changed; re-list. No payload.
+  onWorkApprovalsChanged?: (handler: () => void) => () => void;
   // Read a past run's persisted transcript (plan+execute conversation) for the
   // run-history view. Resolves with the ordered events (empty when absent).
   getWorkBoardRunTranscript?: (
