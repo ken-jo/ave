@@ -6,6 +6,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import type { IpcDeps } from "../types.js";
 import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
+import { maskSensitiveData } from "../../shared/dlp.js";
 import {
   listAuthorizedWorkspaceProjects,
   resolveAuthorizedWorkspaceProject,
@@ -22,16 +23,25 @@ import type {
   WorkProposalApprovalView,
 } from "../../shared/work-approvals-types.js";
 
-type ListRequest = { ok: true; projectRoot: string | undefined } | { ok: false };
+type ListRequest =
+  | { ok: true; mode: "project"; projectRoot: string | undefined }
+  | { ok: true; mode: "all-projects" }
+  | { ok: false };
 
-// Accept only `{ projectRoot?: string }` so renderer input cannot smuggle store options.
+// Accept only `{ projectRoot?: string }` or `{ allProjects: true }` so renderer input cannot smuggle store options.
 function parseListRequest(raw: unknown): ListRequest {
-  if (raw === undefined) return { ok: true, projectRoot: undefined };
+  if (raw === undefined) return { ok: true, mode: "project", projectRoot: undefined };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
   const record = raw as Record<string, unknown>;
+  if (hasOnlyKeys(record, ["allProjects"]) && record.allProjects === true) return { ok: true, mode: "all-projects" };
   if (!hasOnlyKeys(record, ["projectRoot"])) return { ok: false };
   if (record.projectRoot !== undefined && typeof record.projectRoot !== "string") return { ok: false };
-  return { ok: true, projectRoot: record.projectRoot as string | undefined };
+  return { ok: true, mode: "project", projectRoot: record.projectRoot as string | undefined };
+}
+
+// Titles and summaries are model- or plugin-written text; mask secrets and PII before they reach a renderer, as tool results are.
+function masked(text: string): string {
+  return maskSensitiveData(text).masked;
 }
 
 function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
@@ -39,10 +49,10 @@ function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
     kind: "proposal",
     key: `proposal:${proposal.id}`,
     scope: { type: "unscoped" },
-    title: proposal.title,
+    title: masked(proposal.title),
     arrivedAt: proposal.updatedAt,
     proposalId: proposal.id,
-    summary: proposal.summary,
+    summary: masked(proposal.summary),
     pluginLabel: proposal.pluginLabel,
     priority: proposal.priority,
     expiresAt: proposal.expiresAt,
@@ -56,7 +66,7 @@ function memoryCandidateView(entry: NoteEntry & { id: string }): MemoryCandidate
     scope: entry.projectRoot
       ? { type: "project", projectRoot: entry.projectRoot, isDefault: isDefaultWorkspaceRoot(entry.projectRoot) }
       : { type: "global" },
-    title: entry.title,
+    title: masked(entry.title),
     arrivedAt: entry.createdAt ?? null,
     memoryId: entry.id,
   };
@@ -75,7 +85,7 @@ function routineView(routine: RoutineRecord): RoutineAttentionApprovalView | nul
     kind: "routine-attention",
     key: `routine:${routine.id}`,
     scope: { type: "global" },
-    title: routineTitle(routine),
+    title: masked(routineTitle(routine)),
     arrivedAt: routine.lastFiredAt ?? routine.createdAt,
     routineId: routine.id,
     reasons: ["plugins-missing"],
@@ -109,8 +119,9 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     }
     const request = parseListRequest(raw);
     if (!request.ok) return { ok: false, error: "invalid-input" };
-    const resolved = resolveAuthorizedWorkspaceProject(request.projectRoot);
-    if (!resolved.authorized || !resolved.project) return { ok: false, error: "project-not-allowed" };
+    // All-projects mode (owner-approved views: the 전체 프로젝트 list and the badge popover) needs no project; project mode resolves one.
+    const project = request.mode === "project" ? resolveAuthorizedWorkspaceProject(request.projectRoot) : null;
+    if (project && (!project.authorized || !project.project)) return { ok: false, error: "project-not-allowed" };
     if (!workBoardStore) return { ok: false, error: "work-approvals-source-unavailable", source: "proposal" };
     if (!routinesStore) return { ok: false, error: "work-approvals-source-unavailable", source: "routine-attention" };
 
@@ -118,18 +129,20 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     if (proposals.status !== "ok") return { ok: false, error: "work-approvals-source-unavailable", source: "proposal" };
     const proposalViews = proposals.proposals.map(proposalView);
 
-    const project = resolved.project;
-    const candidateViews = memoryManager
-      .listMemoryCandidates({
-        projectRoot: project.projectRoot,
-        projectName: project.projectName,
-        ...(project.isDefault === true ? { includeUnscoped: true } : {}),
-      })
-      .filter(hasMemoryId)
-      .map(memoryCandidateView);
-    const allCandidateCount = memoryManager.countMemoryCandidates(
-      listAuthorizedWorkspaceProjects().map((authorized) => authorized.projectRoot),
-    );
+    // Only authorized projects: a removed or unauthorized project's candidates never appear, in either mode.
+    const allCandidates = memoryManager
+      .listMemoryCandidatesForProjects(listAuthorizedWorkspaceProjects().map((authorized) => authorized.projectRoot))
+      .filter(hasMemoryId);
+    const visibleCandidates = project?.project
+      ? memoryManager
+          .listMemoryCandidates({
+            projectRoot: project.project.projectRoot,
+            projectName: project.project.projectName,
+            ...(project.project.isDefault === true ? { includeUnscoped: true } : {}),
+          })
+          .filter(hasMemoryId)
+      : allCandidates;
+    const candidateViews = visibleCandidates.map(memoryCandidateView);
 
     const routineViews = [
       ...routinesStore.list().map(routineView).filter((view): view is RoutineAttentionApprovalView => view !== null),
@@ -138,7 +151,7 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
 
     const items: WorkApprovalView[] = [...proposalViews, ...candidateViews, ...routineViews];
     // Proposals and routines are never project-scoped, so only memory candidates differ between the visible list and the total.
-    const total = proposalViews.length + routineViews.length + allCandidateCount;
+    const total = proposalViews.length + routineViews.length + allCandidates.length;
     return { ok: true, items, total };
   });
 }

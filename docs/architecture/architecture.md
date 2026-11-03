@@ -1220,8 +1220,12 @@ each decision: open work proposals (`unscoped`), memory review candidates
 (`global`: missing plugins or a held-back invalid plugin id; a successful or
 notify-only result is not a decision and is never listed).
 It returns the requested project's items plus the unscoped and global ones, and
-a `total` across every authorized project for the title-bar badge. Candidates in
-other projects reach the renderer only as part of that count. Views are built
+a `total` across every authorized project for the title-bar badge. With
+`{ allProjects: true }` it returns every authorized project's items instead (the
+owner-approved all-projects view and badge popover); a removed or unauthorized
+project's items never appear. Titles and summaries are DLP-masked. In project
+mode, candidates in other projects reach the renderer only as part of that
+count. Views are built
 field by field, so a routine prompt, memory body or proposal task brief never
 crosses this channel. A missing source store is a
 `work-approvals-source-unavailable` result, never a silently shorter list. Each

@@ -144,6 +144,39 @@ describe("work approvals list", () => {
     expect(result.total).toBe(4);
   });
 
+  it("all-projects mode lists every authorized project's candidates and never an unauthorized or removed project's", async () => {
+    await register();
+    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
+    const global = await memoryManager.saveMemory("Reply language", "Answer in Korean.", { source: "assistant", state: "candidate" });
+    const inA = await memoryManager.saveMemory("Package manager", "Use bun.", { projectRoot: PROJECT_A, source: "assistant", state: "candidate" });
+    const inB = await memoryManager.saveMemory("Other tool", "PRIVATE-MEMORY-BODY", { projectRoot: PROJECT_B, source: "assistant", state: "candidate" });
+    await memoryManager.saveMemory("Removed project", "Gone.", { projectRoot: PROJECT_GONE, source: "assistant", state: "candidate" });
+
+    const result = await list({ allProjects: true });
+    if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
+    const candidates = result.items.filter((item) => item.kind === "memory-candidate");
+    expect(candidates.map((item) => item.memoryId).sort()).toEqual([global.id, inA.id, inB.id].sort());
+    expect(JSON.stringify(result)).not.toContain(PROJECT_GONE);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE-MEMORY-BODY");
+    expect(result.total).toBe(result.items.length);
+    // allProjects must be exactly true and alone.
+    expect(await list({ allProjects: false })).toEqual({ ok: false, error: "invalid-input" });
+    expect(await list({ allProjects: true, projectRoot: PROJECT_A })).toEqual({ ok: false, error: "invalid-input" });
+  });
+
+  it("masks secrets in titles and summaries before they reach the renderer", async () => {
+    await register();
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    await workBoardStore.upsertProposal(INDEXER, { ...PROPOSAL, title: `Rotate ${secret}`, summary: `Leaked ${secret}` });
+    await memoryManager.saveMemory(`Token ${secret}`, "x", { source: "assistant", state: "candidate" });
+    for (const arg of [undefined, { allProjects: true }]) {
+      const result = await list(arg);
+      if (!result.ok) throw new Error("list failed");
+      expect(result.items).toHaveLength(2);
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+  });
+
   it("projects a proposal field by field, without its task brief", async () => {
     await register();
     const posted = await workBoardStore.upsertProposal(INDEXER, PROPOSAL);

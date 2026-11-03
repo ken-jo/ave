@@ -1403,14 +1403,14 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   /**
-   * Main-only: how many review candidates wait across global scope and the given project roots. Review reads stay "global plus the selected
-   * project"; this returns only a number so the title-bar badge can count every authorized project without a renderer enumerating them.
+   * Main-only: review candidates across global scope and the given project roots. Ordinary review reads stay "global plus the selected
+   * project"; the caller (the work-approvals projection) passes only authorized roots and maps entries field by field, never handing a body
+   * to a renderer.
    */
-  countMemoryCandidates(projectRoots: readonly string[]): number {
+  listMemoryCandidatesForProjects(projectRoots: readonly string[]): NoteEntry[] {
     return this.readMarkdownEntries(this.memoryDir, { includeCandidates: true, allScopes: true })
       .filter((entry) => entry.id !== undefined && entry.state === "candidate")
-      .filter((entry) => !entry.projectRoot || projectRoots.some((root) => projectRootEquals(entry.projectRoot, root)))
-      .length;
+      .filter((entry) => !entry.projectRoot || projectRoots.some((root) => projectRootEquals(entry.projectRoot, root)));
   }
 
   searchMemoryEntries(query: string, options: MemoryReadOptions = {}): NoteEntry[] {
@@ -3242,7 +3242,7 @@ export class MemoryManager implements PromptMemorySource {
 
   private readMarkdownEntries(
     dir: string,
-    // allScopes skips the project visibility filter; only countMemoryCandidates uses it, and it returns a number.
+    // allScopes skips the project visibility filter; only listMemoryCandidatesForProjects uses it, with authorized roots.
     options: MemoryReadOptions & { excludeMarkedMemory?: boolean; allScopes?: boolean } = {},
   ): NoteEntry[] {
     return readdirIfPresent(dir)
