@@ -2,6 +2,7 @@
  * Current installs have unique payload directories; legacy installs use version directories. */
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { readAveHomeInput } from "../../shared/ave-home-trust.js";
+import { AveHomeConfigurationRefusedWriteError } from "../../shared/ave-home.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName } from "../catalog/types.js";
@@ -106,8 +107,11 @@ export class ContentLedger {
   private constructor(
     private readonly path: string,
     private readonly entries: Map<string, LedgerEntry>,
-    /** The file is pending review in the home content trust manifest: it lists nothing and is never rewritten. */
-    readonly pendingReview = false,
+    /**
+     * The file was pending review in the home content trust manifest when this view was opened: it lists nothing, sweeps
+     * nothing and is never rewritten from that empty view. A mutation re-reads it, so an approval made since is honoured.
+     */
+    public pendingReview = false,
   ) {}
 
   static async open(path: string): Promise<ContentLedger> {
@@ -130,6 +134,7 @@ export class ContentLedger {
 
   async put(entry: LedgerEntry): Promise<void> {
     return withInstalledStateMutation(async () => {
+      await this.reloadIfPending();
       const next = new Map(this.entries);
       next.set(ledgerKey(entry.kind, entry.name), entry);
       await this.write(next);
@@ -138,6 +143,7 @@ export class ContentLedger {
 
   async remove(kind: ContentKind, name: string): Promise<boolean> {
     return withInstalledStateMutation(async () => {
+      await this.reloadIfPending();
       const key = ledgerKey(kind, name);
       if (!this.entries.has(key)) return false;
       const next = new Map(this.entries);
@@ -145,6 +151,17 @@ export class ContentLedger {
       await this.write(next);
       return true;
     });
+  }
+
+  /** A view opened while the file was pending review re-reads it; still pending, the mutation is refused, never applied to the empty view. */
+  private async reloadIfPending(): Promise<void> {
+    if (!this.pendingReview) return;
+    const input = await readAveHomeInput(this.path);
+    if (input.status === "untrusted") throw new AveHomeConfigurationRefusedWriteError(this.path, "change the installed content ledger", "pending");
+    const entries = input.status === "absent" ? [] : parse(input.bytes.toString("utf8"), this.path);
+    this.entries.clear();
+    for (const entry of entries) this.entries.set(ledgerKey(entry.kind, entry.name), entry);
+    this.pendingReview = false;
   }
 
   /** The file is written first, so a failed write leaves memory and disk agreeing. */

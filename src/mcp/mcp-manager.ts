@@ -2,6 +2,7 @@
 
 
 
+import { assertInstalledMcpFilesIntact } from "../marketplace/app/mcp-installer.js";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
@@ -435,6 +436,9 @@ export class McpManager {
       await existing.disconnect();
       this.clients.delete(config.id);
     }
+
+    // A marketplace-installed server's package files must still be the ones its install record vouches for.
+    if (config.transport === "stdio") await assertInstalledMcpFilesIntact(aveHome(), config.id);
 
     // Always overwrite external sandboxRoot with the host-derived root before constructing a client.
     const { pluginDataDir: _untrustedDataDir, bundledPayloadRoot: _untrustedPayloadRoot, ...managedConfig } =

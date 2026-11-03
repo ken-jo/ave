@@ -3,6 +3,13 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
+const dacls = vi.hoisted(() => ({ override: undefined as undefined | ((paths: readonly string[]) => unknown[]) }));
+vi.mock("../windows-path-facts.js", async (original) => {
+  const actual = await original<typeof import("../windows-path-facts.js")>();
+  return { ...actual, readWindowsDacls: (paths: readonly string[], options?: unknown) =>
+    dacls.override !== undefined ? dacls.override(paths) : (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown)(paths, options) };
+});
+
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +24,10 @@ import {
   _resetAveHomeTrustForTest,
   approveAveHomeTrustItems,
   aveHomeTreeDigest,
+  classifyWindowsHomeEvidence,
+  initialAveHomeTrustManifest,
+  readAveHomeTreeDigestSync,
+  removeNoFollow,
   evaluateAveHomeTrustAtBoot,
   getAveHomeTrustReview,
   isAveHomeTrustPendingAtBoot,
@@ -32,6 +43,12 @@ import { readPermissionsFile } from "../../permissions/permissions-store.js";
 import { DEFAULT_EXECUTION_MODE } from "../permission-mode.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { listCustomCommands } from "../../core/custom-commands.js";
+import { guardAtomicWrite } from "../../lib/atomic-file.js";
+import { updatePermissionsFile } from "../../permissions/permissions-store.js";
+import { storedFileRulesLocation, updateProjectRulesFile } from "../../permissions/rules/project-rule-files.js";
+import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
+import type { WindowsDaclFacts } from "../windows-path-facts.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const paths = useTempPaths("ave-home-trust-", ".ave");
 
@@ -327,6 +344,253 @@ describe("links and removal", () => {
   });
 });
 
+describe("fresh home writes through the stores", () => {
+  // A file lock creates its target empty before the first write; that placeholder must not make a fresh home pending.
+  it("leaves nothing pending after permissions, project rules, the reviewer cache and memory are written", async () => {
+    const dir = home();
+    expect(boot(dir)).toEqual({ pending: false, state: "fresh" });
+    await updatePermissionsFile(join(dir, "permissions.json"), (file) => { file.rules.push({ pattern: "Bash(git status)", action: "allow" } as never); });
+    const location = storedFileRulesLocation(dir, "a".repeat(64), "/work/project");
+    await updateProjectRulesFile(location, (file) => { file.rules.push({ pattern: "Bash(npm test)", action: "allow" } as never); });
+    const cache = new VerdictCache(join(dir, "permissions", "reviewer-cache.jsonl"));
+    await cache.store(
+      { toolName: "fs_write", source: "builtin", category: "write", trustOrigin: "user-keyboard", finalInput: { path: "/work/a.md" } },
+      { allowedDirectories: ["/work"], scope: { mode: "deny-all" } },
+      { level: "low", reason: "ok" },
+    );
+    const memory = new MemoryManager({ aveDir: dir });
+    memory.load();
+    await memory.saveMemory("Build", "Run the tests before pushing.");
+    expect(getAveHomeTrustReview()!.rows).toEqual([]);
+    expect(boot(dir)).toEqual({ pending: false, state: "fresh" });
+    expect(getAveHomeTrustReview()!.rows).toEqual([]);
+    expect((await readPermissionsFile(join(dir, "permissions.json")))?.rules).toEqual([expect.objectContaining({ pattern: "Bash(git status)" })]);
+    expect(new VerdictCache(join(dir, "permissions", "reviewer-cache.jsonl")).lookup(
+      { toolName: "fs_write", source: "builtin", category: "write", trustOrigin: "user-keyboard", finalInput: { path: "/work/a.md" } },
+      { allowedDirectories: ["/work"], scope: { mode: "deny-all" } },
+    ).hit).toBe(true);
+  });
+
+  it("reads an empty file nothing vouches for as absent, but an emptied approved file as changed", () => {
+    const dir = home();
+    const permissions = put(dir, "permissions.json", "");
+    expect(boot(dir).pending).toBe(false);
+    expect(readAveHomeInputSync(permissions)).toEqual({ status: "absent" });
+    writeUtf8FileAtomicSync(permissions, '{"version":1,"rules":[],"mode":"default","updatedAt":""}');
+    writeFileSync(permissions, "");
+    expect(readAveHomeInputSync(permissions)).toMatchObject({ status: "untrusted", reason: "changed" });
+  });
+
+  it("writes memory again after its pending index was removed", async () => {
+    const dir = home();
+    put(dir, "memories/MEMORY.md", "- planted memory");
+    boot(dir);
+    removeAveHomeTrustItem(getAveHomeTrustReview()!.snapshotId, "memories/MEMORY.md");
+    const memory = new MemoryManager({ aveDir: dir });
+    memory.load();
+    await memory.saveMemory("Build", "Run the tests before pushing.");
+    expect(boot(dir).pending).toBe(false);
+  });
+});
+
+describe("approve all stays closed", () => {
+  it("never offers approve all for a home whose commit saw a moved config/ beside it, even after a restart", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    const moved = join(dir, "config.old");
+    mkdirSync(moved, { mode: 0o700 });
+    writeFileSync(join(moved, ".ave-config-migrated"), "ave-home-boundary-v1");
+    boot(dir);
+    expect(manifest(dir)).toMatchObject({ state: "bootstrapped:false", oneByOne: true });
+    expect(getAveHomeTrustReview()!.approveAllOffered).toBe(false);
+    boot(dir);
+    const review = getAveHomeTrustReview()!;
+    expect(review.approveAllOffered).toBe(false);
+    expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
+    expect(approveAveHomeTrustItems(review.snapshotId, ["AGENTS.md"])).toBe(1);
+  });
+
+  it("does not reopen approve all when the manifest is deleted or corrupted", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    boot(dir);
+    expect(getAveHomeTrustReview()!.approveAllOffered).toBe(true);
+    writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), "{not json");
+    boot(dir);
+    expect(manifest(dir)).toMatchObject({ state: "bootstrapped:false", oneByOne: true });
+    expect(getAveHomeTrustReview()!.approveAllOffered).toBe(false);
+  });
+
+  it("writes the one-by-one flag only when the commit saw a moved configuration", () => {
+    const dir = home();
+    expect(JSON.parse(initialAveHomeTrustManifest(dir, true))).toEqual({ version: 1, state: "bootstrapped:false", entries: {} });
+    expect(JSON.parse(initialAveHomeTrustManifest(dir, true, true))).toEqual({ version: 1, state: "bootstrapped:false", oneByOne: true, entries: {} });
+  });
+});
+
+describe("overlapping writes", () => {
+  it("settles on the bytes whose rename landed last, whichever callback runs first", async () => {
+    const dir = home();
+    boot(dir);
+    const path = join(dir, "AGENTS.md");
+    let landA!: () => void;
+    let landB!: () => void;
+    const a = guardAtomicWrite(path, "first", () => new Promise<void>((done) => { landA = done; }));
+    const b = guardAtomicWrite(path, "second", () => new Promise<void>((done) => { landB = done; }));
+    // B renames, then A: A's bytes are on disk. A's callback runs first, B's last.
+    writeFileSync(path, "second");
+    writeFileSync(path, "first");
+    landA();
+    await a;
+    landB();
+    await b;
+    expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
+    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("first") });
+    expect(boot(dir).pending).toBe(false);
+  });
+
+  it("keeps what another write committed when an overlapping one fails", async () => {
+    const dir = home();
+    boot(dir);
+    const path = join(dir, "AGENTS.md");
+    let failB!: () => void;
+    const b = guardAtomicWrite(path, "second", () => new Promise<void>((_done, fail) => { failB = () => fail(new Error("disk full")); }));
+    await guardAtomicWrite(path, "first", async () => { writeFileSync(path, "first"); });
+    failB();
+    await expect(b).rejects.toThrow("disk full");
+    expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
+    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("first") });
+  });
+});
+
+describe("item digests and listing", () => {
+  it("never lets a file stand in for an approved tree with the same serialization", () => {
+    const dir = home();
+    put(dir, "skills/notes/SKILL.md", "notes");
+    boot(dir);
+    approveAveHomeTrustItems(getAveHomeTrustReview()!.snapshotId);
+    const tree = manifest(dir).entries["skills/notes"]!.current!;
+    expect(tree).toBe(aveHomeTreeDigest(new Map([["SKILL.md", Buffer.from("notes")]])));
+    expect(readAveHomeTreeDigestSync(join(dir, "skills", "notes"))).toBe(tree);
+    removeNoFollow(join(dir, "skills", "notes"));
+    put(dir, "skills/notes", `ave-tree-v1\nSKILL.md\0${sha256Hex("notes")}\n`);
+    expect(boot(dir).pending).toBe(true);
+    expect(readAveHomeEntrySync(join(dir, "skills", "notes"))).toMatchObject({ status: "untrusted", reason: "changed" });
+  });
+
+  // A case-sensitive file system lets two names fold to one Windows key; only Linux test hosts can make both names.
+  it.runIf(process.platform === "linux")("refuses approval of two items whose names fold to one key on Windows", () => {
+    const dir = home();
+    put(dir, "skills/Notes/SKILL.md", "upper");
+    put(dir, "skills/notes/SKILL.md", "lower");
+    boot(dir);
+    const platform = process.platform;
+    try {
+      setProcessPlatform("win32");
+      const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key === "skills/notes");
+      expect(rows).toHaveLength(2);
+      for (const entry of rows) expect(entry).toMatchObject({ reason: "unreadable", approvable: false });
+    } finally {
+      setProcessPlatform(platform);
+    }
+  });
+
+  it("shows an item directory that is itself a link, and removes only the link", () => {
+    const dir = home();
+    const outside = join(dirname(dir), "outside-skills");
+    put(outside, "notes/SKILL.md", "outside");
+    symlinkSync(outside, join(dir, "skills"));
+    expect(boot(dir).pending).toBe(true);
+    const review = getAveHomeTrustReview()!;
+    expect(review.rows).toEqual([expect.objectContaining({ key: "skills", reason: "link", approvable: false })]);
+    removeAveHomeTrustItem(review.snapshotId, "skills");
+    expect(existsSync(join(dir, "skills"))).toBe(false);
+    expect(readFileSync(join(outside, "notes", "SKILL.md"), "utf8")).toBe("outside");
+  });
+
+  it("removes a tree through no-follow handles, leaving a linked target untouched", () => {
+    const dir = home();
+    const outside = join(dirname(dir), "outside-data");
+    put(outside, "keep.txt", "keep");
+    put(dir, "agents/helper/AGENTS.md", "help");
+    symlinkSync(outside, join(dir, "agents", "helper", "data"));
+    removeNoFollow(join(dir, "agents", "helper"), dir);
+    expect(existsSync(join(dir, "agents", "helper"))).toBe(false);
+    expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("keep");
+  });
+});
+
+describe("Windows owner and ACL overlay", () => {
+  const user = "S-1-5-21-1-2-3-1001";
+  const other = "S-1-5-21-1-2-3-1002";
+  function row(owner: string, aces: Array<{ sid: string; allow: boolean }>): WindowsDaclFacts {
+    return {
+      exists: true, directory: false, currentUserSid: user, elevated: false,
+      dacl: { owner, protected: true, nullDacl: false, aces: aces.map(({ sid, allow }) => ({ sid, type: allow ? 0 : 1, mask: 0x1f01ff, flags: 0 })) },
+    } as unknown as WindowsDaclFacts;
+  }
+
+  it("withdraws trust from an item another account owns", () => {
+    const result = classifyWindowsHomeEvidence([row(other, [{ sid: user, allow: true }])], ["AGENTS.md"]);
+    expect(result.withdrawn.get("AGENTS.md")).toBe("foreign-owner");
+    expect(result.clean).toBe(false);
+  });
+
+  it("withdraws trust from an item another account can change, including through a parent folder", () => {
+    const result = classifyWindowsHomeEvidence(
+      [row(user, [{ sid: user, allow: true }]), row(user, [{ sid: user, allow: true }, { sid: other, allow: true }])],
+      ["skills/notes", "skills/notes"],
+    );
+    expect(result.withdrawn.get("skills/notes")).toBe("foreign-access");
+    expect(result.clean).toBe(false);
+  });
+
+  it("reads the evidence again at review time, so an item planted after boot is judged on its own", () => {
+    const dir = home();
+    put(dir, "agents.custom.md", "# custom");
+    boot(dir);
+    put(dir, "user-preferences.md", "planted after boot");
+    const platform = process.platform;
+    dacls.override = (paths) => paths.map((path) => path.endsWith("user-preferences.md")
+      ? row(other, [{ sid: user, allow: true }]) : row(user, [{ sid: user, allow: true }]));
+    try {
+      setProcessPlatform("win32");
+      const review = getAveHomeTrustReview()!;
+      expect(review.rows.find((entry) => entry.key === "user-preferences.md")).toMatchObject({ reason: "foreign-owner", approvable: false });
+      expect(review.approveAllOffered).toBe(false);
+      expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
+    } finally {
+      setProcessPlatform(platform);
+      dacls.override = undefined;
+    }
+  });
+
+  it("withholds approve all when the evidence read at review time fails, even with no item withdrawn", () => {
+    const dir = home();
+    put(dir, "agents.custom.md", "# custom");
+    boot(dir);
+    expect(getAveHomeTrustReview()!.approveAllOffered).toBe(true);
+    const platform = process.platform;
+    dacls.override = () => { throw new Error("native read failed"); };
+    try {
+      setProcessPlatform("win32");
+      const review = getAveHomeTrustReview()!;
+      expect(review.rows.every((entry) => entry.approvable)).toBe(true);
+      expect(review.approveAllOffered).toBe(false);
+      expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
+    } finally {
+      setProcessPlatform(platform);
+      dacls.override = undefined;
+    }
+  });
+
+  it("keeps an item the user, SYSTEM and Administrators hold, and treats missing facts as unclean", () => {
+    const clean = classifyWindowsHomeEvidence([row("S-1-5-32-544", [{ sid: user, allow: true }, { sid: "S-1-5-18", allow: true }])], ["AGENTS.md"]);
+    expect(clean).toEqual({ withdrawn: new Map(), clean: true });
+    expect(classifyWindowsHomeEvidence([], ["AGENTS.md"]).clean).toBe(false);
+  });
+});
+
 describe("review summary", () => {
   it("masks arguments, environment and URL credentials", () => {
     const servers = Buffer.from(JSON.stringify({ servers: [
@@ -354,6 +618,22 @@ describe.runIf(process.platform !== "win32")("POSIX home protection", () => {
       expect(lstatSync(parent).mode & 0o777).toBe(0o770);
     } finally {
       chmodSync(parent, 0o700);
+    }
+  });
+
+  it("refuses a home reached through a link that sits in a folder others can write", () => {
+    const base = dirname(paths());
+    const safe = join(base, "safe");
+    const open = join(base, "open");
+    mkdirSync(safe, { mode: 0o700 });
+    mkdirSync(open, { mode: 0o700 });
+    symlinkSync(safe, join(open, "link"));
+    chmodSync(open, 0o770);
+    try {
+      const privacy = ensureAveHomePrivate(join(open, "link", ".ave"));
+      expect(privacy).toMatchObject({ enforcement: "none", category: "posix-root-unsafe", failedPath: open });
+    } finally {
+      chmodSync(open, 0o700);
     }
   });
 });

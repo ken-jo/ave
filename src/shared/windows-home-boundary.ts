@@ -267,11 +267,37 @@ public static class HomeDirectoryDacl {
       return status >= 0;
     } finally { Marshal.FreeHGlobal(memory); }
   }
+  private static bool Named(string name, string expected) {
+    return String.Equals(name, expected, StringComparison.OrdinalIgnoreCase);
+  }
+  /**
+   * Remove one item below an anchor directory through handles only: every directory on the way is opened relative to its parent
+   * without following a reparse point, and the item itself is opened as the reparse point when it is one, so a link or junction
+   * is deleted as an entry and its target is never touched. Returns false when the item does not exist.
+   */
+  public static bool RemoveItem(string anchor, string[] segments, SecurityIdentifier user) {
+    if (segments == null || segments.Length == 0) throw new InvalidOperationException("Item path is invalid");
+    SafeFileHandle current = OpenHome(anchor, user, false);
+    try {
+      for (int index = 0; index < segments.Length - 1; index++) {
+        SafeFileHandle next = OpenRelative(current, segments[index], user, 1, true, true, false);
+        current.Dispose();
+        current = next;
+        if (current == null) return false;
+      }
+      using (var item = OpenRelative(current, segments[segments.Length - 1], user, 1, false, false, false)) {
+        if (item == null) return false;
+        if (!Delete(item, user)) throw new InvalidOperationException("Item removal failed");
+        return true;
+      }
+    } finally { if (current != null) current.Dispose(); }
+  }
   private static int Copy(SafeFileHandle source, SafeFileHandle destination, SecurityIdentifier user) {
     int skipped = 0;
     foreach (string name in RepairEntries(source)) {
       // Trust-state files never travel with a copy: each commit writes them fresh (R3).
-      if (name == RepairMarker || name == NoticeMarker || name == ConfigurationMarker || name == "${AVE_HOME_TRUST_MANIFEST_NAME}" || name == "${AVE_HOME_CONFIGURATION_SOURCES_NAME}") continue;
+      // Compared without case: in a case-sensitive directory a differently cased copy must not slip through either.
+      if (Named(name, RepairMarker) || Named(name, NoticeMarker) || Named(name, ConfigurationMarker) || Named(name, "${AVE_HOME_TRUST_MANIFEST_NAME}") || Named(name, "${AVE_HOME_CONFIGURATION_SOURCES_NAME}")) continue;
       using (var child = OpenRelative(source, name, user, 1, false, false, false)) {
         if (child == null) throw new InvalidOperationException("Repair entry disappeared during copy");
         long attributes = Attributes(child);

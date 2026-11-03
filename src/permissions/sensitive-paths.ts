@@ -252,10 +252,10 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "ave-home", segments: ["subscription-runtimes"], kind: "dir", why: "subscription credentials, executable grants, and host-owned runtime state" },
   { anchor: "ave-home", segments: ["keys"], kind: "dir", why: "signing / encryption keys" },
   { anchor: "ave-home", segments: ["config"], kind: "dir", why: "permission settings, user policy, and legacy secrets" },
-  { anchor: "ave-home", segments: ["ave-secrets.json"], kind: "file", why: "legacy consolidated secrets file" },
-  { anchor: "ave-home", segments: ["settings.json"], kind: "file", why: "app settings + permission configuration" },
-  { anchor: "ave-home", segments: ["permissions.json"], kind: "file", why: "legacy/current permission settings file" },
-  { anchor: "ave-home", segments: ["policy.json"], kind: "file", why: "policy SOT" },
+  { anchor: "ave-home", segments: ["ave-secrets.json"], kind: "file", rotations: true, why: "legacy consolidated secrets file, and the copies a configuration commit moves aside" },
+  { anchor: "ave-home", segments: ["settings.json"], kind: "file", rotations: true, why: "app settings + permission configuration, and the copies a configuration commit moves aside" },
+  { anchor: "ave-home", segments: ["permissions.json"], kind: "file", rotations: true, why: "legacy/current permission settings file, and the copies a configuration commit moves aside" },
+  { anchor: "ave-home", segments: ["policy.json"], kind: "file", rotations: true, why: "policy SOT, and the copies a configuration commit moves aside" },
   {
     anchor: "ave-home",
     segments: ["permissions"],
@@ -295,6 +295,14 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "ave-home", segments: ["agents.custom.md"], kind: "file", why: "custom agent instructions (home content trust input)" },
   { anchor: "ave-home", segments: ["user-preferences.md"], kind: "file", why: "user preferences document (home content trust input)" },
   { anchor: "ave-home", segments: ["memories", "MEMORY.md"], kind: "file", why: "memory index (home content trust input)" },
+  // Not `plugins/.cache` itself: each extension's payload generations live there and its own confined processes read them. A
+  // per-extension `install-receipt.json` has no literal row (the table has no wildcard segment); a write Ave did not record
+  // still makes it pending review.
+  { anchor: "ave-home", segments: ["plugins", ".cache", "plugin-contribution-trust"], kind: "dir", why: "extension hook and MCP contribution approvals (home content trust input)" },
+  { anchor: "ave-home", segments: ["agent-plugin-trust"], kind: "dir", why: "agent extension hook and MCP approvals (home content trust input)" },
+  { anchor: "ave-home", segments: ["packages", "ledger.json"], kind: "file", why: "installed marketplace content records (home content trust input)" },
+  { anchor: "ave-home", segments: ["packages", "mcp-installs.json"], kind: "file", why: "installed marketplace MCP server records (home content trust input)" },
+  { anchor: "ave-home", segments: ["skill-approvals.json"], kind: "file", why: "legacy skill approvals (home content trust input)" },
 ]);
 
 // Host-tool glob projection of SENSITIVE_PATH_ENTRIES. Anchor-free (`**` prefix) for every anchor — see SensitiveAnchor for why the host guard deliberately ignores the anchor. `ave-home` rows keep the literal `.ave` segment to protect copied stores too. `isSensitivePath` also projects those rows onto the current `aveHome`, matching the sandbox floor. A `dir` row needs only the `/**` form: `policyMatchPaths` also tries `<path>/`, so `**\/.ssh/**` already matches the bare directory.

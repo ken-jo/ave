@@ -5,7 +5,7 @@ import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { readAveHomeInput } from "../../shared/ave-home-trust.js";
+import { forgetAveHomeInputSync, readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError, isMarketplaceError, scrubMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
@@ -226,7 +226,10 @@ export class SourceSyncer {
     const keep = new Set([pin, ...(previousPin ? [previousPin] : []), ...(await this.options.retainedCommits(id))]);
     const dir = join(this.sourceDir(id), "snapshots");
     for (const name of await readdir(dir)) {
-      if (SNAPSHOT_FILE.test(name) && !keep.has(name.slice(0, -".json".length))) await rm(join(dir, name), { force: true });
+      if (!SNAPSHOT_FILE.test(name) || keep.has(name.slice(0, -".json".length))) continue;
+      await rm(join(dir, name), { force: true });
+      // A pruned snapshot's manifest entry goes with it, so the same bytes restored later are new, not still approved.
+      forgetAveHomeInputSync(join(dir, name));
     }
   }
 

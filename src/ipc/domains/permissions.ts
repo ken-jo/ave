@@ -18,7 +18,7 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
-import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem } from "../../shared/ave-home-trust.js";
+import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { getWindowsProfileReadDenyWarnings } from "../../permissions/asrt-sandbox.js";
@@ -596,7 +596,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(PERMISSIONS.homeTrustReview, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.homeTrustReview, e); return UNAUTHORIZED_FRAME; }
-    return getAveHomeTrustReview() ?? null;
+    const review = getAveHomeTrustReview();
+    if (review === undefined) return null;
+    // Forced confinement needs a backend: without one, extensions run unconfined and the card must not claim otherwise.
+    const extensionsConfined = getWindowsSandboxSubstrate()?.extensions === "mxc" || detectPluginWorkerSandboxCapability().kind !== "none";
+    return { ...review, extensionsConfined } satisfies AveHomeTrustReviewView;
   });
 
   ipcMain.handle(PERMISSIONS.homeTrustApprove, async (e, payload: unknown) => {

@@ -299,6 +299,12 @@ export class ContentStore {
   /** Before activation, remove install directories not named by the ledger. */
   async sweep(): Promise<string[]> {
     return this.mutate(async () => {
+      // A ledger pending review names nothing it can vouch for; sweeping by it would delete every installed package before the
+      // user has reviewed anything. Nothing is swept until the ledger is approved.
+      if (this.ledger.pendingReview) {
+        log.warn("installed content sweep skipped: the installed content ledger is waiting for review");
+        return [];
+      }
       const removed: string[] = [];
       const named = new Set(this.ledger.list().map((entry) => this.packageDir(entry)));
       const entries = async (dir: string) => readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {

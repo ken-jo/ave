@@ -8,11 +8,11 @@
  * these files as before, the same scope slice 1 gives `isInRefusedAveHome`.
  */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmdirSync, unlinkSync, type Stats } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isMissingPathError, setAtomicWriteGuard, type AtomicWriteTicket } from "../lib/atomic-file.js";
-import { AveHomeConfigurationRefusedWriteError, aveHomeRefusalReason, isAveHomeConfigurationRefused, isInRefusedAveHome, type AveHomeRefusalReason } from "./ave-home.js";
+import { AveHomeConfigurationRefusedWriteError, aveHomeRefusalReason, isAveHomeConfigurationRefused, isInRefusedAveHome, removeWindowsItemNoFollow, type AveHomeRefusalReason } from "./ave-home.js";
 import { AveHomeConfigurationNotOwnerError, isAveHomeConfigurationOwner, readAveHomeTrustManifestBytes, writeAveHomeTrustManifestSync } from "./ave-home-configuration-access.js";
 import { readWindowsDacls, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { WINDOWS_WORKSPACE_TRUSTED_WRITERS } from "./windows-home-boundary.js";
@@ -29,6 +29,11 @@ interface ManifestEntry {
 interface TrustManifest {
   version: 1;
   state: AveHomeTrustState;
+  /**
+   * Set when this manifest was not the one a clean first commit wrote: a moved `config/` sat beside the home at that commit
+   * (D3①), or the manifest was missing or unreadable and recreated. "Approve all" is never offered; each item is reviewed.
+   */
+  oneByOne?: true;
   entries: Record<string, ManifestEntry>;
 }
 
@@ -50,16 +55,14 @@ interface ActiveTrust {
   /** Undefined while the manifest is usable; otherwise every input is untrusted and nothing can be approved. */
   readonly unavailable?: AveHomeRefusalReason;
   manifest: TrustManifest;
-  /** Keys whose owner or ACL evidence withdraws trust for this run (R1). */
-  readonly withdrawn: ReadonlyMap<string, "foreign-owner" | "foreign-access">;
-  /** Whether the evidence read at boot found no foreign owner or ACE and the native read itself succeeded. */
-  readonly evidenceClean: boolean;
+  /** Keys whose owner or ACL evidence withdraws trust for this run (R1). Evidence read later only adds to it. */
+  readonly withdrawn: Map<string, "foreign-owner" | "foreign-access">;
+  /** Whether every evidence read so far (at boot and at each review) found no foreign owner or ACE and itself succeeded. */
+  evidenceClean: boolean;
   readonly pendingAtBoot: boolean;
 }
 
 let active: ActiveTrust | undefined;
-/** A user-owned, owner-only sibling of `config/` holding a valid marker, seen by this run's commit (D3①): no one-click approval. */
-let movedConfigurationSeen = false;
 let reviewSnapshot: { id: string; rows: readonly AveHomeTrustRow[] } | undefined;
 
 const MAX_INPUT_BYTES = 16 * 1024 * 1024;
@@ -146,6 +149,14 @@ class LinkedInputError extends Error {
   }
 }
 
+/** Two names in one directory fold to the same key on Windows (a case-sensitive directory): which one loads is ambiguous. */
+class AmbiguousInputError extends Error {
+  constructor(path: string) {
+    super(`${path} holds names that differ only in case`);
+    this.name = "AmbiguousInputError";
+  }
+}
+
 /** Every component from the home down to `path` must be a real directory or, last, a regular file: no link, junction or reparse point. */
 function assertNoLinkBelow(home: string, path: string): Stats | undefined {
   const segments = homeSegments(home, path) ?? [];
@@ -180,14 +191,30 @@ function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: num
   } finally { closeSync(descriptor); }
 }
 
+/**
+ * Item digests carry their kind, so a tree item and a file item can never share a hash: an attacker who swaps an approved
+ * directory for a file holding its serialization (or the reverse) gets a different digest. Covered single files keep the plain
+ * SHA-256 of their bytes; their keys are never item keys.
+ */
 function treeDigestOf(files: ReadonlyMap<string, Buffer>): string {
   const lines = [...files.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([path, bytes]) => `${path}\0${sha256Hex(bytes)}\n`);
   return sha256Hex(`ave-tree-v1\n${lines.join("")}`);
 }
 
-/** The digest Ave records for a tree item it writes from in-memory bytes, keyed by POSIX relative paths. */
+function entryFileDigestOf(bytes: Uint8Array | string): string {
+  return sha256Hex(`ave-file-v1\n${sha256Hex(bytes)}`);
+}
+
+/** The tree digest of in-memory files keyed by POSIX relative paths: what a no-follow read of the same tree on disk yields. */
 export function aveHomeTreeDigest(files: ReadonlyMap<string, Buffer>): string {
-  return treeDigestOf(new Map([...files].map(([path, bytes]) => [path.split(sep).join("/"), bytes])));
+  return treeDigestOf(files);
+}
+
+/** The tree digest of `root` read without following any link; a link, special file or (Windows) case collision throws. */
+export function readAveHomeTreeDigestSync(root: string): string {
+  const entry = lstatSync(root);
+  if (!entry.isDirectory()) throw new LinkedInputError(root);
+  return treeDigestOf(readTree(root).files);
 }
 
 /** A tree's files by POSIX relative path. Inside the gate a link anywhere rejects the tree; outside it (`follow`) links are read through. */
@@ -196,7 +223,9 @@ function readTree(root: string): { files: Map<string, Buffer>; uids: Set<number>
   const uids = new Set<number>();
   let total = 0;
   const walk = (directory: string, prefix: string): void => {
-    for (const name of readdirSync(directory).sort()) {
+    const names = readdirSync(directory).sort();
+    if (process.platform === "win32" && new Set(names.map((name) => name.toLowerCase())).size !== names.length) throw new AmbiguousInputError(directory);
+    for (const name of names) {
       const path = join(directory, name);
       const entry = lstatSync(path);
       const rel = prefix === "" ? name : `${prefix}/${name}`;
@@ -264,8 +293,20 @@ export function readAveHomeInputSync(path: string): AveHomeInput {
     if (error instanceof LinkedInputError) return { status: "untrusted", bytes: Buffer.alloc(0), reason: "link" };
     throw error;
   }
+  // An empty file nothing vouches for is what a file lock leaves before its first write: it holds no content, so it reads as
+  // absent rather than pending. Once a hash is recorded for the key, an emptied file is a change like any other.
+  if (isPlaceholder(gate.trust, gate.key, read.bytes)) return { status: "absent" };
   const decision = verdict(gate.trust, gate.key, sha256Hex(read.bytes), [read.uid]);
   return decision.trusted ? { status: "trusted", bytes: read.bytes } : { status: "untrusted", bytes: read.bytes, reason: decision.reason };
+}
+
+function isPlaceholder(trust: ActiveTrust, key: string, bytes: Buffer): boolean {
+  return bytes.length === 0 && trust.unavailable === undefined && trust.manifest.entries[key] === undefined;
+}
+
+function isEmptyFile(path: string): boolean {
+  try { const entry = lstatSync(path); return entry.isFile() && entry.size === 0; }
+  catch { return false; }
 }
 
 function readThroughEntry(home: string, key: string, path: string): AveHomeInput {
@@ -341,12 +382,13 @@ export function readAveHomeEntrySync(path: string): AveHomeEntry {
         : { status: "untrusted", kind: "tree", files: tree.files, reason: decision.reason };
     }
     const read = readRegularFile(path, pinned);
-    const decision = verdict(gate.trust, gate.key, sha256Hex(read.bytes), [read.uid]);
+    const decision = verdict(gate.trust, gate.key, entryFileDigestOf(read.bytes), [read.uid]);
     return decision.trusted ? { status: "trusted", kind: "file", bytes: read.bytes }
       : { status: "untrusted", kind: "file", bytes: read.bytes, reason: decision.reason };
   } catch (error) {
     if (isMissingPathError(error)) return { status: "absent" };
     if (error instanceof LinkedInputError) return { status: "untrusted", kind: "tree", files: new Map(), reason: "link" };
+    if (error instanceof AmbiguousInputError) return { status: "untrusted", kind: "tree", files: new Map(), reason: "unreadable" };
     throw error;
   }
 }
@@ -361,7 +403,7 @@ function persist(trust: ActiveTrust): void {
 }
 
 /** Refuse a write that the gate does not allow; return the key to record, or undefined when the path is outside the gate. */
-function admitWrite(path: string, action: string): { trust: ActiveTrust; key: string } | undefined {
+function admitWrite(path: string, action: string): { trust: ActiveTrust; key: string; kind: "file" | "entry" } | undefined {
   const gate = gateFor(path);
   if (gate === undefined || gate.kind === "inside") {
     if (gate !== undefined && gate.trust.unavailable !== undefined) throw new AveHomeConfigurationRefusedWriteError(path, action, gate.trust.unavailable);
@@ -373,7 +415,7 @@ function admitWrite(path: string, action: string): { trust: ActiveTrust; key: st
   const current = gate.kind === "entry" ? readAveHomeEntrySync(path) : readAveHomeInputSync(path);
   // Rewriting a pending item from its absent view would erase content the user has not reviewed: review first.
   if (current.status === "untrusted") throw new AveHomeConfigurationRefusedWriteError(path, action, "pending");
-  return { trust: gate.trust, key: gate.key };
+  return { trust: gate.trust, key: gate.key, kind: gate.kind };
 }
 
 /**
@@ -385,57 +427,81 @@ export function assertAveHomeInputWritable(path: string, action = `change ${path
   admitWrite(path, action);
 }
 
-function stage(trust: ActiveTrust, key: string, hash: string): AtomicWriteTicket {
+/** The hashes of this run's writes still in flight, per key, oldest first. Only Ave's own intents are ever listed here. */
+const inFlight = new Map<string, string[]>();
+/** Per key, the hashes of the writes that overlapped since the key last had none in flight, minus those that failed. */
+const overlapping = new Map<string, Set<string>>();
+
+/** Set `key`'s entry to `current` plus the newest write still in flight, if any. */
+function settle(trust: ActiveTrust, key: string, current: string | undefined): void {
+  const pending = inFlight.get(key)?.at(-1);
+  if (current === undefined && pending === undefined) delete trust.manifest.entries[key];
+  else trust.manifest.entries[key] = { ...(current !== undefined ? { current } : {}), ...(pending !== undefined ? { pendingWrite: pending } : {}) };
+}
+
+function dropInFlight(key: string, hash: string, failed: boolean): void {
+  const list = inFlight.get(key);
+  if (list === undefined) return;
+  const index = list.indexOf(hash);
+  if (index >= 0) list.splice(index, 1);
+  if (failed && !list.includes(hash)) overlapping.get(key)?.delete(hash);
+  if (list.length === 0) { inFlight.delete(key); overlapping.delete(key); }
+}
+
+/**
+ * The hash now on disk when it is one of this run's own overlapping writes to `key`, so writes that overlap settle on whichever
+ * rename landed last instead of on the order their callbacks ran. Without an overlap, or for anything else on disk (absent,
+ * foreign, unreadable), it is the committing write's hash, and a mismatch then reads as changed.
+ */
+function landedHash(trust: ActiveTrust, key: string, kind: "file" | "entry", own: string): string {
+  const group = overlapping.get(key);
+  if (group === undefined || group.size <= 1) return own;
+  const path = join(trust.home, ...key.split("/"));
+  const disk = currentHash({ key, path, kind }, trust.home)?.hash;
+  return disk !== undefined && group.has(disk) ? disk : own;
+}
+
+function stage(trust: ActiveTrust, key: string, kind: "file" | "entry", hash: string): AtomicWriteTicket {
   const before = trust.manifest.entries[key];
-  // One slot: a new write overwrites any earlier intent.
-  trust.manifest.entries[key] = { ...(before?.current !== undefined ? { current: before.current } : {}), pendingWrite: hash };
+  inFlight.set(key, [...(inFlight.get(key) ?? []), hash]);
+  overlapping.set(key, (overlapping.get(key) ?? new Set()).add(hash));
+  // One persisted slot: the newest write's intent. Older writes still in flight stay listed in memory.
+  settle(trust, key, before?.current);
   try { persist(trust); }
   catch (error) {
-    restore(trust, key, before);
+    dropInFlight(key, hash, true);
+    settle(trust, key, before?.current);
     throw error;
   }
   return {
     committed: () => {
-      trust.manifest.entries[key] = { current: hash };
+      const landed = landedHash(trust, key, kind, hash);
+      dropInFlight(key, hash, false);
+      settle(trust, key, landed);
       // The intent already vouches for these bytes, so a failed collapse strands nothing; boot collapses it.
       try { persist(trust); } catch { /* collapsed at the next boot */ }
     },
     failed: () => {
-      // A failed write clears its intent at once, so restored old bytes that happen to match it never become trusted (R5).
-      restore(trust, key, before);
+      // A failed write clears its own intent at once, so restored old bytes that happen to match it never become trusted (R5).
+      // What another write committed meanwhile stays current.
+      dropInFlight(key, hash, true);
+      settle(trust, key, trust.manifest.entries[key]?.current);
       try { persist(trust); } catch { /* the in-memory slot is already cleared; boot drops any stale intent */ }
     },
   };
-}
-
-function restore(trust: ActiveTrust, key: string, before: ManifestEntry | undefined): void {
-  if (before?.current !== undefined) trust.manifest.entries[key] = { current: before.current };
-  else delete trust.manifest.entries[key];
 }
 
 /** The atomic-file guard: every whole-file write of a covered input is admitted, staged and recorded. */
 function guardWrite(path: string, content: string | Uint8Array): AtomicWriteTicket | undefined {
   const admitted = admitWrite(path, `change ${path}`);
   if (admitted === undefined) return undefined;
-  return stage(admitted.trust, admitted.key, sha256Hex(content));
+  return stage(admitted.trust, admitted.key, admitted.kind, admitted.kind === "entry" ? entryFileDigestOf(content) : sha256Hex(content));
 }
 
 /** Record a write that does not go through the atomic-file helpers: `bytes` is exactly what `write` puts at `path`. */
 export function recordAveHomeInputWriteSync<T>(path: string, bytes: string | Uint8Array, write: () => T): T {
   const ticket = guardWrite(path, bytes);
   if (ticket === undefined) return write();
-  let result: T;
-  try { result = write(); }
-  catch (error) { ticket.failed(); throw error; }
-  ticket.committed();
-  return result;
-}
-
-/** Record a whole tree item Ave writes from in-memory bytes: `digest` comes from those bytes, never from a re-read of the tree. */
-export function recordAveHomeEntryWriteSync<T>(path: string, digest: string, write: () => T): T {
-  const admitted = admitWrite(path, `change ${path}`);
-  if (admitted === undefined) return write();
-  const ticket = stage(admitted.trust, admitted.key, digest);
   let result: T;
   try { result = write(); }
   catch (error) { ticket.failed(); throw error; }
@@ -458,15 +524,21 @@ interface CoveredInput {
   readonly key: string;
   readonly path: string;
   readonly kind: "file" | "entry";
+  /**
+   * Set for something that cannot be approved, only removed: a directory Ave enumerates for items that is itself a link or not a
+   * directory (its items would otherwise never show), or a name that collides with another one when case is folded.
+   */
+  readonly blocked?: "link" | "unreadable";
 }
 
-function listDirectory(path: string): string[] {
+/** The names in an enumerated directory; `linked` when the directory itself is a link or not a directory. */
+function listDirectory(path: string): { names: string[]; linked: boolean } {
   try {
     const entry = lstatSync(path);
-    if (!entry.isDirectory()) return [];
-    return readdirSync(path).filter((name) => !name.startsWith(".") || name === ".cache").sort();
+    if (!entry.isDirectory()) return { names: [], linked: true };
+    return { names: readdirSync(path).sort(), linked: false };
   } catch (error) {
-    if (isMissingPathError(error)) return [];
+    if (isMissingPathError(error)) return { names: [], linked: false };
     throw error;
   }
 }
@@ -480,35 +552,44 @@ function exists(path: string): boolean {
 export function listAveHomeCoveredInputs(home: string): CoveredInput[] {
   const root = resolve(home);
   const found: CoveredInput[] = [];
+  const keys = new Set<string>();
   const add = (rel: string, kind: "file" | "entry") => {
     const path = join(root, ...rel.split("/"));
-    if (exists(path)) found.push({ key: foldKey(rel), path, kind });
+    if (!exists(path)) return;
+    const key = foldKey(rel);
+    if (keys.has(key)) {
+      // A second name with the same folded key: neither can be approved, since an approval could not say which one it vouches for.
+      for (let index = 0; index < found.length; index++) if (found[index]!.key === key) found[index] = { ...found[index]!, blocked: "unreadable" };
+      found.push({ key, path, kind, blocked: "unreadable" });
+      return;
+    }
+    keys.add(key);
+    found.push({ key, path, kind });
+  };
+  const list = (rel: string): string[] => {
+    const listing = listDirectory(join(root, ...rel.split("/")));
+    if (listing.linked) found.push({ key: foldKey(rel), path: join(root, ...rel.split("/")), kind: "file", blocked: "link" });
+    return listing.names.filter((name) => !name.startsWith("."));
   };
   for (const rel of COVERED_FILES) add(rel, "file");
-  for (const name of listDirectory(join(root, "permissions", "project-rules"))) if (!name.startsWith(".")) add(`permissions/project-rules/${name}`, "file");
-  for (const name of listDirectory(join(root, "plugins", ".cache"))) if (!name.startsWith(".")) add(`plugins/.cache/${name}/install-receipt.json`, "file");
-  for (const name of listDirectory(join(root, "marketplaces"))) {
-    if (name.startsWith(".")) continue;
+  for (const name of list("permissions/project-rules")) add(`permissions/project-rules/${name}`, "file");
+  for (const name of list("plugins/.cache")) add(`plugins/.cache/${name}/install-receipt.json`, "file");
+  for (const name of list("marketplaces")) {
     add(`marketplaces/${name}/state.json`, "file");
-    for (const snapshot of listDirectory(join(root, "marketplaces", name, "snapshots"))) {
-      if (!snapshot.startsWith(".")) add(`marketplaces/${name}/snapshots/${snapshot}`, "file");
-    }
+    for (const snapshot of list(`marketplaces/${name}/snapshots`)) add(`marketplaces/${name}/snapshots/${snapshot}`, "file");
   }
-  for (const directory of ENTRY_DIRECTORIES) {
-    for (const name of listDirectory(join(root, directory))) if (!name.startsWith(".")) add(`${directory}/${name}`, "entry");
-  }
+  for (const directory of ENTRY_DIRECTORIES) for (const name of list(directory)) add(`${directory}/${name}`, "entry");
   return found;
 }
 
 /** The manifest a commit writes fresh: `fresh` for a home with nothing to vouch for, else every existing item is pending. */
-export function initialAveHomeTrustManifest(home: string, legacyRootConfiguration: boolean): string {
-  const state: AveHomeTrustState = legacyRootConfiguration || listAveHomeCoveredInputs(home).length > 0 ? "bootstrapped:false" : "fresh";
-  return `${JSON.stringify({ version: 1, state, entries: {} } satisfies TrustManifest, null, 2)}\n`;
-}
-
-/** Called by the commit that found a moved `config/` candidate among the root's siblings (D3①). */
-export function noteAveHomeMovedConfiguration(): void {
-  movedConfigurationSeen = true;
+/**
+ * The manifest a commit writes fresh: `fresh` for a home with nothing to vouch for, else every existing item is pending. A
+ * moved `config/` candidate beside the home (D3①) is recorded in the manifest itself, so no later boot offers "approve all".
+ */
+export function initialAveHomeTrustManifest(home: string, legacyRootConfiguration: boolean, movedConfiguration = false): string {
+  const state: AveHomeTrustState = legacyRootConfiguration || listAveHomeCoveredInputs(home).some((input) => !isEmptyFile(input.path)) ? "bootstrapped:false" : "fresh";
+  return `${JSON.stringify({ version: 1, state, ...(movedConfiguration ? { oneByOne: true } : {}), entries: {} } satisfies TrustManifest, null, 2)}\n`;
 }
 
 function parseManifest(bytes: Buffer): TrustManifest | undefined {
@@ -516,8 +597,9 @@ function parseManifest(bytes: Buffer): TrustManifest | undefined {
   try { parsed = JSON.parse(bytes.toString("utf8")); }
   catch { return undefined; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  const { version, state, entries } = parsed as Partial<TrustManifest>;
+  const { version, state, entries, oneByOne } = parsed as Partial<TrustManifest>;
   if (version !== 1 || (state !== "fresh" && state !== "bootstrapped:false" && state !== "bootstrapped:true")) return undefined;
+  if (oneByOne !== undefined && oneByOne !== true) return undefined;
   if (!entries || typeof entries !== "object" || Array.isArray(entries)) return undefined;
   const clean: Record<string, ManifestEntry> = {};
   for (const [key, value] of Object.entries(entries)) {
@@ -527,7 +609,7 @@ function parseManifest(bytes: Buffer): TrustManifest | undefined {
     if (current === undefined && pendingWrite === undefined) continue;
     clean[key] = { ...(current !== undefined ? { current } : {}), ...(pendingWrite !== undefined ? { pendingWrite } : {}) };
   }
-  return { version: 1, state, entries: clean };
+  return { version: 1, state, ...(oneByOne ? { oneByOne } : {}), entries: clean };
 }
 
 /** The hash of an input as it is on disk now, or undefined when it is absent, a link or unreadable. */
@@ -540,7 +622,7 @@ function currentHash(input: CoveredInput, home: string): { hash: string; uids: n
       return { hash: treeDigestOf(tree.files), uids: [...tree.uids], files: [...tree.files.keys()] };
     }
     const read = readRegularFile(input.path, pinned);
-    return { hash: sha256Hex(read.bytes), uids: [read.uid], bytes: read.bytes };
+    return { hash: input.kind === "entry" ? entryFileDigestOf(read.bytes) : sha256Hex(read.bytes), uids: [read.uid], bytes: read.bytes };
   } catch {
     return undefined;
   }
@@ -549,14 +631,16 @@ function currentHash(input: CoveredInput, home: string): { hash: string; uids: n
 const WINDOWS_TRUSTED_OWNERS = new Set(["S-1-5-18", "S-1-5-32-544"]);
 
 /** The Windows owner/ACL overlay: owner or ACE evidence of another principal withdraws an item's trust for this run (R1). */
-function windowsEvidence(inputs: readonly CoveredInput[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean } {
-  const withdrawn = new Map<string, "foreign-owner" | "foreign-access">();
-  if (process.platform !== "win32" || inputs.length === 0) return { withdrawn, clean: true };
+function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean } {
+  if (process.platform !== "win32" || inputs.length === 0) return { withdrawn: new Map(), clean: true };
   const paths: string[] = [];
   const keys: string[] = [];
   for (const input of inputs) {
     paths.push(input.path);
     keys.push(input.key);
+    // The directories between the home and the item too: an ACE granting another principal write on a parent lets it replace the item.
+    const segments = homeSegments(home, input.path) ?? [];
+    for (let depth = 1; depth < segments.length; depth++) { paths.push(join(resolve(home), ...segments.slice(0, depth))); keys.push(input.key); }
     if (input.kind === "entry") {
       try {
         if (lstatSync(input.path).isDirectory()) {
@@ -567,8 +651,17 @@ function windowsEvidence(inputs: readonly CoveredInput[]): { withdrawn: Map<stri
   }
   let facts: readonly WindowsDaclFacts[];
   try { facts = readWindowsDacls(paths); }
-  catch { return { withdrawn, clean: false }; }
-  let clean = facts.length === paths.length;
+  catch { return { withdrawn: new Map(), clean: false }; }
+  return classifyWindowsHomeEvidence(facts, keys);
+}
+
+/**
+ * Classify the owner and DACL facts read for each covered key (one row per path, `keys[i]` naming the item `facts[i]` belongs
+ * to). Pure, so the Windows overlay is tested on every platform.
+ */
+export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], keys: readonly string[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean } {
+  const withdrawn = new Map<string, "foreign-owner" | "foreign-access">();
+  let clean = facts.length === keys.length;
   facts.forEach((row, index) => {
     const key = keys[index]!;
     if (row.exists !== true || !row.dacl) { clean = false; return; }
@@ -614,8 +707,9 @@ export function evaluateAveHomeTrustAtBoot(home: string): AveHomeTrustVerdict {
   let manifest = bytes === undefined ? undefined : parseManifest(bytes);
   let changed = false;
   if (manifest === undefined) {
-    // Absent or unreadable: never trusted. Every existing item is pending.
-    manifest = { version: 1, state: inputs.length > 0 ? "bootstrapped:false" : "fresh", entries: {} };
+    // Absent or unreadable after the commit wrote one: never trusted. Every existing item is pending and reviewed one by one, so
+    // deleting or corrupting the manifest never reopens "approve all".
+    manifest = inputs.length > 0 ? { version: 1, state: "bootstrapped:false", oneByOne: true, entries: {} } : { version: 1, state: "fresh", entries: {} };
     changed = true;
   }
   const byKey = new Map(inputs.map((input) => [input.key, input]));
@@ -628,7 +722,7 @@ export function evaluateAveHomeTrustAtBoot(home: string): AveHomeTrustVerdict {
     if (manifest.entries[key]!.current === undefined) delete manifest.entries[key];
     changed = true;
   }
-  const evidence = windowsEvidence(inputs);
+  const evidence = windowsEvidence(root, inputs);
   active = { home: root, manifest, withdrawn: evidence.withdrawn, evidenceClean: evidence.clean, pendingAtBoot: false };
   if (changed && isAveHomeConfigurationOwner()) persist(active);
   const pending = reviewRows(active).length > 0;
@@ -717,7 +811,12 @@ export function summarizeAveHomeInput(key: string, current: { bytes?: Buffer; fi
 function reviewRows(trust: ActiveTrust): AveHomeTrustRow[] {
   const rows: AveHomeTrustRow[] = [];
   for (const input of listAveHomeCoveredInputs(trust.home)) {
+    if (input.blocked !== undefined) {
+      rows.push({ key: input.key, path: input.path, kind: input.kind, reason: input.blocked, approvable: false });
+      continue;
+    }
     const current = currentHash(input, trust.home);
+    if (current?.bytes !== undefined && input.kind === "file" && isPlaceholder(trust, input.key, current.bytes)) continue;
     if (current === undefined) {
       let reason: AveHomeTrustReason = "unreadable";
       try { assertNoLinkBelow(trust.home, input.path); } catch (error) { if (error instanceof LinkedInputError) reason = "link"; }
@@ -737,11 +836,23 @@ function reviewRows(trust: ActiveTrust): AveHomeTrustRow[] {
   return rows;
 }
 
+/**
+ * Read the owner/ACL evidence again for what is on disk now, so an item that appeared or changed after boot is judged on its
+ * own evidence before the card offers it. Evidence only withdraws (R1): nothing read here makes an item trusted.
+ */
+function refreshEvidence(trust: ActiveTrust): void {
+  const evidence = windowsEvidence(trust.home, listAveHomeCoveredInputs(trust.home));
+  for (const [key, reason] of evidence.withdrawn) if (!trust.withdrawn.has(key)) trust.withdrawn.set(key, reason);
+  if (!evidence.clean) trust.evidenceClean = false;
+}
+
 export interface AveHomeTrustReview {
   readonly snapshotId: string;
   readonly state?: AveHomeTrustState;
   /** The manifest cannot be used this boot: nothing can be approved until the folder is fixed. */
   readonly unavailable?: AveHomeRefusalReason;
+  /** With `unavailable: "recovery"`: the configuration folder to move aside, so the card can name it. */
+  readonly configurationFolder?: string;
   readonly rows: readonly AveHomeTrustRow[];
   /** "Approve all" (D1①): only for an explicit `bootstrapped:false` manifest with clean evidence, on a home not refused now. */
   readonly approveAllOffered: boolean;
@@ -749,18 +860,24 @@ export interface AveHomeTrustReview {
   readonly pendingAtBoot: boolean;
 }
 
+/** What the review IPC serves: the review plus whether extensions actually run confined this boot (a backend may be missing). */
+export interface AveHomeTrustReviewView extends AveHomeTrustReview {
+  readonly extensionsConfined: boolean;
+}
+
 /** The review the card renders. Approve and Remove act only on the rows of this exact snapshot, with the hashes it showed. */
 export function getAveHomeTrustReview(): AveHomeTrustReview | undefined {
   const trust = active;
   if (trust === undefined) return undefined;
+  if (trust.unavailable === undefined) refreshEvidence(trust);
   const rows = trust.unavailable === undefined ? reviewRows(trust) : [];
   const snapshotId = randomUUID();
   reviewSnapshot = { id: snapshotId, rows };
-  const approveAllOffered = trust.unavailable === undefined && trust.manifest.state === "bootstrapped:false" && trust.evidenceClean
-    && !movedConfigurationSeen && rows.length > 0 && rows.every((row) => row.approvable);
+  const approveAllOffered = trust.unavailable === undefined && approveAllAllowed(trust, rows) && rows.length > 0;
   return {
     snapshotId,
     ...(trust.unavailable === undefined ? { state: trust.manifest.state } : { unavailable: trust.unavailable }),
+    ...(trust.unavailable === "recovery" ? { configurationFolder: join(trust.home, "config") } : {}),
     rows,
     approveAllOffered,
     pendingAtBoot: trust.pendingAtBoot,
@@ -773,6 +890,11 @@ export class AveHomeTrustReviewError extends Error {
     super(message);
     this.name = "AveHomeTrustReviewError";
   }
+}
+
+/** D1①: one click only for an explicit `bootstrapped:false` manifest a clean commit wrote, with clean evidence and every row approvable. */
+function approveAllAllowed(trust: ActiveTrust, rows: readonly AveHomeTrustRow[]): boolean {
+  return trust.manifest.state === "bootstrapped:false" && trust.manifest.oneByOne !== true && trust.evidenceClean && rows.every((row) => row.approvable);
 }
 
 function reviewTarget(snapshotId: string): { trust: ActiveTrust; rows: readonly AveHomeTrustRow[] } {
@@ -795,8 +917,7 @@ export function approveAveHomeTrustItems(snapshotId: string, keys?: readonly str
   if (!isAveHomeConfigurationOwner()) throw new AveHomeConfigurationNotOwnerError();
   let selected: readonly AveHomeTrustRow[];
   if (keys === undefined) {
-    const review = trust.manifest.state === "bootstrapped:false" && trust.evidenceClean && !movedConfigurationSeen && rows.every((row) => row.approvable);
-    if (!review) throw new AveHomeTrustReviewError("not-offered", "Approve the items one by one.");
+    if (!approveAllAllowed(trust, rows)) throw new AveHomeTrustReviewError("not-offered", "Approve the items one by one.");
     selected = rows;
   } else {
     selected = keys.map((key) => {
@@ -823,7 +944,7 @@ export function removeAveHomeTrustItem(snapshotId: string, key: string): void {
   if (!isAveHomeConfigurationOwner()) throw new AveHomeConfigurationNotOwnerError();
   const row = rows.find((candidate) => candidate.key === key);
   if (row === undefined) throw new AveHomeTrustReviewError("stale", "The review changed. Reopen it and try again.");
-  removeNoFollow(row.path);
+  removeNoFollow(row.path, trust.home);
   if (trust.manifest.entries[row.key] !== undefined) {
     delete trust.manifest.entries[row.key];
     persist(trust);
@@ -831,32 +952,65 @@ export function removeAveHomeTrustItem(snapshotId: string, key: string): void {
   reviewSnapshot = undefined;
 }
 
-/** Remove `path` without following any link: a link or junction is unlinked itself, a directory is emptied entry by entry. */
-export function removeNoFollow(path: string): void {
+/**
+ * Remove `path` without following any link: a link or junction is deleted as an entry and its target is never touched.
+ * Windows walks from `anchor` through handles opened without following reparse points (the home boundary's Delete). POSIX pins
+ * each directory with an O_NOFOLLOW handle: on Linux its entries are reached through that handle (`/proc/self/fd`); elsewhere
+ * the directory's identity is checked against the pinned handle before each step, so a directory swapped for a link mid-walk
+ * stops the removal instead of reaching outside. The home is owner-only, so such a swap needs the user's own account.
+ */
+export function removeNoFollow(path: string, anchor: string = dirname(resolve(path))): void {
+  if (process.platform === "win32") {
+    const rel = relative(resolve(anchor), resolve(path));
+    if (rel === "" || rel.startsWith("..") || resolve(rel) === rel) throw new Error(`${path} is not below ${anchor}`);
+    removeWindowsItemNoFollow(resolve(anchor), rel.split(sep));
+    return;
+  }
+  removePosixNoFollow(path);
+}
+
+const PROC_FD = "/proc/self/fd";
+const procFdUsable = (() => {
+  let usable: boolean | undefined;
+  return () => {
+    if (usable === undefined) {
+      try { usable = process.platform === "linux" && lstatSync(PROC_FD).isDirectory(); } catch { usable = false; }
+    }
+    return usable;
+  };
+})();
+
+function assertSameDirectory(path: string, pinned: Stats): void {
+  const now = lstatSync(path);
+  if (!now.isDirectory() || now.ino !== pinned.ino || now.dev !== pinned.dev) throw new Error(`${path} changed while it was being removed`);
+}
+
+function removePosixNoFollow(path: string): void {
   let entry: Stats;
   try { entry = lstatSync(path); }
   catch (error) { if (isMissingPathError(error)) return; throw error; }
-  if (entry.isSymbolicLink()) {
-    // A Windows directory junction or symlink is removed as a directory entry; its target is never touched.
-    try { unlinkSync(path); }
-    catch (error) {
-      if (process.platform !== "win32") throw error;
-      rmdirSync(path);
+  // A link, file or special file is removed as an entry; unlink never follows the last component.
+  if (!entry.isDirectory()) { unlinkSync(path); return; }
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const pinned = fstatSync(descriptor);
+    if (!pinned.isDirectory() || pinned.ino !== entry.ino || pinned.dev !== entry.dev) throw new Error(`${path} changed while it was opened`);
+    const byHandle = procFdUsable();
+    const base = byHandle ? join(PROC_FD, String(descriptor)) : path;
+    for (const name of readdirSync(base)) {
+      if (!byHandle) assertSameDirectory(path, pinned);
+      removePosixNoFollow(join(base, name));
     }
-    return;
-  }
-  if (entry.isDirectory()) {
-    for (const name of readdirSync(path)) removeNoFollow(join(path, name));
-    rmdirSync(path);
-    return;
-  }
-  unlinkSync(path);
+    if (!byHandle) assertSameDirectory(path, pinned);
+  } finally { closeSync(descriptor); }
+  rmdirSync(path);
 }
 
 /** Test teardown only. */
 export function _resetAveHomeTrustForTest(): void {
   active = undefined;
-  movedConfigurationSeen = false;
+  inFlight.clear();
+  overlapping.clear();
   reviewSnapshot = undefined;
   setAtomicWriteGuard(undefined);
 }

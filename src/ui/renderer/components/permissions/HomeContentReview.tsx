@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
 import { useTranslation } from "../../../../i18n/react.js";
-import type { AveHomeTrustReason, AveHomeTrustReview, AveHomeTrustRow } from "../../../../shared/ave-home-trust.js";
+import type { AveHomeTrustReason, AveHomeTrustReviewView, AveHomeTrustRow } from "../../../../shared/ave-home-trust.js";
 import { isIpcErrorResult } from "../../types.js";
 import { SandboxRestartDialog } from "../SandboxRestartDialog.js";
 
@@ -19,12 +19,12 @@ const REASON_KEYS: Record<AveHomeTrustReason, string> = {
 
 /**
  * The home content review (slice 3): items in the Ave folder that Ave did not write or the user has not approved stay unloaded,
- * and extensions run confined, until each is approved or removed here. Approval records the hash this card showed; the item
+ * and extensions run confined when a confinement backend is available, until each is approved or removed here. Approval records the hash this card showed; the item
  * loads after a restart. "Approve all" appears only when the host offers it (a clean folder from an earlier Ave version).
  */
 export function HomeContentReview() {
   const { t } = useTranslation();
-  const [review, setReview] = useState<AveHomeTrustReview | null>(null);
+  const [review, setReview] = useState<AveHomeTrustReviewView | null>(null);
   const [busy, setBusy] = useState(false);
   // The host's own refusal message, or "" for the generic failure text.
   const [error, setError] = useState<string | null>(null);
@@ -68,12 +68,14 @@ export function HomeContentReview() {
     <section data-testid="home-trust-review" className="space-y-2 rounded-lg border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) p-3 text-sm">
       <h3 className="font-semibold">{t("permissionsTab.homeTrustTitle")}</h3>
       {review.unavailable !== undefined ? (
-        <p data-testid="home-trust-unavailable">{t(review.unavailable === "recovery" ? "permissionsTab.homeTrustUnavailableRecovery" : "permissionsTab.homeTrustUnavailablePermissions")}</p>
+        <p data-testid="home-trust-unavailable" className="break-all">{review.unavailable === "recovery"
+          ? t("permissionsTab.homeTrustUnavailableRecovery", { path: review.configurationFolder ?? "" })
+          : t("permissionsTab.homeTrustUnavailablePermissions")}</p>
       ) : review.rows.length === 0 ? (
         <p data-testid="home-trust-done">{t("permissionsTab.homeTrustDone")}</p>
       ) : (
         <>
-          <p>{t("permissionsTab.homeTrustDescription")}</p>
+          <p>{t(review.extensionsConfined ? "permissionsTab.homeTrustDescription" : "permissionsTab.homeTrustDescriptionUnconfined")}</p>
           {review.approveAllOffered && (
             <div className="space-y-1">
               <p>{t("permissionsTab.homeTrustApproveAllHint")}</p>

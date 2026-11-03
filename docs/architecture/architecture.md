@@ -3035,7 +3035,8 @@ with its own owner rule:
   refused while the home is refused. On POSIX a home that is not a directory
   owned by the user, is group- or other-writable, or sits under an ancestor
   owned by another account or writable by others (a root-owned sticky
-  ancestor such as `/tmp` is allowed) is refused with the `posix-root-unsafe`
+  ancestor such as `/tmp` is allowed; ancestors include every folder holding
+  a symbolic link on the way, followed link by link) is refused with the `posix-root-unsafe`
   category before any mode is changed; Settings names `chmod go-w` as the fix.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
@@ -3092,14 +3093,25 @@ with its own owner rule:
   `routine/routines.json`, the marketplace sources, states and snapshots,
   `packages/ledger.json` and `packages/mcp-installs.json`, `AGENTS.md`,
   `agents.custom.md`, `user-preferences.md`, `memories/MEMORY.md`, and each
-  first-level entry of `skills/`, `agents/` and `commands/` (a file, or a tree
-  hashed as `sha256("ave-tree-v1\n" + sorted "<path>\0<sha256>\n")`). A loader
+  first-level entry of `skills/`, `agents/` and `commands/` (a file hashed as
+  `sha256("ave-file-v1\n" + sha256(bytes))`, or a tree hashed as
+  `sha256("ave-tree-v1\n" + sorted "<path>\0<sha256>\n")`, so the two kinds never
+  share a digest; names that differ only in case on Windows are refused). An
+  empty file with no entry (what a file lock creates before the first write)
+  reads as absent. Marketplace MCP package files under `mcp/<name>/server/` are
+  checked before every stdio launch against the tree digest of the verified
+  archive held by their install record; a mismatch, a link, or any other entry
+  in `mcp/<name>/` besides `server` and the host's `sandbox` refuses the launch.
+  `runtime/` has no entry: it is a protected boundary, and the boundary itself
+  is the protection by design. A loader
   parses exactly the one no-follow buffer it hashed. An absent, unreadable or
   mismatching manifest or entry means untrusted, and untrusted reads as absent
   apart from the closed restriction overlay above (marketplace revocations also
   still apply). A link anywhere below the home, a POSIX file owned by another
   account, or Windows owner or allow-ACE evidence of another principal (`SY` and
-  `BA` excepted) withdraws trust; evidence never grants it. The boot evaluates
+  `BA` excepted) on the item or on a folder between the home and it withdraws
+  trust; evidence never grants it, and it is read again whenever the review is
+  served. The boot evaluates
   the manifest once right after the commit, collapses each `pendingWrite` that
   matches the file into `current` and drops the rest. While any input is
   pending, shells and extension workers are confined for that boot (the
@@ -3108,15 +3120,24 @@ with its own owner rule:
   `pluginId@version`, permission mode and allow patterns; never arguments,
   environment, headers or URL credentials), and Approve or Remove. Approve
   records the hash the card rendered; Remove deletes the item without following
-  links after a confirmation. "Approve all" is offered only for a
-  `bootstrapped:false` manifest with clean evidence and no moved `config/`
-  among the root's siblings. Approved items load after a restart. Writes go
+  links after a confirmation, through handles that never follow a link (the
+  boundary's own `Delete` on Windows, O_NOFOLLOW-pinned directories on POSIX).
+  An item directory that is itself a link is a remove-only row. "Approve all"
+  is offered only for a `bootstrapped:false` manifest with clean evidence and
+  without `oneByOne: true`, which the commit writes when a moved `config/` sits
+  among the root's siblings and the boot writes when it recreates a missing or
+  unreadable manifest. The card says extensions run isolated only when a
+  confinement backend runs them. Approved items load after a restart. A
+  marketplace ledger or skill-approval view opened while pending sweeps and
+  grants nothing and re-reads the file before its next use; a pruned snapshot
+  forgets its entry. Writes go
   through one guard on the atomic-file helpers: only the host-instance lock
   owner writes a covered input (others get `AveHomeConfigurationNotOwnerError`),
   a pending item is never rewritten from its absent view
   (`AveHomeConfigurationRefusedWriteError`, reason `pending`), and each write
   records its `pendingWrite` before and its `current` after, or clears the
-  intent on failure. Writes inside a tree item are not recorded and leave the
+  intent on failure; overlapping writes to one key settle on whichever of
+  their bytes landed last. Writes inside a tree item are not recorded and leave the
   item pending. Per-entry no-follow cleanup
   preserves links and reports failures for retry. Interactive boot trust failures show a
   localized native error with the cause, path and recovery instructions before exit.

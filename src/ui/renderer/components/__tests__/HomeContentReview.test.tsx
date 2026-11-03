@@ -4,11 +4,11 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { HomeContentReview } from "../permissions/HomeContentReview.js";
 import { t } from "../../../../i18n/index.js";
-import type { AveHomeTrustReview } from "../../../../shared/ave-home-trust.js";
+import type { AveHomeTrustReviewView } from "../../../../shared/ave-home-trust.js";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); delete (window as unknown as { ave?: unknown }).ave; });
 
-function review(overrides: Partial<AveHomeTrustReview> = {}): AveHomeTrustReview {
+function review(overrides: Partial<AveHomeTrustReviewView> = {}): AveHomeTrustReviewView {
   return {
     snapshotId: "snap-1",
     state: "bootstrapped:false",
@@ -18,11 +18,12 @@ function review(overrides: Partial<AveHomeTrustReview> = {}): AveHomeTrustReview
     ],
     approveAllOffered: true,
     pendingAtBoot: true,
+    extensionsConfined: true,
     ...overrides,
   };
 }
 
-function install(first: AveHomeTrustReview | null, after: AveHomeTrustReview | null = first) {
+function install(first: AveHomeTrustReviewView | null, after: AveHomeTrustReviewView | null = first) {
   const homeTrustReview = vi.fn().mockResolvedValueOnce(first).mockResolvedValue(after);
   const homeTrustApprove = vi.fn(async () => ({ ok: true, approved: 1 }));
   const homeTrustRemove = vi.fn(async () => ({ ok: true }));
@@ -79,9 +80,24 @@ describe("HomeContentReview", () => {
   });
 
   it("says why nothing can be reviewed while config/ requires recovery", async () => {
-    install(review({ rows: [], approveAllOffered: false, unavailable: "recovery", state: undefined }));
+    install(review({ rows: [], approveAllOffered: false, unavailable: "recovery", state: undefined, configurationFolder: "/home/u/.ave/config" }));
     render(<HomeContentReview />);
-    expect((await screen.findByTestId("home-trust-unavailable")).textContent).toBe(t("permissionsTab.homeTrustUnavailableRecovery"));
+    const text = (await screen.findByTestId("home-trust-unavailable")).textContent;
+    expect(text).toBe(t("permissionsTab.homeTrustUnavailableRecovery", { path: "/home/u/.ave/config" }));
+    expect(text).toContain("/home/u/.ave/config");
+  });
+
+  it("claims isolated extensions only when a confinement backend runs them", async () => {
+    install(review());
+    render(<HomeContentReview />);
+    await screen.findByTestId("home-trust-review");
+    expect(screen.getByText(t("permissionsTab.homeTrustDescription"))).toBeTruthy();
+    cleanup();
+    install(review({ extensionsConfined: false }));
+    render(<HomeContentReview />);
+    await screen.findByTestId("home-trust-review");
+    expect(screen.getByText(t("permissionsTab.homeTrustDescriptionUnconfined"))).toBeTruthy();
+    expect(screen.queryByText(t("permissionsTab.homeTrustDescription"))).toBeNull();
   });
 
   it("shows the host's refusal message", async () => {

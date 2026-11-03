@@ -17,6 +17,12 @@ const h = vi.hoisted(() => ({
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  homeTrustPending: false,
+}));
+
+vi.mock("../../shared/ave-home-trust.js", async (original) => ({
+  ...(await original<typeof import("../../shared/ave-home-trust.js")>()),
+  isAveHomeTrustPendingAtBoot: () => h.homeTrustPending,
 }));
 
 vi.mock("electron", () => ({
@@ -64,6 +70,8 @@ import {
   __resetSandboxRequestedAtBootForTest,
   detectSandboxCapability,
   getSandboxBootOutcome,
+  isPluginWorkerConfinementRequestedAtBoot,
+  isShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -86,6 +94,7 @@ beforeEach(() => {
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   h.isProbeError.mockReturnValue(false);
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
+  h.homeTrustPending = false;
 });
 
 afterEach(() => {
@@ -109,6 +118,21 @@ describe("boot sandbox outcome", () => {
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", causes: [cause] });
     expect(h.initialize).not.toHaveBeenCalled();
   });
+  it("forces both confinement scopes while Ave folder content is pending review, whatever the settings say", async () => {
+    h.homeTrustPending = true;
+    await initSandboxGate(harness.context(false));
+    expect(isShellSandboxRequestedAtBoot()).toBe(true);
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(true);
+    expect(getSandboxBootOutcome()).toMatchObject({ onSignal: "home-trust-pending" });
+    expect(h.initialize).toHaveBeenCalled();
+  });
+
+  it("leaves confinement to the settings when nothing is pending", async () => {
+    await initSandboxGate(harness.context(false));
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "skip", onSignal: "off" });
+  });
+
   it("is null before the gate has run, which is not the same as off", () => {
     expect(getSandboxBootOutcome()).toBeNull();
   });

@@ -1,6 +1,19 @@
+const trust = vi.hoisted(() => ({ pending: new Set<string>() }));
+vi.mock("../../shared/ave-home-trust.js", async (original) => {
+  const actual = await original<typeof import("../../shared/ave-home-trust.js")>();
+  // A path listed here reads as pending review in the home content trust manifest, as a boot would report it.
+  const pendingView = (path: string, input: Awaited<ReturnType<typeof actual.readAveHomeInput>>) =>
+    trust.pending.has(path) && input.status === "trusted" ? { status: "untrusted" as const, bytes: input.bytes, reason: "changed" as const } : input;
+  return {
+    ...actual,
+    readAveHomeInput: async (path: string) => pendingView(path, await actual.readAveHomeInput(path)),
+    readAveHomeInputSync: (path: string) => pendingView(path, actual.readAveHomeInputSync(path)),
+  };
+});
+
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 // Approval is bound to the body hash; replacing an approved file must require approval again.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   writeFileSync,
   readFileSync,
@@ -14,6 +27,22 @@ import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { observeFileHandleSyncs } from "../../__tests__/support/fsync-observer.js";
 
 const tmpFile = useTempPaths("ave-skill-approvals-", "skill-approvals.json");
+
+describe("SkillApprovalsStore — home content trust", () => {
+  it("re-reads approvals that were pending review when first loaded, once they are approved", async () => {
+    const file = tmpFile();
+    await new SkillApprovalsStore(file).approve("report-writing", "body-v1");
+    trust.pending.add(file);
+    try {
+      const store = new SkillApprovalsStore(file);
+      expect(await store.isApproved("report-writing", "body-v1")).toBe(false);
+      trust.pending.delete(file);
+      expect(await store.isApproved("report-writing", "body-v1")).toBe(true);
+    } finally {
+      trust.pending.delete(file);
+    }
+  });
+});
 
 describe("SkillApprovalsStore — R2-CR-3 hash-binding", () => {
   it("approve(name, body) → isApproved(name, body) returns true for the same body", async () => {

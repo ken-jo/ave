@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { runWindowsNative } from "./windows-native-host.js";
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
@@ -640,6 +640,23 @@ function directoryDescriptor(path: string, row: WindowsDaclFacts): WindowsDirect
     protected: row.dacl.protected, rules: windowsOwnerRules(row.dacl) };
 }
 
+/** Remove `segments` below `anchor` through Windows handles that never follow a link or junction (the boundary's own Delete). */
+export function removeWindowsItemNoFollow(anchor: string, segments: readonly string[]): void {
+  if (process.platform !== "win32") throw new Error("Windows item removal runs on Windows only");
+  const script = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';
+    $request=ConvertFrom-Json $env:AVE_DACL_REQUEST;
+    Add-Type -TypeDefinition @'
+${WINDOWS_HOME_BOUNDARY_SOURCE}
+'@;
+    $identity=[System.Security.Principal.WindowsIdentity]::GetCurrent();
+    [void][HomeDirectoryDacl]::RemoveItem($request.anchor,[string[]]$request.segments,$identity.User);`;
+  runWindowsNative(() => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")], {
+    input: script, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({ anchor, segments }) }),
+  }));
+}
+
 export function acknowledgeHomeBoundaryRepair(home: string, path: string): void {
   if (process.platform !== "win32") return;
   const name = AVE_HOME_PROTECTED_DIRECTORIES.find((entry) => join(home, entry) === path);
@@ -790,8 +807,7 @@ export function posixHomeProtectionFailure(home: string): { failedPath: string; 
   if ((root.mode & 0o022) !== 0) {
     return { failedPath: home, reason: `Group or others can write to the Ave folder. Fix it with: chmod go-w ${posixShellQuote(home)}` };
   }
-  let ancestor = realpathSync(dirname(resolve(home)));
-  for (;;) {
+  for (const ancestor of directoriesResolving(dirname(resolve(home)))) {
     const entry = lstatSync(ancestor);
     const sticky = (entry.mode & 0o1000) !== 0;
     if (entry.uid !== 0 && entry.uid !== uid) {
@@ -800,10 +816,42 @@ export function posixHomeProtectionFailure(home: string): { failedPath: string; 
     if ((entry.mode & 0o022) !== 0 && !(entry.uid === 0 && sticky)) {
       return { failedPath: ancestor, reason: `Group or others can write to a folder above the Ave folder. Fix it with: chmod go-w ${posixShellQuote(ancestor)}` };
     }
-    const parent = dirname(ancestor);
-    if (parent === ancestor) return undefined;
-    ancestor = parent;
   }
+  return undefined;
+}
+
+/**
+ * Every real directory the resolution of `path` passes through, nearest first: the folders of its real path and also each folder
+ * that holds a symbolic link on the way (a link can be repointed by whoever can write the folder holding it), followed link by
+ * link, so a link's own parents are checked too.
+ */
+function directoriesResolving(path: string): string[] {
+  const visited: string[] = [];
+  const seen = new Set<string>();
+  const visit = (directory: string) => { if (!seen.has(directory)) { seen.add(directory); visited.push(directory); } };
+  const pending = path.split(sep).filter((part) => part !== "");
+  let current: string = sep;
+  visit(current);
+  let links = 0;
+  while (pending.length > 0) {
+    const part = pending.shift()!;
+    if (part === ".") continue;
+    if (part === "..") { current = dirname(current); visit(current); continue; }
+    const next = join(current, part);
+    let target: string | undefined;
+    // readlink answers EINVAL for anything that is not a symbolic link.
+    try { target = readlinkSync(next); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error; }
+    if (target !== undefined) {
+      if (++links > 40) throw new Error(`Too many links while resolving ${path}`);
+      if (target.startsWith(sep)) current = sep;
+      pending.unshift(...target.split(sep).filter((piece) => piece !== ""));
+      continue;
+    }
+    current = next;
+    visit(current);
+  }
+  return visited.reverse();
 }
 
 /** Windows needs an explicit owner-only inheritable DACL; report failure so confinement refuses unprotected storage. */

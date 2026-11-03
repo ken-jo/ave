@@ -19,6 +19,7 @@ import { permissionSettingsPath, readPermissionSettings } from "../../permission
 import { loadPolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
+import { removeNoFollow } from "../ave-home-trust.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
@@ -332,6 +333,26 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(existsSync(`${boundary}.unprotected-complete`)).toBe(false);
     expect(ensureAveHomePrivate(dir)).toMatchObject({ repairs: [boundary] });
   });
+  it("removes a home item through handles, deleting a junction inside it but never its target", () => {
+    const dir = fixture();
+    const target = join(dirname(dir), "removal-target");
+    mkdirSync(target); setFixtureOwner(target);
+    const targetFile = join(target, "outside");
+    writeFileSync(targetFile, "untouched"); setFixtureOwner(targetFile);
+    const item = join(dir, "skills", "planted");
+    mkdirSync(join(item, "nested"), { recursive: true });
+    writeFileSync(join(item, "nested", "SKILL.md"), "planted");
+    symlinkSync(target, join(item, "junction"), "junction");
+    symlinkSync(target, join(dir, "skills", "linked"), "junction");
+    removeNoFollow(item, dir);
+    removeNoFollow(join(dir, "skills", "linked"), dir);
+    expect(existsSync(item)).toBe(false);
+    expect(existsSync(join(dir, "skills", "linked"))).toBe(false);
+    expect(readFileSync(targetFile, "utf8")).toBe("untouched");
+    // A missing item is not an error.
+    removeNoFollow(item, dir);
+  });
+
   it("skips a junction during copying and deletes only the junction during aside cleanup", () => {
     const dir = fixture();
     const target = join(dirname(dir), "target");

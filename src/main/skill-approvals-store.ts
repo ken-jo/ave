@@ -5,6 +5,7 @@ import { aveHome } from "../shared/ave-home.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { adoptLegacyRootFileSync, readJsonFileOrEmpty, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "./storage/feature-namespace.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { readAveHomeInput } from "../shared/ave-home-trust.js";
 
 interface SkillApprovalRecord {
   // Record key from the caller — a skill name, or `<name>#bundled`.
@@ -67,6 +68,9 @@ async function writeAtomic(filePath: string, data: SkillApprovalsFile): Promise<
 
 export class SkillApprovalsStore {
   private cache: Map<string, string> | null = null; // record key → material hash
+  // The file was pending review in the home content trust manifest when the cache was filled: the cache holds nothing and is
+  // re-read on the next lookup, so an approval made since takes effect without a restart.
+  private cacheFromPending = false;
   private readonly filePath: string;
 
   constructor(filePath: string = defaultPath()) {
@@ -79,6 +83,7 @@ export class SkillApprovalsStore {
     if (this.filePath === defaultPath()) {
       adoptLegacyRootFileSync(FEATURE_ID, FILE_NAME, LEGACY_ROOT_FILE);
     }
+    this.cacheFromPending = (await readAveHomeInput(this.filePath)).status === "untrusted";
     const file = await readFileOrEmpty(this.filePath);
     this.cache = new Map(file.approvedSkills.map((r) => [r.name, r.sha256]));
   }
@@ -86,7 +91,7 @@ export class SkillApprovalsStore {
   // Approved iff (record key, hash of current material) matches a stored pair. Any change to the material invalidates the approval — this returns false
   // and the caller (skill-load) re-prompts via ApprovalGate.
   async isApproved(recordKey: string, currentMaterial: string): Promise<boolean> {
-    if (this.cache === null) await this.load();
+    if (this.cache === null || this.cacheFromPending) await this.load();
     const recordedHash = this.cache!.get(recordKey);
     if (!recordedHash) return false;
     return recordedHash === hashSkillMaterial(currentMaterial);
@@ -116,6 +121,7 @@ export class SkillApprovalsStore {
         await writeAtomic(this.filePath, file);
       }
       this.cache = new Map(file.approvedSkills.map((r) => [r.name, r.sha256]));
+      this.cacheFromPending = false;
     });
   }
 }

@@ -163,7 +163,14 @@ export async function hashReceiptFiles(
     if (!isContained(pluginRoot, absPath)) {
       throw new Error(`receipt file escapes plugin root: ${relPath}`);
     }
-    const bytes = verified?.get(relPath) ?? await readFile(absPath);
+    // With verified bytes, every listed file must be among them: a silent re-read would hash what is on disk, not what was verified.
+    let bytes: Buffer;
+    if (verified === undefined) bytes = await readFile(absPath);
+    else {
+      const known = verified.get(relPath);
+      if (known === undefined) throw new Error(`receipt file has no verified bytes: ${relPath}`);
+      bytes = known;
+    }
     out.push({
       path: relPath,
       sha256: sha256Hex(bytes),

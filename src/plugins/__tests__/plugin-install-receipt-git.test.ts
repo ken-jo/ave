@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  hashReceiptFiles,
   buildGitInstallReceipt,
   buildInstallReceipt,
   gitInstallRecordProblem,
@@ -55,6 +56,13 @@ describe("git install receipts (schema v4)", () => {
   async function built(git = record()) {
     return buildGitInstallReceipt(pluginRoot, { pluginId: "alpha", version: "1.0.0", artifactSha256: DIGEST, git, files: ["plugin.json", "dist/index.js"] });
   }
+
+  it("hashes only the verified bytes when they are given, and refuses a listed file they do not hold", async () => {
+    const verified = new Map([["plugin.json", Buffer.from("{}\n")]]);
+    await writeFile(join(pluginRoot, "plugin.json"), "{\"swapped\":true}\n");
+    expect(await hashReceiptFiles(pluginRoot, ["plugin.json"], verified)).toEqual([{ path: "plugin.json", sha256: sha256Hex("{}\n") }]);
+    await expect(hashReceiptFiles(pluginRoot, ["plugin.json", "dist/index.js"], verified)).rejects.toThrow("receipt file has no verified bytes: dist/index.js");
+  });
 
   it("round-trips through verification and reaches the load gate as a git install", async () => {
     const { receipt, raw } = await built();

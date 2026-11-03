@@ -8,7 +8,7 @@ import { aveHomeConfigurationDirectory, AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HO
 import { withAveHomeConfigurationMigration } from "./ave-home-configuration-access.js";
 import { AVE_HOME_CONFIGURATION_RECOVERY, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, readWindowsDacls, windowsOwnerRules } from "./windows-path-facts.js";
-import { initialAveHomeTrustManifest, noteAveHomeMovedConfiguration } from "./ave-home-trust.js";
+import { initialAveHomeTrustManifest } from "./ave-home-trust.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { runWindowsNative } from "./windows-native-host.js";
 
@@ -40,10 +40,9 @@ export function migrateAveHomeConfiguration(home: string, privacy?: AveHomePriva
       aveHomeConfigurationDirectory(home);
       return diagnostics;
     }
-    if (movedConfigurationCandidate(home)) noteAveHomeMovedConfiguration();
     const sources = readRootConfigurationSources(home);
     const documents = carriedConfiguration(sources.bytes);
-    const manifest = initialAveHomeTrustManifest(home, sources.present);
+    const manifest = initialAveHomeTrustManifest(home, sources.present, movedConfigurationCandidate(home));
     const result = process.platform === "win32" ? commitWindowsConfiguration(home, documents, manifest) : commitPosixConfiguration(home, documents, manifest);
     if (result.some((diagnostic) => diagnostic.startsWith(AVE_HOME_CONFIGURATION_RECOVERY))) {
       setAveHomeConfigurationRefusedAtBoot(home, "recovery");

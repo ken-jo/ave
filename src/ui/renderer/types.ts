@@ -1582,7 +1582,7 @@ export type AvePermissionApi = {
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
   approveExtensionsWithoutIsolation: () => Promise<{ ok: true } | IpcErrorResult>;
   /** The pending home content review, or null when this boot evaluated nothing. */
-  homeTrustReview: () => Promise<import("../../shared/ave-home-trust.js").AveHomeTrustReview | null | IpcErrorResult>;
+  homeTrustReview: () => Promise<import("../../shared/ave-home-trust.js").AveHomeTrustReviewView | null | IpcErrorResult>;
   homeTrustApprove: (snapshotId: string, keys?: readonly string[]) => Promise<{ ok: true; approved: number } | IpcErrorResult>;
   homeTrustRemove: (snapshotId: string, key: string) => Promise<{ ok: true } | IpcErrorResult>;
   /** Subscribe to default-mode repeated-approval hints for LLM permission review. */
