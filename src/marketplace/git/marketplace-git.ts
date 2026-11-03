@@ -1,25 +1,22 @@
-/** Keeps an isolated runner until invalidated by a runtime change or managed install. */
+/** Keeps an isolated runner until invalidated by a runtime change. */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
 import { MarketplaceError } from "../errors.js";
 import { AskpassBroker } from "./askpass.js";
-import { detectGitRuntime, nodeGitDetectionDeps, type GitDetectionDeps, type GitExecutable, type ManagedGitInstall } from "./detect.js";
+import { bundledRunnerOptions } from "./bundled-git.js";
+import { detectGitRuntime, nodeGitDetectionDeps, type GitDetectionDeps, type GitExecutable } from "./detect.js";
 import { readCopiedCredentialConfig, writeGeneratedGlobalConfig, type CopiedConfigEntry } from "./global-config.js";
-import { findManagedGit, managedRunnerOptions } from "./managed-git.js";
-import { MANAGED_GIT, type ManagedGitPins } from "./managed-git-pins.js";
 import { GitRunner, type GitCommands, type GitRemote, type GitRunnerOptions } from "./run-git.js";
 
 export interface MarketplaceGitOptions {
   envRoot: string;
-  runtimeRoot: string;
-  mode: () => GitRuntimeMode;
+  /** {@link bundledGitRoot} for the app resources; null on a system that ships no copy. */
+  bundledRoot: string | null;
   getToken: (host: string, sourceId: string) => string | null;
   corporateRootsPem: () => Promise<string | null>;
   resolveProxy?: GitRunnerOptions["resolveProxy"];
   platform?: NodeJS.Platform;
-  pins?: ManagedGitPins;
-  detectionDeps?: (findManaged: () => Promise<ManagedGitInstall | null>) => GitDetectionDeps;
+  detectionDeps?: GitDetectionDeps;
 }
 
 interface BuiltRunner {
@@ -51,17 +48,15 @@ export class MarketplaceGit {
   }
 
   private async detect(): Promise<GitExecutable> {
-    const pins = this.options.pins ?? MANAGED_GIT;
-    const findManaged = () => findManagedGit(this.options.runtimeRoot, this.platform, pins);
-    const detection = await detectGitRuntime(this.options.mode(), (this.options.detectionDeps ?? nodeGitDetectionDeps)(findManaged));
-    if (detection.state === "too-old") {
+    const detection = await detectGitRuntime(this.options.detectionDeps ?? nodeGitDetectionDeps(this.options.bundledRoot));
+    if (detection.state === "ready") return detection.git;
+    if (detection.systemTooOld) {
       throw new MarketplaceError(
         "GIT_RUNTIME_TOO_OLD",
-        `system git ${detection.systemTooOld.version} at ${detection.systemTooOld.path} is older than the minimum; switch to Auto or Managed`,
+        `system git ${detection.systemTooOld.version} at ${detection.systemTooOld.path} is older than the minimum, and no bundled git is usable`,
       );
     }
-    if (detection.state === "missing") throw new MarketplaceError("GIT_RUNTIME_MISSING", "no usable git was found; install the managed git");
-    return detection.git;
+    throw new MarketplaceError("GIT_RUNTIME_MISSING", "no usable git was found: no bundled git is usable and no system git is installed");
   }
 
   private async build(): Promise<BuiltRunner> {
@@ -72,19 +67,15 @@ export class MarketplaceGit {
     const globalConfigPath = join(this.options.envRoot, "gitconfig");
     const copied = await readCopiedCredentialConfig(git.path);
     await writeGeneratedGlobalConfig(globalConfigPath, copied);
-    const managed = git.kind === "managed"
-      ? await managedRunnerOptions(
-          { path: git.path, root: git.managedRoot!, version: git.version },
-          this.platform,
-          await this.options.corporateRootsPem(),
-        )
+    const bundled = git.kind === "bundled"
+      ? await bundledRunnerOptions({ path: git.path, root: git.bundledRoot! }, this.platform, await this.options.corporateRootsPem(), this.options.envRoot)
       : {};
     const runner = new GitRunner({
       git,
       globalConfigPath,
       emptyDir,
       askpass: await this.askpass(),
-      ...managed,
+      ...bundled,
       ...(this.options.resolveProxy ? { resolveProxy: this.options.resolveProxy } : {}),
     });
     return { runner, copied };
@@ -93,7 +84,7 @@ export class MarketplaceGit {
   private current(): Promise<BuiltRunner> {
     if (this.closed) return Promise.reject(new Error("the marketplace git runtime is closed"));
     this.built ??= this.build().catch((error: unknown) => {
-      // Nothing is cached for a failed detection: installing git fixes it without a restart.
+      // Nothing is cached for a failed detection: installing a system git fixes it without a restart.
       this.built = null;
       throw error;
     });

@@ -81,6 +81,14 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
   }));
   putFile(join(resources, "licenses", "uv", "LICENSE-MIT"));
   if (platform !== "darwin") {
+    const git = join(resources, "git-runtime", `${platform}-x64`);
+    putFile(join(git, "git-runtime.meta.json"), "{}");
+    for (const file of platform === "win32" ? ["cmd/git.exe", "mingw64/bin/git-remote-https.exe"] : ["bin/git", "libexec/git-core/git-remote-https"]) {
+      putFile(join(git, file));
+    }
+    putFile(join(resources, "licenses", "git", "COPYING"));
+  }
+  if (platform !== "darwin") {
     const vendorPath = join(modules, "@anthropic-ai", "sandbox-runtime", "vendor",
       platform === "linux" ? "seccomp" : "srt-win", "x64",
       platform === "linux" ? "apply-seccomp" : "srt-win.exe");
@@ -185,6 +193,16 @@ describe("packaged graphics runtime", () => {
     await expect(afterPack(context)).rejects.toMatchObject({
       name: "MxcIntegrityError", message: `Native SDK packaging payload missing: ${missing}`,
     });
+  });
+
+  it.each(["win32", "linux"] as const)("rejects a %s package without its bundled git or its license", async (platform) => {
+    const { context, resources } = await createPackage(platform);
+    const helper = platform === "win32" ? "mingw64/bin/git-remote-https.exe" : "libexec/git-core/git-remote-https";
+    rmSync(join(resources, "git-runtime", `${platform}-x64`, helper));
+    await expect(afterPack(context)).rejects.toThrow("packaged git runtime is incomplete");
+    putFile(join(resources, "git-runtime", `${platform}-x64`, helper));
+    rmSync(join(resources, "licenses", "git", "COPYING"));
+    await expect(afterPack(context)).rejects.toThrow("packaged git runtime is incomplete");
   });
 
   it("rejects a missing PDF page renderer, its pdf.js data or notices at package creation", async () => {

@@ -350,15 +350,21 @@ describe("SettingsService marketplace defaults", () => {
     expect(service.get("marketplace").autoUpdateSources).toEqual({ corp: "on" });
   });
 
-  it("keeps a valid git runtime mode and drops anything else", () => {
+  it("drops a git runtime mode left by an older release, keeping the other marketplace settings", async () => {
     const load = (git: unknown) => {
-      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ marketplace: { git } }), "utf-8");
-      return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace").git;
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ marketplace: { git, updateCheckEnabled: false } }), "utf-8");
+      return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("marketplace");
     };
-    expect(load({ mode: "managed" })).toEqual({ mode: "managed" });
-    expect(load({ mode: "system", extra: true })).toEqual({ mode: "system" });
-    expect(load({ mode: "portable" })).toBeUndefined();
-    expect(load("managed")).toBeUndefined();
+    for (const git of [{ mode: "managed" }, { mode: "system", extra: true }, "managed"]) {
+      const marketplace = load(git);
+      expect("git" in marketplace).toBe(false);
+      expect(marketplace.updateCheckEnabled).toBe(false);
+    }
+
+    // A renderer patch goes through the same normalizer.
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ marketplace: { git: { mode: "managed" } } } as never);
+    expect("git" in service.get("marketplace")).toBe(false);
   });
 
   it("keeps only the declaration of an installed messaging connection", async () => {

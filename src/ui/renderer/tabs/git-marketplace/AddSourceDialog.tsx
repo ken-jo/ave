@@ -10,7 +10,7 @@ import { cn } from "../../../../lib/utils.js";
 import { reservedPrefixIn } from "../../../../shared/dlp.js";
 import type { EnteredTargetWarningView, FolderPickView, GitMarketplaceFailure, SourcePreviewAsk, SourcePreviewRequest, SourcePreviewView, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../types.js";
-import { GitRuntimeCard } from "./GitRuntimeCard.js";
+import { GitUnavailable } from "./GitUnavailable.js";
 import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, looksLikeFolder, reservedIdText, shortSha, warningText } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { SourceBadges } from "./SourcesView.js";
@@ -18,7 +18,7 @@ import { SourceBadges } from "./SourcesView.js";
 type Auth = SourcePreviewRequest["auth"];
 
 export interface AddSourceDialogProps {
-  api: Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">;
+  api: Pick<AveApi, "gitMarketplace" | "gitRuntime">;
   open: boolean;
   /** Install from a git folder (§8.1): the address step also asks for a folder. */
   direct?: boolean;
@@ -211,7 +211,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
 
         {step === 0 && (
           <div className="space-y-3">
-            <GitRuntimeCard api={api} compact onReady={() => setGitReady(true)} />
+            <GitUnavailable api={api} onReady={() => setGitReady(true)} />
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs" data-testid="git-marketplace:add:folder-without-git">
               <span className="min-w-0 text-muted-foreground">{t("gitMarketplace.add.folderWithoutGit")}</span>
               {chooseFolderButton}

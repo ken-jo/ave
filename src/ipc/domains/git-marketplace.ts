@@ -14,6 +14,7 @@ import { createMarketplaceLogger } from "../../marketplace/log.js";
 import { getBootInstallNotice, getMarketplaceLifetime, setBootInstallNotice, takePendingGitMarketplaceLink } from "../../main/app-state.js";
 import { ensureCorporateCa } from "../../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../../main/persisted-corp-ca.js";
+import { getHostResources } from "../../main/host-resources.js";
 import { queryDosDevice } from "../../main/windows-path-kind-launcher.js";
 import { marketplaceEvents, startMarketplaceBackground, whileRunning, type MarketplaceBackground } from "../../marketplace/app/background.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
@@ -30,7 +31,7 @@ import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
 import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
 import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
 import { clearKeptArtifacts, createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
-import { gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
+import { bundledGitRoot } from "../../marketplace/git/bundled-git.js";
 import { updateHistoryStore } from "../../marketplace/updates/history.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
 import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";
@@ -304,8 +305,7 @@ async function createGitMarketplaceService(
   const previewTokens = new Map<string, string>();
   const git = new MarketplaceGit({
     envRoot: join(root, ".git-env"),
-    runtimeRoot: gitRuntimeRoot(home),
-    mode: () => deps.settingsService.get("marketplace").git?.mode ?? "auto",
+    bundledRoot: bundledGitRoot(getHostResources().resourcePath),
     getToken: (host, sourceId) => previewTokens.get(sourceId) ?? tokens.get(host),
     corporateRootsPem: async () => (await ensureCorporateCa(readPersistedCorpCaConfigSync(app.getPath("userData")))).pem,
     resolveProxy: (url) => session.defaultSession.resolveProxy(url),

@@ -1,22 +1,24 @@
-/** Which git the marketplace runs (design §9.1). system; the first usable git on PATH, then the well-known install locations; must be at least {@link MIN_GIT_VERSION}. managed; the Ave-downloaded copy (§9.2), present and smoke-tested. auto; system if usable, else managed if present, else
- * "missing". A system git that is too old is reported, and auto moves on. On macOS `/usr/bin/git` is a shim that opens the Command Line Tools installer when the tools are absent. Detection asks `xcode-select -p` first and treats a missing toolchain as "no git there", so probing never pops a dialog. */
+/** Which git the marketplace runs (design §9.1): the copy the installer ships, when it is there and runs; otherwise the first usable git on PATH, then
+ * the well-known install locations. Either must be at least {@link MIN_GIT_VERSION}; a system git that is too old is reported. On macOS, which ships no
+ * copy, `/usr/bin/git` is a shim that opens the Command Line Tools installer when the tools are absent. Detection asks `xcode-select -p` first and treats
+ * a missing toolchain as "no git there", so probing never pops a dialog. */
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { posix } from "node:path";
-import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
+import type { GitRuntimeStatus } from "../../shared/git-runtime.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { buildHostGitArgs } from "../../shared/host-git.js";
+import { findBundledGit, type BundledGitInstall } from "./bundled-git.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
 
-
 export interface GitExecutable {
-  kind: "system" | "managed";
+  kind: "bundled" | "system";
   /** Absolute path of the `git` binary. */
   path: string;
   version: GitVersion;
-  /** Managed copies only: the install root that holds `bin/`, `libexec/`, … */
-  managedRoot?: string;
+  /** The bundled copy only: its root, holding `cmd/` or `bin/`, `libexec/`, … */
+  bundledRoot?: string;
 }
 
 interface TooOldGit {
@@ -26,16 +28,7 @@ interface TooOldGit {
 
 export type GitDetection =
   | { state: "ready"; git: GitExecutable; systemTooOld?: TooOldGit }
-  | { state: "missing"; systemTooOld?: TooOldGit }
-  /** `system` mode only: the system git exists but is older than the minimum. */
-  | { state: "too-old"; systemTooOld: TooOldGit };
-
-/** A managed copy that is installed and passed its smoke test (§9.2). */
-export interface ManagedGitInstall {
-  path: string;
-  root: string;
-  version: GitVersion;
-}
+  | { state: "missing"; systemTooOld?: TooOldGit };
 
 export interface GitDetectionDeps {
   platform: NodeJS.Platform;
@@ -46,7 +39,7 @@ export interface GitDetectionDeps {
   readVersion(path: string): Promise<string | null>;
   /** darwin only: `xcode-select -p` succeeds. */
   commandLineToolsInstalled(): Promise<boolean>;
-  findManagedGit(): Promise<ManagedGitInstall | null>;
+  findBundledGit(): Promise<BundledGitInstall | null>;
 }
 
 const DARWIN_CLT_SHIM = "/usr/bin/git";
@@ -98,28 +91,33 @@ async function findSystemGit(
   return { git: null, tooOld };
 }
 
-export async function detectGitRuntime(mode: GitRuntimeMode, deps: GitDetectionDeps): Promise<GitDetection> {
-  if (mode === "managed") {
-    const managed = await deps.findManagedGit();
-    return managed
-      ? { state: "ready", git: { kind: "managed", path: managed.path, version: managed.version, managedRoot: managed.root } }
-      : { state: "missing" };
-  }
+/** A bundled copy that is missing, fails to run or reports too old a version falls back to the system git. */
+async function usableBundledGit(deps: GitDetectionDeps): Promise<GitExecutable | null> {
+  const bundled = await deps.findBundledGit();
+  if (!bundled) return null;
+  const output = await deps.readVersion(bundled.path);
+  const version = output === null ? null : parseGitVersion(output);
+  if (!version || !meetsMinimumGitVersion(version)) return null;
+  return { kind: "bundled", path: bundled.path, version, bundledRoot: bundled.root };
+}
+
+export async function detectGitRuntime(deps: GitDetectionDeps): Promise<GitDetection> {
+  const bundled = await usableBundledGit(deps);
+  if (bundled) return { state: "ready", git: bundled };
   const system = await findSystemGit(deps);
   const tooOld = system.tooOld ? { systemTooOld: system.tooOld } : {};
   if (system.git) return { state: "ready", git: system.git, ...tooOld };
-  if (mode === "system") {
-    return system.tooOld ? { state: "too-old", systemTooOld: system.tooOld } : { state: "missing" };
-  }
-  const managed = await deps.findManagedGit();
-  if (managed) {
-    return {
-      state: "ready",
-      git: { kind: "managed", path: managed.path, version: managed.version, managedRoot: managed.root },
-      ...tooOld,
-    };
-  }
   return { state: "missing", ...tooOld };
+}
+
+/** The renderer's view of a detection: no paths, only what decides whether a repository source can be read. */
+export function gitRuntimeStatus(detection: GitDetection, bundledShipped: boolean): GitRuntimeStatus {
+  return {
+    state: detection.state,
+    active: detection.state === "ready" ? { kind: detection.git.kind, version: detection.git.version.text } : null,
+    systemTooOld: detection.systemTooOld ? { version: detection.systemTooOld.version } : null,
+    bundledShipped,
+  };
 }
 
 const VERSION_PROBE_TIMEOUT_MS = 5_000;
@@ -140,7 +138,8 @@ function execFileText(file: string, args: string[]): Promise<{ ok: boolean; stdo
   });
 }
 
-export function nodeGitDetectionDeps(findManagedGit: () => Promise<ManagedGitInstall | null>): GitDetectionDeps {
+/** `bundledRoot` is {@link bundledGitRoot} for the app resources, or null to use only the system git. */
+export function nodeGitDetectionDeps(bundledRoot: string | null): GitDetectionDeps {
   return {
     platform: process.platform,
     searchPath: process.env.PATH,
@@ -159,6 +158,6 @@ export function nodeGitDetectionDeps(findManagedGit: () => Promise<ManagedGitIns
     async commandLineToolsInstalled() {
       return (await execFileText("/usr/bin/xcode-select", ["-p"])).ok;
     },
-    findManagedGit,
+    findBundledGit: () => findBundledGit(bundledRoot),
   };
 }

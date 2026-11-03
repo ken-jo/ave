@@ -5,7 +5,6 @@ import type { SourceWarningView } from "./sources/warnings.js";
 export const MARKETPLACE_ERROR_CODES = [
   "GIT_RUNTIME_MISSING",
   "GIT_RUNTIME_TOO_OLD",
-  "GIT_RUNTIME_INSTALL_FAILED",
   "SOURCE_URL_REJECTED",
   "SOURCE_POLICY_BLOCKED",
   "SOURCE_CONFIRMATION_REQUIRED",
@@ -47,14 +46,6 @@ type DetailFieldKind = "string" | "number" | "string[]" | "credential-issuer";
 
 /** Validate boundary details against each code reason and its allowed field types. */
 export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
-  GIT_RUNTIME_INSTALL_FAILED: {
-    checking: {},
-    downloading: {},
-    verifying: {},
-    extracting: {},
-    "smoke-testing": {},
-    installing: {},
-  },
   /** Unsafe addresses and unsupported folder forms are rejected without a confirmation override. */
   SOURCE_URL_REJECTED: {
     "credentials-in-url": {},

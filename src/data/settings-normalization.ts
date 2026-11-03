@@ -55,7 +55,6 @@ import {
   isOfficialPackageLocale,
   normalizeLocaleSetting,
 } from "../i18n/index.js";
-import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
 import { isSidebarState } from "../shared/sidebar-state.js";
@@ -745,9 +744,8 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
     ...DEFAULT_SETTINGS.marketplace,
     ...raw,
   };
-  const gitMode = raw.git && typeof raw.git === "object" ? (raw.git as { mode?: unknown }).mode : undefined;
-  if (isGitRuntimeMode(gitMode)) merged.git = { mode: gitMode };
-  else delete merged.git;
+  // Releases before the bundled git stored a git mode here; it no longer selects anything.
+  delete (merged as { git?: unknown }).git;
   if (raw.installedProviderIds !== undefined && !Array.isArray(raw.installedProviderIds)) {
     throw new LlmProviderSettingsError("marketplace.installedProviderIds", "marketplace.installedProviderIds must be an array");
   }

@@ -20,7 +20,7 @@
  *   prompts       ave:prompts:*
  *   home-docs     ave:home-docs:* — ~/.ave reference docs + upgrade markers
  *   usage         ave:usage:*
- *   git-runtime   ave:git:runtime:* — git marketplace runtime status + managed install
+ *   git-runtime   ave:git:runtime:* — which git the git marketplace runs
  *   audit         ave:audit:*, ave:dlp:*
  *   diagnostics   ave:diagnostics:*, ave:logs:tail
  *   permissions   ave:permission:*, ave:permissions:*, ave:approval:respond,

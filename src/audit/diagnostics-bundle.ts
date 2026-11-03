@@ -93,7 +93,6 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
   if (settings.webSearch) out.webSearch = { provider: settings.webSearch.provider };
   if (settings.marketplace) {
     out.marketplace = {
-      gitMode: settings.marketplace.git?.mode ?? "auto",
       updateCheckEnabled: settings.marketplace.updateCheckEnabled ?? true,
     };
   }
