@@ -49,6 +49,7 @@ function harness(options: {
   revoke?: Route[];
   models?: Route;
   verifyFails?: boolean;
+  prefetchFails?: boolean;
   /** The failure a refresh's rotated ID token (verified without a nonce) meets. */
   refreshVerify?: { failure: ConstructorParameters<typeof ChatGptPlanIdTokenError>[0] | null };
   subject?: string;
@@ -99,6 +100,7 @@ function harness(options: {
       };
     }),
     verifier: {
+      ...(options.prefetchFails ? { prefetchKeys: async () => { throw new ChatGptPlanIdTokenError("jwks-unavailable", "status-503"); } } : {}),
       verify: async (idToken, expected) => {
         if (options.verifyFails) throw new ChatGptPlanIdTokenError("signature");
         if (expected.nonce === undefined && options.refreshVerify?.failure) {
@@ -173,6 +175,21 @@ describe("plan-usage sign-in state machine", () => {
     await expect(completion).rejects.toMatchObject({ failure: "sign-in-failed" });
     expect(h.closed()).toBeGreaterThan(0);
     expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "sign-in-failed" });
+  });
+
+  it("records a closed login window as such, not as an unexpected failure", async () => {
+    const h = harness();
+    const { completion } = await h.session.startSignIn();
+    h.loginWindows[0].onCancel();
+    await completion.catch(() => undefined);
+    expect(h.events.at(-1)).toEqual({ event: "sign-in-failed", failure: "window-closed" });
+  });
+
+  it("fails before the browser opens when the issuer's keys cannot be fetched", async () => {
+    const h = harness({ prefetchFails: true });
+    await expect(h.session.startSignIn()).rejects.toMatchObject({ failure: "temporarily-unavailable" });
+    expect(h.loginWindows).toHaveLength(0);
+    expect(h.events.at(-1)).toEqual({ event: "sign-in-failed", failure: "id-token-jwks-unavailable:status-503" });
   });
   it("registers, validates and stores one encrypted record, then shows the welcome once", async () => {
     const tokenRoutes: Route[] = [];

@@ -106,4 +106,34 @@ describe("plan-usage ID token validation", () => {
     await expect(v.verify(await idToken({ sub: "someone-else" }), { clientId: CLIENT_ID, subject: "user-sub" }))
       .rejects.toMatchObject({ failure: "subject" });
   });
+
+  it("retries a key set the issuer could not serve, then verifies", async () => {
+    const statuses = [503, 200];
+    const urls: string[] = [];
+    const v = new ChatGptPlanIdTokenVerifier((async (url: string) => {
+      urls.push(url);
+      const status = statuses[urls.length - 1]!;
+      return new Response(status === 200 ? JSON.stringify({ keys: [primaryJwk] }) : "unavailable", { status });
+    }) as typeof fetch, () => NOW_SECONDS * 1000, async () => undefined);
+    await expect(v.verify(await idToken(), { clientId: CLIENT_ID, nonce: "n1" })).resolves.toMatchObject({ subject: "user-sub" });
+    expect(urls).toHaveLength(2);
+  });
+
+  it("names why the key set stayed unavailable, without retrying a client-side status", async () => {
+    const thrown = new ChatGptPlanIdTokenVerifier((async () => { throw new TypeError("fetch failed"); }) as typeof fetch,
+      () => NOW_SECONDS * 1000, async () => undefined);
+    await expect(thrown.prefetchKeys()).rejects.toMatchObject({ failure: "jwks-unavailable", detail: "network-TypeError" });
+    let calls = 0;
+    const missing = new ChatGptPlanIdTokenVerifier((async () => { calls += 1; return new Response("", { status: 404 }); }) as typeof fetch,
+      () => NOW_SECONDS * 1000, async () => undefined);
+    await expect(missing.prefetchKeys()).rejects.toMatchObject({ failure: "jwks-unavailable", detail: "status-404" });
+    expect(calls).toBe(1);
+  });
+
+  it("verifies from prefetched keys without fetching again", async () => {
+    const { verifier: v, urls } = verifier([[primaryJwk]]);
+    await v.prefetchKeys();
+    await v.verify(await idToken(), { clientId: CLIENT_ID, nonce: "n1" });
+    expect(urls).toEqual([CHATGPT_PLAN_JWKS_URL]);
+  });
 });

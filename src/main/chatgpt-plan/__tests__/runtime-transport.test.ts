@@ -126,7 +126,7 @@ describe("ChatGPT plan runtime status", () => {
     const h = harness(IDENTITY_SCOPES, () => new Response("{}", { status: 200 }));
     expect(h.runtime.getStatus()).toMatchObject({ connection: "signed-out", notice: "plan-usage-disabled" });
     expect(h.runtime.getStatus().capabilities.chat).toBe(false);
-    // Discovery is fetched before the browser opens; answer it so the attempt reaches the browser.
+    // Discovery and the issuer's keys are fetched before the browser opens; answer both so the attempt reaches the browser.
     const discovery = {
       issuer: "https://auth.openai.com",
       authorization_endpoint: "https://auth.openai.com/api/accounts/authorize",
@@ -134,7 +134,8 @@ describe("ChatGPT plan runtime status", () => {
       jwks_uri: "https://auth.openai.com/.well-known/jwks.json",
       revocation_endpoint: "https://auth.openai.com/api/accounts/oauth/revoke",
     };
-    const consent = harness(IDENTITY_SCOPES, () => new Response(JSON.stringify(discovery), { status: 200 }));
+    const consent = harness(IDENTITY_SCOPES, (url) =>
+      new Response(JSON.stringify(url === discovery.jwks_uri ? { keys: [] } : discovery), { status: 200 }));
     const status = await consent.runtime.startLogin();
     expect(status).toMatchObject({ connection: "pending", pendingLogin: "browser" });
     const params = new URL(consent.opened[0]!).searchParams;
