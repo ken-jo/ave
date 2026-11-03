@@ -21,7 +21,7 @@ import type { TelegramRemoteApprovalGatePort } from "./telegram-remote-approval.
 export interface StartTelegramConnectionActivationOptions {
   readonly encryption: SecretEncryption;
   readonly store: TelegramConnectionStore;
-  readonly settingsService: { getEncryptedSecret(key: string): string | null };
+  readonly settingsService: { getEncryptedSecret(key: string): Promise<string | null> };
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly conversationCommandPort: ConversationCommandPort;
   readonly getCurrentConversationId: () => string;
@@ -67,7 +67,7 @@ export async function reconcileTelegramActorKey(options: {
 }): Promise<void> {
   const botFingerprint = options.store.botFingerprint();
   if (botFingerprint === null) return;
-  const digestActor = createTelegramActorDigester({
+  const digestActor = await createTelegramActorDigester({
     encryption: options.encryption,
     botFingerprint,
     ...(options.secretStore ? { secretStore: options.secretStore } : {}),
@@ -87,13 +87,13 @@ export async function startTelegramConnectionActivation(
   const botFingerprint = store.botFingerprint();
   if (botFingerprint === null) return;
 
-  const digestActor = createTelegramActorDigester({
+  const digestActor = await createTelegramActorDigester({
     encryption: options.encryption,
     botFingerprint,
     ...(options.secretStore ? { secretStore: options.secretStore } : {}),
   });
 
-  const botToken = settingsService.getEncryptedSecret(TELEGRAM_BOT_TOKEN_SECRET_KEY);
+  const botToken = await settingsService.getEncryptedSecret(TELEGRAM_BOT_TOKEN_SECRET_KEY);
   if (botToken === null) return;
 
   const controlReplies = createTelegramControlReplySender({

@@ -23,24 +23,23 @@ describe("host authority secret store", () => {
   // Reject external keys on Windows when POSIX owner-only protection cannot be proven.
   const withExternalKey = it.skipIf(process.platform === "win32");
 
-  withExternalKey("preserves identity across restart and never regenerates it after wrong-key decryption", () => {
-    const secretStore = createHostSecretStore(createNodeSecretEncryption(keyFile), directory);
+  withExternalKey("preserves identity across restart and never regenerates it after wrong-key decryption", async () => {
+    const secretStore = await createHostSecretStore(createNodeSecretEncryption(keyFile), directory);
     const identity = ensureTailnetPairedShareActorSecret(secretStore);
     expect(ensureTailnetPairedShareActorSecret(
-      createHostSecretStore(createNodeSecretEncryption(keyFile), directory),
+      await createHostSecretStore(createNodeSecretEncryption(keyFile), directory),
     )).toBe(identity);
     const files = readdirSync(directory);
-    const original = readFileSync(join(directory, files[0]));
+    const originals = files.map((name) => readFileSync(join(directory, name)));
     writeFileSync(keyFile, randomBytes(32));
-    const wrongKeyStore = createHostSecretStore(createNodeSecretEncryption(keyFile), directory);
-    expect(() => ensureTailnetPairedShareActorSecret(wrongKeyStore)).toThrow(/could not be decrypted/);
+    await expect(createHostSecretStore(createNodeSecretEncryption(keyFile), directory)).rejects.toThrow(/could not be decrypted/);
     expect(readdirSync(directory)).toEqual(files);
-    expect(readFileSync(join(directory, files[0]))).toEqual(original);
+    expect(files.map((name) => readFileSync(join(directory, name)))).toEqual(originals);
   });
 
-  withExternalKey("refuses legacy formats and tampering without quarantine or overwrite", () => {
+  withExternalKey("refuses legacy formats and tampering without quarantine or overwrite", async () => {
     const encryption = createNodeSecretEncryption(keyFile);
-    const store = createHostSecretStore(encryption, directory);
+    const store = await createHostSecretStore(encryption, directory);
     store.write("authority", "retained-value");
     const path = join(directory, "authority.safe-storage");
     const valid = readFileSync(path, "utf8");
@@ -49,32 +48,34 @@ describe("host authority secret store", () => {
       expect(() => store.read("authority", 256)).toThrow();
       expect(() => store.write("authority", "replacement")).toThrow();
       expect(readFileSync(path, "utf8")).toBe(bytes);
-      expect(readdirSync(directory)).toEqual(["authority.safe-storage"]);
+      expect(readdirSync(directory)).toEqual(["authority.safe-storage", "store-data.safe-storage-key"]);
     }
   });
 
-  it("refuses an unconfigured external key without writing or quarantining", () => {
-    const unavailable = createHostSecretStore(createNodeSecretEncryption(), directory);
-    expect(() => unavailable.read("authority", 256)).toThrow(/not available/);
-    expect(() => unavailable.write("authority", "replacement")).toThrow(/not available/);
+  it("refuses an unconfigured external key without writing or quarantining", async () => {
+    await expect(createHostSecretStore(createNodeSecretEncryption(), directory)).rejects.toThrow(/not available/);
     expect(readdirSync(directory)).toEqual([]);
   });
 
-  it("preserves existing desktop quarantine and replacement behavior", () => {
+  it("preserves existing desktop quarantine and replacement behavior", async () => {
     let unavailableCiphertext = false;
+    // Electron's removed synchronous methods throw, so any use of them fails the test.
     const desktopEncryption = {
-      isEncryptionAvailable: () => true,
+      isEncryptionAvailable: () => { throw new Error("deprecated isEncryptionAvailable called"); },
+      encryptString: () => { throw new Error("deprecated encryptString called"); },
+      decryptString: () => { throw new Error("deprecated decryptString called"); },
+      isAsyncEncryptionAvailable: async () => true,
       getSelectedStorageBackend: () => "gnome_libsecret" as const,
-      encryptString: (value: string) => Buffer.from(`sealed:${value}`),
-      decryptString: (value: Buffer) => {
+      encryptStringAsync: async (value: string) => Buffer.from(`sealed:${value}`),
+      decryptStringAsync: async (value: Buffer) => {
         if (unavailableCiphertext) throw new Error("decryption unavailable");
-        return value.toString("utf8").slice("sealed:".length);
+        return { shouldReEncrypt: false, result: value.toString("utf8").slice("sealed:".length) };
       },
     };
-    const store = createHostSecretStore(desktopEncryption, directory);
-    const first = ensureTailnetPairedShareActorSecret(store);
+    const first = ensureTailnetPairedShareActorSecret(await createHostSecretStore(desktopEncryption, directory));
     unavailableCiphertext = true;
-    expect(ensureTailnetPairedShareActorSecret(store)).not.toBe(first);
+    // The data key is unwrapped at open, so the unreadable ciphertext surfaces on the next open.
+    expect(ensureTailnetPairedShareActorSecret(await createHostSecretStore(desktopEncryption, directory))).not.toBe(first);
     expect(readdirSync(directory).some((name) => name.includes("quarantined"))).toBe(true);
   });
 });

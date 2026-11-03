@@ -647,12 +647,12 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
       getMainWindow: () => null,
       bootAuditLogger: { log: vi.fn() },
     };
-    wireReviewerAndPermissions(bootContext as never);
+    await wireReviewerAndPermissions(bootContext as never);
     expect(
       (bootContext as unknown as { rationaleScopeReviewer: unknown })
         .rationaleScopeReviewer,
     ).toBe(initialRationaleScopeReviewer);
-    (bootContext as unknown as { rewireReviewerAgent: () => void })
+    await (bootContext as unknown as { rewireReviewerAgent: () => Promise<void> })
       .rewireReviewerAgent();
     expect(
       (bootContext as unknown as { rationaleScopeReviewer: unknown })
@@ -785,7 +785,7 @@ describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () =>
       getMainWindow: () => null,
       bootAuditLogger: { log: vi.fn() },
     };
-    wireReviewerAndPermissions(bootContext as never);
+    await wireReviewerAndPermissions(bootContext as never);
 
     const options = wireReviewerAgentMock.mock.calls[0]?.[0] as {
       readActiveLlm: () => { baseUrl?: string };

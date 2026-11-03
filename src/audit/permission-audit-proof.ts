@@ -111,7 +111,7 @@ export async function createPermissionAuditSelfTest(
   const keyBefore = protectedKeyIdentity(keyFile);
   if (readdirSync(home).length !== 0) throw new Error("permission audit self-test requires a fresh AVE_HOME");
   const timestamp = now();
-  const seals = createHostSecretStore(createNodeSecretEncryption(keyFile), join(home, "secrets"));
+  const seals = await createHostSecretStore(createNodeSecretEncryption(keyFile), join(home, "secrets"));
   const logger = new AuditLogger(join(home, "audit"), { now: () => timestamp });
   try {
     await logger.setupPermissionAuditChain(ensureAuditSecret(seals), seals);
@@ -297,7 +297,7 @@ export async function createPermissionAuditProof(
   const permissionNames = namesBefore.filter((name) => name.includes("permission-audit"));
   for (const name of permissionNames) canonicalDate(name);
   const encryption = createNodeSecretEncryption(keyFile);
-  const seals = new SafeStorageSecretStore(encryption, secretsDir, "reject", "existing-read-only");
+  const seals = await SafeStorageSecretStore.open(encryption, secretsDir, "reject", "existing-read-only");
   const secret = readExistingAuditSecret(seals);
   const files: PermissionAuditProofFile[] = [];
   for (const name of permissionNames) files.push(await verifyAuditFile(auditDir, name, secret, seals));

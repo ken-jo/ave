@@ -319,7 +319,7 @@ export interface ConversationLoopDeps {
   notificationService?: import("../../main/notification-service.js").NotificationService;
   // Tool audits append to the shared authenticated chain.
   auditLogger?: AuditLogger;
-  rewireReviewerAgent?: () => void;
+  rewireReviewerAgent?: () => Promise<void>;
   llmFetch?: typeof fetch;
   // Require host outbound transport so guarded calls honor machine proxy and trust-store configuration.
   networkFetch: typeof fetch;

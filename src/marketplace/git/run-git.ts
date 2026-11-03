@@ -214,8 +214,8 @@ export class GitRunner {
   }
 
   /** The call answers with the stored token (see {@link GitRemote.useToken}); never over http without `token-unencrypted`. */
-  private offersToken(remote: GitRemote | undefined): remote is GitRemote {
-    return remote !== undefined && remote.useToken && remote.credentialsAllowed && this.options.askpass.hasToken(remote.url.host, remote.sourceId);
+  private async offersToken(remote: GitRemote | undefined): Promise<boolean> {
+    return remote !== undefined && remote.useToken && remote.credentialsAllowed && await this.options.askpass.hasToken(remote.url.host, remote.sourceId);
   }
 
   /** An http call whose source may not send credentials: no token, and the user's helpers are cleared. */
@@ -231,11 +231,12 @@ export class GitRunner {
 
   /** The `-c` flags every call carries, before the subcommand, under the route the PAC resolver answers now. */
   async configArgs(remote: GitRemote | undefined): Promise<string[]> {
-    return this.configArgsFor(remote, await this.proxyFor(remote));
+    const proxy = await this.proxyFor(remote);
+    return this.configArgsFor(remote, proxy, await this.offersToken(remote));
   }
 
   /** The `-c` flags for one call under one route: the same `proxy` its binding checked (§18.2.4). */
-  private configArgsFor(remote: GitRemote | undefined, proxy: string): string[] {
+  private configArgsFor(remote: GitRemote | undefined, proxy: string, offersToken: boolean): string[] {
     const configArgs = [
       "-c", "protocol.file.allow=never",
       "-c", "submodule.recurse=false",
@@ -247,7 +248,7 @@ export class GitRunner {
       "-c", "gc.auto=0",
       "-c", "maintenance.auto=false",
       // Read last, an empty value clears every helper configured before it.
-      ...(this.offersToken(remote) || this.withholdsCredentials(remote) ? ["-c", "credential.helper="] : []),
+      ...(offersToken || this.withholdsCredentials(remote) ? ["-c", "credential.helper="] : []),
       ...Object.entries(this.options.managedConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ];
     return buildHostGitArgs([], { configArgs, disabledHooksPath: this.options.emptyDir });
@@ -337,7 +338,8 @@ export class GitRunner {
   async run(args: readonly string[], options: RunGitOptions): Promise<GitResult> {
     if (options.signal?.aborted) throw options.signal.reason ?? new Error("aborted");
     const remote = options.remote;
-    const ticket = this.offersToken(remote) ? this.options.askpass.issueTicket({ host: remote.url.host, sourceId: remote.sourceId }) : null;
+    const offersToken = await this.offersToken(remote);
+    const ticket = remote && offersToken ? this.options.askpass.issueTicket({ host: remote.url.host, sourceId: remote.sourceId }) : null;
     try {
       const env = {
         ...this.environment(remote),
@@ -346,7 +348,7 @@ export class GitRunner {
       };
       // One PAC answer per call: the route git is configured with is the route the binding checked.
       const proxy = await this.proxyFor(remote);
-      const config = this.configArgsFor(remote, proxy);
+      const config = this.configArgsFor(remote, proxy, offersToken);
       const binding = remote ? await this.bindingArgs(remote, proxy, env) : [];
       const argv = [...config, ...binding, ...args];
       const withheld = this.withholdsCredentials(remote);

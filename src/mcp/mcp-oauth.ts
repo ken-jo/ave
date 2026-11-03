@@ -29,10 +29,10 @@ import { isValidOAuthClientId } from "./safe-names.js";
 import { MCP_PROTOCOL_VERSION } from "./protocol-constants.js";
 
 export interface McpOAuthSecrets {
-  getSecret(key: string): string | null;
+  getSecret(key: string): Promise<string | null>;
   setSecret(key: string, value: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
-  canStoreEncrypted(): boolean;
+  canStoreEncrypted(): Promise<boolean>;
 }
 
 export interface McpOAuthDependencies {
@@ -199,6 +199,7 @@ export class McpOAuthSession {
   private challengeProbeAvailable = true;
   private readonly metadataDocumentRejected = new Set<string>();
   private readonly ready: Promise<void>;
+  private readonly directLoad: Promise<void>;
 
   constructor(private readonly config: McpHttpServerConfig, private readonly dependencies: McpOAuthDependencies,
     options: McpOAuthSessionOptions = {}) {
@@ -211,16 +212,16 @@ export class McpOAuthSession {
       this.ready = Promise.resolve();
     } else if (options.after) {
       this.status = options.initialStatus ?? "required";
-      this.ready = options.after.catch(() => {}).then(() => {
+      this.ready = options.after.catch(() => {}).then(async () => {
         if (!this.controller.signal.aborted) {
           this.status = "required";
-          this.loadStored();
+          await this.loadStored();
         }
       });
     } else {
-      this.loadStored();
-      this.ready = Promise.resolve();
+      this.ready = this.loadStored();
     }
+    this.directLoad = options.after && !this.blocked ? Promise.resolve() : this.ready;
     this.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => this.fetchResource(input, init)) as typeof fetch;
   }
 
@@ -228,9 +229,15 @@ export class McpOAuthSession {
 
   getBlockedCode(): McpAuthErrorCode | undefined { return this.blocked; }
 
-  private loadStored(): void {
+  /**
+   * Settles once a direct load has read stored credentials (`getStatus` reports "required" until then). A session
+   * waiting on a hand-off settles at once and keeps its initial status, so a pending removal never blocks callers.
+   */
+  whenReady(): Promise<void> { return this.directLoad; }
+
+  private async loadStored(): Promise<void> {
     let raw: string | null;
-    try { raw = this.dependencies.secrets.getSecret(this.credentialKey); }
+    try { raw = await this.dependencies.secrets.getSecret(this.credentialKey); }
     catch {
       this.blocked = "mcp-auth-storage-unreadable";
       this.status = "error";
@@ -486,10 +493,10 @@ export class McpOAuthSession {
     let issuer: string | undefined;
     try {
       this.assertActive();
-      if (this.blocked === "mcp-auth-storage-unreadable") this.loadStored();
+      if (this.blocked === "mcp-auth-storage-unreadable") await this.loadStored();
       if (this.blocked) throw new McpOAuthError(this.blocked);
       // Refuse before any network activity, browser, or registration that could not be persisted.
-      if (!this.dependencies.secrets.canStoreEncrypted()) throw new McpOAuthError("mcp-auth-storage-unavailable");
+      if (!await this.dependencies.secrets.canStoreEncrypted()) throw new McpOAuthError("mcp-auth-storage-unavailable");
       this.credentialGeneration += 1;
       this.status = "authenticating";
       const discovery = await this.discover(true);

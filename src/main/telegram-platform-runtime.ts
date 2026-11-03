@@ -113,16 +113,16 @@ export interface TelegramActorDigester {
 
 // Derive the opaque account digest for a Telegram sender id. Pairing redemption stores this digest, and the paired runtime recomputes it on every
 // inbound envelope. Exporting one derivation keeps those two from drifting; a second copy would make a correct pairing unresolvable.
-export function createTelegramActorDigester(options: {
+export async function createTelegramActorDigester(options: {
   readonly botFingerprint: string;
   readonly secretStore?: SecretStore;
   readonly encryption: SecretEncryption;
-}): TelegramActorDigester {
+}): Promise<TelegramActorDigester> {
   if (!options || !BOT_FINGERPRINT_PATTERN.test(options.botFingerprint)) {
     throw new Error("telegram-actor-digester-invalid");
   }
   const secretStore = options.secretStore
-    ?? createHostSecretStore(options.encryption);
+    ?? await createHostSecretStore(options.encryption);
   const actorSecret = ensureTelegramPlatformActorSecret(secretStore);
   return Object.freeze({
     actorKeyDigest: actorKeyDigestFor(actorSecret),
@@ -144,9 +144,9 @@ export interface CreateTelegramPairedPlatformRuntimeOptions {
 
 // Mint routes lazily from verified inbound identity and the durable shared conversation, keeping raw chat IDs off disk.
 // Require both live approval and that same bound conversation on screen; never follow the owner into an unapproved conversation.
-export function createTelegramPairedPlatformRuntime(
+export async function createTelegramPairedPlatformRuntime(
   options: CreateTelegramPairedPlatformRuntimeOptions,
-): TelegramPlatformRuntime {
+): Promise<TelegramPlatformRuntime> {
   if (!options
     || typeof options !== "object"
     || !BOT_FINGERPRINT_PATTERN.test(options.botFingerprint)
@@ -157,7 +157,7 @@ export function createTelegramPairedPlatformRuntime(
   }
   const { authority, botFingerprint, activationEpoch } = options;
   const secretStore = options.secretStore
-    ?? createHostSecretStore(options.encryption);
+    ?? await createHostSecretStore(options.encryption);
   const actorSecret = ensureTelegramPlatformActorSecret(secretStore);
   const bridgeId = deterministicUuid(actorSecret, "bridge", [botFingerprint]);
   const routesByChatId = new Map<string, TelegramPlatformRoute>();

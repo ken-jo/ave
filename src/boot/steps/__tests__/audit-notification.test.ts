@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("electron", () => ({
-  safeStorage: { isEncryptionAvailable: vi.fn(() => false) },
+  safeStorage: { isAsyncEncryptionAvailable: vi.fn(async () => false) },
 }));
 
 vi.mock("../../../audit/audit-logger.js", () => ({
@@ -32,7 +32,7 @@ vi.mock("../../../audit/audit-logger.js", () => ({
 
 vi.mock("../../../audit/hmac-chain.js", () => ({
   FileSecretStore: class {},
-  SafeStorageSecretStore: class {},
+  SafeStorageSecretStore: class { static async open() { return { read: () => null, write: () => undefined }; } },
   ensureAuditSecret: vi.fn(() => "s".repeat(64)),
 }));
 

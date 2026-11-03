@@ -51,11 +51,11 @@ export function callbackUpdate(
 }
 
 // The fixture and runtime must share secret storage so actor digests agree with the paired conversation approval.
-export function ownerPairedAuthority(secretStore: SecretStore): {
+export async function ownerPairedAuthority(secretStore: SecretStore): Promise<{
   readonly ownerDigest: string;
   readonly authority: TelegramPairedRouteAuthority;
-} {
-  const digester = createTelegramActorDigester({ botFingerprint: BOT_FINGERPRINT, secretStore, encryption: unavailableSecretEncryption });
+}> {
+  const digester = await createTelegramActorDigester({ botFingerprint: BOT_FINGERPRINT, secretStore, encryption: unavailableSecretEncryption });
   const ownerDigest = digester.digestFor(OWNER_CHAT_ID);
   if (ownerDigest === null) throw new Error("fixture-owner-digest");
   const conversationDigest = telegramConversationDigest(BOT_FINGERPRINT, BOUND_CONVERSATION);

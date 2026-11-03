@@ -27,7 +27,7 @@ describe("delegated session controller boundary", () => {
       parentDeps: makeSubagentLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: memory,
     });
     vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
-    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(async () => {});
     vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
     const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn");
     const input = { title: "delegated work", instructions: "read the task", toolScope: exactToolScope(["read_item"]) };

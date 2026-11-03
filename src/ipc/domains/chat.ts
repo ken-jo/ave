@@ -931,10 +931,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return { ok: true, released: await releaseGroup(id, "tile closed") };
   });
 
-  ipcMain.handle(CHANNELS.chat.hasProvider, (e, chatGroupId?: unknown) => {
+  ipcMain.handle(CHANNELS.chat.hasProvider, async (e, chatGroupId?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.hasProvider, e); return false; }
     if (!isNativeGroupFrame(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.hasProvider, e); return false; }
-    return groupOf(e, chatGroupId, CHANNELS.chat.hasProvider).loop.hasProvider();
+    const { loop } = groupOf(e, chatGroupId, CHANNELS.chat.hasProvider);
+    await loop.whenProviderReady();
+    return loop.hasProvider();
   });
   // Commands read disk; validate the sender and derive the project from the tile session.
   ipcMain.handle(CHANNELS.chat.listCustomCommands, async (e, chatGroupId?: unknown) => {
@@ -1487,7 +1489,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
         void deps.refreshSandboxNetworkConfig?.();
       }
-      group.loop.refreshProvider();
+      await group.loop.refreshProvider();
       try {
         return await group.turns.continueFromLastUserTurnWithinLease(
           { requireTerminalUser: false, restoreOnFailure: false, userKeyboardIntent },
@@ -1501,7 +1503,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
           void deps.refreshSandboxNetworkConfig?.();
         }
-        group.loop.refreshProvider();
+        await group.loop.refreshProvider();
       }
     });
     return turn ?? { ok: false, error: STREAMING_ACTIVE };

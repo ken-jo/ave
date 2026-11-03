@@ -54,6 +54,7 @@ async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", e
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  await loop.whenProviderReady();
   loop.history.append({ role: "user", content: "reply" });
   const result = await queryLoop(loop, "system", loop.resolveToolScope("reply"), undefined, undefined, null, {
     inputOrigin: "user-keyboard", toolTrustOrigin: "user-keyboard", maxRounds: 1,

@@ -130,7 +130,7 @@ async function handleModelCommand(self: ConversationLoop, args: string): Promise
     return t("be_conversationLoop.cmdModelUnsupported");
   }
   if (requested === MODEL_COMMAND_RESET) {
-    self.setSessionModelOverride(undefined);
+    await self.setSessionModelOverride(undefined);
     return t("be_conversationLoop.cmdModelReset", { model: currentModel() || "-" });
   }
   const model = cleanModelOverride(requested);
@@ -141,7 +141,7 @@ async function handleModelCommand(self: ConversationLoop, args: string): Promise
   if (verification === "unknown") return t("be_conversationLoop.cmdModelUnknown", { model });
   if (verification === "retired") return t("be_conversationLoop.cmdModelRetired", { model });
   if (verification === "unverifiable") return t("be_conversationLoop.cmdModelUnverifiable", { model });
-  self.setSessionModelOverride(model);
+  await self.setSessionModelOverride(model);
   return verification === "deployment"
     ? t("be_conversationLoop.cmdModelSetUnverifiedDeployment", { model })
     : t("be_conversationLoop.cmdModelSet", { model });

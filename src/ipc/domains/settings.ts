@@ -243,13 +243,13 @@ export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstream
   readonly activeChatModel: ActiveChatModel;
 };
 
-export function rendererSettingsSnapshot(
+export async function rendererSettingsSnapshot(
   settingsService: ActiveChatModelSettingsReader & Pick<SettingsService, "getAll">,
   snapshot: AppSettings = settingsService.getAll(),
-): RendererSettingsSnapshot {
+): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
   const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, ...projected } = structuredClone(snapshot);
-  return { ...projected, activeChatModel: resolveMainActiveChatModel(settingsService) };
+  return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService) };
 }
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
@@ -266,6 +266,7 @@ export async function broadcastSettingsSnapshot(
   // `appearance`; a partial snapshot (e.g. a test double or a pre-migration settings file) must not crash the broadcast. setLocale coerces undefined to the English default.
   const nextLocale = normalizeLocale(snapshot.appearance?.language);
   const localeLoaded = await tryLoadLocaleMessages(nextLocale);
+  const rendererSnapshot = await rendererSettingsSnapshot(deps.settingsService, snapshot);
   // Locale loading yields. Suppress stale snapshots (and their locale side effect) if any
   // settings mutation or a caller-specific ownership hand-off occurred while it was in flight.
   if (
@@ -275,7 +276,7 @@ export async function broadcastSettingsSnapshot(
     return;
   }
   if (localeLoaded) setLocale(nextLocale);
-  broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(deps.settingsService, snapshot));
+  broadcastToAppWindows(deps, SETTINGS.updated, rendererSnapshot);
 }
 
 /** Stable signature of the shortcut + startup-launch inputs so the `settings.update` handler can detect when a patch actually changed them and only
@@ -343,28 +344,15 @@ function sameLlmSettings(left: LLMSettings, right: LLMSettings): boolean {
 }
 
 /** Keep main and side-chat provider instances on the same persisted settings. */
-function refreshChatRuntimeProviders(
+async function refreshChatRuntimeProviders(
   deps: Pick<IpcDeps, "conversationLoop" | "sideChatConversationLoop" | "paneChatLoops">,
-): void {
+): Promise<void> {
   // Refresh each binding even if another one fails. ConversationLoop clears its provider before
   // rebuilding, so this leaves no stale API-key transport live under a subscription selection.
-  let failed = false;
-  let firstError: unknown;
-  try {
-    deps.conversationLoop.refreshProvider();
-  } catch (error) {
-    failed = true;
-    firstError = error;
-  }
-  for (const loop of [deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])]) {
-    try {
-      loop?.refreshProvider();
-    } catch (error) {
-      failed = true;
-      firstError ??= error;
-    }
-  }
-  if (failed) throw firstError;
+  const loops = [deps.conversationLoop, deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])];
+  const results = await Promise.allSettled(loops.map(async (loop) => loop?.refreshProvider()));
+  const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failure) throw failure.reason;
 }
 /** Install or remove marketplace provider presets and run every follow-up a preset change needs (reviewer rewire, chat providers, wildcard, sandbox endpoints, the settings broadcast), reporting a follow-up that
  * fails as `finishError` once `mutate` has saved. The settings IPC and the content store's provider activation both go through here, so a preset installed from a git package behaves exactly like one installed today. */
@@ -399,7 +387,7 @@ async function finishProviderPresetMarketplaceMutation(
   const newInstalledProviderPresets = deps.settingsService.get("marketplace").installedProviderPresets;
   if (activeLlmIdentity(prevLlm, prevInstalledProviderPresets) !== activeLlmIdentity(newLlm, newInstalledProviderPresets)) {
     try {
-      deps.rewireReviewerAgent?.();
+      await deps.rewireReviewerAgent?.();
     } catch (err) {
       rewireError = {
         ok: false,
@@ -408,7 +396,7 @@ async function finishProviderPresetMarketplaceMutation(
       };
     }
   }
-  refreshChatRuntimeProviders(deps);
+  await refreshChatRuntimeProviders(deps);
   deps.refreshActiveLlmWildcard?.();
   if (
     llmRouteBaseUrlSignature(prevLlm, prevInstalledProviderPresets)
@@ -570,7 +558,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       runtime = await getSubscriptionRuntime();
       return { ok: true, status: await operation(runtime, provider) };
     } catch (error) {
-      const status = runtime?.getCachedStatus(provider);
+      const status = await runtime?.getCachedStatus(provider);
       return {
         ok: false,
         error: subscriptionRuntimeErrorCode(error),
@@ -598,7 +586,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       const result = await runtime.listModels(provider);
       return { ok: true, ...result };
     } catch (error) {
-      const status = runtime?.getCachedStatus(provider);
+      const status = await runtime?.getCachedStatus(provider);
       return {
         ok: false,
         error: subscriptionRuntimeErrorCode(error),
@@ -618,14 +606,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   };
   /** Bind every execution consumer to the runtime in memory. Each step runs even when an earlier one fails: a
    * restored selection stays authoritative, and a reviewer that cannot be rewired stays on its fail-closed path. */
-  const bindExecutionToSettings = (): void => {
+  const bindExecutionToSettings = async (): Promise<void> => {
     try {
-      refreshChatRuntimeProviders(deps);
+      await refreshChatRuntimeProviders(deps);
     } catch {
       // Each loop was still cleared/rebuilt independently above.
     }
     try {
-      deps.rewireReviewerAgent?.();
+      await deps.rewireReviewerAgent?.();
     } catch {
       // Preserve the original selection error instead of masking it with a best-effort rewire error.
     }
@@ -652,7 +640,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       : settingsService.patch({ llm: { activeChatRuntime: previousActiveChatRuntime } });
     // SettingsService mutates memory before its first await. Restore every executable binding in that same
     // synchronous turn; waiting for disk here would leave the failed API/subscription provider reachable meanwhile.
-    bindExecutionToSettings();
+    await bindExecutionToSettings();
     const ownsRestoration = (): boolean => (
       transitionRevision === activeChatRuntimeTransitionRevision
       && sameActiveChatRuntime(settingsService.get("llm").activeChatRuntime, restoredRuntime)
@@ -662,7 +650,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     } catch {
       // The restoring save failed as well, so memory is back on the settings on disk. Bind execution to them rather than to the runtime that could not be saved.
       if (transitionRevision === activeChatRuntimeTransitionRevision) {
-        bindExecutionToSettings();
+        await bindExecutionToSettings();
         await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
       }
       return null;
@@ -700,8 +688,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     try {
       // SettingsService has synchronously applied the new active runtime at this point. Bind all execution
       // consumers before awaiting disk so no API-key provider can be observed while subscription is active.
-      refreshChatRuntimeProviders(deps);
-      deps.rewireReviewerAgent?.();
+      await refreshChatRuntimeProviders(deps);
+      await deps.rewireReviewerAgent?.();
       deps.refreshActiveLlmWildcard?.();
       await persistSelection;
     } catch {
@@ -905,7 +893,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && (prevBaseUrl !== newBaseUrl || prevActiveLlmIdentity !== newActiveLlmIdentity)
     ) {
       try {
-        deps.rewireReviewerAgent?.();
+        await deps.rewireReviewerAgent?.();
       } catch (err) {
         const message = errorMessage(err);
         // A nested/parallel renderer mutation may have taken ownership while reviewer construction ran. Restore the full predecessor only
@@ -920,14 +908,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
           }
           if (rollbackMessage === null) {
             try {
-              deps.rewireReviewerAgent?.();
+              await deps.rewireReviewerAgent?.();
             } catch {
               // The active LLM settings have been rolled back. Keep the IPC error focused on the original failing
               // rewire; a second failure leaves the app on the same fail-closed reviewer path it had before the patch.
             }
           }
         }
-        refreshChatRuntimeProviders(deps);
+        await refreshChatRuntimeProviders(deps);
         deps.refreshActiveLlmWildcard?.();
         if (
           llmRouteBaseUrlSignature(
@@ -949,7 +937,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         };
       }
     }
-    refreshChatRuntimeProviders(deps);
+    await refreshChatRuntimeProviders(deps);
     // #893; vendor/baseUrl may have changed; re-sync the plugin wildcard so `hostApi.config.get("hostApiKey")` stays consistent with the active vendor.
     deps.refreshActiveLlmWildcard?.();
     // ASRT dynamic-endpoint union: when any vendor baseUrl changed, recompute the shared strict-union and live-swap the ASRT network config so
@@ -1023,9 +1011,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       };
     }
     await settingsService.setSecret(secretKey, apiKey);
-    refreshChatRuntimeProviders(deps);
+    await refreshChatRuntimeProviders(deps);
     // Rewire the reviewer when the provider key changes so cacheScope refreshes.
-    deps.rewireReviewerAgent?.();
+    await deps.rewireReviewerAgent?.();
     // #893; refresh plugin wildcard with the new key for the active vendor.
     deps.refreshActiveLlmWildcard?.();
     // Broadcast settings snapshot so reviewer tab can auto-unlock without a full reload.
@@ -1034,12 +1022,12 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   // read-only; sender guard optional
-  ipcMain.handle(CHANNELS.settings.hasApiKey, (_e, vendor?: string) => {
+  ipcMain.handle(CHANNELS.settings.hasApiKey, async (_e, vendor?: string) => {
     const secretKey = llmSecretKeyForInput(deps, vendor);
     if (!secretKey) return false;
     // A retired profile can still choose a provider with a saved key. Presence is enough for that settings chooser; the credential itself stays fenced.
-    if (settingsService.get("llm").retiredProvider) return settingsService.hasStoredSecret(secretKey);
-    return settingsService.getSecret(secretKey) !== null;
+    if (settingsService.get("llm").retiredProvider) return await settingsService.hasStoredSecret(secretKey);
+    return (await settingsService.getSecret(secretKey)) !== null;
   });
 
   ipcMain.handle(CHANNELS.settings.deleteApiKey, async (e, vendor: string) => {
@@ -1053,9 +1041,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       };
     }
     await settingsService.deleteSecret(secretKey);
-    refreshChatRuntimeProviders(deps);
+    await refreshChatRuntimeProviders(deps);
     // Rewire the reviewer when the provider key is removed so cacheScope refreshes.
-    deps.rewireReviewerAgent?.();
+    await deps.rewireReviewerAgent?.();
     // #893; refresh plugin wildcard so the now-missing key is cleared.
     deps.refreshActiveLlmWildcard?.();
     await broadcastSettingsSnapshot(deps);
@@ -1513,8 +1501,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   });
 
   // read-only; sender guard optional
-  ipcMain.handle(CHANNELS.settings.hasWebApiKey, (_e, provider: string) => {
-    return settingsService.getSecret(`web.apiKey.${provider}`) !== null;
+  ipcMain.handle(CHANNELS.settings.hasWebApiKey, async (_e, provider: string) => {
+    return (await settingsService.getSecret(`web.apiKey.${provider}`)) !== null;
   });
 
   ipcMain.handle(CHANNELS.settings.deleteWebApiKey, async (e, provider: string) => {

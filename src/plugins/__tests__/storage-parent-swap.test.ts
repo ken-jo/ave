@@ -57,9 +57,9 @@ import { removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const encryption = {
   getSelectedStorageBackend: () => "gnome_libsecret" as const,
-  isEncryptionAvailable: () => true,
-  encryptString: (value: string) => Buffer.from(`ENC(${value})`),
-  decryptString: (bytes: Buffer) => /^ENC\(([\s\S]*)\)$/.exec(String(bytes))![1]!,
+  isAsyncEncryptionAvailable: async () => true,
+  encryptStringAsync: async (value: string) => Buffer.from(`ENC(${value})`),
+  decryptStringAsync: async (bytes: Buffer) => ({ shouldReEncrypt: false, result: /^ENC\(([\s\S]*)\)$/.exec(String(bytes))![1]! }),
 };
 
 const base = realpathSync(mkdtempSync(join(tmpdir(), "ave-storage-parent-swap-")));

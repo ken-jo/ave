@@ -304,6 +304,8 @@ describe("common subscription runtime IPC", () => {
       provider: "codex",
       model: "gpt-5",
     });
+    // Rebinding awaits the async provider refresh, but persistence stays held until every consumer is bound.
+    await vi.waitFor(() => expect(deps.refreshActiveLlmWildcard).toHaveBeenCalledOnce());
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledOnce();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledOnce();
     expect(rewire).toHaveBeenCalledOnce();
@@ -354,6 +356,7 @@ describe("common subscription runtime IPC", () => {
 
     firstPersist.resolve();
     await rollbackApplied.promise;
+    await vi.waitFor(() => expect(rewire).toHaveBeenCalledTimes(2));
 
     expect(state.currentLlm().activeChatRuntime).toEqual({ kind: "api" });
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledTimes(2);
@@ -785,9 +788,11 @@ describe("common subscription runtime IPC", () => {
     expect(deps.settingsService.patch).toHaveBeenNthCalledWith(2, {
       llm: { activeChatRuntime: { kind: "api" } },
     });
-    expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(1);
-    expect(send.mock.calls.filter(([channel]) => channel === "ave:settings:subscription:status-updated"))
-      .toHaveLength(2);
+    await vi.waitFor(() => {
+      expect(send.mock.calls.filter(([channel]) => channel === SETTINGS.updated)).toHaveLength(1);
+      expect(send.mock.calls.filter(([channel]) => channel === "ave:settings:subscription:status-updated"))
+        .toHaveLength(2);
+    });
   });
 
   it("suppresses stale selection effects when a newer selection persists while the older write is pending", async () => {

@@ -120,7 +120,7 @@ function settingsTokenStore(deps: IpcDeps): TokenStore {
   const settings = deps.settingsService;
   return {
     get: (host) => settings.getSecret(gitTokenSecretKey(host)),
-    has: (host) => settings.getSecret(gitTokenSecretKey(host)) !== null,
+    has: async (host) => (await settings.getSecret(gitTokenSecretKey(host))) !== null,
     set: (host, token) => settings.setSecret(gitTokenSecretKey(host), token),
     delete: (host) => settings.deleteSecret(gitTokenSecretKey(host)),
   };
@@ -306,7 +306,7 @@ async function createGitMarketplaceService(
     envRoot: join(root, ".git-env"),
     runtimeRoot: gitRuntimeRoot(home),
     mode: () => deps.settingsService.get("marketplace").git?.mode ?? "auto",
-    getToken: (host, sourceId) => previewTokens.get(sourceId) ?? tokens.get(host),
+    getToken: async (host, sourceId) => previewTokens.get(sourceId) ?? await tokens.get(host),
     corporateRootsPem: async () => (await ensureCorporateCa(readPersistedCorpCaConfigSync(app.getPath("userData")))).pem,
     resolveProxy: (url) => session.defaultSession.resolveProxy(url),
   });

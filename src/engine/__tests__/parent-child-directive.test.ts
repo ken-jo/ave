@@ -365,8 +365,8 @@ describe("parent directive delivery into a live sub-agent run", () => {
       .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
       .mockReturnValue(true);
     const refresh = vi
-      .spyOn(ConversationLoop.prototype as unknown as { refreshProvider: () => void }, "refreshProvider")
-      .mockImplementation(function (this: ConversationLoop) {
+      .spyOn(ConversationLoop.prototype as unknown as { refreshProvider: () => Promise<void> }, "refreshProvider")
+      .mockImplementation(async function (this: ConversationLoop) {
         (this as { provider: LLMProvider | null }).provider = provider;
       });
     return () => {

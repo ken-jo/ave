@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const unavailableSecretEncryption: SecretEncryption = {
-  isEncryptionAvailable: () => false,
+  isAsyncEncryptionAvailable: async () => false,
   getSelectedStorageBackend: () => "unknown",
-  encryptString: () => { throw new Error("test-encryption-unavailable"); },
-  decryptString: () => { throw new Error("test-encryption-unavailable"); },
+  encryptStringAsync: async () => { throw new Error("test-encryption-unavailable"); },
+  decryptStringAsync: async () => { throw new Error("test-encryption-unavailable"); },
 };
 
 export const stationaryLeaseState = {

@@ -9,10 +9,10 @@ import { join } from "node:path";
 
 const mockedElectron = vi.hoisted(() => ({
   safeStorage: {
-    isEncryptionAvailable: vi.fn(() => false),
+    isAsyncEncryptionAvailable: vi.fn(async () => false),
     getSelectedStorageBackend: vi.fn(() => "gnome_libsecret" as const),
-    encryptString: vi.fn(),
-    decryptString: vi.fn(),
+    encryptStringAsync: vi.fn(),
+    decryptStringAsync: vi.fn(),
   },
 }));
 

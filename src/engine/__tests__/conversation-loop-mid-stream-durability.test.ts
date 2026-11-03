@@ -407,8 +407,8 @@ describe("mid-stream durability", () => {
       streamThenBlock("child partial", () => { blocked = true; }),
     ]);
     vi.spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider").mockReturnValue(true);
-    vi.spyOn(ConversationLoop.prototype as unknown as { refreshProvider: () => void }, "refreshProvider")
-      .mockImplementation(function (this: ConversationLoop) {
+    vi.spyOn(ConversationLoop.prototype as unknown as { refreshProvider: () => Promise<void> }, "refreshProvider")
+      .mockImplementation(async function (this: ConversationLoop) {
         (this as { provider: LLMProvider | null }).provider = provider;
       });
     const runner = new SubAgentRunner({

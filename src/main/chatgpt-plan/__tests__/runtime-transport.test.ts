@@ -23,8 +23,8 @@ const NOW = Date.now();
 
 class FakeSecrets implements ChatGptPlanSecretStore {
   readonly values = new Map<string, string>();
-  isSecretStorageEncrypted(): boolean { return true; }
-  getEncryptedSecret(key: string): string | null { return this.values.get(key) ?? null; }
+  async isSecretStorageEncrypted(): Promise<boolean> { return true; }
+  async getEncryptedSecret(key: string): Promise<string | null> { return this.values.get(key) ?? null; }
   async setSecret(key: string, value: string): Promise<void> { this.values.set(key, value); }
   async deleteSecret(key: string): Promise<void> { this.values.delete(key); }
 }
@@ -104,14 +104,14 @@ function harness(scopes: readonly string[] | null, responses: (url: string) => R
 
 
 describe("ChatGPT plan runtime status", () => {
-  it("is signed out with no stored record, and chat stays unavailable", () => {
-    const status = harness(null).runtime.getStatus();
+  it("is signed out with no stored record, and chat stays unavailable", async () => {
+    const status = await harness(null).runtime.getStatus();
     expect(status).toMatchObject({ provider: "chatgpt-plan", runtime: "ready", connection: "signed-out", version: null });
     expect(status.capabilities.chat).toBe(false);
   });
 
-  it("is connected with chat once a plan-usage grant is stored", () => {
-    const status = harness(PLAN_SCOPES).runtime.getStatus();
+  it("is connected with chat once a plan-usage grant is stored", async () => {
+    const status = await harness(PLAN_SCOPES).runtime.getStatus();
     expect(status.connection).toBe("connected");
     expect(status.capabilities).toMatchObject({
       chat: true,
@@ -124,8 +124,8 @@ describe("ChatGPT plan runtime status", () => {
 
   it("shows a sign-in without the plan grant as signed out, and asks for consent on the next sign-in", async () => {
     const h = harness(IDENTITY_SCOPES, () => new Response("{}", { status: 200 }));
-    expect(h.runtime.getStatus()).toMatchObject({ connection: "signed-out", notice: "plan-usage-disabled" });
-    expect(h.runtime.getStatus().capabilities.chat).toBe(false);
+    expect(await h.runtime.getStatus()).toMatchObject({ connection: "signed-out", notice: "plan-usage-disabled" });
+    expect((await h.runtime.getStatus()).capabilities.chat).toBe(false);
     // Discovery is fetched before the browser opens; answer it so the attempt reaches the browser.
     const discovery = {
       issuer: "https://auth.openai.com",
@@ -142,7 +142,7 @@ describe("ChatGPT plan runtime status", () => {
     expect(params.get("prompt")).toBe("consent");
     // The reauthorization carries the retained ID token as a hint, and still passes the opener's validation.
     expect(params.get("id_token_hint")).toBe("stored-id-token");
-    consent.runtime.cancelLogin();
+    await consent.runtime.cancelLogin();
   });
 });
 
@@ -295,7 +295,7 @@ describe("ChatGPT plan transport", () => {
     );
     const events = await collect(transport.streamTurn({ model: "m", systemPrompt: "s", messages: [{ role: "user", content: "hi" }] }));
     expect(events.at(-1)).toMatchObject({ type: "error", classification: "chatgpt-plan-temporarily-unavailable" });
-    expect(runtime.getStatus().connection).toBe("connected");
+    expect((await runtime.getStatus()).connection).toBe("connected");
   });
 
   it("fails clearly when signed out, without making an inference request", async () => {
@@ -531,7 +531,7 @@ describe("SubscriptionRuntimeService with ChatGPT plan usage", () => {
   it("maps a session failure to a stable runtime code", async () => {
     const session = { status: () => { throw new Error("broken record"); } } as unknown as ChatGptPlanSession;
     const runtime = new ChatGptPlanRuntime(session, (async () => new Response()) as typeof fetch);
-    expect(runtime.getStatus()).toMatchObject({ runtime: "unavailable", connection: "unknown" });
+    expect(await runtime.getStatus()).toMatchObject({ runtime: "unavailable", connection: "unknown" });
     await expect(runtime.startLogin()).rejects.toBeInstanceOf(ChatGptPlanRuntimeError);
   });
 });

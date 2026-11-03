@@ -114,9 +114,9 @@ export function createNetworkOnlineSource(
 // plain-text encoding, which must never be sent to an external cloud provider.
 interface TelegramConnectionSecretService {
   setSecret(key: string, value: string): Promise<void>;
-  getEncryptedSecret(key: string): string | null;
+  getEncryptedSecret(key: string): Promise<string | null>;
   deleteSecret(key: string): Promise<void>;
-  isSecretStorageEncrypted(): boolean;
+  isSecretStorageEncrypted(): Promise<boolean>;
 }
 
 export interface CreateTelegramConnectionServiceOptions {
@@ -146,7 +146,7 @@ export interface CreateTelegramConnectionServiceOptions {
 
 export interface TelegramConnectionService {
   setOwnerUserId(ownerUserId: string): Promise<TelegramConnectionMutationResult>;
-  snapshot(): TelegramConnectionSnapshotResult;
+  snapshot(): Promise<TelegramConnectionSnapshotResult>;
   connect(botToken: string): Promise<TelegramConnectionMutationResult>;
   disconnect(): Promise<TelegramConnectionMutationResult>;
   pause(): Promise<TelegramConnectionMutationResult>;
@@ -507,9 +507,9 @@ export function createTelegramConnectionService(
     }
   };
 
-  const readStoredToken = (): string | null => {
+  const readStoredToken = async (): Promise<string | null> => {
     try {
-      const value = settingsService.getEncryptedSecret(SECRET_KEY);
+      const value = await settingsService.getEncryptedSecret(SECRET_KEY);
       return isTelegramBotToken(value) ? value : null;
     } catch (error) {
       if (error instanceof AveHomeConfigurationUntrustedError) throw error;
@@ -581,9 +581,9 @@ export function createTelegramConnectionService(
     return OK;
   };
 
-  const snapshot = (): TelegramConnectionSnapshotResult => {
+  const snapshot = async (): Promise<TelegramConnectionSnapshotResult> => {
     try {
-      if (!settingsService.isSecretStorageEncrypted()) return inertSnapshot("unsupported");
+      if (!await settingsService.isSecretStorageEncrypted()) return inertSnapshot("unsupported");
       const owner = store.ownerSnapshot();
       const approval = projectApproval(owner.approval, currentConversation()?.digest ?? null);
       const projected = parseTelegramConnectionSnapshot({
@@ -616,7 +616,7 @@ export function createTelegramConnectionService(
       // Probed before any write: an unencryptable host must not receive the token even briefly.
       let encrypted: boolean;
       try {
-        encrypted = settingsService.isSecretStorageEncrypted();
+        encrypted = await settingsService.isSecretStorageEncrypted();
       } catch {
         return ENCRYPTION_UNAVAILABLE;
       }
@@ -625,7 +625,7 @@ export function createTelegramConnectionService(
       cancelResumeRetry();
 
       // Both halves of "put it back the way it was", read before the first write so a failed attempt can restore the credential and the state it replaced.
-      const previous = readStoredToken();
+      const previous = await readStoredToken();
       const previousDesired = readDesiredState();
       try {
         await settingsService.setSecret(SECRET_KEY, botToken);
@@ -722,7 +722,7 @@ export function createTelegramConnectionService(
       if (origin === "automatic" && (disposed || readDesiredState() !== "connected")) return OK;
       let encrypted: boolean;
       try {
-        encrypted = settingsService.isSecretStorageEncrypted();
+        encrypted = await settingsService.isSecretStorageEncrypted();
       } catch {
         return ENCRYPTION_UNAVAILABLE;
       }
@@ -734,7 +734,7 @@ export function createTelegramConnectionService(
         return reconciled;
       }
       // Require stored credentials for resume and persist failure codes so unattended boot cannot report an active share without a poll loop.
-      const botToken = readStoredToken();
+      const botToken = await readStoredToken();
       if (botToken === null) {
         await noteError(TOKEN_UNREADABLE.error);
         return TOKEN_UNREADABLE;

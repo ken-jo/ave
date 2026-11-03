@@ -21,9 +21,9 @@ describe("A2A remote exact initial replay", () => {
     const store = new A2ARemoteDurableStore({
       namespace: { readJson, writeJson },
       encryption: {
-        isEncryptionAvailable: () => true,
-        encryptString: (value) => Buffer.from(value),
-        decryptString: (value) => value.toString(),
+        isAsyncEncryptionAvailable: async () => true,
+        encryptStringAsync: async (value) => Buffer.from(value),
+        decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }),
       },
     });
     const client = new A2ARemoteClient({
@@ -99,7 +99,7 @@ describe("A2A remote exact initial replay", () => {
         readJson: async <T>(_name: string, fallback: T) => structuredClone((disk ?? fallback) as T),
         writeJson: async (_name: string, value: unknown) => { disk = structuredClone(value); },
       },
-      encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+      encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) },
       random: (size) => Buffer.alloc(size, 6),
       now: () => new Date("2026-07-16T00:00:00.000Z"),
     });
@@ -143,7 +143,7 @@ describe("A2A remote exact initial replay", () => {
     let disk: unknown;
     const now = () => new Date("2026-07-16T00:01:00.000Z");
     const namespace = { readJson: async <T>(_n: string, fallback: T) => structuredClone((disk ?? fallback) as T), writeJson: async (_n: string, value: unknown) => { disk = structuredClone(value); } };
-    const encryption = { isEncryptionAvailable: () => true, encryptString: (v: string) => Buffer.from(v), decryptString: (v: Buffer) => v.toString() };
+    const encryption = { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (v: string) => Buffer.from(v), decryptStringAsync: async (v: Buffer) => ({ shouldReEncrypt: false, result: v.toString() }) };
     const store = new A2ARemoteDurableStore({ namespace, encryption, random: (size) => Buffer.alloc(size, 9), now });
     const bodies: Buffer[] = [];
     const transport = { invoke: vi.fn(async ({ body }: { body: Uint8Array }) => { bodies.push(Buffer.from(body)); if (bodies.length < 3) throw new Error("socket-lost"); return { status: 200, headers: { "a2a-extensions": A2A_EXACT_SEND_REPLAY_URI }, body: Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 41, result: { message: { messageId: "reply-1", role: "ROLE_AGENT", parts: [{ text: "ok" }] } } })) }; }) };
@@ -236,7 +236,7 @@ describe("A2A remote exact initial replay", () => {
     ["remote error", { status: 200, headers: { "a2a-extensions": A2A_EXACT_SEND_REPLAY_URI }, body: Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 41, error: { code: -32001, message: "Remote error" } })) }, "remote-error"],
   ])("atomically deletes the source payload after replay %s settlement", async (_label, terminalResponse, outcome) => {
     let disk: any;
-    const store = new A2ARemoteDurableStore({ namespace: { readJson: async <T>(_name: string, fallback: T) => structuredClone((disk ?? fallback) as T), writeJson: async (_name: string, value: unknown) => { disk = structuredClone(value); } }, encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() }, random: (size) => Buffer.alloc(size, 4), now: () => new Date("2026-07-16T00:01:00.000Z") });
+    const store = new A2ARemoteDurableStore({ namespace: { readJson: async <T>(_name: string, fallback: T) => structuredClone((disk ?? fallback) as T), writeJson: async (_name: string, value: unknown) => { disk = structuredClone(value); } }, encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) }, random: (size) => Buffer.alloc(size, 4), now: () => new Date("2026-07-16T00:01:00.000Z") });
     let calls = 0;
     const client = new A2ARemoteClient({
       enabled: true,
@@ -263,7 +263,7 @@ describe("A2A remote exact initial replay", () => {
         readJson: async <T>(_name: string, fallback: T) => structuredClone((disk ?? fallback) as T),
         writeJson: async (_name: string, value: unknown) => { disk = structuredClone(value); },
       },
-      encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+      encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) },
       random: (size) => Buffer.alloc(size, 7),
       now,
     });

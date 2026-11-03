@@ -174,7 +174,7 @@ describe("SubAgentRunner checkpoint child lifetime", () => {
     const memory = new MemoryManager({ aveDir: join(root, "subagent") });
     const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry), toolRegistry: registry, subAgentMemoryManager: memory });
     const hasProvider = vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
-    const refresh = vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    const refresh = vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(async () => {});
     const loadSession = vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
     const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn");
     let start!: () => void;
@@ -421,11 +421,11 @@ describe("SubAgentRunner — maxRounds bound", () => {
     const refreshProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
+          refreshProvider: () => Promise<void>;
         },
         "refreshProvider",
       )
-      .mockImplementation(function (this: ConversationLoop) {
+      .mockImplementation(async function (this: ConversationLoop) {
         (this as { provider: LLMProvider | null }).provider = provider;
       });
 
@@ -822,11 +822,11 @@ describe("SubAgentRunner — projected terminal status", () => {
     const refreshProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
+          refreshProvider: () => Promise<void>;
         },
         "refreshProvider",
       )
-      .mockImplementation(() => undefined);
+      .mockImplementation(async () => undefined);
     const runTurnSpy = vi
       .spyOn(ConversationLoop.prototype, "runTurn")
       .mockResolvedValue({
@@ -894,11 +894,11 @@ describe("SubAgentRunner — projected terminal status", () => {
       const refreshProviderSpy = vi
         .spyOn(
           ConversationLoop.prototype as unknown as {
-            refreshProvider: () => void;
+            refreshProvider: () => Promise<void>;
           },
           "refreshProvider",
         )
-        .mockImplementation(() => undefined);
+        .mockImplementation(async () => undefined);
       const runTurnSpy = vi
         .spyOn(ConversationLoop.prototype, "runTurn")
         .mockResolvedValue({
@@ -1378,10 +1378,10 @@ describe("SubAgentRunner — what each tool scope grants", () => {
       .mockReturnValue(true);
     const refreshProviderSpy = vi
       .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
+        ConversationLoop.prototype as unknown as { refreshProvider: () => Promise<void> },
         "refreshProvider",
       )
-      .mockImplementation(function (this: ConversationLoop) {
+      .mockImplementation(async function (this: ConversationLoop) {
         (this as { provider: LLMProvider | null }).provider = provider;
       });
     try {
@@ -2888,10 +2888,10 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
       .mockReturnValue(true);
     const refreshProviderSpy = vi
       .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
+        ConversationLoop.prototype as unknown as { refreshProvider: () => Promise<void> },
         "refreshProvider",
       )
-      .mockImplementation(function (this: ConversationLoop) {
+      .mockImplementation(async function (this: ConversationLoop) {
         (this as { provider: LLMProvider | null }).provider = provider;
       });
     restore.push(() => hasProviderSpy.mockRestore());
@@ -3153,7 +3153,7 @@ describe("SubAgentRunner activity ordering", () => {
     let terminalResult: SubAgentSpawnResult | undefined;
     let terminalTaskState: string | undefined;
     vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
-    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(async () => {});
     vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
     vi.spyOn(ConversationLoop.prototype, "fireLifecycleEvent").mockImplementation(async (name) => {
       timeline.push(name);

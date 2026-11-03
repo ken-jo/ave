@@ -91,7 +91,8 @@ type FakeLoop = {
     truncate: (count: number) => void;
     restore: () => void;
   };
-  refreshProvider: () => void;
+  refreshProvider: () => Promise<void>;
+  whenProviderReady: () => Promise<void>;
   resetAndResume: ReturnType<typeof vi.fn>;
   getSessionProjectContext: () => { projectRoot?: string };
 };
@@ -133,7 +134,8 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
       truncate: (count: number) => { messages = messages.slice(0, count); },
       restore: () => {},
     }),
-    refreshProvider: () => {},
+    refreshProvider: async () => {},
+    whenProviderReady: async () => {},
     getSessionProjectContext: () => ({ projectRoot: `/projects/${id}` }),
     resetAndResume: vi.fn(async (sessionId: string) => {
       loop.sessionId = sessionId;
@@ -238,8 +240,8 @@ describe("ave:chat:* with chat groups", () => {
 
   it("names its group or is refused — there is no default tile", async () => {
     const { invoke, resolveChatGroupLoop } = await registerWithGroups();
-    expect(() => invoke(CHANNELS.chat.hasProvider)).toThrow("chat-group-required");
-    expect(() => invoke(CHANNELS.chat.hasProvider, "   ")).toThrow("chat-group-required");
+    await expect(invoke(CHANNELS.chat.hasProvider)).rejects.toThrow("chat-group-required");
+    await expect(invoke(CHANNELS.chat.hasProvider, "   ")).rejects.toThrow("chat-group-required");
     expect(resolveChatGroupLoop).not.toHaveBeenCalled();
   });
 
@@ -308,9 +310,9 @@ describe("ave:chat:* with chat groups", () => {
 
   it("runs each group on its own loop, and the primary on the primary", async () => {
     const { invoke, main, groups, resolveChatGroupLoop } = await registerWithGroups();
-    expect(invoke(CHANNELS.chat.hasProvider, MAIN_CHAT_GROUP_ID)).toBe(false);
-    expect(invoke(CHANNELS.chat.hasProvider, "group-2")).toBe(true);
-    expect(invoke(CHANNELS.chat.hasProvider, "group-3")).toBe(true);
+    expect(await invoke(CHANNELS.chat.hasProvider, MAIN_CHAT_GROUP_ID)).toBe(false);
+    expect(await invoke(CHANNELS.chat.hasProvider, "group-2")).toBe(true);
+    expect(await invoke(CHANNELS.chat.hasProvider, "group-3")).toBe(true);
     expect(resolveChatGroupLoop.mock.calls.map((call) => call[0])).toEqual(["group-2", "group-3"]);
     expect(main.hasProvider).toHaveBeenCalledTimes(1);
     expect(groups.get("group-2")!.hasProvider).toHaveBeenCalledTimes(1);
@@ -717,7 +719,7 @@ describe("ave:chat:* with chat groups", () => {
       getMainWindow: vi.fn(() => null),
     } as unknown as Parameters<typeof registerChatHandlers>[0]);
     const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(nativeChatFrameEvent(), ...args);
-    expect(() => invoke(CHANNELS.chat.hasProvider, "group-2")).toThrow("chat-groups-unavailable");
+    await expect(invoke(CHANNELS.chat.hasProvider, "group-2")).rejects.toThrow("chat-groups-unavailable");
   });
 });
 
@@ -815,7 +817,7 @@ describe("ave:chat:* across several main windows", () => {
     appState.registerMainWindow(primary.window as never, "primary");
     const { resolveChatGroupLoop } = await registerWithGroups(primary.window);
     const contents = { id: 999, mainFrame: { url: "file:///index.html" }, isDestroyed: () => false };
-    expect(handlers.get(CHANNELS.chat.hasProvider)!({ sender: contents, senderFrame: contents.mainFrame }, "group-2")).toBe(false);
+    expect(await handlers.get(CHANNELS.chat.hasProvider)!({ sender: contents, senderFrame: contents.mainFrame }, "group-2")).toBe(false);
     expect(resolveChatGroupLoop).not.toHaveBeenCalled();
   });
 
@@ -832,7 +834,7 @@ describe("ave:chat:* across several main windows", () => {
     const native = { sender: owner, senderFrame: owner.mainFrame };
     const registration = vi.spyOn(await import("../../../permissions/approval-surface-registry.js"), "updateApprovalSurface");
     try {
-      expect(handlers.get(CHANNELS.chat.hasProvider)!(invalid, "new-group")).toBe(false);
+      expect(await handlers.get(CHANNELS.chat.hasProvider)!(invalid, "new-group")).toBe(false);
       expect(handlers.get(CHANNELS.chat.getHistory)!(invalid, "new-group")).toEqual([]);
       await expect(handlers.get(CHANNELS.chat.new)!(invalid, undefined, MAIN_CHAT_GROUP_ID)).rejects.toThrow("unauthorized-frame");
       await expect(handlers.get(CHANNELS.chat.sessionResume)!(invalid, main.getSessionId(), MAIN_CHAT_GROUP_ID)).rejects.toThrow("unauthorized-frame");
@@ -846,7 +848,7 @@ describe("ave:chat:* across several main windows", () => {
       }
       expect(approvalSurfaceRegistry.resolve(main.getSessionId())).toBe(owner);
       // A native surface adopting a cached conversation refreshes delivery.
-      expect(handlers.get(CHANNELS.chat.hasProvider)!(native, MAIN_CHAT_GROUP_ID)).toBe(false);
+      expect(await handlers.get(CHANNELS.chat.hasProvider)!(native, MAIN_CHAT_GROUP_ID)).toBe(false);
       expect(handlers.get(CHANNELS.chat.getHistory)!(native, MAIN_CHAT_GROUP_ID)).toMatchObject({ sessionId: main.getSessionId() });
       expect(registration).toHaveBeenCalledTimes(2);
       expect(registration).toHaveBeenNthCalledWith(1, {

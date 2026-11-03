@@ -244,7 +244,7 @@ describe("host OAuth auth window", () => {
     let callbackRead!: () => void;
     const callbackAnswered = new Promise<void>(resolve => { callbackRead = resolve; });
     const login = new ChatGptPlanSession({
-      secrets: { isSecretStorageEncrypted: () => true, getEncryptedSecret: key => values.get(key) ?? null,
+      secrets: { isSecretStorageEncrypted: async () => true, getEncryptedSecret: async key => values.get(key) ?? null,
         setSecret: async (key, value) => { values.set(key, value); }, deleteSecret: async key => { values.delete(key); } },
       hostId: async () => "urn:uuid:6bdc3791-aab4-4ce0-b8ad-36a5950d279c",
       startListener: startChatGptPlanCallbackListener,
@@ -287,7 +287,7 @@ describe("host OAuth auth window", () => {
       await completion.catch(error => { throw clientError ?? error; });
       await windowCompletion;
       expect(proofVerified).toBe(true);
-      expect(login.status().connection).toBe("connected");
+      expect((await login.status()).connection).toBe("connected");
       expect(constructed[0].isDestroyed()).toBe(true);
     } finally { await login.cancelSignIn(); }
   });

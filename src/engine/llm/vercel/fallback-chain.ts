@@ -178,7 +178,7 @@ function waitForAttemptWindow(
 }
 
 // Reuse the injected secret lookup only when constructing a needed fallback.
-export type ApiKeyGetter = (vendor: LLMVendor) => string;
+export type ApiKeyGetter = (vendor: LLMVendor) => string | Promise<string>;
 export type ProviderFactory = (config: ProviderConfig) => LLMProvider;
 
 export class FallbackProvider implements LLMProvider {
@@ -253,12 +253,12 @@ export async function* streamWithFallback(
   // Construct fallback providers lazily after the primary attempt.
   const totalAttempts = 1 + chain.length;
 
-  const getAttempt = (i: number): {
+  const getAttempt = async (i: number): Promise<{
     provider: LLMProvider;
     label: string;
     identity: { provider: LLMVendor; model: string };
     attemptParams: StreamTurnParams;
-  } => {
+  }> => {
     if (i === 0) {
       return {
         provider: primary,
@@ -268,7 +268,7 @@ export async function* streamWithFallback(
       };
     }
     const entry = chain[i - 1]!;
-    const apiKey = getApiKey(entry.provider);
+    const apiKey = await getApiKey(entry.provider);
     // Primary route limits and capabilities cannot be carried into fallback models.
     const {
       outputCeiling: _primaryCeiling,
@@ -299,7 +299,7 @@ export async function* streamWithFallback(
 
   let lastErr: unknown;
   for (let i = 0; i < totalAttempts; i++) {
-    const { provider, label, identity, attemptParams } = getAttempt(i);
+    const { provider, label, identity, attemptParams } = await getAttempt(i);
     try {
       throwIfAborted(params.abortSignal);
       yield* attemptStreamWithRetries(provider, attemptParams, label, identity, callbacks);

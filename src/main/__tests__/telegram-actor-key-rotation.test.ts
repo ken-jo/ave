@@ -35,21 +35,26 @@ const CODE_DIGEST = "c".repeat(64);
 const tempDirectory = useTempDirs("ave-telegram-rotation-");
 
 // The real encrypted store, plus the one failure a memory-backed double cannot express: the ciphertext stays exactly as written and only this machine's
-// ability to decrypt it goes away.
-function encryptedSecrets(): { readonly store: SecretStore; breakDecryption: () => void } {
+// ability to decrypt it goes away. That loss surfaces where the next boot reopens the store and unwraps its data key, so breaking decryption reopens it.
+async function encryptedSecrets(): Promise<{ readonly store: SecretStore; breakDecryption: () => Promise<void> }> {
   const state = { broken: false };
   const encryption: SafeStorageLike = {
-    isEncryptionAvailable: () => true,
-    encryptString: (value: string) => Buffer.from(`enc:${value}`, "utf8"),
-    decryptString: (value: Buffer) => {
+    isAsyncEncryptionAvailable: async () => true,
+    encryptStringAsync: async (value: string) => Buffer.from(`enc:${value}`, "utf8"),
+    decryptStringAsync: async (value: Buffer) => {
       if (state.broken) throw new Error("safeStorage could not decrypt this ciphertext");
-      return value.toString("utf8").replace(/^enc:/, "");
+      return { shouldReEncrypt: false, result: value.toString("utf8").replace(/^enc:/, "") };
     },
   };
+  const directory = tempDirectory("ave-telegram-rotation-secrets-");
+  let store: SecretStore = await SafeStorageSecretStore.open(encryption, directory);
   return {
-    store: new SafeStorageSecretStore(encryption, tempDirectory("ave-telegram-rotation-secrets-")),
-    breakDecryption: () => {
+    get store() {
+      return store;
+    },
+    breakDecryption: async () => {
       state.broken = true;
+      store = await SafeStorageSecretStore.open(encryption, directory);
     },
   };
 }
@@ -82,7 +87,7 @@ async function connectedAndPaired(
 ): Promise<void> {
   await store.setConnected(BOT_FINGERPRINT);
   await reconcile(store, secretStore);
-  const digester = createTelegramActorDigester({ botFingerprint: BOT_FINGERPRINT, secretStore, encryption: unavailableSecretEncryption });
+  const digester = await createTelegramActorDigester({ botFingerprint: BOT_FINGERPRINT, secretStore, encryption: unavailableSecretEncryption });
   await pairAndShare(store, digester.digestFor(OWNER_ID)!);
 }
 
@@ -127,9 +132,9 @@ function connectionService(store: TelegramConnectionStore, secretStore: SecretSt
     settingsService: {
       setSecret: async () => {},
       // The keychain reset took the bot token along with the actor key.
-      getEncryptedSecret: () => null,
+      getEncryptedSecret: async () => null,
       deleteSecret: async () => {},
-      isSecretStorageEncrypted: () => true,
+      isSecretStorageEncrypted: async () => true,
     },
     bridgeControl: {
       start: async () => {
@@ -150,9 +155,9 @@ function connectionService(store: TelegramConnectionStore, secretStore: SecretSt
 describe("telegram actor key rotation", () => {
   it.each(["strict", "default", "auto", "allow"] as const)("routes the registered owner through the local permission tree in %s", async (mode) => {
     const store = await openStore(tempDirectory());
-    const secrets = encryptedSecrets();
+    const secrets = await encryptedSecrets();
     await connectedAndPaired(store, secrets.store);
-    const runtime = pairedRuntime(store, secrets.store);
+    const runtime = await pairedRuntime(store, secrets.store);
     const authorization = await runtime.authorize({ provider: "telegram", deliveryId: "owner-tree", channelId: OWNER_ID, senderId: OWNER_ID, text: "inspect project" });
     expect(authorization).not.toBeNull();
     const authority = bindRemoteControllerToSession({
@@ -177,7 +182,7 @@ describe("telegram actor key rotation", () => {
   });
 
   it("keeps the paired owner authorized while the actor key is still readable", async () => {
-    const secrets = encryptedSecrets();
+    const secrets = await encryptedSecrets();
     const store = await openStore(tempDirectory("ave-telegram-rotation-store-"));
     await connectedAndPaired(store, secrets.store);
 
@@ -188,15 +193,15 @@ describe("telegram actor key rotation", () => {
     expect(snapshot.pairing).not.toBeNull();
     expect(snapshot.pairingUnrecognized).toBe(false);
     expect(snapshot.approval).not.toBeNull();
-    expect(pairedRuntime(store, secrets.store).authorize(ownerEnvelope())).not.toBeNull();
+    expect((await pairedRuntime(store, secrets.store)).authorize(ownerEnvelope())).not.toBeNull();
   });
 
   it("retires the pairing and refuses the owner once the actor key has rotated", async () => {
-    const secrets = encryptedSecrets();
+    const secrets = await encryptedSecrets();
     const store = await openStore(tempDirectory("ave-telegram-rotation-store-"));
     await connectedAndPaired(store, secrets.store);
 
-    secrets.breakDecryption();
+    await secrets.breakDecryption();
     await reconcile(store, secrets.store);
 
     const snapshot = store.ownerSnapshot();
@@ -206,15 +211,15 @@ describe("telegram actor key rotation", () => {
     expect(snapshot.pairingUnrecognized).toBe(true);
     expect(snapshot.approval).toBeNull();
     expect(store.activePairingActorDigest()).toBeNull();
-    expect(pairedRuntime(store, secrets.store).authorize(ownerEnvelope())).toBeNull();
+    expect((await pairedRuntime(store, secrets.store)).authorize(ownerEnvelope())).toBeNull();
   });
 
   it("reconciles before the bot token is read on the composed boot resume", async () => {
-    const secrets = encryptedSecrets();
+    const secrets = await encryptedSecrets();
     const store = await openStore(tempDirectory("ave-telegram-rotation-store-"));
     await connectedAndPaired(store, secrets.store);
     // One keychain reset takes both secrets: the token this resume needs and the key the pairing's digests were minted under.
-    secrets.breakDecryption();
+    await secrets.breakDecryption();
 
     // Through the composition boot actually runs, not around it. The resume gives up at the missing credential, and everything the bridge would have done —
     // the reconcile included — is downstream of that return.
@@ -227,11 +232,11 @@ describe("telegram actor key rotation", () => {
   });
 
   it("round-trips the actor key digest without ever writing the key itself", async () => {
-    const secrets = encryptedSecrets();
+    const secrets = await encryptedSecrets();
     const directory = tempDirectory("ave-telegram-rotation-store-");
     const store = await openStore(directory);
     const actorSecret = ensureTelegramPlatformActorSecret(secrets.store);
-    const digester = createTelegramActorDigester({
+    const digester = await createTelegramActorDigester({
       botFingerprint: BOT_FINGERPRINT,
       secretStore: secrets.store,
       encryption: unavailableSecretEncryption,
@@ -250,9 +255,9 @@ describe("telegram actor key rotation", () => {
   });
 
   it("treats an absent stored digest with a live pairing as unrecognized, not as adoption", async () => {
-    const secrets = encryptedSecrets();
+    const secrets = await encryptedSecrets();
     const store = await openStore(tempDirectory("ave-telegram-rotation-store-"));
-    const digester = createTelegramActorDigester({
+    const digester = await createTelegramActorDigester({
       botFingerprint: BOT_FINGERPRINT,
       secretStore: secrets.store,
       encryption: unavailableSecretEncryption,

@@ -226,10 +226,10 @@ async function fixture(): Promise<Fixture> {
 function createSession(state: Fixture, options: { store?: Map<string, string>; config?: Partial<McpHttpServerConfig>; getSecret?: McpOAuthSecrets["getSecret"]; canStoreEncrypted?: McpOAuthSecrets["canStoreEncrypted"] } = {}) {
   const store = options.store ?? new Map<string, string>();
   const secrets: McpOAuthSecrets = {
-    getSecret: options.getSecret ?? ((key) => store.get(key) ?? null),
+    getSecret: options.getSecret ?? (async (key) => store.get(key) ?? null),
     setSecret: async (key, value) => { store.set(key, value); },
     deleteSecret: async (key) => { store.delete(key); },
-    canStoreEncrypted: options.canStoreEncrypted ?? (() => true),
+    canStoreEncrypted: options.canStoreEncrypted ?? (async () => true),
   };
   const catchers = new AuthRedirectCatchers();
   const openAuthorizationUrl = vi.fn(async (url: string, login: OAuthLoginOptions) => {
@@ -804,6 +804,7 @@ describe("remote authorization", () => {
     await first.session.authenticate();
     first.session.dispose();
     const restored = createSession(state, { store: first.store, config });
+    await restored.session.whenReady();
     expect(restored.session.getStatus()).toBe("authenticated");
     expect((await restored.session.fetch(state.resource)).ok).toBe(true);
     expect(state.registrations).toHaveLength(0);

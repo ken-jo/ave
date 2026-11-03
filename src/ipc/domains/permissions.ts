@@ -464,7 +464,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const { describeUpstreamProxy, upstreamProxyDeps, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
     const routerDeps = upstreamProxyDeps(deps.settingsService, (url) => session.defaultSession.resolveProxy(url));
     const settings = deps.settingsService.get("upstreamProxy");
-    const stored = parseStoredProxyCredentials(deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET));
+    const stored = parseStoredProxyCredentials(await deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET));
     return {
       settings,
       // Only credentials that would be sent count: bound to the manual proxy as it is now.
@@ -540,7 +540,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
       credentialsChange = "cleared";
     } else {
-      const storedSecret = deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      const storedSecret = await deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
       const stored = parseStoredProxyCredentials(storedSecret);
       if (storedSecret !== null && (stored === null || stored.origin !== next.manualUrl)) {
         await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);

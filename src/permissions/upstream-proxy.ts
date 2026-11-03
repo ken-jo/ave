@@ -172,7 +172,7 @@ export interface UpstreamProxyRouterDeps {
   // The live `upstreamProxy` setting (read per decision, so a change applies without restart).
   settings: () => UpstreamProxySettings;
   // The manual proxy's stored credentials, or null. Sent only when their origin is the manual proxy's.
-  manualCredentials: () => StoredProxyCredentials | null;
+  manualCredentials: () => Promise<StoredProxyCredentials | null>;
   // The app process's environment.
   env: () => NodeJS.ProcessEnv;
   // Chromium's PAC resolution (`session.resolveProxy`); absent on a host without one.
@@ -274,7 +274,7 @@ export async function upstreamRoutesFor(
       });
     }
     // Credentials go only to the proxy they were entered for: a changed host, port or scheme never receives the old one's password.
-    const stored = deps.manualCredentials();
+    const stored = await deps.manualCredentials();
     const auth = stored !== null && stored.origin === proxyOrigin(parsed)
       ? { username: stored.username, password: stored.password }
       : undefined;
@@ -414,7 +414,7 @@ export async function describeUpstreamProxy(deps: UpstreamProxyRouterDeps, url: 
 // The settings reads the router needs, structurally (no dependency on the store module).
 export interface UpstreamProxySettingsSource {
   get(key: "upstreamProxy"): UpstreamProxySettings;
-  getSecret(key: string): string | null;
+  getSecret(key: string): Promise<string | null>;
 }
 
 // Router deps over the live settings, the app's environment and Chromium's resolver.
@@ -425,7 +425,7 @@ export function upstreamProxyDeps(
 ): UpstreamProxyRouterDeps {
   return {
     settings: () => settings.get("upstreamProxy"),
-    manualCredentials: () => parseStoredProxyCredentials(settings.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET)),
+    manualCredentials: async () => parseStoredProxyCredentials(await settings.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET)),
     env: () => process.env,
     ...(resolveProxy ? { resolveProxy } : {}),
     ...(onSkipped ? { onSkipped } : {}),

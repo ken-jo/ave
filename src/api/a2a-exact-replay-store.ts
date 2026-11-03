@@ -11,6 +11,7 @@ import type { A2ASendMessageResult } from "../shared/a2a-wire.js";
 import { maskA2AMessage } from "../engine/a2a-subagent-message-codec.js";
 import { A2A_EXACT_SEND_REPLAY_RETENTION_MS } from "./a2a-remote-contracts.js";
 import type { A2AOsEncryption } from "./a2a-remote-store.js";
+import { DataKeySession } from "./a2a-data-key-session.js";
 import { canonicalizeA2ARemoteTask } from "./a2a-task-store.js";
 import { isRecord, hasExactKeys } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -115,6 +116,7 @@ export class A2AExactReplayStore {
   private readonly retentionMs: number;
   private state: ReplayStateFile | undefined;
   private queue: Promise<void> = Promise.resolve();
+  private keySession?: DataKeySession;
 
   constructor(private readonly options: CreateA2AExactReplayStoreOptions) {
     if (!Number.isInteger(options.maxKeysPerGeneration) || options.maxKeysPerGeneration < 1) throw new Error("a2a-replay-capacity-invalid");
@@ -126,35 +128,42 @@ export class A2AExactReplayStore {
   }
 
   private async withLock<T>(operation: (state: ReplayStateFile) => Promise<T> | T): Promise<T> {
-    const run = this.queue.then(async () => operation(await this.load()));
+    const run = this.queue.then(async () => {
+      try {
+        return await operation(await this.load());
+      } finally {
+        this.keySession?.close();
+      }
+    });
     this.queue = run.then(() => undefined, () => undefined);
     return await run;
   }
 
+  private session(): DataKeySession {
+    this.keySession ??= new DataKeySession(this.options.encryption, this.random, {
+      unavailable: "a2a-replay-encryption-unavailable",
+      invalid: "a2a-replay-key-invalid",
+      decodeWrapped: decodeCanonicalBase64,
+      decodeKey: decodeCanonicalBase64,
+    });
+    return this.keySession;
+  }
+
   private dataKey(state: ReplayStateFile): Buffer {
-    if (!this.options.encryption.isEncryptionAvailable()) throw new Error("a2a-replay-encryption-unavailable");
-    if (!state.encryptedDataKey) {
-      const key = this.random(32);
-      if (key.length !== 32) throw new Error("a2a-replay-key-invalid");
-      state.encryptedDataKey = this.options.encryption.encryptString(key.toString("base64")).toString("base64");
-      return key;
-    }
-    const encrypted = decodeCanonicalBase64(state.encryptedDataKey);
-    if (!encrypted) throw new Error("a2a-replay-key-invalid");
-    const decoded = this.options.encryption.decryptString(encrypted);
-    encrypted.fill(0);
-    const key = decodeCanonicalBase64(decoded);
-    if (!key || key.length !== 32) throw new Error("a2a-replay-key-invalid");
-    return key;
+    return this.session().take(state);
   }
 
   private async load(): Promise<ReplayStateFile> {
-    if (this.state) return this.state;
+    if (this.state) {
+      if (await this.session().open(this.state)) await this.persist(this.state);
+      return this.state;
+    }
     const raw = await this.options.namespace.readJson<unknown>(this.fileName, initialState());
     if (!validState(raw)) throw new Error("a2a-replay-store-invalid");
     const state = structuredClone(raw);
+    const rewrapped = await this.session().open(state);
     this.validateLoadedState(state);
-    let changed = false;
+    let changed = rewrapped;
     for (const record of state.records) {
       if (record.state === "in-progress") {
         record.state = "outcome-unknown";

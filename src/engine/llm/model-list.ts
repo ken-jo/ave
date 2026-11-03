@@ -224,12 +224,12 @@ function resolveModelListBaseUrl(
   };
 }
 
-function storedCredentialForModelList(
+async function storedCredentialForModelList(
   settingsService: SettingsService,
   vendor: LLMVendor,
   resolved: ResolvedModelListBaseUrl,
   credentialScope?: string,
-): string {
+): Promise<string> {
   if (!resolved.mayUseStoredCredential) return "";
   const requestedPresetId = vendor === "openai-compatible" && isMarketplaceProviderPresetId(credentialScope)
     ? credentialScope
@@ -244,9 +244,9 @@ function storedCredentialForModelList(
       if (!resolved.baseUrl || !sameModelListEndpoint(resolved.baseUrl, requestedPreset.baseUrl)) {
         return "";
       }
-      return settingsService.getSecret(
+      return (await settingsService.getSecret(
         marketplaceProviderPresetSecretKey(requestedPreset.providerId),
-      ) ?? "";
+      )) ?? "";
     }
     return "";
   }
@@ -265,12 +265,12 @@ function storedCredentialForModelList(
       if (!resolved.baseUrl || !sameModelListEndpoint(resolved.baseUrl, activePreset.baseUrl)) {
         return "";
       }
-      return settingsService.getSecret(
+      return (await settingsService.getSecret(
         marketplaceProviderPresetSecretKey(activePreset.providerId),
-      ) ?? "";
+      )) ?? "";
     }
   }
-  return settingsService.getSecret(secretKeyFor(vendor)) ?? "";
+  return (await settingsService.getSecret(secretKeyFor(vendor))) ?? "";
 }
 
 function installedProviderPresetForScope(
@@ -738,7 +738,7 @@ export async function listLlmModelsFromSettings(
     throw err;
   }
 
-  const apiKey = storedCredentialForModelList(
+  const apiKey = await storedCredentialForModelList(
     settingsService,
     request.vendor,
     resolved,

@@ -1631,10 +1631,12 @@ export class SettingsService {
   }
 
   /** Decrypt and return a stored secret value. */
-  getSecret(key: string): string | null {
+  async getSecret(key: string): Promise<string | null> {
     if (this.isRetiredLlmCredential(key) || !this.secretReadable(key)) return null;
     try {
-      return this.secretStore.get(key);
+      const value = await this.secretStore.get(key);
+      // Readability may change while decryption is pending; re-check so a withheld key is never handed out.
+      return this.isRetiredLlmCredential(key) || !this.secretReadable(key) ? null : value;
     } catch (err) {
       log.warn("secret read failed: %s", (err as Error).message);
       throw err;
@@ -1642,14 +1644,15 @@ export class SettingsService {
   }
 
   /** Security-sensitive consumers that must reject legacy `plain:` secret entries. */
-  getEncryptedSecret(key: string): string | null {
+  async getEncryptedSecret(key: string): Promise<string | null> {
     if (this.isRetiredLlmCredential(key) || !this.secretReadable(key)) return null;
-    return this.secretStore.getEncrypted(key);
+    const value = await this.secretStore.getEncrypted(key);
+    return this.isRetiredLlmCredential(key) || !this.secretReadable(key) ? null : value;
   }
 
   /** Settings may offer a saved credential for an explicit provider choice without retrieving it. */
-  hasStoredSecret(key: string): boolean {
-    return this.secretReadable(key) && this.secretStore.has(key);
+  async hasStoredSecret(key: string): Promise<boolean> {
+    return this.secretReadable(key) && await this.secretStore.has(key) && this.secretReadable(key);
   }
 
   async deleteSecret(key: string): Promise<void> {
@@ -1693,7 +1696,7 @@ export class SettingsService {
 
   /** Whether a secret written now would actually be encrypted at rest. A surface that stores a user credential
    * must check this before offering to, rather than discovering it as a failure after the user has committed. */
-  isSecretStorageEncrypted(): boolean {
+  async isSecretStorageEncrypted(): Promise<boolean> {
     return this.secretStore.canStoreEncrypted();
   }
 

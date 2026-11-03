@@ -34,8 +34,8 @@ class FakeSecrets implements ChatGptPlanSecretStore {
   readonly values = new Map<string, string>();
   encrypted = true;
   writes = 0;
-  isSecretStorageEncrypted(): boolean { return this.encrypted; }
-  getEncryptedSecret(key: string): string | null { return this.values.get(key) ?? null; }
+  async isSecretStorageEncrypted(): Promise<boolean> { return this.encrypted; }
+  async getEncryptedSecret(key: string): Promise<string | null> { return this.values.get(key) ?? null; }
   async setSecret(key: string, value: string): Promise<void> { this.writes += 1; this.values.set(key, value); }
   async deleteSecret(key: string): Promise<void> { this.values.delete(key); }
 }
@@ -160,7 +160,7 @@ describe("plan-usage sign-in state machine", () => {
       const exchange = h.requests.find(request => request.url === CHATGPT_PLAN_TOKEN_URL)!;
       expect(exchange.body!.get("code")).toBe("accepted-code");
       expect(createHash("sha256").update(exchange.body!.get("code_verifier")!).digest("base64url")).toBe(params.get("code_challenge"));
-      expect(h.session.status().connection).toBe("connected");
+      expect((await h.session.status()).connection).toBe("connected");
       await expect(fetch(redirect)).rejects.toThrow();
     } finally { h.loginWindows[0].onCancel(); await completion.catch(() => undefined); }
   });
@@ -172,15 +172,15 @@ describe("plan-usage sign-in state machine", () => {
     h.loginWindows[0].onCancel();
     await expect(completion).rejects.toMatchObject({ failure: "sign-in-failed" });
     expect(h.closed()).toBeGreaterThan(0);
-    expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "sign-in-failed" });
+    expect(await h.session.status()).toMatchObject({ connection: "signed-out", notice: "sign-in-failed" });
   });
   it("registers, validates and stores one encrypted record, then shows the welcome once", async () => {
     const tokenRoutes: Route[] = [];
     const routed = harness({ token: tokenRoutes });
     tokenRoutes.push(tokensFor(routed, 1));
-    expect(routed.session.status()).toEqual({ connection: "signed-out", planUsage: null, accountLabel: null, notice: null });
+    expect(await routed.session.status()).toEqual({ connection: "signed-out", planUsage: null, accountLabel: null, notice: null });
     const { completion } = await routed.session.startSignIn();
-    expect(routed.session.status().connection).toBe("pending");
+    expect((await routed.session.status()).connection).toBe("pending");
     const params = routed.authorizeParams();
     routed.deliver(`code=c1&state=${params.get("state")}&client_id=oaiapp_1&scope=${encodeURIComponent(PLAN_SCOPES)}`);
     await completion;
@@ -189,14 +189,14 @@ describe("plan-usage sign-in state machine", () => {
     expect(routed.authorizeParams().get("ext_agent_host_id")).toBe(HOST_ID);
     const exchange = routed.requests.find((request) => request.url === CHATGPT_PLAN_TOKEN_URL)!;
     expect(exchange.body!.get("client_id")).toBe("oaiapp_1");
-    expect(routed.session.status()).toEqual({
+    expect(await routed.session.status()).toEqual({
       connection: "connected", planUsage: "enabled", accountLabel: "user@example.com", notice: "welcome",
     });
     const stored = JSON.parse(routed.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
     expect(stored).toMatchObject({ clientId: "oaiapp_1", subject: "user-sub", welcomed: true });
     expect(stored.tokens.scopes).toContain("chatgpt.tokens.use.direct");
-    routed.session.acknowledgeNotice();
-    expect(routed.session.status().notice).toBeNull();
+    await routed.session.acknowledgeNotice();
+    expect((await routed.session.status()).notice).toBeNull();
     expect(routed.closed()).toBe(1);
   });
 
@@ -205,20 +205,20 @@ describe("plan-usage sign-in state machine", () => {
     await expect(signIn(h, (p) => `error=access_denied&state=${p.get("state")}`)).rejects.toMatchObject({ failure: "declined" });
     expect(h.requests.some((request) => request.url === CHATGPT_PLAN_TOKEN_URL)).toBe(false);
     expect(h.secrets.writes).toBe(0);
-    expect(h.session.status().notice).toBe("declined");
-    h.session.acknowledgeNotice();
-    expect(h.session.status().notice).toBeNull();
+    expect((await h.session.status()).notice).toBe("declined");
+    await h.session.acknowledgeNotice();
+    expect((await h.session.status()).notice).toBeNull();
   });
 
   it("explains a callback that does not belong to the attempt, and says nothing after a cancel", async () => {
     const h = harness();
     // The real listener ignores such a callback; the session still checks state itself.
     await expect(signIn(h, () => "code=c1&state=forged")).rejects.toMatchObject({ failure: "sign-in-failed" });
-    expect(h.session.status().notice).toBe("state-mismatch");
+    expect((await h.session.status()).notice).toBe("state-mismatch");
     const { completion } = await h.session.startSignIn();
     h.session.cancelSignIn();
     await expect(completion).rejects.toBeDefined();
-    expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: null });
+    expect(await h.session.status()).toMatchObject({ connection: "signed-out", notice: null });
   });
 
   it("refuses to start without encrypted secret storage", async () => {
@@ -232,7 +232,7 @@ describe("plan-usage sign-in state machine", () => {
     const h = harness({ token: routes });
     routes.push(tokensFor(h, 1, IDENTITY_SCOPES));
     await signIn(h, (p) => `code=c1&state=${p.get("state")}&client_id=oaiapp_1`);
-    expect(h.session.status()).toMatchObject({ connection: "connected", planUsage: "disabled", notice: "plan-usage-disabled" });
+    expect(await h.session.status()).toMatchObject({ connection: "connected", planUsage: "disabled", notice: "plan-usage-disabled" });
     await expect(h.session.accessToken()).rejects.toMatchObject({ failure: "plan-usage-disabled" });
   });
 
@@ -251,7 +251,7 @@ describe("plan-usage sign-in state machine", () => {
     expect(params.get("id_token_hint")).toMatch(/^id-1\./);
     h.deliver(`code=c2&state=${params.get("state")}`);
     await completion;
-    expect(h.session.status()).toMatchObject({ planUsage: "enabled", notice: "welcome" });
+    expect(await h.session.status()).toMatchObject({ planUsage: "enabled", notice: "welcome" });
   });
 
   it("rejects a returning sign-in that comes back as a different account", async () => {
@@ -264,14 +264,14 @@ describe("plan-usage sign-in state machine", () => {
     replay.secrets.values.set(CHATGPT_PLAN_ACCOUNT_SECRET_KEY, h.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
     otherRoutes.push(tokensFor(replay, 2));
     await expect(signIn(replay, (p) => `code=c2&state=${p.get("state")}`)).rejects.toMatchObject({ failure: "account-mismatch" });
-    expect(replay.session.status().notice).toBe("account-mismatch");
+    expect((await replay.session.status()).notice).toBe("account-mismatch");
     expect(JSON.parse(replay.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!).tokens.accessToken).toBe("access-1");
   });
 
   it("keeps a newly issued client when its code is refused, and reauthorizes it next time", async () => {
     const h = harness({ token: [() => json(400, { error: "invalid_grant" })] });
     await expect(signIn(h, (p) => `code=c1&state=${p.get("state")}&client_id=oaiapp_7`)).rejects.toMatchObject({ failure: "sign-in-failed" });
-    expect(h.session.status().connection).toBe("signed-out");
+    expect((await h.session.status()).connection).toBe("signed-out");
     await h.session.startSignIn();
     expect(h.authorizeParams().get("client_id")).toBe("oaiapp_7");
     h.session.cancelSignIn();
@@ -327,7 +327,7 @@ describe("plan-usage token refresh", () => {
     const h = await connected({ token: [() => json(400, { error: "refresh_token_reused" })] });
     h.clock.now += 3600_000;
     await expect(h.session.accessToken()).rejects.toMatchObject({ failure: "reconnect-required" });
-    expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "reconnect-required" });
+    expect(await h.session.status()).toMatchObject({ connection: "signed-out", notice: "reconnect-required" });
     const stored = JSON.parse(h.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
     expect(stored.tokens).toBeNull();
     expect(stored.clientId).toBe("oaiapp_1");
@@ -341,7 +341,7 @@ describe("plan-usage token refresh", () => {
     expect(stored.tokens).toMatchObject({ accessToken: "access-2", refreshToken: "refresh-2" });
     // The unverified rotated ID token is not kept; the last verified one still serves as the sign-in hint.
     expect(stored.tokens.idToken).toBe(`id-1.${h.authorizeParams().get("nonce")}`);
-    expect(h.session.status().connection).toBe("connected");
+    expect((await h.session.status()).connection).toBe("connected");
   });
 
   it.each(["signature", "issuer", "audience", "subject"] as const)(
@@ -353,7 +353,7 @@ describe("plan-usage token refresh", () => {
       const stored = JSON.parse(h.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
       expect(stored.tokens).toBeNull();
       expect(JSON.stringify(stored)).not.toContain("refresh-2");
-      expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "reconnect-required" });
+      expect(await h.session.status()).toMatchObject({ connection: "signed-out", notice: "reconnect-required" });
     },
   );
 
@@ -361,7 +361,7 @@ describe("plan-usage token refresh", () => {
     const h = await connected({ token: [() => json(503, {})] });
     h.clock.now += 3600_000;
     await expect(h.session.accessToken()).rejects.toMatchObject({ failure: "temporarily-unavailable" });
-    expect(h.session.status().connection).toBe("connected");
+    expect((await h.session.status()).connection).toBe("connected");
   });
 
   it("lists the account's models with the session's bearer token", async () => {
@@ -380,7 +380,7 @@ describe("plan-usage sign-out", () => {
     const revocations = h.requests.filter((request) => request.url === CHATGPT_PLAN_REVOCATION_URL);
     expect(revocations).toHaveLength(2);
     expect(revocations[0]!.body!.get("token")).toBe("refresh-1");
-    expect(h.session.status()).toEqual({ connection: "signed-out", planUsage: null, accountLabel: null, notice: null });
+    expect(await h.session.status()).toEqual({ connection: "signed-out", planUsage: null, accountLabel: null, notice: null });
     expect(JSON.parse(h.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!)).toMatchObject({ clientId: "oaiapp_1", tokens: null });
   });
 
@@ -388,7 +388,7 @@ describe("plan-usage sign-out", () => {
     const down = () => new Response("", { status: 502 });
     const h = await connected({ revoke: [down, down, down, down] });
     await h.session.signOut();
-    expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "revocation-unconfirmed" });
+    expect(await h.session.status()).toMatchObject({ connection: "signed-out", notice: "revocation-unconfirmed" });
   });
 });
 
@@ -404,7 +404,7 @@ describe("plan-usage credential redaction", () => {
       (caught: unknown) => caught as Error,
     );
     const surfaces = JSON.stringify({
-      status: h.session.status(),
+      status: await h.session.status(),
       events: h.events,
       error: { name: error.name, message: error.message },
     });

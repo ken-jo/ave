@@ -39,30 +39,30 @@ describe("AskpassBroker", () => {
     broker = await AskpassBroker.start({ getToken: (host) => (host === "github.com" ? "ghs_token" : null) });
     const ticket = broker.issueTicket({ host: "github.com", sourceId: "ave" });
     const id = ticket.env.AVE_ASKPASS_TICKET!;
-    expect(broker.answer(id, "Username for 'https://github.com': ")).toBe(TOKEN_USERNAME);
+    expect(await broker.answer(id, "Username for 'https://github.com': ")).toBe(TOKEN_USERNAME);
     expect(ticket.credentialOffered()).toBe(false);
-    expect(broker.answer(id, "Password for 'https://x-access-token@github.com': ")).toBe("ghs_token");
+    expect(await broker.answer(id, "Password for 'https://x-access-token@github.com': ")).toBe("ghs_token");
     expect(ticket.credentialOffered()).toBe(true);
-    expect(broker.answer(id, "Password for 'https://evil.example': ")).toBe("");
-    expect(broker.answer("forged", "Password for 'https://github.com': ")).toBe("");
+    expect(await broker.answer(id, "Password for 'https://evil.example': ")).toBe("");
+    expect(await broker.answer("forged", "Password for 'https://github.com': ")).toBe("");
     ticket.revoke();
-    expect(broker.answer(id, "Password for 'https://github.com': ")).toBe("");
+    expect(await broker.answer(id, "Password for 'https://github.com': ")).toBe("");
   });
 
   it("asks for the token with the ticket's source, so a token typed into a preview answers that preview only", async () => {
     broker = await AskpassBroker.start({ getToken: (host, sourceId) => (sourceId === "preview-1" ? "typed" : host === "github.com" ? "stored" : null) });
     const preview = broker.issueTicket({ host: "github.com", sourceId: "preview-1" });
     const other = broker.issueTicket({ host: "github.com", sourceId: "ave" });
-    expect(broker.answer(preview.env.AVE_ASKPASS_TICKET!, "Password for 'https://github.com': ")).toBe("typed");
-    expect(broker.answer(other.env.AVE_ASKPASS_TICKET!, "Password for 'https://github.com': ")).toBe("stored");
-    expect(broker.hasToken("github.com", "ave")).toBe(true);
-    expect(broker.hasToken("git.example", "ave")).toBe(false);
+    expect(await broker.answer(preview.env.AVE_ASKPASS_TICKET!, "Password for 'https://github.com': ")).toBe("typed");
+    expect(await broker.answer(other.env.AVE_ASKPASS_TICKET!, "Password for 'https://github.com': ")).toBe("stored");
+    expect(await broker.hasToken("github.com", "ave")).toBe(true);
+    expect(await broker.hasToken("git.example", "ave")).toBe(false);
   });
 
   it("answers nothing when no token is stored for the host", async () => {
     broker = await AskpassBroker.start({ getToken: () => null });
     const ticket = broker.issueTicket({ host: "git.example", sourceId: "custom" });
-    expect(broker.answer(ticket.env.AVE_ASKPASS_TICKET!, "Username for 'https://git.example': ")).toBe("");
+    expect(await broker.answer(ticket.env.AVE_ASKPASS_TICKET!, "Username for 'https://git.example': ")).toBe("");
   });
 
   it.skipIf(process.platform === "win32")("the launcher round-trips through the socket in a private directory", async () => {

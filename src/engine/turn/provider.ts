@@ -90,10 +90,10 @@ export function providerMatchesActiveChatRuntime(
   return provider.subscriptionRuntime?.provider === activeChatRuntime.provider;
 }
 
-export function buildProvider(
+export async function buildProvider(
   deps: ConversationLoopDeps,
   { fallbackEnabled = true }: { fallbackEnabled?: boolean } = {},
-): LLMProvider | null {
+): Promise<LLMProvider | null> {
     const llmSettings = deps.settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
     if (activeChatRuntime?.kind === "subscription") {
@@ -136,7 +136,7 @@ export function buildProvider(
     if (hasMarketplaceProviderPresetSelection && !marketplaceProviderPreset) {
       return null;
     }
-    const apiKey = deps.settingsService.getSecret(
+    const apiKey = await deps.settingsService.getSecret(
       marketplaceProviderPreset
         ? marketplaceProviderPresetSecretKey(marketplaceProviderPreset.providerId)
         : secretKeyFor(vendor),
@@ -213,7 +213,7 @@ export function buildProvider(
       return new FallbackProvider(
         primary,
         chain,
-        (v) => deps.settingsService.getSecret(secretKeyFor(v)) ?? "",
+        async (v) => (await deps.settingsService.getSecret(secretKeyFor(v))) ?? "",
         createLoopProvider,
       );
     } catch {

@@ -82,7 +82,7 @@ export function createWebSearchTool(
         ? Math.min(10, Math.max(1, Math.floor(rawCount)))
         : 5;
       const ws = settingsService.get("webSearch");
-      const apiKey = settingsService.getSecret(`web.apiKey.${ws.provider}`);
+      const apiKey = await settingsService.getSecret(`web.apiKey.${ws.provider}`);
       try {
         if (ws.provider === "tavily" && apiKey) {
           const res = await networkFetch("https://api.tavily.com/search", {

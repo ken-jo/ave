@@ -57,14 +57,17 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         llmFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
         subscriptionProviderFactory: vi.fn(),
       };
-      wireReviewerAndPermissions(context as never);
+      await wireReviewerAndPermissions(context as never);
       const options = wireReviewerAgent.mock.calls[0]?.[0] as unknown as {
         streamProviderFor: (provider: string) => LLMProvider | null;
       };
       expect(options.streamProviderFor("openai")).toBeNull();
       expect(getSecret).not.toHaveBeenCalled();
       retired = false;
-      expect(options.streamProviderFor("openai")).not.toBeNull();
+      // Resolving the retirement changes settings, which rewires the reviewer and pre-reads its credential.
+      await (context as unknown as { rewireReviewerAgent: () => Promise<void> }).rewireReviewerAgent();
+      const rewired = wireReviewerAgent.mock.calls.at(-1)?.[0] as unknown as typeof options;
+      expect(rewired.streamProviderFor("openai")).not.toBeNull();
       expect(getSecret).toHaveBeenCalledOnce();
     } finally {
       vi.doUnmock("electron");
@@ -131,7 +134,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         subscriptionProviderFactory,
       };
 
-      wireReviewerAndPermissions(context as never);
+      await wireReviewerAndPermissions(context as never);
 
       const options = wireReviewerAgent.mock.calls[0]?.[0] as unknown as {
         readActiveLlm: () => { provider: string; model: string };
@@ -185,8 +188,8 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     const context = { host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() }, permissionManager: manager,
       approvalGate: { setOwnerAwayAutoSkipMinutes: vi.fn() }, settingsService: { onChanged: vi.fn(), get: settingsGet, getSecret: vi.fn() },
       llmFetch: vi.fn(), singleHopNetworkFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() }, subscriptionProviderFactory: vi.fn(),
-      rewireReviewerAgent: undefined as (() => void) | undefined };
-    wireReviewerAndPermissions(context as never);
+      rewireReviewerAgent: undefined as (() => Promise<void>) | undefined };
+    await wireReviewerAndPermissions(context as never);
     const classify = vi.fn(() => ({ level: "low" as const, reason: "Previously configured reviewer" }));
     manager.setReviewer({ classifier: { classify }, cache: reviewer.cache, model: "fixture-model" });
     wireJudgeForTest(manager);
@@ -210,7 +213,7 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     }
     classify.mockClear();
     failure = new Error("Catalog read failed before reviewer installation");
-    expect(() => context.rewireReviewerAgent!()).toThrow(failure);
+    await expect(context.rewireReviewerAgent!()).rejects.toThrow(failure);
     expect(begin).toHaveBeenCalledTimes(2);
     expect(complete).toHaveBeenCalledOnce();
     expect(wireReviewerAgent).toHaveBeenCalledOnce();
@@ -222,7 +225,7 @@ it.each([false, true])("blocks existing reviewer authority before a production c
     expect(classify).not.toHaveBeenCalled();
     expect(oldJudge).not.toHaveBeenCalled();
     failure = undefined;
-    context.rewireReviewerAgent!();
+    await context.rewireReviewerAgent!();
     expect(complete).toHaveBeenCalledTimes(2);
   } finally {
     await reviewer.cache.flush();

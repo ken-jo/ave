@@ -1,20 +1,27 @@
 /** Hash exact serialized rows without newlines; prevHash links predecessors and entryHash authenticates the tail. Store daily seals separately from their chains. */
 import {
+  createCipheriv,
+  createDecipheriv,
   createHmac,
+  createSecretKey,
   randomBytes,
   timingSafeEqual,
+  type KeyObject,
 } from "node:crypto";
 import {
   closeSync,
   constants,
   existsSync,
   fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
   chmodSync,
 } from "node:fs";
@@ -27,11 +34,25 @@ import { parseJsonlLines } from "./jsonl-reader.js";
 
 export const GENESIS_MARKER = "genesis";
 const AUDIT_HMAC_SECRET_NAME = "audit-hmac.key";
+// `safe:v1:` is OS safeStorage ciphertext: the data key file, and entries written before the envelope format.
 const SAFE_STORAGE_SECRET_PREFIX = "safe:v1:";
+// `safe:v2:` is AES-256-GCM under the store data key, bound to the entry name.
+const SAFE_STORAGE_ENVELOPE_PREFIX = "safe:v2:";
+const SAFE_STORAGE_ENTRY_SUFFIX = ".safe-storage";
+// A distinct suffix, so no entry name can address the data key file.
+const SAFE_STORAGE_DATA_KEY_FILE = "store-data.safe-storage-key";
+const SAFE_STORAGE_DATA_KEY_FILE_BYTES = 64 * 1024;
+const DATA_KEY_BYTES = 32;
+const ENVELOPE_NONCE_BYTES = 12;
+const ENVELOPE_TAG_BYTES = 16;
 const DEFAULT_SECRET_READ_MAX_BYTES = 1024 * 1024;
 const MAX_SECRET_READ_LIMIT_BYTES = 16 * 1024 * 1024;
 const MAX_SAFE_STORAGE_FILE_BYTES = 32 * 1024 * 1024;
 const SECRET_AUTHORITY_MAX_BYTES = 4 * 1024;
+
+function envelopeAad(name: string): Buffer {
+  return Buffer.from(`ave-secret-store:v2\0${name}`, "utf8");
+}
 
 function hardenSecretDirectory(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -166,10 +187,11 @@ export interface SecretStore {
   write(name: string, value: string): void;
 }
 
+/** The async half of Electron's safeStorage; the deprecated sync methods are never used. */
 export interface SafeStorageLike {
-  isEncryptionAvailable(): boolean;
-  encryptString(value: string): Buffer;
-  decryptString(value: Buffer): string;
+  isAsyncEncryptionAvailable(): Promise<boolean>;
+  encryptStringAsync(value: string): Promise<Buffer>;
+  decryptStringAsync(value: Buffer): Promise<{ shouldReEncrypt: boolean; result: string }>;
 }
 
 /** Use single-line mode-0600 files when OS-backed secret encryption is unavailable. */
@@ -207,30 +229,206 @@ export class FileSecretStore implements SecretStore {
   }
 }
 
-/** Encrypt with OS-backed storage before persisting mode-0600 ciphertext. */
+/** Encrypt under a store data key that OS-backed storage wraps; entries stay mode-0600 files. */
 export class SafeStorageSecretStore implements SecretStore {
   private readonly dir: string;
+  private dataKey: KeyObject | null = null;
+  // Only `existing-read-only` stores keep decrypted pre-envelope values: they cannot rewrite them.
+  private readonly legacyValues = new Map<string, string>();
+  private opened = false;
 
-  constructor(
+  private constructor(
     private readonly safeStorage: SafeStorageLike,
-    dir?: string,
-    private readonly unreadablePolicy: "quarantine" | "reject" = "quarantine",
-    private readonly access: "read-write" | "existing-read-only" = "read-write",
+    dir: string | undefined,
+    private readonly unreadablePolicy: "quarantine" | "reject",
+    private readonly access: "read-write" | "existing-read-only",
   ) {
     this.dir = dir ?? join(aveHome(), "secrets");
-    if (this.access === "read-write") hardenSecretDirectory(this.dir);
+  }
+
+  /**
+   * Async safeStorage cannot serve the synchronous audit sinks, so opening unwraps (or mints) the store's own
+   * data key once; reads and writes then stay synchronous. Pre-envelope `safe:v1:` entries are re-encrypted here.
+   */
+  static async open(
+    safeStorage: SafeStorageLike,
+    dir?: string,
+    unreadablePolicy: "quarantine" | "reject" = "quarantine",
+    access: "read-write" | "existing-read-only" = "read-write",
+  ): Promise<SafeStorageSecretStore> {
+    const store = new SafeStorageSecretStore(safeStorage, dir, unreadablePolicy, access);
+    if (access === "read-write") hardenSecretDirectory(store.dir);
+    if (!await safeStorage.isAsyncEncryptionAvailable()) {
+      throw new Error("Electron safeStorage encryption is not available");
+    }
+    await store.loadDataKey();
+    await store.migrateLegacyEntries();
+    store.opened = true;
+    return store;
   }
 
   private path(name: string): string {
     if (/[\/\\]|\.\./.test(name)) {
       throw new Error(`invalid secret name: ${name}`);
     }
-    return join(this.dir, `${name}.safe-storage`);
+    return join(this.dir, `${name}${SAFE_STORAGE_ENTRY_SUFFIX}`);
   }
 
-  private assertAvailable(): void {
-    if (!this.safeStorage.isEncryptionAvailable()) {
-      throw new Error("Electron safeStorage encryption is not available");
+  private get keyPath(): string {
+    return join(this.dir, SAFE_STORAGE_DATA_KEY_FILE);
+  }
+
+  private readStored(path: string, maxFileBytes: number): string | null {
+    return this.access === "existing-read-only"
+      ? readStablePrivateRegularFileUtf8(path, maxFileBytes, "secret authority")?.replace(/\n$/, "") ?? null
+      : readSecretFileUtf8Bounded(path, maxFileBytes);
+  }
+
+  private async unwrap(stored: string): Promise<{ value: string; shouldReEncrypt: boolean }> {
+    if (!stored.startsWith(SAFE_STORAGE_SECRET_PREFIX)) {
+      throw new Error("Secret ciphertext has an unsupported encryption format");
+    }
+    const encoded = stored.slice(SAFE_STORAGE_SECRET_PREFIX.length);
+    const ciphertext = Buffer.from(encoded, "base64");
+    if (this.unreadablePolicy === "reject"
+      && (ciphertext.length === 0 || ciphertext.toString("base64") !== encoded)) {
+      throw new Error("Secret ciphertext encoding is invalid");
+    }
+    const decrypted = await this.safeStorage.decryptStringAsync(ciphertext);
+    if (typeof decrypted?.result !== "string") throw new Error("Stored secret could not be decrypted");
+    return { value: decrypted.result, shouldReEncrypt: decrypted.shouldReEncrypt === true };
+  }
+
+  private async wrap(value: string): Promise<string> {
+    return SAFE_STORAGE_SECRET_PREFIX + (await this.safeStorage.encryptStringAsync(value)).toString("base64");
+  }
+
+  private async loadDataKey(): Promise<void> {
+    const stored = this.readStored(this.keyPath, SAFE_STORAGE_DATA_KEY_FILE_BYTES);
+    if (stored !== null) {
+      let unwrapped: { value: string; shouldReEncrypt: boolean };
+      try {
+        unwrapped = await this.unwrap(stored);
+      } catch (err) {
+        if (this.unreadablePolicy === "reject") throw new Error("Stored secret could not be decrypted");
+        if (this.access === "existing-read-only") throw new Error("Stored secret could not be decrypted");
+        // Same as an unreadable entry: keep the forensic copy and start over, so every entry it wrapped is quarantined on read.
+        this.quarantineUnreadableSecret(SAFE_STORAGE_DATA_KEY_FILE, this.keyPath, "decrypt-failed", err);
+        await this.mintDataKey();
+        return;
+      }
+      const key = Buffer.from(unwrapped.value, "base64");
+      if (key.length !== DATA_KEY_BYTES || key.toString("base64") !== unwrapped.value) {
+        key.fill(0);
+        throw new Error("secret store data key is invalid");
+      }
+      this.dataKey = createSecretKey(key);
+      key.fill(0);
+      if (unwrapped.shouldReEncrypt && this.access === "read-write") {
+        // The OS key rotated: rewrap the same data key; entries need no change.
+        const rewrapped = await this.wrap(unwrapped.value);
+        if (this.readStored(this.keyPath, SAFE_STORAGE_DATA_KEY_FILE_BYTES) === stored) {
+          atomicWriteSecretFile(this.dir, this.keyPath, rewrapped);
+        }
+      }
+      return;
+    }
+    if (this.access === "read-write") await this.mintDataKey();
+  }
+
+  private async mintDataKey(): Promise<void> {
+    const key = randomBytes(DATA_KEY_BYTES);
+    const encoded = key.toString("base64");
+    const wrapped = await this.wrap(encoded);
+    // Publish with link(2) so a concurrent opener never sees a partial key and exactly one minted key wins.
+    const staging = `${this.keyPath}.staging-${randomBytes(8).toString("hex")}`;
+    atomicWriteSecretFile(this.dir, staging, wrapped);
+    try {
+      linkSync(staging, this.keyPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      key.fill(0);
+      unlinkSync(staging);
+      await this.loadDataKey();
+      return;
+    }
+    unlinkSync(staging);
+    this.dataKey = createSecretKey(key);
+    key.fill(0);
+  }
+
+  private async migrateLegacyEntries(): Promise<void> {
+    let names: string[];
+    try {
+      names = readdirSync(this.dir);
+    } catch (error) {
+      if (isMissingPathError(error)) return;
+      throw error;
+    }
+    for (const file of names) {
+      if (!file.endsWith(SAFE_STORAGE_ENTRY_SUFFIX)) continue;
+      const name = file.slice(0, -SAFE_STORAGE_ENTRY_SUFFIX.length);
+      const p = join(this.dir, file);
+      const stored = this.readStored(p, MAX_SAFE_STORAGE_FILE_BYTES);
+      if (stored === null || !stored.startsWith(SAFE_STORAGE_SECRET_PREFIX)) continue;
+      let value: string;
+      try {
+        value = (await this.unwrap(stored)).value;
+      } catch (err) {
+        // Reject stores leave unreadable entries in place; reading them fails closed.
+        if (this.unreadablePolicy === "quarantine" && this.access === "read-write"
+          && this.readStored(p, MAX_SAFE_STORAGE_FILE_BYTES) === stored) {
+          this.quarantineUnreadableSecret(name, p, "decrypt-failed", err);
+        }
+        continue;
+      }
+      if (this.access === "existing-read-only") {
+        this.legacyValues.set(name, value);
+      } else if (this.readStored(p, MAX_SAFE_STORAGE_FILE_BYTES) === stored) {
+        atomicWriteSecretFile(this.dir, p, this.seal(name, value));
+      }
+    }
+  }
+
+  private requireOpen(): void {
+    if (!this.opened) throw new Error("secret store is not open");
+  }
+
+  private requireDataKey(): KeyObject {
+    if (this.dataKey === null) throw new Error("Electron safeStorage encryption is not available");
+    return this.dataKey;
+  }
+
+  private seal(name: string, value: string): string {
+    const nonce = randomBytes(ENVELOPE_NONCE_BYTES);
+    const cipher = createCipheriv("aes-256-gcm", this.requireDataKey(), nonce, { authTagLength: ENVELOPE_TAG_BYTES });
+    cipher.setAAD(envelopeAad(name));
+    const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+    return SAFE_STORAGE_ENVELOPE_PREFIX + Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString("base64");
+  }
+
+  private openSealed(name: string, stored: string): string {
+    const encoded = stored.slice(SAFE_STORAGE_ENVELOPE_PREFIX.length);
+    const sealed = Buffer.from(encoded, "base64");
+    if (sealed.toString("base64") !== encoded || sealed.length < ENVELOPE_NONCE_BYTES + ENVELOPE_TAG_BYTES) {
+      throw new Error("Secret ciphertext encoding is invalid");
+    }
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      this.requireDataKey(),
+      sealed.subarray(0, ENVELOPE_NONCE_BYTES),
+      { authTagLength: ENVELOPE_TAG_BYTES },
+    );
+    decipher.setAAD(envelopeAad(name));
+    decipher.setAuthTag(sealed.subarray(ENVELOPE_NONCE_BYTES, ENVELOPE_NONCE_BYTES + ENVELOPE_TAG_BYTES));
+    const plaintext = Buffer.concat([
+      decipher.update(sealed.subarray(ENVELOPE_NONCE_BYTES + ENVELOPE_TAG_BYTES)),
+      decipher.final(),
+    ]);
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
+    } finally {
+      plaintext.fill(0);
     }
   }
 
@@ -281,33 +479,32 @@ export class SafeStorageSecretStore implements SecretStore {
     name: string,
     maxBytes = DEFAULT_SECRET_READ_MAX_BYTES,
   ): string | null {
-    this.assertAvailable();
+    this.requireOpen();
     assertSecretReadLimit(maxBytes);
     const p = this.path(name);
-    const encrypted = this.access === "existing-read-only"
-      ? readStablePrivateRegularFileUtf8(
-        p,
-        safeStorageFileLimit(maxBytes),
-        "secret authority",
-      )?.replace(/\n$/, "") ?? null
-      : readSecretFileUtf8Bounded(p, safeStorageFileLimit(maxBytes));
-    if (encrypted === null) return null;
-    if (!encrypted.startsWith(SAFE_STORAGE_SECRET_PREFIX)) {
+    const legacy = this.legacyValues.get(name);
+    const stored = this.readStored(p, safeStorageFileLimit(maxBytes));
+    if (stored === null) return null;
+    if (legacy !== undefined && stored.startsWith(SAFE_STORAGE_SECRET_PREFIX)) {
+      assertSecretValueWithinLimit(legacy, maxBytes);
+      return legacy;
+    }
+    if (stored.startsWith(SAFE_STORAGE_SECRET_PREFIX)) {
+      // Pre-envelope entries are re-encrypted at open; one appearing later is never destroyed.
+      throw new Error("Stored secret could not be decrypted");
+    }
+    if (!stored.startsWith(SAFE_STORAGE_ENVELOPE_PREFIX)) {
       if (this.unreadablePolicy === "reject") throw new Error("Secret ciphertext has an unsupported encryption format");
       this.quarantineUnreadableSecret(name, p, "invalid-prefix");
       return null;
     }
     let value: string;
     try {
-      const encoded = encrypted.slice(SAFE_STORAGE_SECRET_PREFIX.length);
-      const ciphertext = Buffer.from(encoded, "base64");
-      if (this.unreadablePolicy === "reject"
-        && (ciphertext.length === 0 || ciphertext.toString("base64") !== encoded)) {
-        throw new Error("Secret ciphertext encoding is invalid");
-      }
-      value = this.safeStorage.decryptString(ciphertext);
+      value = this.openSealed(name, stored);
     } catch (err) {
-      if (this.unreadablePolicy === "reject") throw new Error("Stored secret could not be decrypted");
+      if (this.unreadablePolicy === "reject" || this.access === "existing-read-only") {
+        throw new Error("Stored secret could not be decrypted");
+      }
       this.quarantineUnreadableSecret(name, p, "decrypt-failed", err);
       return null;
     }
@@ -319,11 +516,10 @@ export class SafeStorageSecretStore implements SecretStore {
     if (this.access === "existing-read-only") {
       throw new Error("secret authority store is read-only");
     }
-    this.assertAvailable();
+    this.requireOpen();
     const p = this.path(name);
     if (this.unreadablePolicy === "reject") this.read(name);
-    const encrypted = SAFE_STORAGE_SECRET_PREFIX + this.safeStorage.encryptString(value).toString("base64");
-    atomicWriteSecretFile(this.dir, p, encrypted);
+    atomicWriteSecretFile(this.dir, p, this.seal(name, value));
   }
 }
 

@@ -665,7 +665,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       mirrors: git ? git.mirrors.length : 0,
       auth: source.auth.kind,
       tokenHost,
-      tokenStored: tokenHost !== null && this.options.tokens.has(tokenHost),
+      tokenStored: tokenHost !== null && await this.options.tokens.has(tokenHost),
       pinnedCommit: state?.pinnedCommit ?? null,
       lastSyncAt: state?.lastSync?.at ?? null,
       marketplace: snapshot
@@ -1622,6 +1622,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     }
     const staged = await this.options.syncer.withRepository(plan.sourceId, async ({ source, repo, remote }) => {
       if (planId) this.progress(planId, "downloading");
+      const sourceToken = await this.tokenFor(source);
       return runPluginLadder(plan, {
         ...gitAccess(repo, remote, source.origin === "direct"),
         repo,
@@ -1629,8 +1630,8 @@ export class MarketplaceService implements RetirementEntryLookup {
         sourceUrl: source.url,
         gate: this.options.gate,
         catalog: await this.catalogSource(source),
-        sourceToken: this.tokenFor(source),
-        tokenMissing: source.auth.kind === "token" && this.tokenFor(source) === null,
+        sourceToken,
+        tokenMissing: source.auth.kind === "token" && sourceToken === null,
         zip: this.options.ladder.zip,
         limits: this.options.ladder.limits,
         workRoot: this.options.workRoot,
@@ -1713,8 +1714,8 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   /** Null without token authentication; release downloads otherwise use the stored token. */
-  private tokenFor(source: ResolvedSource): string | null {
-    return source.auth.kind === "token" ? this.options.tokens.get(source.auth.host) : null;
+  private async tokenFor(source: ResolvedSource): Promise<string | null> {
+    return source.auth.kind === "token" ? await this.options.tokens.get(source.auth.host) : null;
   }
 
   async getRetirementEntry(pluginId: string): Promise<RetirementEntry | null> {

@@ -114,7 +114,8 @@ function applyFreshSessionState(
   self.lastTurnToolNames = null;
   self.compactNum = 0;
   self.rateLimitRecoveryAttempted = false;
-  self.resetSessionModelOverride();
+  // The rebuild is awaited by the next turn through whenProviderReady.
+  void self.resetSessionModelOverride().catch(() => undefined);
   self.gitIgnoreVerdicts.clear();
   self.tracer = createTracer(self.sessionId);
 }
@@ -288,7 +289,7 @@ export async function loadSession(
     self.sessionRoutineId = sessionMeta?.routineId ?? null;
     self.sessionRoutineTitle = sessionMeta?.routineTitle ?? null;
     self.sessionAdditionalDirectories = [];
-    self.resetSessionModelOverride();
+    await self.resetSessionModelOverride();
     self.gitIgnoreVerdicts.clear();
     applyProjectContext(self, sessionMeta?.projectRoot
       ? {

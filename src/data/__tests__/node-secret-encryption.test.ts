@@ -24,43 +24,43 @@ beforeEach(() => {
 afterEach(async () => cleanupTmpDir(root));
 
 describe("protected external key encryption", () => {
-  posixOnly("encrypts independently on each write and authenticates empty and Unicode strings", () => {
+  posixOnly("encrypts independently on each write and authenticates empty and Unicode strings", async () => {
     const encryption = createNodeSecretEncryption(keyFile);
     expect(encryption.getSelectedStorageBackend()).toBe("external_key");
-    expect(encryption.isEncryptionAvailable()).toBe(true);
+    await expect(encryption.isAsyncEncryptionAvailable()).resolves.toBe(true);
     for (const value of ["", "credential-비밀-🔐\n"]) {
-      const first = encryption.encryptString(value);
-      const second = encryption.encryptString(value);
+      const first = await encryption.encryptStringAsync(value);
+      const second = await encryption.encryptStringAsync(value);
       expect(first.equals(second)).toBe(false);
-      expect(encryption.decryptString(first)).toBe(value);
-      expect(createNodeSecretEncryption(keyFile).decryptString(second)).toBe(value);
+      await expect(encryption.decryptStringAsync(first)).resolves.toEqual({ shouldReEncrypt: false, result: value });
+      await expect(createNodeSecretEncryption(keyFile).decryptStringAsync(second)).resolves.toEqual({ shouldReEncrypt: false, result: value });
       if (value) expect(first.includes(Buffer.from(value))).toBe(false);
     }
   });
 
-  posixOnly("rejects a wrong key, changes to every envelope region, and truncated ciphertext", () => {
+  posixOnly("rejects a wrong key, changes to every envelope region, and truncated ciphertext", async () => {
     const encryption = createNodeSecretEncryption(keyFile);
-    const ciphertext = encryption.encryptString("protected-credential");
+    const ciphertext = await encryption.encryptStringAsync("protected-credential");
     const otherFile = join(root, "other-key");
     writeFileSync(otherFile, randomBytes(32), { mode: 0o600 });
-    expect(() => createNodeSecretEncryption(otherFile).decryptString(ciphertext)).toThrow(/authentication failed/);
+    await expect(createNodeSecretEncryption(otherFile).decryptStringAsync(ciphertext)).rejects.toThrow(/authentication failed/);
     for (let offset = 0; offset < ciphertext.length; offset += 1) {
       const changed = Buffer.from(ciphertext);
       changed[offset] ^= 1;
-      expect(() => encryption.decryptString(changed)).toThrow();
+      await expect(encryption.decryptStringAsync(changed)).rejects.toThrow();
     }
     for (let length = 0; length < ciphertext.length; length += 1) {
-      expect(() => encryption.decryptString(ciphertext.subarray(0, length))).toThrow();
+      await expect(encryption.decryptStringAsync(ciphertext.subarray(0, length))).rejects.toThrow();
     }
-    expect(() => encryption.decryptString(Buffer.from("v10legacy-desktop-ciphertext"))).toThrow(/unsupported encryption format/);
+    await expect(encryption.decryptStringAsync(Buffer.from("v10legacy-desktop-ciphertext"))).rejects.toThrow(/unsupported encryption format/);
   });
 
   it("has no plaintext or key creation fallback when no key is configured", async () => {
     const before = readdirSync(root);
     const encryption = createNodeSecretEncryption();
-    expect(encryption.isEncryptionAvailable()).toBe(false);
-    expect(() => encryption.encryptString("secret")).toThrow(SecretEncryptionUnavailableError);
-    expect(() => encryption.decryptString(Buffer.from("secret"))).toThrow(SecretEncryptionUnavailableError);
+    await expect(encryption.isAsyncEncryptionAvailable()).resolves.toBe(false);
+    await expect(encryption.encryptStringAsync("secret")).rejects.toThrow(SecretEncryptionUnavailableError);
+    await expect(encryption.decryptStringAsync(Buffer.from("secret"))).rejects.toThrow(SecretEncryptionUnavailableError);
     const store = new SecretDocumentStore({ path: join(root, "secrets.json"), policy: "development", encryption });
     await expect(store.set("key", "secret")).rejects.toThrow(SecretEncryptionUnavailableError);
     expect(readdirSync(root).filter((name) => !name.endsWith(".lock-anchor"))).toEqual(before);
@@ -103,14 +103,14 @@ describe("protected external key encryption", () => {
     }
   });
 
-  posixOnly("accepts an owner read-only key and pins it until the next startup", () => {
+  posixOnly("accepts an owner read-only key and pins it until the next startup", async () => {
     chmodSync(keyFile, 0o400);
     const encryption = createNodeSecretEncryption(keyFile);
-    const ciphertext = encryption.encryptString("secret");
+    const ciphertext = await encryption.encryptStringAsync("secret");
     chmodSync(keyFile, 0o600);
     writeFileSync(keyFile, randomBytes(32));
-    expect(encryption.decryptString(ciphertext)).toBe("secret");
-    expect(() => createNodeSecretEncryption(keyFile).decryptString(ciphertext)).toThrow(/authentication failed/);
+    await expect(encryption.decryptStringAsync(ciphertext)).resolves.toEqual({ shouldReEncrypt: false, result: "secret" });
+    await expect(createNodeSecretEncryption(keyFile).decryptStringAsync(ciphertext)).rejects.toThrow(/authentication failed/);
   });
 
   posixOnly("rejects ref-shaped hexadecimal lines as external encryption keys", () => {

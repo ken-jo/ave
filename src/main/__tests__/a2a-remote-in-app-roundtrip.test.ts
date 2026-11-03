@@ -105,13 +105,13 @@ function memoryNamespace() {
 }
 
 const encryption = {
-  isEncryptionAvailable: () => true,
+  isAsyncEncryptionAvailable: async () => true,
   getSelectedStorageBackend: () => "gnome_libsecret" as const,
-  encryptString: (value: string) => Buffer.from(`sealed:${value}`, "utf8"),
-  decryptString: (value: Buffer) => {
+  encryptStringAsync: async (value: string) => Buffer.from(`sealed:${value}`, "utf8"),
+  decryptStringAsync: async (value: Buffer) => {
     const text = value.toString("utf8");
     if (!text.startsWith("sealed:")) throw new Error("not sealed by this host");
-    return text.slice("sealed:".length);
+    return { shouldReEncrypt: false, result: text.slice("sealed:".length) };
   },
 };
 
@@ -272,13 +272,13 @@ async function startReceiver(state: {
   };
   const settingsService = {
     get: (key: string) => key === "a2aRemote" ? config : key === "features" ? { a2aRemoteReceiver: true } : undefined,
-    getEncryptedSecret: (key: string) => key === A2A_REMOTE_RECEIVER_SECRET_KEY ? RECEIVER_BEARER : null,
+    getEncryptedSecret: async (key: string) => key === A2A_REMOTE_RECEIVER_SECRET_KEY ? RECEIVER_BEARER : null,
   };
   const agentActionApprover = async (request: { toolName: string }) => {
     approvals.push(request.toolName);
     return { decisionId: `receiver-approval-${approvals.length}`, decidedAt: new Date().toISOString() };
   };
-  const remote = createA2ARemoteRuntime({
+  const remote = await createA2ARemoteRuntime({
     settings: settingsService as never,
     agentActionApprover: agentActionApprover as never,
     projectRoot: "/workspace/receiver",

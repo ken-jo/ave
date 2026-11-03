@@ -28,7 +28,7 @@ import { errorMessage } from "../../shared/error-message.js";
 
 const log = createLogger("ave");
 
-export function wireReviewerAndPermissions(ctx: BootContext): void {
+export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void> {
   const {
     toolRegistry,
     permissionManager,
@@ -50,13 +50,18 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
   toolRegistry.setDenyRules(permissionManager.getVisibilityDenyRules());
 
   // Bind the classifier, verdict cache, and denial history; streaming providers are adapted to one-shot review calls.
-  const reviewerStreamProviderFor = (vendor: string, selectedModel?: string): LLMProvider | null => {
+  // Secrets decrypt asynchronously while reviewer wiring is synchronous, so a plan names the credential to pre-read.
+  interface ReviewerProviderPlan {
+    secretKey?: string;
+    build(apiKey: string | null): LLMProvider | null;
+  }
+  const reviewerProviderPlan = (vendor: string, selectedModel?: string): ReviewerProviderPlan | null => {
     const llmSettings = settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
     if (selectedModel === undefined && activeChatRuntime?.kind === "subscription") {
       // Include authenticated transport in reviewer cache identity; stale subscription reads must not fall through to an API-key provider.
       if (vendor !== `subscription:${activeChatRuntime.provider}`) return null;
-      return subscriptionProviderFactory(activeChatRuntime);
+      return { build: () => subscriptionProviderFactory(activeChatRuntime) };
     }
 
     // An unresolved active provider selection cannot use another host credential.
@@ -76,45 +81,68 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     if (hasMarketplaceProviderPresetSelection && !marketplaceProviderPreset) {
       return null;
     }
-    const apiKey = settingsService.getSecret(
-      marketplaceProviderPreset
-        ? marketplaceProviderPresetSecretKey(marketplaceProviderPreset.providerId)
-        : secretKeyFor(llmVendor),
-    );
-    const effectiveBaseUrl = marketplaceProviderPreset
-      ? marketplaceProviderPreset.baseUrl
-      : block.baseUrl;
-    const isVertex = llmVendor === "vertex-ai";
-    const canUseWithoutApiKey = marketplaceProviderPreset
-      ? marketplaceProviderPreset.requiresApiKey === false && Boolean(effectiveBaseUrl?.trim())
-      : canUseLlmVendorWithoutApiKey(llmVendor, block);
-    if (!apiKey && !isVertex && !canUseWithoutApiKey) return null;
-    if (
-      isVertex &&
-      !block.vertexProject &&
-      !process.env.GOOGLE_CLOUD_PROJECT &&
-      !process.env.GCLOUD_PROJECT
-    ) {
-      return null;
+    const secretKey = marketplaceProviderPreset
+      ? marketplaceProviderPresetSecretKey(marketplaceProviderPreset.providerId)
+      : secretKeyFor(llmVendor);
+    return { secretKey, build: (apiKey) => {
+      const effectiveBaseUrl = marketplaceProviderPreset
+        ? marketplaceProviderPreset.baseUrl
+        : block.baseUrl;
+      const isVertex = llmVendor === "vertex-ai";
+      const canUseWithoutApiKey = marketplaceProviderPreset
+        ? marketplaceProviderPreset.requiresApiKey === false && Boolean(effectiveBaseUrl?.trim())
+        : canUseLlmVendorWithoutApiKey(llmVendor, block);
+      if (!apiKey && !isVertex && !canUseWithoutApiKey) return null;
+      if (
+        isVertex &&
+        !block.vertexProject &&
+        !process.env.GOOGLE_CLOUD_PROJECT &&
+        !process.env.GCLOUD_PROJECT
+      ) {
+        return null;
+      }
+      const providerFetch = selectProviderRuntimeFetch({
+        vendor: llmVendor,
+        baseUrl: effectiveBaseUrl,
+        providerMetadata: marketplaceProviderPreset,
+        llmFetch,
+        networkFetch: singleHopNetworkFetch,
+      });
+      return createProvider({
+        vendor: llmVendor,
+        apiKey: apiKey ?? "",
+        model: selectedModel ?? llmRouteModel(block, marketplaceProviderPreset?.providerId),
+        ...(providerFetch ? { fetch: providerFetch } : {}),
+        ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
+        ...(llmVendor === "openai-compatible" && !marketplaceProviderPreset ? { wire: block.wire } : {}),
+        ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
+        ...(block.vertexProject ? { vertexProject: block.vertexProject } : {}),
+        ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
+      });
+    } };
+  };
+  const readReviewerSecrets = async (
+    targets: ReadonlyArray<{ vendor: string; model?: string }>,
+  ): Promise<Map<string, string | null>> => {
+    const secrets = new Map<string, string | null>();
+    for (const { vendor, model } of targets) {
+      const secretKey = reviewerProviderPlan(vendor, model)?.secretKey;
+      if (secretKey !== undefined && !secrets.has(secretKey)) {
+        secrets.set(secretKey, await settingsService.getSecret(secretKey));
+      }
     }
-    const providerFetch = selectProviderRuntimeFetch({
-      vendor: llmVendor,
-      baseUrl: effectiveBaseUrl,
-      providerMetadata: marketplaceProviderPreset,
-      llmFetch,
-      networkFetch: singleHopNetworkFetch,
-    });
-    return createProvider({
-      vendor: llmVendor,
-      apiKey: apiKey ?? "",
-      model: selectedModel ?? llmRouteModel(block, marketplaceProviderPreset?.providerId),
-      ...(providerFetch ? { fetch: providerFetch } : {}),
-      ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
-      ...(llmVendor === "openai-compatible" && !marketplaceProviderPreset ? { wire: block.wire } : {}),
-      ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
-      ...(block.vertexProject ? { vertexProject: block.vertexProject } : {}),
-      ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
-    });
+    return secrets;
+  };
+  const reviewerStreamProviderFor = (
+    secrets: ReadonlyMap<string, string | null>,
+    vendor: string,
+    selectedModel?: string,
+  ): LLMProvider | null => {
+    const plan = reviewerProviderPlan(vendor, selectedModel);
+    if (!plan) return null;
+    if (plan.secretKey === undefined) return plan.build(null);
+    // A credential not pre-read means settings changed mid-rewire; stay unconfigured until the queued rewire runs.
+    return secrets.has(plan.secretKey) ? plan.build(secrets.get(plan.secretKey) ?? null) : null;
   };
   const readActiveReviewerLlm = () => {
     const llm = settingsService.get("llm");
@@ -182,7 +210,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       } : {}),
     };
   };
-  const rewireReviewerAgent = (): void => {
+  const rewireReviewerAgentNow = async (): Promise<void> => {
     const reconfiguration = permissionManager.beginReviewerReconfiguration();
     // Reapply the read fence on every settings rewire; its generation invalidates verdicts from the prior policy.
     permissionManager.setBlockReadsOutsideWorkingDirectories(
@@ -205,6 +233,14 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       : selectedReviewerModel
         ? { label: formatJudgeModel(selectedReviewerModel), available: true }
         : undefined;
+    const secrets = await readReviewerSecrets([
+      selectedReviewerModel
+        ? { vendor: selectedReviewerModel.vendor, model: selectedReviewerModel.model }
+        : { vendor: readActiveReviewerLlm().provider },
+      ...judgeSettings.settings.chain.flatMap((stage) => stage.model
+        ? [{ vendor: stage.model.vendor, model: stage.model.model }]
+        : []),
+    ]);
     const reviewerResult = wireReviewerAgent({
       permissionManager,
       networkFetch: singleHopNetworkFetch,
@@ -212,8 +248,8 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
         ? () => selectedReviewerIdentity(selectedReviewerModel)
         : readActiveReviewerLlm,
       streamProviderFor: selectedReviewerModel
-        ? (vendor) => reviewerStreamProviderFor(vendor, selectedReviewerModel.model)
-        : reviewerStreamProviderFor,
+        ? (vendor) => reviewerStreamProviderFor(secrets, vendor, selectedReviewerModel.model)
+        : (vendor) => reviewerStreamProviderFor(secrets, vendor),
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
       onRecentlyDeniedChanged: (summary) => {
         for (const window of ctx.host.desktop?.getAppWindows() ?? [getMainWindow()]) {
@@ -231,7 +267,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       settings: judgeSettings.settings,
       ...(judgeSettings.chainRejected === true ? { chainRejected: true } : {}),
       ...(judgeSettings.unreadable === true ? { settingsUnreadable: true } : {}),
-      providerForModel: (model) => reviewerStreamProviderFor(model.vendor, model.model),
+      providerForModel: (model) => reviewerStreamProviderFor(secrets, model.vendor, model.model),
       selectedModelCacheScope,
       networkFetch: singleHopNetworkFetch,
       audit: bootAuditLogger,
@@ -243,7 +279,14 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
     permissionManager.completeReviewerReconfiguration(reconfiguration);
   };
-  rewireReviewerAgent();
+  // Serialized: an overlapping rewire would replace the reconfiguration token the earlier one must complete with.
+  let rewireQueue: Promise<void> = Promise.resolve();
+  const rewireReviewerAgent = (): Promise<void> => {
+    const run = rewireQueue.then(rewireReviewerAgentNow);
+    rewireQueue = run.catch(() => undefined);
+    return run;
+  };
+  await rewireReviewerAgent();
 
   // Install one stable memory-hit broadcaster that resolves the current main window.
   permissionManager.setBroadcastUserApprovalHit((payload) => {

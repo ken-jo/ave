@@ -194,7 +194,7 @@ export async function resolveApiKey(
 
   // Own-namespace misses continue into host tiers because the request asks for a vendor credential, not one named key.
   const ownNamespaceKey = `plugin.${deps.pluginId}.llm.apiKey.${vendor}`;
-  const ownValue = deps.settingsService.getSecret(ownNamespaceKey);
+  const ownValue = await deps.settingsService.getSecret(ownNamespaceKey);
   if (shouldBlockPluginSecretRead({ pluginId: deps.pluginId, storageKey: ownNamespaceKey, value: ownValue })) {
     audit(
       deps,
@@ -241,7 +241,7 @@ export async function resolveApiKey(
   }
   if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-gate");
   // All four tiers passed — fetch the key from settings.
-  const value = deps.settingsService.getSecret(llmKey);
+  const value = await deps.settingsService.getSecret(llmKey);
   if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-secret-read");
   if (typeof value !== "string" || value.length === 0) {
     audit(deps, "info", `resolveApiKey deny reason=no-host-vendor vendor=${vendor}`);

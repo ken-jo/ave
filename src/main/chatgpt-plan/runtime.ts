@@ -107,10 +107,10 @@ export class ChatGptPlanRuntime {
    * usage is not a usable connection: it shows as signed out so "Continue
    * with ChatGPT" asks for the grant again, and chat stays unavailable.
    */
-  getStatus(): SubscriptionRuntimeStatus {
-    let status: ReturnType<ChatGptPlanSession["status"]>;
+  async getStatus(): Promise<SubscriptionRuntimeStatus> {
+    let status: Awaited<ReturnType<ChatGptPlanSession["status"]>>;
     try {
-      status = this.session.status();
+      status = await this.session.status();
     } catch {
       // An unreadable stored record is reported, never replaced behind the user's back.
       return projectStatus("unavailable", "unknown", false);
@@ -121,7 +121,7 @@ export class ChatGptPlanRuntime {
   }
 
   /** The user dismissed the card's notice (the welcome is shown once per install). */
-  acknowledgeNotice(): SubscriptionRuntimeStatus {
+  acknowledgeNotice(): Promise<SubscriptionRuntimeStatus> {
     this.session.acknowledgeNotice();
     return this.getStatus();
   }
@@ -130,7 +130,7 @@ export class ChatGptPlanRuntime {
     return stable(async () => {
       let requestConsent = false;
       try {
-        requestConsent = this.session.status().planUsage === "disabled";
+        requestConsent = (await this.session.status()).planUsage === "disabled";
       } catch {
         throw new ChatGptPlanRuntimeError("subscription-operation-failed");
       }
@@ -140,7 +140,7 @@ export class ChatGptPlanRuntime {
     });
   }
 
-  cancelLogin(): SubscriptionRuntimeStatus {
+  cancelLogin(): Promise<SubscriptionRuntimeStatus> {
     this.session.cancelSignIn();
     return this.getStatus();
   }
@@ -156,7 +156,7 @@ export class ChatGptPlanRuntime {
     return stable(async () => {
       const models = await this.session.listModels();
       return {
-        status: this.getStatus(),
+        status: await this.getStatus(),
         // The server's order is the account's order; there is no runtime default to mark.
         models: models.map((model) => ({ id: model.id, displayName: model.displayName, isDefault: false })),
       };

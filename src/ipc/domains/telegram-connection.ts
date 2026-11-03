@@ -50,14 +50,14 @@ export function registerTelegramConnectionHandlers(deps: IpcDeps): void {
     });
   }
 
-  ipcMain.handle(CHANNELS.telegramConnection.snapshot, (event) => {
+  ipcMain.handle(CHANNELS.telegramConnection.snapshot, async (event) => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.telegramConnection.snapshot, event);
       return UNAUTHORIZED_FRAME;
     }
     if (!service) return DISABLED;
     try {
-      return parseTelegramConnectionSnapshotResult(service.snapshot()) ?? UNAVAILABLE;
+      return parseTelegramConnectionSnapshotResult(await service.snapshot()) ?? UNAVAILABLE;
     } catch {
       return UNAVAILABLE;
     }

@@ -14,7 +14,7 @@ export interface MarketplaceGitOptions {
   envRoot: string;
   runtimeRoot: string;
   mode: () => GitRuntimeMode;
-  getToken: (host: string, sourceId: string) => string | null;
+  getToken: (host: string, sourceId: string) => Promise<string | null>;
   corporateRootsPem: () => Promise<string | null>;
   resolveProxy?: GitRunnerOptions["resolveProxy"];
   platform?: NodeJS.Platform;

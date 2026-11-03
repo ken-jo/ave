@@ -817,7 +817,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  ipcMain.handle(CHANNELS.plugins.configSecretListKeys, (e, pluginId: string) => {
+  ipcMain.handle(CHANNELS.plugins.configSecretListKeys, async (e, pluginId: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.plugins.configSecretListKeys, e);
       return pluginConfigError("unauthorized-frame", t("mainDialog.unauthorizedFrame"));
@@ -831,7 +831,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         const prop = schema.properties[key];
         if (prop?.type === "string" && prop.format === "secret") {
           const storageKey = `plugin.${pluginId}.${key}`;
-          const stored = settingsService.getSecret(storageKey);
+          const stored = await settingsService.getSecret(storageKey);
           if (stored !== null && !shouldBlockPluginSecretRead({ pluginId, storageKey, value: stored })) {
             presentKeys.push(key);
           }

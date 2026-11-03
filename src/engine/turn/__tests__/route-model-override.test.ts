@@ -29,7 +29,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
   },
 }));
 
-function childLoop(catalogModel?: string) {
+async function childLoop(catalogModel?: string) {
   expect(isModelAvailableForVendor("openai", "gpt-5.4-mini", [])).toBe(true);
   const llm = fakeLlmSettings({ model: "gpt-5.4" });
   if (catalogModel) llm.vendors.openai.catalogModel = catalogModel;
@@ -43,13 +43,14 @@ function childLoop(catalogModel?: string) {
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  await loop.whenProviderReady();
   return { llm, loop };
 }
 
 beforeEach(() => { state.configs.length = 0; state.requests.length = 0; });
 
-it.each([undefined, "openai/gpt-5.4"])("budgets the child model without inheriting the parent's named entry (%s)", (catalogModel) => {
-  const { llm, loop } = childLoop(catalogModel);
+it.each([undefined, "openai/gpt-5.4"])("budgets the child model without inheriting the parent's named entry (%s)", async (catalogModel) => {
+  const { llm, loop } = await childLoop(catalogModel);
   expect(state.configs[0]?.model).toBe("gpt-5.4-mini");
   expect(contextBudgetForCurrentRuntime(loop)).toMatchObject({
     model: "gpt-5.4-mini", identity: "openai/gpt-5.4-mini", catalogEntry: "openai/gpt-5.4-mini",
@@ -60,7 +61,7 @@ it.each([undefined, "openai/gpt-5.4"])("budgets the child model without inheriti
 });
 
 it("sends and accounts for the same child model that the adapter was constructed for", async () => {
-  const { loop } = childLoop();
+  const { loop } = await childLoop();
   const result = await loop.runTurn("reply", undefined, undefined, { ...userKeyboardTurn() });
   expect(state.configs[0]?.model).toBe("gpt-5.4-mini");
   expect(state.requests[0]?.model).toBe("gpt-5.4-mini");

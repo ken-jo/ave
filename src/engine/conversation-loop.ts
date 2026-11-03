@@ -119,7 +119,17 @@ export class ConversationLoop {
   readonly history: ConversationHistory;
   readonly toolExecutor: ToolExecutor;
   readonly auditLogger: AuditLogger;
-  provider: LLMProvider | null = null;
+  #provider: LLMProvider | null = null;
+  // Bumped by every assignment, so a slower rebuild never overwrites a newer provider.
+  #providerGeneration = 0;
+  // Null once the latest build settled or an assignment superseded it.
+  #providerReady: Promise<void> | null = null;
+  get provider(): LLMProvider | null { return this.#provider; }
+  set provider(value: LLMProvider | null) {
+    this.#providerGeneration += 1;
+    this.#provider = value;
+    this.#providerReady = null;
+  }
   private approvalSessionId = createDlpSafeUuid();
   private sessionEpochValue = 0;
   /** Read-only: the session identity changes only through `replaceSessionIdentity`. */
@@ -223,7 +233,8 @@ export class ConversationLoop {
       deps.pluginOperationIdentityProvider,
     );
     this.auditLogger = deps.auditLogger ?? new AuditLogger();
-    this.refreshProvider();
+    // Credentials decrypt asynchronously; `whenProviderReady` settles this first build.
+    void this.refreshProvider().catch(() => undefined);
     registerWorkspaceDirectorySource(this);
     // Hosts bind a trusted surface before starting an interactive run. A run
     // created without one has no surface for manual approval.
@@ -317,11 +328,28 @@ export class ConversationLoop {
     }
   }
 
-  refreshProvider(): void {
+  refreshProvider(): Promise<void> {
     // Clear before rebuilding so failed subscription activation cannot leave an API-key transport usable.
     this.provider = null;
     this.lastReportedSubscriptionContextWindow = null;
-    this.provider = buildProvider(this.deps);
+    const generation = this.#providerGeneration;
+    const ready = buildProvider(this.deps).then((provider) => {
+      if (generation === this.#providerGeneration) this.#provider = provider;
+    }).finally(() => {
+      if (generation === this.#providerGeneration) this.#providerReady = null;
+    });
+    this.#providerReady = ready.catch(() => undefined);
+    return ready;
+  }
+
+  /** True while a provider build is in flight; callers skip the await otherwise so turn timing stays synchronous. */
+  get providerPending(): boolean {
+    return this.#providerReady !== null;
+  }
+
+  /** Settles once the latest provider rebuild has finished (successfully or not). */
+  whenProviderReady(): Promise<void> {
+    return this.#providerReady ?? Promise.resolve();
   }
 
   hasProvider(): boolean {
@@ -329,15 +357,15 @@ export class ConversationLoop {
   }
 
   /** Rebuild the provider with the session model override; undefined restores the constructed default. */
-  setSessionModelOverride(model: string | undefined): void {
+  setSessionModelOverride(model: string | undefined): Promise<void> {
     this.deps.modelOverride = model ?? this.constructedModelOverride;
-    this.refreshProvider();
+    return this.refreshProvider();
   }
 
   /** Drop a `/model` choice when the loop moves to another session. */
-  resetSessionModelOverride(): void {
-    if (this.deps.modelOverride === this.constructedModelOverride) return;
-    this.setSessionModelOverride(undefined);
+  resetSessionModelOverride(): Promise<void> {
+    if (this.deps.modelOverride === this.constructedModelOverride) return Promise.resolve();
+    return this.setSessionModelOverride(undefined);
   }
 
   async generateText(
@@ -346,6 +374,7 @@ export class ConversationLoop {
     abortSignal?: AbortSignal,
     options?: GenerateTextOptions,
   ): Promise<string> {
+    if (this.providerPending) await this.whenProviderReady();
     return generateText(this.provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, options);
   }
 
@@ -363,12 +392,13 @@ export class ConversationLoop {
       return this.generateText(prompt, systemPrompt, abortSignal, { ...options, modelOverride: this.deps.modelOverride });
     }
     // Explicit recap selection permits retries, but never substitution by a chat fallback route.
-    const provider = buildProvider({ ...this.deps, modelOverride }, { fallbackEnabled: false });
+    const provider = await buildProvider({ ...this.deps, modelOverride }, { fallbackEnabled: false });
     return generateText(provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, { ...options, modelOverride });
   }
 
   /** Probe connectivity without adding a chat-history turn. */
   async pingProvider(timeoutMs = AI_PROVIDER_PING_TIMEOUT_MS): Promise<AiProviderPingResult> {
+    if (this.providerPending) await this.whenProviderReady();
     return pingProvider(this.provider, this.deps.settingsService, timeoutMs);
   }
 

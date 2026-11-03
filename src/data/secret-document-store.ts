@@ -24,8 +24,15 @@ const log = createLogger("secret-document-store");
 
 export type SecretPolicy = "packaged" | "development";
 
+export interface SecretDecryptionResult {
+  /** The host rotated or upgraded its key; re-encrypt and persist where a write path exists. */
+  shouldReEncrypt: boolean;
+  result: string;
+}
+
+/** Mirrors Electron's async safeStorage API; the deprecated sync methods must not be used. */
 export interface SecretEncryption {
-  isEncryptionAvailable(): boolean;
+  isAsyncEncryptionAvailable(): Promise<boolean>;
   getSelectedStorageBackend():
     | "basic_text"
     | "gnome_libsecret"
@@ -34,8 +41,8 @@ export interface SecretEncryption {
     | "kwallet6"
     | "external_key"
     | "unknown";
-  encryptString(value: string): Buffer;
-  decryptString(value: Buffer): string;
+  encryptStringAsync(value: string): Promise<Buffer>;
+  decryptStringAsync(value: Buffer): Promise<SecretDecryptionResult>;
 }
 
 type SecretEntry =
@@ -330,6 +337,8 @@ export class SecretDocumentStore {
   private readonly runtime: SecretStoreRuntime;
   private readonly onCommittedSecretsChanged?: (keys: readonly string[], before: SecretDocumentIdentity | null, after: SecretDocumentIdentity) => void;
   private cachedIdentity?: { stamp: string; identity: SecretDocumentIdentity | null };
+  // Ciphertext a read was asked to re-encrypt, by entry; the next mutation rewrites entries still holding it. No plaintext is kept.
+  private readonly pendingReEncryption = new Map<string, string>();
 
   constructor(options: SecretDocumentStoreOptions) {
     this.originalPath = resolve(options.path);
@@ -382,62 +391,62 @@ export class SecretDocumentStore {
     return { fingerprint: documentFingerprint(raw), mutation: state.document.mutation ?? null };
   }
 
-  has(key: string): boolean {
+  async has(key: string): Promise<boolean> {
     validateSecretKey(key);
     const state = this.readState(false);
     this.assertCompatibleBackend(state);
     if (!Object.hasOwn(state.document.entries, key)) return false;
     if (state.document.entries[key].encoding === "plain-development") {
       if (this.policy === "packaged") throw new SecretEncryptionUnavailableError();
-    } else if (!this.isEncryptionUsable()) {
+    } else if (!await this.isEncryptionUsable()) {
       throw new SecretEncryptionUnavailableError();
     }
     return true;
   }
 
-  get(key: string): string | null {
+  async get(key: string): Promise<string | null> {
     validateSecretKey(key);
     const state = this.readState(false);
-    this.assertCompatibleDocument(state);
+    await this.assertCompatibleDocument(state);
     if (!Object.hasOwn(state.document.entries, key)) return null;
     const entry = state.document.entries[key];
     if (entry.encoding === "plain-development") {
       if (this.policy === "packaged") throw new SecretEncryptionUnavailableError();
       return entry.value;
     }
-    if (!this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();
-    return this.decrypt(entry.value);
+    if (!await this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();
+    return this.decryptEntry(key, entry.value);
   }
 
-  getEncrypted(key: string): string | null {
+  async getEncrypted(key: string): Promise<string | null> {
     validateSecretKey(key);
     const state = this.readState(false);
-    this.assertCompatibleDocument(state);
+    await this.assertCompatibleDocument(state);
     if (!Object.hasOwn(state.document.entries, key)) return null;
     const entry = state.document.entries[key];
     if (entry.encoding === "plain-development") {
       if (this.policy === "packaged") throw new SecretEncryptionUnavailableError();
       return null;
     }
-    if (!this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();
-    return this.decrypt(entry.value);
+    if (!await this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();
+    return this.decryptEntry(key, entry.value);
   }
 
   async set(key: string, value: string): Promise<void> {
     validateSecretKey(key);
-    await this.mutate(false, (document) => {
-      this.assertWritesAvailable();
-      this.upgradePlainEntries(document);
-      document.entries[key] = this.encode(value);
+    await this.mutate(false, async (document) => {
+      await this.assertWritesAvailable();
+      await this.upgradePlainEntries(document);
+      document.entries[key] = await this.encode(value);
     }, { forceWrite: true, forceChangedKeys: [key] });
   }
 
   async delete(key: string): Promise<boolean> {
     validateSecretKey(key);
-    return this.mutate(false, (document) => {
+    return this.mutate(false, async (document) => {
       if (!Object.hasOwn(document.entries, key)) return false;
-      this.assertWritesAvailable();
-      this.upgradePlainEntries(document);
+      await this.assertWritesAvailable();
+      await this.upgradePlainEntries(document);
       delete document.entries[key];
       return true;
     });
@@ -446,9 +455,9 @@ export class SecretDocumentStore {
   async deleteMany(keys: Iterable<string>): Promise<number> {
     const requested = [...keys];
     for (const key of requested) validateSecretKey(key);
-    return this.mutate(false, (document) => {
-      this.assertWritesAvailable();
-      this.upgradePlainEntries(document);
+    return this.mutate(false, async (document) => {
+      await this.assertWritesAvailable();
+      await this.upgradePlainEntries(document);
       let deleted = 0;
       for (const key of requested) {
         if (!Object.hasOwn(document.entries, key)) continue;
@@ -463,10 +472,10 @@ export class SecretDocumentStore {
   async move(from: string, to: string): Promise<boolean> {
     validateSecretKey(from);
     validateSecretKey(to);
-    return this.mutate(false, (document) => {
+    return this.mutate(false, async (document) => {
       if (!Object.hasOwn(document.entries, from)) return false;
-      this.assertWritesAvailable();
-      this.upgradePlainEntries(document);
+      await this.assertWritesAvailable();
+      await this.upgradePlainEntries(document);
       if (!Object.hasOwn(document.entries, to)) document.entries[to] = document.entries[from];
       delete document.entries[from];
       return true;
@@ -475,8 +484,8 @@ export class SecretDocumentStore {
 
   async migrate(): Promise<boolean> {
     if (!this.runtime.exists(this.path)) return false;
-    return this.mutate(true, (document, source, modeWasRepaired) => {
-      const encryptionAvailable = this.isEncryptionUsable();
+    return this.mutate(true, async (document, source, modeWasRepaired) => {
+      const encryptionAvailable = await this.isEncryptionUsable();
       const hasPlain = Object.values(document.entries)
         .some((entry) => entry.encoding === "plain-development");
       const hasStoredSecrets = Object.keys(document.entries).length > 0;
@@ -484,8 +493,8 @@ export class SecretDocumentStore {
       if (this.policy === "packaged" && !encryptionAvailable && hasStoredSecrets) {
         throw new SecretEncryptionUnavailableError();
       }
-      if (source === "legacy" && encryptionAvailable) this.reencryptLegacyEntries(document);
-      this.upgradePlainEntries(document);
+      if (source === "legacy" && encryptionAvailable) await this.reencryptLegacyEntries(document);
+      await this.upgradePlainEntries(document);
       if (source === "legacy" && !encryptionAvailable) {
         for (const [key, entry] of Object.entries(document.entries)) {
           if (entry.encoding === "safe-storage") {
@@ -515,30 +524,30 @@ export class SecretDocumentStore {
     }
   }
 
-  private encode(value: string): SecretEntry {
-    if (this.isEncryptionUsable()) {
+  private async encode(value: string): Promise<SecretEntry> {
+    if (await this.isEncryptionUsable()) {
       return {
         encoding: this.externalKey ? "external-key" : "safe-storage",
-        value: this.encryption.encryptString(value).toString("base64"),
+        value: (await this.encryption.encryptStringAsync(value)).toString("base64"),
       };
     }
     if (this.policy === "packaged") throw new SecretEncryptionUnavailableError();
     return { encoding: "plain-development", value };
   }
 
-  private assertWritesAvailable(): void {
-    if (this.policy === "packaged" && !this.isEncryptionUsable()) {
+  private async assertWritesAvailable(): Promise<void> {
+    if (this.policy === "packaged" && !await this.isEncryptionUsable()) {
       throw new SecretEncryptionUnavailableError();
     }
   }
 
   /** Check encrypted-at-rest availability before offering credential storage. */
-  canStoreEncrypted(): boolean {
+  async canStoreEncrypted(): Promise<boolean> {
     return this.isEncryptionUsable();
   }
 
-  private isEncryptionUsable(): boolean {
-    if (!this.encryption.isEncryptionAvailable()) return false;
+  private async isEncryptionUsable(): Promise<boolean> {
+    if (!await this.encryption.isAsyncEncryptionAvailable()) return false;
     if (this.policy !== "packaged" || this.platform !== "linux") return true;
     try {
       const backend = this.encryption.getSelectedStorageBackend();
@@ -548,11 +557,33 @@ export class SecretDocumentStore {
     }
   }
 
-  private decrypt(value: string): string {
+  private async decrypt(value: string): Promise<SecretDecryptionResult> {
+    let decrypted: SecretDecryptionResult;
     try {
-      return this.encryption.decryptString(Buffer.from(value, "base64"));
+      decrypted = await this.encryption.decryptStringAsync(Buffer.from(value, "base64"));
     } catch {
       throw new SecretDocumentDecryptionError();
+    }
+    if (typeof decrypted?.result !== "string") throw new SecretDocumentDecryptionError();
+    return { shouldReEncrypt: decrypted.shouldReEncrypt === true, result: decrypted.result };
+  }
+
+  private async decryptEntry(key: string, value: string): Promise<string> {
+    const decrypted = await this.decrypt(value);
+    if (decrypted.shouldReEncrypt) this.pendingReEncryption.set(key, value);
+    return decrypted.result;
+  }
+
+  /** Re-encrypt entries a read flagged, provided they still hold the flagged ciphertext. */
+  private async reEncryptPendingEntries(document: SecretDocument): Promise<void> {
+    if (this.pendingReEncryption.size === 0) return;
+    const pending = [...this.pendingReEncryption];
+    this.pendingReEncryption.clear();
+    if (!await this.isEncryptionUsable()) return;
+    for (const [key, ciphertext] of pending) {
+      const entry = Object.hasOwn(document.entries, key) ? document.entries[key] : undefined;
+      if (entry === undefined || entry.encoding === "plain-development" || entry.value !== ciphertext) continue;
+      document.entries[key] = await this.encode((await this.decrypt(entry.value)).result);
     }
   }
 
@@ -567,30 +598,30 @@ export class SecretDocumentStore {
     }
   }
 
-  private assertCompatibleDocument(state: StoredState): void {
+  private async assertCompatibleDocument(state: StoredState): Promise<void> {
     this.assertCompatibleBackend(state);
     // Authenticate the whole document before reads or mutations so wrong keys cannot destroy unreadable credentials.
     if (this.externalKey) {
       for (const entry of Object.values(state.document.entries)) {
-        if (!this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();
-        this.decrypt(entry.value);
+        if (!await this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();
+        await this.decrypt(entry.value);
       }
     }
   }
 
-  private reencryptLegacyEntries(document: SecretDocument): void {
+  private async reencryptLegacyEntries(document: SecretDocument): Promise<void> {
     const replacements: Array<[string, SecretEntry]> = [];
     for (const [key, entry] of Object.entries(document.entries)) {
       const plaintext = entry.encoding === "safe-storage"
-        ? this.decrypt(entry.value)
+        ? (await this.decrypt(entry.value)).result
         : entry.value;
-      replacements.push([key, this.encode(plaintext)]);
+      replacements.push([key, await this.encode(plaintext)]);
     }
     for (const [key, entry] of replacements) document.entries[key] = entry;
   }
 
-  private upgradePlainEntries(document: SecretDocument): void {
-    if (!this.isEncryptionUsable()) {
+  private async upgradePlainEntries(document: SecretDocument): Promise<void> {
+    if (!await this.isEncryptionUsable()) {
       if (this.policy === "packaged"
         && Object.values(document.entries).some((entry) => entry.encoding === "plain-development")) {
         throw new SecretEncryptionUnavailableError();
@@ -600,7 +631,7 @@ export class SecretDocumentStore {
     const upgrades: Array<[string, SecretEntry]> = [];
     for (const [key, entry] of Object.entries(document.entries)) {
       if (entry.encoding !== "plain-development") continue;
-      upgrades.push([key, this.encode(entry.value)]);
+      upgrades.push([key, await this.encode(entry.value)]);
     }
     for (const [key, entry] of upgrades) document.entries[key] = entry;
   }
@@ -616,24 +647,25 @@ export class SecretDocumentStore {
       document: SecretDocument,
       source: StoredState["kind"],
       modeWasRepaired: boolean,
-    ) => T,
+    ) => T | Promise<T>,
     options: { repairModeBeforeRead?: boolean; rewriteLegacy?: boolean; forceWrite?: boolean; forceChangedKeys?: readonly string[] } = {},
   ): Promise<T> {
     return enqueueMutation(this.originalPath, () => withAveHomeConfigurationWrite(this.originalPath, async () => {
       let completed: MutationResult<T>;
       try {
         completed = await this.runtime.lock(this.lockAnchorPath, async () => {
-          if (this.externalKey) this.assertCompatibleDocument(this.readState(allowLegacy));
+          if (this.externalKey) await this.assertCompatibleDocument(this.readState(allowLegacy));
           const modeWasRepaired = options.repairModeBeforeRead === true
             && this.platform !== "win32"
             && this.runtime.exists(this.path)
             ? this.runtime.repairMode(this.path, PRIVATE_FILE_MODE)
             : false;
           const state = this.readState(allowLegacy);
-          this.assertCompatibleDocument(state);
+          await this.assertCompatibleDocument(state);
           const document = cloneDocument(state.document);
           const before = canonicalBytes(state.document);
-          const value = callback(document, state.kind, modeWasRepaired);
+          const value = await callback(document, state.kind, modeWasRepaired);
+          if (state.kind === "canonical") await this.reEncryptPendingEntries(document);
           const contentChanged = canonicalBytes(document) !== before
             || (options.rewriteLegacy === true && state.kind === "legacy");
           const shouldWrite = (contentChanged || options.forceWrite === true)

@@ -12,9 +12,9 @@ import { join } from "node:path";
 
 const mockedElectron = vi.hoisted(() => ({
   safeStorage: {
-    isEncryptionAvailable: vi.fn(() => false),
-    encryptString: vi.fn(),
-    decryptString: vi.fn(),
+    isAsyncEncryptionAvailable: vi.fn(async () => false),
+    encryptStringAsync: vi.fn(),
+    decryptStringAsync: vi.fn(),
   },
 }));
 

@@ -17,7 +17,7 @@ function setup(result: unknown) {
       readJson: async <T>(_name: string, fallback: T) => structuredClone((disk ?? fallback) as T),
       writeJson: async (_name: string, value: unknown) => { disk = structuredClone(value); writes.push(structuredClone(value)); },
     },
-    encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+    encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) },
     random: (size) => Buffer.alloc(size, 5),
     now,
   });

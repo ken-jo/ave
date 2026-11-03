@@ -169,7 +169,7 @@ export class BootContext {
   declare rationaleScopeReviewer: RationaleScopeReviewer;
   declare approvalSentenceSelector: ApprovalSentenceSelector;
   declare rationaleHostService: RationaleHostService | undefined;
-  declare rewireReviewerAgent: () => void;
+  declare rewireReviewerAgent: () => Promise<void>;
 
   // ── Hooks + plugin tool execution surface ──────────────────────────────────
   declare hookRunner: HookRunner;

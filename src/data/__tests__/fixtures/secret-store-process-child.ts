@@ -7,13 +7,13 @@ const [, , command, path, ...args] = process.argv;
 const [key, value] = args;
 
 const encryption = {
-  isEncryptionAvailable: () => true,
+  isAsyncEncryptionAvailable: async () => true,
   getSelectedStorageBackend: () => "gnome_libsecret" as const,
-  encryptString: (plaintext: string) => Buffer.from(`sealed:${plaintext}`, "utf-8"),
-  decryptString: (ciphertext: Buffer) => {
+  encryptStringAsync: async (plaintext: string) => Buffer.from(`sealed:${plaintext}`, "utf-8"),
+  decryptStringAsync: async (ciphertext: Buffer) => {
     const decoded = ciphertext.toString("utf-8");
     if (!decoded.startsWith("sealed:")) throw new Error("invalid test ciphertext");
-    return decoded.slice(7);
+    return { shouldReEncrypt: false, result: decoded.slice(7) };
   },
 };
 
