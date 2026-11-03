@@ -1160,11 +1160,7 @@ the sub-agent store, so their use appears only as `searched` or `read`.
 Managed memories are either global or scoped to one project, and the default
 project (identified by its path) is an ordinary project scope: its memories are
 not global and do not feed the global long-term overview. Global memories apply
-in every project. A user moves a project memory into global scope with an
-explicit promote operation, which fails on a same-titled global memory, and
-saving from the UI always names the target scope. A user may turn a memory off;
-it stays listed but no longer reaches prompts, model memory search or reads,
-overviews, or the preference profile until it is turned back on.
+in every project. Saving from the UI always names the target scope.
 
 ## Insights
 

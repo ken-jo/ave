@@ -183,8 +183,6 @@ export interface NoteEntry {
   confirmedAt?: string;
   expiresAt?: string;
   pinned?: boolean;
-  /** Set when the user turned the memory off: it stays listed but never reaches a prompt, model search, or overview. */
-  disabled?: boolean;
   derivation?: MemoryDerivationV1;
   capture?: MemoryCaptureV1;
 }
@@ -245,7 +243,6 @@ export interface MemoryMetadataV1 {
   confirmedAt?: string;
   expiresAt?: string;
   pinned?: true;
-  disabled?: true;
   derivation?: MemoryDerivationV1;
   capture?: MemoryCaptureV1;
 }
@@ -803,9 +800,6 @@ function decodeMemoryMetadata(encoded: string): MemoryMetadataV1 | null {
   if (raw.confirmedAt !== undefined && !isValidMemoryTimestamp(raw.confirmedAt)) return null;
   if (raw.expiresAt !== undefined && !isValidMemoryTimestamp(raw.expiresAt)) return null;
   if (raw.pinned !== undefined && raw.pinned !== true) return null;
-  if (raw.disabled !== undefined && raw.disabled !== true) return null;
-  // Only an active memory can be turned off; a disabled candidate is not a state any writer produces.
-  if (raw.disabled === true && raw.state !== "active") return null;
   if (!isRecord(raw.scope)) return null;
 
   let derivation: MemoryDerivationV1 | undefined;
@@ -861,7 +855,6 @@ function decodeMemoryMetadata(encoded: string): MemoryMetadataV1 | null {
     ...(raw.confirmedAt ? { confirmedAt: raw.confirmedAt as string } : {}),
     ...(raw.expiresAt ? { expiresAt: raw.expiresAt as string } : {}),
     ...(raw.pinned === true ? { pinned: true } : {}),
-    ...(raw.disabled === true ? { disabled: true } : {}),
     ...(derivation ? { derivation } : {}),
     ...(capture ? { capture } : {}),
   };
@@ -1554,7 +1547,7 @@ export class MemoryManager implements PromptMemorySource {
         visibleContent,
       ].join("\n");
       writeFileSync(join(this.memoryDir, filename), storedContent, "utf-8");
-      if (metadata.scope.type === "global" && metadata.state === "active" && metadata.disabled !== true) {
+      if (metadata.scope.type === "global" && metadata.state === "active") {
         this.updateMemoryIndexLocked(indexPath, filename, input.title, input.content);
       } else {
         this.removeMemoryIndexEntryLocked(filename, indexPath);
@@ -1596,7 +1589,7 @@ export class MemoryManager implements PromptMemorySource {
       ].join("\n");
       writeFileSync(join(this.memoryDir, found.filename), storedContent, "utf-8");
 
-      if (metadata.scope.type === "global" && metadata.disabled !== true) {
+      if (metadata.scope.type === "global") {
         this.updateMemoryIndexLocked(
           indexPath,
           found.filename,
@@ -1635,31 +1628,6 @@ export class MemoryManager implements PromptMemorySource {
       this.removeMemoryIndexEntryLocked(found.filename, indexPath);
     });
     this.memoryIndex = this.readMemoryIndex();
-  }
-
-  // Move an active project memory into global scope by id; the file and id stay, only the scope changes.
-  async promoteToGlobal(id: string, options: ProjectScopedMemoryOptions = {}): Promise<NoteEntry> {
-    const safeId = this.validateManagedMemoryId(id, "promoteToGlobal");
-    return this.rewriteManagedMemoryMetadata(safeId, "promoteToGlobal", options, (found) => {
-      if (found.metadata.scope.type === "global") throw new Error("promoteToGlobal: memory is already global");
-      if (found.metadata.state !== "active") throw new Error("promoteToGlobal: only active memories can be promoted");
-      // A global note with the same title would make two records answer to one name in every project.
-      if (this.findExistingManagedMemory(found.title, { type: "global" }, undefined, undefined, undefined)) {
-        throw new Error("promoteToGlobal: global-title-conflict");
-      }
-      return { ...found.metadata, scope: { type: "global" } };
-    });
-  }
-
-  // Turn a managed memory off or back on; a disabled memory stays listed for the user only.
-  async setMemoryActive(id: string, active: boolean, options: ProjectScopedMemoryOptions = {}): Promise<NoteEntry> {
-    const safeId = this.validateManagedMemoryId(id, "setMemoryActive");
-    if (typeof active !== "boolean") throw new Error("setMemoryActive: active must be a boolean");
-    return this.rewriteManagedMemoryMetadata(safeId, "setMemoryActive", options, (found) => {
-      if (found.metadata.state !== "active") throw new Error("setMemoryActive: only active memories can be turned off or on");
-      const { disabled: _previous, ...rest } = found.metadata;
-      return active ? rest : { ...rest, disabled: true };
-    });
   }
 
   async updateMemoryIndex(content: string): Promise<void> {
@@ -3396,7 +3364,7 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   private isPromptVisibleMemory(entry: NoteEntry, options: MemorySelectionOptions): boolean {
-    if (this.isDerivedMemory(entry) || entry.state === "candidate" || entry.disabled === true || noteIsExpired(entry)) return false;
+    if (this.isDerivedMemory(entry) || entry.state === "candidate" || noteIsExpired(entry)) return false;
     if (!options.projectRoot) return entry.id !== undefined ? !entry.projectRoot : !entry.projectRoot;
     if (entry.id !== undefined && !entry.projectRoot) return true;
     return projectRootEquals(entry.projectRoot, options.projectRoot)
@@ -3515,8 +3483,6 @@ export class MemoryManager implements PromptMemorySource {
         : {}),
       ...(expiresAt ? { expiresAt } : {}),
       ...(pinned ? { pinned: true } : {}),
-      // Re-saving the same title updates the text; only setMemoryActive turns a memory back on.
-      ...(existing.disabled ? { disabled: true } : {}),
       ...(requested.capture ?? existing.capture ? { capture: { ...(requested.capture ?? existing.capture)! } } : {}),
     };
   }
@@ -3542,7 +3508,6 @@ export class MemoryManager implements PromptMemorySource {
       ...(metadata.confirmedAt ? { confirmedAt: metadata.confirmedAt } : {}),
       ...(metadata.expiresAt ? { expiresAt: metadata.expiresAt } : {}),
       ...(metadata.pinned ? { pinned: true } : {}),
-      ...(metadata.disabled ? { disabled: true } : {}),
       ...(metadata.derivation ? { derivation: { ...metadata.derivation } } : {}),
       ...(metadata.capture ? { capture: { ...metadata.capture } } : {}),
       ...(project?.projectRoot ? { projectRoot: project.projectRoot } : {}),
@@ -3662,7 +3627,6 @@ export class MemoryManager implements PromptMemorySource {
 
   private isConsolidationSource(entry: NoteEntry): boolean {
     return !this.isDerivedMemory(entry)
-      && entry.disabled !== true
       && !noteIsExpired(entry)
       && (entry.state === undefined || entry.state === "active");
   }
@@ -3741,48 +3705,6 @@ export class MemoryManager implements PromptMemorySource {
       };
     }
     return undefined;
-  }
-
-  // Shared lifecycle rewrite: lock, find by id, recheck mutation scope, rewrite the header, resync the index.
-  private async rewriteManagedMemoryMetadata(
-    id: string,
-    operation: string,
-    options: ProjectScopedMemoryOptions,
-    next: (found: { filename: string; title: string; content: string; metadata: MemoryMetadataV1 }) => MemoryMetadataV1,
-  ): Promise<NoteEntry> {
-    const indexPath = join(this.memoryDir, "MEMORY.md");
-    let updated: NoteEntry | undefined;
-    await withFileLock(indexPath, async () => {
-      const found = this.findManagedMemoryById(id);
-      const scopeEntry = found
-        ? this.entryFromMemoryMetadata(found.filename, found.title, found.content, found.metadata, "")
-        : undefined;
-      // Scope misses share the not-found result so a caller cannot probe another project's memory.
-      if (!found || !scopeEntry || !this.memoryScopeVisibleForMutation(scopeEntry, options)) {
-        throw new Error(`${operation}: memory not found`);
-      }
-      if (found.metadata.derivation) throw new Error(`${operation}: derived overviews are host-managed`);
-      const metadata = next(found);
-      const storedContent = [
-        MEMORY_MARKER,
-        `${MEMORY_METADATA_PREFIX}${encodeMemoryMetadata(metadata)}${MEMORY_METADATA_SUFFIX}`,
-        found.content,
-      ].join("\n");
-      writeFileSync(join(this.memoryDir, found.filename), storedContent, "utf-8");
-      if (metadata.scope.type === "global" && metadata.state === "active" && metadata.disabled !== true) {
-        this.updateMemoryIndexLocked(
-          indexPath,
-          found.filename,
-          found.title,
-          this.memoryBodyForPrompt({ filename: found.filename, title: found.title, content: found.content }),
-        );
-      } else {
-        this.removeMemoryIndexEntryLocked(found.filename, indexPath);
-      }
-      updated = this.entryFromMemoryMetadata(found.filename, found.title, found.content, metadata, new Date().toISOString());
-    });
-    this.memoryIndex = this.readMemoryIndex();
-    return updated!;
   }
 
   private allocateMemoryFilename(title: string, id: string): string {

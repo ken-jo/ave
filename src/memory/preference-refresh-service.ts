@@ -123,7 +123,6 @@ function collectPreferenceSources(
 
 function isUserAuthoredGlobalActiveMemory(entry: NoteEntry): boolean {
   return !entry.projectRoot
-    && entry.disabled !== true
     && (entry.state === undefined || entry.state === "active")
     && (entry.source === undefined || entry.source === "user" || entry.source === "capture")
     && entry.derivation === undefined;
