@@ -42,7 +42,7 @@ describe("memory_write — happy path", () => {
     expect(saveMemory).toHaveBeenCalledWith("user-prefers-dark", "The user prefers dark mode.", {
       source: "assistant",
       state: "candidate",
-    });
+    }, "assistant");
     const parsed = JSON.parse(result.output);
     expect(parsed).toMatchObject({
       saved: true,
@@ -64,7 +64,7 @@ describe("memory_write — happy path", () => {
   it("trims surrounding whitespace before persisting", async () => {
     const { store, saveMemory } = makeStore();
     await run({ title: "  spaced  ", content: "  a fact  " }, store);
-    expect(saveMemory).toHaveBeenCalledWith("spaced", "a fact", { source: "assistant", state: "candidate" });
+    expect(saveMemory).toHaveBeenCalledWith("spaced", "a fact", { source: "assistant", state: "candidate" }, "assistant");
   });
 
   it("uses the host-selected project rather than model-provided scope", async () => {
@@ -83,7 +83,7 @@ describe("memory_write — happy path", () => {
       projectRoot: "C:\\workspace\\alpha",
       source: "assistant",
       state: "candidate",
-    });
+    }, "assistant");
   });
 });
 

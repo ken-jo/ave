@@ -123,7 +123,7 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
           ...memoryWriteProjectScope(ctx),
           source: "assistant",
           state: "candidate",
-        });
+        }, "assistant");
         return {
           output: JSON.stringify({
             saved: true,

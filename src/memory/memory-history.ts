@@ -9,7 +9,9 @@ import { SHA256_HEX } from "../lib/hex-digest-equal.js";
 import { appendJsonlCapped } from "./capped-jsonl.js";
 
 // Append-only per-memory change history in one file; the memory store is the single writer.
-// A failed append never fails the memory change: it is logged and later reads report historyIncomplete.
+// A failed append never fails the memory change: it is logged and later reads of that memory report historyIncomplete.
+// Known gap: a crash after the memory file is written but before its row is appended leaves no row and no mark.
+// Deleting a memory scrubs the text its rows carried (title and before/after excerpts); op, actor, time and digest remain.
 
 const log = createLogger("memory-history");
 
@@ -18,15 +20,7 @@ const HISTORY_STATE_FILE = "history-state.json";
 const DEFAULT_MAX_HISTORY_BYTES = 5 * 1024 * 1024;
 export const MAX_HISTORY_TEXT_CHARS = 2_048;
 
-type MemoryHistoryOp =
-  | "created"
-  | "updated"
-  | "activated"
-  | "discarded"
-  | "promoted"
-  | "disabled"
-  | "enabled"
-  | "deleted";
+type MemoryHistoryOp = "created" | "updated" | "activated" | "discarded" | "deleted";
 
 export type MemoryHistoryActor = "user" | "assistant" | "capture" | "import";
 
@@ -53,19 +47,21 @@ export interface MemoryHistoryRead {
   entries: MemoryHistoryRow[];
   /** Rows older than this were rotated out of the capped file. */
   truncatedBefore?: string;
-  /** A write failed or a stored row could not be read, so the list may be missing changes. */
+  /** A write for this memory failed or one of its stored rows could not be read, so the list may be missing changes. */
   historyIncomplete?: true;
 }
 
 interface MemoryHistoryState {
   v: 1;
   truncatedBefore?: string;
-  incompleteSince?: string;
+  /** memoryId -> time of the first failed append still inside the retained window. */
+  incomplete?: Record<string, string>;
 }
 
-const OPS = new Set<MemoryHistoryOp>(["created", "updated", "activated", "discarded", "promoted", "disabled", "enabled", "deleted"]);
+const OPS = new Set<MemoryHistoryOp>(["created", "updated", "activated", "discarded", "deleted"]);
 const ACTORS = new Set<MemoryHistoryActor>(["user", "assistant", "capture", "import"]);
 const SCOPES = new Set<MemoryHistoryScope>(["global", "project"]);
+const ROW_OWNER = /"memoryId"\s*:\s*"([0-9A-Fa-f-]{36})"/;
 
 function isTimestamp(value: unknown): value is string {
   return typeof value === "string" && value.length <= 64 && Number.isFinite(Date.parse(value));
@@ -117,18 +113,30 @@ function parseHistoryRow(line: string): MemoryHistoryRow | null {
   };
 }
 
-/** Masked, bounded text for a before/after snapshot; full bodies stay only in the memory file. */
+/** The memory a stored line belongs to, recovered even from a malformed or torn line when its id survives. */
+function lineOwner(line: string): string | undefined {
+  return ROW_OWNER.exec(line)?.[1]?.toLowerCase();
+}
+
+/** Masked, bounded text for a title or a before/after snapshot; full bodies stay only in the memory file. */
 export function historyText(text: string): string {
   const masked = maskSensitiveData(text).masked;
   return masked.length > MAX_HISTORY_TEXT_CHARS ? `${masked.slice(0, MAX_HISTORY_TEXT_CHARS - 1)}…` : masked;
+}
+
+function withoutText(row: MemoryHistoryRow): MemoryHistoryRow {
+  const { before: _before, after: _after, fields, ...rest } = row;
+  const { title: _title, ...keptFields } = fields ?? {};
+  return { ...rest, ...(Object.keys(keptFields).length > 0 ? { fields: keptFields } : {}) };
 }
 
 export class MemoryHistory {
   private readonly path: string;
   private readonly statePath: string;
   private readonly maxBytes: number;
-  private tail: Promise<void> = Promise.resolve();
-  private incompleteSince: string | undefined;
+  private tail: Promise<unknown> = Promise.resolve();
+  /** Failures whose state write also failed; kept so this process still reports them. */
+  private readonly unrecordedFailures = new Map<string, string>();
 
   constructor(memoryDir: string, options: { maxBytes?: number } = {}) {
     this.path = join(memoryDir, HISTORY_FILE);
@@ -139,34 +147,39 @@ export class MemoryHistory {
   /** Serialized append; resolves after the row is durable or the failure is recorded. Never rejects. */
   record(row: Omit<MemoryHistoryRow, "v" | "at"> & { at?: string }): Promise<void> {
     const full: MemoryHistoryRow = { v: 1, at: row.at ?? new Date().toISOString(), ...withoutAt(row) };
-    const run = this.tail.then(() => this.appendLocked(full));
-    this.tail = run;
-    return run;
+    return this.enqueue(() => this.appendLocked(full));
+  }
+
+  /**
+   * Remove the text a deleted memory's rows carry, keeping op, actor, time and digest. Rejects on failure so the
+   * caller can refuse the delete rather than leave the text behind.
+   */
+  scrub(memoryId: string): Promise<void> {
+    return this.enqueue(() => this.scrubLocked(memoryId.toLowerCase()));
   }
 
   async read(memoryId: string): Promise<MemoryHistoryRead> {
-    await this.tail;
+    await this.tail.catch(() => undefined);
+    const id = memoryId.toLowerCase();
     const state = await this.readState();
-    let incomplete = this.incompleteSince !== undefined || state.incompleteSince !== undefined || state.invalid;
+    let incomplete = state.invalid || state.incomplete[id] !== undefined || this.unrecordedFailures.has(id);
     let raw = "";
     try {
       raw = await readFile(this.path, "utf-8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") incomplete = true;
     }
-    const lines = raw.split("\n");
-    // The last segment is empty after a final newline, or a torn fragment from an interrupted append.
-    const tail = lines.pop();
-    if (tail !== undefined && tail.length > 0) incomplete = true;
     const entries: MemoryHistoryRow[] = [];
-    for (const line of lines) {
+    for (const line of raw.split("\n")) {
       if (line.length === 0) continue;
       const row = parseHistoryRow(line);
       if (!row) {
-        incomplete = true;
+        // A broken line marks only its own memory; a line whose owner cannot be recovered could be anyone's.
+        const owner = lineOwner(line);
+        if (owner === undefined || owner === id) incomplete = true;
         continue;
       }
-      if (row.memoryId === memoryId) entries.push(row);
+      if (row.memoryId.toLowerCase() === id) entries.push(row);
     }
     return {
       entries,
@@ -175,61 +188,126 @@ export class MemoryHistory {
     };
   }
 
+  private enqueue(job: () => Promise<void>): Promise<void> {
+    const run = this.tail.catch(() => undefined).then(job);
+    this.tail = run;
+    return run;
+  }
+
   private async appendLocked(row: MemoryHistoryRow): Promise<void> {
     try {
       const { rotated } = await appendJsonlCapped(this.path, [row], this.maxBytes);
       if (rotated) await this.markRotated();
     } catch (err) {
       log.warn("memory history append failed for op=%s: %s", row.op, (err as Error).message);
-      this.incompleteSince ??= row.at;
-      await this.writeState({ incompleteSince: this.incompleteSince }).catch((stateErr: unknown) => {
+      const id = row.memoryId.toLowerCase();
+      try {
+        const state = await this.readState();
+        if (state.invalid) throw new Error("history state unreadable");
+        await this.writeState({
+          ...state,
+          incomplete: { ...state.incomplete, [id]: state.incomplete[id] ?? row.at },
+        });
+      } catch (stateErr) {
         log.warn("memory history state write failed: %s", (stateErr as Error).message);
-      });
+        if (!this.unrecordedFailures.has(id)) this.unrecordedFailures.set(id, row.at);
+      }
     }
+  }
+
+  private async scrubLocked(id: string): Promise<void> {
+    let raw: string;
+    try {
+      raw = await readFile(this.path, "utf-8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    let changed = false;
+    const kept: string[] = [];
+    for (const line of raw.split("\n")) {
+      if (line.length === 0) continue;
+      const row = parseHistoryRow(line);
+      if (row) {
+        if (row.memoryId.toLowerCase() === id && (row.before !== undefined || row.after !== undefined || row.fields?.title !== undefined)) {
+          kept.push(JSON.stringify(withoutText(row)));
+          changed = true;
+        } else {
+          kept.push(line);
+        }
+        continue;
+      }
+      // A malformed line that may belong to this memory cannot be scrubbed field by field, so it is dropped whole.
+      const owner = lineOwner(line);
+      if (owner === id || (owner === undefined && line.toLowerCase().includes(id))) {
+        changed = true;
+        continue;
+      }
+      kept.push(line);
+    }
+    if (changed) await writeUtf8FileAtomic(this.path, kept.length > 0 ? `${kept.join("\n")}\n` : "");
+    const state = await this.readState();
+    if (!state.invalid && state.incomplete[id] !== undefined) {
+      const { [id]: _gone, ...incomplete } = state.incomplete;
+      await this.writeState({ ...state, incomplete });
+    }
+    this.unrecordedFailures.delete(id);
   }
 
   private async markRotated(): Promise<void> {
     const raw = await readFile(this.path, "utf-8");
     const first = raw.split("\n").find((line) => line.length > 0);
-    const oldest = first ? parseHistoryRow(first)?.at : undefined;
-    await this.writeState({ truncatedBefore: oldest ?? new Date().toISOString() });
+    const truncatedBefore = (first ? parseHistoryRow(first)?.at : undefined) ?? new Date().toISOString();
+    const state = await this.readState();
+    const cutoff = Date.parse(truncatedBefore);
+    // A failure older than the retained window now falls inside the reported truncation, so its mark is cleared.
+    const incomplete = Object.fromEntries(
+      Object.entries(state.invalid ? {} : state.incomplete).filter(([, at]) => Date.parse(at) >= cutoff),
+    );
+    for (const [id, at] of this.unrecordedFailures) {
+      if (Date.parse(at) < cutoff) this.unrecordedFailures.delete(id);
+    }
+    await this.writeState({ truncatedBefore, incomplete });
   }
 
-  private async readState(): Promise<{ truncatedBefore?: string; incompleteSince?: string; invalid: boolean }> {
+  private async readState(): Promise<{ truncatedBefore?: string; incomplete: Record<string, string>; invalid: boolean }> {
     let raw: string;
     try {
       raw = await readFile(this.statePath, "utf-8");
     } catch (err) {
-      return { invalid: (err as NodeJS.ErrnoException).code !== "ENOENT" };
+      return { incomplete: {}, invalid: (err as NodeJS.ErrnoException).code !== "ENOENT" };
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      return { invalid: true };
+      return { incomplete: {}, invalid: true };
     }
     if (
       !isRecord(parsed)
       || parsed.v !== 1
       || (parsed.truncatedBefore !== undefined && !isTimestamp(parsed.truncatedBefore))
-      || (parsed.incompleteSince !== undefined && !isTimestamp(parsed.incompleteSince))
+      || (parsed.incomplete !== undefined && !isRecord(parsed.incomplete))
     ) {
-      return { invalid: true };
+      return { incomplete: {}, invalid: true };
+    }
+    const incomplete: Record<string, string> = {};
+    for (const [id, at] of Object.entries((parsed.incomplete ?? {}) as Record<string, unknown>)) {
+      if (!UUID_PATTERN.test(id) || !isTimestamp(at)) return { incomplete: {}, invalid: true };
+      incomplete[id.toLowerCase()] = at;
     }
     return {
       invalid: false,
+      incomplete,
       ...(parsed.truncatedBefore !== undefined ? { truncatedBefore: parsed.truncatedBefore as string } : {}),
-      ...(parsed.incompleteSince !== undefined ? { incompleteSince: parsed.incompleteSince as string } : {}),
     };
   }
 
-  private async writeState(patch: Omit<MemoryHistoryState, "v">): Promise<void> {
-    const current = await this.readState();
+  private async writeState(state: { truncatedBefore?: string; incomplete: Record<string, string> }): Promise<void> {
     const next: MemoryHistoryState = {
       v: 1,
-      ...(current.truncatedBefore ? { truncatedBefore: current.truncatedBefore } : {}),
-      ...(current.incompleteSince ? { incompleteSince: current.incompleteSince } : {}),
-      ...patch,
+      ...(state.truncatedBefore ? { truncatedBefore: state.truncatedBefore } : {}),
+      ...(Object.keys(state.incomplete).length > 0 ? { incomplete: state.incomplete } : {}),
     };
     await writeUtf8FileAtomic(this.statePath, `${JSON.stringify(next)}\n`);
   }

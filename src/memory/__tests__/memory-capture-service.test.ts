@@ -110,7 +110,7 @@ describe("MemoryCaptureService", () => {
           trigger: "automatic",
           sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         }),
-      }),
+      }), "capture",
     );
   });
 
@@ -125,7 +125,7 @@ describe("MemoryCaptureService", () => {
     expect(saveMemory).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      expect.objectContaining({ state: "candidate", source: "capture" }),
+      expect.objectContaining({ state: "candidate", source: "capture" }), "capture",
     );
   });
 
@@ -175,7 +175,7 @@ describe("MemoryCaptureService", () => {
     expect(saveMemory).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      expect.objectContaining({ state: "candidate", source: "capture" }),
+      expect.objectContaining({ state: "candidate", source: "capture" }), "capture",
     );
   });
 
@@ -207,7 +207,7 @@ describe("MemoryCaptureService", () => {
         projectRoot: "C:\\workspace\\alpha",
         projectName: "alpha",
         capture: expect.objectContaining({ trigger: "explicit" }),
-      }),
+      }), "user",
     );
   });
 

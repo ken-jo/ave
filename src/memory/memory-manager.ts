@@ -1318,6 +1318,7 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   // Recheck source fingerprints under the index lock before committing generated overviews.
+  // Derived overviews get no change-history rows on purpose: they are host-regenerated summaries, not user memories.
   async upsertConsolidatedMemoryIfUnchanged(
     snapshot: MemoryConsolidationSnapshot,
     content: string,
@@ -1513,7 +1514,8 @@ export class MemoryManager implements PromptMemorySource {
       }));
   }
 
-  async saveMemory(title: string, content: string, options: MemorySaveOptions = {}): Promise<NoteEntry> {
+  // `actor` is who is saving now; it is recorded in the change history and never inferred from stored metadata.
+  async saveMemory(title: string, content: string, options: MemorySaveOptions, actor: MemoryHistoryActor): Promise<NoteEntry> {
     const input = this.assertManagedMemoryInput(title, content);
     let metadata = this.createMemoryMetadata(options);
     const visibleContent = `# ${input.title}\n\n${input.content}\n`;
@@ -1566,9 +1568,9 @@ export class MemoryManager implements PromptMemorySource {
     await this.history.record({
       memoryId: metadata.id,
       op: previousBody === undefined ? "created" : "updated",
-      actor: metadata.source,
+      actor,
       fields: {
-        title: input.title,
+        title: historyText(input.title),
         contentDigest: sha256Text(input.content),
         scope: metadata.scope.type,
       },
@@ -1645,6 +1647,8 @@ export class MemoryManager implements PromptMemorySource {
       ) {
         throw new Error("deleteMemoryCandidate: candidate not found");
       }
+      // Deleting removes the text the history kept; if that cannot be done the memory stays and the delete fails.
+      await this.history.scrub(safeId);
       unlinkIfPresent(join(this.memoryDir, found.filename));
       this.removeMemoryIndexEntryLocked(found.filename, indexPath);
     });
@@ -1726,6 +1730,8 @@ export class MemoryManager implements PromptMemorySource {
         }
         deletedId = entry.id;
       }
+      // Deleting removes the text the history kept; if that cannot be done the memory stays and the delete fails.
+      if (deletedId) await this.history.scrub(deletedId);
       unlinkIfPresent(path);
       this.removeMemoryIndexEntryLocked(safeFilename, indexPath);
     });
