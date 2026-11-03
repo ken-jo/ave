@@ -1,5 +1,6 @@
 /** Installs use unique directories and roll back failed activation without moving live files.
  * Loading verifies installed bytes; replaced directories survive until their activation retires. */
+import { assertAveHomeAcceptsInstalls } from "../../shared/ave-home.js";
 import { randomUUID } from "node:crypto";
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -231,6 +232,7 @@ export class ContentStore {
     staged: StagedContent,
     options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[]; assertConsent?: (consent: ConsentFingerprint) => void } = {},
   ): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+    assertAveHomeAcceptsInstalls();
     return this.mutate(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;

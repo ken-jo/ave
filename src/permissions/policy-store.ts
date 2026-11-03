@@ -10,7 +10,7 @@ import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
-import { readAveHomeConfigurationFile, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
+import { readAveHomeConfigurationFile, readAveHomeRestrictionSource, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 const log = createLogger("policy-store");
 
 export const userPolicyPath = (home = aveHome()): string => resolve(aveHomeConfigurationDirectory(home), "policy.json");
@@ -124,12 +124,37 @@ async function readPolicyFile(filePath: string, administrative = false): Promise
   return { status: "valid", fields: statedPolicy(filePath, parsed) };
 }
 
+// The closed restriction overlay of a user policy that reads as absent (a refused home's unverified root file): only the safety
+// booleans, and only when they make Ave stricter. Anything else in the file, and a file that does not parse, applies nothing.
+function restrictionOverlay(userPath: string): StatedPolicy {
+  const bytes = readAveHomeRestrictionSource(userPath);
+  if (bytes === undefined) return {};
+  let stated: StatedPolicy;
+  try { stated = statedPolicy(userPath, parsePolicyDocument(bytes.toString("utf8"))); }
+  catch { return {}; }
+  const overlay: StatedPolicy = {};
+  for (const field of Object.keys(SAFE_BOOLEANS) as Array<keyof typeof SAFE_BOOLEANS>) {
+    if (stated[field] === true) overlay[field] = true;
+  }
+  return overlay;
+}
+
 // Load policy. A valid admin file overrides only the fields it states. An invalid or unreadable admin file requires explicit approval and locks edits. Returned `source` field: - "defaults": no file exists, so defaults are used - "user": only the user file exists - "admin": only the admin file exists - "merged": both exist, with admin overriding user values @param userPath User policy file path (default: ~/.ave/config/policy.json) @param adminPath Admin policy file path (default: getAdminPolicyPath)
 export async function loadPolicy(
   userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<LoadedPolicy> {
   userPath = resolveConfigurationFile(userPath);
+  const loaded = await loadPolicySources(userPath, adminPath);
+  const overlay = restrictionOverlay(userPath);
+  return {
+    ...loaded,
+    requireExplicitApproval: loaded.requireExplicitApproval || overlay.requireExplicitApproval === true,
+    managed: loaded.managed || overlay.managed === true,
+  };
+}
+
+async function loadPolicySources(userPath: string, adminPath: string): Promise<LoadedPolicy> {
   const [userRead, adminRead] = await Promise.all([
     readPolicyFile(userPath),
     readPolicyFile(adminPath, true),

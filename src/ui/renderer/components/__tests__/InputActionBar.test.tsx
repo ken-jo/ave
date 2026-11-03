@@ -19,6 +19,8 @@ import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
 import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
 import { t } from "../../../../i18n/runtime.js";
+import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
+import { HOME_FOLDER_REFUSED } from "../../../../shared/permissions-events.js";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
@@ -547,6 +549,26 @@ describe("permission card (status-row permission cell)", () => {
     await waitFor(() => expect(reviewerDispatch).toHaveBeenCalledTimes(1));
     expect(reviewerDispatch.mock.calls.map((c) => c[0])).toEqual(["mode llm"]);
     await waitFor(() => expect(queryByTestId("permission-quick-picker")).toBeNull());
+  });
+
+  it("closes with a session-only notice when the home folder refusal keeps the pick from being saved", async () => {
+    setMode.mockResolvedValue({ ok: true, mode: "auto", notice: HOME_FOLDER_REFUSED });
+    reviewerDispatch.mockResolvedValue({ ok: true, verb: "mode", settings: { mode: "llm", fallbackOnError: "deny" }, notice: HOME_FOLDER_REFUSED });
+    const notice = vi.fn();
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <ApprovalSurfaceProvider value={{ notice } as unknown as ApprovalSurfaceContextValue}>
+        <TooltipProvider>
+          <ComposerStatusRow ringSlot={<span />} enableThinkingChat={false} onToggleThinking={vi.fn()}
+            statusRow={{ ...defaultStatusRow, permissionMode: "default" }} onOpenModelSettings={vi.fn()} />
+        </TooltipProvider>
+      </ApprovalSurfaceProvider>,
+    );
+    fireEvent.click(getByTestId("iab-status-permission"));
+    await findByTestId("permission-quick-picker");
+    fireEvent.click(getByTestId("permission-quick-picker-option:auto"));
+    await waitFor(() => expect(queryByTestId("permission-quick-picker")).toBeNull());
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledWith(t("permissionsTab.homeFolderRefusedSessionOnly"));
   });
 
   it("stays open with the mark unmoved when the host refuses the pick", async () => {

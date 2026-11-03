@@ -21,7 +21,8 @@ import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-
 import { ChevronDown } from "lucide-react";
 import { buildApprovalScopeOptions } from "../../../permissions/approval-scope-options.js";
 import { SOURCE_BADGE } from "../constants.js";
-import type { ApprovalDecisionExtras } from "../hooks/use-approval.js";
+import { useApprovalSurfaceNotice, type ApprovalDecisionExtras } from "../hooks/use-approval.js";
+import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
 import { UserOwnedSurfaceApprovalCard } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
@@ -458,6 +459,7 @@ export function ToolApprovalContent({
   reviewerSuggestion?: ReviewerSuggestion | null;
 }) {
   const { t: tHook } = useTranslation();
+  const approvalNotice = useApprovalSurfaceNotice();
   const [expanded, setExpanded] = useState(false);
   const [recordingDecision, setRecordingDecision] = useState(false);
   const [recordError, setRecordError] = useState<string | null>(null);
@@ -676,13 +678,16 @@ export function ToolApprovalContent({
   ]);
 
   // Save a remembered decision before resolving the live request: a shell card saves a rule (`rule`), every other remembering card an exact
-  // tool approval. The request is answered only when the save succeeded, and only while it is still the card's request.
+  // tool approval. The request is answered only when the save succeeded, and only while it is still the card's request. When the host
+  // refused the save because boot refused the home folder, the card answers once (`respondOnce`) and the notice says why.
   const recordThenRespond = useCallback(async (
     record: { readonly decision: "allow" | "deny"; readonly scope: UserApprovalScope; readonly rule?: ApprovalRuleSave } | null,
     respond: () => void,
+    respondOnce: () => void = respond,
   ) => {
     if (interactionLocked || recordingRequestIdRef.current !== null) return;
     const requestIdAtStart = request?.id ?? null;
+    let answer = respond;
     setRecordError(null);
     if (request && record) {
       const failureKey = record.rule ? "toolApprovalDialog.ruleDecisionSaveFailed" : "toolApprovalDialog.exactDecisionSaveFailed";
@@ -704,7 +709,10 @@ export function ToolApprovalContent({
           trustOrigin: request.trustOrigin,
           approvalCacheKey: request.approvalCacheKey,
         });
-        if (!result?.ok) {
+        if (!result?.ok && result?.error === HOME_FOLDER_REFUSED) {
+          approvalNotice?.(tHook(record.decision === "deny" ? "toolApprovalDialog.homeFolderRefusedDeniedOnce" : "toolApprovalDialog.homeFolderRefusedOnce"));
+          answer = respondOnce;
+        } else if (!result?.ok) {
           if (activeRequestIdRef.current === request.id) {
             setRecordError(record.rule ? ruleSaveErrorText(result, tHook(failureKey)) : tHook(failureKey));
           }
@@ -724,8 +732,8 @@ export function ToolApprovalContent({
     }
     // The parent decision callback addresses the current FIFO head. An async record completion from a request that was cancelled/replaced must never resolve the next request.
     if (activeRequestIdRef.current !== requestIdAtStart) return;
-    respond();
-  }, [request, finalVerdict, interactionLocked, tHook]);
+    answer();
+  }, [request, finalVerdict, interactionLocked, tHook, approvalNotice]);
   const approvalExtras = useMemo<ApprovalDecisionExtras | undefined>(
     () => hasElicitationSchema && elicitationParse.supported
       ? { elicitationContent }
@@ -768,20 +776,27 @@ export function ToolApprovalContent({
         if (decisionModel.variant === "path-grant") {
           // The folder grant itself is the host's to save, from the parent path the scope authority resolved.
           const parent = outOfDirScopes?.always?.path;
-          if (choice === "allow-everywhere" && parent !== undefined) void recordThenRespond(null, () => onDecide("allow-always", parent));
+          if (choice === "allow-everywhere" && parent !== undefined) {
+            // A refused home folder cannot keep a folder grant: answer once, for the exact target, and say why.
+            if (request?.homeFolderRefused === true) {
+              approvalNotice?.(tHook("toolApprovalDialog.homeFolderRefusedOnce"));
+              void recordThenRespond(null, () => onDecide("allow-once", undefined));
+            } else void recordThenRespond(null, () => onDecide("allow-always", parent));
+          }
           return;
         }
         // The gate answer matches the record: a conversation approval answers allow-session (so a host-held descriptor grant lasts the
         // conversation too), a project or user-global one allow-always.
         const scope: UserApprovalScope = choice === "allow-session" ? "session" : choice === "allow-project" ? "persistent" : "global";
-        void recordThenRespond({ decision: "allow", scope }, () => onDecide(scope === "session" ? "allow-session" : "allow-always", undefined));
+        void recordThenRespond({ decision: "allow", scope }, () => onDecide(scope === "session" ? "allow-session" : "allow-always", undefined),
+          () => onDecide("allow-once", undefined));
         return;
       }
       case "one-shot":
       case "network":
         return;
     }
-  }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes]);
+  }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes, request, approvalNotice, tHook]);
 
   const approveDisabledDescriptionId = isUnsupportedElicitationForm || elicitationInvalid
     ? "mcp-elicitation-input-unavailable"

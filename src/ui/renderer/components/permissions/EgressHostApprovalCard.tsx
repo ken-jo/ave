@@ -2,9 +2,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
-import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
+import { useApprovalSurfaceNotice, type ApprovalDecisionExtras } from "../../hooks/use-approval.js";
 import { canonicalStringify } from "../../../../shared/canonical-json.js";
-import { resolveUserApprovalVerdict } from "../../../../shared/permissions-events.js";
+import { HOME_FOLDER_REFUSED, resolveUserApprovalVerdict } from "../../../../shared/permissions-events.js";
 import { ApprovalDecisionBar, decisionSlotsDisabled, useApprovalDecisionState } from "./ApprovalDecisionBar.js";
 import { networkAnswer, networkDecisionModel, oneShotDecisionModel, ruleSaveErrorText, type ApprovalCardChoice } from "./approval-decision.js";
 
@@ -19,6 +19,7 @@ function useNetworkAnswer(request: ApprovalRequest, decide: Decide): {
   readonly warning: string | null;
 } {
   const { t } = useTranslation();
+  const notice = useApprovalSurfaceNotice();
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -34,7 +35,11 @@ function useNetworkAnswer(request: ApprovalRequest, decide: Decide): {
   const answer = useCallback((choice: ApprovalCardChoice, editedRule?: string) => {
     const payload = request.egressHost;
     if (payload === undefined || recordingRef.current) return;
-    const plan = networkAnswer(payload, choice, editedRule);
+    const asked = networkAnswer(payload, choice, editedRule);
+    // A refused home folder cannot keep a project or always grant: the card answers once and says why.
+    const homeFolderRefused = request.homeFolderRefused === true && (asked.egressScope === "project" || asked.egressScope === "always");
+    const plan = homeFolderRefused ? { ...asked, egressScope: "once" as const } : asked;
+    if (homeFolderRefused) notice?.(t("toolApprovalDialog.homeFolderRefusedOnce"));
     const respond = () => {
       if (activeRequestId.current !== request.id) return;
       if (plan.egressScope === undefined) decide(plan.choice);
@@ -64,6 +69,12 @@ function useNetworkAnswer(request: ApprovalRequest, decide: Decide): {
           trustOrigin: request.trustOrigin,
           approvalCacheKey: request.approvalCacheKey,
         });
+        if (!result?.ok && result?.error === HOME_FOLDER_REFUSED) {
+          // The rule could not be saved because boot refused the home folder; the plan already answers once.
+          notice?.(t(plan.choice === "deny-once" ? "toolApprovalDialog.homeFolderRefusedDeniedOnce" : "toolApprovalDialog.homeFolderRefusedOnce"));
+          respond();
+          return;
+        }
         if (!result?.ok) {
           if (activeRequestId.current === request.id) setError(ruleSaveErrorText(result, failure));
           return;
@@ -80,7 +91,7 @@ function useNetworkAnswer(request: ApprovalRequest, decide: Decide): {
         if (activeRequestId.current === request.id) setRecording(false);
       }
     })();
-  }, [request, decide, t]);
+  }, [request, decide, t, notice]);
   return { answer, recording, error, warning };
 }
 

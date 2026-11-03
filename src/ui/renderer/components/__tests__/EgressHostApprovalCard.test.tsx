@@ -6,6 +6,8 @@ import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { EgressHostApprovalCard } from "../permissions/EgressHostApprovalCard.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
+import { selectDecision } from "./support/decision-bar.js";
 
 const TAB = "terminal:0a1b2c3d-1";
 
@@ -55,3 +57,21 @@ describe("EgressHostApprovalCard conversation isolated-shell grants", () => {
     expect(screen.getByTestId("egress-approval-local-warning").textContent).toContain(lasts);
   });
 });
+
+describe("EgressHostApprovalCard while boot refuses the home folder", () => {
+  it("answers a lasting grant once and shows a localized notice", () => {
+    setLocale("en");
+    const onDecide = vi.fn();
+    const notice = vi.fn();
+    render(
+      <ApprovalSurfaceProvider value={{ notice } as unknown as ApprovalSurfaceContextValue}>
+        <EgressHostApprovalCard request={{ ...terminalAsk("ask-refused"), homeFolderRefused: true }} conversationLabel="Build fixes" onDecide={onDecide} />
+      </ApprovalSurfaceProvider>,
+    );
+    selectDecision("allow-everywhere");
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
+    expect(onDecide).toHaveBeenCalledWith("allow-once", undefined, { egressScope: "once" });
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining("Allowed once only"));
+  });
+});
+

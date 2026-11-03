@@ -9,7 +9,8 @@ import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
 import { caseFoldForMatch } from "../sensitive-paths.js";
 import type { ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, validateRuleList } from "./rule-files.js";
+import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, readUnverifiedStoreText, unverifiedDenyRules, validateRuleList } from "./rule-files.js";
+import { AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../../shared/ave-home.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 
 import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
@@ -135,7 +136,10 @@ export function projectRulesLocation(baseDir: string, projectCwd: string): Proje
   };
 }
 
+// In a home refused at boot the file is unverified: it reads as absent apart from the deny rules it holds for its own project
+// (R2 restriction overlay), and bytes that do not parse read as absent rather than corrupt.
 export async function readProjectRulesFile(location: ProjectRulesLocation): Promise<ProjectRulesFile | null> {
+  if (isInRefusedAveHome(location.filePath)) return readUnverifiedProjectRulesFile(location);
   let raw: string;
   try {
     raw = await readFile(location.filePath, "utf8");
@@ -168,11 +172,29 @@ export async function readProjectRulesFile(location: ProjectRulesLocation): Prom
   };
 }
 
+async function readUnverifiedProjectRulesFile(location: ProjectRulesLocation): Promise<ProjectRulesFile | null> {
+  const raw = readUnverifiedStoreText(location.filePath);
+  if (raw === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const file = parsed as Record<string, unknown>;
+  if (file.projectRoot !== location.projectRoot) return null;
+  const rules = unverifiedDenyRules(file.rules, { specifiersOnly: true });
+  return rules.length === 0 ? null : { version: 1, projectRoot: location.projectRoot, rules, updatedAt: "" };
+}
+
 export async function updateProjectRulesFile(
   location: ProjectRulesLocation,
   mutator: (file: ProjectRulesFile) => void,
   authority?: ApprovalPersistenceGuard,
 ): Promise<ProjectRulesFile> {
+  // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
+  if (isInRefusedAveHome(location.filePath)) throw new AveHomeConfigurationRefusedWriteError(location.filePath);
   // Probe before the global policy queue and cross-process lock; inside them only the synchronous fence below guards the commit.
   await refreshApprovalPersistence(authority);
   return withShellPolicyMutation(async () => {
@@ -233,20 +255,26 @@ export async function listStoredProjectRules(baseDir: string): Promise<{
   }
   const files: StoredProjectRulesFile[] = [];
   const errors: ScopedPermissionRuleError[] = [];
+  // A refused home's files read only as their deny rules; unparseable ones are absent, not listing errors.
+  const unverified = isInRefusedAveHome(directory);
   for (const name of names.sort()) {
     if (!name.endsWith(".json")) continue;
     const filePath = resolve(directory, name);
     try {
       if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new PermissionRulesFileCorruptError(filePath, "invalid file identity");
       const identity = name.slice(0, -".json".length);
-      const raw = await readFile(filePath, "utf8");
-      if (!raw.trim()) continue;
+      const raw = unverified ? readUnverifiedStoreText(filePath) : await readFile(filePath, "utf8");
+      if (raw === undefined || !raw.trim()) continue;
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch (error) {
+        if (unverified) continue;
         throw new PermissionRulesFileCorruptError(filePath, invalidJsonDetail(error, raw));
       }
       const projectRoot = parsed && typeof parsed === "object" ? (parsed as { projectRoot?: unknown }).projectRoot : undefined;
-      if (typeof projectRoot !== "string" || !isAbsolute(projectRoot)) throw new PermissionRulesFileCorruptError(filePath, "invalid project root");
+      if (typeof projectRoot !== "string" || !isAbsolute(projectRoot)) {
+        if (unverified) continue;
+        throw new PermissionRulesFileCorruptError(filePath, "invalid project root");
+      }
       const file = await readProjectRulesFile(storedFileRulesLocation(baseDir, identity, projectRoot));
       if (!file) continue;
       files.push({ ...file, identity });

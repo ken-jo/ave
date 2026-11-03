@@ -1,3 +1,4 @@
+import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Admission denials and forced approvals must precede tool execution.
@@ -2867,6 +2868,40 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect.any(String),
       "permission-slash",
     );
+  });
+
+  it("applies a folder allow-always once to the exact target while boot refuses the home folder", async () => {
+    const executeSpy = vi.fn(async () => "ok");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteFileTool(executeSpy));
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const allowDirectory = vi.fn(async (root: string) => [root]);
+    const executor = new ToolExecutor(
+      registry, undefined, fixtureManager(), undefined, gate, undefined, undefined, undefined, undefined,
+      () => ({ allowDirectory, denyDirectory: vi.fn(async () => []) }),
+    );
+    setAveHomeConfigurationRefusedAtBoot(aveHome());
+    try {
+      const callPromise = executor.executeAll(
+        [{ id: "tu-l1-allow-always-refused", name: "write_file", input: { path: "/var/tmp/refused-scope/notes.md" } }],
+        { sessionId: "sess-l1-allow-always-refused", permissionContext: userPermissionContext() },
+      );
+      const sent = await waitForApprovalPayload<{
+        id: string; nonce: string; hmac: string; homeFolderRefused?: true; outOfAllowedDir?: { suggestedParent?: string };
+      }>(wc);
+      // The card is told, so it answers once and shows the notice; an allow-always that still arrives is not kept.
+      expect(sent.homeFolderRefused).toBe(true);
+      gate.resolve(sent.id, {
+        requestId: sent.id, choice: "allow-always", rememberPattern: sent.outOfAllowedDir?.suggestedParent, nonce: sent.nonce, hmac: sent.hmac,
+      });
+      const results = await callPromise;
+      expect(results[0].is_error).toBeUndefined();
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+      expect(allowDirectory).not.toHaveBeenCalled();
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
   });
 
   it("allow-always fails closed when a standalone executor has no workspace lifecycle", async () => {

@@ -3006,6 +3006,32 @@ with its own owner rule:
   never committed `config/` stays root-only. The first read in a run
   decides the location, and the run keeps it, so a marker that appears
   later in a refused home never moves its configuration.
+  On a refused boot every authority store outside a verified boundary reads
+  as absent: root `permissions.json`, `permissions/user-approvals.json`,
+  `permissions/project-rules`, `permissions/shell-egress-hosts.json` and
+  `permissions/reviewer-cache.jsonl` whatever the committed state, and the
+  root settings, policy and secrets of a home that never committed `config/`.
+  The reviewer cache then lives in memory only.
+  Only a closed restriction overlay applies from those unverified bytes:
+  the `deny` rules of `permissions.json` and of project rules, and
+  `requireExplicitApproval`, `managed` and
+  `permissions.blockReadsOutsideWorkingDirectories` when they are `true`.
+  Allow and ask rules, saved approvals, the stored mode and every other
+  field are ignored, and bytes that do not parse apply nothing. Writes to
+  those stores are refused with `AveHomeConfigurationRefusedWriteError`
+  ("fix the folder permissions first"), so nothing rewrites a user's file
+  from its absent view. The boot continues to the refusal notice. Every
+  approval card is marked `homeFolderRefused`: a remembered allow (exact,
+  rule, folder or network grant) applies once with a localized notice. A
+  durable mode switch or reviewer choice applies for the session with a
+  notice. A deny-always is not saved; a legacy-pattern deny lasts the
+  session in memory. A workspace-root removal whose grant prune is refused
+  stays pending. Extension installs and updates (plugins, MCP servers,
+  skills, agents, commands, boot installs, the managed git runtime) are
+  refused while the home is refused. On POSIX the root check stays a boot
+  failure; its message names the fix for the actual cause (`chown` for
+  another owner, `chmod go-w` for group or other write), with the path
+  single-quoted for the shell.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's

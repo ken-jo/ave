@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, Brain, Check, ChevronRight, HelpCircle, Lightbulb, Paperclip, Square } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { useApprovalSurfaceNotice } from "../hooks/use-approval.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { SandboxRestartDialog } from "./SandboxRestartDialog.js";
@@ -425,6 +426,7 @@ function PermissionQuickPicker({
   const [open, setOpen] = useState(false);
   const [sandboxRestartOpen, setSandboxRestartOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const notice = useApprovalSurfaceNotice();
   const permissionLabel = t(PERMISSION_LABEL_KEYS[permissionMode]);
 
   const pick = async (mode: ExecutionMode) => {
@@ -447,6 +449,8 @@ function PermissionQuickPicker({
         console.warn("[ave] reviewer mode did not follow the permission mode: %s", reviewer.error);
         return;
       }
+      // The pick took, but only for this session: the home folder refusal keeps it from being saved.
+      if (res.notice !== undefined || reviewer.notice !== undefined) notice?.(t("permissionsTab.homeFolderRefusedSessionOnly"));
       setOpen(false);
     } finally {
       setBusy(false);

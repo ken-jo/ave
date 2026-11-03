@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -23,7 +23,7 @@ export function persistedPolicyVersionForContent(filePath: string, raw: string |
 export function capturePersistedPolicyVersion(filePath: string): PersistedPolicyVersion | undefined {
   filePath = resolve(filePath);
   try {
-    return persistedPolicyVersionForContent(filePath, readFileSync(filePath));
+    return persistedPolicyVersionForContent(filePath, readRegularFile(filePath));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
     // A dangling component must not masquerade as an absent rule store.
@@ -39,6 +39,18 @@ export function capturePersistedPolicyVersion(filePath: string): PersistedPolicy
       try { if (!statSync(candidate).isDirectory()) return undefined; } catch { return undefined; }
       return Object.freeze({ filePath, digest: null, contentsDigest: sha256Hex("null") });
     }
+  }
+}
+
+// Opens without blocking and reads only a regular file: a FIFO planted at the rule store must not hang boot (a refused home's
+// root store is unverified). Anything else is a read error, which is not a version.
+function readRegularFile(filePath: string): Buffer {
+  const descriptor = openSync(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  try {
+    if (!fstatSync(descriptor).isFile()) throw new Error("Permission rule store is not a regular file");
+    return readFileSync(descriptor);
+  } finally {
+    closeSync(descriptor);
   }
 }
 

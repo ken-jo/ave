@@ -1,5 +1,6 @@
 /** Owns recorded servers only; unreadable provenance stops changes.
  * Config and file swaps roll back on failure; updates retain the separate data directory. */
+import { assertAveHomeAcceptsInstalls } from "../../shared/ave-home.js";
 import AdmZip from "adm-zip";
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
@@ -221,6 +222,7 @@ export class McpInstaller implements McpInstallerPort {
   }
 
   private async apply(records: McpRecord[], previous: McpRecord | null, record: McpRecord, zipBuffer: Buffer | null): Promise<string | null> {
+    assertAveHomeAcceptsInstalls();
     this.admit(record.name, record.runtime);
     const dataDir = this.dataDir(record.name);
     const createdDataDir = !(await exists(dataDir));

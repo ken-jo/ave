@@ -9,6 +9,7 @@ import {
   removeAllowedDirectoryPersist,
   readPermissionSettings,
   setReviewerSettingsPersist,
+  setSessionReviewerSettings,
   type ReviewerFallbackOnError,
   type ReviewerMode,
   type ReviewerSettingsBlock,
@@ -24,6 +25,8 @@ import {
 } from "../hooks/hook-trust-commands.js";
 export { stripLeadingSlash } from "../shared/slash-sanitizer.js";
 import { stripLeadingSlash } from "../shared/slash-sanitizer.js";
+import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
+import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 import {
   readRecentAuditEntries,
   summarizeAuditDir,
@@ -229,8 +232,9 @@ export interface PermissionReviewerCommand {
 
 export type PermissionReviewerResult =
   | { ok: true; verb: "show"; settings: ReviewerSettingsBlock; fault?: PermissionSettingsFault }
-  | { ok: true; verb: "mode"; settings: ReviewerSettingsBlock }
-  | { ok: true; verb: "fallback"; settings: ReviewerSettingsBlock }
+  // `notice`: the choice applies for this run only, because the settings store refuses writes while boot refuses the home folder.
+  | { ok: true; verb: "mode"; settings: ReviewerSettingsBlock; notice?: typeof HOME_FOLDER_REFUSED }
+  | { ok: true; verb: "fallback"; settings: ReviewerSettingsBlock; notice?: typeof HOME_FOLDER_REFUSED }
   | { ok: false; error: string };
 
 const VALID_REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
@@ -301,6 +305,9 @@ export async function dispatchPermissionReviewerCommand(
       );
       return { ok: true, verb: "mode", settings };
     } catch (err) {
+      if (err instanceof AveHomeConfigurationRefusedWriteError) {
+        return { ok: true, verb: "mode", settings: setSessionReviewerSettings({ mode: cmd.value as ReviewerMode }, pathOverride), notice: HOME_FOLDER_REFUSED };
+      }
       return { ok: false, error: (err as Error).message };
     }
   }
@@ -318,6 +325,9 @@ export async function dispatchPermissionReviewerCommand(
       );
       return { ok: true, verb: "fallback", settings };
     } catch (err) {
+      if (err instanceof AveHomeConfigurationRefusedWriteError) {
+        return { ok: true, verb: "fallback", settings: setSessionReviewerSettings({ fallbackOnError: cmd.value as ReviewerFallbackOnError }, pathOverride), notice: HOME_FOLDER_REFUSED };
+      }
       return { ok: false, error: (err as Error).message };
     }
   }

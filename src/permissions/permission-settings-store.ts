@@ -4,9 +4,9 @@ import { randomUUID } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
 import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationAuthorityAbsent } from "../shared/ave-home.js";
 import { parseConfigurationObject } from "../shared/configuration-document.js";
-import { readAveHomeConfigurationFile, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
+import { readAveHomeConfigurationFile, readAveHomeRestrictionSource, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
@@ -127,7 +127,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
   let parsed: Record<string, unknown>;
   try {
     const bytes = readAveHomeConfigurationFile(pathOverride ?? permissionSettingsPath());
-    if (bytes === undefined) return structuredClone(DEFAULT_FILE);
+    if (bytes === undefined) return withRestrictionOverlay(structuredClone(DEFAULT_FILE), filePath);
     parsed = parseConfigurationObject(bytes.toString("utf8"), true);
     assertPermissionContainer(parsed);
   } catch (err) {
@@ -144,6 +144,41 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
     };
   }
   return normalizePermissionSettings(parsed, filePath);
+}
+
+// A reviewer choice the user made in this run while the settings store refuses writes (a refused home that never committed
+// `config/`). It is in-memory, applies only over the absent view, and is never written.
+let sessionReviewerPatch: Partial<ReviewerSettingsBlock> = {};
+
+/** Apply a reviewer choice for this run only, because the settings store reads as absent and refuses writes. */
+export function setSessionReviewerSettings(patch: Partial<ReviewerSettingsBlock>, pathOverride?: string): ReviewerSettingsBlock {
+  const filePath = resolveConfigurationFile(pathOverride ?? permissionSettingsPath());
+  if (!isAveHomeConfigurationAuthorityAbsent(configurationHomeForFile(filePath) ?? filePath)) {
+    throw new Error("Session reviewer settings apply only while the settings store reads as absent");
+  }
+  sessionReviewerPatch = { ...sessionReviewerPatch, ...patch };
+  return readPermissionSettings(pathOverride).permissions.reviewer;
+}
+
+/** Test teardown only. */
+export function _resetSessionReviewerSettingsForTest(): void {
+  sessionReviewerPatch = {};
+}
+
+// Settings that read as absent (a refused home's unverified root file) still apply the closed restriction overlay: only
+// `permissions.blockReadsOutsideWorkingDirectories`, and only as `true`. Directories, reviewer and judge settings never apply,
+// and a file that does not parse applies nothing.
+function withRestrictionOverlay(file: PermissionSettingsFile, filePath: string): PermissionSettingsFile {
+  if (isAveHomeConfigurationAuthorityAbsent(configurationHomeForFile(filePath) ?? filePath)) {
+    file.permissions.reviewer = { ...file.permissions.reviewer, ...sessionReviewerPatch };
+  }
+  const bytes = readAveHomeRestrictionSource(filePath);
+  if (bytes === undefined) return file;
+  let blockReads: unknown;
+  try { blockReads = (parseConfigurationObject(bytes.toString("utf8"), true).permissions as Record<string, unknown> | undefined)?.blockReadsOutsideWorkingDirectories; }
+  catch { return file; }
+  if (blockReads === true) file.permissions.blockReadsOutsideWorkingDirectories = true;
+  return file;
 }
 
 // Preserve empty legacy documents; reject non-object roots before callers merge fields.

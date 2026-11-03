@@ -11,7 +11,7 @@ import { readPermissionSettings, writePermissionSettings } from "../../permissio
 import { savePolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { SecretDocumentStore } from "../../data/secret-document-store.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-import { ensureAveHomePrivate, _resetAveHomePrivacyForTest, win32SystemBinary } from "../ave-home.js";
+import { AveHomeConfigurationRefusedWriteError, ensureAveHomePrivate, _resetAveHomePrivacyForTest, win32SystemBinary } from "../ave-home.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { withAveHomeConfigurationWrite, setAveHomeConfigurationOwner } from "../ave-home-configuration-access.js";
 
@@ -86,18 +86,19 @@ describe("independent configuration owners", () => {
     expect(existsSync(join(home, "policy.json"))).toBe(false);
   });
 
-  it("keeps a refused home on root files without touching the configuration lock", async () => {
+  it("refuses root writes in a refused home without touching the configuration lock", async () => {
     const home = fixture();
     const lock = join(home, "config", ".ave-config.lock");
     writeFileSync(lock, "unreadable lock");
     expect(migrateAveHomeConfiguration(home, { enforcement: "none", home, category: "not-protected", reason: "Fixture refusal" })).toEqual([]);
-    await writePermissionSettings({ reviewer: { mode: "llm" } });
-    await savePolicy({ requireExplicitApproval: true }, undefined, join(home, "absent-admin.json"));
-    await writePermissionSettings({ reviewer: { mode: "llm" } }, join(home, "config", "settings.json"));
-    await savePolicy({ requireExplicitApproval: true }, join(home, "config", "policy.json"), join(home, "absent-admin.json"));
+    // The unverified root reads as absent, so writing it would rewrite the user's file from nothing (home content trust R2).
+    await expect(writePermissionSettings({ reviewer: { mode: "llm" } })).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+    await expect(savePolicy({ requireExplicitApproval: true }, undefined, join(home, "absent-admin.json"))).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+    await expect(writePermissionSettings({ reviewer: { mode: "llm" } }, join(home, "config", "settings.json"))).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+    await expect(savePolicy({ requireExplicitApproval: true }, join(home, "config", "policy.json"), join(home, "absent-admin.json"))).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
     expect(migrateAveHomeConfiguration(home)).toEqual([]);
-    expect(existsSync(join(home, "settings.json"))).toBe(true);
-    expect(existsSync(join(home, "policy.json"))).toBe(true);
+    expect(existsSync(join(home, "settings.json"))).toBe(false);
+    expect(existsSync(join(home, "policy.json"))).toBe(false);
     expect(existsSync(join(home, "config", "settings.json"))).toBe(false);
     expect(existsSync(join(home, "config", "policy.json"))).toBe(false);
     expect(existsSync(join(home, "config", ".ave-config-migrated"))).toBe(false);

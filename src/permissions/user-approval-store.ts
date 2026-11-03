@@ -3,7 +3,7 @@
 import { mkdir, readFile, stat, chmod } from "node:fs/promises";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "../main/storage/feature-namespace.js";
-import { aveHome } from "../shared/ave-home.js";
+import { aveHome, AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../shared/ave-home.js";
 import { matchesMcpToolApprovalMemory, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import type {
@@ -228,6 +228,8 @@ export class UserApprovalStoreCorruptError extends Error {
 
 async function readApprovalsFile(): Promise<ApprovalsFile> {
   const path = userApprovalFilePath();
+  // Saved approvals grant authority, so a refused home's unverified file reads as absent; no field of it restricts anything.
+  if (isInRefusedAveHome(path)) return { approvals: {} };
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
@@ -274,6 +276,9 @@ async function mutatePersistentApprovals(
   mutator: (file: ApprovalsFile) => Promise<void> | void,
   authority?: ApprovalPersistenceGuard,
 ): Promise<void> {
+  // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
+  const path = userApprovalFilePath();
+  if (isInRefusedAveHome(path)) throw new AveHomeConfigurationRefusedWriteError(path);
   // Probe before the write queue; inside it only the synchronous fence in atomicWrite guards the commit.
   await refreshApprovalPersistence(authority);
   return persistentWrites(async () => {

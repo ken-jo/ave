@@ -1,11 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitRuntimeMode } from "../../../shared/git-runtime-mode.js";
 import type { GitRuntimeProgress } from "../../../shared/git-runtime.js";
 import type { GitDetectionDeps, ManagedGitInstall } from "../detect.js";
 import { GitRuntimeService } from "../runtime-service.js";
+import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot } from "../../../shared/ave-home.js";
 
 let root: string;
 
@@ -86,6 +87,23 @@ describe("GitRuntimeService.install", () => {
     expect(status.lastInstallError!.message).toContain("no network in this test (via http://[REDACTED:CREDENTIALS]@proxy.corp:8080)");
     expect(progress[progress.length - 1]).toMatchObject({ phase: "failed", code: "GIT_RUNTIME_INSTALL_FAILED" });
     expect(status.managed.installed).toBe(false);
+  });
+
+  it("installs nothing while boot refuses the home folder", async () => {
+    const progress: GitRuntimeProgress[] = [];
+    const home = join(root, "refused-home");
+    vi.stubEnv("AVE_HOME", home);
+    setAveHomeConfigurationRefusedAtBoot(home);
+    try {
+      const install = service({ progress }).install();
+      await expect(install).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+      await expect(install).rejects.toThrow(/did not install the managed git runtime/);
+    } finally {
+      _resetAveHomePrivacyForTest();
+      vi.unstubAllEnvs();
+    }
+    // Refused before any download started.
+    expect(progress).toEqual([]);
   });
 
   it("clears the last failure once an install succeeds", async () => {
