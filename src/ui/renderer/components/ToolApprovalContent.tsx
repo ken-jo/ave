@@ -710,7 +710,7 @@ export function ToolApprovalContent({
           approvalCacheKey: request.approvalCacheKey,
         });
         if (!result?.ok && result?.error === HOME_FOLDER_REFUSED) {
-          approvalNotice?.(tHook("toolApprovalDialog.homeFolderRefusedOnce"));
+          approvalNotice?.(tHook(record.decision === "deny" ? "toolApprovalDialog.homeFolderRefusedDeniedOnce" : "toolApprovalDialog.homeFolderRefusedOnce"));
           answer = respondOnce;
         } else if (!result?.ok) {
           if (activeRequestIdRef.current === request.id) {

@@ -71,7 +71,7 @@ function useNetworkAnswer(request: ApprovalRequest, decide: Decide): {
         });
         if (!result?.ok && result?.error === HOME_FOLDER_REFUSED) {
           // The rule could not be saved because boot refused the home folder; the plan already answers once.
-          notice?.(t("toolApprovalDialog.homeFolderRefusedOnce"));
+          notice?.(t(plan.choice === "deny-once" ? "toolApprovalDialog.homeFolderRefusedDeniedOnce" : "toolApprovalDialog.homeFolderRefusedOnce"));
           respond();
           return;
         }
