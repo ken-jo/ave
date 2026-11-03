@@ -1,7 +1,10 @@
 /** Use a real temporary board with an injected runner and real approval gate to test orchestration without model calls. */
 import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { WorkBoardStore } from "../../main/work-board-store.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
 import type {
   SubAgentRunner,
@@ -385,7 +388,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
 });
 
 /** The execute child links before its first round; the runner holds the run open until the test releases it. */
-function linkingRunner(execOk = true): {
+function linkingRunner(): {
   runner: SubAgentRunner;
   release: () => void;
   linked: Promise<string>;
@@ -406,9 +409,6 @@ function linkingRunner(execOk = true): {
       if (!isPlan) {
         onLinkedFired(childSessionId);
         await released;
-      }
-      if (!isPlan && !execOk) {
-        return { summary: "boom", error: "boom", toolCallCount: 0, turnCount: 1, childSessionId, entries: [], ok: false };
       }
       return {
         summary: isPlan ? "PLAN" : "OUTPUT",
@@ -442,7 +442,6 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
 
       const linkedEvent = events.find((e) => e.phase === "executing" && e.runSessionId !== undefined);
       expect(linkedEvent?.runSessionId).toBe(execChild);
-      expect(engine.executingChildSessionId(id)).toBe(execChild);
       // The plan child id stored at approval time must be replaced by the execute child id mid-run.
       await vi.waitFor(async () => {
         const got = await store.get(id);
@@ -453,29 +452,66 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
 
       release();
       expect((await run).status).toBe("completed");
-      expect(engine.executingChildSessionId(id)).toBeUndefined();
     } finally {
       await cleanup();
     }
   });
 
-  it("clears the executing-child record when execution fails", async () => {
-    const { store, cleanup } = tempBoard();
+  it("records one activity entry per phase: the link write appends none", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-wb-link-activity-"));
+    const store = new WorkBoardStore(join(dir, "board.json"));
     try {
-      const created = await store.create({ title: "fails" });
+      const created = await store.create({ title: "one entry per phase" });
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
-      const { runner, release, linked } = linkingRunner(false);
+      const { runner, release, linked } = linkingRunner();
       const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+      const run = engine.runItem(id, { approvalSurface: owner });
+      await linked;
+      release();
+      expect((await run).status).toBe("completed");
+
+      const runEntries = readFileSync(join(dir, "activity.jsonl"), "utf-8").trim().split("\n")
+        .map((line) => JSON.parse(line) as { kind: string; to?: string; itemId?: number })
+        .filter((e) => e.itemId === id && e.kind.startsWith("run-"))
+        .map((e) => `${e.kind}:${e.to}`);
+      expect(runEntries).toEqual([
+        "run-planned:planning",
+        "run-planned:awaiting_approval",
+        "run-planned:executing",
+        "run-executed:completed",
+      ]);
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("fails the run clearly when the link write fails, even though the child finished", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "link write fails" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      vi.spyOn(store, "setRunSessionId").mockRejectedValue(new Error("disk full"));
+      const { runner, release, linked } = linkingRunner();
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const events: WorkBoardRunEvent[] = [];
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e) });
 
       const run = engine.runItem(id, { approvalSurface: owner });
       await linked;
-      expect(engine.executingChildSessionId(id)).toBe(`work-board:${id}::exec`);
       release();
-      expect((await run).status).toBe("error");
-      expect(engine.executingChildSessionId(id)).toBeUndefined();
+      const result = await run;
+      expect(result).toMatchObject({ status: "error", reason: "disk full" });
+      expect(events.at(-1)).toMatchObject({ phase: "error", message: "disk full" });
+      expect(events.some((e) => e.phase === "done")).toBe(false);
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing item");
+      expect(got.item.runStatus).toBe("error");
+      expect(got.item.output).toBeUndefined();
     } finally {
+      vi.restoreAllMocks();
       await cleanup();
     }
   });

@@ -1185,7 +1185,10 @@ Item runs execute as sub-agent sessions whose origin names the item
 namespace, never in the main chat store. While a plan awaits approval the
 item's `runSessionId` names the plan child; the engine replaces it with the
 execute child's id, and emits an `executing` progress event carrying that id,
-as soon as the execute child links (before its first round). Briefing runs
+as soon as the execute child links (before its first round). That link write
+changes only the session id and appends no activity entry. If it fails, the
+run settles as an error even when the child finished: a run whose session the
+board cannot record is not reported as completed. Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
 
 ## Conversation List
