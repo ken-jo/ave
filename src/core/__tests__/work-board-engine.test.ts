@@ -688,25 +688,29 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
     }
   });
 
-  it("reports a refused interrupt and keeps the run's outcome its own", async () => {
+  it("reports a refused interrupt without leaving a stale stop: a later stop still interrupts and cancels", async () => {
     const { store, cleanup } = tempBoard();
     try {
       const created = await store.create({ title: "already ending" });
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
-      const { runner, linked, release, interruptAccepted } = controllableRunner();
+      const { runner, linked, interruptAccepted, interruptCalls } = controllableRunner();
       interruptAccepted.value = false;
       const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
       const run = engine.runItem(id, { approvalSurface: owner });
       await linked;
       expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-running" });
-      release();
-      expect((await run).status).toBe("completed");
+      // The refused call must not leave its mark behind, or this stop would short-circuit without interrupting.
+      interruptAccepted.value = true;
+      expect(engine.cancelRun(id)).toEqual({ ok: true });
+      expect(interruptCalls).toHaveLength(2);
+      expect((await run).status).toBe("cancelled");
     } finally {
       await cleanup();
     }
   });
+
   it("treats a second stop during unwind as the same stop: one interrupt, still cancelled, no error", async () => {
     const { store, cleanup } = tempBoard();
     try {
