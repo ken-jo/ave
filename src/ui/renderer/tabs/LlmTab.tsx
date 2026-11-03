@@ -832,13 +832,13 @@ export interface UnifiedModelOption {
   unlisted?: boolean;
 }
 
-/** Marks the API-key provider inside a unified option value. One provider, however it is reached. A provider with both halves is ONE row: the
- * same company, two ways in. The settings list must not make a user learn that "OpenAI" and "Codex" are the same account seen from two angles. */
+/** One provider row. A subscription row holds only sign-in ways (OpenAI: Codex CLI + ChatGPT plan); its company's API key is
+ * that vendor's own API row (`SUBSCRIPTION_RUNTIME_API_COUNTERPART`), so a key and a subscription never share a card. */
 interface ProviderConnection {
-  /** The subscription runtime id when paired, the marketplace preset's secret id when the row IS a preset, otherwise the API vendor id. */
+  /** The subscription runtime id for a subscription row, the marketplace preset's secret id when the row IS a preset, otherwise the API vendor id. */
   id: string;
   label: string;
-  /** Present when this provider can be reached with an API key. */
+  /** Present on API rows only; a subscription row never carries a key. */
   apiVendorId?: string;
   /** The marketplace preset this row is reached through, when there is one. */
   presetId?: string;
@@ -1659,8 +1659,8 @@ export function LlmTab(props: LlmTabProps) {
     ],
     [marketplaceProviderPresetOptions],
   );
-  // Every provider that could own a row, including the API counterparts of the subscription runtimes; a
-  // paired provider's key belongs to its runtime's row, and that runtime need not be in the vendor catalogue.
+  // Every provider that could own a row, including the API counterparts of the subscription runtimes; each
+  // counterpart's key is its own API row, and that vendor need not be in the visible catalogue.
   const credentialCandidateKey = useMemo(
     () => [...new Set([
       ...providerSelectOptions.map((option) => option.id),
@@ -1713,7 +1713,7 @@ export function LlmTab(props: LlmTabProps) {
     ]),
     [marketplaceProviderPresets],
   );
-  // ONE list. A provider a user recognises as one company is one row, whether it is reached with an API key, by signing in to its subscription runtime, or both; `SUBSCRIPTION_RUNTIME_API_COUNTERPART` is the join that says which pairs are the same company. One configured API route: a vendor,
+  // ONE list. A subscription row holds its company's sign-in ways only; the same company's API key is an ordinary API row beside it (`SUBSCRIPTION_RUNTIME_API_COUNTERPART` names the pairs). One configured API route: a vendor,
   // plus the marketplace preset it is reached THROUGH when there is one, plus the `modelLists` key whose handshake belongs to it. Two presets are two routes through the same `openai-compatible` vendor, so a route; not a vendor id; is what a row is built from, and what its facts are looked up by.
   const installedPresetById = useMemo(
     () => new Map(marketplaceProviderPresets.map((preset) => [preset.providerId, preset])),
@@ -1893,7 +1893,6 @@ export function LlmTab(props: LlmTabProps) {
 
 
   const connections = useMemo<ProviderConnection[]>(() => {
-    const claimed = new Set<string>();
     const rows: ProviderConnection[] = [];
     const routeLabel = (route: ConfiguredApiRoute): string => {
       const preset = route.presetId ? installedPresetById.get(route.presetId) : undefined;
@@ -1904,30 +1903,19 @@ export function LlmTab(props: LlmTabProps) {
       if (SUBSCRIPTION_RUNTIME_ROW_PARTNER[view.descriptor.id]) continue;
       const planView = subscription.providers.find((candidate) =>
         SUBSCRIPTION_RUNTIME_ROW_PARTNER[candidate.descriptor.id] === view.descriptor.id);
-      const counterpart = SUBSCRIPTION_RUNTIME_API_COUNTERPART[view.descriptor.id];
-      if (counterpart) claimed.add(counterpart);
-      const route = counterpart
-        ? configuredApiRoutes.find((candidate) =>
-          !candidate.presetId && candidate.vendorId === counterpart)
-        : undefined;
+      // Sign-in only: the counterpart's key is its own API row below, so a key never makes this row connected.
       rows.push({
         id: view.descriptor.id,
         // The company's name, not the runtime's: "OpenAI", not "Codex".
         label: subscriptionCompanyLabel(view),
-        ...(counterpart ? { apiVendorId: counterpart } : {}),
-        ...(counterpart
-          ? { modelListKey: route?.modelListKey ?? llmModelListCacheKey(counterpart, "", "") }
-          : {}),
-        apiConfigured: Boolean(route),
+        apiConfigured: false,
         subscription: view,
         ...(planView ? { planSubscription: planView } : {}),
         connected: view.status?.connection === "connected"
-          || planView?.status?.connection === "connected"
-          || Boolean(route),
+          || planView?.status?.connection === "connected",
       });
     }
     for (const route of configuredApiRoutes) {
-      if (!route.presetId && claimed.has(route.vendorId)) continue;
       rows.push({
         id: apiRouteRowId(route),
         label: routeLabel(route),
@@ -2073,8 +2061,7 @@ export function LlmTab(props: LlmTabProps) {
 
   /** Read readiness from the route's actual credential requirements and offered catalog; keyless project-authenticated routes must not require a saved API key. */
   const rowChatBlocker = useCallback((row: ProviderConnection): ChatBlocker | null => {
-    // A signed-in subscription row answers turns through its runtime. Whether its API counterpart
-    // also has a key is a different question, and asking it here told a working card to go set one up.
+    // A signed-in subscription row answers turns through its runtime; it has no key to ask about.
     if (row.subscription?.status?.connection === "connected") return null;
     if (row.planSubscription?.status?.connection === "connected") return null;
     const vendorId = row.apiVendorId ?? "";
@@ -2360,10 +2347,8 @@ export function LlmTab(props: LlmTabProps) {
     draftForRow, installedPresetById, putDraft, savedVendorBlocks,
   ]);
 
-  /** Which sign-in method a two-way card is showing, or null when it should ask. The user's pick wins. Without one the card opens on the method that is already in use; the route chat runs on, then a subscription that is
-   * signed in or signing in, then a stored or half-typed key; and with nothing configured it asks, so no key field appears until "API key" is chosen. A row reached only one way has nothing to choose and answers that way. */
-  /** The method this row is serving chat through right now, or null. The OpenAI row (the only row with plan usage)
-   * reads it from the one OpenAI login-type selector, so its three ways in can never disagree with the persisted selection. */
+  /** The method this row is serving chat through right now, or null. The OpenAI subscription row (the only row with plan usage)
+   * reads it from the one OpenAI login-type selector; an API-key login is the OpenAI API row's, never this one's. */
   const rowActiveMethod = useCallback((row: ProviderConnection): ProviderSignInMethod | null => {
     const activeRuntime = subscription.activeRuntime;
     if (row.planSubscription) {
@@ -2374,7 +2359,6 @@ export function LlmTab(props: LlmTabProps) {
         case "chatgpt-plan":
           return "plan";
         case "api-key":
-          return rowIsActiveApiProvider(row) ? "api" : null;
         case null:
           return null;
         default: {
@@ -2387,23 +2371,21 @@ export function LlmTab(props: LlmTabProps) {
     return rowIsActiveApiProvider(row) ? "api" : null;
   }, [rowIsActiveApiProvider, subscription.activeRuntime, vendor]);
 
+  /** Which method a card is showing, or null when it should ask. An API row is its key; a one-runtime subscription row is its sign-in. Only a row with two sign-ins (OpenAI: Codex CLI / ChatGPT plan)
+   * chooses: the user's pick, then the way chat runs on, then one signed in or signing in; with neither it asks. */
   const rowAuthMethod = useCallback((row: ProviderConnection): ProviderSignInMethod | null => {
     if (!row.subscription) return row.apiVendorId ? "api" : null;
-    if (!row.apiVendorId) return "subscription";
+    if (!row.planSubscription) return "subscription";
     const picked = authMethodByRow[row.id];
-    if (picked) return picked;
+    if (picked === "subscription" || picked === "plan") return picked;
     const active = rowActiveMethod(row);
     if (active === "subscription" || active === "plan") return active;
-    if (active === "api" && credentialedProviderIds.has(rowCredentialId(row))) return "api";
     const connection = row.subscription.status?.connection;
     if (connection === "connected" || connection === "pending") return "subscription";
-    const planConnection = row.planSubscription?.status?.connection;
+    const planConnection = row.planSubscription.status?.connection;
     if (planConnection === "connected" || planConnection === "pending") return "plan";
-    if (credentialedProviderIds.has(rowCredentialId(row)) || rowCredentialDirty(row.id)) return "api";
     return null;
-  }, [
-    authMethodByRow, credentialedProviderIds, rowActiveMethod, rowCredentialDirty, rowCredentialId,
-  ]);
+  }, [authMethodByRow, rowActiveMethod]);
 
   /** Whether this row draws the API-key form when open. */
   const rowShowsCredentialForm = useCallback(
@@ -2415,7 +2397,7 @@ export function LlmTab(props: LlmTabProps) {
   const openRow = useCallback((row: ProviderConnection) => {
     // A card opened on a defaulted method stays on it while it is open, even when a status that arrives later would default it elsewhere.
     const method = rowAuthMethod(row);
-    if (row.subscription && row.apiVendorId && method && !authMethodByRow[row.id]) {
+    if (row.planSubscription && method && !authMethodByRow[row.id]) {
       setAuthMethodByRow((current) => ({ ...current, [row.id]: method }));
     }
     if (rowShowsCredentialForm(row)) {
@@ -2424,8 +2406,8 @@ export function LlmTab(props: LlmTabProps) {
     else setOpenRowIds((current) => current.includes(row.id) ? current : [...current, row.id]);
   }, [authMethodByRow, openRowCredentialForm, rowAuthMethod, rowShowsCredentialForm]);
 
-  /** Switch a two-way card to `method`. Picking "API key" starts the key form; leaving it puts away only what was
-   * typed and not saved. Stored keys and signed-in subscriptions are untouched; the card offers their removal. */
+  /** Switch a card to `method`. "API key" (an API row) starts the key form; a sign-in puts away only what was
+   * typed and not saved. Signed-in subscriptions are untouched; the card offers their removal. */
   const chooseAuthMethod = useCallback((row: ProviderConnection, method: ProviderSignInMethod) => {
     setAuthMethodByRow((current) => ({ ...current, [row.id]: method }));
     setSaveFailedRowIds((current) => current.filter((rowId) => rowId !== row.id));
@@ -2520,10 +2502,10 @@ export function LlmTab(props: LlmTabProps) {
     setOpenRowIds((current) => current.filter((rowId) => rowId !== row.id));
   };
 
-  /** Keep a two-way card on the method the user is acting in. Removing the credential the default was
-   * read from would otherwise move the card to another method (or to none) under the user's hands. */
+  /** Keep a two-sign-in card on the method the user is acting in. Signing out of the one the default was
+   * read from would otherwise move the card to the other (or to none) under the user's hands. */
   const pinAuthMethod = (row: ProviderConnection, method: ProviderSignInMethod) => {
-    if (!row.subscription || !row.apiVendorId) return;
+    if (!row.planSubscription) return;
     setAuthMethodByRow((current) => current[row.id] === method ? current : { ...current, [row.id]: method });
   };
 
@@ -2544,35 +2526,13 @@ export function LlmTab(props: LlmTabProps) {
     });
   };
 
-  /** The other method's credential, on a two-way card. Switching the card to one method does not remove what the other one holds: a
-   * saved key or a signed-in subscription keeps working until the user says otherwise. The card says it is there and offers that removal. */
+  /** The other sign-in, on a two-sign-in card. Switching the card to one way in does not sign out of the other: it
+   * keeps working until the user says otherwise. The card says it is there and offers that sign-out. */
   const otherCredentialNote = (row: ProviderConnection) => {
-    if (!row.subscription || !row.apiVendorId) return null;
+    if (!row.planSubscription) return null;
     const method = rowAuthMethod(row);
-    if ((method === "subscription" || method === "plan") && credentialedProviderIds.has(rowCredentialId(row))) {
-      return (
-        <div
-          className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
-          data-testid={`llm-tab:other-credential:${row.id}:api`}
-        >
-          <span>{t("subscriptionProvidersSection.otherApiKeySaved")}</span>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-7 text-xs text-destructive"
-            data-testid={`llm-tab:other-credential:${row.id}:remove-api-key`}
-            onClick={() => deleteRowKey(row)}
-          >
-            {t("subscriptionProvidersSection.removeApiKey")}
-          </Button>
-        </div>
-      );
-    }
-    // A signed-in way in the card is not showing: on the Codex CLI, plan usage; on plan usage, the Codex CLI; on the API key, either.
-    const others = method === "subscription"
-      ? [row.planSubscription]
-      : method === "plan" ? [row.subscription] : [row.subscription, row.planSubscription];
+    // A signed-in way in the card is not showing: on the Codex CLI, plan usage; on plan usage, the Codex CLI.
+    const others = method === "subscription" ? [row.planSubscription] : method === "plan" ? [row.subscription] : [];
     const view = others.find((candidate) => candidate?.status?.connection === "connected");
     if (view && method !== null) {
       const logout = subscription.props.actions.logout;
@@ -2786,8 +2746,8 @@ export function LlmTab(props: LlmTabProps) {
     return <>{blocked}{guidance}</>;
   };
 
-  /** The ways in to this provider, named; and which one is live. A provider a user recognises as one company is one row, so the row has to
-   * say how it is reached. A filled badge is the route chat is actually running on; an outlined one is a route that is configured and idle. */
+  /** The ways in to this row, named; and which one is live. A company's subscription row and its API row share a name, so the badge
+   * says which is which. A filled badge is the route chat is actually running on; an outlined one is a route that is configured and idle. */
   const routeBadges = (row: ProviderConnection) => {
     const active = activeMode(row);
     const badge = (mode: ProviderSignInMethod, label: string) => (
@@ -2814,14 +2774,8 @@ export function LlmTab(props: LlmTabProps) {
   const rowSubscriptionView = (row: ProviderConnection): SubscriptionProviderView | undefined =>
     row.planSubscription && rowAuthMethod(row) === "plan" ? row.planSubscription : row.subscription;
 
-  /** Whether the subscription's state is the row's state (see `providerRowState`). */
-  const subscriptionSpeaksForRow = (row: ProviderConnection): boolean => {
-    const view = rowSubscriptionView(row);
-    if (!view) return false;
-    if (!row.apiConfigured) return true;
-    const connection = view.status?.connection;
-    return connection === "connected" || connection === "pending";
-  };
+  /** Whether the subscription's state is the row's state (see `providerRowState`): always, on a subscription row, since it carries no key. */
+  const subscriptionSpeaksForRow = (row: ProviderConnection): boolean => Boolean(rowSubscriptionView(row));
 
   /** What a subscription row is waiting on, in the row's own words. The five-word column is deliberately coarse; it says whether the
    * provider is usable, not which handshake is missing; so the specific answer moves down to the sub-line, where it has room to be a sentence. */
@@ -2856,8 +2810,7 @@ export function LlmTab(props: LlmTabProps) {
 
   /** Give each provider row one usability state; route details explain partial failures, while the active-route badge separately shows chat selection. */
   const providerRowState = (row: ProviderConnection): ConnectionRowState | null => {
-    // A row with a working API key is not held back by the other method: a missing or unusable CLI only
-    // speaks for the row while the subscription is the way in (signed in, signing in, or no key to fall back on).
+    // A subscription row speaks with its runtime's state; an API row (keyed or not) never hears about a CLI.
     const speaks = subscriptionSpeaksForRow(row);
     const status = speaks ? rowSubscriptionView(row)?.status ?? null : null;
     // No word at all while the surface that owns the real state is still answering; guessing "signed out" during the check is how a row lies. "No CLI found" and
@@ -3026,16 +2979,15 @@ export function LlmTab(props: LlmTabProps) {
               testId={`llm-tab:connection:${row.id}`}
             >
               <div className="space-y-3">
-                {/* A provider reached two ways asks which one first, and the
-                    body shows only that method: sign-in controls for the
-                    subscription, the key form for the API key. */}
-                {row.subscription && row.apiVendorId ? (
+                {/* A subscription with two sign-ins (OpenAI) asks which one
+                    first and shows only its controls; the API key is never a
+                    choice here; it is the vendor's own API row. */}
+                {row.subscription && row.planSubscription ? (
                   <SignInMethodChoice
                     rowId={row.id}
                     planName={row.subscription.descriptor.planName}
                     value={rowAuthMethod(row)}
                     onChange={(method) => chooseAuthMethod(row, method)}
-                    {...(row.planSubscription ? { offersPlan: true } : {})}
                   />
                 ) : null}
                 {row.subscription && rowAuthMethod(row) === "subscription" ? (

@@ -485,40 +485,45 @@ describe("SubscriptionAuthControls", () => {
 
 describe("SignInMethodChoice", () => {
   it.each([
-    ["en", "Billed to your own Claude subscription, not an API key.", "Billed to your configured API key."],
-    ["ko", "API 키가 아닌 본인의 Claude 구독으로 청구됩니다.", "설정한 본인의 API 키로 청구됩니다."],
-  ] as const)("discloses both billing routes before selection in %s", async (locale, subscriptionBilling, apiBilling) => {
+    ["en", "Billed to your own ChatGPT subscription, not an API key."],
+    ["ko", "API 키가 아닌 본인의 ChatGPT 구독으로 청구됩니다."],
+  ] as const)("discloses the subscription billing route before selection in %s, with no API key option", async (locale, subscriptionBilling) => {
     await loadLocaleMessages(locale);
     setLocale(locale);
-    render(<SignInMethodChoice rowId="claude-code" planName="Claude" value={null} onChange={vi.fn()} />);
-    const group = screen.getByTestId("llm-tab:sign-in-method:claude-code");
-    expect(within(group).getByText(subscriptionBilling)).toBeVisible();
-    expect(within(group).getByText(apiBilling)).toBeVisible();
-    expect(within(group).getByTestId("llm-tab:sign-in-method:claude-code:subscription")).toHaveAccessibleDescription(subscriptionBilling);
-    expect(within(group).getByTestId("llm-tab:sign-in-method:claude-code:api")).toHaveAccessibleDescription(apiBilling);
+    render(<SignInMethodChoice rowId="codex" planName="ChatGPT" value={null} onChange={vi.fn()} />);
+    const group = screen.getByTestId("llm-tab:sign-in-method:codex");
+    expect(within(group).getByTestId("llm-tab:sign-in-method:codex:subscription")).toHaveAccessibleDescription(subscriptionBilling);
+    expect(within(group).getByTestId("llm-tab:sign-in-method:codex:plan")).toHaveAccessibleDescription(subscriptionBilling);
+    expect(within(group).queryByTestId("llm-tab:sign-in-method:codex:api")).not.toBeInTheDocument();
+    expect(within(group).getAllByRole("radio")).toHaveLength(2);
     for (const radio of within(group).getAllByRole("radio")) expect(radio).toHaveAttribute("aria-checked", "false");
   });
 
-  it("asks with nothing chosen, then reports the method picked", () => {
+  it("asks with nothing chosen, then reports the sign-in picked", () => {
     const onChange = vi.fn();
     const { rerender } = render(<SignInMethodChoice rowId="codex" planName="ChatGPT" value={null} onChange={onChange} />);
     const subscription = screen.getByTestId("llm-tab:sign-in-method:codex:subscription");
-    const apiKey = screen.getByTestId("llm-tab:sign-in-method:codex:api");
+    const plan = screen.getByTestId("llm-tab:sign-in-method:codex:plan");
     expect(screen.getByRole("radiogroup", { name: "How do you want to sign in?" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "ChatGPT subscription" })).toBe(subscription);
-    expect(screen.getByRole("radio", { name: "API key" })).toBe(apiKey);
+    expect(screen.getByRole("radio", { name: "ChatGPT plan (Sign in with ChatGPT)" })).toBe(plan);
     expect(subscription).toHaveAttribute("aria-checked", "false");
-    expect(apiKey).toHaveAttribute("aria-checked", "false");
+    expect(plan).toHaveAttribute("aria-checked", "false");
 
-    fireEvent.click(apiKey);
-    expect(onChange).toHaveBeenLastCalledWith("api");
-    rerender(<SignInMethodChoice rowId="codex" planName="ChatGPT" value="api" onChange={onChange} />);
-    expect(apiKey).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(plan);
+    expect(onChange).toHaveBeenLastCalledWith("plan");
+    rerender(<SignInMethodChoice rowId="codex" planName="ChatGPT" value="plan" onChange={onChange} />);
+    expect(plan).toHaveAttribute("aria-checked", "true");
     expect(subscription).toHaveAttribute("aria-checked", "false");
     // Both options are buttons in one radio group, so Tab reaches the group and the arrow keys move between them (driven with
     // real key events in the CDP check; jsdom does not run Radix's roving focus).
     expect(subscription.tagName).toBe("BUTTON");
-    expect(apiKey.tagName).toBe("BUTTON");
+    expect(plan.tagName).toBe("BUTTON");
+  });
+
+  it("selects nothing for a method it does not offer", () => {
+    render(<SignInMethodChoice rowId="codex" planName="ChatGPT" value="api" onChange={vi.fn()} />);
+    for (const radio of screen.getAllByRole("radio")) expect(radio).toHaveAttribute("aria-checked", "false");
   });
 
   it("names the plan by the provider's brand", () => {

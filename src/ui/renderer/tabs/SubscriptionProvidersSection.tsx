@@ -611,45 +611,39 @@ export function SubscriptionAuthControls({
   );
 }
 
-/** How a provider with two (or, for OpenAI, three) ways in is signed in to: its CLI subscription, its plan-usage sign-in, or an API key. */
+/** How a provider row is reached: its CLI subscription, its plan-usage sign-in, or (an API row) a key. */
 export type ProviderSignInMethod = "subscription" | "plan" | "api";
 
-/** No configured method means neither radio is selected; switching methods must not delete the other credential. */
+/** The sign-in a subscription row with two ways in (OpenAI: Codex CLI / ChatGPT plan) uses. No configured method means
+ * neither radio is selected; switching must not sign out of the other. The API key is the vendor's own API row, never an option here. */
 export function SignInMethodChoice({
   rowId,
   planName,
   value,
   onChange,
   disabled,
-  offersPlan,
 }: {
   rowId: string;
   planName: string;
   value: ProviderSignInMethod | null;
-  onChange: (method: ProviderSignInMethod) => void;
+  onChange: (method: "subscription" | "plan") => void;
   disabled?: boolean;
-  /** The row also has plan usage (Sign in with ChatGPT): offer it as a third choice. */
-  offersPlan?: boolean;
 }) {
   const { t } = useTranslation();
   const labelId = useId();
   const optionId = (method: ProviderSignInMethod) => `${labelId}-${method}`;
-  // The existing two choices keep their labels; plan usage, when offered, is a third choice with its own.
-  const options: { method: ProviderSignInMethod; label: string }[] = [
+  const options: { method: "subscription" | "plan"; label: string }[] = [
     { method: "subscription", label: t("subscriptionProvidersSection.methodSubscription", { plan: planName }) },
-    ...(offersPlan
-      ? [{ method: "plan" as const, label: t("subscriptionProvidersSection.methodChatgptPlan", { plan: planName }) }]
-      : []),
-    { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
+    { method: "plan", label: t("subscriptionProvidersSection.methodChatgptPlan", { plan: planName }) },
   ];
   return (
     <div className="space-y-2" data-testid={`llm-tab:sign-in-method:${rowId}`}>
       <p id={labelId} className="text-sm font-medium">{t("subscriptionProvidersSection.methodQuestion")}</p>
       <RadioGroup
         aria-labelledby={labelId}
-        value={value ?? ""}
+        value={value === "subscription" || value === "plan" ? value : ""}
         onValueChange={(next) => {
-          if (next === "subscription" || next === "api" || (offersPlan && next === "plan")) onChange(next);
+          if (next === "subscription" || next === "plan") onChange(next);
         }}
         disabled={disabled}
         className="flex flex-wrap gap-2"
@@ -669,9 +663,7 @@ export function SignInMethodChoice({
             <Label htmlFor={optionId(method)} className="cursor-pointer text-sm font-normal">
               <span className="block">{label}</span>
               <span id={`${optionId(method)}-billing`} className="block text-xs text-muted-foreground">
-                {method === "api"
-                  ? t("modelBilling.apiKey")
-                  : t("modelBilling.subscription", { plan: planName })}
+                {t("modelBilling.subscription", { plan: planName })}
               </span>
             </Label>
           </div>

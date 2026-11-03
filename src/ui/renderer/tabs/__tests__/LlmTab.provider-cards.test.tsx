@@ -1226,59 +1226,63 @@ describe("LlmTab provider cards", () => {
     expect(card).toContainElement(screen.getByTestId("llm-tab:save-providers"));
   });
 
-  it("hides the API key field until the API-key route is chosen", async () => {
-    installSubscription([codexView()]);
-    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }));
-
-    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
-    // The sign-in buttons are the row's too, and stay folded away with the rest.
-    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
-
-    const toggle = screen.getByTestId("llm-tab:connection:codex:toggle");
-    fireEvent.click(toggle);
-    const body = screen.getByTestId("llm-tab:connection:codex:detail");
-    // ONE row, opened on the method already in use — here the stored key — so the key form shows and the sign-in controls wait
-    // behind the other choice.
-    await waitFor(() => expect(screen.getByTestId("llm-tab:sign-in-method:codex:api"))
-      .toHaveAttribute("aria-checked", "true"));
-    const form = await screen.findByTestId("llm-tab:manual-section");
-    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
-    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
-    expect(body).toContainElement(form);
-    expect(toggle).toHaveAttribute("aria-controls", body.id);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(/설정됨|Configured|Set/);
-  });
-
-  it("asks for the sign-in method before showing its credential form", async () => {
+  it("gives a configured OpenAI key its own API row, apart from the subscription row", async () => {
     installSubscription([codexView({
       status: { runtime: "ready", connection: "connected", models: [] },
     })]);
-    await renderTab(makeApi());
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }));
+
+    const subscriptionRow = screen.getByTestId("llm-tab:connection:codex");
+    const apiRow = await screen.findByTestId("llm-tab:connection:openai");
+    expect(apiRow).toHaveTextContent("OpenAI");
+    expect(within(subscriptionRow).queryByTestId("llm-tab:connection-route:codex:api")).not.toBeInTheDocument();
+    expect(within(apiRow).getByTestId("llm-tab:connection-route:openai:api")).toBeInTheDocument();
+    expect(within(apiRow).queryByTestId("llm-tab:connection-route:openai:subscription")).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
-    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("llm-tab:save-providers")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
-    expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
-    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByTestId("llm-api-key-input"), { target: { value: "sk-typed" } });
-    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"));
-    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
-    expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
-    fireEvent.click(screen.getByTestId("llm-tab:save-providers-cancel"));
-    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    expect(within(subscriptionRow).queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    expect(within(subscriptionRow).queryByTestId("llm-tab:other-credential:codex:api")).not.toBeInTheDocument();
+
+    const toggle = screen.getByTestId("llm-tab:connection:openai:toggle");
+    fireEvent.click(toggle);
+    const body = screen.getByTestId("llm-tab:connection:openai:detail");
+    const form = await within(apiRow).findByTestId("llm-tab:manual-section");
+    expect(body).toContainElement(form);
+    expect(within(apiRow).getByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(within(apiRow).queryByTestId("llm-tab:sign-in-method:openai")).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(apiRow).getByTestId("llm-tab:api-key-status")).toHaveTextContent(/설정됨|Configured|Set/);
   });
 
-  it("offers the three OpenAI sign-ins side by side on one row", async () => {
-    installSubscription([codexView(), chatgptPlanView()]);
+  it.each([
+    ["codex", () => codexView({ status: { runtime: "ready", connection: "signed-out", models: [] } })],
+    ["claude-code", () => claudeCodeView({ status: { runtime: "ready", connection: "signed-out", models: [] } })],
+  ] as const)("%s: a one-runtime subscription row shows its sign-in with no API-key choice", async (runtime, view) => {
+    installSubscription([view()]);
     await renderTab(makeApi());
-    // Plan usage joins the OpenAI row; it is never a second "OpenAI" row.
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId(`llm-tab:add-provider-item:${runtime}`));
+    const row = await screen.findByTestId(`llm-tab:connection:${runtime}`);
+    expect(within(row).queryByTestId(`llm-tab:sign-in-method:${runtime}`)).not.toBeInTheDocument();
+    expect(within(row).getByTestId(`subscription-provider:${runtime}:login-browser`)).toBeInTheDocument();
+    expect(within(row).queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId(`llm-tab:connection-route:${runtime}:api`)).not.toBeInTheDocument();
+  });
+
+  it("offers exactly the two OpenAI sign-ins, and no API key, on the subscription row", async () => {
+    installSubscription([codexView({
+      status: { runtime: "ready", connection: "connected", models: [] },
+    }), chatgptPlanView()], { logout: vi.fn() });
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }));
+    // Plan usage joins the OpenAI subscription row; it is never a second subscription row.
     expect(screen.queryByTestId("llm-tab:connection:chatgpt-plan")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
-    for (const method of ["subscription", "plan", "api"]) {
-      expect(screen.getByTestId(`llm-tab:sign-in-method:codex:${method}`)).toBeInTheDocument();
-    }
+    const chooser = screen.getByTestId("llm-tab:sign-in-method:codex");
+    expect(within(chooser).getAllByRole("radio").map((radio) => radio.getAttribute("data-testid"))).toEqual([
+      "llm-tab:sign-in-method:codex:subscription",
+      "llm-tab:sign-in-method:codex:plan",
+    ]);
+    expect(screen.queryByTestId("llm-tab:sign-in-method:codex:api")).not.toBeInTheDocument();
     // The existing Codex choice keeps its label; plan usage has its own.
     expect(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"))
       .toHaveAccessibleName(t("subscriptionProvidersSection.methodSubscription", { plan: "ChatGPT" }));
@@ -1292,10 +1296,11 @@ describe("LlmTab provider cards", () => {
     // Plan usage runs no executable, so there is nothing to pick or forget.
     expect(screen.queryByTestId("subscription-provider:chatgpt-plan:configure-runtime")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"));
-    expect(screen.getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
+    expect(screen.getByTestId("subscription-provider:codex:logout")).toBeInTheDocument();
     expect(screen.queryByTestId("subscription-provider:chatgpt-plan:login-browser")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
-    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+    // The key is the OpenAI API row's.
+    expect(within(screen.getByTestId("llm-tab:connection:codex")).queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("llm-tab:connection:openai")).toBeInTheDocument();
   });
 
   it("opens on plan usage when chat runs on it and marks that route active", async () => {
@@ -1339,15 +1344,6 @@ describe("LlmTab provider cards", () => {
     expect(ids).toEqual(expect.arrayContaining(["GPT-6.1 Sol", "gpt-oss-120b"]));
     expect(within(chooserOption("GPT-6.1 Sol")).getByTestId("llm-tab:model-vision:GPT-6.1 Sol")).toBeInTheDocument();
     expect(within(chooserOption("gpt-oss-120b")).queryByTestId("llm-tab:model-vision:gpt-oss-120b")).not.toBeInTheDocument();
-  });
-
-  it("keeps the two-way OpenAI choice when plan usage is absent", async () => {
-    installSubscription([codexView()]);
-    await renderTab(makeApi());
-    fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
-    expect(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"))
-      .toHaveAccessibleName(t("subscriptionProvidersSection.methodSubscription", { plan: "ChatGPT" }));
-    expect(screen.queryByTestId("llm-tab:sign-in-method:codex:plan")).not.toBeInTheDocument();
   });
 
   it("asks for no endpoint where the endpoint is fixed", async () => {
@@ -2108,12 +2104,11 @@ const CONNECTED = /연결됨|Connected/;
 describe("LlmTab names each route's state on a row that has two", () => {
   const SIGNED_IN = { runtime: "ready", connection: "connected", models: [] } as const;
   const SUBSCRIPTION = /구독|Subscription/;
-  const API_KEY = /API/;
   const SIGNED_OUT = /설정 필요|Setup needed/;
   const NOT_SET = /미설정|Not set/;
 
-  it("says one thing about a provider reached two ways", async () => {
-    // Combine subscription and API routes in one provider row with one coherent verdict.
+  it("says one thing about a subscription row, which carries no API route", async () => {
+    // The company's API key is its own row; the subscription row names only its sign-in.
     installSubscription([codexView({ status: SIGNED_IN })], { refreshStatus: vi.fn() });
     await renderTab(makeApi(), { vendor: "claude", model: "claude-sonnet-4-6" });
 
@@ -2126,8 +2121,7 @@ describe("LlmTab names each route's state on a row that has two", () => {
     expect(within(card).queryByText(NOT_SET)).toBeNull();
     expect(within(card).getByTestId("llm-tab:connection-route:codex:subscription"))
       .toHaveTextContent(SUBSCRIPTION);
-    expect(within(card).getByTestId("llm-tab:connection-route:codex:api"))
-      .toHaveTextContent(API_KEY);
+    expect(within(card).queryByTestId("llm-tab:connection-route:codex:api")).toBeNull();
     expect(card.querySelectorAll("[data-testid^='llm-tab:connection-refresh:']")).toHaveLength(1);
     expect(card.querySelectorAll("[data-testid^='llm-tab:connection:'][data-testid$=':state']")).toHaveLength(1);
   });
@@ -2172,13 +2166,8 @@ describe("LlmTab names each route's state on a row that has two", () => {
     expect(document.querySelectorAll("[data-provider-sync-status]")).toHaveLength(1);
   });
 
-  it("still calls a provider connected when one of its two routes failed to sync", async () => {
-    // The other half of the rule above, and the one a real account hits: the
-    // sign-in is live, its models are in the chooser, and the SECOND route —
-    // the stored API key — cannot fetch a catalogue. Wording the row "needs
-    // checking" over that sends someone to repair a provider they are
-    // successfully using; the failed route is named on the sub-line instead,
-    // which is on screen with the row shut.
+  it("keeps a signed-in subscription row connected while its company's API row fails to sync", async () => {
+    // The failed handshake belongs to the OpenAI API row; the subscription row is a different way in and must not wear it.
     installSubscription([codexView({
       status: {
         runtime: "ready",
@@ -2189,16 +2178,16 @@ describe("LlmTab names each route's state on a row that has two", () => {
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     await renderTab(api, { vendor: "openai", model: "" });
 
-    const card = await screen.findByTestId("llm-tab:connection:codex");
-    // The endpoint handshake really did fail, and the row says so on its line.
+    const apiCard = await screen.findByTestId("llm-tab:connection:openai");
     await waitFor(() => expect(
-      within(card).getByTestId("llm-tab:connection-subline:codex"),
+      within(apiCard).getByTestId("llm-tab:connection-subline:openai"),
     ).toHaveAttribute("data-provider-sync-status", "error"));
-    // ...and the word above it still describes the provider, which works.
+    const card = screen.getByTestId("llm-tab:connection:codex");
+    expect(within(card).getByTestId("llm-tab:connection-subline:codex"))
+      .toHaveAttribute("data-provider-sync-status", "none");
     const state = within(card).getByTestId("llm-tab:connection:codex:state");
     expect(state).toHaveAttribute("data-state", "connected");
     expect(state).toHaveTextContent(CONNECTED);
-    // The claim that makes "connected" true: this provider is feeding the one chooser right now.
     expect(await chooserModelIds()).toContain("codex-mini");
   });
 
@@ -2242,7 +2231,7 @@ describe("LlmTab names each route's state on a row that has two", () => {
       .toContainElement(note);
   });
 
-  it("still offers the sign-in a usable provider has not taken", async () => {
+  it("still offers the sign-in a usable API row's company has not taken", async () => {
     installSubscription([codexView()]);
     await renderTab(makeApi({
       hasApiKey: storedKeysFor("openai"),
@@ -2254,25 +2243,26 @@ describe("LlmTab names each route's state on a row that has two", () => {
       model: "claude-sonnet-4-6",
     });
 
-    const card = await screen.findByTestId("llm-tab:connection:codex");
-    // A stored key that reaches its endpoint makes the provider usable, so that is what the row says.
-    await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:codex:state"))
+    const card = await screen.findByTestId("llm-tab:connection:openai");
+    await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:openai:state"))
       .toHaveTextContent(CONNECTED));
-    // Which route is still unused is a question the expanded row answers, in the only place that can do anything about it.
-    fireEvent.click(within(card).getByTestId("llm-tab:connection:codex:toggle"));
-    fireEvent.click(await within(card).findByTestId("llm-tab:sign-in-method:codex:subscription"));
-    expect(within(card).getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
+    // A key does not sign anyone in: the subscription row stays off the list until added, and the menu still offers it.
+    expect(screen.queryByTestId("llm-tab:connection:codex")).toBeNull();
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:codex"));
+    const subscriptionCard = await screen.findByTestId("llm-tab:connection:codex");
+    expect(within(subscriptionCard).getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
   });
 });
 
-describe("LlmTab asks how to sign in to a provider reached two ways", () => {
-  const method = (rowId: string, which: "subscription" | "api") =>
+describe("LlmTab asks how to sign in to a subscription row", () => {
+  const method = (rowId: string, which: "subscription" | "plan") =>
     screen.getByTestId(`llm-tab:sign-in-method:${rowId}:${which}`);
 
   it.each([
-    ["codex", "OpenAI", "ChatGPT", () => codexView()],
-    ["claude-code", "Anthropic Claude", "Claude", () => claudeCodeView()],
-  ] as const)("%s: selecting a subscription entry opens its setup, then allows changing the method", async (rowId, company, plan, view) => {
+    ["codex", "OpenAI", () => codexView()],
+    ["claude-code", "Anthropic Claude", () => claudeCodeView()],
+  ] as const)("%s: selecting a subscription entry opens its sign-in directly, with no method to choose", async (rowId, company, view) => {
     installSubscription([view()], { beginLogin: vi.fn(), refreshStatus: vi.fn() });
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });
 
@@ -2283,68 +2273,43 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
       fireEvent.click(within(card).getByTestId(`llm-tab:connection:${rowId}:toggle`));
     }
     expect(card).toHaveTextContent(company);
-
-    expect(method(rowId, "subscription")).toHaveAttribute("aria-checked", "true");
-    expect(method(rowId, "api")).toHaveAttribute("aria-checked", "false");
-    expect(method(rowId, "subscription")).toHaveAccessibleName(
-      t("subscriptionProvidersSection.methodSubscription", { plan }),
-    );
+    expect(within(card).queryByTestId(`llm-tab:sign-in-method:${rowId}`)).toBeNull();
     expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
     expect(within(card).getByTestId(`subscription-provider:${rowId}:login-browser`)).toBeVisible();
-
-    fireEvent.click(method(rowId, "api"));
-    expect(await within(card).findByTestId("llm-api-key-input")).toBeInTheDocument();
-    expect(within(card).queryByTestId(`subscription-provider:${rowId}`)).toBeNull();
-
-    fireEvent.click(method(rowId, "subscription"));
-    expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
-    expect(within(card).getByTestId(`subscription-provider:${rowId}:login-browser`)).toBeInTheDocument();
     // The user never picks the CLI: there is no runtime picker on the card.
     expect(within(card).queryByTestId(`subscription-provider:${rowId}:configure-runtime`)).toBeNull();
     expect(within(card).queryByTestId(`subscription-provider:${rowId}:change-runtime`)).toBeNull();
     expect(within(card).queryByTestId(`subscription-provider:${rowId}:forget-runtime`)).toBeNull();
   });
 
-  it("opens a signed-in subscription on the subscription method, with no key field", async () => {
+  it("opens a signed-in subscription on its sign-in, with no key field", async () => {
     installSubscription([codexView({ status: { runtime: "ready", connection: "connected", models: [] } })], { logout: vi.fn() });
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });
     fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
-    expect(method("codex", "subscription")).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByTestId("llm-tab:sign-in-method:codex")).toBeNull();
     expect(screen.queryByTestId("llm-api-key-input")).toBeNull();
     expect(screen.getByTestId("subscription-provider:codex:logout")).toBeInTheDocument();
   });
 
-  it("keeps a saved key when switching to the subscription, and removes it only on request", async () => {
-    installSubscription([codexView()], { beginLogin: vi.fn() });
-    const api = makeApi({ hasApiKey: storedKeysFor("openai") });
-    api.deleteApiKey = vi.fn().mockResolvedValue(undefined);
-    await renderTab(api, { vendor: "openrouter", model: "" });
-    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
-    await waitFor(() => expect(method("codex", "api")).toHaveAttribute("aria-checked", "true"));
-
-    fireEvent.click(method("codex", "subscription"));
-    expect(api.deleteApiKey).not.toHaveBeenCalled();
-    const note = screen.getByTestId("llm-tab:other-credential:codex:api");
-    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherApiKeySaved"));
-
-    fireEvent.click(within(note).getByTestId("llm-tab:other-credential:codex:remove-api-key"));
-    await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledExactlyOnceWith("openai"));
-  });
-
-  it("keeps a signed-in subscription when switching to the API key, and signs out only on request", async () => {
+  it("keeps the Codex sign-in when switching to plan usage, and signs out only on request", async () => {
     const logout = vi.fn();
-    installSubscription([claudeCodeView({ status: { runtime: "ready", connection: "connected", models: [] } })], { logout });
+    installSubscription([
+      codexView({ status: { runtime: "ready", connection: "connected", models: [] } }),
+      chatgptPlanView(),
+    ], { logout });
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });
-    fireEvent.click(await screen.findByTestId("llm-tab:connection:claude-code:toggle"));
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
+    expect(method("codex", "subscription")).toHaveAttribute("aria-checked", "true");
 
-    fireEvent.click(method("claude-code", "api"));
-    expect(await screen.findByTestId("llm-api-key-input")).toBeInTheDocument();
+    fireEvent.click(method("codex", "plan"));
+    expect(method("codex", "plan")).toHaveAttribute("aria-checked", "true");
     expect(logout).not.toHaveBeenCalled();
-    const note = screen.getByTestId("llm-tab:other-credential:claude-code:subscription");
-    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherSubscriptionSignedIn", { plan: "Claude" }));
+    const note = screen.getByTestId("llm-tab:other-credential:codex:subscription");
+    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherSubscriptionSignedIn", { plan: "ChatGPT" }));
 
-    fireEvent.click(within(note).getByTestId("llm-tab:other-credential:claude-code:sign-out"));
-    expect(logout).toHaveBeenCalledExactlyOnceWith("claude-code");
+    fireEvent.click(within(note).getByTestId("llm-tab:other-credential:codex:sign-out"));
+    expect(logout).toHaveBeenCalledExactlyOnceWith("codex");
+    expect(screen.queryByTestId("llm-api-key-input")).toBeNull();
   });
 
   it("shows install guidance and Check again, not a file picker, when the CLI is missing", async () => {
@@ -2363,7 +2328,6 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
       .toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
     expect(within(card).getByTestId("llm-tab:connection:codex:state"))
       .toHaveTextContent(t("connectionRow.stateNeedsSetup"));
-    fireEvent.click(method("codex", "subscription"));
     expect(within(card).getByTestId("subscription-provider:codex:install-guidance"))
       .toHaveTextContent(t("subscriptionProvidersSection.installGuidance", { cli: "Codex CLI", plan: "ChatGPT" }));
     expect(within(card).queryByTestId("subscription-provider:codex:configure-runtime")).toBeNull();
@@ -2386,24 +2350,26 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
       hasApiKey: storedKeysFor("openai"),
       listLlmModels: vi.fn().mockResolvedValue(listedModels("openai", "https://api.openai.com/v1/models", ["gpt-5"]) satisfies LlmModelListResult),
     }), { vendor: "openai", model: "gpt-5", hasKey: true });
-    const card = await screen.findByTestId("llm-tab:connection:codex");
-    await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:codex:state")).toHaveTextContent(CONNECTED));
+    const card = await screen.findByTestId("llm-tab:connection:openai");
+    await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:openai:state")).toHaveTextContent(CONNECTED));
     expect(card).not.toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+    // The key never makes the subscription row connected, so a signed-out runtime stays off the list.
+    expect(screen.queryByTestId("llm-tab:connection:codex")).toBeNull();
   });
 
   it("keeps the key form on screen after the key it was opened for is deleted", async () => {
-    installSubscription([codexView()]);
+    installSubscription([codexView({ status: { runtime: "ready", connection: "connected", models: [] } })]);
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     api.deleteApiKey = vi.fn().mockResolvedValue(undefined);
     await renderTab(api, { vendor: "openrouter", model: "" });
-    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
-    await waitFor(() => expect(method("codex", "api")).toHaveAttribute("aria-checked", "true"));
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:openai:toggle"));
+    const card = screen.getByTestId("llm-tab:connection:openai");
     api.hasApiKey = vi.fn().mockResolvedValue(false);
-    fireEvent.click(within(screen.getByTestId("llm-tab:manual-section")).getByRole("button", { name: t("llmTab.delete") }));
+    fireEvent.click(within(await within(card).findByTestId("llm-tab:manual-section")).getByRole("button", { name: t("llmTab.delete") }));
     await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledWith("openai"));
-    await waitFor(() => expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(t("llmTab.apiKeyNotSet")));
-    expect(method("codex", "api")).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+    await waitFor(() => expect(within(card).getByTestId("llm-tab:api-key-status")).toHaveTextContent(t("llmTab.apiKeyNotSet")));
+    expect(within(card).getByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(within(screen.getByTestId("llm-tab:connection:codex")).queryByTestId("llm-api-key-input")).toBeNull();
   });
 
   it("offers subscription and API routes separately with consistent subscription labels", async () => {
@@ -2419,6 +2385,40 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     expect(labels.join("\n")).not.toMatch(/Codex|Claude Code/);
     expect(screen.getByTestId("llm-tab:add-provider-item:claude")).toBeVisible();
     expect(screen.getByTestId("llm-tab:add-provider-item:codex")).toHaveTextContent(t("subscriptionProvidersSection.subscriptionModels", { company: "OpenAI", plan: "ChatGPT" }));
+  });
+
+  it("keeps every subscription company's API vendor in the API group once its subscription row is added", async () => {
+    const runtimeView = (id: "grok-build" | "kimi-code"): SubscriptionProviderView => {
+      const descriptor = subscriptionRuntimeDescriptor(id);
+      return {
+        descriptor: {
+          id,
+          label: descriptor.label,
+          planName: descriptor.planName,
+          cliName: descriptor.cliName,
+          executable: descriptor.executable,
+          description: "",
+          loginMethods: descriptor.loginMethods,
+          supportsLogout: descriptor.supportsManagedLogout,
+        },
+        status: { runtime: "ready", connection: "signed-out", models: [] },
+        busyAction: null,
+        refreshPending: false,
+      };
+    };
+    installSubscription([codexView(), chatgptPlanView(), claudeCodeView(), runtimeView("grok-build"), runtimeView("kimi-code")]);
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    for (const runtime of ["codex", "claude-code", "grok-build", "kimi-code"]) {
+      openMenu(screen.getByTestId("llm-tab:add-provider"));
+      fireEvent.click(await screen.findByTestId(`llm-tab:add-provider-item:${runtime}`));
+      await screen.findByTestId(`llm-tab:connection:${runtime}`);
+    }
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    await screen.findByTestId("llm-tab:add-provider-item:codex");
+    const apiGroup = document.querySelector<HTMLElement>('[data-provider-group="api"]')!.parentElement!;
+    for (const vendor of ["openai", "claude", "xai", "moonshot"]) {
+      expect(within(apiGroup).getByTestId(`llm-tab:add-provider-item:${vendor}`)).toBeInTheDocument();
+    }
   });
 });
 
@@ -2649,13 +2649,13 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
       .map(([request]) => request.baseUrl ?? `<fixed:${request.vendor}>`);
   }
 
-  it("asks a paired vendor's fixed endpoint, since a stored key makes it an API row too", async () => {
-    // Keyed API routes may fetch their model catalog; subscription-only rows must not claim an API sync.
+  it("asks a paired vendor's fixed endpoint, since a stored key makes it its own API row", async () => {
+    // Keyed API routes may fetch their model catalog; subscription rows never claim an API sync.
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     installSubscription([codexView()]);
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6", hasKey: false });
 
-    await waitFor(() => expect(rowOrder()).toEqual(["codex"]));
+    await waitFor(() => expect(rowOrder()).toEqual(["openai"]));
     await settleModelListRequests();
     expect(requestedEndpoints(api)).toEqual(["<fixed:openai>"]);
   });
@@ -3362,29 +3362,32 @@ describe("LlmTab OpenAI model catalogue", () => {
       .toHaveAttribute("data-provider-sync-status", "none");
   });
 
-  /** Use one row and one handshake lookup so sign-in and catalog results cannot contradict duplicate surfaces. */
-  it("gives one vendor one row and one sync verdict, wherever it is reached", async () => {
+  /** The subscription and the key are two rows; the handshake is the API row's alone, so the two cannot contradict each other. */
+  it("gives a company's subscription and its API key two rows, and the sync verdict to the API row", async () => {
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     installSubscription([codexView({
       status: { runtime: "ready", connection: "connected", models: [] },
     })]);
     await renderTab(api, { vendor: "openai", model: "", hasKey: true });
 
-    // Reached by subscription AND by API key, and still ONE row.
-    expect(rowOrder()).toEqual(["codex"]);
+    expect(rowOrder()).toEqual(["codex", "openai"]);
     const card = screen.getByTestId("llm-tab:connection:codex");
     expect(within(card).getByTestId("llm-tab:connection-route:codex:subscription")).toBeInTheDocument();
-    expect(within(card).getByTestId("llm-tab:connection-route:codex:api")).toBeInTheDocument();
+    expect(within(card).queryByTestId("llm-tab:connection-route:codex:api")).toBeNull();
+    const apiCard = screen.getByTestId("llm-tab:connection:openai");
+    expect(within(apiCard).getByTestId("llm-tab:connection-route:openai:api")).toBeInTheDocument();
+    expect(within(apiCard).queryByTestId("llm-tab:connection-route:openai:subscription")).toBeNull();
 
-    // ...and one place in the whole tab where a sync verdict is stated.
-    await waitFor(() => expect(screen.getByTestId("llm-tab:connection-subline:codex"))
+    await waitFor(() => expect(screen.getByTestId("llm-tab:connection-subline:openai"))
       .toHaveAttribute("data-provider-sync-status", "error"));
     const verdicts = [...document.querySelectorAll("[data-provider-sync-status]")]
-      .map((node) => node.getAttribute("data-provider-sync-status"));
+      .map((node) => node.getAttribute("data-provider-sync-status"))
+      .filter((verdict) => verdict !== "none");
     expect(verdicts).toEqual(["error"]);
-    // One refresh, one state word, no capability checklist, no model controls.
+    expect(card.querySelector("[data-provider-sync-status='error']")).toBeNull();
+    // One refresh (the API row's endpoint), one state word per row, no capability checklist, no model controls.
     expect(document.querySelectorAll("[data-testid^='llm-tab:connection-refresh:']")).toHaveLength(1);
-    expect(document.querySelectorAll("[data-testid^='llm-tab:connection:'][data-testid$=':state']")).toHaveLength(1);
+    expect(document.querySelectorAll("[data-testid^='llm-tab:connection:'][data-testid$=':state']")).toHaveLength(2);
     expect(document.querySelectorAll("[data-testid*=':capability']")).toHaveLength(0);
     expect(document.querySelectorAll("[data-testid$=':load-models']")).toHaveLength(0);
     expect(document.querySelectorAll("[data-testid$=':use-for-chat']")).toHaveLength(0);
@@ -3441,10 +3444,10 @@ describe("LlmTab OpenAI model catalogue", () => {
     await renderTab(api, { vendor: "openai", model: "", hasKey: true });
 
     await waitFor(() => {
-      expect(screen.getByTestId("llm-tab:connection-subline:codex"))
+      expect(screen.getByTestId("llm-tab:connection-subline:openai"))
         .toHaveAttribute("data-provider-sync-status", "error");
     });
-    fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
+    fireEvent.click(screen.getByTestId("llm-tab:connection:openai:toggle"));
     expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(/설정됨|Configured|Set/);
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
     expect(screen.getByTestId("llm-tab:manual-section")).toHaveTextContent(/삭제|Delete|Remove/);
@@ -3478,7 +3481,7 @@ describe("LlmTab OpenAI model catalogue", () => {
     expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
     expect(hooks.onImmediateChange).not.toHaveBeenCalled();
     // And the live-route badge stays where chat actually is.
-    expect(screen.getByTestId("llm-tab:connection-route:codex:api"))
+    expect(screen.getByTestId("llm-tab:connection-route:openai:api"))
       .toHaveAttribute("data-active", "true");
     expect(screen.getByTestId("llm-tab:connection-route:openai-compatible:api"))
       .toHaveAttribute("data-active", "false");
