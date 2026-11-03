@@ -16,6 +16,7 @@ import {
   formatElapsed,
   latestTurn,
   runStartedAt,
+  useNowTick,
   useWorkBoardRun,
 } from "../use-work-board-run.js";
 
@@ -246,5 +247,30 @@ describe("run timing helpers", () => {
   it("has no start for an item whose stored run is not in flight", () => {
     expect(runStartedAt(runningItem({ runStatus: "completed" }))).toBeUndefined();
     expect(runStartedAt(runningItem({ runStatus: undefined }))).toBeUndefined();
+  });
+});
+
+describe("useNowTick — the chip's clock", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("leaves no interval behind once the run is no longer live or the chip unmounts", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const { result, rerender, unmount } = renderHook(({ active }) => useNowTick(active), {
+      initialProps: { active: true },
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(result.current).toBe(1_000);
+
+    rerender({ active: false });
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => { vi.advanceTimersByTime(5_000); });
+    expect(result.current).toBe(1_000);
+
+    rerender({ active: true });
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
