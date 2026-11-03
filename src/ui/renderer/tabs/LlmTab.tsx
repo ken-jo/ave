@@ -2061,10 +2061,9 @@ export function LlmTab(props: LlmTabProps) {
 
   /** Read readiness from the route's actual credential requirements and offered catalog; keyless project-authenticated routes must not require a saved API key. */
   const rowChatBlocker = useCallback((row: ProviderConnection): ChatBlocker | null => {
-    // A signed-in subscription row answers turns through its runtime; it has no key to ask about.
-    if (row.subscription?.status?.connection === "connected") return null;
-    if (row.planSubscription?.status?.connection === "connected") return null;
-    const vendorId = row.apiVendorId ?? "";
+    // Only an API row can be blocked on a key, project or catalogue; a subscription row's readiness is its sign-in.
+    if (!row.apiVendorId) return null;
+    const vendorId = row.apiVendorId;
     if (vendorId === "vertex-ai" && !savedVendorBlocks[vendorId]?.vertexProject?.trim()) {
       return "needs-gcp-project";
     }

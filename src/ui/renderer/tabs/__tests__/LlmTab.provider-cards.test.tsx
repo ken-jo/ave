@@ -1267,6 +1267,8 @@ describe("LlmTab provider cards", () => {
     expect(within(row).getByTestId(`subscription-provider:${runtime}:login-browser`)).toBeInTheDocument();
     expect(within(row).queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
     expect(within(row).queryByTestId(`llm-tab:connection-route:${runtime}:api`)).not.toBeInTheDocument();
+    // A signed-out subscription row has no key, project or catalogue to be blocked on; its sign-in says what is missing.
+    expect(within(row).queryByTestId(`llm-tab:connection-blocked:${runtime}`)).not.toBeInTheDocument();
   });
 
   it("offers exactly the two OpenAI sign-ins, and no API key, on the subscription row", async () => {
