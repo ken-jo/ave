@@ -259,6 +259,7 @@ export async function bootstrap(
     auditService,
     settingsService,
     memoryManager,
+    memoryUsageLog,
     memoryCaptureService,
     inputClassifier,
     toolRegistry,
@@ -739,6 +740,7 @@ export async function bootstrap(
 
   const systemPromptBuilder = createSystemPromptBuilder({
     memoryManager,
+    memoryUsageLog,
     toolRegistry,
     pluginRuntime,
     getAvailableSkills: () => ctx.skillStore.listCatalogSync(),

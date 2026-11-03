@@ -1146,6 +1146,17 @@ are English.
 Memory writes should preserve source provenance and avoid storing secrets,
 credentials, raw private data, or unsupported claims.
 
+Memory use is recorded in `memories/usage.jsonl` (`src/memory/memory-usage-log.ts`),
+one row per managed memory id with `via`: `injected` (in a turn's context when
+a round is assembled for send, before the provider call, so a request that then
+fails still counts), `searched` (on the page `memory_search` returned) or `read`
+(`memory_read`). Rows
+hold ids, session and anchor message ids and a timestamp only, never memory or
+user text, and the file is size-capped by dropping its oldest rows. Legacy notes
+without a managed id are not recorded. Only builders on the user's memory store
+record injection; isolated sub-agent builders, including work-board runs, read
+the sub-agent store, so their use appears only as `searched` or `read`.
+
 ## Insights
 
 Insights is the default home for calendar-based activity review:
