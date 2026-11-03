@@ -227,14 +227,42 @@ type WorkBoardRunPhase =
   | "error"
   | "cancelled";
 
+/** One tool call inside a child turn, as the board shows it. The host derives it from the child's DLP-masked transcript: `label` is a
+ * short one-line target (a file name, the head of a command, a host and path), never the call's input. */
+export interface WorkBoardRunToolStep {
+  toolUseId: string;
+  name: string;
+  kind: "read" | "write" | "shell" | "web" | "other";
+  /** At most {@link WORK_BOARD_TOOL_LABEL_MAX} characters on one line; absent when the call names no target. */
+  label?: string;
+  status: "running" | "done" | "error" | "cancelled";
+  /** 1-based turn of the phase's child the step belongs to. */
+  turn: number;
+  /** Epoch milliseconds the step started, while the child reports it. */
+  startedAt?: number;
+  durationMs?: number;
+}
+
+export const WORK_BOARD_TOOL_LABEL_MAX = 80;
+/** Most tool steps one progress event carries: the latest ones of the phase. */
+export const WORK_BOARD_TOOL_STEPS_MAX = 40;
+
+/** What became of a queued steer. `delivered` names the turn of the execute child that received it; `dropped` means the child's turn ended
+ * (or the join limit was reached) before a round boundary took it, so the child never saw it. */
+export type WorkBoardSteerAck =
+  | { messageId: string; status: "delivered"; turn: number }
+  | { messageId: string; status: "dropped"; reason: "joined-limit" | "turn-ended" };
+
 /** Transcript lines live at sessions/<itemId>/<runId>.jsonl and accumulate the run conversation. */
 export interface RunTranscriptEvent {
   ts: string;
   phase: WorkBoardRunPhase;
-  kind: "turn" | "plan" | "output" | "decision" | "error";
+  kind: "turn" | "plan" | "output" | "decision" | "error" | "tool";
   turn?: number;
   text?: string;
   message?: string;
+  /** `kind: "tool"`: a finished tool step, written once when it leaves `running`. */
+  tool?: WorkBoardRunToolStep;
 }
 
 /** Keep prior run transcript pointers on rerun instead of discarding history. */
@@ -257,6 +285,12 @@ export interface WorkBoardRunEvent {
   message?: string;
   /** The execute child's session id: set on the `executing` event fired when that child links (before its first round) and on the terminal `done` event. */
   runSessionId?: string;
+  /** The phase's current tool steps (latest {@link WORK_BOARD_TOOL_STEPS_MAX}), sent whenever one starts or changes status. Such an event
+   * carries no `turn` and is not a phase entry. */
+  tools?: WorkBoardRunToolStep[];
+  /** A queued steer's outcome. Such an event reports nothing else: it may arrive after the run settled (a dropped steer), so its `phase`
+   * is `executing` by construction and must not be read as the run's phase. */
+  steer?: WorkBoardSteerAck;
   at: string;
 }
 
@@ -285,7 +319,9 @@ type WorkBoardSteerRefusal =
   | "recipient-unavailable"
   | "pending-cap";
 
-export type WorkBoardSteerResult = { ok: true } | { ok: false; reason: WorkBoardSteerRefusal };
+/** `ok: true` means queued for the child's next round boundary, not delivered; the outcome arrives later as a progress event whose
+ * `steer.messageId` is this `messageId`. */
+export type WorkBoardSteerResult = { ok: true; messageId: string } | { ok: false; reason: WorkBoardSteerRefusal };
 
 /** Stopping a running execution; not-running means the runner had already let go of the child (it was finishing). */
 export type WorkBoardCancelResult = { ok: true } | { ok: false; reason: "not-executing" | "not-running" };
@@ -295,7 +331,7 @@ type WorkBoardControlRequestRefusal = "user-gesture-required" | "not-found";
 
 /** `redactedCount` reports outgoing PII redaction applied to the text before it reached the child, like a chat send's notice. */
 export type WorkBoardSteerIpcResult =
-  | { ok: true; redactedCount?: number }
+  | { ok: true; messageId: string; redactedCount?: number }
   | {
       ok: false;
       reason:

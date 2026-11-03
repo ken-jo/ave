@@ -276,7 +276,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }, text);
     const result = workBoardEngine.steerRun(id, effective);
     if (!result.ok) return result;
-    return redactedCount > 0 ? { ok: true, redactedCount } : { ok: true };
+    return redactedCount > 0 ? { ok: true, messageId: result.messageId, redactedCount } : { ok: true, messageId: result.messageId };
   });
 
   // Stop a running execution through the ordinary sub-agent interrupt; the run settles as `cancelled`. Same gate as steer.

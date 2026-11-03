@@ -640,7 +640,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
       const run = engine.runItem(id, { approvalSurface: owner });
       const child = await linked;
-      expect(await engine.steerRun(id, "also cover the edge cases")).toEqual({ ok: true });
+      expect(await engine.steerRun(id, "also cover the edge cases")).toEqual({ ok: true, messageId: "m-1" });
       expect(steerCalls).toEqual([[`work-board:${id}`, child, "also cover the edge cases"]]);
       release();
       expect((await run).status).toBe("completed");
