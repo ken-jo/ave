@@ -179,7 +179,7 @@ export async function folderService(options: {
     root: marketplaces,
     workRoot,
     policy,
-    tokens: { get: () => null, has: () => false, set: async () => {}, delete: async () => {} },
+    tokens: { get: async () => null, has: async () => false, set: async () => {}, delete: async () => {} },
     previewTokens: new Map(),
     versionContext: () => ({ appVersion: getAveAppVersion(), platform: options.folders.platform, canaryOptIn: false, installationId: "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b" }),
     installers,

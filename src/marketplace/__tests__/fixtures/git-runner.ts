@@ -32,7 +32,7 @@ export async function createTestGitRunner(
   writeFileSync(globalConfigPath, "");
   const git = options.runtime?.git ?? await hostGitExecutable();
   const tokens = options.tokens ?? {};
-  const broker = options.runtime?.broker ?? await AskpassBroker.start({ getToken: (host) => tokens[host] ?? null });
+  const broker = options.runtime?.broker ?? await AskpassBroker.start({ getToken: async (host) => tokens[host] ?? null });
   const runner = new GitRunner({
     git,
     globalConfigPath,

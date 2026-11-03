@@ -56,13 +56,13 @@ describe("A2A remote boot runtime", () => {
       { a2aRemoteRouting: true, a2aRemoteReceiver: true },
       { "a2a.remote.route-control-auth": "control-secret", "a2a.remote.receiver-bearer": "receiver-secret" },
     );
-    const runtime = await createA2ARemoteRuntime({
+    const runtime = (await createA2ARemoteRuntime({
       settings: value.value,
       agentActionApprover: shared,
       projectRoot: "/project",
       encryption,
       namespace,
-    })!;
+    }))!;
     expect(runtime.agentActionApprover).toBe(shared);
 
     const outbound = runtime.agentActionApprover({

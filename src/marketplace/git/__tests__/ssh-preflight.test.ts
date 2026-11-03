@@ -43,7 +43,7 @@ describe("GitRunner ssh preflight", () => {
     dir = mkdtempSync(join(tmpdir(), "ave-ssh-preflight-"));
     mkdirSync(join(dir, "empty"));
     writeFileSync(join(dir, "gitconfig"), "");
-    broker = await AskpassBroker.start({ getToken: () => null });
+    broker = await AskpassBroker.start({ getToken: async () => null });
   });
 
   afterAll(async () => {

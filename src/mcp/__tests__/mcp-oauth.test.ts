@@ -622,10 +622,11 @@ describe("remote authorization", () => {
     const state = await fixture();
     let readable = false;
     const store = new Map<string, string>();
-    const { session } = createSession(state, { store, getSecret: (key) => {
+    const { session } = createSession(state, { store, getSecret: async (key) => {
       if (!readable) throw new Error("private-storage-diagnostic");
       return store.get(key) ?? null;
     } });
+    await session.whenReady();
     expect(session.getStatus()).toBe("error");
     const failure = await session.authenticate().catch((error: unknown) => error as Error & { code?: string });
     expect(failure).toMatchObject({ code: "mcp-auth-storage-unreadable", message: "MCP authorization storage cannot be read" });
@@ -640,7 +641,7 @@ describe("remote authorization", () => {
 
   it("refuses before discovery, the redirect listener or registration when encrypted storage is unavailable", async () => {
     const state = await fixture();
-    const { session, catchers, openAuthorizationUrl } = createSession(state, { canStoreEncrypted: () => false });
+    const { session, catchers, openAuthorizationUrl } = createSession(state, { canStoreEncrypted: async () => false });
     const open = vi.spyOn(catchers, "open");
     await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-storage-unavailable" });
     expect(open).not.toHaveBeenCalled();

@@ -1344,7 +1344,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     const upstream = await recordingUpstream(200);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     let settings = { ...DEFAULT_UPSTREAM_PROXY, mode: "off" as "off" | "manual" };
-    const router = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: () => null, env: () => ({}) });
+    const router = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: async () => null, env: () => ({}) });
     const phases: Array<SandboxAskContext["phase"]> = [];
     let release!: () => void;
     let entered!: () => void;
@@ -1401,7 +1401,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     const entered = new Promise<void>(resolve => { enter = resolve; });
     const phases: Array<SandboxAskContext["phase"]> = [];
     const router = createUpstreamProxyRouter({
-      settings: () => settings, manualCredentials: () => null, env: () => ({}),
+      settings: () => settings, manualCredentials: async () => null, env: () => ({}),
       resolveProxy: async () => { enter(); await hold; return "DIRECT"; },
     });
     try {
@@ -1456,7 +1456,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       let settings = { ...DEFAULT_UPSTREAM_PROXY, mode: "manual" as const, manualUrl: oldOrigin };
       // Different throwaway credentials identify which service receives the handshake.
       let credentials = { username: "old-wire-user", password: "old-wire-only", origin: oldOrigin };
-      const upstream = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: () => credentials, env: () => ({}) });
+      const upstream = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: async () => credentials, env: () => ({}) });
       setup = await withRouter(test, upstream.router);
       if (setup === undefined) return;
       setDestinationResolverForTesting(async name => {

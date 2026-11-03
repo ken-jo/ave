@@ -239,8 +239,8 @@ describe("MarketplaceService", () => {
     });
     const stored = new Map<string, string>();
     const tokens: TokenStore = {
-      get: (host) => stored.get(host) ?? null,
-      has: (host) => stored.has(host),
+      get: async (host) => stored.get(host) ?? null,
+      has: async (host) => stored.has(host),
       set: async (host, token) => void stored.set(host, token),
       delete: async (host) => void stored.delete(host),
     };

@@ -1060,7 +1060,7 @@ it.each([
     expect(before.review.outcome).toBe("unavailable");
     expect(before.result).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
     expect(streamProviderFor).not.toHaveBeenCalled();
-    const repair = await dispatchPermissionReviewerCommandWithRewire({ verb: "mode", value: "llm" }, wire, path);
+    const repair = await dispatchPermissionReviewerCommandWithRewire({ verb: "mode", value: "llm" }, async () => { wire(); }, path);
     expect(repair.ok).toBe(true);
     expect(readPermissionSettings(path).fault).toBeNull();
     expect(streamProviderFor).toHaveBeenCalledOnce();

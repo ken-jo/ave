@@ -183,7 +183,7 @@ describe("host OAuth auth window", () => {
     const login = new McpOAuthSession({ id: "window-fixture", transport: "http", url: `${base}/mcp`, auth: "oauth",
       allowPrivateNetworks: true, oauth: { clientId: "fixture-client", clientRegistration: "preregistration" } }, {
       networkFetch: fetch, redirectCatchers: new AuthRedirectCatchers(),
-      secrets: { canStoreEncrypted: () => true, getSecret: key => values.get(key) ?? null,
+      secrets: { canStoreEncrypted: async () => true, getSecret: async key => values.get(key) ?? null,
         setSecret: async (key, value) => { values.set(key, value); }, deleteSecret: async key => { values.delete(key); } },
       openAuthorizationUrl: async (url, options) => {
         authorization = new URL(url);

@@ -54,8 +54,8 @@ afterEach(async () => {
   if (existsSync(home)) await cleanupTmpDir(home);
 });
 
-async function createValidAudit(): Promise<{ path: string; seals: ReturnType<typeof createHostSecretStore> }> {
-  const seals = createHostSecretStore(
+async function createValidAudit(): Promise<{ path: string; seals: Awaited<ReturnType<typeof createHostSecretStore>> }> {
+  const seals = await createHostSecretStore(
     createNodeSecretEncryption(keyFile),
     join(home, "secrets"),
   );

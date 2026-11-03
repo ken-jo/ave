@@ -169,7 +169,7 @@ function wireRequest(
 
 function routingFixture(port: number, initialMode: "off" | "manual" = "off") {
   let settings: UpstreamProxySettings = { ...DEFAULT_UPSTREAM_PROXY, mode: initialMode, manualUrl: `http://127.0.0.1:${port}` };
-  const router = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: () => null, env: () => ({}) });
+  const router = createUpstreamProxyRouter({ settings: () => settings, manualCredentials: async () => null, env: () => ({}) });
   return {
     router: router.router,
     useUpstream(resolvesNames = false) {

@@ -128,8 +128,8 @@ beforeEach(() => {
 describe("McpManager bundled generation", () => {
   it("withholds an app plugin's OAuth server until the Authenticate action, then connects it through its session", async () => {
     const stored = new Map<string, string>();
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-oauth.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-oauth.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -168,8 +168,8 @@ describe("McpManager bundled generation", () => {
     const stableId = bundledConfigId({ kind: "plugin", name: "rebuild-kit" }, "remote");
     const stored = new Map<string, string>([["mcp.oauth.index", "{ not json"]]);
     const deleted: string[] = [];
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { deleted.push(key); stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { deleted.push(key); stored.delete(key); }, canStoreEncrypted: async () => true };
     const configPath = join(root, "servers-rebuild.json");
     writeFileSync(configPath, JSON.stringify({ servers: [] }));
     const manager = new McpManager(new McpGovernance(join(root, "policy-rebuild.json")), new ToolRegistry(), unusedNetworkFetch,
@@ -212,8 +212,8 @@ describe("McpManager bundled generation", () => {
       ["mcp.oauth.index", JSON.stringify({ [removedId]: "mcp.oauth.removed", [disabledId]: "mcp.oauth.disabled" })],
       ["mcp.oauth.removed", "grant"], ["mcp.oauth.disabled", "grant"],
     ]);
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-registry.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-registry.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -239,8 +239,8 @@ describe("McpManager bundled generation", () => {
 
   it("asks a reinstalled app plugin to authenticate again once its uninstall retired the sign-in", async () => {
     const stored = new Map<string, string>();
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-reinstall.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-reinstall.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -294,8 +294,8 @@ describe("McpManager bundled generation", () => {
   it("revokes a removed app plugin's sign-in even when its reinstall commits before the package locks settle", async () => {
     const stored = new Map<string, string>();
     let deletions: Promise<void> | undefined;
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { await deletions; stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { await deletions; stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-race.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-race.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });

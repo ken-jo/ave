@@ -86,7 +86,7 @@ describe("reviewer reconfiguration authority", () => {
     const path = join(root, "settings.json");
     writeFileSync(path, JSON.stringify({ permissions: { reviewer: { mode: "llm", fallbackOnError: "deny" } }, unrelated: true }));
     const failure = new Error("Provider factory failed before reviewer installation");
-    const rewire = vi.fn(() => {
+    const rewire = vi.fn(async () => {
       const token = current.manager.beginReviewerReconfiguration();
       if (readPermissionSettings(path).permissions.reviewer.mode === "disabled") throw failure;
       current.configure();

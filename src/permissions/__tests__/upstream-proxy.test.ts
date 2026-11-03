@@ -18,7 +18,7 @@ function deps(overrides: Omit<Partial<UpstreamProxyRouterDeps>, "settings"> & { 
   const { settings, envVars, ...rest } = overrides;
   return {
     settings: () => ({ ...DEFAULT_UPSTREAM_PROXY, ...settings }),
-    manualCredentials: () => null,
+    manualCredentials: async () => null,
     env: () => envVars ?? {},
     ...rest,
   };
@@ -292,7 +292,7 @@ describe("upstreamRoutesFor", () => {
     for (const origin of ["https://other.test:8443", "https://proxy.test:443", "http://proxy.test:8443"]) {
       const manual = deps({
         settings: { mode: "manual", manualUrl: "https://proxy.test:8443" },
-        manualCredentials: () => ({ username: "me", password: "pw", origin }),
+        manualCredentials: async () => ({ username: "me", password: "pw", origin }),
       });
       const result = await upstreamRoutesFor(manual, https("example.com"));
       expect(result.routes, origin).toEqual([{ kind: "https", host: "proxy.test", port: 8443 }]);
@@ -308,7 +308,7 @@ describe("upstreamRoutesFor", () => {
   it("manual: the configured proxy with stored credentials, the bypass list direct, an unusable URL refused", async () => {
     const manual = deps({
       settings: { mode: "manual", manualUrl: "https://proxy.test:8443", bypass: "10.0.0.0/8, .lan" },
-      manualCredentials: () => ({ username: "me", password: "pw", origin: "https://proxy.test:8443" }),
+      manualCredentials: async () => ({ username: "me", password: "pw", origin: "https://proxy.test:8443" }),
       envVars: { HTTPS_PROXY: "http://env:1" },
     });
     expect(await upstreamRoutesFor(manual, https("example.com"))).toMatchObject({
@@ -449,7 +449,7 @@ describe("limitConcurrency (resolveProxy calls)", () => {
     let peak = 0;
     const router = createUpstreamProxyRouter({
       settings: () => ({ ...DEFAULT_UPSTREAM_PROXY }),
-      manualCredentials: () => null,
+      manualCredentials: async () => null,
       env: () => ({}),
       maxConcurrentResolves: 3,
       resolveProxy: async () => {
