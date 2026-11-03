@@ -8,7 +8,7 @@ import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
-import type { RoutineRecord, InvalidRoutine } from "../../shared/routines-types.js";
+import type { RoutineRecord, InvalidRoutine, RoutineFailure } from "../../shared/routines-types.js";
 import type { WorkProposal } from "../../shared/work-board-types.js";
 import type {
   RoutineAttentionApprovalView,
@@ -59,20 +59,30 @@ function routineTitle(routine: RoutineRecord): string {
   return routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
 }
 
-// One view per routine; every reason that applies rides on it, so the badge counts the routine once. A routine counts only for a broken
-// configuration: missing plugins on an active routine (the routine list's own rule) or a held-back invalid plugin id. A successful or
-// notify-only result is not a decision and never enters the list.
+function failureView(failure: RoutineFailure): RoutineFailure {
+  return failure.kind === "error"
+    ? { kind: "error", firedAt: failure.firedAt, at: failure.at, reason: masked(failure.reason) }
+    : { kind: "shutdown-timeout", firedAt: failure.firedAt, at: failure.at };
+}
+
+// One view per routine; every reason that applies rides on it, so the badge counts the routine once. A routine counts for a broken
+// configuration (missing plugins on an active routine, the routine list's own rule; or a held-back invalid plugin id) or for an
+// unacknowledged failed run. A failure counts even on a dismissed record: a shutdown routine stays dismissed after it fails, so its
+// failure would otherwise never be seen. A successful or notify-only result is not a decision and never enters the list.
 function routineView(routine: RoutineRecord): RoutineAttentionApprovalView | null {
-  if (routine.dismissedAt !== undefined || routine.needsAttention === undefined) return null;
+  const pluginsMissing = routine.dismissedAt === undefined && routine.needsAttention !== undefined;
+  const failure = routine.lastFailure && routine.lastFailure.acknowledgedAt === undefined ? routine.lastFailure : undefined;
+  if (!pluginsMissing && !failure) return null;
   return {
     kind: "routine-attention",
     key: `routine:${routine.id}`,
     scope: { type: "global" },
     title: masked(routineTitle(routine)),
-    arrivedAt: routine.lastFiredAt ?? routine.createdAt,
+    arrivedAt: failure?.at ?? routine.lastFiredAt ?? routine.createdAt,
     routineId: routine.id,
-    reasons: ["plugins-missing"],
-    missingPluginIds: [...routine.needsAttention.missingPluginIds],
+    reasons: [...(pluginsMissing ? (["plugins-missing"] as const) : []), ...(failure ? (["run-failed"] as const) : [])],
+    ...(pluginsMissing && routine.needsAttention ? { missingPluginIds: [...routine.needsAttention.missingPluginIds] } : {}),
+    ...(failure ? { failure: failureView(failure) } : {}),
   };
 }
 

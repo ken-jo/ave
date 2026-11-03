@@ -1006,6 +1006,8 @@ export type AveApi = {
   triggerRoutineNow: (id: string) => Promise<{ ok: boolean; error?: string }>;
   listPendingRoutineResults: () => Promise<import("../../shared/routines-types.js").RoutineFiredPayload[]>;
   acknowledgeRoutineResult: (routineId: string, firedAt: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Clear the failure of the fire at `failureFiredAt`; `routine-failure-stale` when a newer failure replaced it. */
+  acknowledgeRoutineFailure: (routineId: string, failureFiredAt: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   addRoutine: (
     input: import("../../shared/routines-types.js").AddRoutineInput,
   ) => Promise<

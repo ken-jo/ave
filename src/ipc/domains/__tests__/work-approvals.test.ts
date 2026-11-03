@@ -221,6 +221,44 @@ describe("work approvals list", () => {
     expect(JSON.stringify(result)).not.toContain("PRIVATE-PRE-PROMPT");
   });
 
+  it("lists an unacknowledged failed run, including a shutdown routine's dismissed record, and drops it once acknowledged", async () => {
+    await register();
+    const daily = await routinesStore.add({
+      trigger: "schedule",
+      execution: "llm-session",
+      schedule: { at: new Date(Date.now() + 60_000).toISOString(), repeat: { kind: "daily" } },
+      prePrompt: "x",
+      title: "Daily",
+    });
+    const dailyFired = (await routinesStore.markFired(daily.id))!.lastFiredAt!;
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    await routinesStore.recordRunOutcome(daily.id, dailyFired, { ok: false, kind: "error", reason: `provider down ${secret}` });
+    const quit = await routinesStore.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
+    const quitFired = (await routinesStore.markFired(quit.id))!.lastFiredAt!;
+    await routinesStore.recordRunOutcome(quit.id, quitFired, { ok: false, kind: "shutdown-timeout" });
+    expect(routinesStore.list().find((r) => r.id === quit.id)?.dismissedAt).toBeDefined();
+
+    const result = await list();
+    if (!result.ok) throw new Error("list failed");
+    const byId = new Map(result.items.map((item) => [item.kind === "routine-attention" ? item.routineId : item.key, item]));
+    expect(byId.get(daily.id)).toMatchObject({
+      reasons: ["run-failed"],
+      failure: { kind: "error", firedAt: dailyFired },
+    });
+    expect(byId.get(quit.id)).toMatchObject({
+      reasons: ["run-failed"],
+      failure: { kind: "shutdown-timeout", firedAt: quitFired },
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(result.total).toBe(2);
+
+    expect(await routinesStore.acknowledgeFailure(quit.id, quitFired)).toBe("acknowledged");
+    await routinesStore.acknowledgeResult(daily.id, dailyFired);
+    const after = await list();
+    if (!after.ok) throw new Error("list failed");
+    expect(after.items).toEqual([]);
+  });
+
   it("lists a held-back invalid routine", async () => {
     mkdirSync(join(dir, "routine"), { recursive: true });
     writeFileSync(join(dir, "routine", "routines.json"), JSON.stringify({

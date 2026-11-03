@@ -108,6 +108,20 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     return { ok: true };
   });
 
+  ipcMain.handle(ROUTINES.acknowledgeFailure, async (e, routineId: unknown, failureFiredAt: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, ROUTINES.acknowledgeFailure, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (typeof routineId !== "string" || typeof failureFiredAt !== "string") return { ok: false, error: "invalid-input" };
+    if (!routinesStore) return { ok: false, error: "no-store" };
+    const outcome = await routinesStore.acknowledgeFailure(routineId, failureFiredAt);
+    if (outcome === "not-found") return { ok: false, error: "routine-not-found" };
+    // A newer failure replaced the one the user saw; the card re-lists on the change signal and shows that one instead.
+    if (outcome === "stale") return { ok: false, error: "routine-failure-stale" };
+    return { ok: true };
+  });
+
   ipcMain.handle(
     ROUTINES.add,
     async (

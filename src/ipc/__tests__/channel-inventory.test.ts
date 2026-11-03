@@ -519,6 +519,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:prompts:list",
         "ave:prompts:list-summaries",
         "ave:prompts:save",
+        "ave:routines:ack-failure",
         "ave:routines:ack-result",
         "ave:routines:add",
         "ave:routines:dismiss",

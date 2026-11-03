@@ -471,8 +471,6 @@ export class RoutinesStore {
       }
       file.routines.push(record);
       await this.persist(file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
       return record;
     });
   }
@@ -489,8 +487,6 @@ export class RoutinesStore {
       }
       r.dismissedAt = new Date().toISOString();
       await this.persist(file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
       return true;
     });
   }
@@ -504,8 +500,6 @@ export class RoutinesStore {
       file.invalid = file.invalid.filter((held) => held.id !== id);
       const removed = file.routines.length + file.invalid.length !== before;
       await this.persist(file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
       return removed;
     });
   }
@@ -578,8 +572,6 @@ export class RoutinesStore {
       if (patch.lastRoutineSessionId !== undefined) r.lastRoutineSessionId = patch.lastRoutineSessionId;
       if (patch.dismissedAt !== undefined) r.dismissedAt = patch.dismissedAt;
       await this.persist(file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
       return r;
     });
   }
@@ -595,6 +587,22 @@ export class RoutinesStore {
       }
       return true;
     });
+  }
+
+  // The user acknowledged the failure of the fire at `failureFiredAt` from 확인 필요. Only that failure is cleared: when a newer fire has
+  // failed (or a success cleared it) since the user saw the card, the acknowledgement is stale and changes nothing.
+  async acknowledgeFailure(id: string, failureFiredAt: string): Promise<"acknowledged" | "stale" | "not-found"> {
+    let stale = false;
+    const updated = await this.mutate(id, (r) => {
+      if (r.lastFailure?.firedAt !== failureFiredAt) {
+        stale = true;
+        return false;
+      }
+      delete r.lastFailure;
+      return true;
+    });
+    if (!updated) return "not-found";
+    return stale ? "stale" : "acknowledged";
   }
 
   // Record how the run of the fire at `firedAt` ended. Runs overlap (dispatch does not await, and a manual trigger can start during a
@@ -629,7 +637,7 @@ export class RoutinesStore {
       this.cache = file.routines;
       this.invalidCache = file.invalid;
       if (!r) return null;
-      if (apply(r)) await writeFileAtomic(this.filePath, file);
+      if (apply(r)) await this.persist(file);
       return cloneRecord(r);
     });
   }
@@ -660,8 +668,6 @@ export class RoutinesStore {
       } else advanceRepeatingSchedule(r, firedAt);
       // cron routines: next-fire is re-computed by the scheduler each tick — no need to advance `at` here.
       await this.persist(file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
       return r;
     });
   }
@@ -679,8 +685,6 @@ export class RoutinesStore {
       if (minuteUTC !== undefined) r.lastSkippedMinuteUTC = minuteUTC;
       advanceRepeatingSchedule(r, new Date().toISOString());
       if (JSON.stringify(r) !== previous) await this.persist(file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
     });
   }
 }

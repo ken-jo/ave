@@ -1216,8 +1216,12 @@ Work approvals ("확인 필요" in the UI) are work-level decisions, separate fr
 tool-execution approvals, which stay in the conversation's ApprovalDock.
 `ave:work-approvals:list` is a read-only projection over the stores that own
 each decision. It covers open work proposals (`unscoped`) and routines needing
-attention (`global`). A routine needs attention when plugins are missing or a
-held-back plugin id is invalid. A successful or notify-only result is not a
+attention (`global`). A routine needs attention when plugins are missing, a
+held-back plugin id is invalid, or its last run failed and the failure is not
+acknowledged. A failure is listed even on a dismissed record (a shutdown routine
+stays dismissed after it fails). `ave:routines:ack-failure` clears exactly the
+failure the card showed, by its `firedAt`, and returns `routine-failure-stale`
+when a newer failure replaced it. A successful or notify-only result is not a
 decision and is never listed. Plan approvals (project-scoped) join with WA-1.
 Memories save without approval, so they are not a source. The list returns
 the requested project's items plus the unscoped and global ones, with a `total`

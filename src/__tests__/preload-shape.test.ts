@@ -270,6 +270,7 @@ describe("preload contextBridge world shape lock", () => {
         },
         "aveApi": {
           "acceptWorkProposal": "function",
+          "acknowledgeRoutineFailure": "function",
           "acknowledgeRoutineResult": "function",
           "acpSubscriptionCancelLogin": "function",
           "acpSubscriptionChooseRuntime": "function",

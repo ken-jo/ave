@@ -37,6 +37,7 @@ export const ROUTINES = {
   fired: "ave:routines:fired",
   pendingResults: "ave:routines:pending-results",
   acknowledgeResult: "ave:routines:ack-result",
+  acknowledgeFailure: "ave:routines:ack-failure",
   listSessions: "ave:routines:list-sessions",
   // Running indicator events (renderer reflects LLM session progress)
   runningStarted: "ave:routines:running-started",

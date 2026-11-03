@@ -5,10 +5,12 @@
  *
  * Renderer-safe: no Node imports.
  */
+import type { RoutineFailure } from "./routines-types.js";
 
 // Scope: `project` (with whether it is the default project), `unscoped` (no project yet; accepting chooses one), or `global` (belongs to no project).
 
 /** A plugin or briefing proposal the user can add to a project or dismiss. */
+
 export interface WorkProposalApprovalView {
   kind: "proposal";
   key: string;
@@ -27,8 +29,8 @@ export interface WorkProposalApprovalView {
 }
 
 /** Why a routine needs the user. One routine yields one view carrying every reason that applies. */
-// Only a broken configuration (or, with routine failure persistence, a failed run) counts; a successful or notify-only result never does.
-type RoutineAttentionReason = "plugins-missing" | "invalid-plugin-id";
+// Only a broken configuration or an unacknowledged failed run counts; a successful or notify-only result never does.
+type RoutineAttentionReason = "plugins-missing" | "invalid-plugin-id" | "run-failed";
 
 export interface RoutineAttentionApprovalView {
   kind: "routine-attention";
@@ -41,6 +43,8 @@ export interface RoutineAttentionApprovalView {
   reasons: RoutineAttentionReason[];
   /** Present with the plugins-missing reason. */
   missingPluginIds?: string[];
+  /** Present with the run-failed reason, never acknowledged; `firedAt` is what 확인함 sends back to acknowledge exactly this failure. */
+  failure?: RoutineFailure;
 }
 
 export type WorkApprovalView =
