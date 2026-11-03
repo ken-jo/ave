@@ -107,13 +107,13 @@ describe("memory_write — provenance", () => {
         sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10",
         messageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f",
       },
-    });
+    }, "assistant");
   });
 
   it("ignores provenance the model puts in its arguments", async () => {
     const { store, saveMemory } = makeStore();
     await run({ title: "stack", content: "Alpha uses pnpm.", origin: { sessionId: "forged" }, sessionId: "forged" }, store);
-    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", { source: "assistant", state: "candidate" });
+    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", { source: "assistant", state: "candidate" }, "assistant");
   });
 });
 

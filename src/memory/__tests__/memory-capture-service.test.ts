@@ -4,7 +4,11 @@ import {
   type MemoryCaptureReviewer,
 } from "../memory-capture-service.js";
 import type { MemoryManager, NoteEntry } from "../memory-manager.js";
-import { MAX_MEMORY_SOURCE_CHARS, MEMORY_KINDS } from "../memory-manager.js";
+import { MAX_MEMORY_SOURCE_CHARS, MEMORY_KINDS, MemoryManager as RealMemoryManager } from "../memory-manager.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const SOURCE = "I prefer concise status updates in Korean.";
 
@@ -242,6 +246,27 @@ describe("MemoryCaptureService", () => {
     expect(result).toEqual({ status: "skipped", reason: "sensitive-input" });
     expect(review).not.toHaveBeenCalled();
     expect(saveMemory).not.toHaveBeenCalled();
+  });
+});
+
+describe("MemoryCaptureService with the real store", () => {
+  it("persists where an automatic capture was learned and reads it back", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-capture-origin-"));
+    const store = new RealMemoryManager({ aveDir: dir });
+    try {
+      const { memoryReviewer } = makeMemoryReviewer();
+      const service = createCaptureService(store, memoryReviewer, "auto");
+
+      enqueueTrustedAutomatic(service);
+      await service.runOnIdle();
+
+      const saved = store.listMemoryEntries().find((entry) => entry.title === "Communication preference");
+      expect(saved?.origin).toEqual({ v: 1, sessionId: SESSION_ID, messageId: TURN_MESSAGE_ID, store: "main" });
+    } finally {
+      store.stopPersistentContextWatcher();
+      store.closeSearchIndex();
+      await cleanupTmpDir(dir);
+    }
   });
 });
 

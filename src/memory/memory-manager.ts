@@ -3569,8 +3569,8 @@ export class MemoryManager implements PromptMemorySource {
       ...(expiresAt ? { expiresAt } : {}),
       ...(pinned ? { pinned: true } : {}),
       ...(requested.capture ?? existing.capture ? { capture: { ...(requested.capture ?? existing.capture)! } } : {}),
-      // Where a memory was learned is its first origin; later edits are in the change history.
-      ...(existing.origin ?? requested.origin ? { origin: { ...(existing.origin ?? requested.origin)! } } : {}),
+      // Origin is set only when a memory is created; a memory first saved without one (a direct UI save) never gains one.
+      ...(existing.origin ? { origin: { ...existing.origin } } : {}),
     };
   }
 
