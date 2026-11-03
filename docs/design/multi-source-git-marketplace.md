@@ -1648,7 +1648,7 @@ fetches a pinned PortableGit at install time instead of shipping it:
   bump.
 - A size or sha256 mismatch deletes the download and places nothing (exit 3).
   A verified archive is extracted to `$INSTDIR\git.partial`, must contain
-  `cmd\git.exe` and `mingw64in\git-remote-https.exe`, and is then renamed
+  `cmd\git.exe` and `mingw64\bin\git-remote-https.exe`, and is then renamed
   to `$INSTDIR\git`. The per-machine install makes that folder
   administrator-writable only.
 - Failure does not abort the install: a oneClick installer has no retry flow.
@@ -1659,8 +1659,8 @@ fetches a pinned PortableGit at install time instead of shipping it:
 
 Installer-copy environment, set on every call; nothing is written inside the
 copy: `cmd\git.exe` with `GIT_EXEC_PATH` = `mingw64\libexec\git-core` and
-`PATH` prefixed with `mingw64in` (which holds the https helper) and
-`usrin`. `-c http.sslBackend=schannel` makes it trust the Windows
+`PATH` prefixed with `mingw64\bin` (which holds the https helper) and
+`usr\bin`. `-c http.sslBackend=schannel` makes it trust the Windows
 certificate store, corporate roots included; the copy's own system config says
 the same, but `GIT_CONFIG_NOSYSTEM=1` keeps that file unread, so the setting is
 passed on every call. `GIT_TEMPLATE_DIR` = an empty Ave-owned directory
