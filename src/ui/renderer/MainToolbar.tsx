@@ -5,6 +5,7 @@ import { RemoteA2AActionButton } from "./components/RemoteA2AActionButton.js";
 import { ToolbarStatusPill } from "./components/ToolbarStatusPill.js";
 import { BootstrapStatusPill, type BootstrapStatusPillProps } from "./components/BootstrapStatusPill.js";
 import { PluginUpdatesPill, type PluginUpdatesPillProps } from "./components/PluginUpdatesPill.js";
+import { WorkApprovalsBadge, type WorkApprovalsBadgeProps } from "./components/work-approvals/WorkApprovalsBadge.js";
 
 /** Every toolbar control must opt out of the title band's drag region to remain clickable. */
 function NoDrag({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -49,6 +50,8 @@ export interface MainToolbarProps {
   pluginUpdates?: PluginUpdatesPillProps;
   /** Managed-plugin bootstrap pill wiring. Omitted where no bootstrap runs. */
   bootstrapStatus?: BootstrapStatusPillProps;
+  /** 확인 필요 badge wiring (work-level approvals only). Omitted where no work board runs. */
+  workApprovals?: WorkApprovalsBadgeProps;
 }
 
 export function MainToolbar({
@@ -63,6 +66,7 @@ export function MainToolbar({
   onSkipAppUpdate,
   pluginUpdates,
   bootstrapStatus,
+  workApprovals,
 }: MainToolbarProps) {
   const { t } = useTranslation();
   // The toolbar content lives IN the window-control band (CustomTitleBar). The
@@ -128,6 +132,13 @@ export function MainToolbar({
       {bootstrapStatus && (
         <NoDrag className="empty:hidden">
           <BootstrapStatusPill {...bootstrapStatus} />
+        </NoDrag>
+      )}
+
+      {/* 확인 필요: renders nothing at zero and until its first result, like the pills above. */}
+      {workApprovals && (
+        <NoDrag className="empty:hidden">
+          <WorkApprovalsBadge {...workApprovals} />
         </NoDrag>
       )}
 

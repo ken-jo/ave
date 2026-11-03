@@ -44,6 +44,9 @@ import { usePaneActions } from "./PaneFrame.js";
 export interface RoutinePanelProps {
   api: AveApi;
   onOpenSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
+  /** A routine another surface (확인 필요) asked to show: scrolled into view and focused once the list holds it, then reported consumed. */
+  focusRoutineId?: string | null;
+  onFocusConsumed?: () => void;
 }
 
 function ExecutionBadge({ execution }: { execution: RoutineExecution }) {
@@ -88,7 +91,7 @@ function describeSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">):
 /** A stored routine the host holds back: shown as an error with its reason and a remove action. */
 function InvalidRoutineRow({ routine, onRemove }: { routine: InvalidRoutine; onRemove: (id: string) => void }) {
   return (
-    <div className="rounded-lg border border-destructive/(--opacity-strong) bg-destructive/(--opacity-subtle) p-3" data-testid="invalid-routine-row" role="alert">
+    <div className="rounded-lg border border-destructive/(--opacity-strong) bg-destructive/(--opacity-subtle) p-3 outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="invalid-routine-row" data-routine-id={routine.id} tabIndex={-1} role="alert">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <span className="text-sm font-semibold leading-snug text-foreground">{routine.id.slice(0, 8)}</span>
@@ -113,8 +116,10 @@ function RoutineRow({ routine, installedTemplateSources, onDismiss, onRemove, on
   const templateSource = routine.source?.startsWith("agent-plugin:") || routine.source?.startsWith("extension:") ? routine.source : null;
   return (
     <div
-      className={`rounded-lg border bg-background p-3 shadow-sm transition-shadow hover:shadow-md ${recentlyFired ? "border-warning/(--opacity-strong) bg-warning/(--opacity-subtle)" : ""}`}
+      className={`rounded-lg border bg-background p-3 shadow-sm outline-none transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring ${recentlyFired ? "border-warning/(--opacity-strong) bg-warning/(--opacity-subtle)" : ""}`}
       data-testid="routine-row"
+      data-routine-id={routine.id}
+      tabIndex={-1}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -679,7 +684,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
   );
 }
 
-export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
+export function RoutinePanel({ api, onOpenSession, focusRoutineId, onFocusConsumed }: RoutinePanelProps) {
   const templates = useInstalledContent().routineTemplates;
   const installedTemplateSources = useMemo(() => new Set(templates.map(packageRoutineSource)), [templates]);
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
@@ -691,6 +696,20 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
   const [selectedTemplate, setSelectedTemplate] = useState<AgentPluginRoutineTemplate | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [loadedOnce, setLoadedOnce] = useState(false);
+
+  // Focus the requested routine once a loaded list contains it; a request for a routine that is gone is still consumed.
+  useEffect(() => {
+    if (!focusRoutineId || loading || !loadedOnce) return;
+    const known = routines.some((r) => r.id === focusRoutineId) || invalidRoutines.some((r) => r.id === focusRoutineId);
+    if (known) {
+      const row = listRef.current?.querySelector<HTMLElement>(`[data-routine-id="${CSS.escape(focusRoutineId)}"]`);
+      row?.scrollIntoView?.({ block: "nearest" });
+      row?.focus();
+    }
+    onFocusConsumed?.();
+  }, [focusRoutineId, invalidRoutines, loadedOnce, loading, onFocusConsumed, routines]);
 
   const refresh = useCallback(async () => {
     if (typeof api.listRoutines !== "function") return;
@@ -719,7 +738,10 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
       setInvalidRoutines(invalid);
       setRoutineSessions(sessions);
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+        setLoadedOnce(true);
+      }
     }
   }, [api]);
 
@@ -841,7 +863,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
                     {t("routinePanel.noRoutinesEmpty")}
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-2" ref={listRef}>
                     {invalidRoutines.map((r) => (
                       <InvalidRoutineRow key={r.id} routine={r} onRemove={(id) => void handleRemove(id)} />
                     ))}

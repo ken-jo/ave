@@ -30,9 +30,7 @@ import type {
   WorkItemResolved,
   WorkItemStatusStored,
   WorkItemUpdateInput,
-  WorkProposal,
 } from "../../../shared/work-board-types.js";
-import { BRIEFING_PROPOSAL_SOURCE_ID } from "../../../shared/work-board-types.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -52,6 +50,7 @@ import {
   type RunStateMap,
   type WorkItemRunState,
 } from "../hooks/use-work-board-run.js";
+import { WorkApprovalStack, type WorkApprovalActions } from "./work-approvals/WorkApprovalStack.js";
 
 export interface WorkBoardPanelProps {
   api: AveApi;
@@ -60,6 +59,28 @@ export interface WorkBoardPanelProps {
    * its latest run transcript expanded, then reports the request consumed. */
   focusItemId?: number | null;
   onFocusConsumed?: () => void;
+  /** A 확인 필요 item the title-bar popover asked the stack to show and focus; reported consumed once handled. */
+  approvalFocusKey?: string | null;
+  onApprovalFocusConsumed?: () => void;
+  /** Open the schedule (routine) surface focused on one routine. */
+  onOpenRoutine?: (routineId: string) => void;
+}
+
+/** Below this panel width the stack and the lanes become tabs instead of stacking (case board 17). */
+const NARROW_PANEL_WIDTH = 900;
+
+function usePanelNarrow(node: HTMLElement | null): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    if (!node || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width !== undefined && width > 0) setNarrow(width < NARROW_PANEL_WIDTH);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [node]);
+  return narrow;
 }
 
 const TITLE_MAX = 256;
@@ -1142,195 +1163,6 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
   );
 }
 
-// Plugin proposals contain no executable content; render attributed plain text and promote accepted proposals through the
-// ordinary plan/approve/execute path.
-
-function ProposalDetailPart({ heading, children }: { heading: string; children: React.ReactNode }) {
-  return (
-    <div className="mt-2">
-      <h5 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{heading}</h5>
-      <div className="mt-1 text-[11px] leading-relaxed text-foreground [overflow-wrap:anywhere]">{children}</div>
-    </div>
-  );
-}
-
-function ProposalCard({
-  proposal,
-  busy,
-  onStart,
-  onLater,
-  onDismiss,
-}: {
-  proposal: WorkProposal;
-  busy: boolean;
-  onStart: (proposal: WorkProposal) => void;
-  onLater: (proposal: WorkProposal) => void;
-  onDismiss: (proposal: WorkProposal) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <article
-      className="rounded-lg border border-border/(--opacity-strong) bg-background p-3 shadow-sm"
-      data-testid="work-board-proposal-card"
-      data-proposal-id={proposal.id}
-    >
-      <div className="flex min-w-0 items-center gap-1.5">
-        <PriorityChip priority={proposal.priority} />
-        <span
-          className="min-w-0 line-clamp-1 text-sm font-semibold leading-snug text-foreground"
-          data-testid="work-board-proposal-title"
-        >
-          {proposal.title}
-        </span>
-      </div>
-      <p
-        className="mt-1.5 line-clamp-2 break-words text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]"
-        data-testid="work-board-proposal-summary"
-      >
-        {proposal.summary}
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Badge variant="outline" data-testid="work-board-proposal-source">
-          {/* A plugin's display name comes off its manifest and is not
-              translated; the host's own briefing has no manifest, so its
-              source reads in the user's language instead of interpolating an
-              English noun into a localized sentence. */}
-          {proposal.pluginId === BRIEFING_PROPOSAL_SOURCE_ID
-            ? t("workBoard.proposalSourceBriefing")
-            : t("workBoard.proposalSourceLabel", { plugin: proposal.pluginLabel })}
-        </Badge>
-        <span className="text-[11px] text-muted-foreground">{formatDue(proposal.dueAt)}</span>
-      </div>
-
-      {expanded && (
-        <div className="mt-2 border-t pt-2" data-testid="work-board-proposal-detail">
-          <ProposalDetailPart heading={t("workBoard.proposalStateHeading")}>
-            <p data-testid="work-board-proposal-state">{proposal.state}</p>
-          </ProposalDetailPart>
-          {proposal.evidence.length > 0 && (
-            <ProposalDetailPart heading={t("workBoard.proposalEvidenceHeading")}>
-              <ul className="space-y-0.5" data-testid="work-board-proposal-evidence">
-                {proposal.evidence.map((row) => (
-                  <li key={`${row.label}:${row.detail}`}>
-                    <span className="text-muted-foreground">{row.label}</span> — {row.detail}
-                  </li>
-                ))}
-              </ul>
-            </ProposalDetailPart>
-          )}
-          {proposal.blockers.length > 0 && (
-            <ProposalDetailPart heading={t("workBoard.proposalBlockersHeading")}>
-              <ul className="space-y-0.5" data-testid="work-board-proposal-blockers">
-                {proposal.blockers.map((row) => (
-                  <li key={row.reason}>
-                    {row.reason}
-                    {row.resolution ? ` — ${row.resolution}` : ""}
-                  </li>
-                ))}
-              </ul>
-            </ProposalDetailPart>
-          )}
-        </div>
-      )}
-
-      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-1">
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-[11px]"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          data-testid="work-board-proposal-expand"
-        >
-          {expanded ? t("workBoard.proposalCollapse") : t("workBoard.proposalExpand")}
-        </Button>
-        <div className="flex flex-wrap justify-end gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-[11px]"
-            disabled={busy}
-            onClick={() => onDismiss(proposal)}
-            data-testid="work-board-proposal-dismiss"
-          >
-            {t("workBoard.proposalDismiss")}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-[11px]"
-            disabled={busy}
-            onClick={() => onLater(proposal)}
-            data-testid="work-board-proposal-later"
-          >
-            {t("workBoard.proposalLater")}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px]"
-            disabled={busy}
-            onClick={() => onStart(proposal)}
-            data-testid="work-board-proposal-start"
-          >
-            {busy ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <Play className="mr-1 h-3 w-3" />
-            )}
-            {t("workBoard.proposalStart")}
-          </Button>
-        </div>
-      </div>
-    </article>
-  );
-}
-
-/** The 추천 작업 band above the lanes. Renders nothing at all when no proposal is open: an always-present empty shell would
- * spend the top of the board on a permanent "nothing here". */
-function ProposalsSection({
-  proposals,
-  pendingId,
-  onStart,
-  onLater,
-  onDismiss,
-}: {
-  proposals: WorkProposal[];
-  pendingId: string | null;
-  onStart: (proposal: WorkProposal) => void;
-  onLater: (proposal: WorkProposal) => void;
-  onDismiss: (proposal: WorkProposal) => void;
-}) {
-  if (proposals.length === 0) return null;
-  return (
-    <section
-      className="rounded-lg border bg-muted/(--opacity-light) shadow-sm"
-      data-testid="work-board-proposals"
-    >
-      <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-4 py-2.5">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          {t("workBoard.proposalsHeading")}
-        </h3>
-        <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
-          {proposals.length}
-        </span>
-      </div>
-      <div className="space-y-2 p-3">
-        {proposals.map((proposal) => (
-          <ProposalCard
-            key={proposal.id}
-            proposal={proposal}
-            busy={pendingId === proposal.id}
-            onStart={onStart}
-            onLater={onLater}
-            onDismiss={onDismiss}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
 // Reports summarize board state; briefings survey read-only and file findings as separately reviewed proposals.
 
 function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdentity }) {
@@ -1530,10 +1362,17 @@ function ReportResultBlock({
   );
 }
 
-export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: WorkBoardPanelProps) {
+export function WorkBoardPanel({
+  api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, onOpenRoutine,
+}: WorkBoardPanelProps) {
   const [items, setItems] = useState<WorkItemResolved[]>([]);
-  const [proposals, setProposals] = useState<WorkProposal[]>([]);
-  const [pendingProposalId, setPendingProposalId] = useState<string | null>(null);
+  const [panelNode, setPanelNode] = useState<HTMLDivElement | null>(null);
+  const narrow = usePanelNarrow(panelNode);
+  const [approvalCount, setApprovalCount] = useState<number | null>(null);
+  // Narrow layout opens 확인 필요 first while it has items; the user's own tab choice then sticks.
+  const [narrowTabChoice, setNarrowTabChoice] = useState<"overview" | "approvals" | null>(null);
+  const narrowTab = narrowTabChoice ?? (approvalCount !== null && approvalCount > 0 ? "approvals" : "overview");
+  const setNarrowTab = setNarrowTabChoice;
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -1579,21 +1418,6 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
     });
     return unsub;
   }, [api, refresh]);
-
-  const refreshProposals = useCallback(async () => {
-    if (typeof api.listWorkProposals !== "function") return;
-    const result = await api.listWorkProposals();
-    if (!mountedRef.current) return;
-    setProposals("status" in result && result.status === "ok" ? result.proposals : []);
-  }, [api]);
-
-  useEffect(() => {
-    void refreshProposals();
-    if (typeof api.onWorkProposalChanged !== "function") return undefined;
-    return api.onWorkProposalChanged(() => {
-      void refreshProposals();
-    });
-  }, [api, refreshProposals]);
 
   const handleTransition = useCallback(
     async (id: number, to: WorkItemStatusStored) => {
@@ -1643,53 +1467,29 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
     return unsub;
   }, [api, refresh]);
 
-  /** Promote a proposal into a work item. Returns the new item id so the caller decides what happens next — 시작 hands it
-   * straight to the run, 나중에 stops here and leaves it sitting in 진행 예정. */
-  const acceptProposal = useCallback(
-    async (proposal: WorkProposal): Promise<number | null> => {
-      if (typeof api.acceptWorkProposal !== "function") return null;
-      setPendingProposalId(proposal.id);
-      try {
-        const result = await api.acceptWorkProposal(proposal.id, project?.projectRoot);
-        if (!mountedRef.current) return null;
-        await refresh();
-        await refreshProposals();
-        return "status" in result && result.status === "accepted" ? result.itemId : null;
-      } finally {
-        if (mountedRef.current) setPendingProposalId(null);
-      }
+  // 확인 필요 actions. Proposals go through their own accept/dismiss channels; an accepted proposal becomes an ordinary item, and
+  // "추가하고 계획" hands its id to the host's plan → approve → execute run (the plugin supplied nothing executable).
+  const approvalActions = useMemo<WorkApprovalActions>(() => ({
+    acceptProposal: async (proposalId, projectRoot) => {
+      if (typeof api.acceptWorkProposal !== "function") return { ok: false, reason: "no-store" };
+      const result = await api.acceptWorkProposal(proposalId, projectRoot);
+      if (mountedRef.current) await refresh();
+      if ("status" in result && result.status === "accepted") return { ok: true, itemId: result.itemId };
+      return { ok: false, reason: "reason" in result ? result.reason : "status" in result ? result.status : result.error };
     },
-    [api, project, refresh, refreshProposals],
-  );
-
-  const onProposalStart = useCallback(
-    (proposal: WorkProposal) => {
-      void acceptProposal(proposal).then((itemId) => {
-        // The plugin supplied nothing executable: what runs is the host's own plan → approve → execute over the item the host just
-        // composed, and the user still approves the plan before anything fires.
-        if (itemId !== null) runItem(itemId);
-      });
+    dismissProposal: async (proposalId) => {
+      if (typeof api.dismissWorkProposal !== "function") return { ok: false, reason: "no-store" };
+      const result = await api.dismissWorkProposal(proposalId);
+      if ("status" in result && result.status === "dismissed") return { ok: true };
+      return { ok: false, reason: "status" in result ? result.status : result.error };
     },
-    [acceptProposal, runItem],
-  );
-
-  const onProposalLater = useCallback(
-    (proposal: WorkProposal) => void acceptProposal(proposal),
-    [acceptProposal],
-  );
-
-  const onProposalDismiss = useCallback(
-    (proposal: WorkProposal) => {
-      if (typeof api.dismissWorkProposal !== "function") return;
-      setPendingProposalId(proposal.id);
-      void api.dismissWorkProposal(proposal.id).finally(() => {
-        if (!mountedRef.current) return;
-        setPendingProposalId(null);
-        void refreshProposals();
-      });
+    runItem: (itemId) => runItem(itemId),
+    openRoutine: (routineId) => onOpenRoutine?.(routineId),
+    acknowledgeRoutineFailure: async (routineId, failureFiredAt) => {
+      if (typeof api.acknowledgeRoutineFailure !== "function") return { ok: false, error: "no-store" };
+      return api.acknowledgeRoutineFailure(routineId, failureFiredAt);
     },
-    [api, refreshProposals],
-  );
+  }), [api, onOpenRoutine, refresh, runItem]);
 
   const onStart = useCallback((id: number) => void handleTransition(id, "in_progress"), [handleTransition]);
   const onComplete = useCallback((id: number) => void handleComplete(id), [handleComplete]);
@@ -1733,8 +1533,10 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   return (
     <>
       <div
+        ref={setPanelNode}
         className="mx-auto flex min-h-0 min-w-0 flex-1 w-full max-w-6xl flex-col overflow-hidden"
         data-testid="work-board-panel"
+        data-narrow={narrow ? "true" : undefined}
       >
         <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
           <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
@@ -1745,30 +1547,61 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
           </div>
         </div>
         <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-          <ProposalsSection
-            proposals={proposals}
-            pendingId={pendingProposalId}
-            onStart={onProposalStart}
-            onLater={onProposalLater}
-            onDismiss={onProposalDismiss}
-          />
-          {/* The columns fill whatever height the proposals and reports leave (flex-1) but never drop below a usable floor;
-              when the bands take the room, the scroller overflows and scrolls instead. The floor must be explicit: with
-              min-h-0 the grid absorbed the whole deficit and squashed the columns to their headers, and with no min-height
-              the grid's content minimum grows it to every card so the columns never scroll internally. The breakpoint is the
-              board's own width (container query), not the window's: a split tile or a narrow window holds three columns only
-              when the board itself is wide enough. Stacked below it, each column gets its own fixed row. */}
-          <div
-            className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
-            data-testid="work-board-columns"
-          >
-            {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
-            {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
-            {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
-          </div>
-          <div className="border-t pt-4">
-            <ReportsSection api={api} project={project} />
-          </div>
+          {narrow && (
+            <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">
+              <Button
+                role="tab"
+                size="sm"
+                variant={narrowTab === "approvals" ? "default" : "outline"}
+                aria-selected={narrowTab === "approvals"}
+                onClick={() => setNarrowTab("approvals")}
+                data-testid="work-board-tab-approvals"
+              >
+                {t("workApprovals.tabApprovals", { count: approvalCount ?? 0 })}
+              </Button>
+              <Button
+                role="tab"
+                size="sm"
+                variant={narrowTab === "overview" ? "default" : "outline"}
+                aria-selected={narrowTab === "overview"}
+                onClick={() => setNarrowTab("overview")}
+                data-testid="work-board-tab-overview"
+              >
+                {t("workApprovals.tabOverview")}
+              </Button>
+            </div>
+          )}
+          {(!narrow || narrowTab === "approvals") && (
+            <WorkApprovalStack
+              api={api}
+              project={project}
+              actions={approvalActions}
+              focusKey={approvalFocusKey}
+              onFocusConsumed={onApprovalFocusConsumed}
+              onCountChange={setApprovalCount}
+            />
+          )}
+          {(!narrow || narrowTab === "overview") && (
+            <>
+              {/* The columns fill whatever height the 확인 필요 stack and reports leave (flex-1) but never drop below a usable floor;
+                  when the bands take the room, the scroller overflows and scrolls instead. The floor must be explicit: with
+                  min-h-0 the grid absorbed the whole deficit and squashed the columns to their headers, and with no min-height
+                  the grid's content minimum grows it to every card so the columns never scroll internally. The breakpoint is the
+                  board's own width (container query), not the window's: a split tile or a narrow window holds three columns only
+                  when the board itself is wide enough. Stacked below it, each column gets its own fixed row. */}
+              <div
+                className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
+                data-testid="work-board-columns"
+              >
+                {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
+                {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
+                {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
+              </div>
+              <div className="border-t pt-4">
+                <ReportsSection api={api} project={project} />
+              </div>
+            </>
+          )}
         </div>
       </div>
 

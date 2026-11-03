@@ -211,6 +211,38 @@ describe("RoutinePanel missing plugins", () => {
   });
 });
 
+describe("RoutinePanel focus target (확인 필요 → 스케줄에서 열기)", () => {
+  it("focuses the requested routine once the list has loaded, then reports it consumed", async () => {
+    const { RoutinePanel } = await import("../components/RoutinePanel.js");
+    const routine: RoutineRecord = {
+      id: "target-routine", trigger: "schedule", execution: "llm-session", title: "Weekday tests",
+      createdAt: new Date().toISOString(), needsAttention: { missingPluginIds: ["mail"] },
+    };
+    const onFocusConsumed = vi.fn();
+    const api = {
+      listRoutines: vi.fn(async () => ({ routines: [routine], invalid: [] })), listRoutineSessions: vi.fn(async () => []),
+      onRoutineFired: vi.fn(() => () => {}),
+    } as unknown as AveApi;
+    const view = render(<RoutinePanel api={api} focusRoutineId="target-routine" onFocusConsumed={onFocusConsumed} />);
+    await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
+    expect(document.activeElement?.getAttribute("data-routine-id")).toBe("target-routine");
+    view.unmount();
+  });
+
+  it("consumes a request for a routine that is gone without focusing anything", async () => {
+    const { RoutinePanel } = await import("../components/RoutinePanel.js");
+    const onFocusConsumed = vi.fn();
+    const api = {
+      listRoutines: vi.fn(async () => ({ routines: [], invalid: [] })), listRoutineSessions: vi.fn(async () => []),
+      onRoutineFired: vi.fn(() => () => {}),
+    } as unknown as AveApi;
+    const view = render(<RoutinePanel api={api} focusRoutineId="gone" onFocusConsumed={onFocusConsumed} />);
+    await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
+    expect(document.activeElement?.getAttribute("data-routine-id")).toBeFalsy();
+    view.unmount();
+  });
+});
+
 describe("RoutinePanel invalid routines", () => {
   it("shows a held-back routine as an error row with its reason and removes it", async () => {
     const { RoutinePanel } = await import("../components/RoutinePanel.js");
