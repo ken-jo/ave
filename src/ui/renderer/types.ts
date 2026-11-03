@@ -1201,7 +1201,7 @@ export type AveApi = {
   ) => () => void;
   // Work-level decisions ("확인 필요") for one project plus the all-project badge total. Tool-execution approvals are not included.
   listWorkApprovals?: (
-    opts?: { projectRoot?: string } | { allProjects: true },
+    opts?: { projectRoot?: string },
   ) => Promise<
     | import("../../shared/work-approvals-types.js").WorkApprovalListResult
     | { ok: false; error: string }

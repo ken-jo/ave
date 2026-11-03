@@ -1219,11 +1219,10 @@ each decision. It covers open work proposals (`unscoped`) and routines needing
 attention (`global`). A routine needs attention when plugins are missing or a
 held-back plugin id is invalid. A successful or notify-only result is not a
 decision and is never listed. Plan approvals (project-scoped) join with WA-1.
-Memories save without approval, so they are not a source. Project mode returns
+Memories save without approval, so they are not a source. The list returns
 the requested project's items plus the unscoped and global ones, with a `total`
-across every authorized project for the title-bar badge. `{ allProjects: true }`
-returns every authorized project's items for the all-projects view and the badge
-popover. Titles and summaries are DLP-masked. Views are built field by field, so
+across every authorized project for the title-bar badge. Titles and summaries
+are DLP-masked. Views are built field by field, so
 a routine prompt or a proposal task brief never crosses this channel. A missing
 source store is a `work-approvals-source-unavailable` result, never a silently
 shorter list. Each source store signals after its own write, whichever path made

@@ -109,18 +109,15 @@ afterEach(async () => {
 });
 
 describe("work approvals list", () => {
-  it("returns the unscoped and global items in project mode and in all-projects mode, with a matching total", async () => {
+  it("returns the unscoped and global items for a project, with a matching total", async () => {
     await register();
     await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
-    for (const arg of [{ projectRoot: PROJECT_A }, { allProjects: true }]) {
-      const result = await list(arg);
-      if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
-      expect(keys(result.items)).toEqual(["proposal"]);
-      expect(result.total).toBe(1);
-    }
-    // allProjects must be exactly true and alone.
-    expect(await list({ allProjects: false })).toEqual({ ok: false, error: "invalid-input" });
-    expect(await list({ allProjects: true, projectRoot: PROJECT_A })).toEqual({ ok: false, error: "invalid-input" });
+    const result = await list({ projectRoot: PROJECT_A });
+    if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
+    expect(keys(result.items)).toEqual(["proposal"]);
+    expect(result.total).toBe(1);
+    // There is no all-projects mode until project-scoped plan approvals (WA-1) exist.
+    expect(await list({ allProjects: true })).toEqual({ ok: false, error: "invalid-input" });
   });
 
   it("masks secrets in titles and summaries before they reach the renderer", async () => {
@@ -134,12 +131,10 @@ describe("work approvals list", () => {
       evidence: [{ label: "Token", detail: secret }],
       blockers: [{ reason: `Blocked by ${secret}`, resolution: `Rotate ${secret}` }],
     });
-    for (const arg of [undefined, { allProjects: true }]) {
-      const result = await list(arg);
-      if (!result.ok) throw new Error("list failed");
-      expect(result.items).toHaveLength(1);
-      expect(JSON.stringify(result)).not.toContain(secret);
-    }
+    const result = await list(undefined);
+    if (!result.ok) throw new Error("list failed");
+    expect(result.items).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   it("projects a proposal field by field, without its task brief", async () => {

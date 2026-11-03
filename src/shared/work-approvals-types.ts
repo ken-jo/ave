@@ -50,7 +50,7 @@ export type WorkApprovalView =
 export type WorkApprovalListResult =
   | {
       ok: true;
-      /** Project mode: the requested project's decisions plus the unscoped and global ones. All-projects mode: every authorized project's. */
+      /** The requested project's decisions plus the unscoped and global ones. */
       items: WorkApprovalView[];
       /** Every decision across all authorized projects, each counted once; the title-bar badge. */
       total: number;

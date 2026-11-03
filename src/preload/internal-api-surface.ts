@@ -1170,7 +1170,7 @@ export function buildInternalApiSurface() {
       | { ok: false; error: string }
     >,
   // Work-level decisions ("확인 필요") for one project plus the all-project badge total; tool-execution approvals stay in the chat ApprovalDock.
-  listWorkApprovals: async (opts?: { projectRoot?: string } | { allProjects: true }) =>
+  listWorkApprovals: async (opts?: { projectRoot?: string }) =>
     ipcRenderer.invoke(WORK_APPROVALS.list, opts) as Promise<
       | import("../shared/work-approvals-types.js").WorkApprovalListResult
       | { ok: false; error: string }

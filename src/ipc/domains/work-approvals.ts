@@ -17,20 +17,16 @@ import type {
   WorkProposalApprovalView,
 } from "../../shared/work-approvals-types.js";
 
-type ListRequest =
-  | { ok: true; mode: "project"; projectRoot: string | undefined }
-  | { ok: true; mode: "all-projects" }
-  | { ok: false };
+type ListRequest = { ok: true; projectRoot: string | undefined } | { ok: false };
 
-// Accept only `{ projectRoot?: string }` or `{ allProjects: true }` so renderer input cannot smuggle store options.
+// Accept only `{ projectRoot?: string }` so renderer input cannot smuggle store options.
 function parseListRequest(raw: unknown): ListRequest {
-  if (raw === undefined) return { ok: true, mode: "project", projectRoot: undefined };
+  if (raw === undefined) return { ok: true, projectRoot: undefined };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
   const record = raw as Record<string, unknown>;
-  if (hasOnlyKeys(record, ["allProjects"]) && record.allProjects === true) return { ok: true, mode: "all-projects" };
   if (!hasOnlyKeys(record, ["projectRoot"])) return { ok: false };
   if (record.projectRoot !== undefined && typeof record.projectRoot !== "string") return { ok: false };
-  return { ok: true, mode: "project", projectRoot: record.projectRoot as string | undefined };
+  return { ok: true, projectRoot: record.projectRoot as string | undefined };
 }
 
 // Titles and summaries are model- or plugin-written text; mask secrets and PII before they reach a renderer, as tool results are.
@@ -102,9 +98,8 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     }
     const request = parseListRequest(raw);
     if (!request.ok) return { ok: false, error: "invalid-input" };
-    // All-projects mode (owner-approved views: the 전체 프로젝트 list and the badge popover) needs no project; project mode resolves one.
-    const project = request.mode === "project" ? resolveAuthorizedWorkspaceProject(request.projectRoot) : null;
-    if (project && (!project.authorized || !project.project)) return { ok: false, error: "project-not-allowed" };
+    const project = resolveAuthorizedWorkspaceProject(request.projectRoot);
+    if (!project.authorized || !project.project) return { ok: false, error: "project-not-allowed" };
     if (!workBoardStore) return { ok: false, error: "work-approvals-source-unavailable", source: "proposal" };
     if (!routinesStore) return { ok: false, error: "work-approvals-source-unavailable", source: "routine-attention" };
 
