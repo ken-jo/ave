@@ -85,6 +85,7 @@ import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
 import { migrateAveHomeConfiguration } from "./shared/ave-home-configuration.js";
+import { evaluateAveHomeTrustAtBoot } from "./shared/ave-home-trust.js";
 import { isAveHomeConfigurationOwner } from "./shared/ave-home-configuration-access.js";
 import { ensureAveScratchDir, removeAveScratchDirIfEmpty } from "./shared/ave-scratch.js";
 import {
@@ -97,7 +98,7 @@ import { assertBootContextReady, createBootContext } from "./boot/context.js";
 import { assembleAppServices } from "./boot/assemble-services.js";
 import { setupNetworkFetch } from "./boot/steps/network-fetch-setup.js";
 import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
-import { notifyHomeBoundaryRepairs, notifyHomeConfigurationPreserved } from "./boot/steps/home-privacy-notice.js";
+import { notifyHomeBoundaryRepairs, notifyHomeConfigurationPreserved, notifyHomeTrustPending } from "./boot/steps/home-privacy-notice.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
 import { setupAlerts } from "./boot/steps/alerts-setup.js";
 import { setupWorkflowStores } from "./boot/steps/workflow-stores.js";
@@ -202,6 +203,8 @@ export async function bootstrap(
     ? migrateAveHomeConfiguration(homePrivacy.home, homePrivacy) : [];
   if (homePrivacy.enforcement === "none") setAveHomeConfigurationRefusedAtBoot(homePrivacy.home);
   for (const diagnostic of configurationDiagnostics) log.warn(`boot: ${diagnostic}`);
+  // Before any loader or boot-time writer: which home inputs Ave can vouch for this run. A pending verdict forces confinement.
+  const homeTrust = evaluateAveHomeTrustAtBoot(homePrivacy.home);
 
   // The application-owned scratch directory the agent may stage work in
   // without an approval. It is offered to the model and to the Layer 1
@@ -276,6 +279,7 @@ export async function bootstrap(
   await setupAuditAndNotification(ctx);
   notifyHomeBoundaryRepairs(homePrivacy, ctx);
   notifyHomeConfigurationPreserved(configurationDiagnostics, ctx);
+  notifyHomeTrustPending(homeTrust, ctx);
 
   // §F7: ApprovalGate with audit. Constructed BEFORE initPluginRuntime so
   // the per-plugin HostApi factory can wire `agentApproval` namespace to the

@@ -116,7 +116,8 @@ describe("independent configuration owners", () => {
     const home = fixture();
     writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } }));
     expect(readPermissionSettings().permissions.blockReadsOutsideWorkingDirectories).toBe(true);
-    expect(migrateOtherProcess(home)).toEqual([]);
+    // The restriction is carried into the committed defaults; the root itself is moved aside, never imported.
+    expect(migrateOtherProcess(home).join("\n")).toContain("settings.json.post-migration-");
     expect(readPermissionSettings().permissions.blockReadsOutsideWorkingDirectories).toBe(true);
   });
 
@@ -124,7 +125,7 @@ describe("independent configuration owners", () => {
     const home = fixture();
     writeFileSync(join(home, "policy.json"), JSON.stringify({ version: 1, requireExplicitApproval: false }));
     expect(userPolicyPath(home)).toBe(join(home, "policy.json"));
-    expect(migrateOtherProcess(home)).toEqual([]);
+    expect(migrateOtherProcess(home).join("\n")).toContain("policy.json.post-migration-");
     await savePolicy({ requireExplicitApproval: true }, undefined, join(home, "absent-admin.json"));
     expect(migrateOtherProcess(home)).toEqual([]);
     expect(JSON.parse(readFileSync(join(home, "config", "policy.json"), "utf8")).requireExplicitApproval).toBe(true);
@@ -144,8 +145,8 @@ describe("independent configuration owners", () => {
     const home = fixture();
     const store = new SecretDocumentStore({ path: join(home, "ave-secrets.json"), policy: "development", encryption: unavailableSecretEncryption });
     await store.set("fixture", "before");
-    migrateOtherProcess(home);
-    expect(store.get("fixture")).toBe("before");
+    // Legacy root secrets are never imported: the commit moves the root document aside.
+    expect(migrateOtherProcess(home).join("\n")).toContain("ave-secrets.json.post-migration-");
     await store.set("fixture", "after");
     expect(store.get("fixture")).toBe("after");
     expect(store.path).toBe(join(home, "config", "ave-secrets.json"));
@@ -170,22 +171,22 @@ describe("independent configuration owners", () => {
     migrateOtherProcess(home);
     const outside = '{"version":1,"requireExplicitApproval":true}';
     writeFileSync(join(home, "policy.json"), outside);
-    expect(migrateOtherProcess(home).join("\n")).toContain("policy.json.post-migration-");
-    const aside = readdirSync(home).find((name) => name.startsWith("policy.json.post-migration-"));
+    const prefix = "Legacy configuration preserved at ";
+    const aside = migrateOtherProcess(home).find((line) => line.startsWith(prefix) && line.includes("policy.json.post-migration-"));
     expect(aside).toBeDefined();
-    expect(readFileSync(join(home, aside!), "utf8")).toBe(outside);
-    expect(JSON.parse(readFileSync(join(home, "config", "policy.json"), "utf8")).requireExplicitApproval).toBe(false);
+    expect(readFileSync(aside!.slice(prefix.length), "utf8")).toBe(outside);
+    expect(JSON.parse(readFileSync(join(home, "config", "policy.json"), "utf8"))).toEqual({ version: 1, requireExplicitApproval: true, managed: false });
   });
 
-  it("deletes a byte identical root copy after commit", () => {
+  it("moves a reappearing root copy aside instead of deleting it, since nothing was imported from it", () => {
     const home = fixture();
     const bytes = '{"version":1,"requireExplicitApproval":false}';
     writeFileSync(join(home, "policy.json"), bytes);
     migrateOtherProcess(home);
     writeFileSync(join(home, "policy.json"), bytes);
-    expect(migrateOtherProcess(home)).toEqual([]);
+    expect(migrateOtherProcess(home).join("\n")).toContain("policy.json.post-migration-");
     expect(existsSync(join(home, "policy.json"))).toBe(false);
-    expect(readdirSync(home).some((name) => name.startsWith("policy.json.post-migration-"))).toBe(false);
+    expect(readdirSync(home).filter((name) => name.startsWith("policy.json.post-migration-"))).toHaveLength(2);
   });
 
   it("reverifies a replaced configuration directory before reading", () => {

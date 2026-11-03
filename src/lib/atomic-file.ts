@@ -41,6 +41,46 @@ const DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME: ParentDirectorySyncRuntime = {
   close: closeSync,
 };
 
+/** One recorded write: `committed` once the new bytes are in place, `failed` when they are not. */
+export interface AtomicWriteTicket {
+  committed(): void;
+  failed(): void;
+}
+
+/** Sees every whole-file write before it starts. It may refuse the write by throwing, or return a ticket to settle afterwards. */
+export type AtomicWriteGuard = (filePath: string, content: string | Uint8Array) => AtomicWriteTicket | undefined;
+
+let atomicWriteGuard: AtomicWriteGuard | undefined;
+
+/** The home content trust manifest registers here, once boot has evaluated it: `lib/` sits below it and cannot import it. */
+export function setAtomicWriteGuard(guard: AtomicWriteGuard | undefined): void {
+  atomicWriteGuard = guard;
+}
+
+/** Run one whole-file write under the registered guard. A write whose rename landed but whose directory sync failed counts as committed. */
+export function guardAtomicWrite<T>(filePath: string, content: string | Uint8Array, write: () => T): T {
+  const ticket = atomicWriteGuard?.(filePath, content);
+  if (ticket === undefined) return write();
+  let result: T;
+  try {
+    result = write();
+  } catch (error) {
+    if (isCommittedAtomicWriteError(error)) ticket.committed();
+    else ticket.failed();
+    throw error;
+  }
+  if (result instanceof Promise) {
+    return result.then((value) => { ticket.committed(); return value; }, (error: unknown) => {
+      if (isCommittedAtomicWriteError(error)) ticket.committed();
+      else ticket.failed();
+      throw error;
+    }) as T;
+  }
+  if (result === false) ticket.failed();
+  else ticket.committed();
+  return result;
+}
+
 /** Rename a staged entry with the shared lock policy. Guard failures abort without retry. */
 export function replaceStagedFile(
   from: string,
@@ -136,12 +176,12 @@ export function writeUtf8FileAtomicSync(
   mode = PRIVATE_FILE_MODE,
   directorySyncRuntime: ParentDirectorySyncRuntime = DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME,
 ): void {
-  writeUtf8FileAtomicSyncInternal(
+  guardAtomicWrite(filePath, content, () => writeUtf8FileAtomicSyncInternal(
     filePath,
     content,
     mode,
     directorySyncRuntime,
-  );
+  ));
 }
 
 /** Atomically replace a UTF-8 file only while a caller-owned precondition still holds. The candidate is fully written
@@ -152,13 +192,13 @@ export function replaceUtf8FileAtomicSyncIf(
   precondition: () => boolean,
   mode = PRIVATE_FILE_MODE,
 ): boolean {
-  return writeUtf8FileAtomicSyncInternal(
+  return guardAtomicWrite(filePath, content, () => writeUtf8FileAtomicSyncInternal(
     filePath,
     content,
     mode,
     DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME,
     precondition,
-  );
+  ));
 }
 
 function writeUtf8FileAtomicSyncInternal(
@@ -229,6 +269,10 @@ export async function writeUtf8FileAtomic(
   content: string,
   mode = PRIVATE_FILE_MODE,
 ): Promise<void> {
+  return guardAtomicWrite(filePath, content, () => writeUtf8FileAtomicUnguarded(filePath, content, mode));
+}
+
+async function writeUtf8FileAtomicUnguarded(filePath: string, content: string, mode: number): Promise<void> {
   const parentDir = dirname(filePath);
   await fsp.mkdir(parentDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   const tempPath = join(parentDir, `.${basename(filePath)}.${pid}.${randomUUID()}.tmp`);

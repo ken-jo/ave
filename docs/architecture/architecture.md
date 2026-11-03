@@ -2988,11 +2988,15 @@ with its own owner rule:
   Any other root is refused. Settings then shows the exact `icacls` command. It
   drops inheritance, then removes every grant and deny of each explicit extra
   principal (`/remove *<sid>`).
-  The boundary list is checked against the sensitive-path table. Permission
-  settings, user policy and legacy root secrets migrate into `config` by
-  copying into a fresh staged file, publishing it inside the protected directory,
-  then flushing a staged `config/.ave-config-migrated` and atomically renaming it
-  before deleting any copied root file. Both path owners use the root until commit.
+  The boundary list is checked against the sensitive-path table. The first
+  protected boot commits `config` with defaults, never with root content: root
+  settings, policy and secrets are unverified, so only the closed restriction
+  fields (`permissions.blockReadsOutsideWorkingDirectories` and `managed` when
+  `true`) carry into the default documents, and secrets never do. The commit
+  stages each absent document inside the protected directory, writes a fresh
+  `config/.ave-config-sources.json` (`{}`) and a fresh home content trust
+  manifest, then flushes and atomically renames `config/.ave-config-migrated`.
+  Root files are then moved aside. Both path owners use the root until commit.
   The holder of the shared host-instance lock migrates, whether desktop or
   headless. Execution-mode and child processes without that lock only resolve
   the current on-disk layout.
@@ -3028,10 +3032,11 @@ with its own owner rule:
   session in memory. A workspace-root removal whose grant prune is refused
   stays pending. Extension installs and updates (plugins, MCP servers,
   skills, agents, commands, boot installs, the managed git runtime) are
-  refused while the home is refused. On POSIX the root check stays a boot
-  failure; its message names the fix for the actual cause (`chown` for
-  another owner, `chmod go-w` for group or other write), with the path
-  single-quoted for the shell.
+  refused while the home is refused. On POSIX a home that is not a directory
+  owned by the user, is group- or other-writable, or sits under an ancestor
+  owned by another account or writable by others (a root-owned sticky
+  ancestor such as `/tmp` is allowed) is refused with the `posix-root-unsafe`
+  category before any mode is changed; Settings names `chmod go-w` as the fix.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's
@@ -3064,19 +3069,55 @@ with its own owner rule:
   require a regular file of at most 4 MiB and check stable timestamps and bytes.
   A vanished file triggers one fresh resolution; persistent absence after an
   observed file or commit raises `AveHomeConfigurationUntrustedError`.
-  Defaults require both candidate files and the migration marker to be absent.
-  Before a new commit, absent source documents become explicit default documents;
-  missing documents in an already committed home are never silently recreated.
-  Before commit, every retry atomically replaces published copies from validated
-  root sources. A linked, unreadable or invalid root source prevents commit and
-  retains all roots with a diagnostic. A malformed regular marker can be removed
-  for retry only inside a verified protected directory.
-  Before committing the marker, migration atomically records each copied source's
-  SHA-256 in `config/.ave-config-sources.json`. Protected-boot cleanup deletes a
-  regular root copy only if its bytes still match that recorded hash. A changed
-  or newly appearing root file moves to `<name>.post-migration-<UTC timestamp>`;
+  A commit writes only absent documents. A `config/` without its marker that
+  already holds a document other than the exact default the commit would write
+  (a repaired or hand-restored folder) requires recovery: nothing is written or
+  committed, the boot treats the home as refused with the reason `recovery`
+  ("Configuration requires recovery"), and the user moves `config/` aside and
+  restarts. A linked, unreadable or invalid root source carries nothing and is
+  reported. A malformed regular marker can be removed for retry only inside a
+  verified protected directory. The source record is empty, so protected-boot
+  cleanup moves every regular root file to `<name>.post-migration-<UTC timestamp>`;
   a diagnostic and a system boot notice name the preserved copy. Cleanup never
-  merges root data into committed configuration. Per-entry no-follow cleanup
+  merges root data into committed configuration.
+  Home content trust. Other inputs in the home that change what Ave runs or
+  allows load only when vouched for by `config/.ave-trust-manifest.json`, read on
+  the verified `config/` boundary: `{version:1, state, entries}` where `state` is
+  `fresh`, `bootstrapped:false` or `bootstrapped:true` and each entry key (home
+  relative, `/`-separated, lower-cased on Windows) holds `current` and at most
+  one `pendingWrite` SHA-256. Covered inputs are `permissions.json` and the
+  `permissions/` stores, `mcp/servers.json(.bak)`, `governance/mcp-policy.json`,
+  `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
+  plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,
+  `routine/routines.json`, the marketplace sources, states and snapshots,
+  `packages/ledger.json` and `packages/mcp-installs.json`, `AGENTS.md`,
+  `agents.custom.md`, `user-preferences.md`, `memories/MEMORY.md`, and each
+  first-level entry of `skills/`, `agents/` and `commands/` (a file, or a tree
+  hashed as `sha256("ave-tree-v1\n" + sorted "<path>\0<sha256>\n")`). A loader
+  parses exactly the one no-follow buffer it hashed. An absent, unreadable or
+  mismatching manifest or entry means untrusted, and untrusted reads as absent
+  apart from the closed restriction overlay above (marketplace revocations also
+  still apply). A link anywhere below the home, a POSIX file owned by another
+  account, or Windows owner or allow-ACE evidence of another principal (`SY` and
+  `BA` excepted) withdraws trust; evidence never grants it. The boot evaluates
+  the manifest once right after the commit, collapses each `pendingWrite` that
+  matches the file into `current` and drops the rest. While any input is
+  pending, shells and extension workers are confined for that boot (the
+  `home-trust-pending` sandbox signal) and Settings shows the review: each row
+  gives its reason, a masked summary (MCP program names and URL hosts, receipt
+  `pluginId@version`, permission mode and allow patterns; never arguments,
+  environment, headers or URL credentials), and Approve or Remove. Approve
+  records the hash the card rendered; Remove deletes the item without following
+  links after a confirmation. "Approve all" is offered only for a
+  `bootstrapped:false` manifest with clean evidence and no moved `config/`
+  among the root's siblings. Approved items load after a restart. Writes go
+  through one guard on the atomic-file helpers: only the host-instance lock
+  owner writes a covered input (others get `AveHomeConfigurationNotOwnerError`),
+  a pending item is never rewritten from its absent view
+  (`AveHomeConfigurationRefusedWriteError`, reason `pending`), and each write
+  records its `pendingWrite` before and its `current` after, or clears the
+  intent on failure. Writes inside a tree item are not recorded and leave the
+  item pending. Per-entry no-follow cleanup
   preserves links and reports failures for retry. Interactive boot trust failures show a
   localized native error with the cause, path and recovery instructions before exit.
   Feature storage asserts that boundaries already

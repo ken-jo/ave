@@ -2,6 +2,7 @@ import { t } from "../../i18n/index.js";
 import { basename } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { acknowledgeHomeBoundaryRepair, AVE_HOME_RUNTIME_DIRECTORY, type AveHomePrivacy } from "../../shared/ave-home.js";
+import type { AveHomeTrustVerdict } from "../../shared/ave-home-trust.js";
 import type { BootContext } from "../context.js";
 
 const log = createLogger("ave");
@@ -57,4 +58,18 @@ export function notifyHomeBoundaryRepairs(
       }
     }
   }
+}
+
+/** One notice when the boot found Ave folder content it cannot vouch for: nothing pending loads until the user reviews it. */
+export function notifyHomeTrustPending(
+  verdict: AveHomeTrustVerdict,
+  ctx: Pick<BootContext, "host" | "notificationService">,
+): void {
+  if (!verdict.pending) return;
+  const body = verdict.unavailable === "recovery" ? t("homePrivacy.configurationRecovery")
+    : verdict.unavailable === "permissions" ? t("homePrivacy.contentRefused")
+      : t("homePrivacy.contentPending");
+  log.warn("boot: Ave folder content is not trusted until it is reviewed: %s", body);
+  if (!ctx.host.desktop) return;
+  ctx.notificationService.deliver({ kind: "system", title: t("homePrivacy.contentPendingTitle"), body, bypassFocusGate: true });
 }
