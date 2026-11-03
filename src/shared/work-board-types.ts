@@ -18,8 +18,6 @@ export type {
   WorkProposalUntrustedText,
 };
 
-export const MAX_ITEMS = 200;
-
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
 
 /** Overdue is computed on every read from incomplete status and due_at. */

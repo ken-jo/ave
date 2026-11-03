@@ -142,6 +142,24 @@ describe("Work Board — recommended-work cards", () => {
     await screen.findByTestId("work-board-panel");
     expect(screen.queryByTestId("work-board-proposals")).toBeNull();
   });
+
+  it("shows the item count without a quota", async () => {
+    const item = {
+      id: 1,
+      title: "first",
+      status: "planned" as const,
+      status_resolved: "planned" as const,
+      priority: "medium" as const,
+      created_at: PROPOSAL.createdAt,
+      updated_at: PROPOSAL.updatedAt,
+    };
+    const { api } = stubApi({
+      listWorkBoard: async () => ({ status: "ok" as const, items: [item, { ...item, id: 2, title: "second" }] }),
+    } as Partial<AveApi>);
+    render(<WorkBoardPanel api={api} />);
+
+    await waitFor(() => expect(screen.getByTestId("work-board-item-count").textContent).toBe("2개"));
+  });
 });
 
 // jsdom does no layout, so this pins the classes that decide it; the heights themselves were measured in the running app.
