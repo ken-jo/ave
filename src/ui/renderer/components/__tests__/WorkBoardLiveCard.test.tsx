@@ -117,6 +117,19 @@ describe("Work Board — compact running card", () => {
     expect(line.getAttribute("title")).toBe("One reproduction failed; finding the cause");
   });
 
+  it("keeps the description in the layout, hidden, so the running card stays as tall as the idle one", async () => {
+    const { api } = stubApi([item()]);
+    render(<WorkBoardPanel api={api} />);
+    const line = await screen.findByTestId("work-board-live-narration");
+
+    const spacer = line.parentElement?.querySelector('p[aria-hidden="true"]');
+    expect(spacer?.textContent).toBe("Reproduce the redirect loop");
+    expect(spacer?.className).toContain("invisible");
+    expect(spacer?.className).toContain("line-clamp-2");
+    // The visible card no longer shows the description or the due line while the run is live.
+    expect(screen.queryByText(t("workBoard.noDueDate"))).toBeNull();
+  });
+
   it("follows live turns after the backfill", async () => {
     const { api, emit } = stubApi([item()]);
     render(<WorkBoardPanel api={api} />);
@@ -187,6 +200,22 @@ describe("Work Board — compact running card", () => {
     expect(secondToggle.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(secondToggle);
     expect(secondToggle.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps the toggle on a selected card after its run ends so the selection can be cleared there", async () => {
+    const { api, emit } = stubApi([item()]);
+    render(<WorkBoardPanel api={api} />);
+    const toggle = await screen.findByTestId("work-board-live-steps");
+    fireEvent.click(toggle);
+
+    emit({ itemId: 4, phase: "done" });
+
+    expect(screen.queryByTestId("work-board-live-chip")).toBeNull();
+    const after = screen.getByTestId("work-board-live-steps");
+    expect(after.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(after);
+    expect(screen.queryByTestId("work-board-live-steps")).toBeNull();
+    expect(screen.getByTestId("work-board-card").getAttribute("data-live-selected")).toBe("false");
   });
 
   it("draws no chip, narration or step toggle on an item that is not running", async () => {

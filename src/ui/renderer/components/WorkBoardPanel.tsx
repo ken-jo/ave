@@ -224,7 +224,7 @@ function LiveRunChip({ run, startedAt, now }: { run: WorkItemRunState; startedAt
   const awaiting = run.phase === "awaiting_approval";
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
         awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
       }`}
       data-testid="work-board-live-chip"
@@ -277,6 +277,8 @@ function WorkItemCard({
   const isCompleted = item.status === "completed";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
   const narration = latestTurn(live);
+  // The toggle stays on a selected card after its run ends, so the selection can always be cleared where it was made.
+  const showStepsToggle = live !== undefined || liveSelected;
   return (
     <button
       type="button"
@@ -297,30 +299,44 @@ function WorkItemCard({
           </div>
           {live ? (
             // A running card keeps its footprint: the chip takes the due line's row and one line of narration takes the
-            // description's place, so turns streaming in never resize the card.
+            // description's place. The description stays in the layout, invisible, so the block is exactly as tall as it
+            // was before the run, and turns streaming in never resize the card. `contain: inline-size` keeps the unwrapped
+            // narration and chip from widening the card past its column (the scroll area sizes its content to fit).
             <>
-              <div className="mt-2 flex min-w-0 items-center gap-1.5 overflow-hidden">
+              <div className="mt-2 flex min-w-0 items-center gap-1.5 overflow-hidden [contain:inline-size]">
                 {overdue && (
                   <Badge variant="outline" className="shrink-0 border-destructive/(--opacity-half) text-destructive">
                     {t("workBoard.overdueBadge")}
                   </Badge>
                 )}
                 <LiveRunChip run={live} startedAt={runStartedAt(item)} now={now} />
+                {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
+                <span aria-hidden="true" className="invisible w-0 text-[11px]">{"\u200b"}</span>
               </div>
-              <p
-                className="mt-1.5 truncate text-[11px] leading-relaxed text-muted-foreground"
-                data-testid="work-board-live-narration"
-                title={narration?.text}
-              >
-                {narration ? (
-                  <>
-                    <span className="tabular-nums">{localClock(narration.at)}</span>
-                    {` · ${narration.text}`}
-                  </>
-                ) : (
-                  t("workBoard.liveNarrationWaiting")
+              <div className="mt-1.5 grid [contain:inline-size]">
+                {item.detail && (
+                  <p
+                    aria-hidden="true"
+                    className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-[11px] leading-relaxed [overflow-wrap:anywhere]"
+                  >
+                    {item.detail}
+                  </p>
                 )}
-              </p>
+                <p
+                  className="col-start-1 row-start-1 truncate text-[11px] leading-relaxed text-muted-foreground"
+                  data-testid="work-board-live-narration"
+                  title={narration?.text}
+                >
+                  {narration ? (
+                    <>
+                      <span className="tabular-nums">{localClock(narration.at)}</span>
+                      {` · ${narration.text}`}
+                    </>
+                  ) : (
+                    t("workBoard.liveNarrationWaiting")
+                  )}
+                </p>
+              </div>
             </>
           ) : (
             <>
@@ -342,8 +358,8 @@ function WorkItemCard({
       </div>
       {/* Inline lifecycle actions. stopPropagation so the card's open-detail
           click does not also fire when the user only wanted to transition. */}
-      <div className={`mt-2.5 flex flex-wrap items-center gap-1 ${live ? "justify-between" : "justify-end"}`}>
-        {live && (
+      <div className={`mt-2.5 flex flex-wrap items-center gap-1 ${showStepsToggle ? "justify-between" : "justify-end"}`}>
+        {showStepsToggle && (
           <Button
             size="sm"
             variant="ghost"
