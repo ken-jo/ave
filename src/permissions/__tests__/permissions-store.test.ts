@@ -29,6 +29,19 @@ vi.mock("node:fs/promises", () => ({
   readFile: readFileMock,
 }));
 
+// The store reads through the home content trust loader; outside a booted home it is a plain read, which this mock stands in for.
+vi.mock("../../shared/ave-home-trust.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../shared/ave-home-trust.js")>()),
+  readAveHomeInput: async (filePath: string) => {
+    try {
+      return { status: "trusted" as const, bytes: Buffer.from(await readFileMock(filePath) as string, "utf-8") };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "absent" as const };
+      throw error;
+    }
+  },
+}));
+
 import { readPermissionsFile, updatePermissionsFile } from "../permissions-store.js";
 
 describe("readPermissionsFile", () => {

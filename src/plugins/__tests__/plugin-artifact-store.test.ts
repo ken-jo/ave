@@ -431,13 +431,13 @@ describe("PluginArtifactStore — extractZip", () => {
         await store.extractZipWithCommit("acme", zip.toBuffer(), async () => undefined, {
           coordinateCommit: async ({ pluginRoot, durableCommit }) => {
             granted = materialiseCandidateRuntimeDirsForTest("acme", pluginRoot, installRoot);
-            grantedInodes = [ino(granted.socketDir), ino(granted.workerRunRoot)];
+            grantedInodes = [ino(granted.socketDir), ino(granted.legacyRunDir)];
             return { result: await durableCommit() };
           },
         });
 
         expect(granted.socketDir).toBe(resolve(installDir, "sockets"));
-        expect([ino(granted.socketDir), ino(granted.workerRunRoot)]).toEqual(grantedInodes);
+        expect([ino(granted.socketDir), ino(granted.legacyRunDir)]).toEqual(grantedInodes);
         expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("1");
         expect((await readdir(installRoot)).filter((name) => name.startsWith(".acme."))).toEqual([]);
       } finally {
@@ -463,7 +463,7 @@ describe("PluginArtifactStore — extractZip", () => {
         await store.extractZipWithCommit("acme", zip.toBuffer(), async () => undefined, {
           coordinateCommit: async ({ pluginRoot, durableCommit }) => {
             const granted = materialiseCandidateRuntimeDirsForTest("acme", pluginRoot, installRoot);
-            grantedInodes = [ino(granted.socketDir), ino(granted.workerRunRoot)];
+            grantedInodes = [ino(granted.socketDir), ino(granted.legacyRunDir)];
             return { result: await durableCommit() };
           },
         });

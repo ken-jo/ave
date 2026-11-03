@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as childProcess from "node:child_process";
@@ -15,6 +15,8 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
+import { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { preparedShellCommand } from "../prepared-shell-invocation.js";
@@ -158,6 +160,25 @@ it.each([
   expect(allowed!.is_error).not.toBe(true);
   expect(f.execute).toHaveBeenCalledOnce();
   expect(f.wc.send).not.toHaveBeenCalled();
+});
+
+it("reports a card rule save refused by a refused home folder so the card can answer once", async () => {
+  const f = fixture();
+  const pending = f.run(false);
+  await vi.waitFor(() => expect(f.wc.send.mock.calls.some(([channel]) => channel === IPC_APPROVAL_REQUEST)).toBe(true));
+  const [, card] = f.wc.send.mock.calls.find(([channel]) => channel === IPC_APPROVAL_REQUEST)!;
+  const snapshot = gate.getRequestSnapshot(card.id)!;
+  setAveHomeConfigurationRefusedAtBoot(cwd);
+  try {
+    expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "always" }, {
+      decision: "allow", scope: "persistent", displayedVerdictAtApproval: snapshot.verdictAtApproval,
+    }, manager)).toMatchObject({ ok: false, error: HOME_FOLDER_REFUSED, message: expect.stringMatching(/Fix the folder permissions first/) });
+  } finally {
+    _resetAveHomePrivacyForTest();
+  }
+  expect(existsSync(join(cwd, "permissions.json"))).toBe(false);
+  gate.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
+  await pending;
 });
 
 it("offers the original checked repository command for persistent approval", async () => {

@@ -7,6 +7,8 @@ import { openDecisionMenu, selectDecision } from "./support/decision-bar.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
+import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
+import { HOME_FOLDER_REFUSED } from "../../../../shared/permissions-events.js";
 
 function exactRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
@@ -164,5 +166,41 @@ describe("one-shot request: the shared decision row", () => {
     fireEvent.keyDown(screen.getByTestId("approval-choice-deny-once"), { key: "Escape" });
     fireEvent.click(screen.getByTestId(TEST_IDS.approveButton));
     expect(onDecide).toHaveBeenCalledWith("allow-once", undefined);
+  });
+});
+
+describe("exact tool approval while boot refuses the home folder", () => {
+  it("says Always deny denied once, not that anything was allowed, when the deny cannot be saved", async () => {
+    const record = vi.fn().mockResolvedValue({ ok: false, error: HOME_FOLDER_REFUSED });
+    vi.stubGlobal("ave", { userApproval: { record } });
+    const onDecide = vi.fn();
+    const notice = vi.fn();
+    render(
+      <ApprovalSurfaceProvider value={{ notice } as unknown as ApprovalSurfaceContextValue}>
+        <ToolApprovalContent conversationLabel="conversation" open request={exactRequest({ homeFolderRefused: true })} onDecide={onDecide} />
+      </ApprovalSurfaceProvider>,
+    );
+    selectDecision("deny-always");
+    fireEvent.click(screen.getByTestId(TEST_IDS.denyButton));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ decision: "deny", scope: "persistent" }));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("deny-once"));
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledWith(t("toolApprovalDialog.homeFolderRefusedDeniedOnce"));
+  });
+
+  it("still says allowed once when an allow cannot be saved", async () => {
+    const record = vi.fn().mockResolvedValue({ ok: false, error: HOME_FOLDER_REFUSED });
+    vi.stubGlobal("ave", { userApproval: { record } });
+    const onDecide = vi.fn();
+    const notice = vi.fn();
+    render(
+      <ApprovalSurfaceProvider value={{ notice } as unknown as ApprovalSurfaceContextValue}>
+        <ToolApprovalContent conversationLabel="conversation" open request={exactRequest({ homeFolderRefused: true })} onDecide={onDecide} />
+      </ApprovalSurfaceProvider>,
+    );
+    selectDecision("allow-project");
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
+    expect(notice).toHaveBeenCalledWith(t("toolApprovalDialog.homeFolderRefusedOnce"));
   });
 });

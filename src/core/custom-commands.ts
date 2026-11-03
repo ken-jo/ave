@@ -2,6 +2,7 @@
 import { open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
+import { readAveHomeEntrySync } from "../shared/ave-home-trust.js";
 import type { CustomCommandEntry, CustomCommandScope } from "../shared/custom-command.js";
 import { parseFrontmatterBlock, unquoteFrontmatterValue } from "../main/skill-store.js";
 
@@ -43,6 +44,17 @@ async function readConfined(dir: string, name: string): Promise<string | null> {
   }
 }
 
+/** A user command is one item of the home content trust manifest: one pending review reads as absent. */
+async function readCommand(scope: CustomCommandScope, dir: string, name: string): Promise<string | null> {
+  const raw = await readConfined(dir, name);
+  if (raw === null || scope !== "user") return raw;
+  let entry: ReturnType<typeof readAveHomeEntrySync>;
+  try { entry = readAveHomeEntrySync(join(dir, `${name}.md`)); }
+  catch { return null; }
+  if (entry.status !== "trusted" || entry.kind !== "file" || entry.bytes.length > CUSTOM_COMMAND_MAX_BYTES) return null;
+  return entry.bytes.toString("utf8").replace(/\r\n/g, "\n");
+}
+
 function parseDefinition(name: string, scope: CustomCommandScope, raw: string): CustomCommandDefinition | null {
   const { fields, body } = parseFrontmatterBlock(raw);
   const trimmed = body.trim();
@@ -76,7 +88,7 @@ export async function listCustomCommands(projectRoot: string | undefined): Promi
   for (const { scope, dir } of commandDirectories(projectRoot)) {
     for (const name of (await commandNames(dir)).sort()) {
       if (seen.has(name)) continue;
-      const raw = await readConfined(dir, name);
+      const raw = await readCommand(scope, dir, name);
       const definition = raw === null ? null : parseDefinition(name, scope, raw);
       if (!definition) continue;
       seen.add(name);
@@ -93,7 +105,7 @@ export async function loadCustomCommand(
 ): Promise<CustomCommandDefinition | null> {
   if (!COMMAND_NAME.test(name)) return null;
   for (const { scope, dir } of commandDirectories(projectRoot)) {
-    const raw = await readConfined(dir, name);
+    const raw = await readCommand(scope, dir, name);
     const definition = raw === null ? null : parseDefinition(name, scope, raw);
     if (definition) return definition;
   }

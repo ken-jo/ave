@@ -1,5 +1,6 @@
 // Unknown/unvouched identities deny; workers reach only declared/model endpoints, never prompt or inherit shell grants. Shells require a matching grant or explicit foreground approval; disabled asks and unattended calls deny. Terminal asks use their tab and deny when unanswered.
 // Decide by name before DNS/routing, then recheck the resolved destination class; changed classes require fresh consent. Match origin in both phases so shell/tab grants cannot cross. Exceptions and every value except literal true deny; audit each final decision with its reason.
+import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import type { ToolApprovalWait } from "../tools/executor-ceiling.js";
 import type { NetworkPermissionEvaluation } from "./permission-manager.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
@@ -327,7 +328,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     // A terminal's "Allow once" is spent on the connection that asked; it is never held.
     if (scope === "once" && (owner.kind === "terminal" || oneConnection)) return allow("prompt", "once");
     const subject = grantSubject(token, owner);
-    await deps.grants.grant(scope, scopes, subject, destination);
+    try {
+      await deps.grants.grant(scope, scopes, subject, destination);
+    } catch (error) {
+      // A project or always grant cannot be kept while boot refuses the home folder; this connection is allowed once.
+      if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
+      return allow("prompt", "once");
+    }
     deps.grants.noteUse(scope, subject, destination);
     return allow("prompt", scope);
   };

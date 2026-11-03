@@ -2,6 +2,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import {
   classifyMultiplexedMessage,
@@ -98,6 +99,24 @@ export interface ChildLink {
   onFault(handler: (reason: string) => void): void;
 }
 
+/** A child whose termination could not be established. Its owner keeps the launch lease and envelope
+ * registration, quarantines the lifecycle and refuses replacement; this is never a revocation claim. */
+export class PluginChildTerminationUnverifiedError extends Error {
+  readonly code = "plugin-child-termination-unverified";
+
+  constructor(pluginId: string, options: ErrorOptions) {
+    super(t("be_pluginChildTransport.terminationUnverified", { pluginId, code: "plugin-child-termination-unverified" }), options);
+    this.name = "PluginChildTerminationUnverifiedError";
+  }
+}
+
+/** Keep both the failure that started teardown and the cleanup failure that followed it. */
+export function terminationUnverified(pluginId: string, original: unknown, cleanupError: unknown): PluginChildTerminationUnverifiedError {
+  return new PluginChildTerminationUnverifiedError(pluginId, {
+    cause: new AggregateError([original, cleanupError], "Teardown after a failure could not verify termination"),
+  });
+}
+
 export interface PluginChildTransportOptions
   extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild" | "invocations"> {
   readonly link: ChildLink;
@@ -128,12 +147,14 @@ export class PluginChildTransport {
     this.link = options.link;
     this.dispatcher = new HostApiDispatcher({
       ...options,
+      isActive: () => this.closedReason === undefined && options.isActive(),
       invocations: {
         resolve: (token) => this.liveInvocations.get(token) ?? this.settledInvocations.get(token),
         toolCallsInFlight: () => this.liveInvocations.size,
       },
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
+        whenDrained: (ready) => this.closedReason === undefined && this.stream.whenDrained(ready),
       },
       // Apply the shutdown-handler bound with grace so the host reports timeout before child termination.
       shutdownChild: async (subscriptionId) => {
@@ -277,9 +298,10 @@ export class PluginChildTransport {
     return await settled;
   }
 
-  sendToChild(notification: HostApiNotification): void {
-    if (this.closedReason !== undefined) return;
-    this.stream.send(notification);
+  /** Returns the UTF-8 bytes queued toward the child for it (0 once closed). */
+  sendToChild(notification: HostApiNotification): number {
+    if (this.closedReason !== undefined) return 0;
+    return this.stream.send(notification);
   }
 
   /** Close is idempotent; mark termination before fallible callbacks that can reenter. */
@@ -337,6 +359,9 @@ export class PluginChildTransport {
   }
 
   private route(message: MultiplexedMessage): void {
+    // Keep the existing inactive reply for late host requests while refusing
+    // effects through the dispatcher's liveness predicate during native drain.
+    if (this.closedReason !== undefined && classifyMultiplexedMessage(message) !== "host-request") return;
     switch (classifyMultiplexedMessage(message)) {
       case "response": {
         const id = String(message.id);

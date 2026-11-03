@@ -103,7 +103,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
-    const updated = await routinesStore.update(routineId, { lastResultAcknowledgedAt: firedAt });
+    const updated = await routinesStore.acknowledgeResult(routineId, firedAt);
     if (!updated) return { ok: false, error: "routine-not-found" };
     return { ok: true };
   });

@@ -1,5 +1,6 @@
 /** Installs use unique directories and roll back failed activation without moving live files.
  * Loading verifies installed bytes; replaced directories survive until their activation retires. */
+import { assertAveHomeAcceptsInstalls } from "../../shared/ave-home.js";
 import { randomUUID } from "node:crypto";
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -231,6 +232,7 @@ export class ContentStore {
     staged: StagedContent,
     options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[]; assertConsent?: (consent: ConsentFingerprint) => void } = {},
   ): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+    assertAveHomeAcceptsInstalls();
     return this.mutate(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;
@@ -297,6 +299,12 @@ export class ContentStore {
   /** Before activation, remove install directories not named by the ledger. */
   async sweep(): Promise<string[]> {
     return this.mutate(async () => {
+      // A ledger pending review names nothing it can vouch for; sweeping by it would delete every installed package before the
+      // user has reviewed anything. Nothing is swept until the ledger is approved.
+      if (this.ledger.pendingReview) {
+        log.warn("installed content sweep skipped: the installed content ledger is waiting for review");
+        return [];
+      }
       const removed: string[] = [];
       const named = new Set(this.ledger.list().map((entry) => this.packageDir(entry)));
       const entries = async (dir: string) => readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {

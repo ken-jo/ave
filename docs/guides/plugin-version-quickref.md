@@ -33,14 +33,18 @@ Released hosts serve protocol `"3"`; published extensions currently declare:
 }
 ```
 
-**Upcoming, unreleased:** this development build serves protocol 4 and requires
-host-issued loopback OAuth state. Do not publish protocol-4 packages for released
-protocol-3 hosts: the host-protocol declaration, independently of `minAppVersion`,
-refuses an unserved contract. No first published app version exists for protocol 4;
-the release PR selects it and records the numeric floor. The untagged
-`4/v0.14.1` schema candidate is not a compatibility promise.
-See [protocol §3.3.1](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth)
-and the [upcoming OAuth migration](./plugin-development.md#loopback-oauth-with-pkce).
+**Upcoming, unreleased:** this development build serves protocol 5, which requires
+host-issued loopback OAuth state and a declared worker control mode. Protocol 4 was
+never released; released hosts move from 3 straight to 5. Do not publish protocol-5
+packages for released protocol-3 hosts: the host-protocol declaration, independently
+of `minAppVersion`, refuses an unserved contract. No first published app version
+exists for protocol 5; the release PR selects it and records the numeric floor. The
+untagged `5/v0.14.2` schema candidate, like the superseded `4/v0.14.1` and
+`4/v0.14.2` candidates, is not a compatibility promise.
+See [protocol §3.3.1](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth),
+[§3.3.2](../design/plugin-hostapi-protocol.md#332-worker-stdio-control-v1),
+the [upcoming OAuth migration](./plugin-development.md#loopback-oauth-with-pkce)
+and [delegated workers](./plugin-development.md#delegated-workers).
 A `process` extension also follows the [entry rules](./plugin-development.md#entry-or-process).
 
 When you start using a contract member that a later app release added, raise

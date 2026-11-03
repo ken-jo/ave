@@ -1,3 +1,14 @@
+const trust = vi.hoisted(() => ({ pending: new Set<string>() }));
+vi.mock("../../../shared/ave-home-trust.js", async (original) => {
+  const actual = await original<typeof import("../../../shared/ave-home-trust.js")>();
+  // A path listed here reads as pending review in the home content trust manifest, as a boot would report it.
+  const readAveHomeInput = async (path: string) => {
+    const input = await actual.readAveHomeInput(path);
+    return trust.pending.has(path) && input.status === "trusted" ? { status: "untrusted" as const, bytes: input.bytes, reason: "changed" as const } : input;
+  };
+  return { ...actual, readAveHomeInput };
+});
+
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -479,6 +490,45 @@ describe("content package store", () => {
     expect(installs("theme", "harbor")).toEqual([second.entry.origin.installId]);
     expect((await reopened.load()).loaded.map((item) => item.entry)).toEqual([second.entry]);
     expect(await reopened.sweep()).toEqual([]);
+  });
+
+  it("sweeps nothing while the ledger is pending review, and keeps every record once it is approved", async () => {
+    const { commit, syncer, store } = await openHarborMarket();
+    const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    const ledgerPath = join(root, "packages", "ledger.json");
+    trust.pending.add(ledgerPath);
+    try {
+      const pending = await openStore();
+      expect(pending.list()).toEqual([]);
+      expect(await pending.sweep()).toEqual([]);
+      expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId]);
+      // Still pending: a change through the empty view is refused, never written over the real records.
+      commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
+      await expect(pending.install(await stage(syncer, (await rows(syncer))[0]!))).rejects.toThrow(/waiting for review|review/i);
+      expect(JSON.parse(readFileSync(ledgerPath, "utf8")).packages).toHaveLength(1);
+      // Approved: the same store re-reads the ledger before its next change.
+      trust.pending.delete(ledgerPath);
+      const ledger = await ContentLedger.open(ledgerPath);
+      expect(ledger.list()).toHaveLength(1);
+    } finally {
+      trust.pending.delete(ledgerPath);
+    }
+  });
+
+  it("a ledger opened while pending re-reads the file before a change, so an approval made since keeps its records", async () => {
+    const { syncer, store } = await openHarborMarket();
+    const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    const ledgerPath = join(root, "packages", "ledger.json");
+    trust.pending.add(ledgerPath);
+    const ledger = await ContentLedger.open(ledgerPath);
+    expect(ledger.pendingReview).toBe(true);
+    const other = { ...first.entry, name: "other", origin: { ...first.entry.origin, payloadDir: first.entry.origin.payloadDir!.replace("/harbor/", "/other/") } };
+    await expect(ledger.put(other)).rejects.toThrow();
+    trust.pending.delete(ledgerPath);
+    await ledger.put(other);
+    expect(ledger.pendingReview).toBe(false);
+    expect(ledger.list().map((entry) => entry.name).sort()).toEqual(["harbor", "other"]);
+    expect((await ContentLedger.open(ledgerPath)).list().map((entry) => entry.name).sort()).toEqual(["harbor", "other"]);
   });
 
   it("a legacy install's version directory survives the sweep", async () => {

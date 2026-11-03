@@ -35,6 +35,9 @@ import { drainMxcHolderLifetimes, sealMxcHolderLifetimeAdmission } from "../perm
 // How long a quit waits for running turns to record themselves as interrupted. Their rows are already on disk as they happen (the turn journal), so this
 // buys the clean interrupted record, not the data, and stays short.
 const RUNNING_TURN_EXIT_WAIT_MS = 3_000;
+// How long a shutdown that already failed or timed out waits for the sandbox runtime's reset. On Windows the ACL release is the reset's first,
+// synchronous step; the wait covers only its proxy teardown, so the process still leaves promptly.
+const OS_SANDBOX_RELEASE_FALLBACK_WAIT_MS = 2_000;
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
@@ -116,6 +119,31 @@ async function flushLogger(): Promise<void> {
   });
 }
 
+// Reset the OS sandbox runtime after every confined child is down and before the host closes: on Windows its reset spawns the private srt-win copy
+// to revoke the session's ACEs, and that copy's exit handler removes it only once the reset has finished.
+async function releaseOsSandboxForExit(): Promise<void> {
+  const { releaseAsrtSandboxForExit } = await import("../permissions/asrt-sandbox.js");
+  await releaseAsrtSandboxForExit();
+}
+
+// The same release on a shutdown that failed or timed out before reaching it. Its failure is reported, never turned into success; the copy is then
+// kept for the next boot's sweep and ACL recovery.
+async function releaseOsSandboxAfterIncompleteShutdown(reason: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"timed-out">((resolve) => {
+    timer = setTimeout(() => resolve("timed-out"), OS_SANDBOX_RELEASE_FALLBACK_WAIT_MS);
+    timer.unref?.();
+  });
+  try {
+    const status = await Promise.race([releaseOsSandboxForExit().then(() => "completed" as const), deadline]);
+    if (status === "timed-out") log.error({ reason }, "shutdown: OS sandbox runtime reset did not finish before exit");
+  } catch (error) {
+    log.error({ reason }, "shutdown: OS sandbox runtime reset failed: %s", errorMessage(error));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type AppShutdownCleanupOutcome = "completed" | "skipped" | "timed-out" | "failed";
 let appShutdownCleanupPromise: Promise<AppShutdownCleanupOutcome> | null = null;
 
@@ -140,6 +168,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
       () => forceKillAllTerminalsForShutdown(),
       () => drainMxcHolderLifetimes(),
       () => forceKillAndDrainManagedChildProcesses(reason),
+      () => releaseOsSandboxForExit(),
       () => host?.close(),
     ];
     for (const stage of stages) {
@@ -152,6 +181,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
     forceKillManagedChildProcesses(reason);
     // PTYs use a separate native owner. Signal them even if an earlier stage exhausted the deadline; a zero wait budget does not extend that deadline.
     await forceKillAllTerminalsForShutdown(0);
+    await releaseOsSandboxAfterIncompleteShutdown(reason);
     log.error({ status: result.status }, "incomplete host bootstrap cleanup did not complete");
   }
   await flushLogger();
@@ -261,6 +291,8 @@ export async function runAppShutdownCleanup(options: {
       // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app alive for a bounded definitive-exit drain so ASRT/HOME finalizers run before
       // Electron completes an otherwise clean shutdown.
       await forceKillAndDrainManagedChildProcesses(`${options.reason} graceful shutdown`);
+      if (signal.aborted) return;
+      await releaseOsSandboxForExit();
       } catch (error) {
         shutdownFailure = error;
         throw error;
@@ -287,6 +319,7 @@ export async function runAppShutdownCleanup(options: {
     if (result.status === "timed-out") {
       // Force-kill BEFORE the log line so killedChildCount reflects what actually happened, not an optimistic pre-kill count.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup timeout`);
+      await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup timeout`);
       await shutdownHost?.close();
       log.error({
         timeoutMs: cleanupTimeoutMs,
@@ -310,6 +343,7 @@ export async function runAppShutdownCleanup(options: {
       // A failed lifecycle stage may have prevented a runtime-owned child from acknowledging its graceful stop. The normal stop ran in the cleanup finally
       // block; this is only the last-resort descendant-safe backstop.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup failed`);
+      await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup failed`);
       await shutdownHost?.close();
       log.error(
         { killedChildCount },

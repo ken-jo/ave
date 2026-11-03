@@ -81,7 +81,7 @@ interface PaneAction {
   icon: ReactNode;
   /** Rendered pressed, for toggles that have an on state (pin). */
   active?: boolean;
-  /** Shown but inert. A limit the CONTENT owns — the work board's item cap — reads in the control itself rather than arriving
+  /** Shown but inert. A limit the CONTENT owns reads in the control itself rather than arriving
    * as a rejection once the user has already clicked, the same rule the split control follows. */
   disabled?: boolean;
   onSelect: () => void | Promise<void>;

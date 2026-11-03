@@ -1,7 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
-import { isMissingPathError } from "../lib/atomic-file.js";
+import { writeUtf8FileAtomic } from "../lib/atomic-file.js";
+import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 
 interface SkillRegistryEntry {
   id: string;
@@ -20,16 +19,12 @@ export interface SkillRegistry {
   skills: SkillRegistryEntry[];
 }
 
+/** Read for a rewrite through the verified loader: a registry pending review is refused before it is read (R4). */
 async function readSkillRegistry(registryPath: string): Promise<SkillRegistry> {
-  let raw: string;
-  try {
-    raw = await readFile(registryPath, "utf-8");
-  } catch (err) {
-    if (isMissingPathError(err)) {
-      return { version: 1, skills: [] };
-    }
-    throw err;
-  }
+  assertAveHomeInputWritable(registryPath);
+  const input = await readAveHomeInput(registryPath);
+  if (input.status === "absent") return { version: 1, skills: [] };
+  const raw = input.bytes.toString("utf-8");
   const parsed = JSON.parse(raw) as Partial<SkillRegistry>;
   if (!Array.isArray(parsed.skills)) {
     throw new Error(`Invalid skill registry: ${registryPath}`);
@@ -38,8 +33,8 @@ async function readSkillRegistry(registryPath: string): Promise<SkillRegistry> {
 }
 
 async function writeSkillRegistry(registryPath: string, registry: SkillRegistry): Promise<void> {
-  await mkdir(dirname(registryPath), { recursive: true });
-  await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8");
+  // The guarded atomic write records the new bytes in the home content trust manifest.
+  await writeUtf8FileAtomic(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
 }
 
 export async function updateSkillRegistry(

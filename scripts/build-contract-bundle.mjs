@@ -13,7 +13,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const CONTRACT_COPIES = Object.freeze({
   "public-contract.ts": "src/plugins/public-contract.ts",
   "plugin-manifest.schema.json": "schemas/plugin-manifest.schema.json",
-  "protocol.schema.json": "schemas/plugin-host-protocol/4/protocol.schema.json",
+  "protocol.schema.json": "schemas/plugin-host-protocol/5/protocol.schema.json",
+  "worker-control.schema.json": "schemas/worker-stdio-control/1/worker-control.schema.json",
 });
 
 export const CONTRACT_BUILDS = Object.freeze({

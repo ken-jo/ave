@@ -31,7 +31,6 @@ for (const locale of ["en", "ko"] as const) {
           const page = await openInlineSettings(context.app, context.page, "llm");
           await page.getByTestId("llm-tab:add-provider").click();
           await page.getByTestId("llm-tab:add-provider-item:claude-code").click();
-          await page.getByTestId("llm-tab:sign-in-method:claude-code:subscription").click();
           const error = page.getByTestId("subscription-provider:claude-code:error");
           await expect(error).toHaveText(nativeMigration
             ? locale === "en"

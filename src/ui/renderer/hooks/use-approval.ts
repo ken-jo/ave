@@ -245,6 +245,8 @@ export interface ApprovalSurfaceContextValue extends ApprovalQueueApi {
   /** The window's held reviewer suggestion, drawn as a band inside whichever card is up. It is one aggregate over a window of approvals, so it
    * belongs to the surface value rather than to a request: every dock offers the same one, and acting on it in any card ends it in all of them. */
   reviewerSuggestion: ReviewerSuggestion | null;
+  /** Show a window-level notice that outlives the card, such as why a remembered answer applied only once. */
+  notice: (message: string) => void;
 }
 
 const ApprovalSurfaceContext = createContext<ApprovalSurfaceContextValue | null>(null);
@@ -257,4 +259,9 @@ export function useApprovalSurface(): ApprovalSurfaceContextValue {
     throw new Error("useApprovalSurface: rendered outside ApprovalSurfaceProvider");
   }
   return value;
+}
+
+/** The surface's notice, or undefined where a card is drawn without a window surface (isolated renders). */
+export function useApprovalSurfaceNotice(): ((message: string) => void) | undefined {
+  return useContext(ApprovalSurfaceContext)?.notice;
 }

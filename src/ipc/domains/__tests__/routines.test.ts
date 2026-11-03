@@ -43,6 +43,7 @@ function makeDeps(
         invalid: [{ id: "legacy", field: "scope.forcedPluginIds", value: "a_b", reason: "invalid-plugin-id" }],
       })),
       update: vi.fn(),
+      acknowledgeResult: vi.fn(async (id: string) => (id === "routine-a" ? { id } : null)),
       dismiss: vi.fn(),
       remove: vi.fn(),
       add: vi.fn(),
@@ -214,4 +215,18 @@ it("reports a manual missing-plugin skip without pretending the routine was not 
   const deps = { ...makeDeps([]), routinesScheduler: { dispatchNow: vi.fn(async () => "plugins-missing") } };
   registerRoutineHandlers(deps as unknown as Parameters<typeof registerRoutineHandlers>[0]);
   expect(await invoke(ROUTINES.triggerNow, "routine-a")).toEqual({ ok: false, error: "plugins-missing" });
+});
+
+describe("routine result acknowledgement", () => {
+  it("acknowledges through the store method that also marks that fire's failure seen", async () => {
+    const deps = await setup([]);
+    expect(await invoke(ROUTINES.acknowledgeResult, "routine-a", "2026-05-16T12:00:00.000Z")).toEqual({ ok: true });
+    expect(deps.routinesStore.acknowledgeResult).toHaveBeenCalledWith("routine-a", "2026-05-16T12:00:00.000Z");
+    expect(deps.routinesStore.update).not.toHaveBeenCalled();
+  });
+
+  it("reports an unknown routine", async () => {
+    await setup([]);
+    expect(await invoke(ROUTINES.acknowledgeResult, "missing", "2026-05-16T12:00:00.000Z")).toEqual({ ok: false, error: "routine-not-found" });
+  });
 });

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { WorkBoardStore, MAX_ITEMS } from "../work-board-store.js";
+import { WorkBoardStore } from "../work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { localDateKey } from "../../shared/local-date.js";
 
@@ -238,8 +238,8 @@ describe("WorkBoardStore — project scope", () => {
   });
 });
 
-describe("WorkBoardStore — MAX_ITEMS cap", () => {
-  it("rejects create once the board holds MAX_ITEMS items", async () => {
+describe("WorkBoardStore — no item cap", () => {
+  it("accepts create beyond the former 200-item cap", async () => {
     const { store, path, cleanup } = tempBoard();
     try {
       const timestamp = new Date(FIXED_NOW).toISOString();
@@ -247,8 +247,8 @@ describe("WorkBoardStore — MAX_ITEMS cap", () => {
         path,
         JSON.stringify({
           version: 1,
-          nextId: MAX_ITEMS + 1,
-          items: Array.from({ length: MAX_ITEMS }, (_, index) => ({
+          nextId: 251,
+          items: Array.from({ length: 250 }, (_, index) => ({
             id: index + 1,
             title: `item-${index}`,
             status: "planned",
@@ -260,10 +260,15 @@ describe("WorkBoardStore — MAX_ITEMS cap", () => {
         "utf-8",
       );
 
-      const overflow = await store.create({ title: "one too many" });
-      expect(overflow.status).toBe("invalid");
-      if (overflow.status !== "invalid") throw new Error("unreachable");
-      expect(overflow.reason).toMatch(/cap reached/);
+      const created = await store.create({ title: "item 251" });
+      expect(created.status).toBe("created");
+      if (created.status !== "created") throw new Error("unreachable");
+      expect(created.itemId).toBe(251);
+
+      const listed = await store.list();
+      expect(listed.status).toBe("ok");
+      if (listed.status !== "ok") throw new Error("unreachable");
+      expect(listed.items).toHaveLength(251);
     } finally {
       await cleanup();
     }

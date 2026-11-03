@@ -19,6 +19,8 @@ import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
 import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
 import { t } from "../../../../i18n/runtime.js";
+import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
+import { HOME_FOLDER_REFUSED } from "../../../../shared/permissions-events.js";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
@@ -34,6 +36,13 @@ const setMode = vi.fn();
 const reviewerDispatch = vi.fn();
 // The permission card's sandbox row reads the host-decided shell status.
 const sandboxCapability = vi.fn();
+// Main's settle hint; the row re-queries on it while the card is open.
+let sandboxChangedHandler: (() => void) | null = null;
+const offSandboxCapabilityChanged = vi.fn(() => { sandboxChangedHandler = null; });
+const onSandboxCapabilityChanged = vi.fn((cb: () => void) => {
+  sandboxChangedHandler = cb;
+  return offSandboxCapabilityChanged;
+});
 const relaunchApp = vi.fn();
 type ShellStatusFixture = {
   state: string;
@@ -53,7 +62,7 @@ vi.mock("../../api-client.js", () => ({
     onSettingsUpdated,
     subscriptionUseApiForChat,
     hasApiKey,
-    permission: { setMode, reviewerDispatch, sandboxCapability },
+    permission: { setMode, reviewerDispatch, sandboxCapability, onSandboxCapabilityChanged },
   }),
 }));
 
@@ -547,6 +556,26 @@ describe("permission card (status-row permission cell)", () => {
     await waitFor(() => expect(reviewerDispatch).toHaveBeenCalledTimes(1));
     expect(reviewerDispatch.mock.calls.map((c) => c[0])).toEqual(["mode llm"]);
     await waitFor(() => expect(queryByTestId("permission-quick-picker")).toBeNull());
+  });
+
+  it("closes with a session-only notice when the home folder refusal keeps the pick from being saved", async () => {
+    setMode.mockResolvedValue({ ok: true, mode: "auto", notice: HOME_FOLDER_REFUSED });
+    reviewerDispatch.mockResolvedValue({ ok: true, verb: "mode", settings: { mode: "llm", fallbackOnError: "deny" }, notice: HOME_FOLDER_REFUSED });
+    const notice = vi.fn();
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <ApprovalSurfaceProvider value={{ notice } as unknown as ApprovalSurfaceContextValue}>
+        <TooltipProvider>
+          <ComposerStatusRow ringSlot={<span />} enableThinkingChat={false} onToggleThinking={vi.fn()}
+            statusRow={{ ...defaultStatusRow, permissionMode: "default" }} onOpenModelSettings={vi.fn()} />
+        </TooltipProvider>
+      </ApprovalSurfaceProvider>,
+    );
+    fireEvent.click(getByTestId("iab-status-permission"));
+    await findByTestId("permission-quick-picker");
+    fireEvent.click(getByTestId("permission-quick-picker-option:auto"));
+    await waitFor(() => expect(queryByTestId("permission-quick-picker")).toBeNull());
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledWith(t("permissionsTab.homeFolderRefusedSessionOnly"));
   });
 
   it("stays open with the mark unmoved when the host refuses the pick", async () => {
@@ -1091,6 +1120,37 @@ describe("permission card sandbox checkbox", () => {
     expect(checkbox.getAttribute("aria-checked")).toBe("true");
     expect(checkbox.hasAttribute("disabled")).toBe(true);
     expect(getByTestId("permission-quick-picker-sandbox-forced").textContent).toContain("AVE_SANDBOX_ENABLED");
+  });
+
+  it("re-queries on the settle hint, keeps the newest answer over a late superseded one, and unsubscribes on unmount", async () => {
+    offSandboxCapabilityChanged.mockClear();
+    const deferred = () => {
+      let resolve!: (value: ReturnType<typeof shellStatus>) => void;
+      const promise = new Promise<ReturnType<typeof shellStatus>>((r) => { resolve = r; });
+      return { promise, resolve };
+    };
+    const slow = deferred();
+    const fast = deferred();
+    const view = await openCard();
+    const row = view.getByTestId("permission-quick-picker-sandbox");
+    expect(row.getAttribute("data-state")).toBe("off");
+    expect(sandboxChangedHandler).not.toBeNull();
+
+    sandboxCapability.mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise);
+    act(() => { sandboxChangedHandler!(); });
+    act(() => { sandboxChangedHandler!(); });
+    expect(sandboxCapability).toHaveBeenCalledTimes(3);
+
+    await act(async () => { fast.resolve(shellStatus({ state: "on", setting: true })); await fast.promise; });
+    expect(row.getAttribute("data-state")).toBe("on");
+    // The earlier query answers last with a stale snapshot; it must not replace the settled one.
+    await act(async () => { slow.resolve(shellStatus({ state: "unavailable", setting: true, causes: ["init-failed"] })); await slow.promise; });
+    expect(row.getAttribute("data-state")).toBe("on");
+    expect(view.getByTestId("permission-quick-picker-sandbox-status").textContent).toBe("켜짐 — 셸이 OS 샌드박스 안에서 실행됩니다.");
+
+    view.unmount();
+    expect(offSandboxCapabilityChanged).toHaveBeenCalledTimes(1);
+    expect(sandboxChangedHandler).toBeNull();
   });
 
   it("says the status could not be read instead of showing a guess", async () => {

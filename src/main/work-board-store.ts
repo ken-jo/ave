@@ -30,7 +30,6 @@ const log = createLogger("ave");
 
 // Re-export the shared type boundary so callers that import from work-board-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
 export {
-  MAX_ITEMS,
   type WorkItemStatusStored,
   type WorkItemRunStatus,
   type WorkItemResolved,
@@ -50,7 +49,6 @@ export {
 } from "../shared/work-board-types.js";
 
 import {
-  MAX_ITEMS,
   type WorkItem,
   type WorkItemResolved,
   type WorkItemStatusStored,
@@ -332,12 +330,6 @@ export class WorkBoardStore {
 
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await readFileOrEmpty(this.filePath);
-      if (board.items.length >= MAX_ITEMS) {
-        return {
-          status: "invalid" as const,
-          reason: `item cap reached (${MAX_ITEMS}); complete or remove old items first`,
-        };
-      }
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
@@ -616,6 +608,34 @@ export class WorkBoardStore {
     });
   }
 
+  // Point the run at the execute child once it links. Only the session id changes: the phase is already `executing` and its activity
+  // entry was written by setRunStatus, so this write appends no activity (a second entry would duplicate the run in reports).
+  async setRunSessionId(id: number, runSessionId: string): Promise<WorkItemUpdateResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      const idx = board.items.findIndex((i) => i.id === id);
+      if (idx === -1) {
+        this.cache = board;
+        return { status: "not_found" as const, itemId: id };
+      }
+      const nowMs = this.now();
+      const updated: WorkItem = {
+        ...board.items[idx],
+        runSessionId,
+        runUpdatedAt: new Date(nowMs).toISOString(),
+      };
+      board.items[idx] = updated;
+      await writeFileAtomic(this.filePath, board);
+      this.cache = board;
+      return {
+        status: "updated" as const,
+        itemId: id,
+        item: decorate(cloneItem(updated), nowMs),
+      };
+    });
+  }
+
   // Only the engine writes terminal results; undefined preserves fields, null clears them, and values replace them.
   // Clear stale plan/output/session fields so a failed new run cannot display an old success.
   async setRunResult(
@@ -886,7 +906,7 @@ export class WorkBoardStore {
     });
   }
 
-  // Turn an accepted proposal into a work item through the ORDINARY create path — same validation, same activity row, same MAX_ITEMS budget as a card the
+  // Turn an accepted proposal into a work item through the ORDINARY create path — same validation and the same activity row as a card the
   // user typed. The proposal keeps `acceptedItemId` so the card stops showing and the item it became stays traceable to its source.
   async acceptProposal(
     id: string,

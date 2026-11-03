@@ -1,5 +1,7 @@
-import { createDynamicTool, type Tool, type ToolExecutionContext, type ToolExecutionResult } from "./base.js";
+import { createDynamicTool, toolSessionId, type Tool, type ToolExecutionContext, type ToolExecutionResult } from "./base.js";
 import type { MemoryManager, NoteEntry } from "../memory/memory-manager.js";
+import { memoryUseStoreForSessionId, type MemoryUsageRecorder, type MemoryUseVia } from "../memory/memory-usage-log.js";
+import { currentAgentObservationIdentity } from "./agent-observation-context.js";
 import { scrubSecretsForLLM } from "../shared/dlp.js";
 import { errorMessage } from "../shared/error-message.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
@@ -18,6 +20,32 @@ type MemoryRecallStore = Pick<
 
 interface MemoryRecallToolDeps {
   memoryManager: MemoryRecallStore;
+  /** Records which managed memories the model saw; ids only. */
+  memoryUsageLog: MemoryUsageRecorder;
+}
+
+// Record ids the model actually received. Legacy notes without a managed id and calls with no conversation are not recorded.
+function recordMemoryUse(
+  deps: MemoryRecallToolDeps,
+  ctx: ToolExecutionContext,
+  via: MemoryUseVia,
+  entries: readonly NoteEntry[],
+): void {
+  const sessionId = toolSessionId(ctx);
+  if (sessionId === undefined) return;
+  const memoryIds = entries.flatMap((entry) => (entry.id !== undefined ? [entry.id] : []));
+  if (memoryIds.length === 0) return;
+  const store = memoryUseStoreForSessionId(sessionId);
+  // The executor's admitted invocation names the turn; tool metadata alone carries no turn identity.
+  const observed = currentAgentObservationIdentity();
+  const anchorMessageId = observed?.sessionId === sessionId ? observed.turnId : undefined;
+  deps.memoryUsageLog.record({
+    memoryIds,
+    via,
+    sessionId,
+    ...(store !== undefined ? { store } : {}),
+    ...(anchorMessageId !== undefined ? { anchorMessageId } : {}),
+  });
 }
 
 // Use the host-selected cwd and include unscoped notes only for the default project, matching prompt selection.
@@ -110,11 +138,13 @@ function createMemorySearchTool(deps: MemoryRecallToolDeps): Tool {
         const scope = memoryProjectScope(ctx);
         const matches = deps.memoryManager.searchModelVisibleMemories(query, scope);
         const candidates = deps.memoryManager.listMemoryCandidates(scope);
+        const page = matches.slice(0, limit);
+        recordMemoryUse(deps, ctx, "searched", page);
         return {
           output: JSON.stringify({
             ...(query ? { query } : {}),
             total: matches.length,
-            memories: matches.slice(0, limit).map(visibleEntrySummary),
+            memories: page.map(visibleEntrySummary),
             ...(matches.length > limit ? { truncated: true } : {}),
             pendingCandidates: candidates.map((entry) => ({
               id: memoryHandle(entry),
@@ -161,6 +191,7 @@ function createMemoryReadTool(deps: MemoryRecallToolDeps): Tool {
             isError: true,
           };
         }
+        recordMemoryUse(deps, ctx, "read", [entry]);
         return {
           output: JSON.stringify({
             id,

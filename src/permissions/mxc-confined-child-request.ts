@@ -1,7 +1,7 @@
 import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { FORWARD_ENV_KEYS, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
-import { quoteWindowsArgument, WINDOWS_COMMAND_LINE_LIMIT } from "../shared/windows-command-line.js";
+import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLine } from "../shared/windows-command-line.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { synthesizeMxcAncestorQueries } from "./mxc-filesystem-policy.js";
 import { isWindowsPathAtOrUnder, type MxcFilesystemGrants } from "./mxc-windows.js";
@@ -15,6 +15,10 @@ export interface MxcConfinedChildRequestInput {
   readonly temp: string;
   readonly grants: MxcFilesystemGrants;
   readonly baseEnv: Readonly<NodeJS.ProcessEnv>;
+  /** Host-owned variables this holder kind already receives on its non-container path (an MCP server's configured
+   * environment and API key, a hook's `AVE_HOOK_*` and plugin roots). They override forwarded values, as they do there;
+   * wrapper proxy/trust keys stay the wrapper's and the profile/temp/cwd keys below stay the container's. */
+  readonly holderEnv?: Readonly<Record<string, string>>;
   readonly proxyUrl: string;
 }
 
@@ -31,8 +35,8 @@ export function buildMxcConfinedChildRequest(input: MxcConfinedChildRequestInput
   }
   if (input.args.some((arg) => /[\0\r\n]/.test(arg))) throw new Error("Container arguments contain a forbidden control character");
   // Contract with the row-3 plugin-child factory: `request.command` must equal the shared Windows command-line helper's
-  // output for (command, args) — the same per-argument `quoteWindowsArgument` join. Never use a probe's quoting here.
-  const command = [input.command, ...input.args].map(quoteWindowsArgument).join(" ");
+  // output for (command, args). Never use a probe's quoting here.
+  const command = windowsCommandLine(input.command, input.args);
   if (command.length + 1 > WINDOWS_COMMAND_LINE_LIMIT) throw new Error("Container command line exceeds the process limit");
   const safeKeys = new Set<string>(FORWARD_ENV_KEYS.map((key) => key.toUpperCase()));
   const environment: Record<string, string> = {};
@@ -43,9 +47,21 @@ export function buildMxcConfinedChildRequest(input: MxcConfinedChildRequestInput
     environment[key] = value;
   }
   if (input.baseEnv.ELECTRON_RUN_AS_NODE === "1") environment.ELECTRON_RUN_AS_NODE = "1";
-  // Profile and working-directory hints must not point back into the host profile.
+  const holderKeys = new Set<string>();
+  for (const [name, value] of Object.entries(input.holderEnv ?? {})) {
+    const key = name.toUpperCase();
+    if (holderKeys.has(key)) throw new Error("Container holder environment contains duplicate keys");
+    holderKeys.add(key);
+    if (typeof value !== "string") throw new Error("Container holder environment values must be strings");
+    if (isSandboxWrapperEnvKey(name)) continue;
+    environment[key] = value;
+  }
+  // Profile and working-directory hints must not point back into the host profile; APPDATA and LOCALAPPDATA are two.
+  // These are applied last, so neither a forwarded nor a holder value overrides them. Inside the
+  // AppContainer, Windows places the process's TEMP at `<LOCALAPPDATA>\Packages\<moniker>\AC\Temp`; with LOCALAPPDATA
+  // at the staging HOME, that temp stays inside the tree the holder adapter removes.
   Object.assign(environment, {
-    HOME: input.home, USERPROFILE: input.home,
+    HOME: input.home, USERPROFILE: input.home, APPDATA: input.home, LOCALAPPDATA: input.home,
     HOMEDRIVE: winPath.parse(input.home).root.slice(0, 2), HOMEPATH: input.home.slice(2),
     TEMP: input.temp, TMP: input.temp, TMPDIR: input.temp, PWD: input.cwd,
   });

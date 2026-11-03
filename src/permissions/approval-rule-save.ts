@@ -6,6 +6,8 @@ import { isWildcardShellRule, shellRuleCoversCommand } from "./rules/shell-rule-
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { isShellRuleSaveScope, type ShellRuleSaveScope } from "../shared/permissions-events.js";
 import { errorMessage } from "../shared/error-message.js";
+import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
+import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
 import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
@@ -153,6 +155,8 @@ export async function saveApprovalCardRule(
       await permissionManager.addRulePersist({ pattern, action }, { kind: "user" }, ...(authority ? [authority] as const : []));
     }
   } catch (error) {
+    // The home's rule stores refuse writes while boot refuses the folder: the card answers once instead and says why.
+    if (error instanceof AveHomeConfigurationRefusedWriteError) return fail(HOME_FOLDER_REFUSED, error.message);
     // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.
     return fail("rule-save-failed", errorMessage(error));
   }

@@ -49,7 +49,7 @@ afterEach(() => {
 describe("private-home refusal at extension spawn boundaries", () => {
   it("refuses an out-of-process child before approval and reaches spawn only after approval", async () => {
     const spec = { pluginId: "privacy", envelope: { read: [path], write: [path] },
-      socketDir: join(path, "sockets"), workerRunRoot: join(path, "run"),
+      socketDir: join(path, "sockets"),
       launch: { kind: "entry" as const, childEntryPath: join(path, "child.mjs") } };
     await expect(spawnConfinedPluginChild(spec)).rejects.toThrow(`read-back-failed, ${path}`);
     expect(spawn).not.toHaveBeenCalled();
@@ -84,7 +84,7 @@ describe("private-home refusal at extension spawn boundaries", () => {
     let client: McpClient | undefined;
     const start = async () => {
       if (kind === "plugin worker") {
-        return spawnWorker({ pluginId: "privacy", workerId: "worker", command: "privacy-worker.exe" });
+        return spawnWorker({ pluginId: "privacy", workerId: "worker", control: "output-only-v1", command: "privacy-worker.exe" });
       }
       if (kind === "plugin child") {
         return spawnConfinedChild({ command: "privacy-child.exe", args: [], label: "plugin-child:privacy",

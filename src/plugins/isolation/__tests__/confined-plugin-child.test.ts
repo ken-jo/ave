@@ -32,7 +32,6 @@ import {
   resolvePluginHostStorageDir,
   resolvePluginSocketDir,
   writeGrantsReachingHostStorage,
-  resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
 // Global setup builds this entry once with the shipped bundle boundary. Every confinement case still spawns that real bundle through the real wrap.
@@ -113,7 +112,7 @@ const CANDIDATE_MANIFEST: PluginManifest = {
   name: "Sample Assistant",
   version: "1.0.0",
   entry: "index.js",
-  requires: { hostProtocol: "4" },
+  requires: { hostProtocol: "5" },
   description: "Exercises declared filesystem authority",
   tools: [],
   sandbox: {
@@ -436,9 +435,6 @@ function socketDirOf(fx: Fixture): string {
 
 /** The other half of the same boundary: `run/` is where the HOST binds a control socket for a worker this
  * plugin asked for, and the child is the client. READ only; the child connects, it does not create anything there. */
-function workerRunRootOf(fx: Fixture): string {
-  return resolvePluginWorkerRunRoot(fx.pluginDataDir);
-}
 
 function baseEnvelope(fx: Fixture): DelegatedWorkerConfinement {
   return derivePluginChildEnvelope({
@@ -456,7 +452,6 @@ async function runProbe(
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
     envelope,
     launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
   });
@@ -496,7 +491,6 @@ process.stdout.write("PROBE:" + JSON.stringify(attempt(() => readFileSync(${JSON
   const child = await spawnConfinedPluginChild({
     pluginId: reader.pluginId,
     socketDir: resolvePluginSocketDir(reader.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(reader.pluginDataDir),
     envelope: derivePluginChildEnvelope({
       pluginId: reader.pluginId,
       pluginRoot: reader.pluginRoot,
@@ -544,7 +538,6 @@ setTimeout(() => process.exit(0), 4000).unref?.();
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
     envelope: baseEnvelope(fx),
     launch: { kind: "entry", childEntryPath: probePath },
   });
@@ -694,7 +687,7 @@ describe("the host decides how far a plugin child reaches", () => {
         configValue: () => undefined,
       }),
     ).toEqual({
-      read: [fx.pluginRoot, fx.pluginDataDir, socketDirOf(fx), workerRunRootOf(fx)],
+      read: [fx.pluginRoot, fx.pluginDataDir, socketDirOf(fx)],
       write: [fx.pluginDataDir, socketDirOf(fx)],
     });
   });
@@ -712,12 +705,19 @@ describe("the host decides how far a plugin child reaches", () => {
       fx.pluginRoot,
       fx.pluginDataDir,
       socketDirOf(fx),
-      workerRunRootOf(fx),
-      join(fx.aveHome, "runtime"),
+      // The runtime row grants the boundary's children, never the boundary: a crash-left ACL grant then sits on a child.
+      join(fx.aveHome, "runtime", "python-envs"),
+      join(fx.aveHome, "runtime", "uv"),
       join(fx.aveHome, "certs"),
     ]);
+    expect(envelope.read).not.toContain(join(fx.aveHome, "runtime"));
     // Host directories contribute to READ only. Its config key is unset here; the case below also checks that another grant cannot turn it writable.
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
+    // What a delegated worker's Windows grant widens to: the containing envelope root, which for a venv interpreter is
+    // `runtime/python-envs`, never `runtime` itself.
+    const venvPython = join(fx.aveHome, "runtime", "python-envs", "env", "venv", "Scripts", "python.exe");
+    expect(outermostContainingRoots([venvPython, join(fx.aveHome, "runtime", "uv", "t", "sha", "uv.exe")], envelope.read))
+      .toEqual([join(fx.aveHome, "runtime", "python-envs"), join(fx.aveHome, "runtime", "uv")]);
   });
 
   it("admits a chosen directory the user approved, as read AND write", () => {
@@ -964,6 +964,40 @@ describe("the host decides how far a plugin child reaches", () => {
     }
   });
 
+  it.skipIf(!canCreateSymlinks())("refuses a granted runtime child that links out of the home, by either spelling", () => {
+    // The runtime row grants its children, so a child, not the row, may be the link: `runtime/python-envs` moved to a big volume the
+    // user approved. Without the child in the subtraction, a config value naming the moved envs would be granted WRITE over every
+    // plugin's venv while the row itself still resolves inside the home.
+    const fx = fixture!;
+    const volume = join(fx.root, "big-volume");
+    const movedEnvs = join(volume, "envs");
+    mkdirSync(join(movedEnvs, "other-plugin-env"), { recursive: true, mode: 0o700 });
+    rmSync(join(fx.hostRuntimeDir, "python-envs"), { recursive: true, force: true });
+    symlinkSync(movedEnvs, join(fx.hostRuntimeDir, "python-envs"));
+    approveWorkspaceRoot(fx, volume);
+    for (const spelling of [movedEnvs, join(movedEnvs, "other-plugin-env"), join(fx.hostRuntimeDir, "python-envs")]) {
+      expect(() =>
+        derivePluginChildEnvelope({
+          pluginId: WIDENED_PLUGIN_ID,
+          sandbox: WIDENED_SANDBOX,
+          pluginRoot: fx.pluginRoot,
+          pluginDataDir: fx.pluginDataDir,
+          configValue: (key) => (key === "indexStorageRoot" ? spelling : undefined),
+        }),
+      ).toThrow(/host-owned catalog directory|host's own storage namespace/);
+    }
+    // The volume itself is still the user's to grant: only the host-owned child is subtracted.
+    const sibling = join(volume, "index");
+    mkdirSync(sibling, { recursive: true, mode: 0o700 });
+    expect(derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => (key === "indexStorageRoot" ? sibling : undefined),
+    }).write).toContain(sibling);
+  });
+
   it.skipIf(!canCreateSymlinks())("refuses a chosen directory under a bundle root that is itself a symlink", () => {
     // The same divergence, on the other subtraction. The install-root entry is the LEXICAL parent of this plugin's bundle, which is the right way to name the directory every install lives in and the wrong way to
     // name a bundle that resolves somewhere else; so the bundle root is named on its own line too. Without that line an approved root covering the real bundle admits a write over the module the next load imports.
@@ -1126,7 +1160,6 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     const child = await spawnConfinedPluginChild({
       pluginId: PLUGIN_ID,
       socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-      workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
       envelope: baseEnvelope(fx),
       launch: { kind: "entry", childEntryPath: probePath },
     });
@@ -1166,7 +1199,6 @@ setTimeout(() => process.exit(0), 2000).unref?.();
       spawnConfinedPluginChild({
         pluginId: PLUGIN_ID,
         socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-        workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
         envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
         launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
       }),
@@ -1188,7 +1220,6 @@ setTimeout(() => process.exit(0), 2000).unref?.();
           spawnConfinedPluginChild({
             pluginId: PLUGIN_ID,
             socketDir: resolvePluginSocketDir(fx.pluginDataDir),
-            workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
             envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
             launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
           }),
@@ -1459,7 +1490,7 @@ export const createPlugin = async (context) => ({
           name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the pilot, confined",
           tools: [
             {
@@ -1511,7 +1542,7 @@ export const createPlugin = async (context) => ({
 describe("the host protocol, spoken by a real confined child", () => {
   /** A complete plugin: its manifest, its entry and its recorded transcript. */
   const MEETING_GOLDEN = fileURLToPath(
-    new URL("./fixtures/host-protocol/4/plugins/meeting/", import.meta.url),
+    new URL("./fixtures/host-protocol/5/plugins/meeting/", import.meta.url),
   );
 
   /** The plugin's own tool results in a recorded transcript, by tool name. */
@@ -1563,7 +1594,7 @@ describe("the host protocol, spoken by a real confined child", () => {
         name: pluginId,
         version: "1.0.0",
         entry: "entry.mjs",
-        requires: { hostProtocol: "4" },
+        requires: { hostProtocol: "5" },
         description: "a child the protocol's process rules are measured on",
         tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
       },
@@ -1783,17 +1814,19 @@ export const createPlugin = async (context) => {
       probe_worker_escape: async () => await attempt(() => api.spawnWorker({
         workerId: "escape",
         command: "/bin/sh",
+        control: "output-only-v1",
         allowWritePaths: ["/"],
       })),
       probe_worker_allowed: async () => {
         const worker = await api.spawnWorker({
           workerId: "indexer",
           command: "/usr/bin/true",
+          control: "output-only-v1",
           allowReadPaths: [context.pluginRoot],
           allowWritePaths: [context.pluginDataDir],
         });
         return {
-          socketPath: worker.socketPath,
+          control: worker.control,
           pid: worker.pid,
           // A live handle would carry these. An id carries none of them.
           fields: Object.keys(worker).sort(),
@@ -1803,6 +1836,7 @@ export const createPlugin = async (context) => {
         const worker = await api.spawnWorker({
           workerId: "chosen",
           command: "/usr/bin/true",
+          control: "output-only-v1",
           allowWritePaths: [api.config.get("workspace")],
         });
         return { pid: worker.pid };
@@ -1810,6 +1844,7 @@ export const createPlugin = async (context) => {
       probe_worker_sibling: async () => await attempt(() => api.spawnWorker({
         workerId: "sibling",
         command: "/usr/bin/true",
+        control: "output-only-v1",
         allowWritePaths: [${JSON.stringify(fx.userRootSibling)}],
       })),
       probe_config: async () => api.config.get("watched") ?? null,
@@ -1824,7 +1859,7 @@ export const createPlugin = async (context) => {
 
       const release = vi.fn();
       const spawnWorker = vi.fn(async () => ({
-        socketPath: "/run/indexer.sock",
+        control: "output-only-v1" as const,
         pid: 31337,
         stop: () => undefined,
         onStdout: () => undefined,
@@ -1868,7 +1903,7 @@ export const createPlugin = async (context) => {
           name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the lossy members, confined",
           configSchema: { type: "object", properties: { watched: { type: "string" }, workspace: { type: "string" } } },
           sandbox: CANDIDATE_MANIFEST.sandbox,
@@ -1952,20 +1987,20 @@ export const createPlugin = async (context) => {
         expect(spawnWorker).not.toHaveBeenCalled();
 
         const spawned = (await instance.handlers.probe_worker_allowed!()) as {
-          socketPath: string;
+          control: string;
           pid: number;
           fields: string[];
         };
         expect(spawnWorker).toHaveBeenCalledTimes(1);
-        expect(spawned.socketPath).toBe("/run/indexer.sock");
+        expect(spawned.control).toBe("output-only-v1");
         expect(spawned.pid).toBe(31337);
         // The plugin holds an id and two scalars behind four local methods; nothing that could be a `ChildProcess`.
         expect(spawned.fields).toEqual([
+          "control",
           "onExit",
           "onStderr",
           "onStdout",
           "pid",
-          "socketPath",
           "stop",
         ]);
 
@@ -2188,7 +2223,7 @@ export const createPlugin = async (context) => {
           name: "Meeting",
           version: "0.5.42",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the recorder, confined",
           configSchema: {
             type: "object",
@@ -2442,7 +2477,6 @@ await reset();
   const child = await spawnConfinedPluginChild({
     pluginId: PLUGIN_ID,
     socketDir: plugin.socketDir,
-    workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
     envelope: derivePluginChildEnvelope({
       pluginId: PLUGIN_ID,
       pluginRoot: plugin.pluginRoot,
@@ -2581,19 +2615,20 @@ describe("a confined child and a Unix-domain socket", () => {
     120_000,
   );
 
-  it.runIf(process.platform !== "win32")(
-    "connects to a worker socket the host bound in the plugin's run directory",
+  it.runIf(process.platform === "darwin")(
+    "cannot connect to a socket in the plugin's retired run directory",
     async () => {
       if (!(await sandboxCasesRun())) return;
-      // The field failure this closes: local-indexer's worker bound its control socket successfully; an unconfined probe reached it; and the plugin's own confined child got `connect EPERM` on the same path, every boot, so the health check timed out at 30s and every one of that plugin's tools was refused
-      // for the rest of the session. `worker-spawn.ts` registers the directory so the WORKER may bind; nothing registered it for the client, because its header recorded an assumption; "the host connects from OUTSIDE the sandbox (unconstrained)"; that stopped being true when every plugin moved out of process.
-      const runDir = join(resolvePluginWorkerRunRoot(shortPlugin.pluginDataDir), "w");
+      // Workers speak stdio since host protocol 5, so the child's envelope names no run/ root and registers no
+      // Unix-socket allow there. A listener the host binds in that directory must be out of the child's reach.
+      // Linux permits the socket family without path scope, so only macOS can assert the refusal.
+      const runDir = join(dirname(shortPlugin.pluginDataDir), "run", "w");
       mkdirSync(runDir, { recursive: true, mode: 0o700 });
 
-      // This is another operation under the identical registered envelope; reset closes every socket before this case and after its result.
       const report = await runUnixConnectProbe(session!, join(runDir, "control.sock"));
 
-      expect(report, JSON.stringify(report)).toEqual({ ok: true });
+      expect(report.ok, JSON.stringify(report)).toBe(false);
+      expect(report.code).toMatch(/EPERM|EACCES/);
     },
     120_000,
   );
@@ -2716,7 +2751,7 @@ export default async function createPlugin(context) {
           name: "Local Indexer",
           version: "0.5.40",
           entry: "plugin.mjs",
-          requires: { hostProtocol: "4" },
+          requires: { hostProtocol: "5" },
           description: "the indexer's host-supplied answers",
           tools: ["indexer_home_probe", "indexer_drive_probe"].map((name) => ({
             name,
@@ -2836,7 +2871,7 @@ process.stdin.on("end", () => process.exit(0));
         name: plugin.pluginId,
         version: "1.0.0",
         process: { command: "./bin/plugin", env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
-        requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
         description: "a process entry whose environment is measured",
         tools: [],
       },
@@ -2879,7 +2914,6 @@ process.stdin.on("end", () => process.exit(0));
     const child = await spawnConfinedPluginChild({
       pluginId: plugin.pluginId,
       socketDir: resolvePluginSocketDir(plugin.pluginDataDir),
-      workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
       envelope: derivePluginChildEnvelope({
         pluginId: plugin.pluginId,
         pluginRoot: plugin.pluginRoot,
@@ -3018,6 +3052,7 @@ process.stdin.on("end", () => process.exit(0));
         const worker = await spawnWorker({
           pluginId: "rs",
           workerId: "w",
+          control: "output-only-v1",
           command: "/bin/sh",
           args: [script],
           env: { PLUGIN_DATA: dataDir, ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: join(elsewhere, "report"), ROOT_ENTRIES_REPORT: inventoryReport },
@@ -3503,6 +3538,7 @@ describe("the sandbox temp directories", () => {
             const worker = await spawnWorker({
               pluginId: "temp-b",
               workerId: "w",
+              control: "output-only-v1",
               command: process.execPath,
               args: [probe],
               env: { ELECTRON_RUN_AS_NODE: "1" },
@@ -3816,7 +3852,6 @@ async function runPluginChildToExit(plugin: InstalledPlugin, entry: string): Pro
   const child = await spawnConfinedPluginChild({
     pluginId: plugin.pluginId,
     socketDir: resolvePluginSocketDir(plugin.pluginDataDir),
-    workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
     envelope: derivePluginChildEnvelope({
       pluginId: plugin.pluginId,
       pluginRoot: plugin.pluginRoot,

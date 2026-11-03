@@ -43,7 +43,8 @@ function descendants(node) {
   return nodes;
 }
 function callsIn(module, name) {
-  const declaration = descendants(sources.get(module)).find(node => isFunctionDeclaration(node) && node.name?.text === name);
+  // The implementation, not an overload signature: only it has a body.
+  const declaration = descendants(sources.get(module)).find(node => isFunctionDeclaration(node) && node.name?.text === name && node.body !== undefined);
   assert.ok(declaration, `${module}: ${name}`);
   return descendants(declaration).filter(isCallExpression).map(call => isIdentifier(call.expression) ? call.expression.text
     : isPropertyAccessExpression(call.expression) ? call.expression.name.text : undefined);

@@ -1,4 +1,4 @@
-Two backports and eight Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and ten Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -196,6 +196,42 @@ the installed package.
     number (a worker profile of about 500 compiled in ~0.1 s locally and
     ~0.7 s on a loaded hosted runner); folded, about 75 remain.
     `setPathFilterCompactionForTesting` renders them unfolded for tests.
+
+12. Host-owned release (Ave): reset() judges the session's Windows ACL
+    release by srt-win's own outcome. revokeWindowsAcl/restoreWindowsAcl
+    take an `onExit(ok)` callback, because srt-win exits non-zero and leaves
+    a path out of its JSON when release_one_ace fails for it
+    (vendor/srt-win-src/src/cli.rs:1292-1320 at v0.0.80, "N FAILED (ACE
+    left in place)"). Statuses follow AceRelease
+    (vendor/srt-win-src/src/state_db.rs:1066-1097): revoked, stillHeld,
+    downgraded, relocated and noRow are completed releases, as are the
+    legacy restored/alreadyOriginal. mismatch and missing already deleted
+    the holder row, so a retry changes nothing; a mismatched object's ACE is
+    left as it was (a deny stays fail-closed) and the next boot's recovery
+    handles leftovers. reset() resolves with those counted per step in
+    `SandboxResetReport.windowsAclUnreleased` (no paths). srt-win not
+    running (undefined), a non-zero exit or any other status is a failure:
+    reset() finishes the rest of the teardown, then rejects with
+    `WindowsSandboxError` code `acl_release_failed`, naming only step and
+    status, and keeps the session's ACL state so a later reset() (the
+    'exit' handler's) tries again. Upstream logged all of this only under
+    SRT_DEBUG and resolved.
+    `SandboxManager.setSignalCleanupOwnedByHost(true)`, called before the
+    first initialize(), stops registerCleanup() from adding its SIGINT and
+    SIGTERM reset, for an embedder whose own signal handling drains its
+    children first and then calls reset(); the 'exit' handler is kept.
+    `setWindowsAclReleaseForTesting` (manager module only, test runner only)
+    gives reset() an ACL session with stand-ins for srt-win's revoke/restore.
+
+13. Recovery report (Ave): srt-win's crash recovery (dead holders pruned,
+    orphan sandbox-user ACEs revoked) was reported only in the stderr of the
+    first acl command, which reaches the embedder only under SRT_DEBUG.
+    initialize() now runs `srt-win acl recover --json` on its own before the
+    session's first grant (its `{deadBrokers, acesRevoked}` output,
+    vendor/srt-win-src/src/cli.rs AclCmd::Recover at v0.0.80) and hands the
+    counts to the listener set with `setWindowsAclRecoveryListener` (a
+    named export of dist/sandbox/windows-sandbox-utils.js). A failed recover
+    fails initialize, as a failed grant or stamp does.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -1802,10 +1838,41 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -150,4 +265,13 @@ export interface ISandboxManager {
+@@ -143,11 +258,49 @@ export interface ISandboxManager {
+     getMaskedFileStore(): MaskedFileStore;
+     updateConfig(newConfig: SandboxRuntimeConfig): void;
+     cleanupAfterCommand(): void;
+-    reset(): Promise<void>;
++    /**
++     * Ave patch (ACL release outcome): rejects with a `WindowsSandboxError`
++     * (code `acl_release_failed`) after the rest of the teardown when the
++     * session's Windows ACL release failed (srt-win did not run, exited
++     * non-zero, or returned an unlisted status); that ACL state is then kept
++     * for a later reset() to retry. Otherwise resolves with the rows srt-win
++     * dropped without releasing (`mismatch`, `missing`), counted per step.
++     */
++    reset(): Promise<SandboxResetReport>;
++    /**
++     * Ave patch (host-owned release): when true before the first
++     * initialize(), no SIGINT/SIGTERM handler resets the runtime; the
++     * embedder's own signal handling calls reset() after its children are
++     * down. The 'exit' handler is still registered.
++     */
++    setSignalCleanupOwnedByHost(owned: boolean): void;
+ }
+ /**
+  * Global sandbox manager that handles both network and filesystem restrictions
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
++/** Ave patch (ACL release outcome): what reset() could not release and will not retry. Counts only; no paths. */
++export interface SandboxResetReport {
++    windowsAclUnreleased: {
++        step: 'grant revoke' | 'deny restore';
++        status: 'mismatch' | 'missing';
++        count: number;
++    }[];
++}
 +/**
 + * Ave patch, test seams: not on SandboxManager and not exported from the
 + * package entry; they throw outside the test runner (VITEST unset).
@@ -1815,6 +1882,12 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
 +    family?: number;
 +}[]>) | undefined): void;
 +export declare function setListenerQuarantineForTesting(ms: number | undefined): void;
++export declare function setWindowsAclReleaseForTesting(session: {
++    sandboxUserSid: string;
++    srtWin: string;
++    revoke: (opts: { sandboxUserSid: string; srtWin: string; onExit: (ok: boolean) => void }) => readonly { path: string; status: string }[] | undefined;
++    restore: (opts: { sandboxUserSid: string; srtWin: string; onExit: (ok: boolean) => void }) => readonly { path: string; status: string }[] | undefined;
++} | undefined): void;
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
@@ -1833,7 +1906,8 @@ index 810b0aa54..bf01699a7 100644
 -import { wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
 +import { assertPtySlavePaths, wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
  import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
- import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
+-import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
++import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, recoverWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
  import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
  import { ownInstallWarning } from './own-files.js';
  import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredCommandKey, shouldIgnoreViolation, } from './sandbox-violation-store.js';
@@ -1853,7 +1927,17 @@ index 810b0aa54..bf01699a7 100644
  import { getJavaProxyAgentJarPathAsync } from './java-proxy-agent.js';
  import { getApplySeccompBinaryPathAsync } from './generate-seccomp-filter.js';
  // ============================================================================
-@@ -47,6 +52,27 @@ let ownInstallLogged = false;
+@@ -43,10 +48,37 @@ let muxProxyServer;
+ let managerContext;
+ let initializationPromise;
+ let cleanupRegistered = false;
++// Ave patch (host-owned release): the embedder's own signal handling drains its
++// children and then calls reset(), so registerCleanup() adds no SIGINT/SIGTERM
++// reset of its own. The 'exit' handler stays as the fallback.
++let signalCleanupOwnedByHost = false;
++// Ave patch (ACL release outcome): test seam replacing srt-win's revoke/restore.
++let windowsAclReleaseForTesting;
+ let ownInstallLogged = false;
  let logMonitorShutdown;
  let linuxMonitor;
  let parentProxy;
@@ -1881,7 +1965,7 @@ index 810b0aa54..bf01699a7 100644
  /** Read live through {@link directLookup}, so a config update applies to the next dial. */
  let resolvedAddressGuard = createResolvedAddressGuard();
  let mitmCA;
-@@ -84,6 +110,68 @@ let windowsWfpVerified = false;
+@@ -84,6 +116,68 @@ let windowsWfpVerified = false;
  // grants/stamps were applied with even if `config` mutated between.
  let srtWinSpawn;
  const sandboxViolationStore = new SandboxViolationStore();
@@ -1950,7 +2034,20 @@ index 810b0aa54..bf01699a7 100644
  // Per-session sentinel↔real-value map for masked credentials. Lives only in
  // process memory; never written to disk or logged. Cleared on reset().
  const sentinelRegistry = new SentinelRegistry();
-@@ -300,11 +388,21 @@ function deniedDomainReason(entry) {
+@@ -129,8 +223,10 @@ function registerCleanup() {
+             }
+         }
+     });
+-    process.once('SIGINT', cleanupHandler);
+-    process.once('SIGTERM', cleanupHandler);
++    if (!signalCleanupOwnedByHost) {
++        process.once('SIGINT', cleanupHandler);
++        process.once('SIGTERM', cleanupHandler);
++    }
+     cleanupRegistered = true;
+ }
+ /**
+@@ -300,11 +396,21 @@ function deniedDomainReason(entry) {
      const own = Object.prototype.hasOwnProperty.call(reasons, entry);
      return (own ? reasons[entry] : undefined) ?? 'host is on the deny list';
  }
@@ -1974,7 +2071,7 @@ index 810b0aa54..bf01699a7 100644
      };
      if (!config) {
          logForDebugging('No config available, denying network request');
-@@ -340,7 +438,7 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -340,7 +446,7 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      for (const allowedDomain of config.network.allowedDomains) {
          if (matchesDomainPatternWithPort(canonicalHost, port, allowedDomain)) {
              logForDebugging(`Allowed by config rule: ${host}:${port}`);
@@ -1983,7 +2080,7 @@ index 810b0aa54..bf01699a7 100644
          }
      }
      // strictAllowlist makes the configured allowlist deterministic enforcement:
-@@ -353,33 +451,70 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -353,33 +459,70 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      // Coming after both configured lists, it lifts the default deny for that
      // one command and never a configured deniedDomains entry. The username is
      // presented by the sandboxed client: see registerCommandNetworkLists.
@@ -2062,7 +2159,7 @@ index 810b0aa54..bf01699a7 100644
          // The callback's own reason, when it gave one, says what to do instead.
          return denied(denialReasonOf(answer) ?? 'user denied');
      }
-@@ -390,6 +525,47 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -390,6 +533,47 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
          return denied('permission prompt failed');
      }
  }
@@ -2110,7 +2207,7 @@ index 810b0aa54..bf01699a7 100644
  /**
   * Build the header-mutation callback that substitutes sentinel→real for
   * masked credentials. Returns undefined when no `credentials` block is
-@@ -438,7 +614,7 @@ function buildSigv4Planner() {
+@@ -438,7 +622,7 @@ function buildSigv4Planner() {
   * otherwise returns undefined.
   *
   * Matches the canonicalized hostname, like the allow/deny filter
@@ -2119,7 +2216,7 @@ index 810b0aa54..bf01699a7 100644
   * fails OPEN on a miss — a host that matches no MITM pattern is dialed
   * directly — so it must accept exactly the set of spellings the allowlist
   * accepts: otherwise `api.example.com.` (trailing-dot FQDN, same name to
-@@ -468,7 +644,7 @@ function getMitmSocketPath(host) {
+@@ -468,7 +652,7 @@ function getMitmSocketPath(host) {
   * so mTLS / cert-pinning clients can complete their own handshake.
   *
   * Matches the canonicalized hostname, like the allow/deny filter
@@ -2128,7 +2225,7 @@ index 810b0aa54..bf01699a7 100644
   * canonicalization (`127.1`, a trailing-dot FQDN) would dodge the exclusion
   * and get terminated anyway.
   */
-@@ -497,11 +673,231 @@ function shouldTerminateTLSForHost(host) {
+@@ -497,11 +681,231 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -2363,7 +2460,7 @@ index 810b0aa54..bf01699a7 100644
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +917,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +925,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -2372,7 +2469,7 @@ index 810b0aa54..bf01699a7 100644
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +934,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +942,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -2407,7 +2504,7 @@ index 810b0aa54..bf01699a7 100644
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +966,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +974,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -2436,7 +2533,7 @@ index 810b0aa54..bf01699a7 100644
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +1002,846 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +1010,858 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -2668,6 +2765,18 @@ index 810b0aa54..bf01699a7 100644
 +export function setListenerQuarantineForTesting(ms) {
 +    assertTestRunner('setListenerQuarantineForTesting');
 +    quarantineMsForTesting = ms;
++}
++/** Test seam: an ACL session for reset() to release with `revoke`/`restore` in place of srt-win (undefined removes it). */
++export function setWindowsAclReleaseForTesting(session) {
++    assertTestRunner('setWindowsAclReleaseForTesting');
++    windowsAclReleaseForTesting = session;
++    windowsFsStampedSet = session === undefined ? undefined : { stamped: [] };
++    windowsFsSbUserSid = session?.sandboxUserSid;
++    srtWinSpawn = session?.srtWin;
++}
++/** Ave patch (host-owned release): see `signalCleanupOwnedByHost`. Takes effect at the first initialize(). */
++function setSignalCleanupOwnedByHost(owned) {
++    signalCleanupOwnedByHost = owned;
 +}
 +/** Test seam: resolve destination names with `resolver` (undefined restores the system resolver). */
 +export function setDestinationResolverForTesting(resolver) {
@@ -3283,7 +3392,7 @@ index 810b0aa54..bf01699a7 100644
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1870,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +1890,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3296,7 +3405,7 @@ index 810b0aa54..bf01699a7 100644
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,7 +1964,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,7 +1984,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -3315,7 +3424,17 @@ index 810b0aa54..bf01699a7 100644
          // Resolve once (stats disk); captured module-level for wrap/reset.
          srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
          const srtWin = srtWinSpawn;
-@@ -992,6 +2261,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -820,6 +2109,9 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+             // catch's best-effort revoke/restore can address whatever
+             // partially landed.
+             windowsFsSbUserSid = sb;
++            // Ave patch (recovery report): recover a dead session's ACEs
++            // first, on its own, so the embedder gets the counts.
++            recoverWindowsAcl({ srtWin });
+             // Grant FIRST so the sandbox user has working-tree access by
+             // the time the deny stamp runs. The two are independent
+             // refcounted state-DB sets keyed on the same holder PID.
+@@ -992,6 +2284,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -3328,7 +3447,7 @@ index 810b0aa54..bf01699a7 100644
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +2790,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2813,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -3338,7 +3457,7 @@ index 810b0aa54..bf01699a7 100644
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +2988,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3011,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -3360,7 +3479,7 @@ index 810b0aa54..bf01699a7 100644
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3009,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3032,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -3403,7 +3522,7 @@ index 810b0aa54..bf01699a7 100644
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3058,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3081,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -3412,7 +3531,7 @@ index 810b0aa54..bf01699a7 100644
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3075,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3098,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -3420,7 +3539,7 @@ index 810b0aa54..bf01699a7 100644
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3111,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3134,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -3437,7 +3556,7 @@ index 810b0aa54..bf01699a7 100644
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1950,7 +3249,7 @@ function getConfig() {
+@@ -1950,7 +3272,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -3446,7 +3565,7 @@ index 810b0aa54..bf01699a7 100644
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3288,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3311,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -3454,7 +3573,89 @@ index 810b0aa54..bf01699a7 100644
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2222,6 +3522,8 @@ async function reset() {
+@@ -2114,6 +3437,8 @@ function forceCloseHttpServer(server) {
+     });
+ }
+ async function reset() {
++    const aclReleaseFailures = [];
++    const aclReleaseStale = new Map();
+     // Windows: release this session's sandbox-user ACEs. Best-effort
+     // — log anomalies rather than throw, so teardown always
+     // completes. Leftover ACEs are recoverable later via
+@@ -2123,28 +3448,55 @@ async function reset() {
+         // Captured at initialize() — the SAME binary the grants/stamps
+         // were applied with, immune to `config` mutation between.
+         const srtWin = srtWinSpawn;
+-        // 'restored'/'alreadyOriginal' are the pre- same-user-removal
+-        // srt-win's success vocabulary; 'revoked'/'stillHeld' are the
+-        // post-. Either is non-anomalous.
+-        const ok = new Set(['revoked', 'stillHeld', 'restored', 'alreadyOriginal']);
+-        const log = (kind, e) => {
+-            if (!ok.has(e.status)) {
+-                logForDebugging(`[Sandbox Windows] ${kind}: '${e.path}' ${e.status} — ` +
++        // Ave patch (ACL release outcome): srt-win's AceRelease statuses
++        // (vendor/srt-win-src/src/state_db.rs:1066-1097 at v0.0.80).
++        // revoked, stillHeld, downgraded (another holder remains, ACE
++        // re-applied at its mask), relocated (revoked at the moved path) and
++        // noRow are completed releases; restored/alreadyOriginal are the
++        // pre- same-user-removal vocabulary. mismatch (ACE on a foreign
++        // object left alone) and missing (path gone) already deleted the
++        // holder row, so a retry changes nothing: they are reported, not
++        // failed. A non-zero exit is a failure even with JSON, because
++        // srt-win leaves a path it could not release out of the JSON
++        // (cli.rs:1292-1320); so is any status not listed here.
++        const released = new Set(['revoked', 'stillHeld', 'downgraded', 'relocated', 'noRow', 'restored', 'alreadyOriginal']);
++        const stale = new Set(['mismatch', 'missing']);
++        const release = (step, run) => {
++            let exitedOk = true;
++            const entries = run({ sandboxUserSid: sb, srtWin, onExit: (ok) => { exitedOk = ok; } });
++            if (entries === undefined) {
++                aclReleaseFailures.push(`${step} did not run`);
++                return;
++            }
++            if (!exitedOk)
++                aclReleaseFailures.push(`${step} exited non-zero`);
++            for (const e of entries) {
++                if (released.has(e.status))
++                    continue;
++                logForDebugging(`[Sandbox Windows] ${step}: '${e.path}' ${e.status} — ` +
+                     `ACE may be left in place; resolve and run ` +
+                     `\`srt-win acl recover\` to clear`, { level: 'warn' });
++                if (stale.has(e.status)) {
++                    const key = `${step}\n${e.status}`;
++                    aclReleaseStale.set(key, (aclReleaseStale.get(key) ?? 0) + 1);
++                }
++                else {
++                    aclReleaseFailures.push(`${step} ${e.status}`);
++                }
+             }
+         };
+-        for (const e of revokeWindowsAcl({ sandboxUserSid: sb, srtWin }) ?? []) {
+-            log('grant revoke', e);
+-        }
+-        for (const e of restoreWindowsAcl({ sandboxUserSid: sb, srtWin }) ?? []) {
+-            log('deny restore', e);
+-        }
++        release('grant revoke', windowsAclReleaseForTesting?.revoke ?? revokeWindowsAcl);
++        release('deny restore', windowsAclReleaseForTesting?.restore ?? restoreWindowsAcl);
++    }
++    // Ave patch (ACL release outcome): keep the session's ACL state when its
++    // release failed, so a later reset() (the 'exit' handler's) tries again.
++    if (aclReleaseFailures.length === 0) {
++        windowsFsStampedSet = undefined;
++        windowsFsSbUserSid = undefined;
++        windowsFsRawInputs = undefined;
++        srtWinSpawn = undefined;
++        windowsAclReleaseForTesting = undefined;
+     }
+-    windowsFsStampedSet = undefined;
+-    windowsFsSbUserSid = undefined;
+-    windowsFsRawInputs = undefined;
+-    srtWinSpawn = undefined;
+     // windowsWfpVerified is NOT cleared — per-process, not per-session.
+     // Clean up any leftover bwrap mount points. Force past the
+     // active-sandbox counter — reset() means the session is over.
+@@ -2222,6 +3574,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -3463,7 +3664,7 @@ index 810b0aa54..bf01699a7 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,6 +3531,26 @@ async function reset() {
+@@ -2229,7 +3583,36 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -3488,9 +3689,19 @@ index 810b0aa54..bf01699a7 100644
 +        privateSocketDir = undefined;
 +    }
      maskedFileStore.dispose();
++    if (aclReleaseFailures.length > 0) {
++        throw new WindowsSandboxError('acl_release_failed', `Windows sandbox ACL release incomplete: ${aclReleaseFailures.join('; ')}`);
++    }
++    return {
++        windowsAclUnreleased: [...aclReleaseStale].map(([key, count]) => {
++            const [step, status] = key.split('\n');
++            return { step, status, count };
++        }),
++    };
  }
  function getSandboxViolationStore() {
-@@ -2336,6 +3658,11 @@ export const SandboxManager = {
+     return sandboxViolationStore;
+@@ -2336,6 +3719,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -3499,6 +3710,7 @@ index 810b0aa54..bf01699a7 100644
 +    closeInvocationConnections,
 +    closeAllInvocationConnections,
 +    setParentProxyRouter,
++    setSignalCleanupOwnedByHost,
      askCallbackDenyReason: true,
      cleanupAfterCommand,
      reset,
@@ -3793,3 +4005,103 @@ index 000000000..344c83b28
 +    res.writeHead(failure.httpStatus, { 'Content-Type': 'text/plain', 'X-Proxy-Error': 'transport-' + failure.kind, 'X-Proxy-Reason': failure.message });
 +    res.end(failure.message + '\n');
 +}
+diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
+index 65b8eef..9cff654 100644
+--- a/dist/sandbox/windows-sandbox-utils.d.ts
++++ b/dist/sandbox/windows-sandbox-utils.d.ts
+@@ -861,6 +861,19 @@ export interface WindowsAclStampOptions {
+  *   to release whatever WAS stamped.
+  */
+ export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
++/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
++export interface WindowsAclRecoveryReport {
++    /** Dead holder processes whose holds were pruned. */
++    deadBrokers: number;
++    /** Orphaned sandbox-user ACEs revoked. */
++    acesRevoked: number;
++}
++/** Ave patch (recovery report): receive each recoverWindowsAcl() result (undefined removes it). */
++export declare function setWindowsAclRecoveryListener(listener: ((report: WindowsAclRecoveryReport) => void) | undefined): void;
++/** Ave patch (recovery report): run srt-win's crash recovery and report its counts. @throws on exit ≠ 0. */
++export declare function recoverWindowsAcl(opts: {
++    srtWin?: SrtWinSpawn;
++}): WindowsAclRecoveryReport;
+ /**
+  * Per-path outcome from `srt-win acl restore --json` /
+  * `revoke --json`. The status set is intentionally loose: the
+@@ -884,6 +897,8 @@ export declare function restoreWindowsAcl(opts: {
+     sandboxUserSid: string;
+     holderPid?: number;
+     srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
+ }): WindowsAclAceOutcome[] | undefined;
+ export interface WindowsAclGrantOptions {
+     /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
+@@ -918,6 +933,8 @@ export declare function revokeWindowsAcl(opts: {
+     sandboxUserSid: string;
+     holderPid?: number;
+     srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
+ }): WindowsAclAceOutcome[] | undefined;
+ /**
+  * Build the spawn descriptor for running `command` inside the Windows
+diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
+index 540c566..1108c1c 100644
+--- a/dist/sandbox/windows-sandbox-utils.js
++++ b/dist/sandbox/windows-sandbox-utils.js
+@@ -1197,6 +1197,34 @@ export function stampWindowsAcl(opts) {
+             `: ${r.stderr || r.stdout}`);
+     }
+ }
++// Ave patch (recovery report): the embedder's listener for crash-recovery
++// counts, set with setWindowsAclRecoveryListener.
++let windowsAclRecoveryListener;
++/**
++ * Ave patch (recovery report): receive the counts of each
++ * recoverWindowsAcl() run (undefined removes the listener).
++ */
++export function setWindowsAclRecoveryListener(listener) {
++    windowsAclRecoveryListener = listener;
++}
++/**
++ * Ave patch (recovery report): run srt-win's crash recovery on its own
++ * (`acl recover --json`, which prints `{deadBrokers, acesRevoked}`;
++ * vendor/srt-win-src/src/cli.rs AclCmd::Recover at v0.0.80) and hand the
++ * counts to the embedder's listener. Without it, recovery is reported
++ * only in the stderr of whichever acl command ran it first.
++ *
++ * @throws on exit ≠ 0 or unparseable output.
++ */
++export function recoverWindowsAcl(opts) {
++    const report = runSrtWinJson(['acl', 'recover', '--json'], { timeoutMs: 60000, srtWin: opts.srtWin });
++    const counts = { deadBrokers: Number(report.deadBrokers), acesRevoked: Number(report.acesRevoked) };
++    if (!Number.isInteger(counts.deadBrokers) || !Number.isInteger(counts.acesRevoked)) {
++        throw new WindowsSandboxError('srt_win_bad_json', `srt-win acl recover: unexpected report ${JSON.stringify(report)}`, 'acl');
++    }
++    windowsAclRecoveryListener?.(counts);
++    return counts;
++}
+ /**
+  * Release this holder's deny ACEs and remove the sandbox-user ACE
+  * on any path whose refcount falls to zero. Best-effort (does not
+@@ -1221,6 +1249,9 @@ export function restoreWindowsAcl(opts) {
+             opts.sandboxUserSid,
+             '--json',
+         ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): srt-win exits non-zero when a
++        // path could not be released and leaves that path out of the JSON.
++        opts.onExit?.(r.ok);
+         if (!r.ok) {
+             logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
+                 `outcomes preserved): ${r.stderr}`, { level: 'error' });
+@@ -1283,6 +1314,8 @@ export function revokeWindowsAcl(opts) {
+             opts.sandboxUserSid,
+             '--json',
+         ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): see restoreWindowsAcl.
++        opts.onExit?.(r.ok);
+         if (!r.ok) {
+             logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
+         }

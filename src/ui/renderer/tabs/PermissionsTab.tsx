@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
+import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { SandboxRestartDialog } from "../components/SandboxRestartDialog.js";
 import { Badge } from "../../../components/ui/badge.js";
@@ -36,7 +37,9 @@ import type {
 import type {
   SandboxCapabilityInfo,
   SandboxMxcUnavailableReason,
+  SandboxWindowsExtensionReason,
   SandboxWindowsStatusInfo,
+  SandboxWindowsSubstrateInfo,
 } from "../../../shared/sandbox-capability-info.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { RecentlyDeniedPanel } from "../components/permissions/RecentlyDeniedPanel.js";
@@ -46,6 +49,7 @@ import { PermissionJudgeContent } from "../components/permissions/PermissionJudg
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
 import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
+import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -180,6 +184,170 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
 } as const satisfies Record<SandboxMxcUnavailableReason, string>;
 
+/** Every reason the shared extension plan can carry, so no reason renders as a raw key. */
+const WINDOWS_EXTENSION_REASON_KEY = {
+  ...MXC_UNAVAILABLE_REASON_KEY,
+  "not-requested": "permissionsTab.osSandboxWindowsExtensionReasonNotRequested",
+  "native-validation-required": "permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired",
+  checking: "permissionsTab.osSandboxWindowsExtensionReasonChecking",
+  ready: "permissionsTab.osSandboxWindowsExtensionReasonReady",
+  "readiness-deadline": "permissionsTab.osSandboxWindowsExtensionReasonReadinessDeadline",
+  "ancestor-policy-unsupported": "permissionsTab.osSandboxWindowsExtensionReasonAncestorPolicyUnsupported",
+  "runtime-start-failed": "permissionsTab.osSandboxWindowsExtensionReasonRuntimeStartFailed",
+  "endpoint-isolation-unverified": "permissionsTab.osSandboxWindowsExtensionReasonEndpointIsolationUnverified",
+  "bash-incompatible": "permissionsTab.osSandboxWindowsExtensionReasonBashIncompatible",
+  "ancestor-already-admitted": "permissionsTab.osSandboxWindowsExtensionReasonAncestorAlreadyAdmitted",
+  "runtime-unavailable": "permissionsTab.osSandboxWindowsExtensionReasonRuntimeUnavailable",
+} as const satisfies Record<SandboxWindowsExtensionReason, string>;
+
+/** What a selected container does not hide or block (design D2/D3 and the contract's measured residuals). Shown only
+ * for a selected MXC plan: these describe the container request, never the srt-win fallback or an unconfined process. */
+const WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS = [
+  ["network", "permissionsTab.osSandboxWindowsExtensionsNetwork"],
+  ["windows", "permissionsTab.osSandboxWindowsExtensionsWindows"],
+  ["folder-names", "permissionsTab.osSandboxWindowsExtensionsFolderNames"],
+  ["temp", "permissionsTab.osSandboxWindowsExtensionsTemp"],
+  ["dll", "permissionsTab.osSandboxWindowsExtensionsDll"],
+  ["bash-hooks", "permissionsTab.osSandboxWindowsExtensionsBashHooks"],
+  ["environment", "permissionsTab.osSandboxWindowsExtensionsEnvironment"],
+  ["reviewer", "permissionsTab.osSandboxWindowsExtensionsReviewer"],
+] as const;
+
+/** The extension backend this session selected, from the shared plan: a checking or rejected plan refuses starts, so it
+ * is never described as unconfined. Snapshots without a plan keep the substrate-only wording. */
+/** The localized cause of an AVE_HOME privacy failure; shared by the boot-degraded card and the Windows privacy panel so both say the same thing. */
+function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
+  switch (error.category) {
+    case "directory-failed": return t("permissionsTab.homePrivacyDirectoryFailed");
+    case "system-root-missing": return t("permissionsTab.homePrivacySystemRootMissing");
+    case "identity-failed": return t("permissionsTab.homePrivacyIdentityFailed");
+    case "icacls-failed": return t("permissionsTab.homePrivacyIcaclsFailed");
+    case "read-back-failed": return t("permissionsTab.homePrivacyReadBackFailed");
+    case "not-protected": return t("permissionsTab.homePrivacyNotProtected");
+    case "invalid-owner-grant": return t("permissionsTab.homePrivacyInvalidOwnerGrant");
+    case "owner-claim-failed": return t("permissionsTab.homePrivacyOwnerClaimFailed");
+    case "reparse-point": return t("permissionsTab.homePrivacyReparsePoint");
+    case "posix-root-unsafe": return t("permissionsTab.homePrivacyPosixRootUnsafe");
+    case "extra-principals": return t("permissionsTab.homePrivacyExtraPrincipals", {
+      principals: (error.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+    });
+    case "workspace-extra-principals": return t("permissionsTab.homePrivacyWorkspaceExtraPrincipals", {
+      principals: (error.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+    });
+  }
+}
+
+/** The fix for each AVE_HOME privacy failure, or null where the cause text already says what to do. */
+const HOME_PRIVACY_FIX_KEY = {
+  "directory-failed": "permissionsTab.homePrivacyFixDirectory",
+  "system-root-missing": "permissionsTab.homePrivacyFixSystemRoot",
+  "identity-failed": "permissionsTab.homePrivacyFixIdentity",
+  "icacls-failed": "permissionsTab.homePrivacyFixPermissions",
+  "read-back-failed": "permissionsTab.homePrivacyFixPermissions",
+  "not-protected": "permissionsTab.homePrivacyFixPermissions",
+  "invalid-owner-grant": "permissionsTab.homePrivacyFixPermissions",
+  "owner-claim-failed": null,
+  "reparse-point": "permissionsTab.homePrivacyFixReparsePoint",
+  "posix-root-unsafe": "permissionsTab.homePrivacyFixPosixRoot",
+  "extra-principals": null,
+  "workspace-extra-principals": null,
+} as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;
+
+/** `sentence` followed by the category's own fix, when the cause text does not already carry one. */
+function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
+  const fix = HOME_PRIVACY_FIX_KEY[error.category];
+  return fix === null ? sentence : `${sentence} ${t(fix)}`;
+}
+
+/**
+ * The exact repair for a home Ave would not repair itself: drop inheritance and keep one owner-only entry, then remove each explicit
+ * foreign principal's grants and denies (`/remove` without `:g`; inheritance removal does not touch explicit entries). Command Prompt syntax, so `%USERNAME%` stays a literal here.
+ */
+function homePrivacyFixCommand(error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string | null {
+  const target = `"${error.path}"`;
+  const removals = (error.extraPrincipals ?? []).filter((principal) => principal.explicit === true).map(({ sid }) => `icacls ${target} /remove *${sid}`);
+  // The workspace keeps inheriting from the protected home: only its own foreign entries are removed.
+  if (error.category === "workspace-extra-principals") return removals.length > 0 ? removals.join("\r\n") : null;
+  if (error.category !== "extra-principals" && error.category !== "not-protected") return null;
+  return [
+    `icacls ${target} /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"`,
+    ...removals,
+  ].join("\r\n");
+}
+
+function HomePrivacyFixCommand({ error }: { error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]> }) {
+  const { copied, copy } = useCopyFlash();
+  const command = homePrivacyFixCommand(error);
+  if (command === null) return null;
+  return (
+    <div data-testid="os-sandbox-windows-home-privacy-command" className="mt-2 space-y-1">
+      <p>{t("permissionsTab.homePrivacyCommandIntro")}</p>
+      <pre className="whitespace-pre-wrap break-all rounded bg-background/(--opacity-stronger) px-2 py-1 font-mono text-[11px] text-foreground">{command}</pre>
+      <Button type="button" size="sm" variant="outline" data-testid="os-sandbox-windows-home-privacy-command-copy" onClick={() => copy(command)}>
+        {copied ? t("permissionsTab.homePrivacyCommandCopied") : t("permissionsTab.homePrivacyCommandCopy")}
+      </Button>
+    </div>
+  );
+}
+
+function WindowsExtensionStatus({ substrate }: { substrate: SandboxWindowsSubstrateInfo }) {
+  const { t } = useTranslation();
+  const plan = substrate.extensionPlan;
+  if (!plan) {
+    return (
+      <p data-testid="os-sandbox-windows-substrate-extensions">
+        {substrate.extensions === "srt-win"
+          ? t("permissionsTab.osSandboxWindowsExtensionsSrtWin")
+          : t("permissionsTab.osSandboxWindowsExtensionsNone")}
+      </p>
+    );
+  }
+  const reason = t(WINDOWS_EXTENSION_REASON_KEY[plan.reason]);
+  const selectedMxc = plan.readiness === "ready" && plan.selectedBackend === "mxc";
+  const text = plan.readiness === "off"
+    ? t("permissionsTab.osSandboxWindowsExtensionsOff")
+    : selectedMxc
+      ? t("permissionsTab.osSandboxWindowsExtensionsMxcSelected")
+      : plan.readiness === "checking"
+        ? t("permissionsTab.osSandboxWindowsExtensionsChecking")
+        : plan.readiness === "rejected"
+          ? t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason })
+          : plan.readiness === "fallback"
+            ? t("permissionsTab.osSandboxWindowsExtensionsFallback", { reason })
+            : t("permissionsTab.osSandboxWindowsExtensionsUnavailable", { reason });
+  return (
+    <>
+      <p
+        data-testid="os-sandbox-windows-substrate-extensions"
+        data-readiness={plan.readiness}
+        data-selected-backend={plan.selectedBackend}
+        data-reason={plan.reason}
+      >
+        {text}
+      </p>
+      {selectedMxc ? (
+        <div
+          data-testid="os-sandbox-windows-extension-disclosure"
+          data-egress-identity={plan.egressIdentity}
+          data-proxy-owner-verified={String(plan.proxyOwnerVerified)}
+          data-host-loopback={plan.hostLoopback}
+          data-ancestor-access={plan.ancestorAccess}
+          className="space-y-1 border-t pt-1"
+        >
+          <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsExtensionsDisclosureHeading")}</p>
+          <ul className="list-disc space-y-0.5 pl-4">
+            {WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS.map(([id, key]) => (
+              <li key={id} data-testid={`os-sandbox-windows-extension-disclosure-${id}`} className="[overflow-wrap:anywhere]">
+                {t(key)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
   success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
   info: "border-info/(--opacity-medium) bg-info/(--opacity-soft) text-info",
@@ -270,6 +438,12 @@ export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMod
   return m === "auto" ? "llm" : "disabled";
 }
 
+/** The independent reads behind the panel's sections. */
+const PANEL_LOADS = ["mode", "policy", "rules", "hooks", "directories", "reviewer", "settings"] as const;
+type PanelLoad = (typeof PANEL_LOADS)[number];
+type PanelLoadState = "pending" | "ready" | "failed";
+const INITIAL_PANEL_LOAD = Object.fromEntries(PANEL_LOADS.map((load) => [load, "pending"])) as Record<PanelLoad, PanelLoadState>;
+
 export function PermissionsTab({
   exactDenyDraft = null,
   onExactDenySaved,
@@ -281,8 +455,8 @@ export function PermissionsTab({
 } = {}) {
   const { t } = useTranslation();
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Each panel read settles on its own: a failing or slow read marks only the sections that use it, never the whole tab.
+  const [panelLoad, setPanelLoad] = useState<Record<PanelLoad, PanelLoadState>>(INITIAL_PANEL_LOAD);
 
 
   const [banner, setBanner] = useState<{ type: "error" | "warn"; msg: string } | null>(null);
@@ -368,6 +542,10 @@ export function PermissionsTab({
   // and this one never confines shells. `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
   const [workerConfinementEnabled, setWorkerConfinementEnabled] = useState(false);
   const [workerConfinementBusy, setWorkerConfinementBusy] = useState(false);
+  // With the variable set, extension confinement is on for this run whatever is stored, so the row shows the effective state, checked
+  // and not clickable (native run 3: it read "disabled" under a notice saying the environment forces it on).
+  const workerConfinementForced = envForcedPaths.includes("features.pluginWorkerConfinement");
+  const workerConfinementEffective = workerConfinementEnabled || workerConfinementForced;
   // Windows srt-win repair flow (the OS sandbox is normally provisioned at app-install time; this panel is the re-provision/repair fallback). `windowsStatus` holds the latest readiness snapshot once the user opts in on win32; the panel renders off it.
   // `windowsInstallPhase` is where a click is: "installing" (main checks status, then may raise the UAC prompt) or "refreshing" (re-reading status afterwards); while it is set the "Re-provision" button is disabled. `windowsInstallOutcome` is what the last click led to, shown until the next.
   const [windowsStatus, setWindowsStatus] = useState<SandboxWindowsStatusInfo | null>(null);
@@ -375,66 +553,119 @@ export function PermissionsTab({
   const windowsInstallBusy = windowsInstallPhase !== null;
   const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
-  // True once the panel has content on screen. After that, a refresh must not reach for the blank/error surface: `loading` replaces the WHOLE panel with one line, the scroll container collapses from ~4000px to
-  // one viewport, and the browser clamps scrollTop to the new maximum. When the content comes back the scroll position is gone; which is why removing a rule at the bottom of the page threw the user back to the top.
-  const hasLoadedRef = useRef(false);
+  // A read that has succeeded once keeps its last-known values on screen when a later refresh fails; the failure goes to the
+  // banner instead. Replacing loaded content with a loading or error line would collapse the scroll container and lose the user's place.
+  const loadedReadsRef = useRef(new Set<PanelLoad>());
 
-  const fetchAll = useCallback(async () => {
-    if (!hasLoadedRef.current) {
-      setLoading(true);
-      setError(null);
-    }
+  // A refresh that failed after an earlier success leaves last-known values on screen; the section says so beside them.
+  const [staleReads, setStaleReads] = useState<ReadonlySet<PanelLoad>>(() => new Set());
+
+  const settle = useCallback(async <T,>(load: PanelLoad, read: () => Promise<T>, apply: (value: T) => void): Promise<void> => {
     try {
-      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, settingsRes] =
-        await Promise.all([
-          window.ave.permission.getMode(),
-          window.ave.policy.get(),
-          window.ave.permission.listScopedRules(),
-          window.ave.permission.hookTrustList(),
-          window.ave.permission.dirDispatch("list"),
-          window.ave.permission.reviewerDispatch("show"),
-          getApi().getSettings(),
-        ]);
-      if (!reviewerRes.ok) {
-        throw new Error(reviewerRes.error);
-      }
-      setMode(normalizeExecutionMode(modeRes.mode));
-      setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
-      setRequireExplicit(policyRes.requireExplicitApproval);
-      // Host-derived: `managed` alone misses an admin-dir file that does not set managed:true, which savePolicy still refuses to overwrite.
-      setPolicyManaged(!policyRes.editable);
-      setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
-      setPolicyAdminPath(policyRes.adminPath as string | undefined);
-      setPolicyAdminReason(policyRes.adminStatus === "invalid" ? policyRes.adminReason : undefined);
-      setRules(rulesRes.rules);
-      setRuleLoadErrors(rulesRes.errors);
-      setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
-      setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
-      setReviewer(reviewerRes.settings);
-      setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
-      const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
-      setSandboxEnabled(osSandboxOn);
-      const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
-      setWorkerConfinementEnabled(workerConfinementOn);
+      apply(await read());
+      loadedReadsRef.current.add(load);
+      setPanelLoad((prev) => ({ ...prev, [load]: "ready" }));
+      setStaleReads((prev) => { if (!prev.has(load)) return prev; const next = new Set(prev); next.delete(load); return next; });
     } catch (e) {
-      console.warn("[ave] permissions: load failed:", errorMessage(e));
-      const message = t("permissionsTab.errorLoadFailed");
-      // Same rule for the failure surface. A refresh that fails still has the last-known state on screen,
-      // so it reports through the banner instead of replacing what the user is reading with an error page.
-      if (hasLoadedRef.current) showBanner("error", message);
-      else setError(message);
-    } finally {
-      hasLoadedRef.current = true;
-      setLoading(false);
+      // The read and the error class: a host refusal crosses IPC inside the message (for example AveHomeConfigurationUntrustedError).
+      console.warn("[ave] permissions: load failed:", load, e instanceof Error ? e.name : typeof e, errorMessage(e));
+      if (loadedReadsRef.current.has(load)) {
+        showBanner("error", t("permissionsTab.errorLoadFailed"));
+        setStaleReads((prev) => new Set(prev).add(load));
+      } else {
+        setPanelLoad((prev) => ({ ...prev, [load]: "failed" }));
+      }
     }
   }, [showBanner]);
+
+  const readDirectories = useCallback(() => {
+    if (!loadedReadsRef.current.has("directories")) setPanelLoad((prev) => ({ ...prev, directories: "pending" }));
+    return settle("directories", () => window.ave.permission.dirDispatch("list"), (dirRes) => {
+      if (!dirRes.ok) throw new Error(dirRes.error);
+      if (dirRes.verb !== "list") throw new Error(`unexpected directory reply '${dirRes.verb}'`);
+      setDirectories(dirRes.userAdditions);
+    });
+  }, [settle]);
+
+  const fetchAll = useCallback(async () => {
+    setPanelLoad((prev) => {
+      const next = { ...prev };
+      for (const load of PANEL_LOADS) if (!loadedReadsRef.current.has(load)) next[load] = "pending";
+      return next;
+    });
+    await Promise.all([
+      settle("mode", () => window.ave.permission.getMode(), (modeRes) => {
+        setMode(normalizeExecutionMode(modeRes.mode));
+      }),
+      settle("policy", () => window.ave.policy.get(), (policyRes) => {
+        setRequireExplicit(policyRes.requireExplicitApproval);
+        // Host-derived: `managed` alone misses an admin-dir file that does not set managed:true, which savePolicy still refuses to overwrite.
+        setPolicyManaged(!policyRes.editable);
+        setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
+        setPolicyAdminPath(policyRes.adminPath as string | undefined);
+        setPolicyAdminReason(policyRes.adminStatus === "invalid" ? policyRes.adminReason : undefined);
+      }),
+      settle("rules", () => window.ave.permission.listScopedRules(), (rulesRes) => {
+        setRules(rulesRes.rules);
+        setRuleLoadErrors(rulesRes.errors);
+      }),
+      settle("hooks", () => window.ave.permission.hookTrustList(), (hookTrustRes) => {
+        if (!hookTrustRes.ok) throw new Error(hookTrustRes.error ?? "hook trust list failed");
+        setQuarantinedHooks(hookTrustRes.disabled);
+      }),
+      readDirectories(),
+      settle("reviewer", () => window.ave.permission.reviewerDispatch("show"), (reviewerRes) => {
+        if (!reviewerRes.ok) throw new Error(reviewerRes.error);
+        setReviewer(reviewerRes.settings);
+        setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
+      }),
+      settle("settings", () => getApi().getSettings(), (settingsRes) => {
+        setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
+        setSandboxEnabled(settingsRes.features?.osToolSandbox ?? false);
+        setWorkerConfinementEnabled(settingsRes.features?.pluginWorkerConfinement ?? false);
+      }),
+    ]);
+  }, [settle, readDirectories]);
+
+  /** The scoped pending/error line for a section built from `loads`, or null when every read it uses has arrived. */
+  const panelLoadNotice = (scope: string, loads: readonly PanelLoad[]): ReactNode => {
+    if (loads.every((load) => panelLoad[load] === "ready")) return null;
+    if (loads.some((load) => panelLoad[load] === "failed")) {
+      return (
+        <div
+          role="alert"
+          data-testid={`permissions-load-error-${scope}`}
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-sm text-destructive"
+        >
+          <span className="min-w-0 break-words">{t("permissionsTab.errorLoadFailed")}</span>
+          <Button type="button" size="sm" variant="outline" onClick={() => void fetchAll()}>
+            {t("permissionsTab.refreshButton")}
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <p data-testid={`permissions-loading-${scope}`} className="py-2 text-sm text-muted-foreground">
+        {t("permissionsTab.loading")}
+      </p>
+    );
+  };
+
+  /** Beside a section whose last refresh failed after an earlier success: the values shown are the last ones loaded. */
+  const panelStaleNotice = (scope: string, loads: readonly PanelLoad[]): ReactNode =>
+    loads.some((load) => staleReads.has(load)) ? (
+      <p role="status" data-testid={`permissions-stale-${scope}`} className="text-[11px] text-warning">
+        {t("permissionsTab.sectionStale")}
+      </p>
+    ) : null;
 
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
   useEffect(() => {
     // On win32 with either setting ON (or a reported home-privacy / helper failure), surface the consent/setup state so
     // the panel persists across navigations until ready. Extension provisioning is separate from MXC shell readiness.
-    const windowsSetupRelevant = sandboxEnabled || workerConfinementEnabled ||
+    // Unread settings are not "not requested": the read-only status is fetched so the setup panel can say it is waiting on them.
+    const windowsSetupRelevant = panelLoad.settings !== "ready" || sandboxEnabled || workerConfinementEffective ||
       sandboxCapability?.homePrivacyError !== undefined || bootReportsWindowsHelperFailure(sandboxCapability?.boot);
     if (sandboxCapability?.platform !== "win32" || !windowsSetupRelevant) {
       setWindowsStatus(null);
@@ -446,7 +677,7 @@ export function PermissionsTab({
       if (!cancelled) setWindowsStatus(status);
     }).catch(() => { /* The explicit setup action reports repair errors. */ });
     return () => { cancelled = true; };
-  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEnabled]);
+  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEffective, panelLoad.settings]);
 
   const fetchApprovals = useCallback(async () => {
     if (!window.ave?.userApproval) return;
@@ -589,11 +820,14 @@ export function PermissionsTab({
     setModeBusy(true);
     try {
       let modeChanged = m === mode;
+      // Set when the home folder refusal kept a change to this session; the notice is shown once both steps are done.
+      let sessionOnly = false;
       if (m !== mode) {
         const res = await window.ave.permission.setMode(m);
         if (res.ok) {
           setMode(normalizeExecutionMode(res.mode));
           modeChanged = true;
+          if (res.notice !== undefined) sessionOnly = true;
         } else {
           showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
           return;
@@ -605,6 +839,7 @@ export function PermissionsTab({
         if (reviewerRes.ok) {
           setReviewer(reviewerRes.settings);
           setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
+          if (reviewerRes.notice !== undefined) sessionOnly = true;
         } else {
           const previousSettingsRestored = !reviewerModeInvalid;
           if (reviewerModeInvalid) await fetchAll();
@@ -612,6 +847,7 @@ export function PermissionsTab({
           return;
         }
       }
+      if (sessionOnly) showBanner("warn", t("permissionsTab.homeFolderRefusedSessionOnly"));
     } catch (e) {
       showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
     } finally {
@@ -816,12 +1052,7 @@ export function PermissionsTab({
     }
   };
 
-  const refreshDirectories = async () => {
-    const res = await window.ave.permission.dirDispatch("list");
-    if (res.ok && res.verb === "list") {
-      setDirectories(res.userAdditions);
-    }
-  };
+  const refreshDirectories = readDirectories;
 
   const handleAddDirectory = async (acknowledgeWarnings = false) => {
     const dir = newDirectory.trim();
@@ -892,10 +1123,314 @@ export function PermissionsTab({
   const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
+  // "Requested" needs the stored settings; until they are read, only a boot-reported helper failure can say so.
+  const settingsRead = panelLoad.settings === "ready";
   const windowsHelperRequested =
-    sandboxEnabled || workerConfinementEnabled || bootReportsWindowsHelperFailure(sandboxBoot);
+    (settingsRead && (sandboxEnabled || workerConfinementEffective)) || bootReportsWindowsHelperFailure(sandboxBoot);
   // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
+
+  // The OS sandbox disclosure reads its own host snapshot and never waits on the panel reads; only the two rows that state stored settings do.
+  const settingsNotice = panelLoadNotice("os-sandbox-settings", ["settings"]);
+  // ── OS Tool Sandbox ──
+  const osSandboxSection = (
+        <SettingsSection
+          data-settings-section="permissions-os-sandbox"
+          title={t("permissionsTab.osSandboxTitle")}
+          description={t("permissionsTab.osSandboxDescription")}
+        >
+          <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
+          <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
+          {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
+          {/* The two rows read the stored settings that the panel load returns; until it has, they would state a setting nobody read. */}
+          {panelStaleNotice("os-sandbox-settings", ["settings"])}
+          {settingsNotice ?? (
+            <>
+          <div className="flex items-start gap-3">
+            <Checkbox
+              checked={sandboxEnabled}
+              data-testid="os-sandbox-toggle"
+              aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
+              disabled={sandboxBusy || !(sandboxCapability?.available ?? false)}
+              className="mt-0.5 size-5"
+              onCheckedChange={() => void handleSandboxToggle()}
+            />
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.osSandboxShellLabel")}
+                {" — "}
+                {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
+              {shellStatusError ? (
+                <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-[11px] text-destructive">
+                  {t("permissionsTab.osSandboxShellStatusError")}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <EnvForcedNotice
+            settingsPath="features.osToolSandbox"
+            forcedPaths={envForcedPaths}
+            messageKey="permissionsTab.osSandboxEnvForced"
+            testId="os-sandbox-forced"
+            className="mt-2"
+          />
+          <div className="mt-3 flex items-start gap-3">
+            <Checkbox
+              checked={workerConfinementEffective}
+              data-testid="worker-confinement-toggle"
+              aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
+              disabled={workerConfinementForced || workerConfinementBusy || !(sandboxCapability?.available ?? false)}
+              className="mt-0.5 size-5"
+              onCheckedChange={() => void handleWorkerConfinementToggle()}
+            />
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.workerConfinementLabel")}
+                {" — "}
+                {workerConfinementEffective ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
+            </div>
+          </div>
+          <EnvForcedNotice
+            settingsPath="features.pluginWorkerConfinement"
+            forcedPaths={envForcedPaths}
+            messageKey="permissionsTab.workerConfinementEnvForced"
+            testId="worker-confinement-forced"
+            className="mt-2"
+          />
+            </>
+          )}
+          {sandboxCapability && !sandboxCapability.available ? (
+            <p
+              data-testid="os-sandbox-unavailable"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+            >
+              {t("permissionsTab.osSandboxUnavailable", { platform: sandboxCapability.platform })}
+            </p>
+          ) : null}
+          {sandboxCapability && sandboxCapability.available ? (
+            <div className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground">
+              <p className="font-medium text-foreground">{t("permissionsTab.osSandboxCapabilityHeading")}</p>
+              <p>
+                {sandboxCapability.platform === "darwin"
+                  ? t("permissionsTab.osSandboxCapabilityMac")
+                  : sandboxCapability.platform === "linux"
+                    ? t("permissionsTab.osSandboxCapabilityLinux")
+                    : sandboxCapability.platform === "win32"
+                      ? t("permissionsTab.osSandboxCapabilityWindows")
+                      : t("permissionsTab.osSandboxCapabilityOther")}
+              </p>
+              {sandboxPotentialReason ? (
+                <p data-testid="os-sandbox-potential-reason">
+                  {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxKindText(sandboxCapability.kind) })}
+                </p>
+              ) : null}
+              {sandboxRuntimeReason ? (
+                <p data-testid="os-sandbox-runtime-reason">
+                  {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
+                </p>
+              ) : null}
+              {sandboxCapability.workerRuntime ? (
+                <p data-testid="worker-confinement-runtime-reason">
+                  {t("permissionsTab.workerConfinementRuntimeReason", { reason: sandboxKindText(sandboxCapability.workerRuntime.kind) })}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {sandboxDegraded && sandboxBoot ? (
+            <div
+              data-testid="os-sandbox-boot-degraded"
+              className="space-y-1 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+            >
+              <p className="font-medium">{t("permissionsTab.osSandboxBootDegradedHeading")}</p>
+              <p>{t("permissionsTab.osSandboxBootDegradedBody")}</p>
+              {sandboxBoot.causes.length > 0 ? (
+                <p
+                  data-testid="os-sandbox-boot-degraded-detail"
+                  className="whitespace-pre-line font-mono text-foreground"
+                >
+                  {sandboxBoot.causes.includes("ave-home-privacy-failed")
+                    ? sandboxCapability?.homePrivacyError
+                      ? withHomePrivacyFix(t("permissionsTab.osSandboxBootDegradedHomePrivacy", {
+                          path: sandboxCapability.homePrivacyError.path,
+                          reason: homePrivacyReasonText(sandboxCapability.homePrivacyError),
+                        }), sandboxCapability.homePrivacyError)
+                      : t("permissionsTab.homePrivacyBootFailed")
+                    : sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
+                    ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                    : sandboxBoot.causes.includes("windows-sandbox-missing")
+                    ? t("inputActionBar.sandboxCauseWindowsSandboxMissing")
+                    : sandboxBoot.reason === "degrade-windows-init-failed"
+                    ? t("permissionsTab.osSandboxInitFailedHint")
+                    : t("permissionsTab.osSandboxDiagnosticHint")}
+                </p>
+              ) : null}
+              <p className="italic">
+                {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
+              </p>
+            </div>
+          ) : null}
+          {windowsSubstrate ? (
+            <div
+              data-testid="os-sandbox-windows-substrate"
+              data-shells={windowsSubstrate.shells}
+              data-extensions={windowsSubstrate.extensions}
+              data-mxc={windowsSubstrate.mxc.state}
+              className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground"
+            >
+              <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsSubstrateHeading")}</p>
+              <p data-testid="os-sandbox-windows-substrate-shells">
+                {windowsSubstrate.shells === "mxc"
+                  ? t("permissionsTab.osSandboxWindowsShellsMxc")
+                  : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
+                    ? t("permissionsTab.osSandboxWindowsShellsChecking")
+                    : windowsSubstrate.shells === "approved-host"
+                      ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
+                      : t("permissionsTab.osSandboxWindowsShellsNone")}
+              </p>
+              {windowsSubstrate.shells === "mxc" ? (
+                <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
+              ) : null}
+              {windowsSubstrate.mxc.state === "unavailable" ? (
+                <p data-testid="os-sandbox-windows-mxc-reason" data-reason={windowsSubstrate.mxc.reason}>
+                  {t("permissionsTab.osSandboxWindowsMxcUnavailable", {
+                    reason: t(MXC_UNAVAILABLE_REASON_KEY[windowsSubstrate.mxc.reason]),
+                    build: windowsSubstrate.windowsBuild ?? "?",
+                  })}
+                </p>
+              ) : windowsSubstrate.mxc.state === "available" && windowsSubstrate.shells === "none" ? (
+                <p data-testid="os-sandbox-windows-mxc-unused">
+                  {t("permissionsTab.osSandboxWindowsMxcUnused", { build: windowsSubstrate.windowsBuild ?? "?" })}
+                </p>
+              ) : null}
+              <WindowsExtensionStatus substrate={windowsSubstrate} />
+              {windowsSubstrate.extensionEgressIdentity === "shared" && windowsSubstrate.extensions === "srt-win" ? (
+                <p data-testid="os-sandbox-windows-shared-identity">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
+              ) : null}
+            </div>
+          ) : null}
+          {/* ── Windows srt-win consent flow ── */}
+          {(sandboxCapability?.profileReadDenyWarnings ?? windowsStatus?.profileReadDenyWarnings ?? []).map(({ path, principals }) => (
+            <p key={path} data-testid="os-sandbox-windows-profile-read-deny-warning" role="alert"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
+              {principals?.length
+                ? t("permissionsTab.osSandboxWindowsProfileReadDenyReadable", { path, principals: principals.join(", ") })
+                : t("permissionsTab.osSandboxWindowsProfileReadDenyUnverified", { path })}
+            </p>
+          ))}
+          {windowsInstallOutcome ? (
+            <p
+              data-testid="os-sandbox-windows-install-outcome"
+              data-outcome={windowsInstallOutcome.outcome}
+              data-error-code={windowsInstallOutcome.errorCode}
+              role={windowsInstallOutcome.tone === "error" ? "alert" : "status"}
+              className={`whitespace-pre-line rounded-md border px-3 py-2 text-[11px] ${WINDOWS_INSTALL_OUTCOME_TONE[windowsInstallOutcome.tone]}`}
+            >
+              {windowsInstallOutcome.text}
+            </p>
+          ) : null}
+          {windowsInstallPhase ? (
+            <p
+              data-testid="os-sandbox-windows-install-pending"
+              data-phase={windowsInstallPhase}
+              role="status"
+              className="text-[11px] italic text-muted-foreground"
+            >
+              {windowsInstallPhase === "installing"
+                ? t("permissionsTab.osSandboxWindowsInstallPending")
+                : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
+            </p>
+          ) : null}
+          {/* Until settings are read the setup panel cannot say whether it was requested; the section's one settings notice above covers it. */}
+          {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
+            windowsStatus.homePrivacyError ? (
+              <div
+                data-testid="os-sandbox-windows-home-privacy-error"
+                role="alert"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {/* After the session approval extensions run unisolated, so "blocked" and the approval offer would both be false. */}
+                {withHomePrivacyFix(t(windowsStatus.homePrivacyError.approvedForSession
+                  ? "permissionsTab.osSandboxBootDegradedHomePrivacy"
+                  : "permissionsTab.osSandboxWindowsHomePrivacyError", {
+                  path: windowsStatus.homePrivacyError.path,
+                  reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
+                }), windowsStatus.homePrivacyError)}
+                {windowsStatus.homePrivacyError.approvedForSession ? null : ` ${t("permissionsTab.homePrivacyApproveHint")}`}
+                <HomePrivacyFixCommand error={windowsStatus.homePrivacyError} />
+                {windowsStatus.homePrivacyError.approvedForSession ? (
+                  <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
+                ) : (
+                  <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}
+                    onClick={() => void handlePrivacyApproval()}>
+                    {t("permissionsTab.homePrivacyApproveForSession")}
+                  </Button>
+                )}
+              </div>
+            ) : windowsStatus.helperError ? (
+              <p
+                data-testid="os-sandbox-windows-helper-unavailable"
+                data-error-code={windowsStatus.helperError}
+                role="status"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {windowsStatus.helperError === "srt-win-integrity-mismatch"
+                  ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                  : t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
+              </p>
+            ) : windowsStatus.userState !== "absent" ||
+            windowsStatus.wfpState !== "absent" ? (
+              // Install partially ran or status cannot be fully read. Show the localized setup guidance and keep the explicit retry action available. Setup does not require signing out.
+              <div
+                data-testid="os-sandbox-windows-setup-status"
+                className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-[11px] text-info"
+              >
+                <p className="font-medium">{t("permissionsTab.osSandboxWindowsReloginHeading")}</p>
+                <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  data-testid="os-sandbox-windows-install"
+                  disabled={windowsInstallBusy}
+                  onClick={() => void handleWindowsInstall()}
+                >
+                  {windowsInstallBusy
+                    ? t("permissionsTab.osSandboxWindowsInstalling")
+                    : t("permissionsTab.osSandboxWindowsInstallButton")}
+                </Button>
+              </div>
+            ) : (
+              // Sandbox not ready (install-time provisioning was cancelled/failed or the app was not installed via the
+              // NSIS installer). REPAIR fallback: warning card + a "Re-provision" button. No auto-UAC; the user must click.
+              <div
+                data-testid="os-sandbox-windows-consent"
+                className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                <p className="font-medium">{t("permissionsTab.osSandboxWindowsConsentHeading")}</p>
+                <p>{t("permissionsTab.osSandboxWindowsConsentBody")}</p>
+                <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  data-testid="os-sandbox-windows-install"
+                  disabled={windowsInstallBusy}
+                  onClick={() => void handleWindowsInstall()}
+                >
+                  {windowsInstallBusy
+                    ? t("permissionsTab.osSandboxWindowsInstalling")
+                    : t("permissionsTab.osSandboxWindowsInstallButton")}
+                </Button>
+              </div>
+            )
+          ) : null}
+          <UpstreamProxySettings />
+        </SettingsSection>
+  );
 
   return (
     <div className="pr-1">
@@ -904,6 +1439,8 @@ export function PermissionsTab({
           title={t("permissionsTab.pageTitle")}
           description={t("permissionsTab.pageDescription")}
         />
+
+        <HomeContentReview />
 
         {/* ── 인라인 배너 (§F9 — alert 대체) ── */}
         {banner && (
@@ -987,27 +1524,10 @@ export function PermissionsTab({
           </div>
         ) : null}
 
-        {loading ? (
-          <div
-            className="py-8 text-center text-sm text-muted-foreground"
-            data-testid="permissions-loading"
-          >
-            {t("permissionsTab.loading")}
-          </div>
-        ) : error ? (
-          <div
-            className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-sm text-destructive"
-            data-testid="permissions-load-error"
-          >
-            <span className="min-w-0 break-words">{error}</span>
-            <Button type="button" size="sm" variant="outline" onClick={() => void fetchAll()}>
-              {t("permissionsTab.refreshButton")}
-            </Button>
-          </div>
-        ) : (
-          <>
 
-        {quarantinedHooks.length > 0 && (
+        {panelLoadNotice("hooks", ["hooks"])}
+        {panelStaleNotice("hooks", ["hooks"])}
+        {panelLoad.hooks === "ready" && quarantinedHooks.length > 0 && (
           <div
             data-testid="hook-quarantine-notice"
             className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
@@ -1052,6 +1572,9 @@ export function PermissionsTab({
           title={t("permissionsTab.currentPolicySummaryTitle")}
           description={t("permissionsTab.currentPolicySummaryDescription")}
         >
+          {panelStaleNotice("policy-summary", ["mode", "policy"])}
+          {panelLoadNotice("policy-summary", ["mode", "policy"]) ?? (
+          <>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="rounded-md border px-3 py-2">
               <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryPolicyPreset")}</p>
@@ -1062,6 +1585,8 @@ export function PermissionsTab({
               <p className="mt-1 text-sm font-medium">{requireExplicit ? t("permissionsTab.summaryExplicitRequired") : t("permissionsTab.summaryCloseDenies")}</p>
             </div>
           </div>
+          </>
+          )}
         </SettingsSection>
 
         {reviewerModeInvalid ? (
@@ -1096,6 +1621,9 @@ export function PermissionsTab({
           title={t("permissionsTab.policyTitle")}
           description={t("permissionsTab.policyDescription")}
         >
+          {panelStaleNotice("policy", ["mode", "reviewer"])}
+          {panelLoadNotice("policy", ["mode", "reviewer"]) ?? (
+          <>
           <RadioGroup
             value={mode}
             disabled={modeBusy || reviewerRecoveryBusy}
@@ -1151,6 +1679,8 @@ export function PermissionsTab({
               </Label>
             ))}
           </RadioGroup>
+          </>
+          )}
         </SettingsSection>
 
         {/* ── Section B: Explicit Approval Policy ── */}
@@ -1159,6 +1689,9 @@ export function PermissionsTab({
           title={t("permissionsTab.approvalDialogTitle")}
           description={t("permissionsTab.approvalDialogDescription")}
         >
+          {panelStaleNotice("approval-dialog", ["policy", "settings"])}
+          {panelLoadNotice("approval-dialog", ["policy", "settings"]) ?? (
+          <>
           <div className="flex items-center gap-3">
             <Checkbox
               checked={requireExplicit}
@@ -1196,305 +1729,13 @@ export function PermissionsTab({
                 : t("permissionsTab.adminPolicyNoPath")}
             </p>
           )}
+          </>
+          )}
         </SettingsSection>
 
         <RecentlyDeniedPanel showEmpty />
 
-        {/* ── OS Tool Sandbox ── */}
-        <SettingsSection
-          data-settings-section="permissions-os-sandbox"
-          title={t("permissionsTab.osSandboxTitle")}
-          description={t("permissionsTab.osSandboxDescription")}
-        >
-          <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
-          <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
-          {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
-          <div className="flex items-start gap-3">
-            <Checkbox
-              checked={sandboxEnabled}
-              data-testid="os-sandbox-toggle"
-              aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
-              disabled={sandboxBusy || !(sandboxCapability?.available ?? false)}
-              className="mt-0.5 size-5"
-              onCheckedChange={() => void handleSandboxToggle()}
-            />
-            <div className="min-w-0 space-y-0.5">
-              <p className="text-sm">
-                {t("permissionsTab.osSandboxShellLabel")}
-                {" — "}
-                {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
-              </p>
-              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
-              {shellStatusError ? (
-                <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-[11px] text-destructive">
-                  {t("permissionsTab.osSandboxShellStatusError")}
-                </p>
-              ) : null}
-            </div>
-          </div>
-          <EnvForcedNotice
-            settingsPath="features.osToolSandbox"
-            forcedPaths={envForcedPaths}
-            messageKey="permissionsTab.osSandboxEnvForced"
-            testId="os-sandbox-forced"
-            className="mt-2"
-          />
-          <div className="mt-3 flex items-start gap-3">
-            <Checkbox
-              checked={workerConfinementEnabled}
-              data-testid="worker-confinement-toggle"
-              aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
-              disabled={workerConfinementBusy || !(sandboxCapability?.available ?? false)}
-              className="mt-0.5 size-5"
-              onCheckedChange={() => void handleWorkerConfinementToggle()}
-            />
-            <div className="min-w-0 space-y-0.5">
-              <p className="text-sm">
-                {t("permissionsTab.workerConfinementLabel")}
-                {" — "}
-                {workerConfinementEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
-              </p>
-              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
-            </div>
-          </div>
-          <EnvForcedNotice
-            settingsPath="features.pluginWorkerConfinement"
-            forcedPaths={envForcedPaths}
-            messageKey="permissionsTab.workerConfinementEnvForced"
-            testId="worker-confinement-forced"
-            className="mt-2"
-          />
-          {sandboxCapability && !sandboxCapability.available ? (
-            <p
-              data-testid="os-sandbox-unavailable"
-              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
-            >
-              {t("permissionsTab.osSandboxUnavailable", { platform: sandboxCapability.platform })}
-            </p>
-          ) : null}
-          {sandboxCapability && sandboxCapability.available ? (
-            <div className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground">
-              <p className="font-medium text-foreground">{t("permissionsTab.osSandboxCapabilityHeading")}</p>
-              <p>
-                {sandboxCapability.platform === "darwin"
-                  ? t("permissionsTab.osSandboxCapabilityMac")
-                  : sandboxCapability.platform === "linux"
-                    ? t("permissionsTab.osSandboxCapabilityLinux")
-                    : sandboxCapability.platform === "win32"
-                      ? t("permissionsTab.osSandboxCapabilityWindows")
-                      : t("permissionsTab.osSandboxCapabilityOther")}
-              </p>
-              {sandboxPotentialReason ? (
-                <p data-testid="os-sandbox-potential-reason">
-                  {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxKindText(sandboxCapability.kind) })}
-                </p>
-              ) : null}
-              {sandboxRuntimeReason ? (
-                <p data-testid="os-sandbox-runtime-reason">
-                  {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
-                </p>
-              ) : null}
-              {sandboxCapability.workerRuntime ? (
-                <p data-testid="worker-confinement-runtime-reason">
-                  {t("permissionsTab.workerConfinementRuntimeReason", { reason: sandboxKindText(sandboxCapability.workerRuntime.kind) })}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-          {sandboxDegraded && sandboxBoot ? (
-            <div
-              data-testid="os-sandbox-boot-degraded"
-              className="space-y-1 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
-            >
-              <p className="font-medium">{t("permissionsTab.osSandboxBootDegradedHeading")}</p>
-              <p>{t("permissionsTab.osSandboxBootDegradedBody")}</p>
-              {sandboxBoot.causes.length > 0 ? (
-                <p
-                  data-testid="os-sandbox-boot-degraded-detail"
-                  className="whitespace-pre-line font-mono text-foreground"
-                >
-                  {sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
-                    ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
-                    : sandboxBoot.causes.includes("windows-sandbox-missing")
-                    ? t("inputActionBar.sandboxCauseWindowsSandboxMissing")
-                    : sandboxBoot.reason === "degrade-windows-init-failed"
-                    ? t("permissionsTab.osSandboxInitFailedHint")
-                    : t("permissionsTab.osSandboxDiagnosticHint")}
-                </p>
-              ) : null}
-              <p className="italic">
-                {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
-              </p>
-            </div>
-          ) : null}
-          {windowsSubstrate ? (
-            <div
-              data-testid="os-sandbox-windows-substrate"
-              data-shells={windowsSubstrate.shells}
-              data-extensions={windowsSubstrate.extensions}
-              data-mxc={windowsSubstrate.mxc.state}
-              className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground"
-            >
-              <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsSubstrateHeading")}</p>
-              <p data-testid="os-sandbox-windows-substrate-shells">
-                {windowsSubstrate.shells === "mxc"
-                  ? t("permissionsTab.osSandboxWindowsShellsMxc")
-                  : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
-                    ? t("permissionsTab.osSandboxWindowsShellsChecking")
-                    : windowsSubstrate.shells === "approved-host"
-                      ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
-                      : t("permissionsTab.osSandboxWindowsShellsNone")}
-              </p>
-              {windowsSubstrate.shells === "mxc" ? (
-                <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
-              ) : null}
-              {windowsSubstrate.mxc.state === "unavailable" ? (
-                <p data-testid="os-sandbox-windows-mxc-reason" data-reason={windowsSubstrate.mxc.reason}>
-                  {t("permissionsTab.osSandboxWindowsMxcUnavailable", {
-                    reason: t(MXC_UNAVAILABLE_REASON_KEY[windowsSubstrate.mxc.reason]),
-                    build: windowsSubstrate.windowsBuild ?? "?",
-                  })}
-                </p>
-              ) : windowsSubstrate.mxc.state === "available" && windowsSubstrate.shells === "none" ? (
-                <p data-testid="os-sandbox-windows-mxc-unused">
-                  {t("permissionsTab.osSandboxWindowsMxcUnused", { build: windowsSubstrate.windowsBuild ?? "?" })}
-                </p>
-              ) : null}
-              <p data-testid="os-sandbox-windows-substrate-extensions">
-                {windowsSubstrate.extensions === "srt-win"
-                  ? t("permissionsTab.osSandboxWindowsExtensionsSrtWin")
-                  : t("permissionsTab.osSandboxWindowsExtensionsNone")}
-              </p>
-              {windowsSubstrate.extensionEgressIdentity === "shared" && windowsSubstrate.extensions === "srt-win" ? (
-                <p data-testid="os-sandbox-windows-shared-identity">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
-              ) : null}
-            </div>
-          ) : null}
-          {/* ── Windows srt-win consent flow ── */}
-          {(sandboxCapability?.profileReadDenyWarnings ?? windowsStatus?.profileReadDenyWarnings ?? []).map(({ path, principals }) => (
-            <p key={path} data-testid="os-sandbox-windows-profile-read-deny-warning" role="alert"
-              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
-              {principals?.length
-                ? t("permissionsTab.osSandboxWindowsProfileReadDenyReadable", { path, principals: principals.join(", ") })
-                : t("permissionsTab.osSandboxWindowsProfileReadDenyUnverified", { path })}
-            </p>
-          ))}
-          {windowsInstallOutcome ? (
-            <p
-              data-testid="os-sandbox-windows-install-outcome"
-              data-outcome={windowsInstallOutcome.outcome}
-              data-error-code={windowsInstallOutcome.errorCode}
-              role={windowsInstallOutcome.tone === "error" ? "alert" : "status"}
-              className={`whitespace-pre-line rounded-md border px-3 py-2 text-[11px] ${WINDOWS_INSTALL_OUTCOME_TONE[windowsInstallOutcome.tone]}`}
-            >
-              {windowsInstallOutcome.text}
-            </p>
-          ) : null}
-          {windowsInstallPhase ? (
-            <p
-              data-testid="os-sandbox-windows-install-pending"
-              data-phase={windowsInstallPhase}
-              role="status"
-              className="text-[11px] italic text-muted-foreground"
-            >
-              {windowsInstallPhase === "installing"
-                ? t("permissionsTab.osSandboxWindowsInstallPending")
-                : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
-            </p>
-          ) : null}
-          {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
-            windowsStatus.homePrivacyError ? (
-              <div
-                data-testid="os-sandbox-windows-home-privacy-error"
-                role="alert"
-                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
-              >
-                {t("permissionsTab.osSandboxWindowsHomePrivacyError", {
-                  path: windowsStatus.homePrivacyError.path,
-                  reason: {
-                    "directory-failed": t("permissionsTab.homePrivacyDirectoryFailed"),
-                    "system-root-missing": t("permissionsTab.homePrivacySystemRootMissing"),
-                    "identity-failed": t("permissionsTab.homePrivacyIdentityFailed"),
-                    "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
-                    "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
-                    "not-protected": t("permissionsTab.homePrivacyNotProtected"),
-                    "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
-                    "owner-claim-failed": t("permissionsTab.homePrivacyOwnerClaimFailed"),
-                    "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
-                    "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
-                      principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
-                    }),
-                  }[windowsStatus.homePrivacyError.category],
-                })}
-                {windowsStatus.homePrivacyError.approvedForSession ? (
-                  <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
-                ) : (
-                  <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}
-                    onClick={() => void handlePrivacyApproval()}>
-                    {t("permissionsTab.homePrivacyApproveForSession")}
-                  </Button>
-                )}
-              </div>
-            ) : windowsStatus.helperError ? (
-              <p
-                data-testid="os-sandbox-windows-helper-unavailable"
-                data-error-code={windowsStatus.helperError}
-                role="status"
-                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
-              >
-                {windowsStatus.helperError === "srt-win-integrity-mismatch"
-                  ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
-                  : t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
-              </p>
-            ) : windowsStatus.userState !== "absent" ||
-            windowsStatus.wfpState !== "absent" ? (
-              // Install partially ran or status cannot be fully read. Show the localized setup guidance and keep the explicit retry action available. Setup does not require signing out.
-              <div
-                data-testid="os-sandbox-windows-setup-status"
-                className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-[11px] text-info"
-              >
-                <p className="font-medium">{t("permissionsTab.osSandboxWindowsReloginHeading")}</p>
-                <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  data-testid="os-sandbox-windows-install"
-                  disabled={windowsInstallBusy}
-                  onClick={() => void handleWindowsInstall()}
-                >
-                  {windowsInstallBusy
-                    ? t("permissionsTab.osSandboxWindowsInstalling")
-                    : t("permissionsTab.osSandboxWindowsInstallButton")}
-                </Button>
-              </div>
-            ) : (
-              // Sandbox not ready (install-time provisioning was cancelled/failed or the app was not installed via the
-              // NSIS installer). REPAIR fallback: warning card + a "Re-provision" button. No auto-UAC; the user must click.
-              <div
-                data-testid="os-sandbox-windows-consent"
-                className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
-              >
-                <p className="font-medium">{t("permissionsTab.osSandboxWindowsConsentHeading")}</p>
-                <p>{t("permissionsTab.osSandboxWindowsConsentBody")}</p>
-                <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  data-testid="os-sandbox-windows-install"
-                  disabled={windowsInstallBusy}
-                  onClick={() => void handleWindowsInstall()}
-                >
-                  {windowsInstallBusy
-                    ? t("permissionsTab.osSandboxWindowsInstalling")
-                    : t("permissionsTab.osSandboxWindowsInstallButton")}
-                </Button>
-              </div>
-            )
-          ) : null}
-          <UpstreamProxySettings />
-        </SettingsSection>
+        {osSandboxSection}
 
         {/* ── Network: what the sandbox proxy refused ── */}
         <SettingsSection
@@ -1512,6 +1753,9 @@ export function PermissionsTab({
           title={t("permissionsTab.unifiedRulesTitle")}
           description={t("permissionsTab.unifiedRulesDescription")}
         >
+          {panelStaleNotice("rules", ["rules"])}
+          {panelLoadNotice("rules", ["rules"]) ?? (
+          <>
           {ruleLoadErrors.length > 0 || approvalLoadError ? (
             <div role="alert" data-testid="permissions-rule-load-error" className="text-xs text-destructive">
               {t("permissionsTab.unifiedRulesLoadError")}
@@ -1607,6 +1851,8 @@ export function PermissionsTab({
               {t("permissionsTab.addButton")}
             </Button>
           </div>
+          </>
+          )}
         </SettingsSection>
 
         {/* ── Section D: Additional Directories ── */}
@@ -1626,6 +1872,9 @@ export function PermissionsTab({
             </Button>
           }
         >
+          {panelStaleNotice("directories", ["directories"])}
+          {panelLoadNotice("directories", ["directories"]) ?? (
+          <>
           {directories.length === 0 ? (
             <p className="text-[11px] text-muted-foreground italic">{t("permissionsTab.directoriesEmpty")}</p>
           ) : (
@@ -1704,6 +1953,8 @@ export function PermissionsTab({
               </div>
             </div>
           )}
+          </>
+          )}
         </SettingsSection>
 
         {/* ── Audit Log ── */}
@@ -1724,9 +1975,6 @@ export function PermissionsTab({
               bar, and its 480px would not fit a tile at the width floor. */}
           <AuditPanel open={auditOpen} onClose={() => setAuditOpen(false)} />
         </SettingsSection>
-
-          </>
-        )}
 
       </div>
     </div>

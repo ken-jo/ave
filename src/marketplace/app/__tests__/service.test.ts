@@ -49,7 +49,7 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
-import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { aveHome, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 
@@ -548,6 +548,22 @@ describe("MarketplaceService", () => {
     } finally {
       await expect(pending).resolves.toEqual({ state: "superseded" });
     }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
+
+  it("installs and updates nothing while boot refuses the home folder", async () => {
+    await build(policyLoad({}), undefined, git.runner);
+    const { url } = market();
+    await addMarket(url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    const plan = await service.planInstall(key);
+    setAveHomeConfigurationRefusedAtBoot(aveHome());
+    await expect(service.executeInstall(plan.planId)).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+    await expect(service.applyUpdate({ key, from: "1.0.0", to: "1.1.0", switchSource: false }, () => true)).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    await expect(service.applyBootInstalls([], applied)).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+    expect(legacyRuns).toEqual([]);
+    expect(store.list()).toEqual([]);
     expect(hasMarketplaceInstallInFlight()).toBe(false);
   });
 

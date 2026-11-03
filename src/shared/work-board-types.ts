@@ -18,8 +18,6 @@ export type {
   WorkProposalUntrustedText,
 };
 
-export const MAX_ITEMS = 200;
-
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
 
 /** Overdue is computed on every read from incomplete status and due_at. */
@@ -61,7 +59,7 @@ export interface WorkItem {
   runStatus?: WorkItemRunStatus;
   plan?: string;
   output?: string;
-  /** The execute child's `childSessionId` — links the run to its isolated session for audit/trace. */
+  /** The plan child's id while awaiting approval, replaced by the execute child's `childSessionId` as soon as that child links — links the run to its isolated session for audit/trace. */
   runSessionId?: string;
   runUpdatedAt?: string;
   runId?: string;
@@ -254,7 +252,7 @@ export interface WorkBoardRunEvent {
   text?: string;
   /** Failure reason (error phase) or denial reason (denied phase). */
   message?: string;
-  /** The execute child's session id, set on the terminal `done` event. */
+  /** The execute child's session id: set on the `executing` event fired when that child links (before its first round) and on the terminal `done` event. */
   runSessionId?: string;
   at: string;
 }

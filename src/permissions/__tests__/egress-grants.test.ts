@@ -24,6 +24,7 @@ import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { PermissionManager } from "../permission-manager.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
+import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 
 const ALL = ["once", "session", "project", "always"] as const;
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
@@ -47,6 +48,25 @@ afterEach(() => {
 });
 
 describe("EgressGrantStore", () => {
+  it("reads a refused home's remembered hosts as absent and refuses to rewrite them", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("always", ALL, subject, github);
+    const saved = readFileSync(file, "utf8");
+    setAveHomeConfigurationRefusedAtBoot(dir);
+    try {
+      // A planted (or the user's) always grant must not let a sandboxed shell reach the host without a card (R2).
+      const refused = new EgressGrantStore(file);
+      expect(await refused.matchingScope(subject, github, ALL)).toBeUndefined();
+      await expect(refused.grant("always", ALL, subject, { host: "example.com", port: 443 })).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+      await expect(refused.grant("project", ALL, subject, github)).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
+      await refused.grant("session", ALL, subject, github);
+      expect(await refused.matchingScope(subject, github, ALL)).toBe("session");
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
+    expect(readFileSync(file, "utf8")).toBe(saved);
+  });
+
   it("filters eligible scopes before choosing a stored grant", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("once", ALL, subject, github);

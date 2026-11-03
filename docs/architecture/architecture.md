@@ -1146,6 +1146,17 @@ are English.
 Memory writes should preserve source provenance and avoid storing secrets,
 credentials, raw private data, or unsupported claims.
 
+Memory use is recorded in `memories/usage.jsonl` (`src/memory/memory-usage-log.ts`),
+one row per managed memory id with `via`: `injected` (in a turn's context when
+a round is assembled for send, before the provider call, so a request that then
+fails still counts), `searched` (on the page `memory_search` returned) or `read`
+(`memory_read`). Rows
+hold ids, session and anchor message ids and a timestamp only, never memory or
+user text, and the file is size-capped by dropping its oldest rows. Legacy notes
+without a managed id are not recorded. Only builders on the user's memory store
+record injection; isolated sub-agent builders, including work-board runs, read
+the sub-agent store, so their use appears only as `searched` or `read`.
+
 ## Insights
 
 Insights is the default home for calendar-based activity review:
@@ -1171,7 +1182,13 @@ owns storage, approvals, and audit.
 
 Item runs execute as sub-agent sessions whose origin names the item
 (`work-board:<itemId>`), so their conversations live in the isolated sub-agent
-namespace, never in the main chat store. Briefing runs
+namespace, never in the main chat store. While a plan awaits approval the
+item's `runSessionId` names the plan child; the engine replaces it with the
+execute child's id, and emits an `executing` progress event carrying that id,
+as soon as the execute child links (before its first round). That link write
+changes only the session id and appends no activity entry. If it fails, the
+run settles as an error even when the child finished: a run whose session the
+board cannot record is not reported as completed. Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
 
 ## Conversation List
@@ -1690,8 +1707,10 @@ Key boundaries:
   the user-activation gate and runs on an extension-origin chain) (#1556);
 - long-lived extension workers are spawned only through HostApi `spawnWorker`;
   filesystem read grants must be declared explicitly as `allowReadPaths` and are
-  never inferred from argv. The worker's stdin is the host's liveness pipe — it
-  carries no bytes and closes only when the host process is gone — so a
+  never inferred from argv. Each worker declares `control`: an `output-only-v1`
+  worker reads nothing on stdin, and a `stdio-control-v1` worker reads its frames
+  there. Either way stdin is the host's liveness pipe: the host closes it only on
+  an orderly stop, otherwise it closes when the host process is gone, so a
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
 
@@ -1763,6 +1782,18 @@ some missing, the routine runs and records the missing IDs as `needsAttention`.
 The routine panel shows either state and offers removal. Installed-but-unloaded
 extensions are not missing; runtime scope and headless permission gates still decide
 which tools may run.
+
+An LLM routine run that does not complete persists `lastFailure` on the routine
+record, so a restart keeps it. `kind: "error"` covers a run that threw, with a
+`reason` that is DLP-masked, home-path-redacted and then bounded.
+`kind: "shutdown-timeout"` covers a shutdown run cut off at quit. Runs can
+overlap, so an outcome or acknowledgement for anything but the current
+`lastFiredAt` is stale and changes nothing. A later successful run of the
+current fire clears the failure, and acknowledging that fire's result marks it
+seen. A failed scheduled one-shot is restored from dismissal so it stays
+reviewable, but it is not due again. Shutdown routines are never restored,
+because they would run at every quit. An unreadable stored `lastFailure` is
+dropped with a warning, and the routine itself is kept.
 
 ## Main-process composition and boot readiness
 
@@ -2107,8 +2138,8 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
 - Linux: a sandboxed command cannot create a user namespace or a mount
   namespace of its own. The seccomp helper refuses those calls. Where the
   helper is not in the chain, bubblewrap 0.8 or later is passed
-  `--disable-userns`. The helper is out of the chain whenever a worker control
-  socket is registered, because that turns on `allowAllUnixSockets`. So
+  `--disable-userns`. The helper is out of the chain whenever a plugin's own
+  socket directory is registered, because that turns on `allowAllUnixSockets`. So
   anything that sandboxes itself that way fails inside Ave's sandbox:
   Chromium's or Electron's namespace sandbox, rootless podman or buildah, a
   nested bubblewrap, `unshare -U`. Plugin workers are not affected, because
@@ -2266,7 +2297,7 @@ nothing. On Linux every lane socket and every proxy backend socket lives in
 one private 0700 directory, and each wrap mounts a tmpfs over that directory
 and binds back only its own lane socket, so no wrap can see another's socket
 even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
-worker socket directory does). On macOS `allowAllUnixSockets` would expose the
+plugin socket directory does). On macOS `allowAllUnixSockets` would expose the
 shared bridge socket, so while it is set shell and extension identity is
 `shared`. The proxy refuses a destination that is a proxy front end's port on
 this host, so one invocation cannot hop onto another's listener. The
@@ -2471,8 +2502,9 @@ when the channel is strong. Grant lookup filters eligible scopes before
 selecting the narrowest match.
 
 `spawnWorker` is the only host primitive that can establish that worker-backed
-plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket
-control path. Windows workers keep TCP control, but their filesystem access is
+plugin substrate. Workers on every platform talk to their plugin over their own
+stdio (worker stdio control v1 or output-only, host protocol 5); none gets a socket
+or a port. On Windows their filesystem access is
 scoped through a per-worker holder PID ACL grant using ASRT's Windows
 `grantWindowsAcl`/`revokeWindowsAcl` primitives, then the command is wrapped
 through srt-win. The holder command must be launched through a pinned System32
@@ -2707,11 +2739,55 @@ in its directory.
 - **Settings.** Permissions shows the substrate chosen for shells and
   extensions, the MXC unavailable reason with the Windows build, the Bash
   limit, the DNS channel, and that extensions share one proxy identity.
+- **Extension disclosure (row 6).** The Permissions card renders the
+  extension state from `SandboxWindowsSubstrateInfo.extensionPlan`, never from
+  `extensions` alone: `checking` and `rejected` say starts are refused and that
+  nothing runs unconfined; `fallback` names srt-win 0.0.80 under one shared
+  account and its reason; `unavailable` and `off` say extensions are not
+  confined. Every closed reason maps to a catalog key. A ready MXC plan is
+  described as a selection, not proof that a process runs contained (a
+  plugin's Doctor card shows its own `windows-mxc` confinement, labelled
+  "Windows container (MXC)"). Only that selection lists what a container does
+  not hide or block: egress only through the holder's own proxy endpoint, whose
+  owner Windows does not verify (D2); loopback requested in both directions,
+  inbound left to Windows Firewall, DNS through the host resolver; untrusted
+  windows with clipboard and input injection off (D3); ancestor
+  query/enumerate grants that expose names and metadata, cascading into nested
+  folders, including profile and `AVE_HOME` sibling names and other plugin IDs
+  (peer-measured `descendantEnumeration: visible`); the effective temp in the
+  AppContainer profile under the staging home; DLL search from cwd/PATH and
+  holder-writable folders that the host does not harden; Bash hooks refused in
+  a container (D4); `NODE_OPTIONS`/`NODE_PATH` configurations refused; and the
+  binary MCP reviewer marker that does not name the backend. The chat input's
+  sandbox badge adds an extension warning when extension confinement was
+  requested and the plan is not `ready`, even while shells are healthy; it
+  shows nothing for a ready or unrequested plan. Holder and lifecycle refusals
+  (`executable-not-admissible`, `holder-workspace-busy`, `bash-incompatible`,
+  `holder-environment-refused`, `holder-quarantined`,
+  `worker-transport-unsupported`, `native-entry-required`,
+  `extension-readiness-refused`, `plugin-child-termination-unverified`,
+  `plugin-lifecycle-quarantined`, and the hook's `hook-settle-deadline` and
+  `hook-termination-unverified`) are localized on the host and end with their
+  stable code. Hook denies and MCP rows carry that text. A plugin's Doctor
+  detail carries it when the refusal is raised by the factory that admits and
+  spawns the child (`native-entry-required`, `worker-transport-unsupported`,
+  `extension-readiness-refused`, `plugin-child-termination-unverified`); other
+  factory and start errors keep the generic Doctor text, since a start failure
+  is a child RPC error and may carry paths. A quarantined MCP server's row
+  (`McpServerState.containedQuarantined`) says reconnect is blocked until Ave
+  restarts. A quarantined plugin's card (`lifecycleQuarantined`) says it cannot
+  restart until Ave restarts, and adds that its contained process keeps the
+  folder access it started with only when `grantsRetained` is true, i.e. a
+  quarantined sandbox grant incarnation is still registered (stop, drain and
+  startup quarantines hold no quarantined grant incarnation). A folder removal whose revocation did not
+  finish (`cleanupPending`) reports that as status text, never a confirmation,
+  because the user performed the removal. The MCP tab re-reads server state
+  when the window regains focus or becomes visible.
 
 Not covered: plugin workers stay on srt-win. MXC's proxy mode forbids direct
-egress rules, so the TCP worker control channel cannot reach a container; a
-container worker needs a stdio control path or control over its own proxy
-port. Windows PowerShell 5.1 and Node inside a container start only in an
+egress rules, so a loopback worker channel cannot reach a container; host
+protocol 5 gives workers stdio control instead, and the container worker adapter
+follows it. Windows PowerShell 5.1 and Node inside a container start only in an
 interactive session: in the SSH session-0 window station both fail with
 `0xC0000142`, which detection reports as `unverified-session`. An
 interactive-session probe (2026-10-16) ran both with `ui.disable: false`, which
@@ -2795,6 +2871,49 @@ with its own owner rule:
   grants covering that outer directory are refused. Session reset or holder
   release removes the deny when its final hold ends. A dead holder leaves its
   ACE until a later native ACL operation prunes its tracked hold.
+  The session reset spawns this copy to revoke and restore the session's ACEs.
+  The quit sequences (`runAppShutdownCleanup` on a clean, failed or timed-out
+  quit, and `runIncompleteBootShutdown`) await `releaseAsrtSandboxForExit` after
+  their confined children are down and before the host closes. The release
+  follows srt-win's own outcome (carried ASRT patch part 12). It fails when
+  srt-win did not run, exited non-zero (srt-win leaves a path it could not
+  release out of its JSON), or answered a status outside its `AceRelease` set.
+  The quit is then `failed` and the runtime keeps the session for a retry.
+  `revoked`, `stillHeld`, `downgraded`, `relocated` and `noRow` are completed
+  releases. `mismatch` and `missing` mean srt-win already dropped the holder
+  row, so a retry would change nothing. They do not fail the quit; Ave logs
+  their counts per step, without paths. A mismatched object's ACE is left as
+  it was, so a deny there stays fail-closed, and the next boot's ACL recovery
+  handles leftovers.
+  The copy's `exit` handler, registered at import and so run before the
+  runtime's own, removes the copy only after a successful release.
+  Otherwise it keeps the copy and writes one line to stderr, since the file log
+  is closed by then. The runtime's `exit` handler then retries the release with
+  the copy still present, the next boot's sweep removes the copy, and ACL
+  recovery remains the fallback for a crash.
+  That recovery runs as `srt-win acl recover --json` (carried ASRT patch part
+  13) at the next initialize that starts an srt-win session. It does not run
+  on the Windows proxy-only path (`windows.externalConfinement`), which sets
+  up no session ACLs. Every srt-win acl command runs the same recovery, so
+  when another live Ave process's acl command recovered first, this run
+  reports 0. The counts went to that process instead, and they reach its log
+  only when its own initialize recover found them. Ave logs the counts,
+  without paths, at INFO when it pruned a dead holder or revoked an ACE. It also warns when a previous
+  session's ACEs had to be revoked, so a crash leftover is visible without
+  `SRT_DEBUG`.
+  Some exits skip the quit sequences and rely on that `exit` handler path:
+  `--plugin-smoke` ends with `app.exit()`, and a desktop GUI boot failure quits
+  before services exist, where `before-quit` returns early.
+  Signals: the headless host claims SIGINT and SIGTERM
+  (`claimAsrtSignalRelease`) before the runtime initializes, so the runtime
+  registers no signal reset and the host's handler runs the quit sequence.
+  While that cleanup runs, the host keeps a listener that only reports
+  "shutdown already in progress", so a repeated signal cannot end the process
+  before the release; without a listener the process would end with no `exit`
+  event at all.
+  In the desktop app the runtime's own signal handler still resets it as soon
+  as the signal arrives, before children are drained. Any later reset, including
+  the one in a quit sequence, finds no ACL session left to release.
   The stale-copy sweep checks both directory owners and DACLs for the new layout,
   and also accepts the old single-level layout with its original marker checks.
   It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
@@ -2804,18 +2923,161 @@ with its own owner rule:
   exact explicit ACE or its inheritance source, with active holders accounted for.
 - **Private storage boundaries are protected at creation.**
   On Windows, boot creates `AVE_HOME` and the `secrets`,
-  `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
+  `subscription-runtimes`, `keys`, `certs`, `config` and `runtime` boundaries with
   `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
   `OBJ_DONT_REPARSE` relative to a pinned directory handle.
-  The boundary list is checked against the sensitive-path table. Permission
-  settings, user policy and legacy root secrets migrate into `config` by
-  copying into a fresh staged file, publishing it inside the protected directory,
-  then flushing a staged `config/.ave-config-migrated` and atomically renaming it
-  before deleting any copied root file. Both path owners use the root until commit.
+  - `runtime` holds uv, the Python installs, the venvs and the uv cache.
+    Repair never copies into it: a nonconforming `runtime` is set aside
+    for deletion and created empty, and its contents are rebuilt from the
+    plugin lockfiles when a plugin next needs them. Until a rebuild
+    succeeds, the plugin reports "Python runtime rebuild needed" and does
+    not start. There is no offline fallback to older contents.
+  - No sandbox grant names `runtime` itself, so a grant entry left by a
+    crash never lands on the boundary's own DACL. The sandbox account
+    crosses the owner-only boundary through bypass-traverse.
+    - A bundled program inside `runtime` (an MCP server or hook) is granted
+      read on the children it needs: `runtime\uv`, or its env root's
+      `venv` and `python`.
+    - A plugin's `hostDirectory: ["runtime"]` declaration grants read on
+      `runtime/python-envs` and `runtime/uv`, and the workers it delegates
+      map onto those roots.
+    - A writer that would create a runtime child (uv materialization,
+      Python setup, a plugin child's envelope) first checks that boot's
+      boundary is present and, on Windows, owner-only. It never recreates
+      a moved one; a restart does.
+  - Off Windows, boot sets `config` and `runtime` to 0700 on every start,
+    through a no-follow handle.
+  The helper is the first creator of the home. A plain `mkdir` would leave an
+  inherited DACL, which the helper's create-or-open keeps and RootSafe refuses.
+  Mutation and repair happen only under the host-instance lock.
+  Every process start runs `createAveHomeIfAbsent` in `ensureWorkspaceCwd`, its
+  first home write, before the lock. If the home is missing, that step only
+  creates it, with the owner-only descriptor, then reads RootSafe back.
+  It does no repair and no runtime-root claim, and it seals nothing.
+  An existing home spawns nothing. If the create fails, the start writes nothing
+  under AVE_HOME. It anchors cwd, which is the default workspace root, in a fresh
+  empty `ave-workspace-*` directory under the OS temp directory. That is never the
+  temp root itself and never AVE_HOME. mkdtemp inherits what the temp directory
+  grants, so the start verifies the directory with the same private-temp check
+  as the scratch directory (`verifyPrivateTempDir`): a real directory, not a
+  link, owned by this account and, off Windows, closed to other accounts. On
+  Windows that check relies on the per-user temp DACL, as the scratch directory
+  does. If the check fails, the start refuses with a configuration error and
+  never runs with a foreign-writable workspace. On exit the directory is removed
+  only while it is still empty, never recursively. Boot then degrades as for any
+  home failure.
+  `bootstrap()`, under the lock, runs the full protection and seals the result.
+  RootSafe, OwnerOnly, the extra-principal list and the configuration read
+  verification evaluate allow entries only. A deny entry never grants access,
+  so it cannot let another principal in. srt-win confines its sandbox account
+  with them: at init it stamps an inheritable FILE_DELETE_CHILD deny on the
+  home root (the parent of each denied home path) and a deny on each denied
+  path, `config` among them, and removes them at quit. Ave never names such an
+  entry in its `/remove` guidance. It does not rewrite one away from a root, an
+  owner-only boundary or the workspace: the narrow root repair below refuses a
+  root with an explicit deny, Repair leaves an owner-only boundary as it is, and
+  the workspace rewrite keeps an inherited deny. A boundary Repair recreates, or
+  a runtime root it claims from Administrators, starts as `D:P` owner-only.
+  Under the lock, a root is repaired only in one narrow shape: the shape a plain
+  mkdir under a profile left before homes were created this way. The repair sets
+  `D:P(A;OICI;FA;;;<user>)` on the pinned home handle and verifies it through the
+  unchanged RootSafe and OwnerOnly checks. Every one of these must hold:
+  - the root is owned by the token user (an Administrators-owned root never
+    qualifies, even elevated)
+  - it is not a link
+  - its DACL is unprotected
+  - every non-owner entry is inherited, and is for SYSTEM or Administrators
+    (an inherited Users, Authenticated Users, Everyone, CREATOR OWNER, domain
+    group or other-user entry is refused)
+  - the user has an entry
+  The root repair writes only the root's own DACL, with
+  NtSetSecurityObject, which reaches no child. SetSecurityInfo, used before,
+  also propagated into existing children. In native run 4 that propagation
+  turned the workspace's stale inherited SYSTEM and Administrators entries
+  into explicit ones, before any other writer ran. Existing children keep
+  their stale inherited SYSTEM, Administrators and user entries. Ave leaves
+  them: only those two principals can remain, and they hold backup and
+  take-ownership rights over the volume anyway. A tree walk would cost boot
+  time in proportion to the home's size. The boundary subdirectories are
+  protected and checked on every boot by Repair and OwnerOnly. The one
+  exception is `workspace`: the cwd, the default workspace root and the
+  in-project auto-write scope.
+  Every boot whose root passes RootSafe checks the workspace on a no-reparse
+  handle, whether or not that boot repaired the root. The workspace is the
+  process's own cwd, so the handle is opened for READ_CONTROL, WRITE_DAC,
+  read-attributes and SYNCHRONIZE with full sharing. A request that could
+  include DELETE is a sharing violation against the cwd handle. A
+  workspace that cannot be opened is reported as a diagnostic, never
+  treated as clean. If its inherited allow
+  entries are anything other than the single user entry a protected root
+  passes down, Ave rewrites only that directory's own DACL: its explicit
+  entries and inherited denies in order, then that entry. It then reads the result back.
+  Because the check runs on every boot, a boot whose rewrite failed is
+  retried. That boot was refused with no repairs, and the root may already
+  be `D:P` owner-only. The same holds when the request times out.
+  A link, a protected DACL, a foreign owner, or a workspace that cannot be
+  opened or read is left as it is. A write that fails, or a read-back that
+  does not match, refuses the boot.
+  After protection, the workspace's own entries are read. An explicit or
+  inherited allow that grants write to any principal other than the user,
+  SYSTEM or Administrators is a workspace extra principal. The boot is
+  refused, and Settings names the principal and shows `icacls
+  "<workspace>" /remove *<sid>` for each explicit one. The command does not
+  drop the workspace's inheritance. A foreign read-only entry is reported
+  as a diagnostic only.
+  Any other root is refused. Settings then shows the exact `icacls` command. It
+  drops inheritance, then removes every grant and deny of each explicit extra
+  principal (`/remove *<sid>`).
+  The boundary list is checked against the sensitive-path table. The first
+  protected boot commits `config` with defaults, never with root content: root
+  settings, policy and secrets are unverified, so only the closed restriction
+  fields (`permissions.blockReadsOutsideWorkingDirectories` and `managed` when
+  `true`) carry into the default documents, and secrets never do. The commit
+  stages each absent document inside the protected directory, writes a fresh
+  `config/.ave-config-sources.json` (`{}`) and a fresh home content trust
+  manifest, then flushes and atomically renames `config/.ave-config-migrated`.
+  Root files are then moved aside. Both path owners use the root until commit.
   The holder of the shared host-instance lock migrates, whether desktop or
   headless. Execution-mode and child processes without that lock only resolve
   the current on-disk layout.
-  A refused home stays root-only, without migration.
+  A refused home is never migrated, and its root is not trusted. If an
+  earlier verified boot committed `config/`, the refused boot keeps reading
+  and writing there. Each access verifies `config/`'s own protected
+  owner-only DACL, never the root's, so the committed policy still applies,
+  and boot reaches the privacy refusal and its fix command. Before this,
+  reading the root found nothing and the configuration error stopped boot
+  (native run 4). A marker with invalid content is refused. A home that
+  never committed `config/` stays root-only. The first read in a run
+  decides the location, and the run keeps it, so a marker that appears
+  later in a refused home never moves its configuration.
+  On a refused boot every authority store outside a verified boundary reads
+  as absent: root `permissions.json`, `permissions/user-approvals.json`,
+  `permissions/project-rules`, `permissions/shell-egress-hosts.json` and
+  `permissions/reviewer-cache.jsonl` whatever the committed state, and the
+  root settings, policy and secrets of a home that never committed `config/`.
+  The reviewer cache then lives in memory only.
+  Only a closed restriction overlay applies from those unverified bytes:
+  the `deny` rules of `permissions.json` and of project rules, and
+  `requireExplicitApproval`, `managed` and
+  `permissions.blockReadsOutsideWorkingDirectories` when they are `true`.
+  Allow and ask rules, saved approvals, the stored mode and every other
+  field are ignored, and bytes that do not parse apply nothing. Writes to
+  those stores are refused with `AveHomeConfigurationRefusedWriteError`
+  ("fix the folder permissions first"), so nothing rewrites a user's file
+  from its absent view. The boot continues to the refusal notice. Every
+  approval card is marked `homeFolderRefused`: a remembered allow (exact,
+  rule, folder or network grant) applies once with a localized notice. A
+  durable mode switch or reviewer choice applies for the session with a
+  notice. A deny-always is not saved; a legacy-pattern deny lasts the
+  session in memory. A workspace-root removal whose grant prune is refused
+  stays pending. Extension installs and updates (plugins, MCP servers,
+  skills, agents, commands, boot installs, the managed git runtime) are
+  refused while the home is refused. On POSIX a home that is not a directory
+  owned by the user, is group- or other-writable, or sits under an ancestor
+  owned by another account or writable by others (a root-owned sticky
+  ancestor such as `/tmp` is allowed; ancestors include every folder holding
+  a symbolic link on the way, followed link by link) is refused with the `posix-root-unsafe`
+  category before any mode is changed; Settings names `chmod go-w` as the fix.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's
@@ -2837,6 +3099,11 @@ with its own owner rule:
   that queue. Within this scope, synchronous atomic staging creates and renames
   check the previous certificate immediately before their syscall and re-key only
   the affected directory's ChangeTime immediately afterward, without yielding.
+  A certificate already stale before the syscall is verified again from fresh
+  DACL facts, as a read would: a root's ChangeTime also moves when an entry is
+  created in it (a first boot creates its folders after the first configuration
+  read) or when srt-win stamps its deny. The write proceeds only when that
+  verification passes on the same certified objects.
   A changed identity, ancestor or other boundary refuses re-keying. Async callback
   completion never re-keys a certificate. Foreign changes after the immediate
   observation still force verification. A concurrent same-account DACL change
@@ -2848,19 +3115,76 @@ with its own owner rule:
   require a regular file of at most 4 MiB and check stable timestamps and bytes.
   A vanished file triggers one fresh resolution; persistent absence after an
   observed file or commit raises `AveHomeConfigurationUntrustedError`.
-  Defaults require both candidate files and the migration marker to be absent.
-  Before a new commit, absent source documents become explicit default documents;
-  missing documents in an already committed home are never silently recreated.
-  Before commit, every retry atomically replaces published copies from validated
-  root sources. A linked, unreadable or invalid root source prevents commit and
-  retains all roots with a diagnostic. A malformed regular marker can be removed
-  for retry only inside a verified protected directory.
-  Before committing the marker, migration atomically records each copied source's
-  SHA-256 in `config/.ave-config-sources.json`. Protected-boot cleanup deletes a
-  regular root copy only if its bytes still match that recorded hash. A changed
-  or newly appearing root file moves to `<name>.post-migration-<UTC timestamp>`;
+  A commit writes only absent documents. A `config/` without its marker that
+  already holds a document other than the exact default the commit would write
+  (a repaired or hand-restored folder) requires recovery: nothing is written or
+  committed, the boot treats the home as refused with the reason `recovery`
+  ("Configuration requires recovery"), and the user moves `config/` aside and
+  restarts. A linked, unreadable or invalid root source carries nothing and is
+  reported. A malformed regular marker can be removed for retry only inside a
+  verified protected directory. The source record is empty, so protected-boot
+  cleanup moves every regular root file to `<name>.post-migration-<UTC timestamp>`;
   a diagnostic and a system boot notice name the preserved copy. Cleanup never
-  merges root data into committed configuration. Per-entry no-follow cleanup
+  merges root data into committed configuration.
+  Home content trust. Other inputs in the home that change what Ave runs or
+  allows load only when vouched for by `config/.ave-trust-manifest.json`, read on
+  the verified `config/` boundary: `{version:1, state, entries}` where `state` is
+  `fresh`, `bootstrapped:false` or `bootstrapped:true` and each entry key (home
+  relative, `/`-separated, lower-cased on Windows) holds `current` and at most
+  one `pendingWrite` SHA-256. Covered inputs are `permissions.json` and the
+  `permissions/` stores, `mcp/servers.json(.bak)`, `governance/mcp-policy.json`,
+  `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
+  plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,
+  `routine/routines.json`, the marketplace sources, states and snapshots,
+  `packages/ledger.json` and `packages/mcp-installs.json`, `AGENTS.md`,
+  `agents.custom.md`, `user-preferences.md`, `memories/MEMORY.md`, and each
+  first-level entry of `skills/`, `agents/` and `commands/` (a file hashed as
+  `sha256("ave-file-v1\n" + sha256(bytes))`, or a tree hashed as
+  `sha256("ave-tree-v1\n" + sorted "<path>\0<sha256>\n")`, so the two kinds never
+  share a digest; names that differ only in case on Windows are refused). An
+  empty file with no entry (what a file lock creates before the first write)
+  reads as absent. Marketplace MCP package files under `mcp/<name>/server/` are
+  checked before every stdio launch against the tree digest of the verified
+  archive held by their install record; a mismatch, a link, or any other entry
+  in `mcp/<name>/` besides `server` and the host's `sandbox` refuses the launch.
+  `runtime/` has no entry: it is a protected boundary, and the boundary itself
+  is the protection by design. A loader
+  parses exactly the one no-follow buffer it hashed. An absent, unreadable or
+  mismatching manifest or entry means untrusted, and untrusted reads as absent
+  apart from the closed restriction overlay above (marketplace revocations also
+  still apply). A link anywhere below the home, a POSIX file owned by another
+  account, or Windows owner or allow-ACE evidence of another principal (`SY` and
+  `BA` excepted) on the item or on a folder between the home and it withdraws
+  trust; evidence never grants it, and it is read again whenever the review is
+  served. The boot evaluates
+  the manifest once right after the commit, collapses each `pendingWrite` that
+  matches the file into `current` and drops the rest. While any input is
+  pending, shells and extension workers are confined for that boot (the
+  `home-trust-pending` sandbox signal) and Settings shows the review: each row
+  gives its reason, a masked summary (MCP program names and URL hosts, receipt
+  `pluginId@version`, permission mode and allow patterns; never arguments,
+  environment, headers or URL credentials), and Approve or Remove. Approve
+  records the hash the card rendered; Remove deletes the item without following
+  links after a confirmation, through handles that never follow a link (the
+  boundary's own `Delete` on Windows, O_NOFOLLOW-pinned directories on POSIX).
+  An item directory that is itself a link is a remove-only row. "Approve all"
+  is offered only for a `bootstrapped:false` manifest with clean evidence and
+  without `oneByOne: true`, which the commit writes when a moved `config/` sits
+  among the root's siblings and the boot writes when the manifest bytes do not
+  parse. A committed `config/` with no manifest (a home from an earlier Ave)
+  gets `bootstrapped:false` without it. The card says extensions run isolated only when a
+  confinement backend runs them. Approved items load after a restart. A
+  marketplace ledger or skill-approval view opened while pending sweeps and
+  grants nothing and re-reads the file before its next use; a pruned snapshot
+  forgets its entry. Writes go
+  through one guard on the atomic-file helpers: only the host-instance lock
+  owner writes a covered input (others get `AveHomeConfigurationNotOwnerError`),
+  a pending item is never rewritten from its absent view
+  (`AveHomeConfigurationRefusedWriteError`, reason `pending`), and each write
+  records its `pendingWrite` before and its `current` after, or clears the
+  intent on failure; overlapping writes to one key settle on whichever of
+  their bytes landed last. Writes inside a tree item are not recorded and leave the
+  item pending. Per-entry no-follow cleanup
   preserves links and reports failures for retry. Interactive boot trust failures show a
   localized native error with the cause, path and recovery instructions before exit.
   Feature storage asserts that boundaries already
@@ -2872,11 +3196,15 @@ with its own owner rule:
   rewritten, and its children are never inspected. Traverse bypass does
   not grant access through a child's own protected DACL, so a foreign
   read grant on the root cannot open a boundary.
-  The root retains its protected user FullControl rule. Foreign root
-  grants contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
-  (`0x1200a9`, including SYNCHRONIZE) emit diagnostics without disabling
-  confinement. Any write, delete, WRITE_DAC, WRITE_OWNER or other wider
-  right refuses confinement before boundary repair.
+  The root retains its protected user FullControl rule. A foreign root
+  allow contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
+  (`0x1200a9`, including SYNCHRONIZE) that applies to the root alone (no
+  object or container inheritance) emits a diagnostic without disabling
+  confinement; that is the traversal case. An inheritable foreign entry of
+  any rights would flow into every unprotected child (workspace, logs,
+  extension data), so it is an extra principal. The refusal names it and the
+  `icacls` command removes it. Any write, delete, WRITE_DAC, WRITE_OWNER or
+  other wider right refuses confinement before boundary repair.
   A nonconforming boundary is renamed to `<name>.unprotected-recovery`,
   replaced with a freshly protected directory, and copied without carrying
   its ACLs or read-only attributes. Links and junctions are skipped and logged.

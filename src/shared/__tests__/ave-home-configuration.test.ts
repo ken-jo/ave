@@ -3,20 +3,21 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
-import { ensureAveHomePrivate, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
+import { AVE_HOME_PROTECTED_DIRECTORIES, aveHomeRefusalReason, ensureAveHomePrivate, isAveHomeConfigurationRefused, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { permissionSettingsPath, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import { loadPolicy, savePolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { isPathAllowed } from "../../permissions/allowed-directories.js";
 import { buildMandatorySandboxWritePolicy } from "../../permissions/sandbox-write-policy.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../../permissions/sensitive-paths.js";
-import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
+import { getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
+import { hostRuntimeReads } from "../../sandbox/wrap-bundled-command.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
@@ -42,6 +43,18 @@ function fixture(): string {
   expect(ensureAveHomePrivate(dir).enforcement).not.toBe("none");
   return dir;
 }
+
+/** The aside copy a commit made of a legacy root file, named in its diagnostic. */
+function asideOf(diagnostics: readonly string[], dir: string, name: string): string {
+  const prefix = "Legacy configuration preserved at ";
+  const found = diagnostics.find((line) => line.startsWith(prefix) && line.slice(prefix.length).startsWith(join(dir, `${name}.post-migration-`)));
+  expect(found, `${name} moved aside`).toBeDefined();
+  return found!.slice(prefix.length);
+}
+
+const DEFAULT_SETTINGS = "{}\n";
+const DEFAULT_POLICY = { version: 1, requireExplicitApproval: true, managed: false };
+const DEFAULT_SECRETS = { version: 1, entries: {} };
 
 function exposeConfiguration(dir: string): void {
   const config = join(dir, "config");
@@ -119,40 +132,28 @@ describe("protected home configuration", () => {
     await expect(savePolicy({ requireExplicitApproval: true }, undefined, admin)).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
   });
 
-  it("retries failed root deletions on the next protected boot", async () => {
+  it("commits defaults for legacy roots without importing their authority, and moves the roots aside", () => {
     const dir = fixture();
-    const contents: Record<string, string> = { "settings.json": "{}", "policy.json": '{"version":1}', "ave-secrets.json": '{"key":"plain:secret"}' };
+    const contents: Record<string, string> = {
+      "settings.json": '{"permissions":{"reviewer":{"mode":"llm"}}}',
+      "policy.json": '{"version":1,"requireExplicitApproval":false}',
+      "ave-secrets.json": '{"key":"plain:secret"}',
+    };
     for (const [name, bytes] of Object.entries(contents)) writeFileSync(join(dir, name), bytes);
-    const actualProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
-    if (process.platform === "win32") {
-      vi.mocked(execFileSync).mockImplementation((file, args, options) => {
-        const input = (options as { input?: string } | undefined)?.input;
-        const interrupted = typeof input === "string" && input.includes("$result = [HomeDirectoryDacl]::MigrateConfiguration")
-          ? { ...options, input: input.replace("if (!Delete(deletion.Key, user))", "if (true)") }
-          : options;
-        return actualProcess.execFileSync(file, args, interrupted);
-      });
-    } else {
-      vi.mocked(unlinkSync).mockImplementation((path) => {
-        if (Object.keys(contents).some((name) => String(path).endsWith(`/${name}`))) {
-          throw Object.assign(new Error("Root deletion denied"), { code: "EACCES" });
-        }
-        actualFs.unlinkSync(path);
-      });
-    }
     const diagnostics = migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir));
-    expect(diagnostics.join("\n")).toContain("settings.json");
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
-    for (const name of Object.keys(contents)) expect(existsSync(join(dir, name))).toBe(true);
-    vi.mocked(execFileSync).mockImplementation(actualProcess.execFileSync);
-    vi.mocked(unlinkSync).mockImplementation(actualFs.unlinkSync);
-    _resetAveHomePrivacyForTest();
-    expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir))).toEqual([]);
+    // R2: root bytes are unverified, so nothing widening is imported; the defaults are committed instead.
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(DEFAULT_SETTINGS);
+    expect(JSON.parse(readFileSync(join(dir, "config", "policy.json"), "utf8"))).toEqual(DEFAULT_POLICY);
+    expect(JSON.parse(readFileSync(join(dir, "config", "ave-secrets.json"), "utf8"))).toEqual(DEFAULT_SECRETS);
     for (const [name, bytes] of Object.entries(contents)) {
       expect(existsSync(join(dir, name))).toBe(false);
-      expect(readFileSync(join(dir, "config", name), "utf8")).toBe(bytes);
+      expect(readFileSync(asideOf(diagnostics, dir, name), "utf8")).toBe(bytes);
     }
+    // A home with legacy content starts its trust manifest pending review.
+    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toEqual({ version: 1, state: "bootstrapped:false", entries: {} });
+    _resetAveHomePrivacyForTest();
+    expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir))).toEqual([]);
   });
 
   it("leaves linked stale root entries and their targets untouched after commit", () => {
@@ -180,58 +181,67 @@ describe("protected home configuration", () => {
     expect(() => userPolicyPath(dir)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
   });
 
-  it("does not commit a settings document rejected by its reader", () => {
+  it("commits defaults past a settings root its reader rejects and keeps that root aside", () => {
     const dir = fixture();
     writeFileSync(join(dir, "settings.json"), "[]");
-    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("settings.json");
-    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
-    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("[]");
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(DEFAULT_SETTINGS);
+    expect(readFileSync(asideOf(diagnostics, dir, "settings.json"), "utf8")).toBe("[]");
   });
 
-  it("does not commit legacy secrets rejected by their reader", () => {
+  it("never imports legacy secrets, readable or not", () => {
     const dir = fixture();
     writeFileSync(join(dir, "ave-secrets.json"), '{"secret":42}');
-    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("ave-secrets.json");
-    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
-    expect(readFileSync(join(dir, "ave-secrets.json"), "utf8")).toBe('{"secret":42}');
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(JSON.parse(readFileSync(join(dir, "config", "ave-secrets.json"), "utf8"))).toEqual(DEFAULT_SECRETS);
+    expect(readFileSync(asideOf(diagnostics, dir, "ave-secrets.json"), "utf8")).toBe('{"secret":42}');
   });
 
-  it("preserves the root read restriction over a stale published copy on retry", () => {
+  it("carries a root read restriction into the committed defaults", () => {
     const dir = fixture();
-    writeFileSync(join(dir, "config", "settings.json"), JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: false } }));
-    writeFileSync(join(dir, "settings.json"), JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } }));
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true, reviewer: { mode: "llm" } } }));
+    writeFileSync(join(dir, "policy.json"), JSON.stringify({ version: 1, requireExplicitApproval: false, managed: true }));
     migrateAveHomeConfiguration(dir);
-    expect(JSON.parse(readFileSync(permissionSettingsPath(dir), "utf8")).permissions.blockReadsOutsideWorkingDirectories).toBe(true);
+    // Restrictions only: strict-OR into the defaults, never the root's widening fields.
+    expect(JSON.parse(readFileSync(permissionSettingsPath(dir), "utf8"))).toEqual({ permissions: { blockReadsOutsideWorkingDirectories: true } });
+    expect(JSON.parse(readFileSync(userPolicyPath(dir), "utf8"))).toEqual({ version: 1, requireExplicitApproval: true, managed: true });
     expect(existsSync(join(dir, "settings.json"))).toBe(false);
   });
 
-  it("preserves explicit approval from root over a stale policy copy on retry", () => {
+  it("requires recovery for a repaired config/ and commits nothing (S3-1)", () => {
     const dir = fixture();
+    // A config/ without its marker that holds documents other than the exact defaults was written outside a commit.
     writeFileSync(join(dir, "config", "policy.json"), JSON.stringify({ version: 1, requireExplicitApproval: false }));
     writeFileSync(join(dir, "policy.json"), JSON.stringify({ version: 1, requireExplicitApproval: true }));
-    migrateAveHomeConfiguration(dir);
-    expect(JSON.parse(readFileSync(userPolicyPath(dir), "utf8")).requireExplicitApproval).toBe(true);
-    expect(existsSync(join(dir, "policy.json"))).toBe(false);
+    expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir)).join("\n")).toContain("requires recovery");
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+    expect(existsSync(join(dir, "config", ".ave-trust-manifest.json"))).toBe(false);
+    expect(readFileSync(join(dir, "config", "policy.json"), "utf8")).toBe(JSON.stringify({ version: 1, requireExplicitApproval: false }));
+    expect(readFileSync(join(dir, "policy.json"), "utf8")).toBe(JSON.stringify({ version: 1, requireExplicitApproval: true }));
+    expect(isAveHomeConfigurationRefused(dir)).toBe(true);
+    expect(aveHomeRefusalReason(dir)).toBe("recovery");
   });
 
-  it("keeps root authoritative when a source is a reparse point", () => {
+  it("commits defaults past a root source that is a reparse point and leaves the link", () => {
     const dir = fixture();
     const target = join(dirname(dir), "linked-settings");
     mkdirSync(target);
     symlinkSync(target, join(dir, "settings.json"), process.platform === "win32" ? "junction" : "dir");
     expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir)).join("\n")).toContain("settings.json");
-    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
-    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
+    expect(lstatSync(join(dir, "settings.json")).isSymbolicLink()).toBe(true);
   });
 
-  it("keeps all roots when a policy source fails reader validation", () => {
+  it("commits defaults past a policy root its reader rejects", () => {
     const dir = fixture();
     writeFileSync(join(dir, "settings.json"), "{}");
     writeFileSync(join(dir, "policy.json"), JSON.stringify({ version: 2, requireExplicitApproval: true }));
-    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("policy.json");
-    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
-    expect(existsSync(join(dir, "settings.json"))).toBe(true);
-    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    expect(JSON.parse(readFileSync(userPolicyPath(dir), "utf8"))).toEqual(DEFAULT_POLICY);
+    expect(readFileSync(asideOf(diagnostics, dir, "policy.json"), "utf8")).toBe(JSON.stringify({ version: 2, requireExplicitApproval: true }));
   });
 
   it("rejects an empty marker outside boot with a named trust error", () => {
@@ -251,9 +261,10 @@ describe("protected home configuration", () => {
     const dir = fixture();
     writeFileSync(join(dir, "settings.json"), "{}");
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "");
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    const diagnostics = migrateAveHomeConfiguration(dir);
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
     expect(existsSync(join(dir, "settings.json"))).toBe(false);
+    expect(readFileSync(asideOf(diagnostics, dir, "settings.json"), "utf8")).toBe("{}");
   });
 
   it("refuses to recover an empty marker in an unprotected directory", () => {
@@ -274,7 +285,7 @@ describe("protected home configuration", () => {
     expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
   });
 
-  it("keeps both owners at the root before migration even with published copies", () => {
+  it("keeps both owners at the root before migration, and a published copy without a marker requires recovery", () => {
     const dir = fixture();
     writeFileSync(join(dir, "policy.json"), '{"version":1,"requireExplicitApproval":true}');
     writeFileSync(join(dir, "config", "policy.json"), '{"version":1,"requireExplicitApproval":false}');
@@ -283,10 +294,9 @@ describe("protected home configuration", () => {
     expect(userPolicyPath()).toBe(join(dir, "policy.json"));
     expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
     expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
-    migrateAveHomeConfiguration(dir);
-    expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
-    expect(JSON.parse(readFileSync(userPolicyPath(dir), "utf8")).requireExplicitApproval).toBe(true);
-    expect(existsSync(join(dir, "policy.json"))).toBe(false);
+    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("requires recovery");
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+    expect(existsSync(join(dir, "policy.json"))).toBe(true);
   });
 
   it("writes a migration marker for a fresh home with no root files", () => {
@@ -325,6 +335,19 @@ describe("protected home configuration", () => {
     }
     expect(getDefaultSensitiveWriteDenyPaths().map((path) => path.replace(/\\/g, "/").replace(/\/$/, "")))
       .toContain(join(dir, "config").replace(/\\/g, "/"));
+    // `runtime` is a protected boundary whose venvs sandboxed extensions must still read, and its sensitive row arrives with slice 3's
+    // rows. A row in the shared table projects into the read floor as well, which would stop every venv. A write-only projection
+    // (as the write floor's `homeWritePersistence` list is) avoids that, but on Windows any deny on `runtime` is kept and stamped onto
+    // the boundary's own DACL whenever a narrowed runtime grant intersects it, so it also needs a Windows deny-target exemption.
+    expect(AVE_HOME_PROTECTED_DIRECTORIES).toContain("runtime");
+    const runtime = join(dir, "runtime");
+    expect(lstatSync(runtime).isDirectory()).toBe(true);
+    const folded = (path: string) => caseFoldForMatch(path.replace(/\\/g, "/").replace(/\/$/, ""));
+    const runtimeKey = folded(runtime);
+    expect(getDefaultSensitiveReadDenyPaths().map(folded).filter((path) => path === runtimeKey || path.startsWith(`${runtimeKey}/`))).toEqual([]);
+    expect(isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(join(runtime, "uv", "target", "sha", "uv"))), "read")).toBeNull();
+    // A sandboxed runtime program is granted the child it needs, never the boundary.
+    expect(hostRuntimeReads(join(runtime, "uv", "target", "sha", "uv"))).toEqual([join(runtime, "uv")]);
   });
 
   it("resolves marker presence after boot while other homes resolve independently", () => {
@@ -341,7 +364,7 @@ describe("protected home configuration", () => {
     expect(userPolicyPath(other)).toBe(join(other, "policy.json"));
   });
 
-  it("saves through both legacy owners for the next protected boot", async () => {
+  it("does not import what the legacy owners saved before the first protected boot", async () => {
     const dir = fixture();
     vi.stubEnv("AVE_HOME", dir);
     await writePermissionSettings({ reviewer: { mode: "llm" } });
@@ -351,59 +374,56 @@ describe("protected home configuration", () => {
     expect(existsSync(join(dir, "config", "settings.json"))).toBe(false);
     expect(existsSync(join(dir, "config", "policy.json"))).toBe(false);
     migrateAveHomeConfiguration(dir);
-    expect(JSON.parse(readFileSync(permissionSettingsPath(), "utf8")).permissions.reviewer.mode).toBe("llm");
-    expect(JSON.parse(readFileSync(userPolicyPath(), "utf8")).requireExplicitApproval).toBe(true);
+    expect(readFileSync(permissionSettingsPath(), "utf8")).toBe(DEFAULT_SETTINGS);
+    expect(JSON.parse(readFileSync(userPolicyPath(), "utf8"))).toEqual(DEFAULT_POLICY);
   });
 
-  it("copies complete files into the boundary and deletes their root names once", () => {
+  it("moves complete root files aside once and leaves nothing for the next boot", () => {
     const dir = fixture();
     const contents: Record<string, string> = { "settings.json": "{}", "policy.json": '{"version":1}', "ave-secrets.json": '{"key":"plain:secret"}' };
     for (const name of Object.keys(contents)) writeFileSync(join(dir, name), contents[name]);
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
-    for (const name of ["settings.json", "policy.json", "ave-secrets.json"]) {
-      expect(readFileSync(join(dir, "config", name), "utf8")).toBe(contents[name]);
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(diagnostics).toHaveLength(3);
+    for (const name of Object.keys(contents)) {
       expect(existsSync(join(dir, name))).toBe(false);
+      expect(readFileSync(asideOf(diagnostics, dir, name), "utf8")).toBe(contents[name]);
     }
     expect(migrateAveHomeConfiguration(dir)).toEqual([]);
   });
 
-  it("replaces a published file with the authoritative root before commit", () => {
+  it("requires recovery instead of replacing a published file that is not the default", () => {
     const dir = fixture();
     const oldPath = join(dir, "settings.json");
     const newPath = join(dir, "config", "settings.json");
-    mkdirSync(dirname(newPath), { recursive: true });
     writeFileSync(oldPath, '{"current":true}');
     writeFileSync(newPath, '{"current":false}');
-    const diagnostics = migrateAveHomeConfiguration(dir);
-    expect(diagnostics).toEqual([]);
-    expect(existsSync(oldPath)).toBe(false);
-    expect(readFileSync(newPath, "utf8")).toBe('{"current":true}');
+    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("requires recovery");
+    expect(readFileSync(oldPath, "utf8")).toBe('{"current":true}');
+    expect(readFileSync(newPath, "utf8")).toBe('{"current":false}');
   });
 
   it("recovers a crash after staging without treating a partial stage as live", () => {
     const dir = fixture();
     const destination = join(dir, "config");
-    mkdirSync(destination, { recursive: true });
     writeFileSync(join(dir, "policy.json"), '{"version":1}');
     writeFileSync(join(destination, ".policy.json.migration-interrupted"), "partial");
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
-    expect(readFileSync(join(destination, "policy.json"), "utf8")).toBe('{"version":1}');
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(JSON.parse(readFileSync(join(destination, "policy.json"), "utf8"))).toEqual(DEFAULT_POLICY);
     expect(existsSync(join(dir, "policy.json"))).toBe(false);
+    expect(readFileSync(asideOf(diagnostics, dir, "policy.json"), "utf8")).toBe('{"version":1}');
   });
 
-  it("recovers a crash after publication and before deleting the root file", () => {
+  it("finishes a commit interrupted after it published the defaults", () => {
     const dir = fixture();
     const oldPath = join(dir, "policy.json");
     const newPath = join(dir, "config", "policy.json");
-    mkdirSync(dirname(newPath), { recursive: true });
     writeFileSync(oldPath, '{"version":1}');
-    copyFileSync(oldPath, `${newPath}.stage`);
-    renameSync(`${newPath}.stage`, newPath);
-    const rootIdentity = statSync(oldPath).ino;
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    // The interrupted commit had already published the exact default, so the retry reuses it.
+    writeFileSync(newPath, '{"version":1,"requireExplicitApproval":true,"managed":false}\n');
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
     expect(existsSync(oldPath)).toBe(false);
-    expect(readFileSync(newPath, "utf8")).toBe('{"version":1}');
-    expect(statSync(newPath).ino).not.toBe(rootIdentity);
+    expect(readFileSync(asideOf(diagnostics, dir, "policy.json"), "utf8")).toBe('{"version":1}');
   });
 
   it("skips a root link without reading or deleting its target", () => {
@@ -415,7 +435,7 @@ describe("protected home configuration", () => {
     symlinkSync(target, oldPath, process.platform === "win32" ? "junction" : "dir");
     expect(migrateAveHomeConfiguration(dir).join("\n")).toContain(oldPath);
     expect(lstatSync(oldPath).isSymbolicLink()).toBe(true);
-    expect(existsSync(join(dir, "config", "settings.json"))).toBe(false);
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(DEFAULT_SETTINGS);
     expect(readFileSync(join(target, "private"), "utf8")).toBe("untouched");
   });
 
@@ -436,7 +456,7 @@ describe("protected home configuration", () => {
     symlinkSync(target, source);
     expect(migrateAveHomeConfiguration(dir).join("\n")).toContain(source);
     expect(lstatSync(source).isSymbolicLink()).toBe(true);
-    expect(existsSync(join(dir, "config", "policy.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, "config", "policy.json"), "utf8"))).toEqual(DEFAULT_POLICY);
     expect(readFileSync(target, "utf8")).toBe("outside-policy");
     expect(statSync(target).mode).toBe(mode);
   });

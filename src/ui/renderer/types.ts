@@ -1,3 +1,4 @@
+import type { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
@@ -209,6 +210,9 @@ export type PluginCardSummary = {
   confinement?: PluginConfinementReport;
   /** The last refused update or restart of this running plugin. */
   lastAttemptRefusal?: PluginAttemptRefusal;
+  /** Quarantined until host restart; cannot restart. `grantsRetained`: a quarantined sandbox grant incarnation still
+   * holds its folder access, even for folders removed since. */
+  lifecycleQuarantined?: { grantsRetained: boolean };
   /** Marketplace request slugs that should collapse onto this installed plugin. */
   installAliases?: string[];
 };
@@ -1482,13 +1486,16 @@ export type PermissionReviewerDispatchResult =
        * surfaces a banner. Undefined on legacy/main builds that do not report it.
        */
       reviewerDegradedToRule?: boolean;
+      /** The choice applies for this run only: the settings store refuses writes while boot refuses the home folder. */
+      notice?: typeof HOME_FOLDER_REFUSED;
     }
   | { ok: false; error: string };
 
 export type AvePermissionApi = {
   getMode: () => Promise<{ mode: string }>;
   setMode: (mode: string) => Promise<
-    | { ok: true; mode: string }
+    // `notice`: the mode applies for this session only because the home's permission store refuses writes while boot refuses the folder.
+    | { ok: true; mode: string; notice?: typeof HOME_FOLDER_REFUSED }
     | { ok: false; error: string; message?: string }
   >;
   onModeChanged: (cb: (mode: string) => void) => () => void;
@@ -1538,6 +1545,8 @@ export type AvePermissionApi = {
   onUserApprovalHit: (cb: (payload: UserApprovalHitPayload) => void) => () => void;
   /** Read-only: honest OS sandbox capability for the current platform. */
   sandboxCapability: () => Promise<SandboxCapabilityInfo>;
+  /** Hint event: the sandbox status snapshot changed in main (for example the Windows MXC check settled). Re-read `sandboxCapability`. */
+  onSandboxCapabilityChanged: (cb: () => void) => () => void;
   /** Read-only: Windows srt-win install readiness (group + WFP + verbatim instructions). */
   sandboxWindowsStatus: () => Promise<SandboxWindowsStatusInfo>;
   /**
@@ -1574,6 +1583,10 @@ export type AvePermissionApi = {
    */
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
   approveExtensionsWithoutIsolation: () => Promise<{ ok: true } | IpcErrorResult>;
+  /** The pending home content review, or null when this boot evaluated nothing. */
+  homeTrustReview: () => Promise<import("../../shared/ave-home-trust.js").AveHomeTrustReviewView | null | IpcErrorResult>;
+  homeTrustApprove: (snapshotId: string, keys?: readonly string[]) => Promise<{ ok: true; approved: number } | IpcErrorResult>;
+  homeTrustRemove: (snapshotId: string, key: string) => Promise<{ ok: true } | IpcErrorResult>;
   /** Subscribe to default-mode repeated-approval hints for LLM permission review. */
   onReviewSuggestion: (cb: (payload: PermissionReviewSuggestionPayload) => void) => () => void;
   /** Permission policy — `/permission reviewer ...` slash dispatch. */
@@ -2031,6 +2044,8 @@ export interface AveWorkspaceApi {
      * the removal toast so the user knows saved grants were revoked too.
      */
     prunedGrants?: number;
+    /** Some revocation did not finish, e.g. a quarantined process keeps its access until Ave restarts. Informational only. */
+    cleanupPending?: boolean;
     error?: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "lifecycle-failed";
     message?: string;
   }>;

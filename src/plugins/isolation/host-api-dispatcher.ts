@@ -1,6 +1,8 @@
 // Dispatch reverse calls through the complete effect-instrumented host table; unknown, local-only, and non-JSON calls fail explicitly.
 // Bind caller and generation identity to the connection, never request fields.
 // Host error classification stays here; children import only the wire contract.
+import { workerOutputFlowOf } from "../../permissions/worker-flow.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute } from "node:path";
 import { createLogger } from "../../lib/logger.js";
@@ -23,10 +25,17 @@ import {
   type PluginHostApi,
   type PluginWorkerSpec,
   type StorageEncoding,
+  WorkerControlError,
+  WORKER_CONTROL_FRAME_BYTES_MAX,
+  type SpawnedPluginWorker,
+  type StdioControlPluginWorker,
+  type WorkerControlRemoteError,
   type AttachFloatingPanelRequest,
   type AudioCaptureRequest,
 } from "../public-contract.js";
 import { isGrantPathWithin, outermostContainingRoots } from "../../permissions/asrt-sandbox.js";
+import { WorkerTransportUnsupportedError } from "../../permissions/mxc-extension-errors.js";
+import { WorkerControlFailedError } from "../../permissions/worker-stdio-control.js";
 import {
   HOSTAPI_PATH_CONTRACTS,
   HOST_PROTOCOL_NOTIFICATIONS,
@@ -42,6 +51,7 @@ import {
   hostApiPathOf,
   inactiveHostApiMessage,
   toHostApiRpcError,
+  asWireWorkerSend,
   type ChildNotificationSink,
   type ContractOf,
   type DispatchedConfigSubscriptionPath,
@@ -63,6 +73,8 @@ import {
   type WireResolveApiKeyOptions,
   type WireWorkerHandle,
   type WireWorkerEvent,
+  type WireWorkerError,
+  type WireWorkerSend,
   type HostApiEventPayloads,
   type WireAudioCaptureEvent,
   type WireFloatingPanelEvent,
@@ -118,11 +130,16 @@ export interface SubscriptionScope<Event = unknown> {
   /** Allocate host IDs for worker handles and key leases. */
   open(teardown: (reason: SubscriptionCloseReason) => void): string;
   /** Event payload types come from the shared contract; never means no pushes. */
-  deliver(subscriptionId: string, payload: Event): void;
+  /** Returns the bytes the sink queued toward the child for this event, where it reports them. */
+  deliver(subscriptionId: string, payload: Event): number | undefined;
   /** Host closure releases its registration and tells the child to clear local handle or credential state. */
   release(subscriptionId: string): boolean;
   /** Await the registered child shutdown handler under the owner request bound. */
   shutdown(subscriptionId: string): Promise<void>;
+  /** Route `notifications/ave/subscription/send` for this registration to `receive` until it closes. */
+  accept(subscriptionId: string, receive: (payload: unknown) => void): void;
+  /** See {@link ChildNotificationSink.whenDrained}; false where the wire cannot pace. */
+  whenDrained(ready: () => void): boolean;
 }
 
 type WireResultFor<C extends HostApiPathContract> = C["result"] extends "void"
@@ -700,7 +717,8 @@ function decodeWorkerSpec(
     "env",
     "allowReadPaths",
     "allowWritePaths",
-    "udsArgName",
+    "control",
+    "stateDirectory",
   ]);
   for (const field of Object.keys(spec)) {
     if (!known.has(field)) rejectArgument(call.path, `spec has unknown field '${field}'`);
@@ -720,17 +738,13 @@ function decodeWorkerSpec(
   ) {
     rejectArgument(call.path, "spec.env must be a record of strings");
   }
-  const udsArgName = spec.udsArgName;
-  if (
-    udsArgName !== undefined
-    && typeof udsArgName !== "string"
-    && !(
-      typeof udsArgName === "object"
-      && udsArgName !== null
-      && typeof (udsArgName as { env?: unknown }).env === "string"
-    )
-  ) {
-    rejectArgument(call.path, "spec.udsArgName must be a string or { env: string }");
+  const control = spec.control;
+  if (control !== "stdio-control-v1" && control !== "output-only-v1") {
+    rejectArgument(call.path, "spec.control must be \"stdio-control-v1\" or \"output-only-v1\"");
+  }
+  const stateDirectory = spec.stateDirectory;
+  if (stateDirectory !== undefined && typeof stateDirectory !== "boolean") {
+    rejectArgument(call.path, "spec.stateDirectory must be a boolean");
   }
   // Consume the actual child grant set so envelope widening updates delegation at the same boundary.
   assertGrantsWithinEnvelope(call, "allowReadPaths", allowReadPaths, confinement.read);
@@ -750,11 +764,144 @@ function decodeWorkerSpec(
     ...(env !== undefined ? { env: env as Record<string, string | undefined> } : {}),
     ...(readGrants !== undefined ? { allowReadPaths: readGrants } : {}),
     ...(writeGrants !== undefined ? { allowWritePaths: writeGrants } : {}),
-    ...(udsArgName !== undefined
-      ? { udsArgName: udsArgName as PluginWorkerSpec["udsArgName"] }
-      : {}),
+    control,
+    ...(stateDirectory !== undefined ? { stateDirectory } : {}),
   };
 }
+
+/** A worker control failure as it crosses; codes outside the closed set never reach the child. */
+function wireWorkerErrorOf(error: unknown): WireWorkerError {
+  if (error instanceof WorkerControlError) {
+    return { code: error.code, message: error.message, ...(error.remote ? { remote: error.remote } : {}) };
+  }
+  // Plugin-side misuse (a bad method name, non-JSON params) is reported as a failed request with the reason.
+  return {
+    code: "worker-request-failed",
+    message: errorMessage(error),
+    remote: { code: -32602, message: errorMessage(error) },
+  };
+}
+
+/**
+ * Relay one stdio-control worker between the child and the host-owned channel. Child ids and worker ids never mix:
+ * the child's `request`/`notification` ids are echoed on the answering event, and worker requests get host relay ids.
+ * Nothing is buffered beyond the channel's own bounds, and nothing pending survives the worker's exit.
+ */
+function relayStdioControlWorker(
+  worker: StdioControlPluginWorker,
+  scope: SubscriptionScope,
+  handleId: string,
+  push: (payload: WireWorkerEvent) => void,
+): void {
+  const childRequests = new Map<number, AbortController>();
+  const workerRequests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  let nextRelayId = 0;
+  let open = true;
+  // A malformed send still settles what it names: a call the child is waiting on gets an error event, a worker request
+  // the child was answering gets an error response. A send whose id cannot be read names nothing, so the handle is
+  // revoked and the child settles every call on it.
+  const refuseMalformedSend = (payload: unknown, error: unknown): void => {
+    const record = payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : {};
+    const id = record.id;
+    const message = `the plugin sent a malformed worker send: ${errorMessage(error)}`;
+    if (Number.isSafeInteger(id) && (id as number) >= 0) {
+      if (record.kind === "request" || record.kind === "notification") {
+        push({ kind: "error", id: id as number, error: { code: "worker-request-failed", message } });
+        return;
+      }
+      if (record.kind === "response") {
+        const pending = workerRequests.get(id as number);
+        if (pending) {
+          workerRequests.delete(id as number);
+          pending.reject(new WorkerControlError("worker-request-failed", message, { code: -32603, message }));
+          return;
+        }
+      }
+    }
+    log.warn(`[host-api-dispatcher] revoking worker handle '${handleId}': ${message}`);
+    scope.release(handleId);
+  };
+  const answer = (id: number, outcome: Promise<unknown>): void => {
+    outcome.then(
+      (result) => push({ kind: "result", id, result: result === undefined ? null : result }),
+      (error: unknown) => push({ kind: "error", id, error: wireWorkerErrorOf(error) }),
+    );
+  };
+  worker.onRequest((method, params, signal) => new Promise<unknown>((resolve, reject) => {
+    if (!open) {
+      reject(new WorkerControlError("worker-incarnation-ended", "the plugin's handle for this worker is closed"));
+      return;
+    }
+    const id = nextRelayId++;
+    workerRequests.set(id, { resolve, reject });
+    signal.addEventListener("abort", () => {
+      if (!workerRequests.delete(id)) return;
+      push({ kind: "cancel", id });
+      reject(new WorkerControlError("worker-request-cancelled", "the worker cancelled this request"));
+    }, { once: true });
+    push({ kind: "request", id, method, ...(params !== undefined ? { params } : {}) });
+  }));
+  worker.onNotification((method, params) => {
+    push({ kind: "notification", method, ...(params !== undefined ? { params } : {}) });
+  });
+  worker.onExit(() => {
+    open = false;
+    for (const controller of childRequests.values()) controller.abort();
+    childRequests.clear();
+    for (const pending of workerRequests.values()) {
+      pending.reject(new WorkerControlError("worker-incarnation-ended", "the worker exited"));
+    }
+    workerRequests.clear();
+  });
+  scope.accept(handleId, (payload) => {
+    let send: WireWorkerSend;
+    try {
+      send = asWireWorkerSend(payload, "spawnWorker(send)");
+    } catch (error) {
+      refuseMalformedSend(payload, error);
+      return;
+    }
+    switch (send.kind) {
+      case "request": {
+        if (childRequests.has(send.id)) {
+          push({ kind: "error", id: send.id, error: { code: "worker-request-failed", message: `request id ${send.id} is already in flight` } });
+          return;
+        }
+        const controller = new AbortController();
+        childRequests.set(send.id, controller);
+        const outcome = Promise.resolve().then(() => worker.request(send.method, send.params, { signal: controller.signal }));
+        void outcome.finally(() => { childRequests.delete(send.id); }).catch(() => {});
+        answer(send.id, outcome);
+        return;
+      }
+      case "notification":
+        answer(send.id, Promise.resolve().then(() => worker.notify(send.method, send.params)));
+        return;
+      case "cancel":
+        childRequests.get(send.id)?.abort();
+        return;
+      case "response": {
+        const pending = workerRequests.get(send.id);
+        if (!pending) return;
+        workerRequests.delete(send.id);
+        if ("error" in send) {
+          const remote: WorkerControlRemoteError = send.error;
+          pending.reject(new WorkerControlError("worker-request-failed", remote.message, remote));
+        } else {
+          pending.resolve(send.result);
+        }
+        return;
+      }
+    }
+  });
+}
+
+/** Bytes one worker's relay may push toward the child while the child's wire has not drained, before its incarnation
+ * ends: two maximal worker frames, well under the wire's own bound, so a flooding worker ends before it can end its
+ * plugin's whole channel. Traffic from elsewhere on the channel does not count. */
+export const WORKER_RELAY_BACKLOG_BYTES_MAX = 2 * (WORKER_CONTROL_FRAME_BYTES_MAX + 1);
 
 /** Worker handles carry IDs and notifications; the host retains process ownership. */
 function spawnWorkerPath(
@@ -763,7 +910,7 @@ function spawnWorkerPath(
 ): HostApiPathHandler {
   return defineHostApiPath("spawnWorker", async (call, scope) => {
     const spec = decodeWorkerSpec(call, confinement);
-    const worker = await hostApi.spawnWorker!(spec);
+    const worker: SpawnedPluginWorker = await hostApi.spawnWorker!(spec);
 
     let exited = false;
     let live = true;
@@ -772,16 +919,51 @@ function spawnWorkerPath(
       // Never signal an already-reaped PID; it may belong to another process.
       if (!exited) worker.stop();
     });
+    // Pace the worker against the child's wire: whenever the wire must drain, whoever filled it, the worker's output pipes
+    // are not read, so the worker blocks on its own writes instead of the host buffering for it. The channel as a whole
+    // stays bounded by the stream's own queue limit; the relay bounds only what this worker pushed since the wire last
+    // drained, so other traffic on the channel never ends a healthy worker. Past that bound the incarnation ends with
+    // `output-overflow`; a handle the host cannot pace is stopped.
+    const flow = workerOutputFlowOf(worker);
+    let paused = false;
+    let relayed = 0;
+    const regulate = (bytes: number): void => {
+      if (!live || exited) return;
+      relayed += bytes;
+      if (!paused) {
+        const deferred = scope.whenDrained(() => {
+          paused = false;
+          relayed = 0;
+          if (live && !exited) flow?.resume();
+        });
+        if (!deferred) {
+          relayed = 0;
+          return;
+        }
+        paused = true;
+        flow?.pause();
+      }
+      if (relayed > WORKER_RELAY_BACKLOG_BYTES_MAX) {
+        if (flow) flow.end("output-overflow");
+        else worker.stop();
+      }
+    };
     // Stop notifications at release to tolerate chunks arriving while worker pipes drain.
     const push = (payload: WireWorkerEvent): void => {
-      if (live) scope.deliver(handleId, payload);
+      if (!live) return;
+      const queued = scope.deliver(handleId, payload);
+      if (payload.kind !== "exit") regulate(queued ?? 0);
     };
     try {
-      worker.onStdout((chunk) => push({ kind: "stdout", chunk }));
+      if (worker.control === "output-only-v1") {
+        worker.onStdout((chunk) => push({ kind: "stdout", chunk }));
+      } else {
+        relayStdioControlWorker(worker, scope, handleId, push);
+      }
       worker.onStderr((chunk) => push({ kind: "stderr", chunk }));
       worker.onExit((info) => {
         exited = true;
-        push({ kind: "exit", code: info.code, signal: info.signal });
+        push({ kind: "exit", code: info.code, signal: info.signal, reason: info.reason });
         // Release exited worker registrations immediately so repeated spawns do not accumulate entries.
         scope.release(handleId);
       });
@@ -791,7 +973,7 @@ function spawnWorkerPath(
     }
     return {
       handleId,
-      socketPath: worker.socketPath,
+      control: worker.control,
       pid: worker.pid,
     } satisfies WireWorkerHandle;
   });
@@ -1204,6 +1386,9 @@ export function classifyHostApiError(error: unknown): HostApiWireError {
       },
     };
   }
+  if (error instanceof WorkerTransportUnsupportedError || error instanceof WorkerControlFailedError) {
+    return { code: error.code, name: error.name, message: error.message };
+  }
   if (error instanceof PluginRuntimeDetachedOperationError) {
     // Keep settlement promises host-side; the child only learns that the call detached.
     return {
@@ -1313,6 +1498,8 @@ export class HostApiDispatcher {
   );
   /** Retain a controller exactly for each in-flight request; child death aborts every operation. */
   private readonly inFlight = new Map<string, AbortController>();
+  /** Inbound routes for handles that accept child sends, removed with their registration. */
+  private readonly receivers = new Map<string, (payload: unknown) => void>();
   private readonly pendingSubscriptions = new Map<HostApiPath, number>();
   private pendingSubscriptionCount = 0;
   private readonly reportedUnknownFields = new Set<string>();
@@ -1427,6 +1614,18 @@ export class HostApiDispatcher {
       this.options.log(notification.params.message, notification.params.meta);
       return;
     }
+    if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.subscriptionSend) {
+      const { subscriptionId, payload } = notification.params;
+      const receive = typeof subscriptionId === "string" ? this.receivers.get(subscriptionId) : undefined;
+      // A send racing the handle's close is dropped; its pending calls were settled by the exit event.
+      if (!receive) return;
+      try {
+        receive(payload);
+      } catch (error) {
+        log.warn(`[host-api-dispatcher] dropped a malformed send for '${subscriptionId}': ${errorMessage(error)}`);
+      }
+      return;
+    }
     if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.subscriptionRelease) {
       // The child already disposed its side, so host cleanup sends no close back.
       this.subscriptions.close(notification.params.subscriptionId, "disposed");
@@ -1454,6 +1653,7 @@ export class HostApiDispatcher {
     this.warnedTokenlessPaths.clear();
     this.budgets.end();
     const closed = this.subscriptions.end("peer-gone");
+    this.receivers.clear();
     this.pendingSubscriptions.clear();
     this.pendingSubscriptionCount = 0;
     return closed;
@@ -1599,6 +1799,7 @@ export class HostApiDispatcher {
       reason: SubscriptionCloseReason,
       subscriptionId: string,
     ) => {
+      this.receivers.delete(subscriptionId);
       subscription.teardown(reason);
       if (reason !== "revoked") return;
       const deliver = () => {
@@ -1632,6 +1833,13 @@ export class HostApiDispatcher {
       },
       release: (subscriptionId) => this.subscriptions.close(subscriptionId, "revoked"),
       shutdown: (subscriptionId) => this.options.shutdownChild(subscriptionId),
+      accept: (subscriptionId, receive) => {
+        if (!this.subscriptions.get(subscriptionId)) {
+          throw new HostApiBoundaryError("subscription-unknown", `[host-api-dispatcher] no open subscription '${subscriptionId}'`);
+        }
+        this.receivers.set(subscriptionId, receive);
+      },
+      whenDrained: (ready) => this.options.notifications.whenDrained?.(ready) ?? false,
       deliver: (subscriptionId, payload) => {
         if (!this.subscriptions.get(subscriptionId)) {
           throw new HostApiBoundaryError(
@@ -1639,11 +1847,12 @@ export class HostApiDispatcher {
             `[host-api-dispatcher] no open subscription '${subscriptionId}'`,
           );
         }
-        this.options.notifications.deliver({
+        const queued = this.options.notifications.deliver({
           jsonrpc: "2.0",
           method: HOST_PROTOCOL_NOTIFICATIONS.subscription,
           params: { subscriptionId, payload },
         });
+        return typeof queued === "number" ? queued : undefined;
       },
     };
   }

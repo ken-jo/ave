@@ -1,5 +1,6 @@
 import { requireDesktopHost, type BootHost } from "../../host-runtime.js";
 /** Resolve runtime bindings lazily; effect-wrapper order and the single HTTP-verb read are security invariants. */
+import { registerWorkerOutputFlow, workerOutputFlowOf } from "../../../permissions/worker-flow.js";
 import type { BrowserWindow } from "electron";
 import { randomUUID } from "node:crypto";
 import { normalizeAllowedHosts, urlHostMatchesAllowList } from "../../../main/host-allow-list.js";
@@ -11,6 +12,7 @@ import type {
   AlertResult,
   AttachFloatingPanelRequest,
   AudioCaptureRequest,
+  PluginWorkerExitInfo,
 } from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
 import { onLocaleChange } from "../../../i18n/index.js";
@@ -456,29 +458,71 @@ export function createHostApiFactory(
         worker.stop();
       };
       hostIncarnation.registerDisposer(stop);
-      return {
-        socketPath: worker.socketPath,
+      const base = {
         pid: worker.pid,
         stop,
-        onStdout: (listener) => {
-          assertIssuedCapabilityActive("hostApi.spawnWorker().onStdout");
-          worker.onStdout((chunk) => {
-            if (hostIncarnation.isActive()) listener(chunk);
-          });
-        },
-        onStderr: (listener) => {
+        onStderr: (listener: (chunk: string) => void) => {
           assertIssuedCapabilityActive("hostApi.spawnWorker().onStderr");
           worker.onStderr((chunk) => {
             if (hostIncarnation.isActive()) listener(chunk);
           });
         },
-        onExit: (listener) => {
+        onExit: (listener: (info: PluginWorkerExitInfo) => void) => {
           assertIssuedCapabilityActive("hostApi.spawnWorker().onExit");
           worker.onExit((info) => {
             if (hostIncarnation.isActive()) listener(info);
           });
         },
       };
+      const bound = <T extends object>(handle: T): T => {
+        // The relay toward a child paces the worker it actually holds: the wrapper forwards to the host handle's flow.
+        const flow = workerOutputFlowOf(worker);
+        if (flow) registerWorkerOutputFlow(handle, flow);
+        return handle;
+      };
+      if (worker.control === "output-only-v1") {
+        return bound({
+          ...base,
+          control: worker.control,
+          onStdout: (listener) => {
+            assertIssuedCapabilityActive("hostApi.spawnWorker().onStdout");
+            worker.onStdout((chunk) => {
+              if (hostIncarnation.isActive()) listener(chunk);
+            });
+          },
+        });
+      }
+      if ((worker as { control: unknown }).control !== "stdio-control-v1") {
+        throw new Error(`[host-api-factory] spawnWorker returned a handle with control '${String((worker as { control: unknown }).control)}'`);
+      }
+      // Control traffic is the worker's own channel, admitted with the spawn; an inactive incarnation can neither send nor receive.
+      return bound({
+        ...base,
+        control: worker.control,
+        request: (method, params, options) => {
+          assertIssuedCapabilityActive("hostApi.spawnWorker().request");
+          return worker.request(method, params, options);
+        },
+        notify: (method, params) => {
+          assertIssuedCapabilityActive("hostApi.spawnWorker().notify");
+          return worker.notify(method, params);
+        },
+        onRequest: (handler) => {
+          assertIssuedCapabilityActive("hostApi.spawnWorker().onRequest");
+          worker.onRequest((method, params, signal) => {
+            if (!hostIncarnation.isActive()) {
+              throw new Error("the plugin instance that owns this worker is no longer active");
+            }
+            return handler(method, params, signal);
+          });
+        },
+        onNotification: (listener) => {
+          assertIssuedCapabilityActive("hostApi.spawnWorker().onNotification");
+          worker.onNotification((method, params) => {
+            if (hostIncarnation.isActive()) listener(method, params);
+          });
+        },
+      });
     };
       const pluginStorage = createPluginStorage(
         pluginId,

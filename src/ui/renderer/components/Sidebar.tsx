@@ -174,6 +174,8 @@ export interface SidebarProps {
   onRefreshProjects?: () => void | Promise<void>;
   /** Surface a refused project mutation — an add or a remove — to the user. */
   onProjectError?: ProjectErrorReporter;
+  /** Surface an informational outcome of a project mutation the user made (never a confirmation). */
+  onProjectNotice?: (message: string) => void;
   mainSurfaces?: readonly MainSurface[];
   browserTabs?: BrowserTabsApi;
   chatGroupIds?: readonly string[];
@@ -1145,6 +1147,7 @@ function ProjectSessionList({
   onNewChatForProject,
   onRefreshProjects,
   onProjectError,
+  onProjectNotice,
   projects: projectsProp,
   surfaces,
   bindingsLoaded,
@@ -1182,6 +1185,7 @@ function ProjectSessionList({
   onNewChatForProject?: (project: { projectRoot?: string; projectName?: string }) => void | Promise<void>;
   onRefreshProjects?: () => void | Promise<void>;
   onProjectError?: ProjectErrorReporter;
+  onProjectNotice?: (message: string) => void;
   projects?: ProjectIdentity[];
   surfaces: readonly SidebarSurface[];
   bindingsLoaded: boolean;
@@ -1249,6 +1253,8 @@ function ProjectSessionList({
         onProjectError?.("remove", result?.error, result?.message);
         return;
       }
+      // The user removed the project; a revocation that could not finish is reported, never asked about.
+      if (result.cleanupPending) onProjectNotice?.(t("chatPreviewRail.removeRootCleanupPending"));
       await onRefreshProjects?.();
     } catch (error) {
       onProjectError?.("remove", "remove-failed", error instanceof Error ? error.message : undefined);
@@ -1852,6 +1858,7 @@ export function Sidebar({
   onOpenPaneChat,
   onRefreshProjects,
   onProjectError,
+  onProjectNotice,
   mainSurfaces = [],
   browserTabs,
   chatGroupIds = [],
@@ -2364,6 +2371,7 @@ export function Sidebar({
                     onNewChatForProject={onNewChatForProject}
                     onRefreshProjects={onRefreshProjects}
                     onProjectError={onProjectError}
+                    onProjectNotice={onProjectNotice}
                     surfaces={surfaces}
                     bindingsLoaded={bindingsLoaded}
                     onOpenSurface={onOpenSurface}

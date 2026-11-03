@@ -30,13 +30,13 @@ const DOC_SLUGS = JSON.parse(
 ) as string[];
 
 describe("released plugin guidance", () => {
-  it("keeps protocol 3 current and labels protocol 4 unreleased in both locales", () => {
+  it("keeps protocol 3 current and labels protocol 5 unreleased in both locales", () => {
     const plugins = [...docsSource.matchAll(/^  plugins: \{[\s\S]*?^  \},?$/gmu)].map(match => match[0]);
     expect(plugins).toHaveLength(2);
     expect(plugins[0]).toContain("현재 출시된 앱용 플러그인은 호스트 프로토콜 3과 최소 앱 버전 0.14.0");
-    expect(plugins[0]).toContain("프로토콜 4는 아직 출시 전");
+    expect(plugins[0]).toContain("프로토콜 5는 아직 출시 전");
     expect(plugins[1]).toContain("released hosts currently declare host protocol 3 and minimum app version 0.14.0");
-    expect(plugins[1]).toContain("Protocol 4 is upcoming and unreleased");
+    expect(plugins[1]).toContain("Protocol 5 is upcoming and unreleased");
   });
 });
 

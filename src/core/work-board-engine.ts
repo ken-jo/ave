@@ -499,6 +499,10 @@ export function createWorkBoardEngine(
       await store.setRunStatus(itemId, "executing");
       emit({ itemId, phase: "executing" });
 
+      // The plan child's id is stored until the execute child links; replace it then so an in-flight "open session" opens the execute session.
+      // The store serializes writes per file, so this lands before the terminal result write below.
+      // The write settles into a captured outcome so a rejection is never left unhandled while the child runs.
+      let linkedPersist: Promise<{ failed: false } | { failed: true; error: unknown }> = Promise.resolve({ failed: false });
       const execResult = await runner.spawn(
         {
           title: `Execute: ${item.title}`,
@@ -510,6 +514,15 @@ export function createWorkBoardEngine(
           profileModel: profile?.model,
         },
         {
+          onLinked: ({ childSessionId }) => {
+            emit({ itemId, phase: "executing", runSessionId: childSessionId });
+            linkedPersist = store
+              .setRunSessionId(itemId, childSessionId)
+              .then(
+                () => ({ failed: false as const }),
+                (error: unknown) => ({ failed: true as const, error }),
+              );
+          },
           onActivity: makeTurnRecorder((turn, text) => {
             emit({ itemId, phase: "executing", turn, text });
             record({ phase: "executing", kind: "turn", turn, text });
@@ -517,6 +530,9 @@ export function createWorkBoardEngine(
           onError: (message) => emit({ itemId, phase: "error", message }),
         },
       );
+      // A failed link write is a store failure; surface it through the run's error path rather than dropping it, even if the child finished.
+      const linkOutcome = await linkedPersist;
+      if (linkOutcome.failed) throw linkOutcome.error;
       // Treat ok:false as error, never as completed output containing the error summary.
       if (execResult.ok === false) {
         const reason = execResult.error ?? execResult.summary;

@@ -5,6 +5,8 @@ import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
+import { sanitizeRoutineFailureReason } from "../../main/routines-store.js";
+import type { RoutineRunOutcome } from "../../shared/routines-types.js";
 
 const log = createLogger("ave");
 
@@ -16,6 +18,20 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
   const announce = (channel: string, payload: unknown): void => {
     stageInSuggestionsSession(memoryManager);
     fanOutToAllWindows(appWindows(), channel, payload);
+  };
+
+  // The failure card is also a persisted record, so it survives a restart; a persist error is logged, never turned into a fake success.
+  const persistRunOutcome = async (
+    routineId: string,
+    firedAt: string,
+    outcome: RoutineRunOutcome,
+  ): Promise<void> => {
+    try {
+      const updated = await routinesStore.recordRunOutcome(routineId, firedAt, outcome);
+      if (!updated) log.warn("routines llm-session outcome persist failed: routine not found (%s)", routineId);
+    } catch (err) {
+      log.warn("routines llm-session outcome persist failed (%s): %s", routineId, (err as Error).message);
+    }
   };
 
   routinesScheduler.onLlmSession(({ routine }) => {
@@ -37,6 +53,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
 
       let runSummary = "";
       let routineSessionId: string | undefined;
+      let runError: Error | undefined;
       try {
         const runResult = await routineEngine.runRoutine({
           id: routine.id,
@@ -56,10 +73,12 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         }
       } catch (err) {
         log.warn("routines llm-session run failed: %s", (err as Error).message);
+        runError = err as Error;
         try {
           announce(ROUTINES.failed, {
             routineId: routine.id,
-            error: (err as Error).message,
+            // The same masked, home-redacted text the store keeps; raw provider errors can carry secrets or paths.
+            error: sanitizeRoutineFailureReason((err as Error).message),
           });
         } catch {
           // non-fatal
@@ -72,6 +91,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
           // non-fatal
         }
       }
+      await persistRunOutcome(routine.id, firedAt, runError ? { ok: false, kind: "error", reason: runError.message } : { ok: true });
       const summary = runSummary;
       // Allow-list event fields; spreading the routine could expose private content.
       try {

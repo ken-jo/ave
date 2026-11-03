@@ -95,15 +95,14 @@ export function ensureInstalledContent(
   return pending;
 }
 
+/** Be told whenever the installed content of this window is (re)applied. Returns the unsubscribe function. */
+export function subscribeInstalledContent(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
 export function useInstalledContent(): InstalledContentView {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => current,
-    () => current,
-  );
+  return useSyncExternalStore(subscribeInstalledContent, () => current, () => current);
 }
 
 /** @internal test-only reset. */

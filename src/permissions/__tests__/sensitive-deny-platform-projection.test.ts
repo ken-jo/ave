@@ -10,7 +10,7 @@ vi.mock("../../shared/policy-home.js", async (importOriginal) => ({
   policyHomeAnchors: () => ["/fixture-home/user"],
 }));
 
-import { getDefaultSensitiveWriteDenyPaths, getVendoredSrtWinExePath } from "../asrt-sandbox.js";
+import { getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, getVendoredSrtWinExePath } from "../asrt-sandbox.js";
 import { SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "../sensitive-paths.js";
 
 const FIXTURE_HOME = "/fixture-home/user";
@@ -136,6 +136,22 @@ const MAIN_FLOOR: readonly string[] = [
   `${FIXTURE_HOME}/.ave/host-runtime/`,
   `${FIXTURE_HOME}/.ave/routine/`,
   `${FIXTURE_HOME}/.ave/plugins/auth-partitions.json`,
+  `${FIXTURE_HOME}/.ave/mcp/servers.json`,
+  `${FIXTURE_HOME}/.ave/governance/mcp-policy.json`,
+  `${FIXTURE_HOME}/.ave/marketplaces/`,
+  `${FIXTURE_HOME}/.ave/plugins/registry.json`,
+  `${FIXTURE_HOME}/.ave/skills/`,
+  `${FIXTURE_HOME}/.ave/agents/`,
+  `${FIXTURE_HOME}/.ave/commands/`,
+  `${FIXTURE_HOME}/.ave/AGENTS.md`,
+  `${FIXTURE_HOME}/.ave/agents.custom.md`,
+  `${FIXTURE_HOME}/.ave/user-preferences.md`,
+  `${FIXTURE_HOME}/.ave/memories/MEMORY.md`,
+  `${FIXTURE_HOME}/.ave/plugins/.cache/plugin-contribution-trust/`,
+  `${FIXTURE_HOME}/.ave/agent-plugin-trust/`,
+  `${FIXTURE_HOME}/.ave/packages/ledger.json`,
+  `${FIXTURE_HOME}/.ave/packages/mcp-installs.json`,
+  `${FIXTURE_HOME}/.ave/skill-approvals.json`,
   USER_DATA,
   `${FIXTURE_HOME}/.zshenv`,
   `${FIXTURE_HOME}/.zprofile`,
@@ -238,6 +254,21 @@ describe.runIf(realPlatform !== "win32")("the OS deny floor per platform", () =>
     const expected = posixFloor(userData ?? `${FIXTURE_HOME}/Library/Application Support/Ave`).filter((path) => !dropped.has(path));
     expect(expected.length).toBe(MAIN_FLOOR.length - DARWIN_DROPPED.length);
     expect(denyFloor("darwin", userData)).toEqual(expected);
+  });
+
+  // The runtime boundary carries no row until slice 3. A table row also lands in the read floor and would stop every sandboxed venv;
+  // a write-only entry beside `homeWritePersistence` would not, but on Windows any deny there is stamped onto the boundary's own DACL
+  // whenever a narrowed runtime grant intersects it, which boot would then refuse, so that entry needs a deny-target exemption first.
+  it.each(["win32", "linux", "darwin"] as const)("%s projects no read or write deny onto the runtime boundary", (platform) => {
+    const runtime = `${FIXTURE_AVE_HOME}/runtime`;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    try {
+      const floors = [...getDefaultSensitiveReadDenyPaths(), ...getDefaultSensitiveWriteDenyPaths()].map((path) => path.replace(/[\\/]$/, ""));
+      expect(floors.filter((path) => path === runtime || path.startsWith(`${runtime}/`))).toEqual([]);
+      expect(floors).toContain(`${FIXTURE_AVE_HOME}/config`);
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+    }
   });
 
   it("leaves out of the macOS floor exactly the rows tagged for another OS", () => {

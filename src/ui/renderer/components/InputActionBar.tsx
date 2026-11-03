@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, Brain, Check, ChevronRight, HelpCircle, Lightbulb, Paperclip, Square } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { useApprovalSurfaceNotice } from "../hooks/use-approval.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { SandboxRestartDialog } from "./SandboxRestartDialog.js";
@@ -425,6 +426,7 @@ function PermissionQuickPicker({
   const [open, setOpen] = useState(false);
   const [sandboxRestartOpen, setSandboxRestartOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const notice = useApprovalSurfaceNotice();
   const permissionLabel = t(PERMISSION_LABEL_KEYS[permissionMode]);
 
   const pick = async (mode: ExecutionMode) => {
@@ -447,6 +449,8 @@ function PermissionQuickPicker({
         console.warn("[ave] reviewer mode did not follow the permission mode: %s", reviewer.error);
         return;
       }
+      // The pick took, but only for this session: the home folder refusal keeps it from being saved.
+      if (res.notice !== undefined || reviewer.notice !== undefined) notice?.(t("permissionsTab.homeFolderRefusedSessionOnly"));
       setOpen(false);
     } finally {
       setBusy(false);
@@ -574,22 +578,37 @@ function SandboxCheckboxRow({ onOpenPermissions, onRestartRequired }: { onOpenPe
   const [busy, setBusy] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
 
+  // A settings change and a settle hint can both re-query; only the newest query may write state, so a slow
+  // earlier answer cannot overwrite the settled one. Unmount bumps the generation so no answer lands after close.
+  const mounted = useRef(false);
+  const generation = useRef(0);
   const refresh = useCallback(async () => {
+    const current = ++generation.current;
     try {
       const info = await getApi().permission.sandboxCapability();
-      setStatus(info.shell);
-      setLoadFailed(false);
+      if (mounted.current && current === generation.current) {
+        setStatus(info.shell);
+        setLoadFailed(false);
+      }
       return info.shell;
     } catch (error) {
       console.warn("[ave] sandbox status read failed: %s", errorMessage(error));
-      setLoadFailed(true);
+      if (mounted.current && current === generation.current) setLoadFailed(true);
     }
   }, []);
 
   // Mounted only while the card is open, so this reads on open and follows a change made in Settings while the card stays up.
   useEffect(() => {
+    mounted.current = true;
     void refresh();
-    return getApi().onSettingsUpdated(() => { void refresh(); });
+    const offSettings = getApi().onSettingsUpdated(() => { void refresh(); });
+    const offSandbox = getApi().permission.onSandboxCapabilityChanged?.(() => { void refresh(); });
+    return () => {
+      mounted.current = false;
+      generation.current += 1;
+      offSettings();
+      offSandbox?.();
+    };
   }, [refresh]);
 
   const toggle = async () => {

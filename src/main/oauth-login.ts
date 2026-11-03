@@ -1,7 +1,17 @@
 /** Host-owned login lifetime. Completion comes from the listener or runtime, never page content. */
+/** Why a login window ended without completing; `failed` covers any end the window did not classify. */
+export type OAuthLoginEndReason = "window-closed" | "timeout" | "crashed" | "browser-unavailable" | "load-failed" | "failed";
+
+export class AuthWindowEndedError extends Error {
+  constructor(readonly reason: OAuthLoginEndReason, message: string) {
+    super(message);
+    this.name = "AuthWindowEndedError";
+  }
+}
+
 export interface OAuthLoginOptions {
   completion: Promise<unknown>;
-  onCancel(): void;
+  onCancel(reason?: OAuthLoginEndReason): void;
   timeoutMs: number;
 }
 
@@ -32,19 +42,19 @@ export class OAuthLoginAttempt {
     this.complete();
   }
 
-  open(url: string, openLogin: OpenOAuthLogin, timeoutMs: number, onCancel: () => void): void {
+  open(url: string, openLogin: OpenOAuthLogin, timeoutMs: number, onCancel: (reason: OAuthLoginEndReason) => void): void {
     if (this.opened || this.finished) return;
     this.opened = true;
-    const cancel = () => {
+    const cancel = (reason: OAuthLoginEndReason = "failed") => {
       if (this.finished) return;
       this.finish();
-      onCancel();
+      onCancel(reason);
     };
     void Promise.resolve().then(() => {
       if (!this.finished) return openLogin(url, {
         completion: this.completion, timeoutMs, onCancel: cancel,
       });
-    }).catch(cancel);
+    }).catch((error: unknown) => cancel(error instanceof AuthWindowEndedError ? error.reason : "failed"));
   }
 }
 import { SYSTEM_BROWSER_OAUTH_ENDPOINTS } from "./oauth-browser-policy.js";

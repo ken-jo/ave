@@ -1469,6 +1469,29 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     expect(screen.getByTestId("plugin-config:row-arm:meeting")).toHaveTextContent("별도 프로세스 · OS 샌드박스 없음");
   });
 
+  it.each([
+    ["failed", true, true],
+    ["disabled", false, true],
+    ["failed", true, false],
+  ] as const)("tells a %s quarantined plugin it cannot restart until Ave restarts (doctor %s, grants retained %s)", async (loadStatus, doctor, grantsRetained) => {
+    showCards([{ ...base, id: "meeting", loadStatus, lifecycleQuarantined: { grantsRetained } }]);
+    render(<PluginConfigTab />);
+    const line = await screen.findByTestId("plugin-config:lifecycle-quarantined:meeting");
+    expect(line).toHaveTextContent("이 익스텐션이 멈췄는지 확인하지 못해 Ave 를 재시작할 때까지 다시 시작할 수 없습니다.");
+    expect(line).toHaveAttribute("data-grants-retained", String(grantsRetained));
+    // Folder access is claimed only for a retained sandbox grant incarnation.
+    expect(line.textContent?.includes("시작 당시의 폴더 접근을 유지")).toBe(grantsRetained);
+    expect(line).toHaveAttribute("role", "status");
+    expect(screen.queryByTestId("plugin-config:doctor-panel:meeting") !== null).toBe(doctor);
+  });
+
+  it("shows no quarantine line for a plugin that is not quarantined", async () => {
+    showCards([{ ...base, id: "meeting", loadStatus: "failed" as const }]);
+    render(<PluginConfigTab />);
+    await screen.findByTestId("plugin-config:doctor-panel:meeting");
+    expect(screen.queryByTestId("plugin-config:lifecycle-quarantined:meeting")).toBeNull();
+  });
+
   it("names the arm and that no child existed in the Doctor panel of a plugin that failed after routing", async () => {
     showCards([{
       ...base,
@@ -1491,7 +1514,7 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     ["macos-sandbox", "macOS 샌드박스"],
     ["linux-bubblewrap", "Linux 샌드박스(bubblewrap)"],
     ["windows-srt", "Windows 샌드박스"],
-    ["windows-mxc", "Windows MXC 컨테이너"],
+    ["windows-mxc", "Windows 컨테이너(MXC)"],
     ["unconfined", "OS 샌드박스 없음"],
   ] as const)("names a child spawned under %s in the Doctor panel", async (confinement, text) => {
     showCards([{

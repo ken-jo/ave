@@ -30,11 +30,32 @@ describe("per-holder native request", () => {
     const request = buildMxcConfinedChildRequest({ ...spec, baseEnv: { ...spec.baseEnv,
       PROVIDER_API_KEY: "secret", HTTP_PROXY: "http://evil.test", NODE_OPTIONS: "--require=evil",
       MXC_FFI_DIR: "C:\\override", USERPROFILE: "C:\\host", HOME: "C:\\host", TEMP: "C:\\host", PWD: "C:\\host",
-    } });
-    expect(request.environment).toMatchObject({ HOME: spec.home, USERPROFILE: spec.home, TEMP: spec.temp, TMP: spec.temp,
-      PWD: spec.cwd, ELECTRON_RUN_AS_NODE: "1" });
+      APPDATA: "C:\\profile\\AppData\\Roaming",
+    }, holderEnv: { APPDATA: "C:\\holder\\Roaming", LOCALAPPDATA: "C:\\holder\\Local" } });
+    // LOCALAPPDATA is container-owned too: Windows derives the AppContainer TEMP from it.
+    expect(request.environment).toMatchObject({ HOME: spec.home, USERPROFILE: spec.home, APPDATA: spec.home, LOCALAPPDATA: spec.home,
+      TEMP: spec.temp, TMP: spec.temp, PWD: spec.cwd, ELECTRON_RUN_AS_NODE: "1" });
+    for (const host of ["C:\\profile\\AppData\\Local", "C:\\profile\\AppData\\Roaming", "C:\\holder\\Roaming", "C:\\holder\\Local"]) {
+      expect(Object.values(request.environment!)).not.toContain(host);
+    }
     for (const key of ["PROVIDER_API_KEY", "HTTP_PROXY", "NODE_OPTIONS", "MXC_FFI_DIR"]) expect(request.environment).not.toHaveProperty(key);
     expect(request.inheritDefaultEnvironment).toBe(false);
+  });
+
+  it("carries the holder's host-owned variables, leaving wrapper and container-owned keys alone", () => {
+    const spec = input();
+    const request = buildMxcConfinedChildRequest({ ...spec, holderEnv: {
+      AVE_HOOK_TYPE: "pre", PLUGIN_DATA: "D:\\staging\\data", FS_TOKEN: "k", LANG: "ko_KR.UTF-8",
+      HTTP_PROXY: "http://evil.test", HOME: "C:\\host", TEMP: "C:\\host", PWD: "C:\\host",
+    } });
+    expect(request.environment).toMatchObject({ AVE_HOOK_TYPE: "pre", PLUGIN_DATA: "D:\\staging\\data", FS_TOKEN: "k",
+      LANG: "ko_KR.UTF-8", HOME: spec.home, TEMP: spec.temp, PWD: spec.cwd });
+    expect(request.environment).not.toHaveProperty("HTTP_PROXY");
+  });
+
+  it("refuses duplicate or loader-override holder variables", () => {
+    expect(() => buildMxcConfinedChildRequest({ ...input(), holderEnv: { Token: "a", TOKEN: "b" } })).toThrow("duplicate");
+    expect(() => buildMxcConfinedChildRequest({ ...input(), holderEnv: { NODE_OPTIONS: "--require=x" } })).toThrow();
   });
 
   it.each(["command", "cwd", "home", "temp"] as const)("refuses unadmitted %s without widening", (field) => {

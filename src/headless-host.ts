@@ -10,6 +10,7 @@ import { createWindowlessHost } from "./main/windowless-host.js";
 import { probeHostRuntimeResources } from "./main/host-runtime-probe.js";
 import { runAppShutdownCleanup, runIncompleteBootShutdown, runShutdownHooks } from "./main/app-shutdown.js";
 import { sealManagedChildProcessAdmission } from "./main/managed-child-processes.js";
+import { claimAsrtSignalRelease } from "./permissions/asrt-signal-ownership.js";
 import { setAppShutdownStarted } from "./main/app-state.js";
 import { errorMessage } from "./shared/error-message.js";
 import { AveHomeConfigurationNotOwnerError } from "./shared/ave-home-configuration-access.js";
@@ -92,6 +93,9 @@ export async function main(): Promise<number> {
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  // These handlers lead to the quit sequence, which drains confined children before it resets the sandbox runtime; the runtime must not reset
+  // itself on the same signal first.
+  claimAsrtSignalRelease();
   try {
     await Promise.race([(async () => {
       const createHost = () => createNodeBootHost({
@@ -157,12 +161,22 @@ export async function main(): Promise<number> {
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
-    runShutdownHooks();
-    const outcome = runtime
-      ? await runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
-      : await runIncompleteBootShutdown(host);
-    if (outcome === "failed" || outcome === "timed-out") process.exitCode = EXEC_FAILURE_EXIT_CODE;
-    runtime?.conversationSurfaceRuntime.sharedProjection.stop();
+    // Hold the signals until cleanup ends. With no listener a repeated signal ends the process at once, without an 'exit' event, so neither this
+    // cleanup nor the sandbox runtime's exit handler (whose own signal reset this host claimed) would release the runtime.
+    const onSignalDuringShutdown = () => { process.stderr.write("headless: shutdown already in progress\n"); };
+    process.on("SIGINT", onSignalDuringShutdown);
+    process.on("SIGTERM", onSignalDuringShutdown);
+    try {
+      runShutdownHooks();
+      const outcome = runtime
+        ? await runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
+        : await runIncompleteBootShutdown(host);
+      if (outcome === "failed" || outcome === "timed-out") process.exitCode = EXEC_FAILURE_EXIT_CODE;
+      runtime?.conversationSurfaceRuntime.sharedProjection.stop();
+    } finally {
+      process.removeListener("SIGINT", onSignalDuringShutdown);
+      process.removeListener("SIGTERM", onSignalDuringShutdown);
+    }
   }
 }
 

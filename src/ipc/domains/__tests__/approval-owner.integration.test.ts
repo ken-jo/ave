@@ -1,6 +1,6 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,8 @@ import { LlmRiskClassifier, type LlmReviewerProvider, type RiskVerdict } from ".
 import { LlmApprovalSentenceSelector } from "../../../permissions/reviewer/approval-sentence-selector.js";
 import * as approvals from "../../../permissions/user-approval-store.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
+import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../../shared/ave-home.js";
+import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { ToolExecutor } from "../../../tools/executor.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { BashTool } from "../../../tools/shell-tools.js";
@@ -345,6 +347,25 @@ describe("live native approval ownership", () => {
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
+  });
+
+  it("reports a durable exact approval refused by a refused home folder and records nothing", async () => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const { request } = f.queueCard();
+    const card = await f.waitForCard();
+    setAveHomeConfigurationRefusedAtBoot(f.root);
+    try {
+      expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+        requestId: request.id, args: JSON.stringify(request.args), scope: "persistent", verdictAtApproval: "low",
+        intent: { inputOrigin: "user-keyboard", userActivation: true }, nlJustification: null,
+      })).toEqual({ ok: false, error: HOME_FOLDER_REFUSED, message: expect.stringMatching(/Fix the folder permissions first/) });
+      expect(await approvals.listApprovals()).toEqual([]);
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
+    expect(existsSync(approvals.userApprovalFilePath())).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
   });
 
   it("lets only the current owner persist the host-derived exact shell rule", async () => {

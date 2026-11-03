@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 185
+ * Fragments: 189
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";
@@ -44,8 +44,10 @@ import { en as en_be_mcpResourceAttachment } from "./be_mcpResourceAttachment.js
 import { en as en_be_mcpResourceTools } from "./be_mcpResourceTools.js";
 import { en as en_be_memoryManager } from "./be_memoryManager.js";
 import { en as en_be_memoryWrite } from "./be_memoryWrite.js";
+import { en as en_be_mxcExtensionErrors } from "./be_mxcExtensionErrors.js";
 import { en as en_be_parentDirective } from "./be_parentDirective.js";
 import { en as en_be_permissionModeApply } from "./be_permissionModeApply.js";
+import { en as en_be_pluginChildTransport } from "./be_pluginChildTransport.js";
 import { en as en_be_pluginExpansion } from "./be_pluginExpansion.js";
 import { en as en_be_pluginRuntime } from "./be_pluginRuntime.js";
 import { en as en_be_pluginUiHost } from "./be_pluginUiHost.js";
@@ -61,6 +63,7 @@ import { en as en_be_routineEngine } from "./be_routineEngine.js";
 import { en as en_be_routineSchedule } from "./be_routineSchedule.js";
 import { en as en_be_runtimeIndex } from "./be_runtimeIndex.js";
 import { en as en_be_sandboxCapability } from "./be_sandboxCapability.js";
+import { en as en_be_scriptHookRunner } from "./be_scriptHookRunner.js";
 import { en as en_be_sessionGoal } from "./be_sessionGoal.js";
 import { en as en_be_sessionGoalRevival } from "./be_sessionGoalRevival.js";
 import { en as en_be_sessionTasks } from "./be_sessionTasks.js";
@@ -80,6 +83,7 @@ import { en as en_be_toolSearch } from "./be_toolSearch.js";
 import { en as en_be_tools } from "./be_tools.js";
 import { en as en_be_windowDomain } from "./be_windowDomain.js";
 import { en as en_be_windowTitlebarShell } from "./be_windowTitlebarShell.js";
+import { en as en_be_wrapBundledCommand } from "./be_wrapBundledCommand.js";
 import { en as en_bootstrapStatusPill } from "./bootstrapStatusPill.js";
 import { en as en_bottomActionRow } from "./bottomActionRow.js";
 import { en as en_browserWorkspace } from "./browserWorkspace.js";
@@ -231,8 +235,10 @@ export const generatedEn: Record<string, string> = {
   ...en_be_mcpResourceTools,
   ...en_be_memoryManager,
   ...en_be_memoryWrite,
+  ...en_be_mxcExtensionErrors,
   ...en_be_parentDirective,
   ...en_be_permissionModeApply,
+  ...en_be_pluginChildTransport,
   ...en_be_pluginExpansion,
   ...en_be_pluginRuntime,
   ...en_be_pluginUiHost,
@@ -248,6 +254,7 @@ export const generatedEn: Record<string, string> = {
   ...en_be_routineSchedule,
   ...en_be_runtimeIndex,
   ...en_be_sandboxCapability,
+  ...en_be_scriptHookRunner,
   ...en_be_sessionGoal,
   ...en_be_sessionGoalRevival,
   ...en_be_sessionTasks,
@@ -267,6 +274,7 @@ export const generatedEn: Record<string, string> = {
   ...en_be_tools,
   ...en_be_windowDomain,
   ...en_be_windowTitlebarShell,
+  ...en_be_wrapBundledCommand,
   ...en_bootstrapStatusPill,
   ...en_bottomActionRow,
   ...en_browserWorkspace,

@@ -1,3 +1,5 @@
+import { assertAveHomeAcceptsInstalls } from "../shared/ave-home.js";
+import { forgetAveHomeInputSync } from "../shared/ave-home-trust.js";
 import { cp, mkdir, readFile, rename, rm, stat as statAsync } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, posix, resolve } from "node:path";
@@ -595,6 +597,7 @@ export class PluginMarketplaceService {
       assertConsent?: (consent: ConsentFingerprint) => void;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact; consent: ConsentFingerprint }> {
+    assertAveHomeAcceptsInstalls();
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
       options?.activatePreparedArtifact,
       "git plugin install",
@@ -632,12 +635,12 @@ export class PluginMarketplaceService {
           assertGitInstallManifest(document, expectedPluginOf(plan));
           if (hasProcessEntry(document)) assertStagedArtifactPinned(staged);
         },
-        prepareReceipt: async (pluginRoot, files) => {
+        prepareReceipt: async (pluginRoot, files, verifiedPayload) => {
           // Future updates compare against the exact bytes installed now.
           const consent = pluginConsent(JSON.parse(await readFile(resolve(pluginRoot, "plugin.json"), "utf-8")) as unknown, await readPayloadFiles(pluginRoot, files));
           options.assertConsent?.(consent);
           installedConsent = consent;
-          return this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, consent, options.reviewedAppVersion);
+          return this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, verifiedPayload, consent, options.reviewedAppVersion);
         },
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
         activatePreparedArtifact,
@@ -695,6 +698,7 @@ export class PluginMarketplaceService {
     pluginRoot: string,
     staged: StagedPluginArtifact,
     files: string[],
+    verifiedPayload: ReadonlyMap<string, Buffer>,
     consent: ConsentFingerprint,
     reviewedAppVersion?: string,
   ): Promise<string> {
@@ -717,6 +721,7 @@ export class PluginMarketplaceService {
           consent,
         },
         files,
+        verifiedPayload,
       })).raw;
     }
     return (await buildGitInstallReceipt(pluginRoot, {
@@ -736,6 +741,7 @@ export class PluginMarketplaceService {
         consent,
       },
       files,
+      verifiedPayload,
     })).raw;
   }
 
@@ -782,7 +788,8 @@ export class PluginMarketplaceService {
     zipBuffer: Buffer,
     opts: {
       assertManifest: (manifestFile: string, pluginRoot: string) => Promise<void>;
-      prepareReceipt: (pluginRoot: string, files: string[]) => Promise<string>;
+      /** `verifiedPayload`: the verified artifact's bytes by receipt path, hashed instead of a re-read of the extracted files. */
+      prepareReceipt: (pluginRoot: string, files: string[], verifiedPayload: ReadonlyMap<string, Buffer>) => Promise<string>;
       approvedPluginAccess: PluginAccessSpec | undefined;
       beforePromote?: (recoveryBackupDir: string) => Promise<void>;
       commit?: (manifestPath: string, manifestAbsPath: string) => Promise<void>;
@@ -841,7 +848,9 @@ export class PluginMarketplaceService {
             await opts.assertManifest(manifestFile, pluginRoot);
             preparedDocument = JSON.parse(manifestRaw) as unknown;
             preparedManifest = flattenAgentPluginsManifest(preparedDocument);
-            preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files]);
+            const verifiedPayload = new Map(this.artifactStore.readZipPayloadFiles(pluginId, zipBuffer)
+              .map((file) => [file.path.split("\\").join("/"), file.data] as const));
+            preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files], verifiedPayload);
             if (preparedManifest.process !== undefined) {
               // Admit process entries only from verified pinned release/archive receipts, never tree or catalog provenance.
               const committing = await verifyInstallReceiptRaw(preparedReceiptRaw, pluginId, pluginRoot);
@@ -891,6 +900,7 @@ export class PluginMarketplaceService {
       try {
         if (priorReceiptRaw === undefined) {
           await rm(installReceiptPath(this.cacheRoot, pluginId), { force: true });
+          forgetAveHomeInputSync(installReceiptPath(this.cacheRoot, pluginId));
         } else {
           await restoreInstallReceiptRaw(this.cacheRoot, pluginId, priorReceiptRaw);
         }
@@ -1006,6 +1016,7 @@ export class PluginMarketplaceService {
     sourcePath: string,
     options: { activatePreparedArtifact: PreparedMarketplacePluginActivation },
   ): Promise<{ pluginId: string; installed: true; unchanged?: true }> {
+    assertAveHomeAcceptsInstalls();
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
       options?.activatePreparedArtifact,
       "local plugin install",
@@ -1389,6 +1400,8 @@ export class PluginMarketplaceService {
     // The fresh candidate may still be confined to this root.
     await removePluginTreeNowOrAtBoot(installDir, this.pluginsRoot, removeTreeNow);
     await rm(installReceiptPath(this.cacheRoot, pluginId), { force: true });
+    // A deleted receipt's hash must not vouch for the same bytes restored later.
+    forgetAveHomeInputSync(installReceiptPath(this.cacheRoot, pluginId));
     this.clearInstallReceiptValidationForPlugin(pluginId);
   }
 

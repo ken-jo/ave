@@ -6,7 +6,7 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
 import { CoveredConversationApprovalDock } from "../permissions/ApprovalDock.js";
 import { I18nProvider } from "../../../../i18n/react.js";
-import { getLocale, setLocale as setRuntimeLocale } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale as setRuntimeLocale, t } from "../../../../i18n/runtime.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import { sessionRow } from "../../../../../test/renderer/mock-ave-api.js";
@@ -719,6 +719,41 @@ describe("Sidebar project pinning", () => {
         );
         expect(onRefreshProjects).toHaveBeenCalledTimes(1);
       });
+    } finally {
+      restore();
+    }
+  });
+
+  it("reports unfinished cleanup after the user removes a project, as a notice and never a confirmation", async () => {
+    const onRefreshProjects = vi.fn();
+    const onProjectNotice = vi.fn();
+    const onProjectError = vi.fn();
+    const { getByTestId, removeRoot, emitNativeContextCommand, restore } = renderSidebar({
+      sessions: [], projects, onRefreshProjects, onProjectNotice, onProjectError,
+    });
+    removeRoot.mockResolvedValueOnce({ ok: true, removed: "x", roots: [], cleanupPending: true } as never);
+    try {
+      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha")));
+      emitNativeContextCommand("project.remove");
+      await waitFor(() => expect(onRefreshProjects).toHaveBeenCalledTimes(1));
+      expect(onProjectNotice).toHaveBeenCalledTimes(1);
+      expect(onProjectNotice).toHaveBeenCalledWith(t("chatPreviewRail.removeRootCleanupPending"));
+      expect(t("chatPreviewRail.removeRootCleanupPending")).not.toBe("chatPreviewRail.removeRootCleanupPending");
+      expect(onProjectError).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("sends no notice when the removal cleanup finished", async () => {
+    const onProjectNotice = vi.fn();
+    const onRefreshProjects = vi.fn();
+    const { getByTestId, emitNativeContextCommand, restore } = renderSidebar({ sessions: [], projects, onRefreshProjects, onProjectNotice });
+    try {
+      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha")));
+      emitNativeContextCommand("project.remove");
+      await waitFor(() => expect(onRefreshProjects).toHaveBeenCalledTimes(1));
+      expect(onProjectNotice).not.toHaveBeenCalled();
     } finally {
       restore();
     }

@@ -99,7 +99,7 @@ async function harness(
     reportUnknownField: () => {},
     shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
-    notifications: { deliver: (notification) => child.deliver(notification) },
+    notifications: { deliver: (notification) => { child.deliver(notification); } },
     table: (options.table ?? HOSTAPI_DISPATCH_TABLE) as typeof HOSTAPI_DISPATCH_TABLE,
   });
 

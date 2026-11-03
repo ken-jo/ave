@@ -36,8 +36,9 @@ function fixture(): { home: string; path: string } {
   setFixtureOwner(dirname(home));
   vi.stubEnv("AVE_HOME", home);
   expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
-  writeFileSync(join(home, "settings.json"), '{"permissions":{}}');
   migrateAveHomeConfiguration(home);
+  // A commit writes defaults and never imports root bytes, so the owner's later save is what these reads observe.
+  writeFileSync(join(home, "config", "settings.json"), '{"permissions":{}}');
   return { home, path: join(home, "settings.json") };
 }
 
@@ -275,8 +276,10 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
     const path = join(home, "settings.json");
     writeFileSync(path, "{}");
-    if (layout === "migrated") migrateAveHomeConfiguration(home);
-    else rmdirSync(join(home, "config"));
+    if (layout === "migrated") {
+      migrateAveHomeConfiguration(home);
+      writeFileSync(join(home, "config", "settings.json"), "{}");
+    } else rmdirSync(join(home, "config"));
     expect(readAveHomeConfigurationFile(path)?.toString()).toBe("{}");
     const file = layout === "migrated" ? join(home, "config", "settings.json") : path;
     const inode = lstatSync(file, { bigint: true }).ino;
@@ -371,6 +374,52 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
       writeUtf8FileAtomicSync(target, "{}");
     })).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
     expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+  });
+
+  it("verifies configuration reads and owner writes under srt-win's sandbox deny entries", async () => {
+    // srt-win stamps (D;OICI;FILE_DELETE_CHILD) for its sandbox account on the home root and (D;OICI;<write>) on config/ at init,
+    // after the boot has certified configuration reads. Guests stands in for the srt-sandbox account.
+    const { home, path } = fixture();
+    writeFileSync(join(home, "config", "policy.json"), "{}");
+    const policy = join(home, "policy.json");
+    expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
+    expect(readAveHomeConfigurationFile(policy)?.toString()).toBe("{}");
+    childProcess.execFileSync(win32SystemBinary("icacls"), [home, "/deny", "*S-1-5-32-546:(OI)(CI)(DC)", "/q"], { windowsHide: true, stdio: "pipe" });
+    childProcess.execFileSync(win32SystemBinary("icacls"), [join(home, "config"), "/deny", "*S-1-5-32-546:(OI)(CI)(WD,AD,WEA,WA,DE,DC)", "/q"], { windowsHide: true, stdio: "pipe" });
+    expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
+    await withAveHomeConfigurationWrite(policy, async (target) => { writeUtf8FileAtomicSync(target, '{"saved":true}'); });
+    expect(readAveHomeConfigurationFile(policy)?.toString()).toBe('{"saved":true}');
+    // A deny never hides a foreign allow: weakening the stamped root is still refused.
+    weaken(home);
+    expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+  });
+
+  it("re-verifies a certificate staled by a new home entry instead of refusing the next owner write (first boot)", async () => {
+    // A first boot certifies a configuration read, then creates sibling folders in the home root (logs/, plugins/, ...), which
+    // moves the root's ChangeTime. The next owner write into config/ must re-verify that stale certificate, not refuse it.
+    const { home } = fixture();
+    writeFileSync(join(home, "config", "policy.json"), "{}");
+    const policy = join(home, "policy.json");
+    expect(readAveHomeConfigurationFile(policy)?.toString()).toBe("{}");
+    const before = pinWindowsPaths([home])[0]!;
+    mkdirSync(join(home, "first-boot-sibling"));
+    const after = pinWindowsPaths([home])[0]!;
+    expect(windowsObjectKey(after)).toBe(windowsObjectKey(before));
+    expect(after.changeTime).not.toBe(before.changeTime);
+    await withAveHomeConfigurationWrite(policy, async (target) => { writeUtf8FileAtomicSync(target, '{"saved":true}'); });
+    expect(readAveHomeConfigurationFile(policy)?.toString()).toBe('{"saved":true}');
+  });
+
+  it("still refuses an owner write when the root behind a stale certificate was weakened", async () => {
+    const { home } = fixture();
+    writeFileSync(join(home, "config", "policy.json"), "{}");
+    const policy = join(home, "policy.json");
+    readAveHomeConfigurationFile(policy);
+    await expect(withAveHomeConfigurationWrite(join(home, "settings.json"), async (target) => {
+      await Promise.resolve();
+      weaken(home);
+      writeUtf8FileAtomicSync(target, "{}");
+    })).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
   });
 
   it("invalidates a cached certificate when pinned ChangeTime changes with the DACL", () => {

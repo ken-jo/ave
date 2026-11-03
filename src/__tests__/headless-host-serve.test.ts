@@ -62,6 +62,18 @@ async function serveUntilReady(): Promise<number> {
 }
 
 describe("headless --serve", () => {
+  it("makes its first AVE_HOME write through ensureWorkspaceCwd, before the host-instance lock and the windowless host", async () => {
+    // ensureWorkspaceCwd only creates a missing home (create-only helper); repair runs in bootstrap() under the lock.
+    startTailnetSurface.mockResolvedValue({ ok: true, enabled: false });
+    const { ensureWorkspaceCwd } = await import("../main/ensure-workspace-cwd.js");
+    const { acquireHostInstanceLock } = await import("../main/host-instance-lock.js");
+    const { createWindowlessHost } = await import("../main/windowless-host.js");
+    await serveUntilReady();
+    const first = vi.mocked(ensureWorkspaceCwd).mock.invocationCallOrder[0]!;
+    expect(first).toBeLessThan(vi.mocked(acquireHostInstanceLock).mock.invocationCallOrder[0]!);
+    expect(first).toBeLessThan(vi.mocked(createWindowlessHost).mock.invocationCallOrder[0]!);
+  });
+
   it("keeps serving the local API when the Tailnet surface fails to start", async () => {
     startTailnetSurface.mockRejectedValue(new Error("tailnet-observer-config-unreadable: /Users/example/.ave/tailnet.json"));
 
@@ -82,5 +94,27 @@ describe("headless --serve", () => {
     expect(code).toBe(0);
     expect(stdout.join("")).toContain("server-ready");
     expect(stderr).toEqual([]);
+  });
+
+  it("holds a repeated signal while shutdown cleanup runs, and releases the signals once it ends", async () => {
+    startTailnetSurface.mockResolvedValue(null);
+    const { runAppShutdownCleanup } = await import("../main/app-shutdown.js");
+    let finishCleanup!: () => void;
+    vi.mocked(runAppShutdownCleanup).mockImplementationOnce(() => new Promise((resolve) => { finishCleanup = () => resolve("completed"); }));
+    const baseline = { int: process.listenerCount("SIGINT"), term: process.listenerCount("SIGTERM") };
+    const { main } = await import("../headless-host.js");
+    const exit = main();
+    await vi.waitFor(() => expect(stdout.join("")).toContain("server-ready"));
+    process.emit("SIGTERM");
+    await vi.waitFor(() => expect(runAppShutdownCleanup).toHaveBeenCalled());
+    // A second Ctrl+C during the drain finds a listener, so it cannot end the process before the runtime is released.
+    expect(process.listenerCount("SIGINT")).toBe(baseline.int + 1);
+    expect(process.listenerCount("SIGTERM")).toBe(baseline.term + 1);
+    process.emit("SIGINT");
+    expect(stderr.join("")).toContain("headless: shutdown already in progress\n");
+    finishCleanup();
+    expect(await exit).toBe(0);
+    expect(process.listenerCount("SIGINT")).toBe(baseline.int);
+    expect(process.listenerCount("SIGTERM")).toBe(baseline.term);
   });
 });

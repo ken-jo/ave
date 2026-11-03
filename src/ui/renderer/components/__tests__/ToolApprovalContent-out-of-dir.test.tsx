@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
 import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
 import { setLocale } from "../../../../i18n/runtime.js";
 
@@ -86,6 +87,23 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     });
     expect(onDecide).toHaveBeenCalledWith("allow-always", PARENT);
     expect(record).not.toHaveBeenCalled();
+  });
+
+  it("answers allow-always once with a localized notice while boot refuses the home folder", async () => {
+    const notice = vi.fn();
+    const onDecide = vi.fn();
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    render(
+      <ApprovalSurfaceProvider value={{ notice } as unknown as ApprovalSurfaceContextValue}>
+        <ToolApprovalContent conversationLabel="conversation" open request={makeRequest({ homeFolderRefused: true })} onDecide={onDecide} />
+      </ApprovalSurfaceProvider>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
+    });
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide).toHaveBeenCalledWith("allow-once", undefined);
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining("이번 한 번만 허용했습니다"));
   });
 
   it("allow-once and deny stay narrow: no pattern, no record", async () => {

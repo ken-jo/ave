@@ -21,7 +21,6 @@ import {
 } from "../../../components/ui/dialog.js";
 import type { AveApi } from "../types.js";
 import type {
-  RunProgressEventPayload,
   RunTranscriptEvent,
   WorkBoardBriefingKind,
   WorkBoardBriefingResult,
@@ -33,12 +32,25 @@ import type {
   WorkItemUpdateInput,
   WorkProposal,
 } from "../../../shared/work-board-types.js";
-import { BRIEFING_PROPOSAL_SOURCE_ID, MAX_ITEMS } from "../../../shared/work-board-types.js";
+import { BRIEFING_PROPOSAL_SOURCE_ID } from "../../../shared/work-board-types.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { usePaneActions } from "./PaneFrame.js";
+import {
+  currentPhaseTurn,
+  formatElapsed,
+  isRunInFlight,
+  latestTurn,
+  liveTextOf,
+  runStartedAt,
+  useNowTick,
+  useWorkBoardRun,
+  type RunPhase,
+  type RunStateMap,
+  type WorkItemRunState,
+} from "../hooks/use-work-board-run.js";
 
 export interface WorkBoardPanelProps {
   api: AveApi;
@@ -110,143 +122,6 @@ function formatDue(iso: string | undefined): string {
   return date ? t("workBoard.dueLabel", { date }) : t("workBoard.noDueDate");
 }
 
-// Derive run state only from host events; awaiting-approval is informational because the shared host gate owns the
-// decision.
-
-type RunPhase = RunProgressEventPayload["phase"];
-
-interface WorkItemRunState {
-  /** A run is in flight (between runStarted and runFinished/runFailed). */
-  busy: boolean;
-  /** Latest phase from the engine progress stream. Undefined until the first event. */
-  phase?: RunPhase;
-  /** Latest child-agent turn text for the active (planning/executing) phase. */
-  liveText?: string;
-  /** Terminal failure / denial reason (error / denied phase or runFailed). */
-  reason?: string;
-  /** Execute child's session id, set on the terminal `done` event. */
-  runSessionId?: string;
-}
-
-type RunStateMap = Record<number, WorkItemRunState | undefined>;
-
-/** Phases that should show an active spinner. */
-function isActivePhase(phase: RunPhase | undefined): boolean {
-  return phase === "planning" || phase === "executing";
-}
-
-/** True while the run is in flight (no terminal phase reached yet). */
-function isRunInFlight(run: WorkItemRunState | undefined): boolean {
-  if (!run) return false;
-  if (run.phase === "done" || run.phase === "denied" || run.phase === "error") return false;
-  return run.busy || run.phase !== undefined;
-}
-
-/**
- * Subscribe to the four host run channels in ONE effect with a single cleanup.
- * Returns the per-item run state map plus a `runItem` launcher. The launcher
- * optimistically seeds `busy` so the card shows a starting indicator instantly,
- * even before the `runStarted` broadcast lands.
- */
-function useWorkBoardRun(api: AveApi): {
-  runState: RunStateMap;
-  runItem: (id: number) => void;
-} {
-  const [runState, setRunState] = useState<RunStateMap>({});
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
-
-  const patch = useCallback((id: number, next: Partial<WorkItemRunState>) => {
-    if (!mountedRef.current) return;
-    setRunState((prev) => {
-      const cur = prev[id] ?? { busy: false };
-      return { ...prev, [id]: { ...cur, ...next } };
-    });
-  }, []);
-
-  useEffect(() => {
-    const unsubs: Array<() => void> = [];
-    if (typeof api.onWorkBoardRunProgress === "function") {
-      unsubs.push(
-        api.onWorkBoardRunProgress((ev: RunProgressEventPayload) => {
-          patch(ev.itemId, {
-            phase: ev.phase,
-            // Only active phases carry live turn text; clear it on transition.
-            liveText: ev.phase === "planning" || ev.phase === "executing" ? ev.text : undefined,
-            reason: ev.phase === "error" || ev.phase === "denied" ? ev.message : undefined,
-            runSessionId: ev.runSessionId,
-            // A terminal phase ends the in-flight window even if runFinished is late.
-            busy: ev.phase !== "done" && ev.phase !== "denied" && ev.phase !== "error",
-          });
-        }),
-      );
-    }
-    if (typeof api.onWorkBoardRunStarted === "function") {
-      unsubs.push(
-        api.onWorkBoardRunStarted(({ itemId }) => {
-          patch(itemId, { busy: true, phase: undefined, liveText: undefined, reason: undefined });
-        }),
-      );
-    }
-    if (typeof api.onWorkBoardRunFinished === "function") {
-      unsubs.push(
-        api.onWorkBoardRunFinished(({ itemId, status }) => {
-          patch(itemId, {
-            busy: false,
-            phase: status === "completed" ? "done" : status === "denied" ? "denied" : status === "error" ? "error" : undefined,
-          });
-        }),
-      );
-    }
-    if (typeof api.onWorkBoardRunFailed === "function") {
-      unsubs.push(
-        api.onWorkBoardRunFailed(({ itemId, reason }) => {
-          patch(itemId, { busy: false, phase: "error", reason });
-        }),
-      );
-    }
-    return () => {
-      for (const u of unsubs) u();
-    };
-  }, [api, patch]);
-
-  const runItem = useCallback(
-    (id: number) => {
-      if (typeof api.runWorkBoardItem !== "function") return;
-      // Optimistic: show a starting indicator before runStarted lands.
-      patch(id, { busy: true, phase: undefined, liveText: undefined, reason: undefined, runSessionId: undefined });
-      void api.runWorkBoardItem(id).then((result) => {
-        if (!mountedRef.current) return;
-        if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: result.error });
-          return;
-        }
-        if (result && "status" in result) {
-          patch(id, {
-            busy: false,
-            phase:
-              result.status === "completed"
-                ? "done"
-                : result.status === "denied"
-                  ? "denied"
-                  : result.status === "error" || result.status === "not_found"
-                    ? "error"
-                    : undefined,
-            reason: result.reason,
-            runSessionId: result.runSessionId,
-          });
-        }
-      }).catch((err: unknown) => {
-        if (!mountedRef.current) return;
-        patch(id, { busy: false, phase: "error", reason: errorMessage(err) });
-      });
-    },
-    [api, patch],
-  );
-
-  return { runState, runItem };
-}
-
 function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
   if (!run) return null;
   const inFlight = isRunInFlight(run);
@@ -313,6 +188,66 @@ function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
   );
 }
 
+/** The compact card's phase word; null for a run that is not in flight. Exhaustive over the run phases so a new phase must
+ * decide how its card reads. */
+function liveChipLabel(phase: RunPhase | undefined): string | null {
+  switch (phase) {
+    case undefined:
+      return t("workBoard.liveChipStarting");
+    case "planning":
+      return t("workBoard.liveChipPlanning");
+    case "awaiting_approval":
+      return t("workBoard.liveChipAwaitingApproval");
+    case "executing":
+      return t("workBoard.liveChipExecuting");
+    case "done":
+    case "denied":
+    case "error":
+      return null;
+    default: {
+      const unhandled: never = phase;
+      throw new Error(`unhandled work board run phase: ${String(unhandled)}`);
+    }
+  }
+}
+
+/** "실행 중 · N턴째 · m:ss" — phase, the current phase's turn (once it took one), and the time since the run began (once the
+ * listed item carries this run's start). The chip owns the 1s clock, so the tick re-renders only the chip, not the board or an
+ * open detail dialog. */
+function LiveRunChip({ run, startedAt }: { run: WorkItemRunState; startedAt: string | undefined }) {
+  const now = useNowTick(true);
+  const label = liveChipLabel(run.phase);
+  if (label === null) return null;
+  const turn = currentPhaseTurn(run);
+  const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+  const parts = [label];
+  if (turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
+  if (Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
+  const awaiting = run.phase === "awaiting_approval";
+  return (
+    <span
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
+        awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
+      }`}
+      data-testid="work-board-live-chip"
+      data-phase={run.phase ?? "starting"}
+    >
+      {awaiting ? (
+        <CheckCircle2 className="h-3 w-3 shrink-0" />
+      ) : (
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      )}
+      <span className="min-w-0 truncate">{parts.join(" · ")}</span>
+    </span>
+  );
+}
+
+function localClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 interface WorkItemCardProps {
   item: WorkItemResolved;
   run: WorkItemRunState | undefined;
@@ -323,10 +258,31 @@ interface WorkItemCardProps {
   onOpenDetail: (id: number) => void;
 }
 
-function WorkItemCard({ item, run, onStart, onComplete, onReopen, onRun, onOpenDetail }: WorkItemCardProps) {
+function WorkItemCard({
+  item,
+  run,
+  onStart,
+  onComplete,
+  onReopen,
+  onRun,
+  onOpenDetail,
+}: WorkItemCardProps) {
   const overdue = item.status_resolved === "overdue";
   const isCompleted = item.status === "completed";
-  const busy = isRunInFlight(run);
+  const live = run !== undefined && isRunInFlight(run) ? run : undefined;
+  const narration = latestTurn(live);
+  const narrationLine = (className: string) => (
+    <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
+      {narration ? (
+        <>
+          <span className="tabular-nums">{localClock(narration.at)}</span>
+          {` · ${narration.text}`}
+        </>
+      ) : (
+        t("workBoard.liveNarrationWaiting")
+      )}
+    </p>
+  );
   return (
     <button
       type="button"
@@ -344,41 +300,73 @@ function WorkItemCard({ item, run, onStart, onComplete, onReopen, onRun, onOpenD
               {item.title}
             </span>
           </div>
-          {item.detail && (
-            <p className="mt-1.5 line-clamp-2 break-words text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</p>
+          {live ? (
+            // A running card keeps its footprint. The chip takes the due line's row, and one line of narration takes the
+            // description's place: the description stays in the layout, invisible, so the block is exactly as tall as it was
+            // before the run. A card without a description has no line to give, so its narration shares the chip's row.
+            // Turns streaming in never resize the card. `contain: inline-size` keeps the unwrapped narration and chip from
+            // widening the card past its column (the scroll area sizes its content to fit).
+            <>
+              <div
+                className="mt-2 flex min-w-0 items-center gap-1.5 overflow-hidden [contain:inline-size]"
+                data-testid="work-board-live-row"
+              >
+                {overdue && (
+                  <Badge variant="outline" className="shrink-0 border-destructive/(--opacity-half) text-destructive">
+                    {t("workBoard.overdueBadge")}
+                  </Badge>
+                )}
+                <LiveRunChip run={live} startedAt={runStartedAt(item)} />
+                {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
+                <span aria-hidden="true" className="invisible w-0 text-[11px]">{"\u200b"}</span>
+                {!item.detail && narrationLine("min-w-0 flex-1 truncate text-[11px] text-muted-foreground")}
+              </div>
+              {item.detail && (
+                <div className="mt-1.5 grid [contain:inline-size]">
+                  <p
+                    aria-hidden="true"
+                    className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-[11px] leading-relaxed [overflow-wrap:anywhere]"
+                  >
+                    {item.detail}
+                  </p>
+                  {narrationLine("col-start-1 row-start-1 truncate text-[11px] leading-relaxed text-muted-foreground")}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {item.detail && (
+                <p className="mt-1.5 line-clamp-2 break-words text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</p>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {overdue && (
+                  <Badge variant="outline" className="border-destructive/(--opacity-half) text-destructive">
+                    {t("workBoard.overdueBadge")}
+                  </Badge>
+                )}
+                <span className="text-[11px] text-muted-foreground">{formatDue(item.due_at)}</span>
+                <RunIndicator run={run} />
+              </div>
+            </>
           )}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {overdue && (
-              <Badge variant="outline" className="border-destructive/(--opacity-half) text-destructive">
-                {t("workBoard.overdueBadge")}
-              </Badge>
-            )}
-            <span className="text-[11px] text-muted-foreground">{formatDue(item.due_at)}</span>
-            <RunIndicator run={run} />
-          </div>
         </div>
       </div>
       {/* Inline lifecycle actions. stopPropagation so the card's open-detail
           click does not also fire when the user only wanted to transition. */}
       <div className="mt-2.5 flex flex-wrap justify-end gap-1">
-        {!isCompleted && (
+        {!isCompleted && !live && (
           <Button
             size="sm"
             variant="ghost"
             className="h-6 px-2 text-[11px]"
-            disabled={busy}
             onClick={(e) => {
               e.stopPropagation();
               onRun(item.id);
             }}
             data-testid="work-board-run"
           >
-            {busy ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <Play className="mr-1 h-3 w-3" />
-            )}
-            {busy ? t("workBoard.runBusyShort") : t("workBoard.runButton")}
+            <Play className="mr-1 h-3 w-3" />
+            {t("workBoard.runButton")}
           </Button>
         )}
         {item.status === "planned" && (
@@ -455,6 +443,9 @@ function BoardColumn({
   onOpenDetail,
   testId,
 }: BoardColumnProps) {
+  // The list takes whatever height the section is given and scrolls. Its floor belongs to the grid that sizes the
+  // section (see WorkBoardPanel), not to the list: a min-height on the inner list left the section free to shrink to its
+  // header while the list was clipped below it.
   return (
     <section className="flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid={testId}>
       <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
@@ -463,7 +454,7 @@ function BoardColumn({
           {items.length}
         </span>
       </div>
-      <ScrollArea className="min-h-[200px] flex-1 px-2 pb-2">
+      <ScrollArea className="min-h-0 flex-1 px-2 pb-2" data-testid={`${testId}-list`}>
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t("workBoard.loadingLabel")}</div>
         ) : items.length === 0 ? (
@@ -686,7 +677,7 @@ function RunOutputPanel({
   const inFlight = isRunInFlight(run);
   const plan = item.plan;
   const output = item.output;
-  const liveText = inFlight && isActivePhase(run?.phase) ? run?.liveText : undefined;
+  const liveText = inFlight ? liveTextOf(run) : undefined;
   const sessionId = run?.runSessionId ?? item.runSessionId;
 
   // Nothing to show: never run AND no live activity.
@@ -1595,11 +1586,11 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   const inProgress = useMemo(() => items.filter((i) => i.status === "in_progress"), [items]);
   const completed = useMemo(() => items.filter((i) => i.status === "completed"), [items]);
 
-  const capReached = items.length >= MAX_ITEMS;
-
   // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
   // the hook).
-  const { runState, runItem } = useWorkBoardRun(api);
+  // A run entering a phase has just written its run fields (runId, runHistory, runStatus) to the item. Re-list so the card's elapsed
+  // time reads this run's start rather than the previous run's; turn events do not re-list.
+  const { runState, runItem } = useWorkBoardRun(api, items, refresh);
 
   // A finished run may have written engine fields (plan/output/runStatus) onto
   // the item; re-list so the board view reflects the persisted run result.
@@ -1668,13 +1659,12 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   const onOpenDetail = useCallback((id: number) => setDetailId(id), []);
 
   // The board's own global controls. They sat beside the heading this panel no longer draws; the pane's header carries them
-  // now. What is left in the body is the state they act on — the count and the cap warning — not a control.
+  // now. What is left in the body is the state they act on — the count — not a control.
   usePaneActions(useMemo(() => [
     {
       id: "work-board-add",
       label: t("workBoard.addItemButton"),
       icon: <Plus className="h-4 w-4" />,
-      disabled: capReached,
       onSelect: () => setShowCreate(true),
     },
     {
@@ -1683,7 +1673,7 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
       icon: <RefreshCw className="h-4 w-4" />,
       onSelect: () => void refresh(),
     },
-  ], [capReached, refresh]));
+  ], [refresh]));
 
   const renderColumn = (heading: string, columnItems: WorkItemResolved[], emptyLabel: string, testId: string) => (
     <BoardColumn
@@ -1710,15 +1700,12 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
         <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
           <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
           <div className="flex shrink-0 items-center gap-2">
-            <Badge variant="outline" title={t("workBoard.panelTitle")}>
-              {items.length}/{MAX_ITEMS}
+            <Badge variant="outline" className="whitespace-nowrap" title={t("workBoard.panelTitle")} data-testid="work-board-item-count">
+              {t("workBoard.itemCount", { count: items.length })}
             </Badge>
-            {capReached && (
-              <span className="text-xs text-destructive">{t("workBoard.capReachedLabel")}</span>
-            )}
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+        <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
           <ProposalsSection
             proposals={proposals}
             pendingId={pendingProposalId}
@@ -1726,7 +1713,16 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
             onLater={onProposalLater}
             onDismiss={onProposalDismiss}
           />
-          <div className="grid min-h-0 gap-3 sm:grid-cols-3">
+          {/* The columns fill whatever height the proposals and reports leave (flex-1) but never drop below a usable floor;
+              when the bands take the room, the scroller overflows and scrolls instead. The floor must be explicit: with
+              min-h-0 the grid absorbed the whole deficit and squashed the columns to their headers, and with no min-height
+              the grid's content minimum grows it to every card so the columns never scroll internally. The breakpoint is the
+              board's own width (container query), not the window's: a split tile or a narrow window holds three columns only
+              when the board itself is wide enough. Stacked below it, each column gets its own fixed row. */}
+          <div
+            className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
+            data-testid="work-board-columns"
+          >
             {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
             {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
             {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}

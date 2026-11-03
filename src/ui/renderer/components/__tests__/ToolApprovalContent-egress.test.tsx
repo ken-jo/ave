@@ -7,6 +7,8 @@ import { openDecisionMenu, selectDecision } from "./support/decision-bar.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
+import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
+import { HOME_FOLDER_REFUSED } from "../../../../shared/permissions-events.js";
 
 const RULE = "Network(downloads.example.com:443)";
 
@@ -153,5 +155,24 @@ describe("network approval dock card", () => {
     for (const testId of [TEST_IDS.denyButton, TEST_IDS.allowSessionButton, TEST_IDS.approveButton, "approval-deny-menu", "approval-allow-menu"]) {
       expect(screen.getByTestId(testId)).toBeDisabled();
     }
+  });
+});
+
+describe("network approval dock card while boot refuses the home folder", () => {
+  it("says the connection was denied once when the deny rule cannot be saved", async () => {
+    const record = vi.fn().mockResolvedValue({ ok: false, error: HOME_FOLDER_REFUSED });
+    vi.stubGlobal("ave", { userApproval: { record } });
+    const onDecide = vi.fn();
+    const notice = vi.fn();
+    render(
+      <ApprovalSurfaceProvider value={{ notice } as unknown as ApprovalSurfaceContextValue}>
+        <ToolApprovalContent open request={{ ...request, homeFolderRefused: true }} conversationLabel="project session" onDecide={onDecide} />
+      </ApprovalSurfaceProvider>,
+    );
+    selectDecision("deny-always");
+    fireEvent.click(screen.getByTestId(TEST_IDS.denyButton));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("deny-once"));
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledWith(t("toolApprovalDialog.homeFolderRefusedDeniedOnce"));
   });
 });

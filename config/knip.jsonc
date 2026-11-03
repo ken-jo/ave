@@ -76,6 +76,8 @@
         "tools/mxc-probes/shell-ui.mjs",
         "tools/mxc-probes/ancestor-exposure.mjs",
         "tools/mxc-probes/egress-policy.mjs",
+        "tools/mxc-probes/holder-mcp-stdio.mjs",
+        "tools/mxc-probes/holder-hook-json.mjs",
         // Plugin modules the host-protocol golden harness hands the child runtime
         // BY PATH, which imports them through `importPluginFactory` as it imports
         // an installed plugin's entry — nothing names them in an import.
@@ -107,7 +109,10 @@
         "src/core/model-catalog/__tests__/fixtures/refresh-process.ts",
         // The conversation turn the SIGKILL durability test runs in its own
         // process and kills mid-stream; spawned BY PATH.
-        "src/engine/__tests__/fixtures/mid-stream-writer.ts"
+        "src/engine/__tests__/fixtures/mid-stream-writer.ts",
+        // The srt-win exit-order test runs it as a separate process so its
+        // exit handlers fire for real; spawned BY PATH.
+        "src/permissions/__tests__/fixtures/srt-win-exit-order-child.ts"
       ]
     },
     "web": {

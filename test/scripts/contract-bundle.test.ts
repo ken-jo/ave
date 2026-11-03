@@ -19,6 +19,7 @@ const BUNDLE_FILES = [
   "public-contract.ts",
   "plugin-manifest.schema.json",
   "protocol.schema.json",
+  "worker-control.schema.json",
   "marketplace-check.js",
   "agent-plugin-components.js",
 ];
@@ -96,7 +97,8 @@ describe("build-contract-bundle", () => {
     const sources: Record<string, string> = {
       "public-contract.ts": "src/plugins/public-contract.ts",
       "plugin-manifest.schema.json": "schemas/plugin-manifest.schema.json",
-      "protocol.schema.json": "schemas/plugin-host-protocol/4/protocol.schema.json",
+      "protocol.schema.json": "schemas/plugin-host-protocol/5/protocol.schema.json",
+      "worker-control.schema.json": "schemas/worker-stdio-control/1/worker-control.schema.json",
     };
     for (const [name, path] of Object.entries(sources)) {
       const committed = spawnSync("git", ["show", `HEAD:${path}`], { cwd: root, maxBuffer: 64 * 1024 * 1024 }).stdout;

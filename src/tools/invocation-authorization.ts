@@ -38,6 +38,7 @@ import type { ApprovalPurposeSuggestion } from "../shared/permission-review-stat
 import { t } from "../i18n/index.js";
 import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import { createLogger } from "../lib/logger.js";
+import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import {
   hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import {
@@ -1192,7 +1193,14 @@ export async function authorizeToolInvocation(
           ) {
             const pattern =
               approvalCacheKey ?? decision.rememberPattern ?? toolUse.name;
-            await services.permissionManager.addAlwaysDeniedPersist(pattern);
+            try {
+              await services.permissionManager.addAlwaysDeniedPersist(pattern);
+            } catch (error) {
+              // The rule store refuses writes while boot refuses the home folder. This call is denied; a legacy pattern's deny was
+              // already added in memory and lasts this session, while a rules-language deny is not kept.
+              if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
+              log.warn(`deny-always for ${toolUse.name} was not saved; it lasts at most this session: ${error.message}`);
+            }
           }
           const hostFailure = approvalFailureOutcome(
             decision, toolUse.name, permissionResult,

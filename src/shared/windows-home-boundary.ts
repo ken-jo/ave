@@ -1,16 +1,74 @@
-import { isOwnerOnlyDacl, mapWindowsGenericRights, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
+import { isOwnerOnlyDacl, mapWindowsGenericRights, windowsGrantingRules, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 
 export const WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS = 0x1200a9;
 
-/** Root traversal may be shared; all mutating rights remain exclusive to the owner. */
+/**
+ * A foreign root entry Ave accepts (with a diagnostic): an allow of read-only rights that applies to the root alone. Traversal into the
+ * home may be shared; an inheritable entry (OI or CI) of any rights flows into every unprotected child (workspace, logs, plugin data),
+ * so it is an extra principal. All mutating rights remain exclusive to the owner.
+ */
+export function isWindowsHomeRootForeignTraversal(rule: { accessControlType: number; fileSystemRights: number; inheritanceFlags: number }): boolean {
+  return rule.accessControlType === 0 && rule.inheritanceFlags === 0
+    && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0;
+}
+
+/** Besides the user, the principals that may write to the workspace: SYSTEM and Administrators (lead decision 2026-11-02). */
+export const WINDOWS_WORKSPACE_TRUSTED_WRITERS: ReadonlySet<string> = new Set(["S-1-5-18", "S-1-5-32-544"]);
+
+/**
+ * The workspace is the cwd, the default workspace root and the in-project auto-write scope, so any other principal that can write to
+ * it, through an explicit or an inherited allow, is an extra principal there. A foreign read-only allow is reported, not refused.
+ */
+export function isWindowsWorkspaceForeignWriter(rule: { sid: string; accessControlType: number; fileSystemRights: number }, userSid: string): boolean {
+  return rule.sid !== userSid && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid) && rule.accessControlType === 0
+    && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) !== 0;
+}
+
 export function isWindowsHomeRootSafe(facts: WindowsDaclFacts): boolean {
   if (!facts.dacl?.protected) return false;
-  const rules = windowsOwnerRules(facts.dacl);
+  // Deny entries (srt-win's FILE_DELETE_CHILD deny for its sandbox account among them) remove rights and never grant any.
+  const rules = windowsGrantingRules(windowsOwnerRules(facts.dacl));
   return isOwnerOnlyDacl({ ownerSid: facts.dacl.owner, elevated: facts.elevated,
     rules: rules.filter(rule => rule.sid === facts.currentUserSid) }, facts.currentUserSid)
-    && rules.every(rule => rule.sid === facts.currentUserSid || (rule.accessControlType === 0
-      && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0));
+    && rules.every(rule => rule.sid === facts.currentUserSid || isWindowsHomeRootForeignTraversal(rule));
 }
+
+/**
+ * Mirrors HomeDirectoryDacl.RepairInheritedRoot: the only root shape Ave repairs, the one its own plain mkdir produced before the
+ * protection helper created homes. The native helper re-checks it on the pinned handle it repairs through; this decides whether to ask.
+ */
+const ROOT_REPAIR_REMOVABLE = new Set(["S-1-5-18", "S-1-5-32-544"]);
+
+export function isWindowsHomeRootRepairable(facts: WindowsDaclFacts): boolean {
+  const dacl = facts.dacl;
+  if (facts.exists !== true || !facts.directory || facts.reparseTag !== 0 || (facts.attributes & 0x400) !== 0) return false;
+  if (!dacl || dacl.nullDacl) return false;
+  // Owned by the token user (an Administrators-owned root never qualifies, elevated or not), and never a protected DACL:
+  // a protected root, safe or not, is left exactly as it is.
+  if (dacl.owner !== facts.currentUserSid || dacl.protected) return false;
+  let userEntry = false;
+  for (const ace of dacl.aces) {
+    const own = ace.sid === facts.currentUserSid;
+    const inherited = (ace.flags & 0x10) !== 0;
+    if (!inherited && (!own || ace.type !== 0)) return false;
+    // The repair may drop only inherited SYSTEM and Administrators entries (owner decision 2026-11-02); any other inherited
+    // principal (Users, Authenticated Users, Everyone, CREATOR OWNER, a domain group, another user) is refused with the command.
+    if (!own && (ace.sid === null || !ROOT_REPAIR_REMOVABLE.has(ace.sid))) return false;
+    if (own) userEntry = true;
+  }
+  return userEntry;
+}
+
+/** Host-managed executables (uv, Python installs, venvs, the uv cache). A protected boundary that Repair never copies into: a
+ * nonconforming one is set aside and created empty, and its contents are rebuilt on demand. Defined here, beside the Repair source
+ * that reads it, and re-exported by ave-home.ts. */
+export const AVE_HOME_RUNTIME_DIRECTORY = "runtime";
+
+/** Names the Repair copy and the commit read; ave-home.ts re-exports the first two under their `config/` names. */
+export const AVE_HOME_TRUST_MANIFEST_NAME = ".ave-trust-manifest.json";
+export const AVE_HOME_CONFIGURATION_SOURCES_NAME = ".ave-config-sources.json";
+/** The diagnostic prefix of a commit that found user files in an uncommitted `config/`: the home is refused for recovery. */
+export const AVE_HOME_CONFIGURATION_RECOVERY = "Configuration requires recovery";
 
 export const WINDOWS_HOME_BOUNDARY_SOURCE = `using System;
 using System.ComponentModel;
@@ -76,7 +134,7 @@ public static class HomeDirectoryDacl {
       return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly, readOnly ? 7u : 3u);
     }
   }
-  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u) {
+  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u, uint access = 0u) {
     if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
     IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
     IntPtr memory = IntPtr.Zero;
@@ -89,7 +147,7 @@ public static class HomeDirectoryDacl {
       var attributes = new ObjectAttributes { Length = (uint)Marshal.SizeOf(typeof(ObjectAttributes)), Root = parent.DangerousGetHandle(), Name = memory, Attributes = noReparse ? 0x1040u : 0x40u, Descriptor = security.AddrOfPinnedObject() };
       SafeFileHandle handle;
       IoStatus io;
-      int status = NtCreateFile(out handle, readOnly ? 0x00120089u : 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, share, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
+      int status = NtCreateFile(out handle, access != 0u ? access : readOnly ? 0x00120089u : 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, share, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
       if (status == unchecked((int)0xC0000034)) { if (handle != null) handle.Dispose(); return null; }
       if (status < 0) {
         if (handle != null) handle.Dispose();
@@ -132,22 +190,30 @@ public static class HomeDirectoryDacl {
     string owner = security.GetOwner(typeof(SecurityIdentifier)).Value;
     return owner == user.Value || (elevated && owner == "S-1-5-32-544");
   }
+  // A deny entry never grants access (srt-win confines its sandbox account with them), so both shapes evaluate allow entries alone.
   public static bool OwnerOnly(DirectorySecurity security, SecurityIdentifier user, bool elevated) {
-    var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
-    if (!OwnerValid(security, user, elevated) || !security.AreAccessRulesProtected || rules.Count != 1) return false;
-    var rule = (FileSystemAccessRule)rules[0];
-    return rule.IdentityReference.Value == user.Value && rule.AccessControlType == AccessControlType.Allow &&
+    if (!OwnerValid(security, user, elevated) || !security.AreAccessRulesProtected) return false;
+    FileSystemAccessRule rule = null;
+    int granting = 0;
+    foreach (FileSystemAccessRule entry in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      if (entry.AccessControlType == AccessControlType.Deny) continue;
+      granting++;
+      rule = entry;
+    }
+    return granting == 1 && rule.IdentityReference.Value == user.Value && rule.AccessControlType == AccessControlType.Allow &&
       (int)rule.FileSystemRights == 2032127 && (int)rule.InheritanceFlags == 3 && (int)rule.PropagationFlags == 0 && !rule.IsInherited;
   }
   public static bool RootSafe(DirectorySecurity security, SecurityIdentifier user, bool elevated, int readMask) {
     if (!OwnerValid(security, user, elevated) || !security.AreAccessRulesProtected) return false;
     int ownRules = 0;
     foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      if (rule.AccessControlType == AccessControlType.Deny) continue;
       if (rule.IdentityReference.Value == user.Value) {
         ownRules++;
         if (rule.AccessControlType != AccessControlType.Allow || (int)rule.FileSystemRights != 2032127 ||
           (int)rule.InheritanceFlags != 3 || (int)rule.PropagationFlags != 0 || rule.IsInherited) return false;
-      } else if (rule.AccessControlType != AccessControlType.Allow || (MapFileGenericRights((int)rule.FileSystemRights) & ~readMask) != 0) return false;
+      } else if (rule.AccessControlType != AccessControlType.Allow || (int)rule.InheritanceFlags != 0 ||
+        (MapFileGenericRights((int)rule.FileSystemRights) & ~readMask) != 0) return false;
     }
     return ownRules == 1;
   }
@@ -209,10 +275,37 @@ public static class HomeDirectoryDacl {
       return status >= 0;
     } finally { Marshal.FreeHGlobal(memory); }
   }
+  private static bool Named(string name, string expected) {
+    return String.Equals(name, expected, StringComparison.OrdinalIgnoreCase);
+  }
+  /**
+   * Remove one item below an anchor directory through handles only: every directory on the way is opened relative to its parent
+   * without following a reparse point, and the item itself is opened as the reparse point when it is one, so a link or junction
+   * is deleted as an entry and its target is never touched. Returns false when the item does not exist.
+   */
+  public static bool RemoveItem(string anchor, string[] segments, SecurityIdentifier user) {
+    if (segments == null || segments.Length == 0) throw new InvalidOperationException("Item path is invalid");
+    SafeFileHandle current = OpenHome(anchor, user, false);
+    try {
+      for (int index = 0; index < segments.Length - 1; index++) {
+        SafeFileHandle next = OpenRelative(current, segments[index], user, 1, true, true, false);
+        current.Dispose();
+        current = next;
+        if (current == null) return false;
+      }
+      using (var item = OpenRelative(current, segments[segments.Length - 1], user, 1, false, false, false)) {
+        if (item == null) return false;
+        if (!Delete(item, user)) throw new InvalidOperationException("Item removal failed");
+        return true;
+      }
+    } finally { if (current != null) current.Dispose(); }
+  }
   private static int Copy(SafeFileHandle source, SafeFileHandle destination, SecurityIdentifier user) {
     int skipped = 0;
     foreach (string name in RepairEntries(source)) {
-      if (name == RepairMarker || name == NoticeMarker || name == ConfigurationMarker) continue;
+      // Trust-state files never travel with a copy: each commit writes them fresh (R3).
+      // Compared without case: in a case-sensitive directory a differently cased copy must not slip through either.
+      if (Named(name, RepairMarker) || Named(name, NoticeMarker) || Named(name, ConfigurationMarker) || Named(name, "${AVE_HOME_TRUST_MANIFEST_NAME}") || Named(name, "${AVE_HOME_CONFIGURATION_SOURCES_NAME}")) continue;
       using (var child = OpenRelative(source, name, user, 1, false, false, false)) {
         if (child == null) throw new InvalidOperationException("Repair entry disappeared during copy");
         long attributes = Attributes(child);
@@ -291,108 +384,50 @@ public static class HomeDirectoryDacl {
     }
     return diagnostics.ToArray();
   }
-  public static string[] MigrateConfiguration(string path, string directory, string[] names, SecurityIdentifier user, bool elevated, string[] expectedHashes) {
+  // Commit a fresh configuration: write each absent document, refuse (and write nothing) when a document already present differs
+  // from what this commit would write, then write the trust-state files fresh and the marker last. Root files are never copied.
+  public static string[] CommitConfiguration(string path, string directory, string[] names, SecurityIdentifier user, bool elevated, string[] contents, string manifest) {
     var diagnostics = new System.Collections.Generic.List<string>();
     using (var home = OpenHome(path, user, false)) {
       if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
       using (var destination = OpenRelative(home, directory, user, 1, true, true, true)) {
         if (destination == null || !OwnerOnly(Read(destination), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
-        var retained = new System.Collections.Generic.List<IDisposable>();
-        var deletions = new System.Collections.Generic.Dictionary<SafeFileHandle, string>();
-        bool refused = false;
-        try {
-          for (int index = 0; index < names.Length; index++) {
-          string name = names[index];
-          string oldPath = System.IO.Path.Combine(path, name);
-          string newPath = System.IO.Path.Combine(path, directory, name);
-          {
-            SafeFileHandle source;
-            try { source = OpenRelative(home, name, user, 1, false, false, false, false, 1); }
-            catch (Exception) { diagnostics.Add("Configuration source could not be read safely: " + oldPath); refused = true; continue; }
-            if (source == null) {
-              if (!String.IsNullOrEmpty(expectedHashes[index])) { diagnostics.Add("Configuration source disappeared: " + oldPath); refused = true; }
-              continue;
-            }
-            retained.Add(source);
-            if ((Attributes(source) & 0x410) != 0) {
-              diagnostics.Add("Skipped non-regular configuration source \\"" + oldPath + "\\" for \\"" + newPath + "\\"");
-              refused = true;
-              continue;
-            }
-            string staged = "." + name + ".migration-" + Guid.NewGuid().ToString("N");
-            var input = new System.IO.FileStream(source, System.IO.FileAccess.Read);
-            retained.Add(input);
-            byte[] contents;
-            using (var bytes = new System.IO.MemoryStream()) { input.CopyTo(bytes); contents = bytes.ToArray(); }
-            string hash;
-            using (var digest = System.Security.Cryptography.SHA256.Create()) { hash = Convert.ToBase64String(digest.ComputeHash(contents)); }
-            if (hash != expectedHashes[index]) { diagnostics.Add("Configuration source changed after validation: " + oldPath); refused = true; continue; }
-            using (var copy = OpenRelative(destination, staged, user, 2, false, true, false))
-            using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
-              output.Write(contents, 0, contents.Length);
-              output.Flush(true);
-              Rename(copy, destination, name, true);
-              deletions.Add(source, oldPath);
+        var absent = new bool[names.Length];
+        for (int index = 0; index < names.Length; index++) {
+          byte[] expected = System.Text.Encoding.UTF8.GetBytes(contents[index]);
+          using (var existing = OpenRelative(destination, names[index], user, 1, false, true, false, true, 1)) {
+            if (existing == null) { absent[index] = true; continue; }
+            if ((Attributes(existing) & 0x410) != 0) { diagnostics.Add("${AVE_HOME_CONFIGURATION_RECOVERY}: " + System.IO.Path.Combine(path, directory, names[index])); continue; }
+            using (var input = new System.IO.FileStream(existing, System.IO.FileAccess.Read))
+            using (var bytes = new System.IO.MemoryStream()) {
+              input.CopyTo(bytes);
+              byte[] previous = bytes.ToArray();
+              bool identical = previous.Length == expected.Length;
+              for (int offset = 0; identical && offset < previous.Length; offset++) identical = previous[offset] == expected[offset];
+              if (!identical) diagnostics.Add("${AVE_HOME_CONFIGURATION_RECOVERY}: " + System.IO.Path.Combine(path, directory, names[index]));
             }
           }
-          }
-          if (refused) return diagnostics.ToArray();
-          for (int index = 0; index < names.Length; index++) {
-            if (!String.IsNullOrEmpty(expectedHashes[index])) continue;
-            string text = names[index] == "settings.json" ? "{}\\n" : names[index] == "policy.json"
-              ? "{\\"version\\":1,\\"requireExplicitApproval\\":true,\\"managed\\":false}\\n"
-              : "{\\"version\\":1,\\"entries\\":{}}\\n";
-            byte[] contents = System.Text.Encoding.UTF8.GetBytes(text);
-            using (var existing = OpenRelative(destination, names[index], user, 1, false, true, false, true, 1)) {
-              if (existing != null) {
-                if ((Attributes(existing) & 0x410) != 0) { diagnostics.Add("Configuration without a root source is not a regular file: " + names[index]); return diagnostics.ToArray(); }
-                using (var input = new System.IO.FileStream(existing, System.IO.FileAccess.Read))
-                using (var bytes = new System.IO.MemoryStream()) {
-                  input.CopyTo(bytes);
-                  byte[] previous = bytes.ToArray();
-                  bool identical = previous.Length == contents.Length;
-                  for (int offset = 0; identical && offset < previous.Length; offset++) identical = previous[offset] == contents[offset];
-                  if (!identical) { diagnostics.Add("Configuration without a root source requires recovery: " + names[index]); return diagnostics.ToArray(); }
-                }
-                continue;
-              }
-            }
-            string staged = "." + names[index] + ".migration-" + Guid.NewGuid().ToString("N");
-            using (var copy = OpenRelative(destination, staged, user, 2, false, true, false))
-            using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
-              output.Write(contents, 0, contents.Length);
-              output.Flush(true);
-              Rename(copy, destination, names[index], true);
-            }
-          }
-          string hashRecord = "{";
-          for (int index = 0; index < names.Length; index++) {
-            if (String.IsNullOrEmpty(expectedHashes[index])) continue;
-            if (hashRecord.Length > 1) hashRecord += ",";
-            string quote = ((char)34).ToString();
-            hashRecord += quote + names[index] + quote + ":" + quote + expectedHashes[index] + quote;
-          }
-          byte[] hashBytes = System.Text.Encoding.UTF8.GetBytes(hashRecord + "}");
-          string stagedHashes = ".ave-config-sources-" + Guid.NewGuid().ToString("N");
-          using (var record = OpenRelative(destination, stagedHashes, user, 2, false, true, false))
-          using (var output = new System.IO.FileStream(record, System.IO.FileAccess.Write)) {
-            output.Write(hashBytes, 0, hashBytes.Length);
-            output.Flush(true);
-            Rename(record, destination, ".ave-config-sources.json", true);
-          }
-          EnsureMarker(destination, ConfigurationMarker, user);
-          if (!HasMarker(destination, ConfigurationMarker, user)) throw new InvalidOperationException("Configuration migration marker is invalid");
-          foreach (var deletion in deletions) {
-            try {
-              if (!Delete(deletion.Key, user)) diagnostics.Add("Legacy configuration retained after copy: " + deletion.Value);
-            } catch (Exception error) { diagnostics.Add("Legacy configuration cleanup failed: " + deletion.Value + ": " + error.Message); }
-          }
-        } finally {
-          for (int index = retained.Count - 1; index >= 0; index--) retained[index].Dispose();
         }
+        if (diagnostics.Count > 0) return diagnostics.ToArray();
+        for (int index = 0; index < names.Length; index++) {
+          if (absent[index]) WriteStaged(destination, names[index], System.Text.Encoding.UTF8.GetBytes(contents[index]), user);
+        }
+        WriteStaged(destination, "${AVE_HOME_CONFIGURATION_SOURCES_NAME}", System.Text.Encoding.UTF8.GetBytes("{}"), user);
+        WriteStaged(destination, "${AVE_HOME_TRUST_MANIFEST_NAME}", System.Text.Encoding.UTF8.GetBytes(manifest), user);
+        EnsureMarker(destination, ConfigurationMarker, user);
+        if (!HasMarker(destination, ConfigurationMarker, user)) throw new InvalidOperationException("Configuration migration marker is invalid");
       }
     }
     return diagnostics.ToArray();
+  }
+  private static void WriteStaged(SafeFileHandle destination, string name, byte[] contents, SecurityIdentifier user) {
+    string staged = "." + name + ".migration-" + Guid.NewGuid().ToString("N");
+    using (var copy = OpenRelative(destination, staged, user, 2, false, true, false))
+    using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
+      output.Write(contents, 0, contents.Length);
+      output.Flush(true);
+      Rename(copy, destination, name, true);
+    }
   }
   [DllImport("advapi32.dll", SetLastError = true)]
   private static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint info, byte[] owner, IntPtr group, byte[] dacl, IntPtr sacl);
@@ -412,6 +447,100 @@ public static class HomeDirectoryDacl {
       if (result != 0) throw new Win32Exception((int)result);
       if (!OwnerOnly(Read(handle), user, false)) throw new InvalidOperationException("Runtime ownership claim protection is unverified");
     }
+  }
+  // The one root shape Ave repairs: what a plain mkdir under a user profile produced before the protection helper created the home.
+  // Owned by the current user (an Administrators-owned root never qualifies, even elevated), not a link, an unprotected DACL whose
+  // every non-owner entry is inherited, and an entry for the user. Checked and repaired on the pinned home handle, then read back
+  // through RootSafe and OwnerOnly unchanged. Any other shape is left exactly as it is and refused by the caller.
+  public static bool RootRepairable(DirectorySecurity security, SecurityIdentifier user) {
+    if (security.GetOwner(typeof(SecurityIdentifier)).Value != user.Value) return false;
+    if (security.AreAccessRulesProtected) return false;
+    bool userEntry = false;
+    foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      bool own = rule.IdentityReference.Value == user.Value;
+      if (!rule.IsInherited && (!own || rule.AccessControlType != AccessControlType.Allow)) return false;
+      if (!own && rule.IdentityReference.Value != "S-1-5-18" && rule.IdentityReference.Value != "S-1-5-32-544") return false;
+      if (own) userEntry = true;
+    }
+    return userEntry;
+  }
+  public static bool RepairInheritedRoot(SafeFileHandle home, SecurityIdentifier user, bool elevated, int readMask) {
+    // Read() refuses a link or a non-directory on this same handle.
+    if (!RootRepairable(Read(home), user)) return false;
+    // Only the root's own DACL is written. SetSecurityInfo also propagated into existing children, and native run 4 showed that
+    // propagation turning the workspace's stale inherited SYSTEM and Administrators entries into explicit ones (before any other
+    // writer ran). NtSetSecurityObject computes no inheritance and reaches no child; the per-boot workspace check rewrites it.
+    var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected |
+      ControlFlags.DiscretionaryAclAutoInherited | ControlFlags.SelfRelative, null, null, null,
+      new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")").DiscretionaryAcl);
+    byte[] bytes = new byte[descriptor.BinaryLength];
+    descriptor.GetBinaryForm(bytes, 0);
+    Check(NtSetSecurityObject(home, 4u, bytes), "Home root repair failed");
+    var repaired = Read(home);
+    if (!RootSafe(repaired, user, elevated, readMask) || !OwnerOnly(repaired, user, elevated)) throw new InvalidOperationException("Home root repair protection is unverified");
+    return true;
+  }
+  [DllImport("ntdll.dll")]
+  private static extern int NtSetSecurityObject(SafeFileHandle handle, uint info, byte[] descriptor);
+  // The root repair writes only the root (NtSetSecurityObject, no propagation), so a workspace made under the older, unprotected root
+  // keeps that root's stale inherited entries until it is rewritten here. Every boot whose root passes RootSafe checks this one
+  // directory, the cwd and default workspace root: when its inherited entries are anything but the single entry a RootSafe root
+  // passes down (the user's FullControl, object and container inherit), it is rewritten as its explicit entries in order followed
+  // by that entry. NtSetSecurityObject computes no inheritance, so the result is exactly this, and it is read back.
+  // Running every boot, not only in the boot that repaired the root, is what retries a boot whose rewrite failed.
+  // The workspace is the app's cwd, so it is opened for exactly READ_CONTROL, WRITE_DAC, FILE_READ_ATTRIBUTES and SYNCHRONIZE
+  // with full sharing: a request that could include DELETE is a sharing violation against the process's own cwd handle (CI run
+  // 41469456420). A link, a non-directory, a protected DACL or a foreign owner is "left"; one that cannot be opened or read is
+  // "unavailable", which the boot reports. Other children keep their stale SYSTEM and Administrators entries.
+  public static string ReinheritWorkspace(SafeFileHandle home, SecurityIdentifier user) {
+    SafeFileHandle handle;
+    try { handle = OpenRelative(home, "workspace", user, 1, true, true, false, false, 7u, 0x00160080u); }
+    catch (InvalidOperationException) { return "left"; }
+    catch (Win32Exception) { return "unavailable"; }
+    if (handle == null) return "absent";
+    using (handle) {
+      RawSecurityDescriptor raw;
+      try { raw = new RawSecurityDescriptor(ReadDescriptor(handle), 0); }
+      catch (Win32Exception) { return "unavailable"; }
+      if ((raw.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0 || raw.DiscretionaryAcl == null) return "left";
+      if (raw.Owner == null || raw.Owner.Value != user.Value) return "left";
+      if (!StaleInheritance(raw.DiscretionaryAcl, user)) return "clean";
+      var acl = new RawAcl(GenericAcl.AclRevision, raw.DiscretionaryAcl.Count + 1);
+      int index = 0;
+      // Explicit entries are kept in order, and so is an inherited deny (srt-win's sandbox deny on the root flows here): a deny is
+      // never stale, and dropping it would only widen what the sandbox account can do in the workspace.
+      foreach (GenericAce ace in raw.DiscretionaryAcl) {
+        if ((ace.AceFlags & AceFlags.Inherited) == 0 || InheritedDeny(ace)) acl.InsertAce(index++, ace.Copy());
+      }
+      acl.InsertAce(index, new CommonAce(AceFlags.ObjectInherit | AceFlags.ContainerInherit | AceFlags.Inherited,
+        AceQualifier.AccessAllowed, 0x1f01ff, user, false, null));
+      var descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclAutoInherited |
+        ControlFlags.SelfRelative, null, null, null, acl);
+      byte[] bytes = new byte[descriptor.BinaryLength];
+      descriptor.GetBinaryForm(bytes, 0);
+      Check(NtSetSecurityObject(handle, 4u, bytes), "Workspace inheritance reset failed");
+      if (StaleInheritance(new RawSecurityDescriptor(ReadDescriptor(handle), 0).DiscretionaryAcl, user)) {
+        throw new InvalidOperationException("Workspace inheritance reset is unverified");
+      }
+      return "rewritten";
+    }
+  }
+  private static bool InheritedDeny(GenericAce ace) {
+    var common = ace as CommonAce;
+    return (ace.AceFlags & AceFlags.Inherited) != 0 && common != null && common.AceQualifier == AceQualifier.AccessDenied;
+  }
+  // True unless the only inherited allow entry is the one a RootSafe root passes down to a child directory. An inherited deny is
+  // not stale: RootSafe evaluates allow entries alone, so a safe root may pass one down.
+  public static bool StaleInheritance(RawAcl acl, SecurityIdentifier user) {
+    int inherited = 0;
+    foreach (GenericAce ace in acl) {
+      if ((ace.AceFlags & AceFlags.Inherited) == 0 || InheritedDeny(ace)) continue;
+      inherited++;
+      var common = ace as CommonAce;
+      if (common == null || common.AceQualifier != AceQualifier.AccessAllowed || common.SecurityIdentifier.Value != user.Value ||
+        common.AccessMask != 0x1f01ff || ace.AceFlags != (AceFlags.ObjectInherit | AceFlags.ContainerInherit | AceFlags.Inherited)) return true;
+    }
+    return inherited != 1;
   }
   public static int Repair(SafeFileHandle home, string name, SecurityIdentifier user, bool elevated, string path = "") {
     CleanupWarnings.Clear();
@@ -453,8 +582,10 @@ public static class HomeDirectoryDacl {
         live = OpenRelative(home, name, user, 2, true, true, true);
       }
       EnsureMarker(live, RepairMarker, user);
+      // The runtime boundary holds executables another principal may have changed while it was unprotected. Copying would launder
+      // them into the protected directory, so it starts empty and its contents are rebuilt; the aside is deleted below.
       step = "copy";
-      int skipped = Copy(aside, live, user);
+      int skipped = name == "${AVE_HOME_RUNTIME_DIRECTORY}" ? 0 : Copy(aside, live, user);
       step = "verify";
       if (!OwnerOnly(Read(live), user, elevated)) throw new InvalidOperationException("Fresh boundary protection failed verification");
       EnsureMarker(live, NoticeMarker, user);

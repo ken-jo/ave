@@ -3,7 +3,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import { createSerialQueue, type SerialQueue } from "../lib/with-file-lock.js";
 import { withDirectoryMutationObserver } from "../lib/directory-mutation-observer.js";
-import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_TRUST_MANIFEST, AveHomeConfigurationRefusedWriteError, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationAuthorityAbsent, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { isWindowsHomeRootSafe } from "./windows-home-boundary.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts, type WindowsPathFacts } from "./windows-path-facts.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandles } from "./windows-configuration-handles.js";
@@ -50,15 +51,19 @@ function writeHome(path: string): string {
   return configurationHomeForFile(path) ?? dirname(resolve(path));
 }
 
-function verifyWriteBoundary(home: string): void {
-  if (isAveHomeConfigurationRefused(home)) return;
+function verifyWriteBoundary(home: string, path: string): void {
+  // A refused home's unverified root reads as absent, so a write there would rewrite the user's file from nothing: refuse it.
+  // A write into its committed `config/` still verifies that directory's own DACL.
+  const refused = isAveHomeConfigurationRefused(home);
+  if (refused && isAveHomeConfigurationAuthorityAbsent(home)) throw new AveHomeConfigurationRefusedWriteError(resolveConfigurationFile(path));
   if (process.platform === "win32") {
     try { windowsReadBoundary(resolveConfigurationFile(join(home, "settings.json")), { present: false }).handles?.close(); }
     catch (error) {
       if (error instanceof AveHomeConfigurationUntrustedError) throw error;
       throw new AveHomeConfigurationUntrustedError(home, (error as Error).message);
     }
-  } else verifyAveHomeConfiguration(home, "boundary");
+  } else if (!refused) verifyAveHomeConfiguration(home, "boundary");
+  if (refused) return;
   if (homeKey(home) === homeKey(aveHome())) {
     if (!configurationEntryExists(join(home, "config"))) throw new AveHomeConfigurationUntrustedError(home, "Configuration directory is missing");
   }
@@ -74,7 +79,7 @@ export function tryWithAveHomeConfigurationWrite(path: string, callback: (path: 
   if (!isAveHomeConfigurationOwner()) return false;
   const home = writeHome(path);
   if (busyHomes.has(homeKey(home))) return false;
-  verifyWriteBoundary(home);
+  verifyWriteBoundary(home, path);
   let active = true;
   try {
     withDirectoryMutationObserver((directory) => active ? observeOwnerDirectoryMutation(directory) : () => {},
@@ -92,7 +97,7 @@ export async function withAveHomeConfigurationWrite<T>(path: string, callback: (
     if (queue === undefined) { queue = createSerialQueue(); ownership.queues.set(key, queue); }
     return await queue(async () => {
       assertOwner();
-      verifyWriteBoundary(home);
+      verifyWriteBoundary(home, path);
       let active = true;
       try {
         return await withDirectoryMutationObserver((directory) => active ? observeOwnerDirectoryMutation(directory) : () => {},
@@ -103,6 +108,45 @@ export async function withAveHomeConfigurationWrite<T>(path: string, callback: (
     const remaining = busyHomes.get(key)! - 1;
     if (remaining === 0) busyHomes.delete(key); else busyHomes.set(key, remaining);
   }
+}
+
+/** The trust manifest's path in a home: always inside `config/`, never at the root. */
+export function aveHomeTrustManifestPath(home: string): string {
+  return join(resolve(home), AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_TRUST_MANIFEST);
+}
+
+/**
+ * The trust manifest's bytes, read on the verified `config/` boundary; undefined when the home is refused, has not committed
+ * `config/` (a manifest in an uncommitted `config/` is never adopted, R3), or has no manifest yet.
+ */
+export function readAveHomeTrustManifestBytes(home: string): Buffer | undefined {
+  const path = aveHomeTrustManifestPath(home);
+  try {
+    if (isAveHomeConfigurationRefused(home)) return undefined;
+    if (aveHomeConfigurationDirectory(home) !== dirname(path)) return undefined;
+    if (!configurationEntryExists(path)) return undefined;
+    return readOpenedFile(path, { present: false });
+  } catch (error) {
+    if (error instanceof AveHomeConfigurationUntrustedError) throw error;
+    throw new AveHomeConfigurationUntrustedError(path, (error as Error).message);
+  }
+}
+
+/**
+ * Replace the trust manifest. Only the host-instance lock owner writes it, only into a committed and verified `config/`, and the
+ * write is synchronous so a recorded input write can stage its intent before its own bytes land.
+ */
+export function writeAveHomeTrustManifestSync(home: string, content: string): void {
+  assertOwner();
+  const path = aveHomeTrustManifestPath(home);
+  if (isAveHomeConfigurationRefused(home)) throw new AveHomeConfigurationRefusedWriteError(path, "record the review of your Ave folder");
+  if (aveHomeConfigurationDirectory(home) !== dirname(path)) throw new AveHomeConfigurationUntrustedError(path, "Configuration directory is not committed");
+  verifyWriteBoundary(home, path);
+  let active = true;
+  try {
+    withDirectoryMutationObserver((directory) => active ? observeOwnerDirectoryMutation(directory) : () => {},
+      () => writeUtf8FileAtomicSync(path, content, 0o600));
+  } finally { active = false; }
 }
 
 interface WindowsReadBoundary {
@@ -154,19 +198,44 @@ function windowsBoundaryIdentity(boundary: WindowsReadBoundary): string {
   return windowsBoundarySnapshot(boundary, pinWindowsPaths([boundary.root, boundary.directory])).identity;
 }
 
+/** The object keys of a boundary identity: each certified directory without its ChangeTime, then the ancestors. */
+function windowsBoundaryObjects(boundary: Pick<WindowsReadBoundary, "identity" | "protectedDirectory">): string {
+  const parts = boundary.identity.split("|");
+  const directories = boundary.protectedDirectory ? 2 : 1;
+  return parts.map((part, index) => index < directories ? part.slice(0, part.lastIndexOf(":")) : part).join("|");
+}
+
+/**
+ * A certificate goes stale whenever a certified directory's ChangeTime moves, and that is not only a foreign change: the root's
+ * moves when any entry is created in it (a first boot creates logs/, plugins/, workspace/ after configuration is first read), and
+ * when srt-win stamps its sandbox deny on it. A read re-verifies a stale certificate from fresh DACL facts; a write does the same,
+ * and refuses only what that verification refuses, or a boundary whose directories are no longer the certified objects.
+ */
+function reverifyStaleBoundary(stale: WindowsReadBoundary, directory: string): WindowsReadBoundary {
+  windowsReadCertificates.delete(stale.key);
+  let fresh: WindowsReadBoundary;
+  try { fresh = windowsReadBoundary(stale.path, { present: false }); }
+  catch (error) {
+    throw new AveHomeConfigurationUntrustedError(directory, `Configuration boundary changed before owner mutation: ${(error as Error).message}`);
+  }
+  fresh.handles?.close();
+  // The key carries the verification mode: a home refused since the certificate would verify without RootSafe.
+  if (fresh.key !== stale.key || windowsBoundaryObjects(fresh) !== windowsBoundaryObjects(stale)) {
+    windowsReadCertificates.delete(fresh.key);
+    throw new AveHomeConfigurationUntrustedError(directory, "Configuration boundary changed before owner mutation");
+  }
+  return fresh;
+}
+
 function observeOwnerDirectoryMutation(directory: string): () => void {
   if (process.platform !== "win32") return () => {};
   assertOwner();
   const key = homeKey(directory);
   const affected = [...windowsReadCertificates.values()].filter((boundary) =>
     homeKey(boundary.root) === key || (boundary.protectedDirectory && homeKey(boundary.directory) === key));
-  const snapshots = affected.map((boundary) => {
-    const before = windowsBoundaryIdentity(boundary);
-    if (before !== boundary.identity) {
-      windowsReadCertificates.delete(boundary.key);
-      throw new AveHomeConfigurationUntrustedError(directory, "Configuration boundary changed before owner mutation");
-    }
-    return { boundary, before: before.split("|") };
+  const snapshots = affected.map((certified) => {
+    const boundary = windowsBoundaryIdentity(certified) === certified.identity ? certified : reverifyStaleBoundary(certified, directory);
+    return { boundary, before: boundary.identity.split("|") };
   });
   return () => {
     for (const { boundary, before } of snapshots) {
@@ -299,8 +368,38 @@ function readOpenedFile(path: string, seen: { present: boolean }): Buffer | unde
   }
 }
 
+/**
+ * The bytes of a home configuration file, or undefined when it is absent. A refused home that never committed `config/` has
+ * no verified boundary, so its root settings, policy and secrets read as absent whatever is on disk (R2 of the home content
+ * trust design); only `readAveHomeRestrictionSource` may look at those bytes.
+ */
 export function readAveHomeConfigurationFile(path: string): Buffer | undefined {
   const home = configurationHomeForFile(path);
+  try {
+    if (home !== undefined && isAveHomeConfigurationAuthorityAbsent(home)) return undefined;
+  } catch (error) {
+    if (error instanceof AveHomeConfigurationUntrustedError) throw error;
+    throw new AveHomeConfigurationUntrustedError(path, (error as Error).message);
+  }
+  return readConfigurationBytes(path, home);
+}
+
+/**
+ * The unverified root bytes behind a configuration file that reads as absent, for the closed restriction overlay alone: the
+ * caller may take only fields that make Ave stricter. Undefined when the file is trusted (read it normally), missing, or
+ * cannot be read safely: unreadable bytes restrict nothing and never stop the refused boot.
+ */
+export function readAveHomeRestrictionSource(path: string): Buffer | undefined {
+  const home = configurationHomeForFile(path);
+  try {
+    if (home === undefined || !isAveHomeConfigurationAuthorityAbsent(home)) return undefined;
+    return readConfigurationBytes(path, home);
+  } catch {
+    return undefined;
+  }
+}
+
+function readConfigurationBytes(path: string, home: string | undefined): Buffer | undefined {
   const seen = { present: false };
   try {
     for (let attempt = 0; attempt < 2; attempt++) {

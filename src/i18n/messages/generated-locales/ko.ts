@@ -35,8 +35,10 @@ import { ko as ko_be_mcpResourceAttachment } from "../generated/be_mcpResourceAt
 import { ko as ko_be_mcpResourceTools } from "../generated/be_mcpResourceTools.js";
 import { ko as ko_be_memoryManager } from "../generated/be_memoryManager.js";
 import { ko as ko_be_memoryWrite } from "../generated/be_memoryWrite.js";
+import { ko as ko_be_mxcExtensionErrors } from "../generated/be_mxcExtensionErrors.js";
 import { ko as ko_be_parentDirective } from "../generated/be_parentDirective.js";
 import { ko as ko_be_permissionModeApply } from "../generated/be_permissionModeApply.js";
+import { ko as ko_be_pluginChildTransport } from "../generated/be_pluginChildTransport.js";
 import { ko as ko_be_pluginExpansion } from "../generated/be_pluginExpansion.js";
 import { ko as ko_be_pluginRuntime } from "../generated/be_pluginRuntime.js";
 import { ko as ko_be_pluginUiHost } from "../generated/be_pluginUiHost.js";
@@ -52,6 +54,7 @@ import { ko as ko_be_routineEngine } from "../generated/be_routineEngine.js";
 import { ko as ko_be_routineSchedule } from "../generated/be_routineSchedule.js";
 import { ko as ko_be_runtimeIndex } from "../generated/be_runtimeIndex.js";
 import { ko as ko_be_sandboxCapability } from "../generated/be_sandboxCapability.js";
+import { ko as ko_be_scriptHookRunner } from "../generated/be_scriptHookRunner.js";
 import { ko as ko_be_sessionGoal } from "../generated/be_sessionGoal.js";
 import { ko as ko_be_sessionGoalRevival } from "../generated/be_sessionGoalRevival.js";
 import { ko as ko_be_sessionTasks } from "../generated/be_sessionTasks.js";
@@ -71,6 +74,7 @@ import { ko as ko_be_toolSearch } from "../generated/be_toolSearch.js";
 import { ko as ko_be_tools } from "../generated/be_tools.js";
 import { ko as ko_be_windowDomain } from "../generated/be_windowDomain.js";
 import { ko as ko_be_windowTitlebarShell } from "../generated/be_windowTitlebarShell.js";
+import { ko as ko_be_wrapBundledCommand } from "../generated/be_wrapBundledCommand.js";
 import { ko as ko_bootstrapStatusPill } from "../generated/bootstrapStatusPill.js";
 import { ko as ko_bottomActionRow } from "../generated/bottomActionRow.js";
 import { ko as ko_browserWorkspace } from "../generated/browserWorkspace.js";
@@ -222,8 +226,10 @@ export const koMessages: Record<string, string> = {
   ...ko_be_mcpResourceTools,
   ...ko_be_memoryManager,
   ...ko_be_memoryWrite,
+  ...ko_be_mxcExtensionErrors,
   ...ko_be_parentDirective,
   ...ko_be_permissionModeApply,
+  ...ko_be_pluginChildTransport,
   ...ko_be_pluginExpansion,
   ...ko_be_pluginRuntime,
   ...ko_be_pluginUiHost,
@@ -239,6 +245,7 @@ export const koMessages: Record<string, string> = {
   ...ko_be_routineSchedule,
   ...ko_be_runtimeIndex,
   ...ko_be_sandboxCapability,
+  ...ko_be_scriptHookRunner,
   ...ko_be_sessionGoal,
   ...ko_be_sessionGoalRevival,
   ...ko_be_sessionTasks,
@@ -258,6 +265,7 @@ export const koMessages: Record<string, string> = {
   ...ko_be_tools,
   ...ko_be_windowDomain,
   ...ko_be_windowTitlebarShell,
+  ...ko_be_wrapBundledCommand,
   ...ko_bootstrapStatusPill,
   ...ko_bottomActionRow,
   ...ko_browserWorkspace,

@@ -82,7 +82,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     vi.spyOn(manager, "initialize").mockImplementation(async next => { config = next; });
     vi.spyOn(manager, "getConfig").mockImplementation(() => config);
     vi.spyOn(manager, "updateConfig").mockImplementation(next => { config = next; });
-    vi.spyOn(manager, "reset").mockImplementation(async () => { config = undefined; });
+    vi.spyOn(manager, "reset").mockImplementation(async () => { config = undefined; return { windowsAclUnreleased: [] }; });
     return vi.spyOn(manager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["echo"], env: {} });
   }
 

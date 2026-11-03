@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import type { ResolvedMcpServer } from "../../resolve/mcp.js";
-import { McpInstaller, mcpInstallOrigins } from "../mcp-installer.js";
+import { assertInstalledMcpFilesIntact, McpInstaller, mcpInstallOrigins } from "../mcp-installer.js";
 import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
 import { hasMarketplaceInstallInFlight } from "../install-lifecycle.js";
 
@@ -128,6 +128,59 @@ describe("McpInstaller", () => {
       expect(await readFile(recordsPath(), "utf8")).toBe(before);
       expect([...manager.configs.values()]).toEqual(configs);
     }
+  });
+
+  it("launches installed package files only while they match the tree their install record holds", async () => {
+    await installer.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\necho v1\n") }), { switchSource: false });
+    const record = JSON.parse(await readFile(recordsPath(), "utf8")).servers[0];
+    expect(record.origin.filesTree).toMatch(/^[0-9a-f]{64}$/);
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).resolves.toBeUndefined();
+    // The host's own sandbox folder beside the files is allowed.
+    await mkdir(join(home, "mcp", "notes", "sandbox"), { recursive: true });
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).resolves.toBeUndefined();
+    const script = join(home, "mcp", "notes", "server", "run.sh");
+    await writeFile(script, "#!/bin/sh\necho planted\n");
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).rejects.toThrow(/changed after install/);
+    await writeFile(script, "#!/bin/sh\necho v1\n");
+    await writeFile(join(home, "mcp", "notes", "server", "extra.js"), "planted");
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).rejects.toThrow(/changed after install/);
+    await rm(join(home, "mcp", "notes", "server", "extra.js"));
+    await mkdir(join(home, "mcp", "notes", "node_modules"));
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).rejects.toThrow(/unexpected node_modules/);
+    await rm(join(home, "mcp", "notes", "node_modules"), { recursive: true });
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).resolves.toBeUndefined();
+  });
+
+  it("updates package files without refusing the connection made before the new record is written", async () => {
+    await installer.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\necho v1\n") }), { switchSource: false });
+    // The manager checks the files while it connects, inside addConfig, as McpManager.connectServer does.
+    const checked: string[] = [];
+    const add = manager.addConfig.bind(manager);
+    vi.spyOn(manager, "addConfig").mockImplementation(async (config) => {
+      await assertInstalledMcpFilesIntact(home, config.id);
+      checked.push(config.id);
+      return add(config);
+    });
+    await installer.install(resolved("2.0.0", { files: serverZip("#!/bin/sh\necho v2\n") }), { switchSource: false });
+    expect(checked).toEqual(["notes"]);
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).resolves.toBeUndefined();
+  });
+
+  it("refuses a record with package files but no tree, and ignores servers it did not install", async () => {
+    await installer.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\necho v1\n") }), { switchSource: false });
+    const file = JSON.parse(await readFile(recordsPath(), "utf8"));
+    delete file.servers[0].origin.filesTree;
+    await writeFile(recordsPath(), JSON.stringify(file));
+    await expect(assertInstalledMcpFilesIntact(home, "notes")).rejects.toThrow(/no file digest/);
+    await expect(assertInstalledMcpFilesIntact(home, "weather")).resolves.toBeUndefined();
+  });
+
+  it("names the damaged record file and the fix when the install records do not parse", async () => {
+    await installer.install(resolved("1.0.0", { files: serverZip("#!/bin/sh\necho v1\n") }), { switchSource: false });
+    await writeFile(recordsPath(), "{not json");
+    const refusal = assertInstalledMcpFilesIntact(home, "notes");
+    await expect(refusal).rejects.toThrow(`MCP server notes was not started: the MCP install record file ${recordsPath()} is damaged`);
+    await expect(refusal).rejects.toThrow("Restore that file from a backup, or delete it and reinstall your marketplace MCP servers, then restart Ave");
   });
 
   it("counts direct server admission before its queue yields and through connection setup", async () => {

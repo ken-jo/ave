@@ -21,6 +21,7 @@ export function approvalSurfaceStub(): ApprovalSurfaceContextValue {
     lockedRequestId: null,
     proposal: null,
     reviewerSuggestion: null,
+    notice: vi.fn(),
   };
 }
 

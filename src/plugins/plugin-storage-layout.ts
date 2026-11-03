@@ -21,9 +21,16 @@ export const PLUGIN_HOST_STORAGE_DIR_NAME = "storage";
 /** Build storage in host-only staging, then rename it atomically; interrupted copies restart on boot. */
 export const PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME = ".storage-migrating";
 
-const PLUGIN_STATE_DIR_NAMES: readonly string[] = [PLUGIN_DATA_DIR_NAME, PLUGIN_HOST_STORAGE_DIR_NAME];
+/** Host-allocated worker state lives under workers/<workerId>/: written by that worker only, never inside the child-writable data dir. */
+export const PLUGIN_WORKER_STATE_DIR_NAME = "workers";
 
-/** Host-allocated worker control sockets live under run/<workerId>/. */
+const PLUGIN_STATE_DIR_NAMES: readonly string[] = [
+  PLUGIN_DATA_DIR_NAME,
+  PLUGIN_HOST_STORAGE_DIR_NAME,
+  PLUGIN_WORKER_STATE_DIR_NAME,
+];
+
+/** Workers no longer get sockets; run/ stays a reserved runtime name so directories that older hosts created are carried, never packaged. */
 export const PLUGIN_WORKER_RUN_DIR_NAME = "run";
 
 /** Plugin-bound sockets and host-allocated worker sockets use separate roots with different ownership. */
@@ -40,6 +47,7 @@ export const PLUGIN_RUNTIME_DIR_NAMES: ReadonlySet<string> = new Set([
   PLUGIN_DATA_DIR_NAME,
   PLUGIN_HOST_STORAGE_DIR_NAME,
   PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME,
+  PLUGIN_WORKER_STATE_DIR_NAME,
   PLUGIN_WORKER_RUN_DIR_NAME,
   PLUGIN_OWN_SOCKET_DIR_NAME,
   PLUGIN_SOCKET_CARRY_DIR_NAME,
@@ -123,7 +131,8 @@ export async function carryPluginStateDirs(
 }
 
 function stateDirLabel(name: string): string {
-  return name === PLUGIN_DATA_DIR_NAME ? "data" : "host storage";
+  if (name === PLUGIN_DATA_DIR_NAME) return "data";
+  return name === PLUGIN_WORKER_STATE_DIR_NAME ? "worker state" : "host storage";
 }
 
 // Install rejects conflicting state and rolls back; recovery must reach a terminal result without deleting state.
@@ -748,11 +757,6 @@ async function lstatOrUndefined(path: string): Promise<Stats | undefined> {
   }
 }
 
-/** Host-allocated worker control sockets use run/<workerId>/; child grants must reach that same root. */
-export function resolvePluginWorkerRunRoot(pluginDataDir: string): string {
-  // Derive from pluginDataDir so worker socket grants and creation share one root.
-  return resolve(dirname(pluginDataDir), PLUGIN_WORKER_RUN_DIR_NAME);
-}
 
 /** Reserve the terminating NUL in sockaddr_un; oversized paths otherwise fail as opaque malformed addresses. */
 const MAX_UNIX_SOCKET_PATH_BYTES = (process.platform === "darwin" ? 104 : 108) - 1;

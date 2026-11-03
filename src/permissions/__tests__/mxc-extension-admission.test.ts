@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/test-helpers.js";
 import { admitMxcExtensionFilesystem, assertExtensionStartAllowed } from "../asrt-sandbox.js";
+import { MxcExtensionReadinessRefusedError, MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
   __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   setWindowsSandboxSubstrate,
@@ -101,7 +102,10 @@ describe("legacy adapter admission", () => {
         admittedAncestorBackend: "srt-win", windowsBuild: null, srtWinReady: true });
       expect(substrate.extensionPlan?.readiness).toBe("rejected");
       setWindowsSandboxSubstrate(substrate);
-      expect(() => assertExtensionStartAllowed()).toThrow(/has not admitted/);
+      // A named, localized refusal that keeps its stable code and stays a contract error.
+      expect(() => assertExtensionStartAllowed()).toThrow(MxcExtensionReadinessRefusedError);
+      expect(() => assertExtensionStartAllowed()).toThrow(MxcProcessContractError);
+      expect(() => assertExtensionStartAllowed()).toThrow(/\(extension-readiness-refused\)$/u);
     }
   });
 

@@ -96,6 +96,24 @@ afterEach(() => {
 });
 
 describe("the transport is the one producer of MCP request metadata", () => {
+  it("refuses new host effects while a closed child is still draining", async () => {
+    const rig = recordedLink();
+    const log = vi.fn();
+    const transport = new PluginChildTransport({
+      pluginId: "transportprobe", isActive: () => true, log, reportUnknownField: () => {}, link: rig.link,
+    });
+    transport.start();
+    transport.close("revoked");
+    rig.childToHost.write(frameMessage({ jsonrpc: "2.0", id: "late", method: "ave/host/logEvent",
+      params: { level: "info", message: "late effect" } }));
+    await settle();
+    expect(log).not.toHaveBeenCalled();
+    expect(rig.sent).toEqual([expect.objectContaining({ id: "late", error: expect.objectContaining({
+      data: expect.objectContaining({ code: "plugin-inactive" }),
+    }) })]);
+    expect(rig.terminated).toEqual(["revoked"]);
+    rig.fireGone("native process stopped");
+  });
   it("stamps exactly the protocol version and empty client capabilities on an MCP request", async () => {
     const { link, sent } = recordedLink();
     const transport = transportOver(link);

@@ -2,7 +2,8 @@
 
 import { hostname, platform, userInfo } from "node:os";
 import type { ActiveRolePrompt } from "../data/role-presets.js";
-import type { PromptMemorySource } from "../memory/memory-manager.js";
+import type { NoteEntry, PromptMemorySource } from "../memory/memory-manager.js";
+import { memoryUseStoreForSessionId, type MemoryUsageRecorder } from "../memory/memory-usage-log.js";
 import {
   MAX_SKILL_TRIGGERS,
   MAX_SKILL_TRIGGER_CHARS,
@@ -100,6 +101,17 @@ export interface SystemPromptBuilderDeps {
   getAppModelContext?: (sessionId: string) => string;
   /** Render approved-server instructions as untrusted metadata through callbacks, without importing network layers. */
   mcpServerGuidanceProvider?: () => Array<{ serverId: string; instructions: string }>;
+  /** Records injected memory ids; paired with the user's memory store, so isolated child builders never inherit it. */
+  memoryUsageLog?: MemoryUsageRecorder;
+}
+
+/** One turn's injection record: the turn loop supplies the conversation identity the builder does not know. */
+export interface TurnMemoryUse {
+  sessionId: string;
+  /** The user message that opened the turn. */
+  anchorMessageId?: string;
+  /** Ids already recorded this turn; later rounds rebuild the same context and must not log it again. */
+  recorded: Set<string>;
 }
 
 export class SystemPromptBuilder {
@@ -131,11 +143,18 @@ export class SystemPromptBuilder {
 
   /** Child builders need fresh mutable project/session state while preserving host catalog callbacks. */
   createIsolated(overrides: Pick<SystemPromptBuilderDeps, "memoryManager" | "toolRegistry">): SystemPromptBuilder {
-    return new SystemPromptBuilder({ ...this.deps, ...overrides });
+    // A child's memory store is not the user's: its injected ids must not enter the user's memory use log.
+    return new SystemPromptBuilder({ ...this.deps, memoryUsageLog: undefined, ...overrides });
 
   }
   /** Put changing clock, title, origin, and ranked notes after the cache breakpoint so earlier prompt bytes remain reusable. */
-  buildTurnContext(memoryQuery: string, originSource: string | null): string {
+  /** The recorder routine builders share with the main builder, which reads the same memory store. */
+  get memoryUsageRecorder(): MemoryUsageRecorder | undefined {
+    return this.deps.memoryUsageLog;
+  }
+
+  /** Pass `memoryUse` only for context assembled for send; estimation builds omit it so they never record use. */
+  buildTurnContext(memoryQuery: string, originSource: string | null, memoryUse?: TurnMemoryUse): string {
     // Compute the user-local offset from the same instant so clock text remains correct across DST.
     const parts = [
       "<turn-context>",
@@ -163,7 +182,8 @@ export class SystemPromptBuilder {
           includeUnscoped: this.projectContext.isDefault === true,
         }
       : undefined;
-    const notes = this.deps.memoryManager.selectRelevantMemories(memoryQuery, memoryScope).context;
+    const selection = this.deps.memoryManager.selectRelevantMemories(memoryQuery, memoryScope);
+    const notes = selection.context;
     if (notes) {
       parts.push([
         "<ave-user-memory>",
@@ -171,9 +191,27 @@ export class SystemPromptBuilder {
         neutralizeFenceClose(notes, "ave-user-memory"),
         "</ave-user-memory>",
       ].join("\n"));
+      if (memoryUse) this.recordInjectedMemories(selection.entries, memoryUse);
     }
     parts.push("</turn-context>");
     return parts.join("\n");
+  }
+
+  private recordInjectedMemories(entries: readonly NoteEntry[], memoryUse: TurnMemoryUse): void {
+    const recorder = this.deps.memoryUsageLog;
+    if (!recorder) return;
+    const memoryIds = entries.flatMap((entry) =>
+      entry.id !== undefined && !memoryUse.recorded.has(entry.id) ? [entry.id] : []);
+    if (memoryIds.length === 0) return;
+    recorder.record({
+      memoryIds,
+      via: "injected",
+      sessionId: memoryUse.sessionId,
+      // Only builders on the user's store carry a recorder, and those run main-store conversations.
+      store: memoryUseStoreForSessionId(memoryUse.sessionId) ?? "main",
+      ...(memoryUse.anchorMessageId !== undefined ? { anchorMessageId: memoryUse.anchorMessageId } : {}),
+    });
+    for (const id of memoryIds) memoryUse.recorded.add(id);
   }
 
   /** Keep stable host facts in the cached prefix; reverify scratch ownership on each build and keep the clock in turn context. */

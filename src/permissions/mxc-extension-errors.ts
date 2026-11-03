@@ -1,3 +1,5 @@
+import { t } from "../i18n/index.js";
+
 export class MxcProcessContractError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -29,8 +31,18 @@ export class MxcCapabilityUnavailableError extends Error {
 export class WorkerTransportUnsupportedError extends Error {
   readonly code = "worker-transport-unsupported";
   constructor() {
-    super("Selected container backend requires native streams; workers require stdio control v1. Update the process adapter and its client before starting it");
+    super(t("be_mxcExtensionErrors.workerTransportUnsupported", { code: "worker-transport-unsupported" }));
     this.name = "WorkerTransportUnsupportedError";
+  }
+}
+
+/** Extension backend readiness is checking or rejected: the start is refused, never run unconfined. A contract error, so
+ * callers that treat readiness refusals as `MxcProcessContractError` keep doing so. */
+export class MxcExtensionReadinessRefusedError extends MxcProcessContractError {
+  readonly code = "extension-readiness-refused";
+  constructor() {
+    super(t("be_mxcExtensionErrors.readinessRefused", { code: "extension-readiness-refused" }));
+    this.name = "MxcExtensionReadinessRefusedError";
   }
 }
 
@@ -38,7 +50,7 @@ export class WorkerTransportUnsupportedError extends Error {
 export class MxcNativeEntryRequiredError extends Error {
   readonly code = "native-entry-required";
   constructor() {
-    super("Selected container backend requires the native stream entry; this process adapter has not migrated to it");
+    super(t("be_mxcExtensionErrors.nativeEntryRequired", { code: "native-entry-required" }));
     this.name = "MxcNativeEntryRequiredError";
   }
 }

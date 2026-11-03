@@ -4,7 +4,8 @@ import type { RiskVerdict } from "./risk-classifier.js";
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
 import { JsonlRecordFile } from "../../audit/jsonl-reader.js";
 import { createLogger } from "../../lib/logger.js";
-import { aveHome } from "../../shared/ave-home.js";
+import { aveHome, isInRefusedAveHome } from "../../shared/ave-home.js";
+import { readAveHomeInputSync } from "../../shared/ave-home-trust.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 const log = createLogger("reviewer-cache");
@@ -141,8 +142,11 @@ export class VerdictCache {
   // Best-effort rewrites scheduled by synchronous lookup pruning.
   private readonly pendingRewrites = new Set<Promise<void>>();
 
+  private readonly filePath: string;
+
   constructor(filePath?: string) {
-    this.file = new JsonlRecordFile<VerdictCacheEntry>(filePath ?? defaultPath(), {
+    this.filePath = filePath ?? defaultPath();
+    this.file = new JsonlRecordFile<VerdictCacheEntry>(this.filePath, {
       accept: (parsed): parsed is VerdictCacheEntry => {
         const entry = parsed as Partial<VerdictCacheEntry> | null;
         return Boolean(
@@ -162,7 +166,19 @@ export class VerdictCache {
   // Ensure the in-memory mirror is populated. Reads the JSONL file once per cache instance (subsequent calls are no-op when entries !== null). Tests call resetForTests to force a re-read.
   private ensureLoaded(): void {
     if (this.entries !== null) return;
-    this.entries = this.file.loadSync();
+    // Cached verdicts can approve in automatic review, so an unverified file (a refused home's, or one pending review) reads as
+    // absent (R2), and the cache then lives in memory only for the run: rewriting the file from the absent view would erase it.
+    let input;
+    try { input = readAveHomeInputSync(this.filePath); }
+    catch (err) { log.warn(`failed to read cache: %s`, (err as Error).message); input = { status: "absent" as const }; }
+    this.memoryOnly = input.status === "untrusted";
+    this.entries = input.status === "trusted" ? this.file.parse(input.bytes.toString("utf-8")) : [];
+  }
+
+  private memoryOnly = false;
+
+  private unverified(): boolean {
+    return this.memoryOnly || isInRefusedAveHome(this.filePath);
   }
 
   // Look up a verdict. Returns: - hit:true + verdict — entry matches key + invalidationKey + not expired - hit:false miss-stale — entry found but invalidationKey doesn't match - hit:false miss-expired — entry found but expired - hit:false miss-not-found
@@ -213,12 +229,10 @@ export class VerdictCache {
       invalidationKey: computeInvalidationKey(ctx),
     };
     this.entries!.push(entry);
-    const pruned = this.pruneExpiredAndCap(Date.now());
-    if (pruned) {
-      await this.file.rewrite(this.entries!);
-    } else {
-      await this.file.append(entry);
-    }
+    this.pruneExpiredAndCap(Date.now());
+    if (this.unverified()) return;
+    // A whole-file rewrite, never an append: the trust manifest records the hash of exactly the bytes written.
+    await this.file.rewrite(this.entries!);
   }
 
   // Walk cache file and drop entries whose invalidationKey doesn't match the current context. Called when settings change. Returns the count of dropped entries (for audit/UX).
@@ -228,7 +242,7 @@ export class VerdictCache {
     const before = this.entries!.length;
     this.entries = this.entries!.filter((e) => e.invalidationKey === ivk);
     const dropped = before - this.entries!.length;
-    if (dropped > 0) {
+    if (dropped > 0 && !this.unverified()) {
       await this.file.rewrite(this.entries!);
     }
     return dropped;
@@ -256,6 +270,7 @@ export class VerdictCache {
   }
 
   private scheduleRewrite(): void {
+    if (this.unverified()) return;
     let pending: Promise<void>;
     pending = this.file.rewrite(this.entries!)
       .catch((err) => {

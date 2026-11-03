@@ -27,6 +27,7 @@ import type {
 import type { ReadableToolResult } from "../tools/tool-result-chunk.js";
 import type { SessionKind } from "../memory/memory-manager.js";
 import type { ActiveRolePrompt } from "../data/role-presets.js";
+import type { TurnMemoryUse } from "../prompts/system-prompt-builder.js";
 import { AuditLogger } from "../audit/audit-logger.js";
 import type { ChatInputOrigin } from "../shared/chat-origin.js";
 
@@ -397,8 +398,8 @@ export class ConversationLoop {
   }
 
   // Append varying turn context only inside a request user message; never persist it.
-  buildTurnContext(memoryQuery: string, originSource: string | null): string {
-    return this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery, originSource) ?? "";
+  buildTurnContext(memoryQuery: string, originSource: string | null, memoryUse?: TurnMemoryUse): string {
+    return this.deps.systemPromptBuilder.buildTurnContext?.(memoryQuery, originSource, memoryUse) ?? "";
   }
 
   estimateCurrentRequestProjection(params: {
