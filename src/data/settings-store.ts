@@ -1,4 +1,5 @@
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
+import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
   normalizeCorpCaCommonName,
@@ -105,6 +106,7 @@ import {
   SIDE_PANEL_SPLIT_KEYS,
   normalizeSystem,
   normalizeDocuments,
+  normalizeWorkBoard,
   isWebViewPreferredFlow,
   normalizeWebView,
   preserveInstalledProviderPresetMetadata,
@@ -573,6 +575,8 @@ export interface AppSettings {
   webView: WebViewSettings;
   /** User-owned document opening policy; agent writes remain blocked by the settings-file floor. */
   documents: DocumentSettings;
+  /** Work board display preferences. */
+  workBoard: WorkBoardSettings;
   /** Window close-button behaviour (hide-to-tray vs quit). */
   system: SystemSettings;
   /** Global keyboard shortcuts (show/hide window toggle). */
@@ -1239,6 +1243,11 @@ export class SettingsService {
       acceptField(nextDocuments, "openMode", partial.documents.openMode, isDocumentOpenMode, "documents", PATCHED_FIELD);
       this.settings.documents = nextDocuments;
     }
+    if (partial.workBoard && typeof partial.workBoard === "object" && !Array.isArray(partial.workBoard)) {
+      const nextWorkBoard = { ...this.settings.workBoard };
+      acceptField(nextWorkBoard, "toolApprovalSurface", partial.workBoard.toolApprovalSurface, isWorkBoardToolApprovalSurface, "workBoard", PATCHED_FIELD);
+      this.settings.workBoard = nextWorkBoard;
+    }
     if (partial.webView) {
       // Field-level validation (mirrors `system`/`shortcuts`): an out-of-enum `preferredFlow` is dropped and the existing preference kept, instead of persisting a
       // value that only the *next* load would reject. The accepted value set is owned by `isWebViewPreferredFlow` so the load path and this path can never drift apart.
@@ -1880,6 +1889,7 @@ export class SettingsService {
         appearance,
         webView: normalizeWebView(parsed.webView),
         documents: normalizeDocuments(parsed.documents),
+        workBoard: normalizeWorkBoard(parsed.workBoard),
         system: normalizeSystem(parsed.system),
         shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
         plugins: {},

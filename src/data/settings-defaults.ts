@@ -109,6 +109,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     language: DEFAULT_LOCALE,
   },
   documents: { openMode: "direct" },
+  workBoard: { toolApprovalSurface: "chat" },
   webView: {
     preferredFlow: "in-app",
   },

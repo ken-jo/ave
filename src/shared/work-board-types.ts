@@ -227,6 +227,19 @@ type WorkBoardRunPhase =
   | "error"
   | "cancelled";
 
+/** Where a running work item's tool approval is answered (owner decision 2026-11-04). `chat`: the board marks the card and links to the run's
+ * chat, where the normal approval card decides. `dialog`: the window's approval dialog over the board. Display location only: the same
+ * request is decided once, through the same gate, in either place. */
+export type WorkBoardToolApprovalSurface = "chat" | "dialog";
+
+export interface WorkBoardSettings {
+  toolApprovalSurface: WorkBoardToolApprovalSurface;
+}
+
+export function isWorkBoardToolApprovalSurface(value: unknown): value is WorkBoardToolApprovalSurface {
+  return value === "chat" || value === "dialog";
+}
+
 /** One tool call inside a child turn, as the board shows it. The host derives it from the child's DLP-masked transcript: `label` is a
  * short one-line target (a file name, the head of a command, a host and path), never the call's input. */
 export interface WorkBoardRunToolStep {
