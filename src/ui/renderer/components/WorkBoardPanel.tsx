@@ -466,7 +466,7 @@ function BoardColumn({
           {items.length}
         </span>
       </div>
-      <ScrollArea className="min-h-0 flex-1 px-2 pb-2">
+      <ScrollArea className="min-h-0 flex-1 px-2 pb-2" data-testid={`${testId}-list`}>
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t("workBoard.loadingLabel")}</div>
         ) : items.length === 0 ? (
@@ -1721,7 +1721,7 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
             )}
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+        <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
           <ProposalsSection
             proposals={proposals}
             pendingId={pendingProposalId}
@@ -1732,10 +1732,11 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
           {/* The columns fill whatever height the proposals and reports leave (flex-1) but never drop below a usable floor;
               when the bands take the room, the scroller overflows and scrolls instead. The floor must be explicit: with
               min-h-0 the grid absorbed the whole deficit and squashed the columns to their headers, and with no min-height
-              the grid's content minimum grows it to every card so the columns never scroll internally. Stacked below sm,
-              each column gets its own fixed row. */}
+              the grid's content minimum grows it to every card so the columns never scroll internally. The breakpoint is the
+              board's own width (container query), not the window's: a split tile or a narrow window holds three columns only
+              when the board itself is wide enough. Stacked below it, each column gets its own fixed row. */}
           <div
-            className="grid flex-1 auto-rows-[20rem] gap-3 sm:min-h-[20rem] sm:auto-rows-auto sm:grid-cols-3"
+            className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
             data-testid="work-board-columns"
           >
             {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}

@@ -153,17 +153,22 @@ describe("Work Board — columns beside the recommended-work band", () => {
     render(<WorkBoardPanel api={api} />);
 
     await screen.findByTestId("work-board-proposals");
-    const grid = screen.getByTestId("work-board-columns").className.split(/\s+/);
+    const columns = screen.getByTestId("work-board-columns");
+    // The column count follows the board's width, not the window's, so a split tile stacks like a narrow window.
+    expect(columns.parentElement?.classList.contains("@container")).toBe(true);
+    const grid = columns.className.split(/\s+/);
+    expect(grid.some((c) => c.startsWith("sm:"))).toBe(false);
     // min-h-0 here let the grid take the whole deficit and squash the columns to their headers.
     expect(grid).not.toContain("min-h-0");
-    expect(grid).toEqual(expect.arrayContaining(["flex-1", "auto-rows-[20rem]", "sm:min-h-[20rem]"]));
+    expect(grid).toEqual(expect.arrayContaining(["flex-1", "auto-rows-[20rem]", "@2xl:min-h-[20rem]", "@2xl:grid-cols-3"]));
 
     for (const id of ["work-board-column-planned", "work-board-column-in-progress", "work-board-column-completed"]) {
       const column = screen.getByTestId(id);
       expect(column.parentElement).toBe(screen.getByTestId("work-board-columns"));
       // The list scrolls inside the height the grid gives it; a floor of its own would be clipped by the section.
-      const list = column.querySelector("[data-radix-scroll-area-viewport]")?.parentElement;
-      expect(list?.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-0", "flex-1"]));
+      const list = screen.getByTestId(`${id}-list`);
+      expect(column.contains(list)).toBe(true);
+      expect(list.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-0", "flex-1"]));
     }
   });
 });
