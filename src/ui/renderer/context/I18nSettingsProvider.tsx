@@ -7,6 +7,7 @@ import {
   tryLoadLocaleMessages,
   type Locale,
 } from "../../../i18n/index.js";
+import { messages, type Messages } from "../../../i18n/messages/index.js";
 import { I18nProvider } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
 import { ensureInstalledContent, subscribeInstalledContent } from "../installed-content.js";
@@ -37,23 +38,30 @@ export async function resolveBootLocale(api: Pick<AveApi, "getSettings">): Promi
 
 export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE }: { children: ReactNode; initialLocale?: Locale }) {
   const api = useMemo(() => tryGetApi(), []);
-  // `revision` counts applied catalogs: re-applying the same locale after an installed package replaced its catalog changes the
-  // context value, so consumers re-render with the package's strings.
+  // `revision` counts catalog changes: an installed package replacing the catalog of the language on screen changes the
+  // context value, so consumers re-render with its strings. Re-applying the same locale and catalog (a settings broadcast
+  // that leaves the language alone) changes nothing, so `t` keeps its identity.
   const [active, setActive] = useState<{ locale: Locale; revision: number }>({ locale: initialLocale, revision: 0 });
-  const renderedLocaleRef = useRef<Locale>(initialLocale);
-  const hydratedRef = useRef(false);
+  const appliedRef = useRef<{ locale: Locale; catalog: Messages | undefined }>({ locale: initialLocale, catalog: messages[initialLocale] });
   const mountedRef = useRef(true);
   const localeRequestRef = useRef(0);
   useEffect(() => () => { mountedRef.current = false; }, []);
+
+  const commitLocale = useCallback((next: Locale) => {
+    const catalog = messages[next];
+    const applied = appliedRef.current;
+    if (applied.locale === next && applied.catalog === catalog) return;
+    appliedRef.current = { locale: next, catalog };
+    setActive((previous) => ({ locale: next, revision: previous.revision + 1 }));
+  }, []);
 
   const applyLocale = useCallback(async (next: Locale) => {
     const requestId = ++localeRequestRef.current;
     const loaded = await tryLoadLocaleMessages(next);
     if (!mountedRef.current || requestId !== localeRequestRef.current) return;
     if (!loaded) return;
-    renderedLocaleRef.current = next;
-    setActive((previous) => ({ locale: next, revision: previous.revision + 1 }));
-  }, []);
+    commitLocale(next);
+  }, [commitLocale]);
 
   // Hydrate from persisted settings on mount.
   useEffect(() => {
@@ -69,18 +77,20 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
         await applyLocale(normalizeLocale(settings.appearance?.language));
       } catch {
         /* ignore — render continues at the English default */
-      } finally {
-        hydratedRef.current = true;
       }
     })();
     return () => { cancelled = true; };
   }, [api, applyLocale]);
 
-  // A package installed, updated or removed later replaces the catalog of the language on screen; apply its strings. The boot
-  // hydration above applies the first installed set itself.
+  // Installed content (at boot, or a package installed, updated or removed later) replaces the catalog of the language on
+  // screen: reload it and re-render with its strings. This is not a language request, so it leaves a pending switch or the boot
+  // hydration above in charge of which language applies.
   useEffect(() => subscribeInstalledContent(() => {
-    if (hydratedRef.current) void applyLocale(renderedLocaleRef.current);
-  }), [applyLocale]);
+    const locale = appliedRef.current.locale;
+    void tryLoadLocaleMessages(locale).then((loaded) => {
+      if (loaded && mountedRef.current && appliedRef.current.locale === locale) commitLocale(locale);
+    });
+  }), [commitLocale]);
 
   // Cross-window sync: a language change in the settings window broadcasts to every renderer so the main window re-localizes
   // without a restart.

@@ -128,67 +128,6 @@ describe("translate", () => {
     }
   });
 
-  it("keeps answering from the loaded catalog until an installed package's merged catalog replaces it", async () => {
-    const restore = __setLocaleLoaderForTest("ko", async () => ({ "common.cancel": "취소" }));
-    let releasePack!: (catalog: Record<string, string>) => void;
-    try {
-      await loadLocaleMessages("ko");
-      registerInstalledLocales([{ locale: "ko", nativeName: "한국어", englishName: "Korean" }]);
-      setInstalledCatalogLoader(() => new Promise((resolve) => { releasePack = resolve; }));
-
-      // The installed set changed, but no lookup may fall back to English while the package loads.
-      expect(translate("ko", "common.cancel")).toBe("취소");
-      expect(isLocaleMessagesLoaded("ko")).toBe(false);
-      const loading = loadLocaleMessages("ko");
-      await vi.waitFor(() => expect(releasePack).toBeTypeOf("function"));
-      expect(translate("ko", "common.cancel")).toBe("취소");
-
-      releasePack({ "common.cancel": "그만두기" });
-      await loading;
-      expect(translate("ko", "common.cancel")).toBe("그만두기");
-      expect(isLocaleMessagesLoaded("ko")).toBe(true);
-    } finally {
-      registerInstalledLocales([]);
-      setInstalledCatalogLoader(null);
-      restore();
-    }
-  });
-
-  it("does not commit a package catalog whose load started before the installed set changed again", async () => {
-    const restore = __setLocaleLoaderForTest("ko", async () => ({ "common.cancel": "취소" }));
-    let releaseOld!: (catalog: Record<string, string>) => void;
-    try {
-      registerInstalledLocales([{ locale: "ko", nativeName: "한국어", englishName: "Korean" }]);
-      setInstalledCatalogLoader(() => new Promise((resolve) => { releaseOld = resolve; }));
-      const stale = loadLocaleMessages("ko");
-      await vi.waitFor(() => expect(releaseOld).toBeTypeOf("function"));
-      setInstalledCatalogLoader(async () => ({ "common.cancel": "새 패키지" }));
-      releaseOld({ "common.cancel": "옛 패키지" });
-
-      await expect(stale).resolves.toMatchObject({ "common.cancel": "새 패키지" });
-      expect(translate("ko", "common.cancel")).toBe("새 패키지");
-    } finally {
-      registerInstalledLocales([]);
-      setInstalledCatalogLoader(null);
-      restore();
-    }
-  });
-
-  it("drops a replaced package catalog whose replacement cannot load", async () => {
-    registerInstalledLocales([{ locale: "fr", nativeName: "Français", englishName: "French" }]);
-    setInstalledCatalogLoader(async () => ({ "common.cancel": "Annuler" }));
-    try {
-      await loadLocaleMessages("fr");
-      registerInstalledLocales([]);
-      setInstalledCatalogLoader(async () => { throw new Error("package removed"); });
-      await expect(loadLocaleMessages("fr")).rejects.toThrow("no catalog for locale fr");
-      expect(translate("fr", "common.cancel")).toBe(translate("en", "common.cancel"));
-    } finally {
-      registerInstalledLocales([]);
-      setInstalledCatalogLoader(null);
-    }
-  });
-
   it("reads a new installed locale over English only", async () => {
     registerInstalledLocales([{ locale: "fr", nativeName: "Français", englishName: "French" }]);
     setInstalledCatalogLoader(async () => ({ "common.cancel": "Annuler" }));

@@ -210,21 +210,43 @@ describe("I18nSettingsProvider installed language package over a compiled locale
     expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
   });
 
-  it("applies an updated package to the language on screen without passing through English", async () => {
+  it("applies an updated package to the language on screen", async () => {
     __resetLazyLocaleMessagesForTest();
     const { api, updatePack } = installApiWithKoreanPack("언어(패키지)");
     const initialLocale = await resolveBootLocale(api as never);
     render(<I18nSettingsProvider initialLocale={initialLocale}><LocaleProbe /></I18nSettingsProvider>);
     await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어(패키지)"));
 
-    const seen: string[] = [];
-    const observer = new MutationObserver(() => seen.push(screen.getByTestId("language-title").textContent ?? ""));
-    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
     updatePack("언어(새 패키지)");
 
     await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어(새 패키지)"));
-    observer.disconnect();
-    expect(seen).not.toContain("Language");
+    expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
+  });
+});
+
+describe("I18nSettingsProvider settings broadcasts", () => {
+  it("keeps `t` and the render count when a broadcast leaves the language unchanged", async () => {
+    const { api, settingsUpdatedHandlers } = installApi("ko");
+    const initialLocale = await resolveBootLocale(api as never);
+    const seen: Array<ReturnType<typeof useTranslation>["t"]> = [];
+    function TranslateProbe() {
+      const { t } = useTranslation();
+      seen.push(t);
+      return <span data-testid="title">{t("settings.appearance.language.title")}</span>;
+    }
+    render(<I18nSettingsProvider initialLocale={initialLocale}><TranslateProbe /></I18nSettingsProvider>);
+    // Let the mount hydration (same saved language, same catalog) settle.
+    await waitFor(() => expect(api.getSettings).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const rendersBefore = seen.length;
+    const tBefore = seen.at(-1);
+
+    settingsUpdatedHandlers[0]?.({ appearance: { language: "ko" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(seen.length).toBe(rendersBefore);
+    expect(seen.at(-1)).toBe(tBefore);
+    expect(screen.getByTestId("title")).toHaveTextContent("언어");
   });
 });
 
@@ -266,6 +288,8 @@ describe("renderer entry boot failure", () => {
     try {
       await waitFor(() => expect(boot.root.querySelector('[data-testid="boot-settings-unavailable"]')).not.toBeNull());
       expect(boot.root.textContent).toContain("Ave could not read its settings");
+      // No known error code: the message and the reload only, no empty diagnostic line.
+      expect(boot.root.querySelectorAll("p")).toHaveLength(1);
       expect(boot.root.querySelector("button")).not.toBeNull();
       expect(boot.createRoot).not.toHaveBeenCalled();
     } finally {

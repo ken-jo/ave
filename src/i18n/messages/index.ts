@@ -50,13 +50,6 @@ export type InstalledCatalogLoader = (locale: Locale) => Promise<Messages>;
 let installedCatalogLoader: InstalledCatalogLoader | null = null;
 /** Locales whose loaded catalog came from an installed package. */
 const loadedFromInstalled = new Set<Locale>();
-/**
- * Loaded catalogs the installed set has since changed under. They keep answering lookups until the next load replaces them in
- * one assignment, so a re-render between the change and that load never falls back to English.
- */
-const staleLocales = new Set<Locale>();
-/** Bumped whenever the installed set changes, so a load started under the previous one cannot commit its catalog. */
-let catalogGeneration = 0;
 
 /**
  * Loaded catalogs, keyed by locale. Only English is eager: the global default
@@ -86,12 +79,12 @@ const localeLoaders: Record<LazyLocale, () => Promise<Messages>> = {
 const pendingLoads = new Map<Locale, Promise<Messages>>();
 
 export function isLocaleMessagesLoaded(locale: Locale): boolean {
-  return messages[locale] !== undefined && !staleLocales.has(locale);
+  return messages[locale] !== undefined;
 }
 
 export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
   const existing = messages[locale];
-  if (existing && !staleLocales.has(locale)) return existing;
+  if (existing) return existing;
   const pending = pendingLoads.get(locale);
   if (pending) return pending;
   const installed = isInstalledLocale(locale) && installedCatalogLoader !== null;
@@ -106,24 +99,14 @@ export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
         }
       : () => installedCatalogLoader!(locale)
     : compiled;
-  if (!loader) {
-    forgetStale(locale);
-    throw new Error(`no catalog for locale ${locale}`);
-  }
-  const generation = catalogGeneration;
+  if (!loader) throw new Error(`no catalog for locale ${locale}`);
   const next = loader().then((catalog) => {
-    if (generation !== catalogGeneration) return loadLocaleMessages(locale);
-    // One assignment swaps a stale catalog for the merged one: no lookup ever sees the locale empty.
     messages[locale] = catalog;
-    staleLocales.delete(locale);
     if (installed) loadedFromInstalled.add(locale);
     pendingLoads.delete(locale);
     return catalog;
   }, (err) => {
-    if (generation === catalogGeneration) {
-      pendingLoads.delete(locale);
-      forgetStale(locale);
-    }
+    pendingLoads.delete(locale);
     throw err;
   });
   pendingLoads.set(locale, next);
@@ -138,21 +121,13 @@ export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
  */
 export function setInstalledCatalogLoader(loader: InstalledCatalogLoader | null): void {
   installedCatalogLoader = loader;
-  catalogGeneration += 1;
-  // Loads in flight belong to the previous installed set; each re-reads under this one when it settles.
-  pendingLoads.clear();
   for (const locale of Object.keys(messages)) {
     if (locale !== DEFAULT_LOCALE && (loadedFromInstalled.has(locale) || isInstalledLocale(locale))) {
-      staleLocales.add(locale);
+      delete messages[locale];
+      pendingLoads.delete(locale);
     }
   }
   loadedFromInstalled.clear();
-}
-
-/** A stale catalog whose replacement could not load is dropped: the package it came from may be gone. */
-function forgetStale(locale: Locale): void {
-  if (!staleLocales.delete(locale)) return;
-  delete messages[locale];
 }
 
 export async function tryLoadLocaleMessages(locale: Locale): Promise<boolean> {
@@ -178,7 +153,6 @@ export function __resetLazyLocaleMessagesForTest(): void {
   for (const locale of lazyLocales) {
     delete messages[locale];
     pendingLoads.delete(locale);
-    staleLocales.delete(locale);
   }
 }
 
@@ -191,11 +165,9 @@ export function __setLocaleLoaderForTest(
   localeLoaders[locale] = loader;
   delete messages[locale];
   pendingLoads.delete(locale);
-  staleLocales.delete(locale);
   return () => {
     localeLoaders[locale] = previous;
     delete messages[locale];
     pendingLoads.delete(locale);
-    staleLocales.delete(locale);
   };
 }

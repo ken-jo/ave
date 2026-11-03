@@ -50,15 +50,19 @@ export async function renderBootFailure(
   panel.dataset.testid = settingsStep ? "boot-settings-unavailable" : "model-catalog-unavailable";
   panel.style.cssText = "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:100vh;padding:32px;text-align:center;font:14px system-ui,sans-serif";
   const message = document.createElement("p");
-  message.textContent = t(messageKey);
-  const detail = document.createElement("p");
-  detail.style.cssText = "opacity:0.7;font-size:12px";
-  detail.textContent = errorKey ? t(errorKey) : "";
+  // A diagnostic line only when one resolved: a settings failure without a known code shows the message and the reload alone.
+  const detail = errorKey === undefined ? null : document.createElement("p");
+  if (detail) detail.style.cssText = "opacity:0.7;font-size:12px";
   const reload = document.createElement("button");
   reload.type = "button";
-  reload.textContent = t("errorBoundary.reloadButton");
   reload.addEventListener("click", () => window.location.reload());
-  panel.append(message, detail, reload);
+  const paint = () => {
+    message.textContent = t(messageKey);
+    if (detail && errorKey !== undefined) detail.textContent = t(errorKey);
+    reload.textContent = t("errorBoundary.reloadButton");
+  };
+  paint();
+  panel.append(...(detail ? [message, detail, reload] : [message, reload]));
   root.replaceChildren(panel);
 
   // The settings-backed locale provider has not mounted on this failure path. Show the fallback immediately, then apply the
@@ -69,15 +73,11 @@ export async function renderBootFailure(
     const locale = normalizeLocale(settings.appearance?.language);
     if (await tryLoadLocaleMessages(locale)) {
       document.documentElement.lang = setLocale(locale);
-      message.textContent = t(messageKey);
-      detail.textContent = errorKey ? t(errorKey) : "";
-      reload.textContent = t("errorBoundary.reloadButton");
+      paint();
     }
   } catch {
     // An unavailable settings channel must leave the reload control usable.
     document.documentElement.lang = setLocale(DEFAULT_LOCALE);
-    message.textContent = t(messageKey);
-    detail.textContent = errorKey ? t(errorKey) : "";
-    reload.textContent = t("errorBoundary.reloadButton");
+    paint();
   }
 }
