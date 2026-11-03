@@ -593,7 +593,12 @@ function SandboxCheckboxRow({ onOpenPermissions, onRestartRequired }: { onOpenPe
   // Mounted only while the card is open, so this reads on open and follows a change made in Settings while the card stays up.
   useEffect(() => {
     void refresh();
-    return getApi().onSettingsUpdated(() => { void refresh(); });
+    const offSettings = getApi().onSettingsUpdated(() => { void refresh(); });
+    const offSandbox = getApi().permission.onSandboxCapabilityChanged?.(() => { void refresh(); });
+    return () => {
+      offSettings();
+      offSandbox?.();
+    };
   }, [refresh]);
 
   const toggle = async () => {

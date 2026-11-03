@@ -1545,6 +1545,8 @@ export type AvePermissionApi = {
   onUserApprovalHit: (cb: (payload: UserApprovalHitPayload) => void) => () => void;
   /** Read-only: honest OS sandbox capability for the current platform. */
   sandboxCapability: () => Promise<SandboxCapabilityInfo>;
+  /** Hint event: the sandbox status snapshot changed in main (for example the Windows MXC check settled). Re-read `sandboxCapability`. */
+  onSandboxCapabilityChanged: (cb: () => void) => () => void;
   /** Read-only: Windows srt-win install readiness (group + WFP + verbatim instructions). */
   sandboxWindowsStatus: () => Promise<SandboxWindowsStatusInfo>;
   /**

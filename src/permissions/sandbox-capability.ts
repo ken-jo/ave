@@ -86,6 +86,18 @@ let _bootOutcome: SandboxBootOutcome | null = null;
 let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
 let _mxcShellCapability: SandboxCapability | undefined;
 const _issuedHostShellExecutionPlans = new WeakMap<HostShellExecutionPlan, string>();
+let _statusChangeListener: (() => void) | undefined;
+
+// The one observer of status-snapshot changes: the desktop IPC layer, which turns each change into a renderer hint so a
+// surface that read the snapshot before a late change (the Windows MXC start probe settling after boot) re-reads it.
+// A later registration replaces the earlier one; `undefined` clears it. @internal — only the IPC registration and tests should call this.
+export function setSandboxStatusChangeListener(listener: (() => void) | undefined): void {
+  _statusChangeListener = listener;
+}
+
+function notifySandboxStatusChanged(): void {
+  _statusChangeListener?.();
+}
 
 // Monotonic identity for capability and wrapped-worker membership changes.
 export function getSandboxGeneration(): string {
@@ -96,11 +108,14 @@ export function getSandboxGeneration(): string {
 export function setActiveSandboxCapability(cap: SandboxCapability): void {
   _activeCapability = cap;
   _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
 }
 // Publish the boot-time SHELL sandbox intent (`features.osToolSandbox` / `AVE_SANDBOX_ENABLED=1`). This is deliberately independent from the live active capability: requested-on-but-degraded and explicit-off both have kind="none", yet the host-shell plan must distinguish them without re-reading mutable renderer settings. It is also what scopes the published ASRT capability to shells: with it off, ASRT may still be active for plugin workers, and detectShellSandboxCapability reports `none`. @internal — only the boot-time sandbox init path and tests should call this.
 export function setShellSandboxRequestedAtBoot(requested: boolean): void {
-  if (_shellSandboxRequestedAtBoot !== requested) _sandboxGeneration += 1;
+  const changed = _shellSandboxRequestedAtBoot !== requested;
+  if (changed) _sandboxGeneration += 1;
   _shellSandboxRequestedAtBoot = requested;
+  if (changed) notifySandboxStatusChanged();
 }
 
 // True only when the shell sandbox was requested for this process at boot.
@@ -110,8 +125,10 @@ export function isShellSandboxRequestedAtBoot(): boolean {
 
 // Publish the boot-time PLUGIN-WORKER confinement intent (`features.pluginWorkerConfinement` / `AVE_PLUGIN_WORKER_CONFINEMENT=1`). Sealed once per process like the shell intent, so a worker spawn never re-reads the mutable setting; `isPluginWorkerConfinementActive` in asrt-sandbox.ts combines it with the live ASRT state. @internal — only the boot-time sandbox init path and tests should call this.
 export function setPluginWorkerConfinementRequestedAtBoot(requested: boolean): void {
-  if (_pluginWorkerConfinementRequestedAtBoot !== requested) _sandboxGeneration += 1;
+  const changed = _pluginWorkerConfinementRequestedAtBoot !== requested;
+  if (changed) _sandboxGeneration += 1;
   _pluginWorkerConfinementRequestedAtBoot = requested;
+  if (changed) notifySandboxStatusChanged();
 }
 
 // True only when plugin-worker confinement was requested for this process at boot.
@@ -126,6 +143,7 @@ export function setSandboxBootOutcome(outcome: SandboxBootOutcome): void {
     dependencyErrors: Object.freeze([...outcome.dependencyErrors]),
     causes: Object.freeze([...outcome.causes]),
   });
+  notifySandboxStatusChanged();
 }
 
 // What the boot gate decided, or `null` if it never ran. `null` is NOT "off": a caller that renders absence as a disabled sandbox would be asserting something this process never established.
@@ -179,6 +197,7 @@ export function setWindowsSandboxSubstrate(
   });
   _mxcShellCapability = mxcShellCapability === undefined ? undefined : Object.freeze({ ...mxcShellCapability });
   _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
 }
 
 // Every plan field is a closed primitive (validated above), so field equality is content equality.

@@ -206,6 +206,7 @@ export const en = {
   "sandboxPolicy.terminalChanged": "Repository protection changed since this Agent shell started. Close and reopen the Agent shell to refresh its sandbox before running this command.",
   "sandboxStatus.retry": "Retry status query",
   "sandboxStatus.queryFailed": "Sandbox status unknown · could not query the host",
+  "sandboxStatus.checking": "Sandbox checking · shell container probe running",
   "sandboxStatus.off": "Sandbox off · {reason}",
   "sandboxStatus.disabled": "disabled in settings",
   "sandboxStatus.unsupported": "platform not supported",

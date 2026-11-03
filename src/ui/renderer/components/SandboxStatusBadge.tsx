@@ -34,6 +34,10 @@ export function SandboxStatusBadge({
   // No host snapshot means status is still unknown; platform potential and desired settings cannot stand in for the actual execution route.
   const shellBadge = statusQueryFailed || (plan !== undefined && !plan.sandboxed);
   if (!shellBadge && extensionKey === null) return null;
+  // While the Windows MXC start probe runs, shells take the interim route and the plan reads as unsandboxed. That is a phase, not the
+  // outcome: say so, and let the settle hint from main replace it with the real plan.
+  const checking = !statusQueryFailed && plan !== undefined && !plan.sandboxed && plan.requestedSandbox
+    && capability?.windowsSubstrate?.mxc.state === "checking";
   const reasonText =
     plan?.fallbackReason === "platform-unsupported"
       ? t("sandboxStatus.unsupported")
@@ -45,14 +49,16 @@ export function SandboxStatusBadge({
           : t("sandboxStatus.unavailable");
   const label = statusQueryFailed
     ? t("sandboxStatus.queryFailed")
-    : t("sandboxStatus.off", { reason: reasonText });
+    : checking
+      ? t("sandboxStatus.checking")
+      : t("sandboxStatus.off", { reason: reasonText });
   return (
     <span className="inline-flex shrink-0 items-center gap-1">
     {shellBadge ? (
       <Badge
         variant="outline"
         role="status"
-        data-testid={statusQueryFailed ? "sandbox-status-query-failed" : "sandbox-off-status"}
+        data-testid={statusQueryFailed ? "sandbox-status-query-failed" : checking ? "sandbox-checking-status" : "sandbox-off-status"}
         className="shrink-0 whitespace-normal border-warning text-warning"
         title={label}
       >

@@ -672,3 +672,22 @@ describe("sandboxCapability shell status (the permission card's checkbox)", () =
     }));
   });
 });
+
+describe("sandboxCapability change hint", () => {
+  it("hints every app window when the sandbox status changes after registration, so a renderer re-reads without a reload", async () => {
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    const send = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send } };
+    const { registerPermissionsHandlers } = await import("../permissions.js");
+    handlers.clear();
+    registerPermissionsHandlers({ ...makeDeps({ osToolSandbox: true }), getAppWindows: vi.fn(() => [window]) } as never);
+    try {
+      expect(send).not.toHaveBeenCalled();
+      capability.setSandboxBootOutcome({ action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", dependencyErrors: [], causes: [] });
+      expect(send).toHaveBeenCalledWith(PERMISSIONS.sandboxCapabilityChanged, {});
+    } finally {
+      capability.setSandboxStatusChangeListener(undefined);
+      capability.__resetSandboxBootOutcomeForTest();
+    }
+  });
+});
