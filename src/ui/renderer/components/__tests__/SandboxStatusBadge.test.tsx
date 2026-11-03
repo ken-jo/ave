@@ -193,7 +193,8 @@ describe("SandboxStatusBadge — Windows MXC check settling after boot", () => {
     expect(checking.shellExecutionPlan?.fallbackReason).toBe("windows-partial-shell-acl-unsafe");
     render(<SandboxStatusBadge capability={checking} />);
     expect(screen.queryByTestId("sandbox-off-status")).toBeNull();
-    expect(screen.getByTestId("sandbox-checking-status")).toHaveTextContent("샌드박스 확인 중");
+    expect(screen.getByTestId("sandbox-checking-status").textContent)
+      .toBe("샌드박스 확인 중 · 끝날 때까지 셸 명령은 샌드박스 없이 호스트에서 실행되며 현재 모드에 따라 승인됨");
   });
 
   it("still reports a settled unavailable result as off", () => {

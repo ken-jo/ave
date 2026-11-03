@@ -208,7 +208,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "sandboxPolicy.terminalChanged": "이 에이전트 셸이 시작된 뒤 저장소 보호 경로가 변경됐습니다. 명령을 실행하기 전에 에이전트 셸을 닫았다가 다시 열어 샌드박스를 갱신하세요.",
   "sandboxStatus.retry": "상태 다시 확인",
   "sandboxStatus.queryFailed": "샌드박스 상태 확인 불가 · 호스트 조회 실패",
-  "sandboxStatus.checking": "샌드박스 확인 중 · 셸 컨테이너 점검 중",
+  "sandboxStatus.checking": "샌드박스 확인 중 · 끝날 때까지 셸 명령은 샌드박스 없이 호스트에서 실행되며 현재 모드에 따라 승인됨",
   "sandboxStatus.off": "샌드박스 꺼짐 · {reason}",
   "sandboxStatus.disabled": "설정에서 비활성화됨",
   "sandboxStatus.unsupported": "지원하지 않는 플랫폼",

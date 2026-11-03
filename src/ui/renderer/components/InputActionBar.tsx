@@ -578,24 +578,34 @@ function SandboxCheckboxRow({ onOpenPermissions, onRestartRequired }: { onOpenPe
   const [busy, setBusy] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
 
+  // A settings change and a settle hint can both re-query; only the newest query may write state, so a slow
+  // earlier answer cannot overwrite the settled one. Unmount bumps the generation so no answer lands after close.
+  const mounted = useRef(false);
+  const generation = useRef(0);
   const refresh = useCallback(async () => {
+    const current = ++generation.current;
     try {
       const info = await getApi().permission.sandboxCapability();
-      setStatus(info.shell);
-      setLoadFailed(false);
+      if (mounted.current && current === generation.current) {
+        setStatus(info.shell);
+        setLoadFailed(false);
+      }
       return info.shell;
     } catch (error) {
       console.warn("[ave] sandbox status read failed: %s", errorMessage(error));
-      setLoadFailed(true);
+      if (mounted.current && current === generation.current) setLoadFailed(true);
     }
   }, []);
 
   // Mounted only while the card is open, so this reads on open and follows a change made in Settings while the card stays up.
   useEffect(() => {
+    mounted.current = true;
     void refresh();
     const offSettings = getApi().onSettingsUpdated(() => { void refresh(); });
     const offSandbox = getApi().permission.onSandboxCapabilityChanged?.(() => { void refresh(); });
     return () => {
+      mounted.current = false;
+      generation.current += 1;
       offSettings();
       offSandbox?.();
     };
