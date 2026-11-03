@@ -126,7 +126,14 @@ describe("work approvals list", () => {
   it("masks secrets in titles and summaries before they reach the renderer", async () => {
     await register();
     const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
-    await workBoardStore.upsertProposal(INDEXER, { ...PROPOSAL, title: `Rotate ${secret}`, summary: `Leaked ${secret}` });
+    await workBoardStore.upsertProposal(INDEXER, {
+      ...PROPOSAL,
+      title: `Rotate ${secret}`,
+      summary: `Leaked ${secret}`,
+      state: `State ${secret}`,
+      evidence: [{ label: "Token", detail: secret }],
+      blockers: [{ reason: `Blocked by ${secret}`, resolution: `Rotate ${secret}` }],
+    });
     for (const arg of [undefined, { allProjects: true }]) {
       const result = await list(arg);
       if (!result.ok) throw new Error("list failed");
@@ -152,6 +159,9 @@ describe("work approvals list", () => {
       pluginLabel: "Indexer",
       priority: "medium",
       expiresAt: posted.proposal.expiresAt,
+      state: PROPOSAL.state,
+      evidence: [],
+      blockers: [],
     }]);
     expect(JSON.stringify(result)).not.toContain("PRIVATE-TASK-BRIEF");
   });

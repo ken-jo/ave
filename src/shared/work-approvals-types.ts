@@ -20,6 +20,10 @@ export interface WorkProposalApprovalView {
   pluginLabel: string;
   priority: "high" | "medium" | "low";
   expiresAt: string;
+  /** The card's expandable detail: what the plugin observed. Display text only; never the run's taskBrief. */
+  state: string;
+  evidence: Array<{ label: string; detail: string }>;
+  blockers: Array<{ reason: string; resolution?: string }>;
 }
 
 /** Why a routine needs the user. One routine yields one view carrying every reason that applies. */

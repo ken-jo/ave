@@ -50,6 +50,12 @@ function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
     pluginLabel: proposal.pluginLabel,
     priority: proposal.priority,
     expiresAt: proposal.expiresAt,
+    state: masked(proposal.state),
+    evidence: proposal.evidence.map((row) => ({ label: masked(row.label), detail: masked(row.detail) })),
+    blockers: proposal.blockers.map((row) => ({
+      reason: masked(row.reason),
+      ...(row.resolution !== undefined ? { resolution: masked(row.resolution) } : {}),
+    })),
   };
 }
 
