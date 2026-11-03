@@ -1675,3 +1675,58 @@ describe("upstream proxy in Settings", () => {
     expect(await invokeRegisteredHandlerWithEvent(handlers, PERMISSIONS.upstreamProxyGet, foreignFrameEvent("https://attacker.example/"), undefined)).toEqual(UNAUTHORIZED_FRAME);
   });
 });
+
+describe("home content review IPC", () => {
+  async function pendingHome(): Promise<string> {
+    const { _resetAveHomeTrustForTest, evaluateAveHomeTrustAtBoot } = await import("../../../shared/ave-home-trust.js");
+    const { migrateAveHomeConfiguration } = await import("../../../shared/ave-home-configuration.js");
+    _resetAveHomeTrustForTest();
+    const parent = mkdtempSync(join(tmpdir(), "ave-home-review-ipc-"));
+    setFixtureOwner(parent);
+    const home = join(parent, ".ave");
+    const privacy = ensureAveHomePrivate(home);
+    writeFileSync(join(home, "AGENTS.md"), "# instructions");
+    migrateAveHomeConfiguration(home, privacy);
+    expect(evaluateAveHomeTrustAtBoot(home).pending).toBe(true);
+    return parent;
+  }
+
+  it("serves the review only to the host renderer and approves only with a user gesture", async () => {
+    const parent = await pendingHome();
+    try {
+      const { deps } = await setup();
+      for (const channel of [PERMISSIONS.homeTrustReview, PERMISSIONS.homeTrustApprove, PERMISSIONS.homeTrustRemove]) {
+        expect(await invokeRegisteredHandlerWithEvent(handlers, channel, pluginShellFrameEvent(), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
+        expect(await invokeRegisteredHandlerWithEvent(handlers, channel, framelessEvent(), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
+      }
+      const review = await invoke(PERMISSIONS.homeTrustReview) as { snapshotId: string; rows: { key: string }[] };
+      expect(review.rows.map((row) => row.key)).toEqual(["AGENTS.md"]);
+      expect(await invoke(PERMISSIONS.homeTrustApprove, { snapshotId: review.snapshotId, keys: ["AGENTS.md"] }))
+        .toMatchObject({ ok: false, error: "user-keyboard-required" });
+      expect(await invoke(PERMISSIONS.homeTrustApprove, { snapshotId: review.snapshotId, keys: [], intent: USER_INTENT }))
+        .toMatchObject({ ok: false, error: "invalid-payload" });
+      expect(await invoke(PERMISSIONS.homeTrustApprove, { snapshotId: "other", keys: ["AGENTS.md"], intent: USER_INTENT }))
+        .toMatchObject({ ok: false, error: "stale" });
+      expect(await invoke(PERMISSIONS.homeTrustApprove, { snapshotId: review.snapshotId, keys: ["AGENTS.md"], intent: USER_INTENT }))
+        .toEqual({ ok: true, approved: 1 });
+      expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "approval",
+        output: expect.stringContaining('"action":"home_content_approved"') }));
+    } finally {
+      (await import("../../../shared/ave-home-trust.js"))._resetAveHomeTrustForTest();
+      await cleanupTmpDir(parent);
+    }
+  });
+
+  it("removes a reviewed item after the user confirmed", async () => {
+    const parent = await pendingHome();
+    try {
+      await setup();
+      const review = await invoke(PERMISSIONS.homeTrustReview) as { snapshotId: string };
+      expect(await invoke(PERMISSIONS.homeTrustRemove, { snapshotId: review.snapshotId, key: "AGENTS.md", intent: USER_INTENT })).toEqual({ ok: true });
+      expect(() => readFileSync(join(parent, ".ave", "AGENTS.md"))).toThrow();
+    } finally {
+      (await import("../../../shared/ave-home-trust.js"))._resetAveHomeTrustForTest();
+      await cleanupTmpDir(parent);
+    }
+  });
+});

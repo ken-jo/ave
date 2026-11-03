@@ -795,6 +795,13 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(PERMISSIONS.sandboxWindowsInstall, { intent: ipcUserKeyboardIntent() }),
     approveExtensionsWithoutIsolation: async () =>
       ipcRenderer.invoke(PERMISSIONS.approveExtensionsWithoutIsolation, { intent: ipcUserKeyboardIntent() }),
+    homeTrustReview: async () => ipcRenderer.invoke(PERMISSIONS.homeTrustReview),
+    /** MUTATING: approve rows of the served review snapshot; without keys, approve all (offered only for a clean legacy home). */
+    homeTrustApprove: async (snapshotId: string, keys?: readonly string[]) =>
+      ipcRenderer.invoke(PERMISSIONS.homeTrustApprove, { snapshotId, ...(keys ? { keys: [...keys] } : {}), intent: ipcUserKeyboardIntent() }),
+    /** MUTATING: delete one reviewed item without following links, after the user confirmed. */
+    homeTrustRemove: async (snapshotId: string, key: string) =>
+      ipcRenderer.invoke(PERMISSIONS.homeTrustRemove, { snapshotId, key, intent: ipcUserKeyboardIntent() }),
     listRules: async () => ipcRenderer.invoke(PERMISSIONS.listRules),
     listScopedRules: async () => ipcRenderer.invoke(PERMISSIONS.listScopedRules),
     removeScopedRule: async (rule: import("../shared/permissions-events.js").ScopedPermissionRule) =>
