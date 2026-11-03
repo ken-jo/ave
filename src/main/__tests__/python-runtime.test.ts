@@ -44,6 +44,7 @@ vi.mock("../../shared/ave-home.js", async (importOriginal) => {
 function boundaryCreatedByBoot(): void { runtimeBoundary.createdByBoot = true; }
 
 import * as fsMock from "node:fs/promises";
+import * as pathFacts from "../../shared/windows-path-facts.js";
 import * as cpMock from "node:child_process";
 
 const mockedAccess = vi.mocked(fsMock.access);
@@ -932,6 +933,11 @@ describe("PythonRuntimeBootstrapper", () => {
 
   it("on Windows refuses to recreate a missing runtime boundary and asks for a restart", async () => {
     rmSync(path.join(process.env.AVE_HOME!, "runtime"), { recursive: true, force: true });
+    // The simulated drive's entries do not inherit; give them the inheriting owner-only entry a protected home root carries, so
+    // the guard reaches the boundary check this case is about rather than the unprotected-home refusal.
+    const simulated = pathFacts.readWindowsDacls;
+    vi.spyOn(pathFacts, "readWindowsDacls").mockImplementation((paths, options) => simulated(paths, options).map((row) =>
+      row.dacl ? { ...row, dacl: { ...row.dacl, aces: row.dacl.aces.map((ace) => ({ ...ace, flags: 3 })) } } : row));
     const originalPlatform = process.platform;
     const originalArch = process.arch;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });

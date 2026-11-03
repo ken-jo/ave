@@ -313,9 +313,17 @@ export function assertAveHomeRuntimeBoundary(home = aveHome()): void {
   const path = resolve(home, AVE_HOME_RUNTIME_DIRECTORY);
   let protectedBoundary: boolean;
   if (process.platform === "win32") {
-    const entry = readWindowsDacls([path])[0]!;
+    const [root, entry] = readWindowsDacls([resolve(home), path]) as [WindowsDaclFacts, WindowsDaclFacts];
     protectedBoundary = entry.exists === true && entry.directory === true && admitWindowsReparse(entry, "evidence") === true
       && entry.dacl?.protected === true && isOwnerOnlyDacl(directoryDescriptor(path, entry), entry.currentUserSid);
+    // A boundary that fails under a refused or unverified home is not something a restart repairs: boot creates and repairs it only
+    // under a protected root, so the message points to the home's permissions instead.
+    const failure = getAveHomePrivacyFailure();
+    if (!protectedBoundary && (failure !== undefined || !admitWindowsReparse(root, "evidence") || !isWindowsHomeRootSafe(root))) {
+      const detail = failure !== undefined ? `${failure.category}, ${failure.failedPath ?? failure.home}` : `home ${resolve(home)} is not protected`;
+      throw new Error(`Ave runtime folder ${path} is unavailable because AVE_HOME protection is not established (${detail}). `
+        + "Fix the folder permissions shown in Settings > Permissions, then restart Ave.");
+    }
   } else {
     const entry = lstatSync(path, { throwIfNoEntry: false });
     protectedBoundary = entry !== undefined && entry.isDirectory();

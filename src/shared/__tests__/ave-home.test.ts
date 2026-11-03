@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
-import { assertAveHomeRuntimeBoundary, AVE_HOME_PROTECTED_DIRECTORIES, AVE_HOME_RUNTIME_DIRECTORY, createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
+import { assertAveHomeRuntimeBoundary, setAveHomePrivacyAtBoot, AVE_HOME_PROTECTED_DIRECTORIES, AVE_HOME_RUNTIME_DIRECTORY, createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
@@ -531,9 +531,11 @@ describe("ensureAveHomePrivate", () => {
   describe("the runtime boundary guard writers call before creating a runtime child", () => {
     const hostPlatform = process.platform;
     afterEach(() => { Object.defineProperty(process, "platform", { value: hostPlatform, configurable: true }); });
-    function onWindows(facts: (path: string) => windowsPathFacts.WindowsDaclFacts): void {
+    /** `facts` describes the runtime boundary; the home root is the protected owner-only root unless `root` says otherwise. */
+    function onWindows(facts: (path: string) => windowsPathFacts.WindowsDaclFacts, root = (path: string) => nativeDescriptor(path)): void {
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-      vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths) => paths.map(facts));
+      vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths) =>
+        paths.map((path) => (path.endsWith("runtime") ? facts(path) : root(path))));
     }
     it("admits the owner-only protected boundary boot created", () => {
       onWindows((path) => nativeDescriptor(path));
@@ -549,6 +551,26 @@ describe("ensureAveHomePrivate", () => {
     ] as const)("refuses a Windows runtime boundary that is %s", (_name, facts) => {
       onWindows(facts as (path: string) => windowsPathFacts.WindowsDaclFacts);
       expect(() => assertAveHomeRuntimeBoundary(home())).toThrow(/missing, a link, or not protected; restart Ave to recreate it/);
+    });
+    const missing = (path: string) => ({ ...nativeDescriptor(path), exists: false, directory: false, dacl: null });
+    it("points a missing boundary under a refused home to the folder-permission fix instead of a restart", () => {
+      const dir = home();
+      onWindows(missing);
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: dir, failedPath: dir, category: "extra-principals", reason: "fixture" });
+      expect(() => assertAveHomeRuntimeBoundary(dir)).toThrow(
+        `AVE_HOME protection is not established (extra-principals, ${dir}). Fix the folder permissions shown in Settings > Permissions, then restart Ave.`);
+      expect(() => assertAveHomeRuntimeBoundary(dir)).not.toThrow(/restart Ave to recreate it/);
+      // A boundary that is still owner-only is admitted as before: the split changes only what a failure says.
+      onWindows((path) => nativeDescriptor(path));
+      expect(() => assertAveHomeRuntimeBoundary(dir)).not.toThrow();
+    });
+    it("points a missing boundary under an unprotected home root to the folder-permission fix before boot publishes a refusal", () => {
+      const dir = home();
+      onWindows(missing, (path) => {
+        const facts = nativeDescriptor(path);
+        return { ...facts, dacl: { ...facts.dacl!, aces: [...facts.dacl!.aces, { type: 0, flags: 3, mask: 0x1f01ff, sid: "S-1-5-32-545" }] } };
+      });
+      expect(() => assertAveHomeRuntimeBoundary(dir)).toThrow(/is not protected\)\. Fix the folder permissions shown in Settings > Permissions/);
     });
     it.skipIf(process.platform === "win32")("requires a real POSIX runtime directory and refuses a missing one or a link", () => {
       const dir = home();

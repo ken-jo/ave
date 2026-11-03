@@ -964,6 +964,40 @@ describe("the host decides how far a plugin child reaches", () => {
     }
   });
 
+  it.skipIf(!canCreateSymlinks())("refuses a granted runtime child that links out of the home, by either spelling", () => {
+    // The runtime row grants its children, so a child, not the row, may be the link: `runtime/python-envs` moved to a big volume the
+    // user approved. Without the child in the subtraction, a config value naming the moved envs would be granted WRITE over every
+    // plugin's venv while the row itself still resolves inside the home.
+    const fx = fixture!;
+    const volume = join(fx.root, "big-volume");
+    const movedEnvs = join(volume, "envs");
+    mkdirSync(join(movedEnvs, "other-plugin-env"), { recursive: true, mode: 0o700 });
+    rmSync(join(fx.hostRuntimeDir, "python-envs"), { recursive: true, force: true });
+    symlinkSync(movedEnvs, join(fx.hostRuntimeDir, "python-envs"));
+    approveWorkspaceRoot(fx, volume);
+    for (const spelling of [movedEnvs, join(movedEnvs, "other-plugin-env"), join(fx.hostRuntimeDir, "python-envs")]) {
+      expect(() =>
+        derivePluginChildEnvelope({
+          pluginId: WIDENED_PLUGIN_ID,
+          sandbox: WIDENED_SANDBOX,
+          pluginRoot: fx.pluginRoot,
+          pluginDataDir: fx.pluginDataDir,
+          configValue: (key) => (key === "indexStorageRoot" ? spelling : undefined),
+        }),
+      ).toThrow(/host-owned catalog directory|host's own storage namespace/);
+    }
+    // The volume itself is still the user's to grant: only the host-owned child is subtracted.
+    const sibling = join(volume, "index");
+    mkdirSync(sibling, { recursive: true, mode: 0o700 });
+    expect(derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => (key === "indexStorageRoot" ? sibling : undefined),
+    }).write).toContain(sibling);
+  });
+
   it.skipIf(!canCreateSymlinks())("refuses a chosen directory under a bundle root that is itself a symlink", () => {
     // The same divergence, on the other subtraction. The install-root entry is the LEXICAL parent of this plugin's bundle, which is the right way to name the directory every install lives in and the wrong way to
     // name a bundle that resolves somewhere else; so the bundle root is named on its own line too. Without that line an approved root covering the real bundle admits a write over the module the next load imports.

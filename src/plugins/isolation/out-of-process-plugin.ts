@@ -169,8 +169,10 @@ function ceilingSubtractions(
     },
     // Every directory the closed host catalog resolves to; the whole catalog, not this plugin's alone, because what is being excluded is the class "somewhere the host handed a plugin child READ" and a value that names a neighbour's granted directory raises the same question as one that names its own. The entries are enumerated rather than covered by the `aveHome()`
     // entry above: a row is a LEXICAL join onto the home, the caller compares in canonical form, and a granted directory that is itself a symlink out of the home therefore has a canonical form the home entry does not contain. Moving a multi-gigabyte interpreter tree to another volume and linking it back is the ordinary reason for that to be true on a real machine.
-    ...Object.values(HOST_DIRECTORY_CATALOG).map((grant) => ({
-      root: join(aveHome(), ...grant.segments),
+    // Each row's granted directories too, not only the row's own: a grant is a child of the row (runtime/python-envs), and a child that
+    // is itself a link out of the home has a canonical form that the row's canonical form does not contain.
+    ...Object.values(HOST_DIRECTORY_CATALOG).flatMap((row) => [row.segments, ...row.grants]).map((segments) => ({
+      root: join(aveHome(), ...segments),
       detail: "resolves inside a host-owned catalog directory",
     })),
   ];
