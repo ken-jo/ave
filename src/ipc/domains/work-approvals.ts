@@ -1,8 +1,8 @@
-// Work approvals ("확인 필요"): a read-only projection over the stores that own each work-level decision. Every action (accept or dismiss a proposal,
+// Work approvals ("확인 필요"): a read-only projection over the stores that own each work-level decision. The change broadcast is wired at boot
+// (boot/steps/work-approvals-wiring.ts). Every action (accept or dismiss a proposal,
 // approve or discard a memory candidate, open or acknowledge a routine) stays on that source's own channel; this domain only lists and signals.
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
-import { broadcastToAppWindows } from "../window-fanout.js";
 import type { IpcDeps } from "../types.js";
 import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
@@ -102,14 +102,6 @@ function hasMemoryId(entry: NoteEntry): entry is NoteEntry & { id: string } {
 export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
   const { workBoardStore, routinesStore, memoryManager, auditLogger } = deps;
 
-  // Every source store signals after its own write, whichever path made it (IPC, plugin HostApi, scheduler, model tool), so the stack never polls.
-  const broadcastChanged = (): void => {
-    broadcastToAppWindows(deps, WORK_APPROVALS.changed);
-  };
-  workBoardStore?.proposalsChanged.subscribe(broadcastChanged);
-  routinesStore?.changed.subscribe(broadcastChanged);
-  memoryManager.candidatesChanged.subscribe(broadcastChanged);
-
   ipcMain.handle(WORK_APPROVALS.list, async (e, raw?: unknown): Promise<WorkApprovalListResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_APPROVALS.list, e);
@@ -119,11 +111,11 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     if (!request.ok) return { ok: false, error: "invalid-input" };
     const resolved = resolveAuthorizedWorkspaceProject(request.projectRoot);
     if (!resolved.authorized || !resolved.project) return { ok: false, error: "project-not-allowed" };
-    if (!workBoardStore) return { ok: false, error: "source-unavailable", source: "proposal" };
-    if (!routinesStore) return { ok: false, error: "source-unavailable", source: "routine-attention" };
+    if (!workBoardStore) return { ok: false, error: "work-approvals-source-unavailable", source: "proposal" };
+    if (!routinesStore) return { ok: false, error: "work-approvals-source-unavailable", source: "routine-attention" };
 
     const proposals = await workBoardStore.listProposals();
-    if (proposals.status !== "ok") return { ok: false, error: "source-unavailable", source: "proposal" };
+    if (proposals.status !== "ok") return { ok: false, error: "work-approvals-source-unavailable", source: "proposal" };
     const proposalViews = proposals.proposals.map(proposalView);
 
     const project = resolved.project;

@@ -77,6 +77,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "tailnet-sharing-input-invalid": "formatIpcError.tailnetSharingInputInvalid",
   "tailnet-sharing-operation-rejected": "formatIpcError.tailnetSharingOperationRejected",
   "tailnet-sharing-unavailable": "formatIpcError.tailnetSharingUnavailable",
+  "work-approvals-source-unavailable": "formatIpcError.workApprovalsSourceUnavailable",
   "tailnet-observer-input-invalid": "formatIpcError.invalidInput",
   "tailnet-observer-unavailable": "formatIpcError.tailnetObserverUnavailable",
   "tailnet-observer-write-failed": "formatIpcError.tailnetObserverWriteFailed",

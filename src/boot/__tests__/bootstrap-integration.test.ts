@@ -91,7 +91,7 @@ vi.mock("../services.js", () => ({
         deletePluginConfig: vi.fn(async () => undefined),
         deletePluginSecrets: vi.fn(async () => 0),
       },
-      memoryManager: {},
+      memoryManager: { candidatesChanged: { subscribe: vi.fn(() => () => {}) } },
       // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },
       inputClassifier: {},
@@ -353,6 +353,7 @@ vi.mock("../../main/routines-store.js", () => ({
     load = vi.fn(async () => {});
     update = vi.fn(async () => true);
     list = vi.fn(() => []);
+    changed = { subscribe: vi.fn(() => () => {}) };
   },
 }));
 vi.mock("../../main/routines-scheduler.js", () => ({
@@ -377,6 +378,7 @@ vi.mock("../../main/work-board-store.js", () => ({
   WorkBoardStore: class {
     load = vi.fn(async () => {});
     reconcileInterruptedRuns = vi.fn(async () => {});
+    proposalsChanged = { subscribe: vi.fn(() => () => {}) };
   },
 }));
 vi.mock("../../main/session-tasks-store.js", () => ({ SessionTasksStore: class {},

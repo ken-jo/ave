@@ -1223,10 +1223,12 @@ It returns the requested project's items plus the unscoped and global ones, and
 a `total` across every authorized project for the title-bar badge. Candidates in
 other projects reach the renderer only as part of that count. Views are built
 field by field, so a routine prompt, memory body or proposal task brief never
-crosses this channel. A missing source store is a `source-unavailable` result,
-never a silently shorter list. Each source store signals after its own write,
-whichever path made it (IPC, plugin HostApi, scheduler, model tool), and main
-broadcasts the payload-free `ave:work-approvals:changed` so windows re-list.
+crosses this channel. A missing source store is a
+`work-approvals-source-unavailable` result, never a silently shorter list. Each
+source store signals after its own write, whichever path made it (IPC, plugin
+HostApi, scheduler, model tool). The boot step `wireWorkApprovalsChanged`
+subscribes to those signals and broadcasts the payload-free
+`ave:work-approvals:changed` so windows re-list.
 Actions stay on each source's own channel.
 
 ## Conversation List

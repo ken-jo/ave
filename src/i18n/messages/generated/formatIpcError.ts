@@ -247,6 +247,7 @@ export const en = {
   "formatIpcError.installedContentUnavailable": "Installed themes, languages and fonts could not be loaded.",
   "formatIpcError.languageNotInstalled": "That language is not installed.",
   "formatIpcError.providerPresetRefreshFailed": "The provider change was saved but could not be applied yet. Restart the app to apply it.",
+  "formatIpcError.workApprovalsSourceUnavailable": "Items that need your review could not be loaded.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.invalidPath": "경로가 올바르지 않습니다.",
@@ -465,6 +466,7 @@ export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.tailnetSharingInputInvalid": "Tailnet 공유 요청이 올바르지 않습니다.",
   "formatIpcError.tailnetSharingOperationRejected": "Tailnet 공유 작업을 완료하지 못했습니다.",
   "formatIpcError.tailnetSharingUnavailable": "Tailnet 공유 기능을 현재 사용할 수 없습니다.",
+  "formatIpcError.workApprovalsSourceUnavailable": "확인이 필요한 항목을 불러오지 못했습니다.",
   "formatIpcError.tailnetObserverUnavailable": "Tailnet 관찰자 설정을 현재 사용할 수 없습니다.",
   "formatIpcError.tailnetObserverWriteFailed": "Tailnet 관찰자 설정을 저장하지 못했습니다.",
   "formatIpcError.productionDisabled": "프로덕션 환경에서는 사용할 수 없습니다.",

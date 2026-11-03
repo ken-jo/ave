@@ -11,6 +11,7 @@ import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { RoutinesStore } from "../../../main/routines-store.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import type { WorkApprovalListResult, WorkApprovalView } from "../../../shared/work-approvals-types.js";
+import { wireWorkApprovalsChanged } from "../../../boot/steps/work-approvals-wiring.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -81,6 +82,18 @@ async function register(overrides: Record<string, unknown> = {}) {
     getMainWindow: () => win,
     getAppWindows: () => [win],
     ...overrides,
+  } as never);
+}
+
+// The boot step that turns every source store's write signal into the payload-free broadcast.
+function wire() {
+  const win = windowStub();
+  wireWorkApprovalsChanged({
+    workBoardStore,
+    routinesStore,
+    memoryManager,
+    getMainWindow: () => win,
+    host: { desktop: { getAppWindows: () => [win] } },
   } as never);
 }
 
@@ -249,9 +262,9 @@ describe("work approvals list", () => {
 
   it("fails clearly when a source store is not wired, instead of dropping it", async () => {
     await register({ workBoardStore: undefined });
-    expect(await list()).toEqual({ ok: false, error: "source-unavailable", source: "proposal" });
+    expect(await list()).toEqual({ ok: false, error: "work-approvals-source-unavailable", source: "proposal" });
     await register({ routinesStore: undefined });
-    expect(await list()).toEqual({ ok: false, error: "source-unavailable", source: "routine-attention" });
+    expect(await list()).toEqual({ ok: false, error: "work-approvals-source-unavailable", source: "routine-attention" });
   });
 
   it("refuses an unauthorized project and a payload with extra keys", async () => {
@@ -269,14 +282,14 @@ describe("work approvals list", () => {
 
 describe("work approvals changed signal", () => {
   it("fires for a plugin proposal posted through HostApi, not only through IPC", async () => {
-    await register();
+    wire();
     await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
     expect(changedCount()).toBe(1);
     expect(send).toHaveBeenCalledWith(WORK_APPROVALS.changed, undefined);
   });
 
   it("fires when a memory candidate is captured, approved, or discarded, and not for an active memory", async () => {
-    await register();
+    wire();
     await memoryManager.saveMemory("Active fact", "x", { state: "active" });
     expect(changedCount()).toBe(0);
     const first = await memoryManager.saveMemory("Draft one", "x", { source: "assistant", state: "candidate" });
@@ -289,7 +302,7 @@ describe("work approvals changed signal", () => {
   });
 
   it("fires when deleteMemory removes a candidate file", async () => {
-    await register();
+    wire();
     const draft = await memoryManager.saveMemory("Draft", "x", { source: "assistant", state: "candidate" });
     const before = changedCount();
     await memoryManager.deleteMemory(draft.filename);
@@ -304,7 +317,7 @@ describe("work approvals changed signal", () => {
       prePrompt: "x",
       scope: { pluginIds: { mode: "allow", ids: ["mail"] }, forcedPluginIds: [], directories: [] },
     });
-    await register();
+    wire();
     await routinesStore.markPluginsMissing(routine.id, ["mail"]);
     expect(changedCount()).toBe(1);
   });

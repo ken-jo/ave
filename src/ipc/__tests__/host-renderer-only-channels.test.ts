@@ -154,8 +154,6 @@ function makeDeps(): never {
     },
     revokePluginOperationSession: vi.fn(),
     workBoardStore: undefined,
-    // The work-approvals domain subscribes to the candidate signal at registration.
-    memoryManager: { candidatesChanged: { subscribe: vi.fn(() => () => {}) } },
   } as unknown as never;
 }
 

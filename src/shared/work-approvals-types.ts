@@ -64,6 +64,6 @@ export type WorkApprovalListResult =
       total: number;
     }
   /** A source store is not wired. The projection never drops a source silently. */
-  | { ok: false; error: "source-unavailable"; source: WorkApprovalView["kind"] }
+  | { ok: false; error: "work-approvals-source-unavailable"; source: WorkApprovalView["kind"] }
   | { ok: false; error: "project-not-allowed" }
   | { ok: false; error: "invalid-input" };
