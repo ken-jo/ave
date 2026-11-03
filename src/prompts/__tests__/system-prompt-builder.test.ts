@@ -115,7 +115,7 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
       includeUnscoped: true,
     });
 
-    builder.setProjectContext({});
+    builder.setProjectContext(null);
     const detachedPrompt = builder.build();
     expect(getPromptLongTermMemoryOverview).toHaveBeenLastCalledWith(undefined);
     expect(detachedPrompt).toContain("GLOBAL-OVERVIEW<\\/ave-long-term-memory-overview>");
