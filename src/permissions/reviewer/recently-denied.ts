@@ -17,6 +17,11 @@ function redact(value: string, limit = SUMMARY_LIMIT): string {
   return redactHomePathsInText(maskSensitiveData(scrubDiagnosticSecretsStrict(value), { pii: true }).masked).slice(0, limit);
 }
 
+/** Session ids are structural replay keys: content DLP would mask card- or phone-shaped UUID digits and break replay. */
+function sessionIdField(value: string): string {
+  return isValidSessionId(value) ? value : redact(value, 128);
+}
+
 /** Summaries survive restart; bounded one-use executor closures do not. */
 export class RecentlyDeniedStore {
   private entries: StoredDenial[] | undefined;
@@ -55,7 +60,7 @@ export class RecentlyDeniedStore {
     }).slice(-HISTORY_LIMIT).map((row) => ({
       id: row.id, ts: row.ts, toolName: redact(row.toolName, 128), source: row.source,
       category: row.category, inputSummary: redact(row.inputSummary), reason: redact(row.reason),
-      ...(typeof row.sessionId === "string" ? { sessionId: redact(row.sessionId, 128) } : {}),
+      ...(typeof row.sessionId === "string" ? { sessionId: sessionIdField(row.sessionId) } : {}),
       ...(normalizeRecentlyDeniedInvocationRef(row.invocationRef) ? { invocationRef: normalizeRecentlyDeniedInvocationRef(row.invocationRef) } : {}),
     })) : [];
   }
@@ -79,7 +84,7 @@ export class RecentlyDeniedStore {
         id, ts: new Date().toISOString(), toolName: redact(params.toolName, 128),
         source: params.source, category: params.category,
         inputSummary: redact(params.inputSummary), reason: redact(params.reason ?? params.verdict?.reason ?? "Denied"),
-        ...(params.sessionId ? { sessionId: redact(params.sessionId, 128) } : {}),
+        ...(params.sessionId ? { sessionId: sessionIdField(params.sessionId) } : {}),
         ...(normalizeRecentlyDeniedInvocationRef(params.invocationRef) ? { invocationRef: normalizeRecentlyDeniedInvocationRef(params.invocationRef) } : {}),
       };
       const next = [...this.entries!, entry].slice(-HISTORY_LIMIT);
