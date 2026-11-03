@@ -6,8 +6,13 @@ import type { IpcDeps } from "../types.js";
 import type {
   WorkBoardBriefingKind,
   WorkBoardBriefingResult,
+  WorkBoardCancelIpcResult,
+  WorkBoardSteerIpcResult,
   WorkItemRunResult,
 } from "../../shared/work-board-types.js";
+import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
+import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
+import { sanitizeOutgoingInput } from "../handlers/chat.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
 import { createDirStorage } from "../../work-board/storage.js";
@@ -235,6 +240,56 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       // Convert engine failures to its stable error envelope; do not throw across IPC.
       return { status: "error", reason } satisfies WorkItemRunResult;
     }
+  });
+
+  // Steer a running execution (permission-decision-tree.md S→T). Only a sender-validated board-window main frame carrying a consumed local
+  // keyboard gesture may steer; anything else is refused, never downgraded to another principal (contrast chat guide). The engine picks the
+  // child from its own record and the text enters as host-fenced non-principal guidance, so the child's permissions do not widen.
+  ipcMain.handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, intent?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!workBoardEngine) return NO_ENGINE;
+    if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
+    if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
+    // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents.
+    if (!isBoardOwnerFrame(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (typeof text !== "string" || text.trim().length === 0) return { ok: false, reason: "empty-text" };
+    // The execute child cannot open a composer file reference mid-run, exactly as a chat guide cannot.
+    try {
+      if (parseFileMentionReferences(text).length > 0) return { ok: false, reason: "file-reference-while-running" };
+    } catch {
+      return { ok: false, reason: "file-reference-invalid" };
+    }
+    // The same outgoing PII redaction as a keyboard send; its count is returned because the board has no conversation stream to notify.
+    let redactedCount = 0;
+    const effective = sanitizeOutgoingInput(deps.settingsService, (event) => {
+      if (event.kind === "privacy.redacted") redactedCount += event.count;
+    }, text);
+    const result = workBoardEngine.steerRun(id, effective);
+    if (!result.ok) return result;
+    return redactedCount > 0 ? { ok: true, redactedCount } : { ok: true };
+  });
+
+  // Stop a running execution through the ordinary sub-agent interrupt; the run settles as `cancelled`. Same gate as steer.
+  ipcMain.handle(WORK_BOARD.cancelRun, async (e, id: number, intent?: unknown): Promise<WorkBoardCancelIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.cancelRun, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!workBoardEngine) return NO_ENGINE;
+    if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
+    if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
+    // The same owner check as starting the run: a board window's main frame, never a subframe or another webContents.
+    if (!isBoardOwnerFrame(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.cancelRun, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    return workBoardEngine.cancelRun(id);
   });
 
   // Preserve the reporter's ok/empty result and map provider failure to the public error envelope.

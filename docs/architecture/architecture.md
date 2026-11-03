@@ -1188,7 +1188,24 @@ execute child's id, and emits an `executing` progress event carrying that id,
 as soon as the execute child links (before its first round). That link write
 changes only the session id and appends no activity entry. If it fails, the
 run settles as an error even when the child finished: a run whose session the
-board cannot record is not reported as completed. Briefing runs
+board cannot record is not reported as completed.
+
+While the execute child runs, the local user can steer or stop it
+(`ave:work-board:steer-run`, `ave:work-board:cancel-run`). Both are internal,
+sender-validated channels from a board window's main frame that require a
+consumed keyboard gesture (`CHANNEL_GESTURE: "required"`); a call without one
+is refused, not downgraded. The engine resolves the child from its own record
+of the item's execute child, never from renderer input. A steer is queued for
+the child's next round boundary as host-fenced guidance with no principal and
+no sender prefix, so it neither grants the child user-keyboard capabilities nor
+raises an other-principal floor; nothing is stored for a later resume. A stop
+uses the ordinary sub-agent interrupt, and a run the user stopped settles as
+`cancelled` (shown as stopped, not as an error). Planning and plan approval
+are not steerable or stoppable here. See
+[permission-decision-tree.md](./permission-decision-tree.md), S→T and the
+"Delegated work" note; the tree is unchanged.
+
+Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
 
 ## Conversation List

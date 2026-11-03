@@ -516,3 +516,191 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
     }
   });
 });
+
+/** An execute child that stays live until released or interrupted; interruption mirrors the runner's interrupted result, including its onError notice. */
+function controllableRunner(): {
+  runner: SubAgentRunner;
+  linked: Promise<string>;
+  release: () => void;
+  interruptCalls: Array<[string, string]>;
+  steerCalls: Array<[string, string, string]>;
+  interruptAccepted: { value: boolean };
+} {
+  const registry = boardParentToolRegistry();
+  let release!: () => void;
+  let interrupt!: () => void;
+  const settled = new Promise<"released" | "interrupted">((r) => {
+    release = () => r("released");
+    interrupt = () => r("interrupted");
+  });
+  let onLinkedFired!: (id: string) => void;
+  const linked = new Promise<string>((r) => { onLinkedFired = r; });
+  const interruptCalls: Array<[string, string]> = [];
+  const steerCalls: Array<[string, string, string]> = [];
+  const interruptAccepted = { value: true };
+  const runner = {
+    async spawn(input: { profileMode?: string; originSessionId?: string }, callbacks?: SubAgentSpawnCallbacks) {
+      const isPlan = input.profileMode === "plan";
+      const childSessionId = `${input.originSessionId}::${isPlan ? "plan" : "exec"}`;
+      callbacks?.onLinked?.({ childSessionId });
+      if (isPlan) {
+        return { summary: "PLAN", toolCallCount: 0, turnCount: 1, childSessionId, entries: [], ok: true };
+      }
+      onLinkedFired(childSessionId);
+      const how = await settled;
+      if (how === "interrupted") {
+        callbacks?.onError?.("sub-agent run interrupted");
+        return {
+          summary: "sub-agent run interrupted", error: "sub-agent run interrupted", stopReason: "interrupted",
+          toolCallCount: 0, turnCount: 1, childSessionId, entries: [], ok: false,
+        };
+      }
+      return { summary: "OUTPUT", toolCallCount: 0, turnCount: 1, childSessionId, entries: [], ok: true };
+    },
+    interruptRun(id: string, origin: string) {
+      interruptCalls.push([id, origin]);
+      if (!interruptAccepted.value) return { ok: false, message: `sub-agent run is not running: ${id}` };
+      interrupt();
+      return { ok: true, message: `interrupt requested for sub-agent run: ${id}` };
+    },
+    queueHostDirectiveToWorkBoardChild(origin: string, child: string, text: string) {
+      steerCalls.push([origin, child, text]);
+      return { ok: true, disposition: "queued", childSessionId: child, messageId: "m-1" };
+    },
+    parentToolRegistry: () => registry,
+  } as unknown as SubAgentRunner;
+  return { runner, linked, release, interruptCalls, steerCalls, interruptAccepted };
+}
+
+describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => {
+  it("refuses steer and stop when nothing is executing, including while the plan awaits approval", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "idle" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, steerCalls, interruptCalls } = controllableRunner();
+      let answer!: (choice: "allow-once" | "deny-once") => void;
+      const gate = {
+        requestAndWait: () => new Promise((r) => { answer = (choice) => r({ choice }); }),
+      } as unknown as Parameters<typeof createWorkBoardEngine>[0]["approvalGate"];
+      const events: WorkBoardRunEvent[] = [];
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e) });
+
+      expect(await engine.steerRun(id, "go faster")).toEqual({ ok: false, reason: "not-executing" });
+      expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+
+      const run = engine.runItem(id);
+      await vi.waitFor(() => expect(events.some((e) => e.phase === "awaiting_approval")).toBe(true));
+      expect(await engine.steerRun(id, "go faster")).toEqual({ ok: false, reason: "not-executing" });
+      expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+      answer("deny-once");
+      expect((await run).status).toBe("denied");
+      expect(steerCalls).toEqual([]);
+      expect(interruptCalls).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("records the execute child when it links and forgets it when the run settles", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "record the child" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, linked, release } = controllableRunner();
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+      expect(engine.executingChildSessionId(id)).toBeUndefined();
+      const run = engine.runItem(id, { approvalSurface: owner });
+      const child = await linked;
+      expect(engine.executingChildSessionId(id)).toBe(child);
+      release();
+      expect((await run).status).toBe("completed");
+      expect(engine.executingChildSessionId(id)).toBeUndefined();
+      expect(engine.steerRun(id, "too late")).toEqual({ ok: false, reason: "not-executing" });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("steers the host-recorded execute child of this item", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "steer me" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, linked, release, steerCalls } = controllableRunner();
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+      const run = engine.runItem(id, { approvalSurface: owner });
+      const child = await linked;
+      expect(await engine.steerRun(id, "also cover the edge cases")).toEqual({ ok: true });
+      expect(steerCalls).toEqual([[`work-board:${id}`, child, "also cover the edge cases"]]);
+      release();
+      expect((await run).status).toBe("completed");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("stops the execute child: interrupts it, settles as cancelled (never error), and records the user stop", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "stop me" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, linked, interruptCalls } = controllableRunner();
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const events: WorkBoardRunEvent[] = [];
+      const transcriptStorage = memTranscriptStorage();
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e), transcriptStorage });
+      const run = engine.runItem(id, { approvalSurface: owner });
+      const child = await linked;
+
+      expect(engine.cancelRun(id)).toEqual({ ok: true });
+      expect(interruptCalls).toEqual([[child, `work-board:${id}`]]);
+      const result = await run;
+      expect(result.status).toBe("cancelled");
+
+      expect(events.filter((e) => e.phase === "error")).toEqual([]);
+      expect(events.filter((e) => e.phase === "cancelled")).toHaveLength(1);
+      expect(events[events.length - 1].phase).toBe("cancelled");
+
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing item");
+      expect(got.item.runStatus).toBe("cancelled");
+      const entry = got.item.runHistory?.at(-1);
+      expect(entry?.status).toBe("cancelled");
+      expect(entry?.endedAt).toBeDefined();
+
+      const runId = got.item.runId!;
+      const recorded = await readRunTranscript(transcriptStorage, id, runId);
+      expect(recorded.at(-1)).toMatchObject({ phase: "cancelled", kind: "decision", message: "user-stopped" });
+      expect(engine.executingChildSessionId(id)).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("reports a refused interrupt and keeps the run's outcome its own", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "already ending" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const { runner, linked, release, interruptAccepted } = controllableRunner();
+      interruptAccepted.value = false;
+      const { gate, owner } = boardApprovalGate("allow-once");
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+      const run = engine.runItem(id, { approvalSurface: owner });
+      await linked;
+      expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-running" });
+      release();
+      expect((await run).status).toBe("completed");
+    } finally {
+      await cleanup();
+    }
+  });
+});

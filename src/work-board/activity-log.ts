@@ -16,7 +16,8 @@ export interface ActivityEvent {
     | "run-planned"
     | "run-executed"
     | "run-denied"
-    | "run-failed";
+    | "run-failed"
+    | "run-cancelled";
   itemId?: number;
   title?: string;
   from?: string;

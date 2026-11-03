@@ -1152,6 +1152,22 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(WORK_BOARD.proposalChanged, listener);
     return () => ipcRenderer.removeListener(WORK_BOARD.proposalChanged, listener);
   },
+  // Steer the item's running execute child at its next round boundary. The snapshot was minted at the user's gesture and is consumed here
+  // once, so a replayed or scripted call reaches main without userActivation and is refused (no downgrade to another principal).
+  steerWorkBoardRun: async (itemId: number, text: string, userIntent?: UserKeyboardIntentSnapshot) =>
+    ipcRenderer.invoke(WORK_BOARD.steerRun, itemId, text, {
+      inputOrigin: "user-keyboard",
+      userActivation: consumeUserKeyboardIntent(userIntent),
+    }) as Promise<
+      | import("../shared/work-board-types.js").WorkBoardSteerIpcResult
+      | { ok: false; error: string }
+    >,
+  // Stop the item's running execute child; the click's own activation is the gesture, as for the other required-gesture controls.
+  cancelWorkBoardRun: async (itemId: number) =>
+    ipcRenderer.invoke(WORK_BOARD.cancelRun, itemId, ipcUserKeyboardIntent()) as Promise<
+      | import("../shared/work-board-types.js").WorkBoardCancelIpcResult
+      | { ok: false; error: string }
+    >,
   // Read a past run's persisted transcript (plan+execute conversation) for the run-history view. Resolves with the ordered events (empty when absent).
   getWorkBoardRunTranscript: async (itemId: number, runId: string) =>
     ipcRenderer.invoke(WORK_BOARD.runTranscript, itemId, runId) as Promise<
@@ -1159,7 +1175,7 @@ export function buildInternalApiSurface() {
       | { ok: false; error: string }
     >,
   // Live per-phase progress for an in-flight run (planning / awaiting_approval / executing / denied /
-  // done / error). Payload === the engine's WorkBoardRunEvent (aliased as RunProgressEventPayload).
+  // done / error / cancelled). Payload === the engine's WorkBoardRunEvent (aliased as RunProgressEventPayload).
   onWorkBoardRunProgress: (
     handler: (payload: import("../shared/work-board-types.js").RunProgressEventPayload) => void,
   ) => {
@@ -1179,7 +1195,7 @@ export function buildInternalApiSurface() {
   onWorkBoardRunFinished: (
     handler: (payload: {
       itemId: number;
-      status: "completed" | "denied" | "not_found" | "error" | "already_running";
+      status: import("../shared/work-board-types.js").WorkItemRunResult["status"];
       at: string;
     }) => void,
   ) => {

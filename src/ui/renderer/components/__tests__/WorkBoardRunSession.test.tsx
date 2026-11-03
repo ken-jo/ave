@@ -54,4 +54,35 @@ describe("Work Board — live execute session id", () => {
     expect(panel.querySelector('[title="exec-child-session"]')).not.toBeNull();
     expect(panel.querySelector('[title="plan-child-session"]')).toBeNull();
   });
+
+  it("shows a user-stopped run as stopped, not as an error, from the progress event and the finished marker", async () => {
+    let progress: ((ev: RunProgressEventPayload) => void) | undefined;
+    const finished: Array<(payload: { itemId: number; status: "cancelled"; at: string }) => void> = [];
+    const noop = () => () => {};
+    const api = {
+      listWorkBoard: async () => ({ status: "ok" as const, items: [ITEM] }),
+      listWorkProposals: async () => ({ status: "ok" as const, proposals: [] }),
+      onWorkBoardItemChanged: noop,
+      onWorkProposalChanged: noop,
+      onWorkBoardRunProgress: (cb: (ev: RunProgressEventPayload) => void) => { progress = cb; return () => {}; },
+      onWorkBoardRunStarted: noop,
+      onWorkBoardRunFinished: (cb: (typeof finished)[number]) => { finished.push(cb); return () => {}; },
+      onWorkBoardRunFailed: noop,
+    } as unknown as AveApi;
+
+    render(<WorkBoardPanel api={api} />);
+    await screen.findByTestId("work-board-card");
+    await waitFor(() => expect(progress !== undefined && finished.length > 0).toBe(true));
+    const at = "2026-11-04T00:00:02.000Z";
+    act(() => progress!({ itemId: 9, phase: "executing", runSessionId: "exec-child-session", at }));
+    act(() => progress!({ itemId: 9, phase: "cancelled", message: "user-stopped", at }));
+    const chip = await screen.findByTestId("work-board-run-cancelled");
+    expect(chip.textContent).toContain("중지됨");
+    expect(screen.queryByTestId("work-board-run-error")).toBeNull();
+    expect(screen.queryByTestId("work-board-run-indicator")).toBeNull();
+
+    act(() => { for (const cb of finished) cb({ itemId: 9, status: "cancelled", at }); });
+    expect(await screen.findByTestId("work-board-run-cancelled")).toBeTruthy();
+    expect(screen.queryByTestId("work-board-run-error")).toBeNull();
+  });
 });

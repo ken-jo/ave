@@ -19,6 +19,8 @@ import type {
   WorkBoardBriefingKind,
   WorkBoardBriefingResult,
   WorkBoardRunEvent,
+  WorkBoardCancelResult,
+  WorkBoardSteerResult,
   WorkProposalInput,
 } from "../shared/work-board-types.js";
 import {
@@ -98,7 +100,7 @@ interface RunItemOptions {
 }
 
 interface RunItemResult {
-  status: "completed" | "denied" | "not_found" | "error" | "already_running";
+  status: "completed" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
   output?: string;
   plan?: string;
   runSessionId?: string;
@@ -109,6 +111,17 @@ interface RunItemResult {
 export interface WorkBoardEngine {
   /** Combine in-process and persisted active-status guards per item; finished reruns start clean while preserving history. */
   runItem(itemId: number, opts?: RunItemOptions): Promise<RunItemResult>;
+
+  /** The execute child's session id while that child is linked and the run is still in flight; undefined in every other phase. */
+  executingChildSessionId(itemId: number): string | undefined;
+
+  /** Queue the local user's text for this item's execute child at its next round boundary. The child is the engine's own record, never a
+   * caller-supplied id; the text enters as host-fenced non-principal guidance (permission-decision-tree.md S→T, "Delegated work"). */
+  steerRun(itemId: number, text: string): WorkBoardSteerResult;
+
+  /** Interrupt this item's execute child through the ordinary sub-agent cancellation path; the run settles as `cancelled`.
+   * Planning and plan approval are not stoppable here and refuse as not-executing. */
+  cancelRun(itemId: number): WorkBoardCancelResult;
 
   /** A read-only survey files proposals for user review without plan approval; individual tools remain gated. Allow only one survey per briefing window. */
   runBriefing(
@@ -341,6 +354,13 @@ export function createWorkBoardEngine(
   /** Set the in-process guard before awaiting persisted status to close the duplicate-run race. */
   const inFlight = new Set<number>();
 
+  /** Host-recorded execute child per item, set when the child links and removed when the run settles. Steer and stop resolve the child here, never from a renderer payload. */
+  const executingChildByItem = new Map<number, string>();
+
+  /** Items whose stop the user requested and the runner accepted. Only an interrupted result for such an item becomes `cancelled`; an
+   * interruption the user did not ask for (workspace revocation, shutdown) stays an error. */
+  const cancelRequested = new Set<number>();
+
   /** Allow one survey per window so duplicate clicks cannot incur duplicate child runs. */
   const briefingInFlight = new Set<WorkBoardBriefingKind>();
 
@@ -370,6 +390,8 @@ export function createWorkBoardEngine(
     try {
       return await runItemGuarded(itemId, item, opts);
     } finally {
+      executingChildByItem.delete(itemId);
+      cancelRequested.delete(itemId);
       inFlight.delete(itemId);
       updateApprovalSurface({ kind: "release", sessionId: originSessionId });
     }
@@ -515,6 +537,8 @@ export function createWorkBoardEngine(
         },
         {
           onLinked: ({ childSessionId }) => {
+            // The host's own record of this run's execute child: steer and stop resolve it here, never from renderer input.
+            executingChildByItem.set(itemId, childSessionId);
             emit({ itemId, phase: "executing", runSessionId: childSessionId });
             linkedPersist = store
               .setRunSessionId(itemId, childSessionId)
@@ -527,12 +551,23 @@ export function createWorkBoardEngine(
             emit({ itemId, phase: "executing", turn, text });
             record({ phase: "executing", kind: "turn", turn, text });
           }),
-          onError: (message) => emit({ itemId, phase: "error", message }),
+          // The runner reports some interrupted unwinds through onError; a stop the user asked for is not an error.
+          onError: (message) => {
+            if (!cancelRequested.has(itemId)) emit({ itemId, phase: "error", message });
+          },
         },
       );
       // A failed link write is a store failure; surface it through the run's error path rather than dropping it, even if the child finished.
       const linkOutcome = await linkedPersist;
       if (linkOutcome.failed) throw linkOutcome.error;
+      // A user stop settles as cancelled (owner decision 2026-11-04), checked before the generic failure branch.
+      if (execResult.ok === false && execResult.stopReason === "interrupted" && cancelRequested.has(itemId)) {
+        await store.setRunResult(itemId, { runStatus: "cancelled", plan });
+        record({ phase: "cancelled", kind: "decision", message: "user-stopped" });
+        emit({ itemId, phase: "cancelled", message: "user-stopped" });
+        await flushTranscript();
+        return { status: "cancelled", plan, reason: "user-stopped" };
+      }
       // Treat ok:false as error, never as completed output containing the error summary.
       if (execResult.ok === false) {
         const reason = execResult.error ?? execResult.summary;
@@ -666,5 +701,40 @@ export function createWorkBoardEngine(
     }
   }
 
-  return { runItem, runBriefing };
+  /** A recorded execute child implies a constructed runner; a missing one is a wiring fault, not a refusal. */
+  function runnerForLiveChild(): SubAgentRunner {
+    const runner = getRunner();
+    if (!runner) throw new Error("work-board execute child is recorded but the sub-agent runner is not available");
+    return runner;
+  }
+
+  function steerRun(itemId: number, text: string): WorkBoardSteerResult {
+    const child = executingChildByItem.get(itemId);
+    if (child === undefined) return { ok: false, reason: "not-executing" };
+    const delivered = runnerForLiveChild().queueHostDirectiveToWorkBoardChild(workBoardOriginSessionId(itemId), child, text);
+    return delivered.ok ? { ok: true } : { ok: false, reason: delivered.reason };
+  }
+
+  function cancelRun(itemId: number): WorkBoardCancelResult {
+    const child = executingChildByItem.get(itemId);
+    if (child === undefined) return { ok: false, reason: "not-executing" };
+    // Mark before interrupting: the runner may unwind and report synchronously inside interruptRun.
+    cancelRequested.add(itemId);
+    // "Ordinary parent/child cancellation … remain effective" (permission-decision-tree.md, Delegated work): the existing interrupt path,
+    // whose turn abort also settles any parked approval card of the child through the gate's own abort handling.
+    const interrupted = runnerForLiveChild().interruptRun(child, workBoardOriginSessionId(itemId));
+    if (!interrupted.ok) {
+      cancelRequested.delete(itemId);
+      return { ok: false, reason: "not-running" };
+    }
+    return { ok: true };
+  }
+
+  return {
+    runItem,
+    runBriefing,
+    executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
+    steerRun,
+    cancelRun,
+  };
 }

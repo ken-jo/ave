@@ -4,6 +4,7 @@ import type {
   RunProgressEventPayload,
   RunTranscriptEvent,
   WorkItemResolved,
+  WorkItemRunResult,
   WorkItemRunStatus,
 } from "../../../shared/work-board-types.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -46,10 +47,51 @@ function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
   return phase === "planning" || phase === "executing";
 }
 
+/** Terminal phases end the in-flight window; every phase is named so a new one cannot silently read as in flight or as finished.
+ * `cancelled` is a run the user stopped (owner decision 2026-11-04): terminal, and never an error. */
+export function isTerminalPhase(phase: RunPhase): boolean {
+  switch (phase) {
+    case "planning":
+    case "awaiting_approval":
+    case "executing":
+      return false;
+    case "done":
+    case "denied":
+    case "error":
+    case "cancelled":
+      return true;
+    default: {
+      const unhandled: never = phase;
+      throw new Error(`unhandled work-board run phase: ${String(unhandled)}`);
+    }
+  }
+}
+
+/** The phase a terminal run result settles the card in. already_running started nothing here, so it leaves no phase. */
+export function phaseForRunResult(status: WorkItemRunResult["status"]): RunPhase | undefined {
+  switch (status) {
+    case "completed":
+      return "done";
+    case "denied":
+      return "denied";
+    case "error":
+    case "not_found":
+      return "error";
+    case "cancelled":
+      return "cancelled";
+    case "already_running":
+      return undefined;
+    default: {
+      const unhandled: never = status;
+      throw new Error(`unhandled work-board run result: ${String(unhandled)}`);
+    }
+  }
+}
+
 /** True while the run is in flight (no terminal phase reached yet). */
 export function isRunInFlight(run: WorkItemRunState | undefined): boolean {
   if (!run) return false;
-  if (run.phase === "done" || run.phase === "denied" || run.phase === "error") return false;
+  if (run.phase !== undefined && isTerminalPhase(run.phase)) return false;
   return run.busy || run.phase !== undefined;
 }
 
@@ -105,6 +147,7 @@ function inFlightPhaseOf(status: WorkItemRunStatus | undefined): RunPhase | null
     case "completed":
     case "denied":
     case "error":
+    case "cancelled":
       return null;
     default: {
       const unhandled: never = status;
@@ -210,7 +253,7 @@ export function useWorkBoardRun(
               reason: phase === "error" || phase === "denied" ? ev.message : undefined,
               runSessionId: ev.runSessionId ?? cur.runSessionId,
               // A terminal phase ends the in-flight window even if runFinished is late.
-              busy: phase !== "done" && phase !== "denied" && phase !== "error",
+              busy: !isTerminalPhase(phase),
             };
           });
           if (ev.turn === undefined && (isActivePhase(ev.phase) || ev.phase === "awaiting_approval")) {
@@ -231,7 +274,7 @@ export function useWorkBoardRun(
         api.onWorkBoardRunFinished(({ itemId, status }) => {
           patch(itemId, {
             busy: false,
-            phase: status === "completed" ? "done" : status === "denied" ? "denied" : status === "error" ? "error" : undefined,
+            phase: phaseForRunResult(status),
           });
         }),
       );
@@ -292,14 +335,7 @@ export function useWorkBoardRun(
           update(id, (cur) => ({
             ...cur,
             busy: false,
-            phase:
-              result.status === "completed"
-                ? "done"
-                : result.status === "denied"
-                  ? "denied"
-                  : result.status === "error" || result.status === "not_found"
-                    ? "error"
-                    : undefined,
+            phase: phaseForRunResult(result.status),
             reason: result.reason,
             runSessionId: result.runSessionId ?? cur.runSessionId,
           }));

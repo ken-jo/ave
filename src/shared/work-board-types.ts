@@ -32,7 +32,8 @@ export type WorkItemStatusResolved =
  */
 export type WorkItemPriority = "high" | "medium" | "low";
 
-/** Run lifecycle is independent of board status; absent means never run, denied means approval rejected or expired, and error means planning or execution threw. */
+/** Run lifecycle is independent of board status; absent means never run, denied means approval rejected or expired, error means planning or
+ * execution failed, and cancelled means the user stopped the execution (owner decision 2026-11-04: shown as stopped, never as an error). */
 export type WorkItemRunStatus =
   | "idle"
   | "planning"
@@ -40,7 +41,8 @@ export type WorkItemRunStatus =
   | "executing"
   | "completed"
   | "denied"
-  | "error";
+  | "error"
+  | "cancelled";
 
 /** Persist ISO timestamps; unset optional fields are omitted rather than null. */
 export interface WorkItem {
@@ -222,7 +224,8 @@ type WorkBoardRunPhase =
   | "executing"
   | "denied"
   | "done"
-  | "error";
+  | "error"
+  | "cancelled";
 
 /** Transcript lines live at sessions/<itemId>/<runId>.jsonl and accumulate the run conversation. */
 export interface RunTranscriptEvent {
@@ -262,13 +265,49 @@ export type RunProgressEventPayload = WorkBoardRunEvent;
 
 /** IPC forwards the engine result unchanged; not_found means an unknown item ID. */
 export interface WorkItemRunResult {
-  status: "completed" | "denied" | "not_found" | "error" | "already_running";
+  status: "completed" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
   output?: string;
   plan?: string;
   runSessionId?: string;
   /** already_running reports the concurrent run without spawning another child. */
   reason?: string;
 }
+
+/** Steering a running execution (permission-decision-tree.md S→T): accepted means queued for the execute child's next round boundary.
+ * not-executing covers every phase but a linked execute child, planning and plan approval included. The other reasons are the runner's
+ * live-delivery refusals; nothing is stored for later. */
+type WorkBoardSteerRefusal =
+  | "not-executing"
+  | "unknown-recipient"
+  | "invalid-message"
+  | "message-too-long"
+  | "recipient-unavailable"
+  | "pending-cap";
+
+export type WorkBoardSteerResult = { ok: true } | { ok: false; reason: WorkBoardSteerRefusal };
+
+/** Stopping a running execution; not-running means the runner had already let go of the child (it was finishing). */
+export type WorkBoardCancelResult = { ok: true } | { ok: false; reason: "not-executing" | "not-running" };
+
+/** Refusals the IPC boundary makes before the engine is asked: no consumed local keyboard gesture (never downgraded), or no such item. */
+type WorkBoardControlRequestRefusal = "user-gesture-required" | "not-found";
+
+/** `redactedCount` reports outgoing PII redaction applied to the text before it reached the child, like a chat send's notice. */
+export type WorkBoardSteerIpcResult =
+  | { ok: true; redactedCount?: number }
+  | {
+      ok: false;
+      reason:
+        | WorkBoardSteerRefusal
+        | WorkBoardControlRequestRefusal
+        | "empty-text"
+        | "file-reference-while-running"
+        | "file-reference-invalid";
+    };
+
+export type WorkBoardCancelIpcResult =
+  | WorkBoardCancelResult
+  | { ok: false; reason: WorkBoardControlRequestRefusal };
 
 // Proposals are author-revocable and expire separately from user-owned work items; only user acceptance creates an item.
 // Proposals carry text and identity, never plugin actions; starting one uses the host plan/approve/execute flow.
