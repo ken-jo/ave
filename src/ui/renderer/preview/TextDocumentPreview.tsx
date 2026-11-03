@@ -126,7 +126,7 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
 
   const passiveKind = state.phase === "ok" ? resolvePreviewRenderer({ text: state.content, path: state.path }).kind : undefined;
   const sourceVisible = selected || (state.phase === "ok" && state.binding !== undefined
-    && (state.changes.length > 0 || passiveKind === "text"));
+    && (state.changes.length > 0 || passiveKind === "text" || passiveKind === "code"));
   const acknowledgeRendered = useCallback(() => {
     if (state.phase !== "ok" || !state.binding) return;
     const { binding, seq } = state;

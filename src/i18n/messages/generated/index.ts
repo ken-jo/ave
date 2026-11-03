@@ -106,6 +106,7 @@ import { en as en_dockedApprovalCard } from "./dockedApprovalCard.js";
 import { en as en_egressApprovalCard } from "./egressApprovalCard.js";
 import { en as en_errorBoundary } from "./errorBoundary.js";
 import { en as en_fileEditDiff } from "./fileEditDiff.js";
+import { en as en_folderView } from "./folderView.js";
 import { en as en_formatIpcError } from "./formatIpcError.js";
 import { en as en_generalTab } from "./generalTab.js";
 import { en as en_gitMarketplace } from "./gitMarketplace.js";
@@ -301,6 +302,7 @@ export const generatedEn: Record<string, string> = {
   ...en_egressApprovalCard,
   ...en_errorBoundary,
   ...en_fileEditDiff,
+  ...en_folderView,
   ...en_formatIpcError,
   ...en_generalTab,
   ...en_gitMarketplace,

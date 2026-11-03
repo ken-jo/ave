@@ -60,8 +60,8 @@ const ALIASES: Record<string, string> = {
   yml: "yaml",
 };
 
-/** The grammar a fence language resolves to, or null when none is offered. */
-function resolveGrammar(language: string | undefined): string | null {
+/** The grammar a fence language or file extension resolves to, or null when none is offered. */
+export function resolveGrammar(language: string | undefined): string | null {
   if (!language) return null;
   const key = language.toLowerCase();
   const name = ALIASES[key] ?? key;
@@ -137,4 +137,41 @@ export function useHighlightedCode(language: string | undefined, code: string): 
       return null;
     }
   }, [ready, name, code]);
+}
+
+interface HastNodeLike {
+  type?: string;
+  value?: unknown;
+  properties?: { className?: unknown };
+  children?: readonly HastNodeLike[];
+}
+
+/** One coloured run of a line: its text and the innermost `hljs-*` classes that apply to it. */
+export interface HighlightedPiece {
+  text: string;
+  className: string | undefined;
+}
+
+/** Split a highlighted tree into lines of class-carrying pieces, so a renderer can number lines even when a token (a block
+ * comment, a template string) spans a line break. Only `hljs-*` class names survive; no other tree content reaches the DOM. */
+export function highlightedLines(tree: HighlightedTree): HighlightedPiece[][] {
+  const lines: HighlightedPiece[][] = [[]];
+  const walk = (nodes: readonly HastNodeLike[] | undefined, inherited: string | undefined): void => {
+    for (const node of nodes ?? []) {
+      if (node.type === "text" && typeof node.value === "string") {
+        node.value.split("\n").forEach((part, index) => {
+          if (index > 0) lines.push([]);
+          if (part.length > 0) lines[lines.length - 1]!.push({ text: part, className: inherited });
+        });
+      } else if (node.type === "element") {
+        const raw = node.properties?.className;
+        const own = Array.isArray(raw)
+          ? raw.filter((name): name is string => typeof name === "string" && name.startsWith("hljs-")).join(" ")
+          : "";
+        walk(node.children, own || inherited);
+      }
+    }
+  };
+  walk((tree as unknown as HastNodeLike).children, undefined);
+  return lines;
 }

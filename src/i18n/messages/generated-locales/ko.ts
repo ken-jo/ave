@@ -97,6 +97,7 @@ import { ko as ko_dockedApprovalCard } from "../generated/dockedApprovalCard.js"
 import { ko as ko_egressApprovalCard } from "../generated/egressApprovalCard.js";
 import { ko as ko_errorBoundary } from "../generated/errorBoundary.js";
 import { ko as ko_fileEditDiff } from "../generated/fileEditDiff.js";
+import { ko as ko_folderView } from "../generated/folderView.js";
 import { ko as ko_formatIpcError } from "../generated/formatIpcError.js";
 import { ko as ko_generalTab } from "../generated/generalTab.js";
 import { ko as ko_gitMarketplace } from "../generated/gitMarketplace.js";
@@ -292,6 +293,7 @@ export const koMessages: Record<string, string> = {
   ...ko_egressApprovalCard,
   ...ko_errorBoundary,
   ...ko_fileEditDiff,
+  ...ko_folderView,
   ...ko_formatIpcError,
   ...ko_generalTab,
   ...ko_gitMarketplace,

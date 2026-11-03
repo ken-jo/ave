@@ -5,6 +5,7 @@ import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { wrapRenderHtmlInlineFrameDocument } from "../../../shared/render-html-preview.js";
 import { previewDocumentFormatOf, type PreviewDocumentFormat } from "../../../shared/preview-document.js";
 import { previewPageFormatOf, type PreviewPageFormat } from "../../../shared/preview-page-document.js";
+import { highlightedLines, resolveGrammar, useHighlightedCode } from "../hooks/use-highlighted-code.js";
 
 /**
  * Progressive file/text viewer registry (§6.10.6). A descriptor (text + an
@@ -27,9 +28,11 @@ export interface PreviewContentDescriptor {
   path?: string;
   mimeType?: string;
   filename?: string;
+  /** The host returned only the first lines of the file (its line window); the code renderer says so. */
+  truncated?: boolean;
 }
 
-export type PreviewRenderKind = "text" | "markdown" | "mermaid";
+export type PreviewRenderKind = "text" | "markdown" | "mermaid" | "code";
 
 /**
  * How a file target is previewed. Table documents (csv/tsv/xlsx/xls/ods) are
@@ -67,6 +70,40 @@ function TextRenderer({ descriptor }: { descriptor: PreviewContentDescriptor }) 
     <pre className="max-h-(--preview-block-max-height) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-[11px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
       {descriptor.text}
     </pre>
+  );
+}
+
+/** Line-numbered, syntax-coloured source. The grammar is a local lazy chunk (no network); until it loads, and past the
+ * highlighter's size cap, the same rows show uncoloured so nothing shifts. */
+function CodeRenderer({ descriptor }: { descriptor: PreviewContentDescriptor }) {
+  const { t } = useTranslation();
+  const tree = useHighlightedCode(extensionOf(descriptor), descriptor.text);
+  const lines = useMemo(() => tree ? highlightedLines(tree)
+    : descriptor.text.split(/\r\n|\r|\n/).map((line) => line.length > 0 ? [{ text: line, className: undefined }] : []),
+  [tree, descriptor.text]);
+  const digits = String(lines.length).length;
+  return (
+    <div className="ave-code-lines min-w-0" data-testid="preview-code" data-highlighted={tree ? "true" : undefined}>
+      {descriptor.truncated ? (
+        <div className="border-b px-3 py-1 text-[11px] text-muted-foreground" data-testid="preview-code-truncated">
+          {t("folderView.codeFirstLines", { count: lines.length.toLocaleString() })}
+        </div>
+      ) : null}
+      <pre className="overflow-auto py-2 font-mono text-xs leading-5 text-foreground">
+        <code>
+          {lines.map((pieces, index) => (
+            <span key={index} className="flex min-h-5 px-2" data-testid="preview-code-line" data-line={index + 1}>
+              <span aria-hidden="true" className="mr-3 shrink-0 select-none text-right text-muted-foreground"
+                style={{ minWidth: `${Math.max(2, digits)}ch` }}>{index + 1}</span>
+              <span className="whitespace-pre">
+                {pieces.length === 0 ? "\u200b" : pieces.map((piece, at) =>
+                  piece.className ? <span key={at} className={piece.className}>{piece.text}</span> : piece.text)}
+              </span>
+            </span>
+          ))}
+        </code>
+      </pre>
+    </div>
   );
 }
 
@@ -230,8 +267,15 @@ const mermaidRenderer: PreviewRenderer = {
   Component: ({ descriptor, onRendered }) => <MermaidBlock key={descriptor.text} code={descriptor.text} onRendered={onRendered} />,
 };
 
+const codeRenderer: PreviewRenderer = {
+  kind: "code",
+  // The highlighter's own grammar table decides what counts as code, so no fourth extension list exists.
+  match: (descriptor) => resolveGrammar(extensionOf(descriptor)) !== null,
+  Component: CodeRenderer,
+};
+
 // Ordered — first match wins; `text` is always last (always-true fallback).
-const REGISTRY: readonly PreviewRenderer[] = [mermaidRenderer, markdownRenderer, textRenderer];
+const REGISTRY: readonly PreviewRenderer[] = [mermaidRenderer, markdownRenderer, codeRenderer, textRenderer];
 
 export function resolvePreviewRenderer(descriptor: PreviewContentDescriptor): PreviewRenderer {
   return REGISTRY.find((renderer) => renderer.match(descriptor)) ?? textRenderer;
