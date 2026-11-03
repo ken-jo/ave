@@ -608,6 +608,34 @@ export class WorkBoardStore {
     });
   }
 
+  // Point the run at the execute child once it links. Only the session id changes: the phase is already `executing` and its activity
+  // entry was written by setRunStatus, so this write appends no activity (a second entry would duplicate the run in reports).
+  async setRunSessionId(id: number, runSessionId: string): Promise<WorkItemUpdateResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      const idx = board.items.findIndex((i) => i.id === id);
+      if (idx === -1) {
+        this.cache = board;
+        return { status: "not_found" as const, itemId: id };
+      }
+      const nowMs = this.now();
+      const updated: WorkItem = {
+        ...board.items[idx],
+        runSessionId,
+        runUpdatedAt: new Date(nowMs).toISOString(),
+      };
+      board.items[idx] = updated;
+      await writeFileAtomic(this.filePath, board);
+      this.cache = board;
+      return {
+        status: "updated" as const,
+        itemId: id,
+        item: decorate(cloneItem(updated), nowMs),
+      };
+    });
+  }
+
   // Only the engine writes terminal results; undefined preserves fields, null clears them, and values replace them.
   // Clear stale plan/output/session fields so a failed new run cannot display an old success.
   async setRunResult(
