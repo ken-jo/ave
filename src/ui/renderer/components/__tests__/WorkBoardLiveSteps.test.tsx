@@ -160,6 +160,14 @@ describe("Work Board — a run's tool approval (owner decision B)", () => {
     expect(vi.mocked(surface.decide).mock.calls[0]?.[0]).toBe("req-child");
   });
 
+  it("never claims a run of an item this board does not list (another project's board)", async () => {
+    const other = approvalRequest({ id: "req-other", sessionId: "sub-other", toolName: "run_shell" }) as unknown as ApprovalRequest;
+    const { emit, surface } = await mountBoard({}, [other]);
+    await emit({ itemId: 99, phase: "executing", runSessionId: "sub-other" });
+    expect(surface.claims.ownerOf("sub-other")).toBeNull();
+    expect(document.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeNull();
+  });
+
   it("releases the claim when the board leaves", async () => {
     const { emit, surface, view } = await mountBoard({}, [childApproval()]);
     await emit({ itemId: 4, phase: "executing", runSessionId: CHILD });

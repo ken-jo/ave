@@ -187,8 +187,8 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
   const inFlight = isRunInFlight(run);
   const phase = run.phase;
 
-  // Settled states. `done` is reflected by the item's stored output in the detail modal, not a persistent card badge. Every phase is named
-  // so a new one cannot fall through to "no chip" unnoticed.
+  // Settled states of a run this board saw: done, rejected, failed or stopped, each with its own chip (livestep cases 10-12). Every phase
+  // is named so a new one cannot fall through to "no chip" unnoticed.
   if (!inFlight) {
     switch (phase) {
       case undefined:

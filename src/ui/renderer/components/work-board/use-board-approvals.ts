@@ -65,15 +65,13 @@ export function useBoardApprovals(items: readonly WorkItemResolved[], runState: 
   const { claims, queue } = surface;
   const surfaceId = `work-board:${useId()}`;
 
-  // Session → item, for every child the listed items or the live run state name.
+  // Session → item, for the children of the items this board lists. The run state also holds runs of items another project's board lists
+  // (progress is window-wide); claiming those would hold their cards off the lane with no card here to draw them.
   const sessionToItem = useMemo(() => {
     const map = new Map<string, number>();
     for (const item of items) {
       if (item.runSessionId) map.set(item.runSessionId, item.id);
       for (const id of runState[item.id]?.sessionIds ?? []) map.set(id, item.id);
-    }
-    for (const [key, run] of Object.entries(runState)) {
-      for (const id of run?.sessionIds ?? []) map.set(id, Number(key));
     }
     return map;
   }, [items, runState]);
