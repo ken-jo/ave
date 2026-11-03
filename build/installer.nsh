@@ -49,7 +49,7 @@ Function aveInstallMarketplaceGit
   ave_git_use_sysnative:
   StrCpy $R6 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   DetailPrint "Ave: downloading git for marketplaces (official MinGit release, sha256-pinned)…"
-  nsExec::ExecToLog '"$R6" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\${AVE_GIT_INSTALL_SCRIPT}" -InstallDir "$INSTDIR" -DownloadDir "$PLUGINSDIR"'
+  nsExec::ExecToLog '"$R6" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\${AVE_GIT_INSTALL_SCRIPT}" -InstallDir "$INSTDIR" -DownloadDir "$INSTDIR"'
   Pop $R7
   ; Plain StrCmp: this file is included before LogicLib, so ${If} is unavailable inside a Function.
   StrCmp $R7 "0" ave_git_done

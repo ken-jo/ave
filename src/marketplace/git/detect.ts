@@ -16,8 +16,8 @@ export interface GitExecutable {
   /** Absolute path of the `git` binary. */
   path: string;
   version: GitVersion;
-  /** The installer's copy only: its root, holding `cmd/` or `bin/`, `libexec/`, … */
-  installerRoot?: string;
+  /** The installer's copy only: where it is laid out. */
+  installer?: InstallerGitInstall;
 }
 
 interface TooOldGit {
@@ -97,7 +97,7 @@ async function usableInstallerGit(deps: GitDetectionDeps): Promise<GitExecutable
   const output = await deps.readVersion(installed.path);
   const version = output === null ? null : parseGitVersion(output);
   if (!version || !meetsMinimumGitVersion(version)) return null;
-  return { kind: "installer", path: installed.path, version, installerRoot: installed.root };
+  return { kind: "installer", path: installed.path, version, installer: installed };
 }
 
 export async function detectGitRuntime(deps: GitDetectionDeps): Promise<GitDetection> {

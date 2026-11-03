@@ -61,7 +61,7 @@ export class MarketplaceGit {
     const globalConfigPath = join(this.options.envRoot, "gitconfig");
     const copied = await readCopiedCredentialConfig(git.path);
     await writeGeneratedGlobalConfig(globalConfigPath, copied);
-    const installed = git.kind === "installer" ? installerRunnerOptions({ path: git.path, root: git.installerRoot! }) : {};
+    const installed = git.kind === "installer" ? installerRunnerOptions(git.installer!) : {};
     const runner = new GitRunner({
       git,
       globalConfigPath,

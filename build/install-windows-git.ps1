@@ -11,11 +11,11 @@ $ProgressPreference = 'SilentlyContinue'
 # Windows PowerShell's own modules only; a PowerShell 7 PSModulePath must not supply these cmdlets.
 $env:PSModulePath = Join-Path $PSHOME 'Modules'
 
-# Update together from the release notes' SHA-256 table: https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.4
+# Update together from the release notes' SHA-256 table (Prefix is the archive's toolchain directory, read from the zip itself): https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.4
 $Tag = 'v2.56.0.windows.4'
 $Assets = @{
-  AMD64 = @{ Name = 'MinGit-2.56.0.4-64-bit.zip'; Size = 39846926; Sha256 = 'e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877' }
-  ARM64 = @{ Name = 'MinGit-2.56.0.4-arm64.zip'; Size = 37980967; Sha256 = '70f7649f78088c1db1d2f3571ca46a04d5bef06e4e9d56d8ed7f9829e8c6c4db' }
+  AMD64 = @{ Name = 'MinGit-2.56.0.4-64-bit.zip'; Size = 39846926; Sha256 = 'e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877'; Prefix = 'ucrt64' }
+  ARM64 = @{ Name = 'MinGit-2.56.0.4-arm64.zip'; Size = 37980967; Sha256 = '70f7649f78088c1db1d2f3571ca46a04d5bef06e4e9d56d8ed7f9829e8c6c4db'; Prefix = 'clangarm64' }
 }
 
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -53,8 +53,8 @@ try {
   try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::ExtractToDirectory($zip, $staging)
-    foreach ($file in 'cmd\git.exe', 'mingw64\bin\git-remote-https.exe') {
-      if (-not (Test-Path -LiteralPath (Join-Path $staging $file) -PathType Leaf)) { throw "$file is missing from the archive" }
+    foreach ($file in 'cmd\git.exe', "$($asset.Prefix)\bin\git-remote-https.exe", "$($asset.Prefix)\libexec\git-core") {
+      if (-not (Test-Path -LiteralPath (Join-Path $staging $file))) { throw "$file is missing from the archive" }
     }
     Rename-Item -LiteralPath $staging -NewName 'git'
   } catch {

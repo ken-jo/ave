@@ -104,7 +104,7 @@ export interface GitRunnerOptions {
   /** An empty Ave-owned directory, used as `core.hooksPath` and `GIT_TEMPLATE_DIR`. */
   emptyDir: string;
   askpass: AskpassBroker;
-  /** The installer's copy: `GIT_EXEC_PATH`, CA bundle and similar (installer-git.ts). */
+  /** The installer's copy: `GIT_EXEC_PATH` (installer-git.ts). */
   installerEnv?: Record<string, string>;
   /** The installer's copy: prepended to PATH so git finds its own helpers first. */
   installerPathPrefix?: string;

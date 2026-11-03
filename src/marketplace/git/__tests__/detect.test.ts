@@ -55,8 +55,9 @@ function fakeDeps(overrides: Partial<GitDetectionDeps> & { versions: Record<stri
 }
 
 const INSTALLED: InstallerGitInstall = {
-  path: "/opt/Ave/resources/git-runtime/linux-x64/bin/git",
-  root: "/opt/Ave/resources/git-runtime/linux-x64",
+  path: "C:\\Program Files\\Ave\\git\\cmd\\git.exe",
+  root: "C:\\Program Files\\Ave\\git",
+  prefix: "ucrt64",
 };
 
 describe("detectGitRuntime", () => {
@@ -69,7 +70,7 @@ describe("detectGitRuntime", () => {
     );
     expect(detection).toEqual({
       state: "ready",
-      git: { kind: "installer", path: INSTALLED.path, installerRoot: INSTALLED.root, version: { major: 2, minor: 53, patch: 0, text: "2.53.0" } },
+      git: { kind: "installer", path: INSTALLED.path, installer: INSTALLED, version: { major: 2, minor: 53, patch: 0, text: "2.53.0" } },
     });
   });
 

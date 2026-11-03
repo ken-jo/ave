@@ -21,11 +21,12 @@ describe("installerGitRoot", () => {
 });
 
 describe("findInstallerGit", () => {
-  it("accepts a root holding cmd\\git.exe", () => {
+  it.each(["ucrt64", "clangarm64"])("accepts a root holding cmd\\git.exe and a %s toolchain", (prefix) => {
     const root = join(dir, "git");
     mkdirSync(join(root, "cmd"), { recursive: true });
+    mkdirSync(join(root, prefix, "libexec", "git-core"), { recursive: true });
     writeFileSync(join(root, "cmd", "git.exe"), "");
-    expect(findInstallerGit(root)).toEqual({ path: join(root, "cmd", "git.exe"), root });
+    expect(findInstallerGit(root)).toEqual({ path: join(root, "cmd", "git.exe"), root, prefix });
   });
 
   it("refuses no root, a missing root and a root without the binary", () => {
@@ -33,14 +34,19 @@ describe("findInstallerGit", () => {
     expect(findInstallerGit(join(dir, "absent"))).toBeNull();
     mkdirSync(join(dir, "empty"));
     expect(findInstallerGit(join(dir, "empty"))).toBeNull();
+    const noToolchain = join(dir, "no-toolchain");
+    mkdirSync(join(noToolchain, "cmd"), { recursive: true });
+    writeFileSync(join(noToolchain, "cmd", "git.exe"), "");
+    expect(findInstallerGit(noToolchain)).toBeNull();
   });
 });
 
 describe("installerRunnerOptions", () => {
-  it("uses schannel and the copy's own tools", () => {
-    const options = installerRunnerOptions({ path: "C:\\Ave\\git\\cmd\\git.exe", root: "C:\\Ave\\git" });
+  it("uses schannel and the copy's own toolchain tools", () => {
+    const root = "C:\\Ave\\git";
+    const options = installerRunnerOptions({ path: join(root, "cmd", "git.exe"), root, prefix: "ucrt64" });
     expect(options.installerConfig).toEqual({ "http.sslBackend": "schannel" });
-    expect(options.installerEnv).toEqual({ GIT_EXEC_PATH: join("C:\\Ave\\git", "mingw64", "libexec", "git-core") });
-    expect(options.installerPathPrefix?.split(";")).toEqual([join("C:\\Ave\\git", "mingw64", "bin"), join("C:\\Ave\\git", "usr", "bin")]);
+    expect(options.installerEnv).toEqual({ GIT_EXEC_PATH: join(root, "ucrt64", "libexec", "git-core") });
+    expect(options.installerPathPrefix?.split(";")).toEqual([join(root, "ucrt64", "bin"), join(root, "usr", "bin")]);
   });
 });

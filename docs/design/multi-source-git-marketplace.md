@@ -1646,9 +1646,13 @@ fetches a pinned PortableGit at install time instead of shipping it:
   The tag, sizes and sha256 values are pinned in the script and updated
   together from the release notes' SHA-256 table, reviewed like a dependency
   bump.
+- The archive is downloaded into `$INSTDIR` itself, so only an administrator
+  can touch it between the hash check and extraction.
 - A size or sha256 mismatch deletes the download and places nothing (exit 3).
   A verified archive is extracted to `$INSTDIR\git.partial`, must contain
-  `cmd\git.exe` and `mingw64\bin\git-remote-https.exe`, and is then renamed
+  `cmd\git.exe` and the toolchain directory pinned with the asset (`ucrt64` on
+  x64, `clangarm64` on arm64; MinGit has no `mingw64`) with
+  `bin\git-remote-https.exe` and `libexec\git-core`, and is then renamed
   to `$INSTDIR\git`. The per-machine install makes that folder
   administrator-writable only.
 - Failure does not abort the install: a oneClick installer has no retry flow.
@@ -1658,8 +1662,8 @@ fetches a pinned PortableGit at install time instead of shipping it:
   (`customRemoveFiles`); an update downloads it again.
 
 Installer-copy environment, set on every call; nothing is written inside the
-copy: `cmd\git.exe` with `GIT_EXEC_PATH` = `mingw64\libexec\git-core` and
-`PATH` prefixed with `mingw64\bin` (which holds the https helper) and
+copy: `cmd\git.exe` with `GIT_EXEC_PATH` = `<toolchain>\libexec\git-core` and
+`PATH` prefixed with `<toolchain>\bin` (which holds the https helper) and
 `usr\bin`. `-c http.sslBackend=schannel` makes it trust the Windows
 certificate store, corporate roots included; the copy's own system config says
 the same, but `GIT_CONFIG_NOSYSTEM=1` keeps that file unread, so the setting is
