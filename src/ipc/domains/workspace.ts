@@ -1,7 +1,7 @@
 import { dialog, ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
+import { isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
 import { randomBytes } from "node:crypto";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { createLogger } from "../../lib/logger.js";
@@ -40,6 +40,10 @@ import {
 import { getActivePluginSurfacePermissionScope } from "../../boot/plugin-surface-permissions.js";
 import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session-lifecycle.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
+import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
+import { openVerifiedExternalFile, type ExternalOpenRefusal } from "../../main/external-open-target.js";
+import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import {
   searchWorkspaceFiles,
   WORKSPACE_FILE_QUERY_MAX_CHARS,
@@ -123,7 +127,14 @@ export interface WorkspaceDropPrepareResult {
 export interface WorkspaceDirEntry {
   name: string;
   path: string;
-  type: "file" | "directory";
+  // A link is listed, never followed: its target stays in main and only `outside` crosses IPC.
+  type: "file" | "directory" | "link";
+  /** Links only: the link's real target is not inside the project root that contains this folder (or cannot be resolved). */
+  outside?: boolean;
+  /** From the entry's own lstat; a link reports the link, not its target. */
+  size: number;
+  mtimeMs: number;
+  birthtimeMs: number;
 }
 
 export interface WorkspaceListDirResult {
@@ -131,9 +142,28 @@ export interface WorkspaceListDirResult {
   path?: string;
   entries?: WorkspaceDirEntry[];
   truncated?: boolean;
-  error?: "unauthorized" | "path-not-allowed" | "sensitive-path" | "not-a-dir" | "read-failed";
+  /** How many entries the sensitive-path floor left out, so an empty folder can say whether anything was hidden. */
+  hidden?: number;
+  error?: "unauthorized" | "path-not-allowed" | "sensitive-path" | "not-a-dir" | "permission-denied" | "not-found" | "read-failed";
   message?: string;
 }
+
+/** `outside-project` = the real target is not inside `projectRoot`; the rest come from the shared open sequence. */
+export type WorkspaceOpenPathResult =
+  | { ok: true }
+  | {
+    ok: false;
+    error:
+      | "unauthorized"
+      | typeof USER_KEYBOARD_REQUIRED.error
+      | "invalid-request"
+      | "settings-unreadable"
+      | "root-not-registered"
+      | "path-not-allowed"
+      | "sensitive-path"
+      | "outside-project"
+      | ExternalOpenRefusal;
+  };
 
 export interface WorkspaceRemoveRootResult {
   ok: boolean;
@@ -180,6 +210,36 @@ function currentScope(): { cwd: string; extraAllowed: string[] } {
   const cwd = getDefaultWorkspaceRoot();
   const additional = readPermissionSettings().permissions.additionalDirectories;
   return { cwd, extraAllowed: buildRuntimeAllowedDirectories(additional) };
+}
+
+/** Case-folded canonical form used for every root and containment comparison in this domain. */
+function matchKey(path: string): string {
+  return caseFoldForMatch(canonicalizePathForMatch(path));
+}
+
+/** The registered root `projectRoot` names, compared canonically; null when it is not (or no longer) a project root. */
+function registeredRoot(projectRoot: string): WorkspaceRoot | null {
+  const key = matchKey(projectRoot);
+  return computeRoots().find((root) => matchKey(root.path) === key) ?? null;
+}
+
+/** The innermost registered root containing `dir`, as a match key; links in a folder outside every root count as outside. */
+function containingRootKey(dir: string): string | null {
+  const dirKey = matchKey(dir);
+  let best: string | null = null;
+  for (const root of computeRoots()) {
+    const key = matchKey(root.path);
+    if (isPathWithin(key, dirKey) && (best === null || key.length > best.length)) best = key;
+  }
+  return best;
+}
+
+/** Map a filesystem failure to the folder view's stable codes. */
+function listDirFailure(err: unknown): "permission-denied" | "not-found" | "read-failed" {
+  const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
+  if (code === "EACCES" || code === "EPERM") return "permission-denied";
+  if (code === "ENOENT" || code === "ENOTDIR") return "not-found";
+  return "read-failed";
 }
 
 function computeRoots(): WorkspaceRoot[] {
@@ -799,35 +859,61 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         return { ok: false, error, message: `scope guard rejected: ${verdict.error}` };
       }
       const dir = verdict.resolved;
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
       try {
-        const stat = await fs.stat(dir);
-        if (!stat.isDirectory()) {
-          return { ok: false, error: "not-a-dir", path: dir, message: "not a directory" };
-        }
+        stat = await fs.stat(dir);
+      } catch (err) {
+        return { ok: false, error: listDirFailure(err), path: dir, message: errorMessage(err) };
+      }
+      if (!stat.isDirectory()) {
+        return { ok: false, error: "not-a-dir", path: dir, message: "not a directory" };
+      }
+      try {
         const dirents = await fs.readdir(dir, { withFileTypes: true });
+        const rootKey = containingRootKey(dir);
         const entries: WorkspaceDirEntry[] = [];
         let truncated = false;
+        let hidden = 0;
         for (const ent of dirents) {
+          const full = join(dir, ent.name);
+          // Filter sensitive entries using the file tools' policy so browsing cannot offer paths reads refuse.
+          if (isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(full)))) {
+            hidden += 1;
+            continue;
+          }
           if (entries.length >= MAX_DIR_ENTRIES) {
             truncated = true;
             break;
           }
-          const full = join(dir, ent.name);
-          // Filter sensitive entries using the file tools' policy so browsing cannot offer paths reads refuse.
-          if (isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(full)))) continue;
-          // List only plain files and directories; symlink entries could advertise out-of-scope targets.
-          if (ent.isFile()) entries.push({ name: ent.name, path: full, type: "file" });
-          else if (ent.isDirectory()) entries.push({ name: ent.name, path: full, type: "directory" });
+          let info: Awaited<ReturnType<typeof fs.lstat>>;
+          try {
+            info = await fs.lstat(full);
+          } catch {
+            // Removed between readdir and lstat; it is no longer there to show.
+            continue;
+          }
+          const times = { size: info.size, mtimeMs: info.mtimeMs, birthtimeMs: info.birthtimeMs };
+          if (info.isSymbolicLink()) {
+            // Listed for display only; the target is resolved here solely to decide `outside` and never leaves main.
+            let outside = true;
+            try {
+              outside = rootKey === null || !isPathWithin(rootKey, matchKey(await fs.realpath(full)));
+            } catch {
+              outside = true;
+            }
+            entries.push({ name: ent.name, path: full, type: "link", outside, ...times });
+          } else if (info.isFile()) entries.push({ name: ent.name, path: full, type: "file", ...times });
+          else if (info.isDirectory()) entries.push({ name: ent.name, path: full, type: "directory", ...times });
         }
         entries.sort((a, b) => {
-          if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
+          if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
           return a.name.localeCompare(b.name);
         });
-        return { ok: true, path: dir, entries, truncated };
+        return { ok: true, path: dir, entries, truncated, hidden };
       } catch (err) {
         return {
           ok: false,
-          error: "read-failed",
+          error: listDirFailure(err),
           path: dir,
           message: errorMessage(err),
         };
@@ -991,6 +1077,62 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         ...(removal.cleanupPending ? { cleanupPending: true } : {}),
         ...(undoToken ? { undoToken } : {}),
       };
+    },
+  );
+
+  // Open one in-project file with the OS default app. A user action from the folder view, never a tool: no agent,
+  // plugin frame or remote controller reaches it, and the permission tree gains no node for it.
+  ipcMain.handle(
+    CHANNELS.workspace.openPath,
+    async (e, payload: unknown): Promise<WorkspaceOpenPathResult> => {
+      if (!validateAppWindowMainFrameSender(e, deps)) {
+        auditUnauthorized(auditLogger, CHANNELS.workspace.openPath, e);
+        return { ok: false, error: "unauthorized" };
+      }
+      if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;
+      const { projectRoot, path: rawPath } = payload as { projectRoot?: unknown; path?: unknown };
+      if (typeof projectRoot !== "string" || typeof rawPath !== "string" || rawPath.length === 0
+        || !isAbsolutePath(projectRoot) || !isAbsolutePath(rawPath)) {
+        return { ok: false, error: "invalid-request" };
+      }
+      let root: WorkspaceRoot | null;
+      let scope: { cwd: string; extraAllowed: string[] };
+      try {
+        root = registeredRoot(projectRoot);
+        scope = currentScope();
+      } catch (error) {
+        if (error instanceof PermissionSettingsUnreadableError) return { ok: false, error: "settings-unreadable" };
+        throw error;
+      }
+      if (!root) return { ok: false, error: "root-not-registered" };
+      const verdict = assertReadableFilePath(rawPath, scope.cwd, scope.extraAllowed);
+      if (!verdict.ok) return { ok: false, error: verdict.error === "sensitive-path" ? "sensitive-path" : "path-not-allowed" };
+      const rootPath = root.path;
+      // The requested spelling goes in, not the resolved one, so a `.sh` name that links to a text file is still refused.
+      const opened = await openVerifiedExternalFile(rawPath, (real) => {
+        if (!validateAppWindowMainFrameSender(e, deps)) return "unauthorized";
+        // The root is re-read each time: removing it between the click and the open withdraws the authority.
+        const current = registeredRoot(rootPath);
+        if (!current) return "root-not-registered";
+        return isPathWithin(matchKey(current.path), matchKey(real)) ? null : "outside-project";
+      });
+      try {
+        auditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: "workspace-open-path",
+          type: opened.ok ? "info" : "warn",
+          input: JSON.stringify({
+            channel: CHANNELS.workspace.openPath,
+            root: opaqueWorkspaceRootAuditRef(rootPath),
+            path: opaqueWorkspaceRootAuditRef(opened.ok ? opened.real : verdict.resolved),
+            ok: opened.ok,
+            ...(opened.ok ? {} : { error: opened.error }),
+          }),
+        });
+      } catch {
+        // An audit sink failure must not change what the user was told.
+      }
+      return opened.ok ? { ok: true } : { ok: false, error: opened.error };
     },
   );
 

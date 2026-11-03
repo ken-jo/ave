@@ -262,6 +262,7 @@ describe("preload contextBridge world shape lock", () => {
             "dropPrepare",
             "listDir",
             "listRoots",
+            "openPath",
             "pickRoot",
             "previewRemoveRoot",
             "removeRoot",
