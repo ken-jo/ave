@@ -269,7 +269,7 @@ export function broadcastPermissionConfigChanged(deps: PermissionConfigBroadcast
 
 /** Hint every app window that the sandbox status snapshot changed. Payload-less like `configChanged`: listeners re-read `sandboxCapability`,
  * which recomputes the shell plan from the current state, so a renderer that read the snapshot during the Windows MXC check stops showing it. */
-export function broadcastSandboxCapabilityChanged(deps: PermissionConfigBroadcastTarget): void {
+function broadcastSandboxCapabilityChanged(deps: PermissionConfigBroadcastTarget): void {
   const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
   for (const win of windows) {
     sendToWindow(win, PERMISSIONS.sandboxCapabilityChanged, {});
