@@ -1,4 +1,5 @@
-/** Follow settings broadcasts across windows; without a preload bridge, render children using the default English locale. */
+/** Render the saved language from the first paint and follow settings broadcasts across windows; without a preload bridge, render
+ * children using the default English locale. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_LOCALE,
@@ -20,9 +21,20 @@ function tryGetApi(): AveApi | null {
   }
 }
 
-export function I18nSettingsProvider({ children }: { children: ReactNode }) {
+/**
+ * The locale the first render uses: the saved `appearance.language` (seeded from the system language on a fresh install), with
+ * its compiled catalog already loaded, so the first paint is not English for a user who chose another language. `renderer.tsx`
+ * awaits this beside the model catalog before mounting. It does not wait for installed content: that load can take seconds at
+ * boot, and the provider's hydration below still applies an installed-package language once it registers.
+ */
+export async function resolveBootLocale(api: Pick<AveApi, "getSettings">): Promise<Locale> {
+  const locale = normalizeLocale((await api.getSettings()).appearance?.language);
+  return (await tryLoadLocaleMessages(locale)) ? locale : DEFAULT_LOCALE;
+}
+
+export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE }: { children: ReactNode; initialLocale?: Locale }) {
   const api = useMemo(() => tryGetApi(), []);
-  const [locale, setLocaleState] = useState<Locale>(DEFAULT_LOCALE);
+  const [locale, setLocaleState] = useState<Locale>(initialLocale);
   const mountedRef = useRef(true);
   const localeRequestRef = useRef(0);
   useEffect(() => () => { mountedRef.current = false; }, []);

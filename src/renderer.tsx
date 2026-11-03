@@ -1,7 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./ui/renderer/App.js";
 import { primeHostMarketplaceApi } from "./ui/renderer/host-marketplace-api.js";
-import { I18nSettingsProvider } from "./ui/renderer/context/I18nSettingsProvider.js";
+import { I18nSettingsProvider, resolveBootLocale } from "./ui/renderer/context/I18nSettingsProvider.js";
 import { getApi } from "./ui/renderer/api-client.js";
 import { installRendererModelCatalog, renderModelCatalogUnavailable } from "./ui/renderer/model-catalog-bootstrap.js";
 
@@ -15,10 +15,13 @@ if (typeof document !== "undefined") {
   if (root) {
     const api = getApi();
     // Mount only once the catalog is in: the first settings snapshot resolves
-    // the context window against it (model-catalog-bootstrap.ts).
-    void installRendererModelCatalog(api).then(() => {
+    // the context window against it (model-catalog-bootstrap.ts). The saved
+    // language resolves alongside, so the first paint is already localized.
+    const bootLocale = resolveBootLocale(api);
+    void installRendererModelCatalog(api).then(async () => {
+      const initialLocale = await bootLocale;
       createRoot(root).render(
-        <I18nSettingsProvider>
+        <I18nSettingsProvider initialLocale={initialLocale}>
           <App />
         </I18nSettingsProvider>,
       );

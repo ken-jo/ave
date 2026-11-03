@@ -204,16 +204,18 @@ describe("renderModelCatalogUnavailable", () => {
     };
     const getApi = vi.fn(() => api);
     const createRoot = vi.fn();
+    const resolveBootLocale = vi.fn(async () => "en");
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.doMock("../api-client.js", () => ({ getApi }));
     vi.doMock("../host-marketplace-api.js", () => ({ primeHostMarketplaceApi: vi.fn() }));
     vi.doMock("../App.js", () => ({ App: () => null }));
-    vi.doMock("../context/I18nSettingsProvider.js", () => ({ I18nSettingsProvider: () => null }));
+    vi.doMock("../context/I18nSettingsProvider.js", () => ({ I18nSettingsProvider: () => null, resolveBootLocale }));
     vi.doMock("react-dom/client", () => ({ createRoot }));
     try {
       await import("../../../renderer.js");
       await waitFor(() => expect(root.textContent).toContain("인증되지 않은 프레임"));
       expect(getApi).toHaveBeenCalledOnce();
+      expect(resolveBootLocale).toHaveBeenCalledWith(api);
       expect(api.getSettings).toHaveBeenCalledOnce();
       expect(document.documentElement.lang).toBe("ko");
       expect(createRoot).not.toHaveBeenCalled();

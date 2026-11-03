@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { Locale } from "../../../../i18n/locale.js";
-import { __setLocaleLoaderForTest } from "../../../../i18n/messages/index.js";
-import { I18nSettingsProvider } from "../I18nSettingsProvider.js";
+import { __resetLazyLocaleMessagesForTest, __setLocaleLoaderForTest } from "../../../../i18n/messages/index.js";
+import { I18nSettingsProvider, resolveBootLocale } from "../I18nSettingsProvider.js";
 
 function installApi(initialLanguage: Locale = "en") {
   const settingsUpdatedHandlers: Array<(settings: { appearance?: { language?: Locale } }) => void> = [];
@@ -40,6 +40,63 @@ function renderLocaleProbe() {
 afterEach(() => {
   cleanup();
   delete (window as unknown as { aveApi?: unknown }).aveApi;
+});
+
+describe("I18nSettingsProvider boot locale", () => {
+  it("renders a saved Korean setting on the very first render, before any hydration effect runs", async () => {
+    __resetLazyLocaleMessagesForTest();
+    const { api } = installApi("ko");
+
+    const initialLocale = await resolveBootLocale(api as never);
+    render(<I18nSettingsProvider initialLocale={initialLocale}><LocaleProbe /></I18nSettingsProvider>);
+
+    // Synchronous: the first commit already carries the saved language (no waitFor).
+    expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
+    expect(screen.getByTestId("language-title")).toHaveTextContent("언어");
+  });
+
+  it("boots in English when the saved language's catalog cannot load", async () => {
+    const restore = __setLocaleLoaderForTest("ko", () => Promise.reject(new Error("missing chunk")));
+    try {
+      await expect(resolveBootLocale({ getSettings: async () => ({ appearance: { language: "ko" } }) as never })).resolves.toBe("en");
+    } finally {
+      restore();
+    }
+  });
+
+  it("mounts the renderer entry with the saved language as the provider's initial locale", async () => {
+    const root = document.createElement("div");
+    root.id = "root";
+    document.body.append(root);
+    const api = { getSettings: vi.fn(async () => ({ appearance: { language: "ko" } })) };
+    const render = vi.fn();
+    vi.resetModules();
+    vi.doMock("../../api-client.js", () => ({ getApi: () => api }));
+    vi.doMock("../../host-marketplace-api.js", () => ({ primeHostMarketplaceApi: vi.fn() }));
+    vi.doMock("../../App.js", () => ({ App: () => null }));
+    vi.doMock("../../model-catalog-bootstrap.js", () => ({
+      installRendererModelCatalog: vi.fn(async () => undefined),
+      renderModelCatalogUnavailable: vi.fn(),
+    }));
+    vi.doMock("react-dom/client", () => ({ createRoot: () => ({ render }) }));
+    try {
+      await import("../../../../renderer.js");
+      await waitFor(() => expect(render).toHaveBeenCalledOnce());
+      const element = render.mock.calls[0]![0] as { props: { initialLocale?: string } };
+      expect(element.props.initialLocale).toBe("ko");
+    } finally {
+      root.remove();
+      vi.doUnmock("../../api-client.js");
+      vi.doUnmock("../../host-marketplace-api.js");
+      vi.doUnmock("../../App.js");
+      vi.doUnmock("../../model-catalog-bootstrap.js");
+      vi.doUnmock("react-dom/client");
+    }
+  });
+
+  it("boots in English for an English setting", async () => {
+    await expect(resolveBootLocale({ getSettings: async () => ({ appearance: { language: "en" } }) as never })).resolves.toBe("en");
+  });
 });
 
 describe("I18nSettingsProvider lazy locale loading", () => {
