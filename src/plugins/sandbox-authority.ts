@@ -1,12 +1,18 @@
 import { join } from "node:path";
-import { aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import type { PluginManifest, PluginSandboxDeclaration } from "./public-contract.js";
 import { isRecord } from "../shared/is-record.js";
 
-/** Host-owned subtrees that a reviewed declaration may name. */
+/** Host-owned subtrees that a reviewed declaration may name. `segments` is the directory the row names; `grants` are what a
+ * child is actually granted READ on. The runtime boundary is granted through its children only: an ACL grant entry a crash leaves
+ * behind then sits on a child, never on the boundary's own DACL that boot checks. */
 export const HOST_DIRECTORY_CATALOG = {
-  runtime: { segments: ["runtime"], piercesDenyFloor: false },
-  certs: { segments: ["certs"], piercesDenyFloor: true },
+  runtime: {
+    segments: [AVE_HOME_RUNTIME_DIRECTORY],
+    grants: [[AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT.pythonEnvs], [AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT.uv]],
+    piercesDenyFloor: false,
+  },
+  certs: { segments: ["certs"], grants: [["certs"]], piercesDenyFloor: true },
 } as const;
 
 /**

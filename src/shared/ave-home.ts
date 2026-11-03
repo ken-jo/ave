@@ -9,7 +9,7 @@ import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
-import { isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsWorkspaceForeignWriter, WINDOWS_WORKSPACE_TRUSTED_WRITERS, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
+import { AVE_HOME_RUNTIME_DIRECTORY, isWindowsHomeRootForeignTraversal, isWindowsHomeRootRepairable, isWindowsWorkspaceForeignWriter, WINDOWS_WORKSPACE_TRUSTED_WRITERS, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
 import { fileIdentityKey } from "../lib/file-identity.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandleEntry } from "./windows-configuration-handles.js";
 
@@ -297,9 +297,41 @@ function inspectWindowsConfiguration(home: string, boundaryOnly: boolean): boole
   return true;
 }
 
+export { AVE_HOME_RUNTIME_DIRECTORY };
+
+/** Children of the runtime boundary. An env root is the boundary itself or `python-envs/<id>`; each holds `venv` and the `python`
+ * installs its venv was created from. A sandboxed spawn is granted these children, never the boundary itself. */
+export const AVE_RUNTIME_LAYOUT = Object.freeze({ uv: "uv", pythonEnvs: "python-envs", venv: "venv", python: "python" });
+
 export const AVE_HOME_PROTECTED_DIRECTORIES: readonly string[] = Object.freeze([
-  "secrets", "subscription-runtimes", "keys", "certs", AVE_HOME_CONFIGURATION_DIRECTORY,
+  "secrets", "subscription-runtimes", "keys", "certs", AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_RUNTIME_DIRECTORY,
 ]);
+
+/** Only boot creates the runtime boundary. Every writer that would otherwise recreate a moved or missing one with a recursive mkdir
+ * calls this first: it must be a real directory, not a link, and on Windows owner-only with a protected DACL. A restart recreates it. */
+export function assertAveHomeRuntimeBoundary(home = aveHome()): void {
+  const path = resolve(home, AVE_HOME_RUNTIME_DIRECTORY);
+  let protectedBoundary: boolean;
+  if (process.platform === "win32") {
+    const [root, entry] = readWindowsDacls([resolve(home), path]) as [WindowsDaclFacts, WindowsDaclFacts];
+    protectedBoundary = entry.exists === true && entry.directory === true && admitWindowsReparse(entry, "evidence") === true
+      && entry.dacl?.protected === true && isOwnerOnlyDacl(directoryDescriptor(path, entry), entry.currentUserSid);
+    // A boundary that fails under a refused or unverified home is not something a restart repairs: boot creates and repairs it only
+    // under a protected root, so the message points to the home's permissions instead.
+    const failure = getAveHomePrivacyFailure();
+    if (!protectedBoundary && (failure !== undefined || !admitWindowsReparse(root, "evidence") || !isWindowsHomeRootSafe(root))) {
+      const detail = failure !== undefined ? `${failure.category}, ${failure.failedPath ?? failure.home}` : `home ${resolve(home)} is not protected`;
+      throw new Error(`Ave runtime folder ${path} is unavailable because AVE_HOME protection is not established (${detail}). `
+        + "Fix the folder permissions shown in Settings > Permissions, then restart Ave.");
+    }
+  } else {
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    protectedBoundary = entry !== undefined && entry.isDirectory();
+  }
+  if (!protectedBoundary) {
+    throw new Error(`Ave runtime folder ${path} is missing, a link, or not protected; restart Ave to recreate it`);
+  }
+}
 
 /** All user-data paths must use this resolver so AVE_HOME isolates every store, including secrets. */
 export function aveHome(): string {
@@ -666,12 +698,24 @@ export function ensureAveHomePrivate(
 ): AveHomePrivacy {
   if (runtime.platform !== "win32") {
     mkdirSync(home, { recursive: true, mode: 0o700 });
-    const config = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
-    mkdirSync(config, { mode: 0o700, recursive: true });
-    if (process.platform !== "win32") {
-      const handle = openSync(config, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      try { fchmodSync(handle, 0o700); }
-      finally { closeSync(handle); }
+    // Every boot: an existing 0755 child would otherwise stay group/other-readable under a root the fatal check admits.
+    for (const name of [AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_RUNTIME_DIRECTORY]) {
+      const directory = join(home, name);
+      if (process.platform === "win32") {
+        mkdirSync(directory, { mode: 0o700, recursive: true });
+      } else {
+        let handle: number;
+        try {
+          mkdirSync(directory, { mode: 0o700, recursive: true });
+          handle = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ELOOP" && code !== "ENOTDIR" && code !== "EEXIST") throw error;
+          throw new Error(`Ave cannot protect ${directory}: it is a link or not a directory. Move it out of ${home} and restart Ave.`, { cause: error });
+        }
+        try { fchmodSync(handle, 0o700); }
+        finally { closeSync(handle); }
+      }
     }
     return { enforcement: "posix-mode", home };
   }

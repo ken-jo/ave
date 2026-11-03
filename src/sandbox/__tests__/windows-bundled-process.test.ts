@@ -109,13 +109,32 @@ describe("spawnWindowsBundledProcess", () => {
     expect(asrtCleanup).not.toHaveBeenCalled();
   });
 
-  it("grants READ on the host's runtime directory only for a program the host keeps there", async () => {
+  it("grants READ on the runtime children a program needs, never on the runtime boundary itself", async () => {
     confinedSpawn.mockImplementation(spawnedAs(brokerChild()));
     const runtime = join(aveHome(), "runtime");
+    const reads = (call: number) => (holdGrant.mock.calls[call]![0] as { allowRead: string[] }).allowRead;
     await spawnWindowsBundledProcess({ ...input, command: join(runtime, "uv", "x86_64-pc-windows-msvc", "abc", "uv.exe") });
-    expect((holdGrant.mock.calls[0]![0] as { allowRead: string[] }).allowRead).toContain(runtime);
+    expect(reads(0)).toContain(join(runtime, "uv"));
+    expect(reads(0)).not.toContain(runtime);
+    const env = join(runtime, "python-envs", "x86_64-pc-windows-msvc-py312-abc");
+    await spawnWindowsBundledProcess({ ...input, command: join(env, "venv", "Scripts", "python.exe") });
+    expect(reads(1)).toEqual(expect.arrayContaining([join(env, "venv"), join(env, "python")]));
+    expect(reads(1)).not.toContain(runtime);
+    expect(reads(1)).not.toContain(env);
+    await spawnWindowsBundledProcess({ ...input, command: join(runtime, "venv", "Scripts", "python.exe") });
+    expect(reads(2)).toEqual(expect.arrayContaining([join(runtime, "venv"), join(runtime, "python")]));
+    expect(reads(2)).not.toContain(runtime);
     await spawnWindowsBundledProcess({ ...input, command: `${runtime}-elsewhere\\uv.exe` });
-    expect((holdGrant.mock.calls[1]![0] as { allowRead: string[] }).allowRead).not.toContain(runtime);
+    expect(reads(3).some((path) => path.startsWith(runtime))).toBe(false);
+  });
+
+  it("refuses a program inside the runtime boundary that is outside its uv and Python layout", async () => {
+    confinedSpawn.mockImplementation(spawnedAs(brokerChild()));
+    const runtime = join(aveHome(), "runtime");
+    for (const command of [join(runtime, "tool.exe"), join(runtime, "uv-cache", "x", "tool.exe"), join(runtime, "python-envs", "tool.exe")]) {
+      await expect(spawnWindowsBundledProcess({ ...input, command })).rejects.toThrow(/not in its uv or Python environment layout/);
+    }
+    expect(holdGrant).not.toHaveBeenCalled();
   });
 
   it("ends the process when the grant is lost while it runs", async () => {

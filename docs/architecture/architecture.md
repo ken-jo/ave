@@ -2894,9 +2894,30 @@ with its own owner rule:
   exact explicit ACE or its inheritance source, with active holders accounted for.
 - **Private storage boundaries are protected at creation.**
   On Windows, boot creates `AVE_HOME` and the `secrets`,
-  `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
+  `subscription-runtimes`, `keys`, `certs`, `config` and `runtime` boundaries with
   `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
   `OBJ_DONT_REPARSE` relative to a pinned directory handle.
+  - `runtime` holds uv, the Python installs, the venvs and the uv cache.
+    Repair never copies into it: a nonconforming `runtime` is set aside
+    for deletion and created empty, and its contents are rebuilt from the
+    plugin lockfiles when a plugin next needs them. Until a rebuild
+    succeeds, the plugin reports "Python runtime rebuild needed" and does
+    not start. There is no offline fallback to older contents.
+  - No sandbox grant names `runtime` itself, so a grant entry left by a
+    crash never lands on the boundary's own DACL. The sandbox account
+    crosses the owner-only boundary through bypass-traverse.
+    - A bundled program inside `runtime` (an MCP server or hook) is granted
+      read on the children it needs: `runtime\uv`, or its env root's
+      `venv` and `python`.
+    - A plugin's `hostDirectory: ["runtime"]` declaration grants read on
+      `runtime/python-envs` and `runtime/uv`, and the workers it delegates
+      map onto those roots.
+    - A writer that would create a runtime child (uv materialization,
+      Python setup, a plugin child's envelope) first checks that boot's
+      boundary is present and, on Windows, owner-only. It never recreates
+      a moved one; a restart does.
+  - Off Windows, boot sets `config` and `runtime` to 0700 on every start,
+    through a no-follow handle.
   The helper is the first creator of the home. A plain `mkdir` would leave an
   inherited DACL, which the helper's create-or-open keeps and RootSafe refuses.
   Mutation and repair happen only under the host-instance lock.

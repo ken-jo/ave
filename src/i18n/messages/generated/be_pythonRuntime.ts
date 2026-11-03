@@ -37,6 +37,9 @@ export const en = {
 
   // verifyImports: runtime verification failure
   "be_pythonRuntime.errRuntimeVerifyFailed": "Python runtime verification failed.\nCause: {message}",
+
+  // setup: a download step (Python install or locked package sync) failed while rebuilding the runtime
+  "be_pythonRuntime.errRebuildNeeded": "Python runtime rebuild needed; connect to the network and restart Ave.\nCause: {message}",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "be_pythonRuntime.statusReadyCached": "Python 런타임 준비 완료 (캐시)",
@@ -55,4 +58,5 @@ export const ko: Record<keyof typeof en, string> = {
   "be_pythonRuntime.errPythonExecError": "Python 실행 오류: {message}",
   "be_pythonRuntime.errPythonVerifyFailed": "Python 검증 실패 (exit {code})\nstdout: {stdout}\nstderr: {stderr}",
   "be_pythonRuntime.errRuntimeVerifyFailed": "Python 런타임 검증 실패.\n원인: {message}",
+  "be_pythonRuntime.errRebuildNeeded": "Python 런타임을 다시 만들어야 합니다. 네트워크에 연결한 뒤 Ave를 다시 시작하세요.\n원인: {message}",
 };

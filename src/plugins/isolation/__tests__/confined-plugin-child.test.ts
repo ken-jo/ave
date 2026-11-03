@@ -705,11 +705,19 @@ describe("the host decides how far a plugin child reaches", () => {
       fx.pluginRoot,
       fx.pluginDataDir,
       socketDirOf(fx),
-      join(fx.aveHome, "runtime"),
+      // The runtime row grants the boundary's children, never the boundary: a crash-left ACL grant then sits on a child.
+      join(fx.aveHome, "runtime", "python-envs"),
+      join(fx.aveHome, "runtime", "uv"),
       join(fx.aveHome, "certs"),
     ]);
+    expect(envelope.read).not.toContain(join(fx.aveHome, "runtime"));
     // Host directories contribute to READ only. Its config key is unset here; the case below also checks that another grant cannot turn it writable.
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
+    // What a delegated worker's Windows grant widens to: the containing envelope root, which for a venv interpreter is
+    // `runtime/python-envs`, never `runtime` itself.
+    const venvPython = join(fx.aveHome, "runtime", "python-envs", "env", "venv", "Scripts", "python.exe");
+    expect(outermostContainingRoots([venvPython, join(fx.aveHome, "runtime", "uv", "t", "sha", "uv.exe")], envelope.read))
+      .toEqual([join(fx.aveHome, "runtime", "python-envs"), join(fx.aveHome, "runtime", "uv")]);
   });
 
   it("admits a chosen directory the user approved, as read AND write", () => {
@@ -954,6 +962,40 @@ describe("the host decides how far a plugin child reaches", () => {
         }),
       ).toThrow(/host-owned catalog directory/);
     }
+  });
+
+  it.skipIf(!canCreateSymlinks())("refuses a granted runtime child that links out of the home, by either spelling", () => {
+    // The runtime row grants its children, so a child, not the row, may be the link: `runtime/python-envs` moved to a big volume the
+    // user approved. Without the child in the subtraction, a config value naming the moved envs would be granted WRITE over every
+    // plugin's venv while the row itself still resolves inside the home.
+    const fx = fixture!;
+    const volume = join(fx.root, "big-volume");
+    const movedEnvs = join(volume, "envs");
+    mkdirSync(join(movedEnvs, "other-plugin-env"), { recursive: true, mode: 0o700 });
+    rmSync(join(fx.hostRuntimeDir, "python-envs"), { recursive: true, force: true });
+    symlinkSync(movedEnvs, join(fx.hostRuntimeDir, "python-envs"));
+    approveWorkspaceRoot(fx, volume);
+    for (const spelling of [movedEnvs, join(movedEnvs, "other-plugin-env"), join(fx.hostRuntimeDir, "python-envs")]) {
+      expect(() =>
+        derivePluginChildEnvelope({
+          pluginId: WIDENED_PLUGIN_ID,
+          sandbox: WIDENED_SANDBOX,
+          pluginRoot: fx.pluginRoot,
+          pluginDataDir: fx.pluginDataDir,
+          configValue: (key) => (key === "indexStorageRoot" ? spelling : undefined),
+        }),
+      ).toThrow(/host-owned catalog directory|host's own storage namespace/);
+    }
+    // The volume itself is still the user's to grant: only the host-owned child is subtracted.
+    const sibling = join(volume, "index");
+    mkdirSync(sibling, { recursive: true, mode: 0o700 });
+    expect(derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => (key === "indexStorageRoot" ? sibling : undefined),
+    }).write).toContain(sibling);
   });
 
   it.skipIf(!canCreateSymlinks())("refuses a chosen directory under a bundle root that is itself a symlink", () => {
