@@ -778,6 +778,9 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
  * umask-002 system does not refuse every home. The macOS extended ACL (`chmod +a`) is not covered by mode bits.
  */
 export function posixHomeProtectionFailure(home: string): { failedPath: string; reason: string } | undefined {
+  // Production reaches the POSIX branch only on a POSIX host. A test that simulates POSIX on a Windows host has no POSIX
+  // ownership to read; a real Windows home is checked by its DACL instead.
+  if (process.platform === "win32") return undefined;
   const uid = process.geteuid!();
   const root = lstatSync(home);
   if (!root.isDirectory()) return { failedPath: home, reason: "The Ave folder is a link or not a directory" };

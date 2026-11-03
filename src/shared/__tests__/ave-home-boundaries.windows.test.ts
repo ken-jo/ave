@@ -4,7 +4,6 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 useConfigurationOwner();
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -26,13 +25,23 @@ beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), i
 describe.runIf(process.platform === "win32")("protected home boundaries", () => {
   afterEach(() => { _resetAveHomePrivacyForTest(); vi.unstubAllEnvs(); });
   const home = useTempPaths("ave-boundaries-", ".ave");
-  it("migrates a valid source above the descriptor content snapshot limit", () => {
+  const PRESERVED = "Legacy configuration preserved at ";
+  /** The aside copy a commit made of root file `name`, from its diagnostic. */
+  function asideOf(diagnostics: readonly string[], dir: string, name: string): string {
+    const line = diagnostics.find((entry) => entry.startsWith(PRESERVED) && entry.slice(PRESERVED.length).startsWith(join(dir, `${name}.post-migration-`)));
+    expect(line, `${name} moved aside: ${diagnostics.join(" | ")}`).toBeDefined();
+    return line!.slice(PRESERVED.length);
+  }
+  const DEFAULT_POLICY = '{"version":1,"requireExplicitApproval":true,"managed":false}\n';
+  const FRESH_MANIFEST = '{"version":1,"state":"bootstrapped:false","entries":{}}';
+  it("moves a large root source aside and commits the defaults", () => {
     const dir = fixture();
     const bytes = JSON.stringify({ padding: "x".repeat(1024 * 1024 + 1) });
     writeFileSync(join(dir, "settings.json"), bytes);
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
-    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(bytes);
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe("{}\n");
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(true);
+    expect(readFileSync(asideOf(diagnostics, dir, "settings.json"), "utf8")).toBe(bytes);
   });
   /**
    * Every home here sits in a parent whose whole DACL the test writes (protected: SYSTEM, Administrators and the user, each
@@ -150,7 +159,8 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     const dir = fixture();
     writeFileSync(join(dir, "settings.json"), "{}");
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "invalid");
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(diagnostics.every((line) => line.startsWith(PRESERVED))).toBe(true);
     expect(existsSync(join(dir, "settings.json"))).toBe(false);
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
   });
@@ -164,82 +174,81 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
     expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
   });
-  it("keeps every root file until the migration marker commits published copies", () => {
+  it("keeps every root file until the migration marker commits the defaults", () => {
     const dir = fixture();
     writeFileSync(join(dir, "settings.json"), "{}");
     writeFileSync(join(dir, "policy.json"), '{"version":1}');
     const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("Rename(copy, destination, name, true);",
-      'Rename(copy, destination, name, true); if (name == "policy.json") throw new InvalidOperationException("migration interrupted");');
-    const settingsHash = createHash("sha256").update("{}").digest("base64");
-    const policyHash = createHash("sha256").update('{"version":1}').digest("base64");
-    expect(native(`try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json','policy.json'),$u,$false,@('${settingsHash}','${policyHash}')) } catch { 'interrupted' }`, dir, source)).toBe("interrupted");
+      'Rename(copy, destination, name, true); if (name == "policy.json") throw new InvalidOperationException("commit interrupted");');
+    const contents = `@(("{}" + [char]10), ('{"version":1,"requireExplicitApproval":true,"managed":false}' + [char]10))`;
+    expect(native(`try { [HomeDirectoryDacl]::CommitConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json','policy.json'),$u,$false,${contents},'${FRESH_MANIFEST}') } catch { 'interrupted' }`, dir, source)).toBe("interrupted");
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
     expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("{}");
     expect(readFileSync(join(dir, "policy.json"), "utf8")).toBe('{"version":1}');
     expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
     expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    // The retry reuses the exact defaults the interrupted commit published, then moves the roots aside.
+    const diagnostics = migrateAveHomeConfiguration(dir);
+    expect(diagnostics.every((line) => line.startsWith(PRESERVED))).toBe(true);
     expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
     expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
+    expect(readFileSync(join(dir, "config", "policy.json"), "utf8")).toBe(DEFAULT_POLICY);
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
   });
   it("keeps the final marker absent when interrupted after flushing its stage", () => {
     const dir = fixture();
     writeFileSync(join(dir, "settings.json"), "{}");
-    const hash = createHash("sha256").update("{}").digest("base64");
     const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("Rename(marker, directory, name);",
       'if (name == ConfigurationMarker) throw new InvalidOperationException("marker interrupted"); Rename(marker, directory, name);');
-    expect(native(`try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@('${hash}')) } catch { 'interrupted' }`, dir, source)).toBe("interrupted");
+    expect(native(`try { [HomeDirectoryDacl]::CommitConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@(("{}" + [char]10)),'${FRESH_MANIFEST}') } catch { 'interrupted' }`, dir, source)).toBe("interrupted");
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
     expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("{}");
     expect(readdirSync(join(dir, "config")).filter((name) => name.startsWith("..ave-config-migrated.migration-"))).toHaveLength(1);
     expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(migrateAveHomeConfiguration(dir).every((line) => line.startsWith(PRESERVED))).toBe(true);
     expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
   });
 
-  it("refuses an unreadable root source without committing or deleting it", () => {
+  it("commits the defaults past an unreadable root source and leaves it in place", () => {
     const dir = fixture();
     const source = join(dir, "settings.json");
     writeFileSync(source, "{}");
     execFileSync(win32SystemBinary("icacls"), [source, "/deny", "*S-1-1-0:R", "/q"], { windowsHide: true, stdio: "pipe" });
     try {
       expect(migrateAveHomeConfiguration(dir).join("\n")).toContain(source);
-      expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
-      expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+      expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+      expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
     } finally {
       execFileSync(win32SystemBinary("icacls"), [source, "/remove:d", "*S-1-1-0", "/q"], { windowsHide: true, stdio: "pipe" });
     }
     expect(readFileSync(source, "utf8")).toBe("{}");
   });
-  it("rejects root bytes changed after reader validation before publishing a marker", () => {
+  it("requires recovery natively when config/ holds a document other than the default, and writes nothing", () => {
     const dir = fixture();
-    const hash = createHash("sha256").update("{}").digest("base64");
-    const contents = '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}';
-    writeFileSync(join(dir, "settings.json"), contents);
-    const diagnostics = native(`[HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@('${hash}'))`, dir);
-    expect(diagnostics).toContain("changed after validation");
-    expect(diagnostics).toContain("settings.json");
+    const repaired = '{"permissions":{"blockReadsOutsideWorkingDirectories":false}}';
+    writeFileSync(join(dir, "config", "settings.json"), repaired);
+    writeFileSync(join(dir, "settings.json"), "{}");
+    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("Configuration requires recovery");
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
-    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe(contents);
-    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    expect(existsSync(join(dir, "config", ".ave-trust-manifest.json"))).toBe(false);
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(repaired);
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("{}");
   });
-  it("migrates root configuration into fresh files without foreign read grants", () => {
+  it("commits fresh defaults without the root source's foreign read grants and moves the source aside", () => {
     const dir = fixture();
     // Root-only: an inheritable foreign root grant now refuses the home (lead decision 2026-11-02), and the source file's own
-    // explicit grant below is what this checks the copy does not carry.
+    // explicit grant below is what this checks the committed file does not carry.
     grant(dir, "RX");
     const source = join(dir, "settings.json");
     writeFileSync(source, '{"private":true}');
     grant(source, "R");
-    const oldIdentity = statSync(source).ino;
     const before = command("(Get-Acl -LiteralPath $env:AVE_TEST_TARGET).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }", source);
     expect(before).toContain("S-1-1-0");
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    const diagnostics = migrateAveHomeConfiguration(dir);
     const target = join(dir, "config", "settings.json");
-    expect(readFileSync(target, "utf8")).toBe('{"private":true}');
+    expect(readFileSync(target, "utf8")).toBe("{}\n");
     expect(existsSync(source)).toBe(false);
-    expect(statSync(target).ino).not.toBe(oldIdentity);
+    expect(readFileSync(asideOf(diagnostics, dir, "settings.json"), "utf8")).toBe('{"private":true}');
     const copy = JSON.parse(command("$a=Get-Acl -LiteralPath $env:AVE_TEST_TARGET; @($a.Access | ForEach-Object { @{ sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; inherited=$_.IsInherited; rights=[int]$_.FileSystemRights } }) | ConvertTo-Json -Compress", target));
     expect(copy).toMatchObject({ inherited: true, rights: 2032127 });
     expect(copy.sid).toBe(readWindowsDirectoryDacls([join(dir, "config")])[0].currentUserSid);
@@ -263,10 +272,11 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     damage(boundary);
     writeFileSync(join(dir, "policy.json"), '{"version":1,"requireExplicitApproval":true}');
     expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl", repairs: [boundary] });
-    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    const diagnostics = migrateAveHomeConfiguration(dir);
     expectBoundary(boundary);
-    expect(readFileSync(join(boundary, "policy.json"), "utf8")).toBe('{"version":1,"requireExplicitApproval":true}');
+    expect(readFileSync(join(boundary, "policy.json"), "utf8")).toBe(DEFAULT_POLICY);
     expect(existsSync(join(dir, "policy.json"))).toBe(false);
+    expect(readFileSync(asideOf(diagnostics, dir, "policy.json"), "utf8")).toBe('{"version":1,"requireExplicitApproval":true}');
   });
   it("repairs a foreign boundary ACE through replacement and preserves protected copies", () => {
     const dir = fixture();
@@ -435,9 +445,9 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     writeFileSync(join(dir, "settings.json"), "{}"); setFixtureOwner(join(dir, "settings.json"));
     const id = "11111111111111111111111111111111";
     linkSync(outside, join(dir, "config", `.settings.json.migration-${id}`));
-    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace('Guid.NewGuid().ToString("N")', `"${id}"`);
-    const hash = createHash("sha256").update("{}").digest("base64");
-    expect(native(`try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@('${hash}')); 'copied' } catch { 'refused' }`, dir, source)).toBe("refused");
+    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replaceAll('Guid.NewGuid().ToString("N")', `"${id}"`);
+    expect(source).not.toBe(WINDOWS_HOME_BOUNDARY_SOURCE);
+    expect(native(`try { [HomeDirectoryDacl]::CommitConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@(("{}" + [char]10)),'${FRESH_MANIFEST}'); 'committed' } catch { 'refused' }`, dir, source)).toBe("refused");
     expect(readFileSync(outside, "utf8")).toBe("untouched");
     expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("{}");
     expect(existsSync(join(dir, "config", "settings.json"))).toBe(false);

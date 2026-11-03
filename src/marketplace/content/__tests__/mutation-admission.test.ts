@@ -25,7 +25,7 @@ function members(type: { prototype: object }, instance: object): string[] {
 }
 
 const STORE_INTERNALS = ["queue", "options", "ledger", "serialize", "mutate", "removeWhenRetired", "assertClaimFree", "loadOne"];
-const LEDGER_INTERNALS = ["path", "entries", "write"];
+const LEDGER_INTERNALS = ["path", "entries", "write", "pendingReview"];
 const SETTINGS_OBSERVERS = ["getAll", "get", "getProviderConfigRevision", "getSecretGeneration", "isSecretIdentityUsable",
   "onLeaseStateChanged", "onChanged", "getPluginConfig", "getSecret", "getEncryptedSecret", "hasStoredSecret", "isSecretStorageEncrypted"];
 const SETTINGS_OTHER_WRITES = ["migrateSecrets", "deleteRetiredMarketplaceApiKey", "deleteRetiredLlmVendorApiKeys",

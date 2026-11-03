@@ -283,8 +283,9 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   // host tools (skill resources, memory) read and write them through the verified loaders.
   // `config/.ave-trust-manifest.json` is covered by the `config` row. `runtime` has no row: see the runtime note in
   // ave-home-configuration.test.ts (a deny there would land on the boundary's own Windows DACL).
-  { anchor: "ave-home", segments: ["mcp"], kind: "dir", why: "MCP server definitions and their environment (home content trust input)" },
-  { anchor: "ave-home", segments: ["governance"], kind: "dir", why: "MCP governance policy (home content trust input)" },
+  // Files, not the `mcp` directory: each server's own sandbox data lives under `mcp/<id>/sandbox` and stays writable to it.
+  { anchor: "ave-home", segments: ["mcp", "servers.json"], kind: "file", rotations: true, why: "MCP server definitions and their environment, and the .bak copy (home content trust input)" },
+  { anchor: "ave-home", segments: ["governance", "mcp-policy.json"], kind: "file", why: "MCP governance policy (home content trust input)" },
   { anchor: "ave-home", segments: ["marketplaces"], kind: "dir", why: "marketplace sources, pins and snapshots (home content trust input)" },
   { anchor: "ave-home", segments: ["plugins", "registry.json"], kind: "file", why: "installed extension registry (home content trust input)" },
   { anchor: "ave-home", segments: ["skills"], kind: "dir", why: "user skills and their approvals (home content trust input)" },
