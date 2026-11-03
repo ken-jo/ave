@@ -70,7 +70,7 @@ describe("routine run outcome persistence", () => {
     expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith(
       "routine-a",
       "2026-11-04T01:00:00.000Z",
-      { ok: false, reason: "boom" },
+      { ok: false, kind: "error", reason: "boom" },
     );
   });
 

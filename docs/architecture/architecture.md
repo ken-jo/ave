@@ -1766,12 +1766,17 @@ The routine panel shows either state and offers removal. Installed-but-unloaded
 extensions are not missing; runtime scope and headless permission gates still decide
 which tools may run.
 
-An LLM routine run that throws (scheduled, manual, or shutdown, including the
-shutdown timeout) persists `lastFailure` (`firedAt`, `at`, bounded `reason`) on
-the routine record, so a restart keeps it. The next successful run clears it.
-Acknowledging that fire's result marks the failure seen; a newer failure is not
-hidden by an older acknowledgement. A failed one-shot is restored from dismissal
-so it stays reviewable, and it is not due again.
+An LLM routine run that does not complete persists `lastFailure` on the routine
+record, so a restart keeps it. `kind: "error"` covers a run that threw, with a
+`reason` that is DLP-masked, home-path-redacted and then bounded.
+`kind: "shutdown-timeout"` covers a shutdown run cut off at quit. Runs can
+overlap, so an outcome or acknowledgement for anything but the current
+`lastFiredAt` is stale and changes nothing. A later successful run of the
+current fire clears the failure, and acknowledging that fire's result marks it
+seen. A failed scheduled one-shot is restored from dismissal so it stays
+reviewable, but it is not due again. Shutdown routines are never restored,
+because they would run at every quit. An unreadable stored `lastFailure` is
+dropped with a warning, and the routine itself is kept.
 
 ## Main-process composition and boot readiness
 

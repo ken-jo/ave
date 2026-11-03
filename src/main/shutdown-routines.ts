@@ -2,7 +2,7 @@ import type { Routine, RoutineResult } from "../routines/routine-engine.js";
 import { createLogger } from "../lib/logger.js";
 import { t } from "../i18n/index.js";
 import type { FireOptions } from "./notification-service.js";
-import type { RoutineRecord } from "../shared/routines-types.js";
+import type { RoutineRecord, RoutineRunOutcome } from "../shared/routines-types.js";
 import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
@@ -14,11 +14,7 @@ type ShutdownRoutinesStore = {
     id: string,
     patch: Partial<Pick<RoutineRecord, "lastRoutineSessionId">>,
   ) => Promise<RoutineRecord | null>;
-  recordRunOutcome: (
-    id: string,
-    firedAt: string,
-    outcome: { ok: true } | { ok: false; reason: string },
-  ) => Promise<RoutineRecord | null>;
+  recordRunOutcome: (id: string, firedAt: string, outcome: RoutineRunOutcome) => Promise<RoutineRecord | null>;
 };
 
 type ShutdownRoutineEngine = {
@@ -47,11 +43,11 @@ export async function runShutdownRoutines(
     );
     for (const routine of shutdownRoutines) {
       let routineSessionId: string | undefined;
-      let failureReason: string | undefined;
+      let outcome: RoutineRunOutcome = { ok: true };
       try {
         if (routine.execution === "llm-session") {
           const run = await runLlmShutdownRoutine(svc.routineEngine, routine, timeoutMs);
-          if (run.timedOut) failureReason = "shutdown timeout";
+          if (run.timedOut) outcome = { ok: false, kind: "shutdown-timeout" };
           else routineSessionId = run.sessionId;
         } else {
           svc.notificationService?.fire({
@@ -63,24 +59,17 @@ export async function runShutdownRoutines(
         }
       } catch (err) {
         log.warn("before-quit: shutdown routine failed (id=%s): %s", routine.id, errorMessage(err));
-        failureReason = errorMessage(err);
+        outcome = { ok: false, kind: "error", reason: errorMessage(err) };
       }
 
+      let fired: RoutineRecord | null = null;
       try {
-        const fired = await svc.routinesStore.markFired(routine.id);
+        fired = await svc.routinesStore.markFired(routine.id);
         if (fired && routineSessionId) {
           const updated = await svc.routinesStore.update(routine.id, { lastRoutineSessionId: routineSessionId });
           if (!updated) {
             log.warn("before-quit: shutdown routine session id persist failed (id=%s)", routine.id);
           }
-        }
-        // Persist the outcome so the next launch shows a failed shutdown run instead of losing it to the log.
-        if (fired?.lastFiredAt && routine.execution === "llm-session") {
-          await svc.routinesStore.recordRunOutcome(
-            routine.id,
-            fired.lastFiredAt,
-            failureReason === undefined ? { ok: true } : { ok: false, reason: failureReason },
-          );
         }
       } catch (markErr) {
         log.warn(
@@ -88,6 +77,14 @@ export async function runShutdownRoutines(
           routine.id,
           errorMessage(markErr),
         );
+      }
+      // Persist the outcome so the next launch shows a failed shutdown run instead of losing it to the log.
+      if (fired?.lastFiredAt && routine.execution === "llm-session") {
+        try {
+          await svc.routinesStore.recordRunOutcome(routine.id, fired.lastFiredAt, outcome);
+        } catch (outcomeErr) {
+          log.warn("before-quit: shutdown routine outcome persist failed (id=%s): %s", routine.id, errorMessage(outcomeErr));
+        }
       }
     }
   } catch (err) {

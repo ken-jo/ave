@@ -5,6 +5,8 @@ import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
+import { sanitizeRoutineFailureReason } from "../../main/routines-store.js";
+import type { RoutineRunOutcome } from "../../shared/routines-types.js";
 
 const log = createLogger("ave");
 
@@ -22,7 +24,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
   const persistRunOutcome = async (
     routineId: string,
     firedAt: string,
-    outcome: { ok: true } | { ok: false; reason: string },
+    outcome: RoutineRunOutcome,
   ): Promise<void> => {
     try {
       const updated = await routinesStore.recordRunOutcome(routineId, firedAt, outcome);
@@ -75,7 +77,8 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         try {
           announce(ROUTINES.failed, {
             routineId: routine.id,
-            error: (err as Error).message,
+            // The same masked, home-redacted text the store keeps; raw provider errors can carry secrets or paths.
+            error: sanitizeRoutineFailureReason((err as Error).message),
           });
         } catch {
           // non-fatal
@@ -88,7 +91,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
           // non-fatal
         }
       }
-      await persistRunOutcome(routine.id, firedAt, runError ? { ok: false, reason: runError.message } : { ok: true });
+      await persistRunOutcome(routine.id, firedAt, runError ? { ok: false, kind: "error", reason: runError.message } : { ok: true });
       const summary = runSummary;
       // Allow-list event fields; spreading the routine could expose private content.
       try {

@@ -86,7 +86,7 @@ describe("runShutdownRoutines", () => {
     expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith(
       "shutdown-llm",
       "2026-05-16T01:00:00.000Z",
-      { ok: false, reason: "provider down" },
+      { ok: false, kind: "error", reason: "provider down" },
     );
     expect(routinesStore.update).not.toHaveBeenCalled();
   });
@@ -105,7 +105,7 @@ describe("runShutdownRoutines", () => {
     expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith(
       "shutdown-llm",
       "2026-05-16T01:00:00.000Z",
-      { ok: false, reason: "shutdown timeout" },
+      { ok: false, kind: "shutdown-timeout" },
     );
   });
 
@@ -117,5 +117,38 @@ describe("runShutdownRoutines", () => {
     await runShutdownRoutines({ routinesStore, routineEngine, notificationService: { fire: vi.fn() } });
 
     expect(routinesStore.recordRunOutcome).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failing shutdown routine dismissed against a real store, so it does not run at every quit", async () => {
+    const { RoutinesStore } = await import("../routines-store.js");
+    const { mkdtempSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { cleanupTmpDir } = await import("../../__tests__/support/tmp-dir-teardown.js");
+    const dir = mkdtempSync(join(tmpdir(), "ave-shutdown-routine-"));
+    try {
+      const routinesStore = new RoutinesStore(join(dir, "routines.json"));
+      await routinesStore.load();
+      const r = await routinesStore.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
+      const routineEngine = { runRoutine: vi.fn(async () => { throw new Error("provider down"); }) };
+
+      await runShutdownRoutines({ routinesStore, routineEngine });
+      expect(routineEngine.runRoutine).toHaveBeenCalledTimes(1);
+      expect(routinesStore.list().find((x) => x.id === r.id)?.lastFailure).toMatchObject({ kind: "error", reason: "provider down" });
+
+      await runShutdownRoutines({ routinesStore, routineEngine });
+      expect(routineEngine.runRoutine).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("does not report a failed outcome write as a markFired failure", async () => {
+    const record = routine();
+    const routinesStore = failingStore(record);
+    routinesStore.recordRunOutcome.mockRejectedValueOnce(new Error("disk full"));
+    const routineEngine = { runRoutine: vi.fn(async () => { throw new Error("provider down"); }) };
+    await expect(runShutdownRoutines({ routinesStore, routineEngine })).resolves.toBeUndefined();
+    expect(routinesStore.markFired).toHaveBeenCalledTimes(1);
   });
 });
