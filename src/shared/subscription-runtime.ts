@@ -293,9 +293,8 @@ export const SUBSCRIPTION_RUNTIME_API_COUNTERPART: Readonly<
 });
 
 /**
- * Runtimes that are another way into a provider row already owned by a primary runtime. ChatGPT plan usage is the
- * third OpenAI sign-in beside the Codex CLI and the API key, so it joins the Codex row instead of adding a second
- * "OpenAI" row.
+ * Runtimes that are another way into a subscription row already owned by a primary runtime. ChatGPT plan usage is the
+ * second OpenAI sign-in beside the Codex CLI, so it joins the Codex row; the OpenAI API key is its own API row.
  */
 export const SUBSCRIPTION_RUNTIME_ROW_PARTNER: Readonly<
   Partial<Record<SubscriptionRuntimeId, SubscriptionRuntimeId>>
