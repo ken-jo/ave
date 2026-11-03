@@ -1707,8 +1707,8 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
         <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
           <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
           <div className="flex shrink-0 items-center gap-2">
-            <Badge variant="outline" title={t("workBoard.panelTitle")}>
-              {items.length}
+            <Badge variant="outline" className="whitespace-nowrap" title={t("workBoard.panelTitle")} data-testid="work-board-item-count">
+              {t("workBoard.itemCount", { count: items.length })}
             </Badge>
           </div>
         </div>
