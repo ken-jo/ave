@@ -298,8 +298,21 @@ function assertBetterSqlite3Binary(context) {
   }
 }
 
+// The packaged copy must carry its marker, its git, its https helper and the license notice; the tree was verified before packing.
+async function assertBundledGitResource(context) {
+  const { GIT_RUNTIME_MARKER, GIT_RUNTIME_RESOURCE_DIR, gitRuntimeLayout, gitRuntimeTargetKey } = await import("./git-runtime-targets.mjs");
+  const key = gitRuntimeTargetKey(context.electronPlatformName, ARCH_DIR_BY_ENUM[context.arch]);
+  if (key === null) return;
+  const root = join(electronResourcesDir(context), GIT_RUNTIME_RESOURCE_DIR, key);
+  const layout = gitRuntimeLayout(root, context.electronPlatformName);
+  for (const path of [join(root, GIT_RUNTIME_MARKER), layout.executable, layout.httpsHelper, join(electronResourcesDir(context), "licenses", "git", "COPYING")]) {
+    if (!existsSync(path)) throw new Error(`packaged git runtime is incomplete: ${path}`);
+  }
+}
+
 module.exports = async function afterPack(context) {
   assertBundledUvResource(context);
+  await assertBundledGitResource(context);
   assertSandboxVendorBinaries(context);
   assertNodePtyBinary(context);
   assertBetterSqlite3Binary(context);

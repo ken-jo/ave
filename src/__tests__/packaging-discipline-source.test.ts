@@ -2363,7 +2363,7 @@ describe("installer smoke and packaging discipline", () => {
     // The prebuilt spawn-helper ships mode 0644; the installed copy the dev
     // app loads gets its execute bit back before anything else runs.
     expect(packageJson.scripts?.postinstall).toBe(
-      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/fetch-mxc.mjs --current && node scripts/hooks/install.mjs",
+      "node scripts/restore-node-pty-exec-bit.mjs && node scripts/fetch-uv.mjs && node scripts/fetch-git.mjs --current && node scripts/fetch-mxc.mjs --current && node scripts/hooks/install.mjs",
     );
     // afterPack follows node-pty's loader order instead of hardcoding the
     // per-ABI gyp output directory.
@@ -2428,6 +2428,13 @@ describe("installer smoke and packaging discipline", () => {
         from: resource.from,
         to: resource.to,
       });
+    }
+
+    const platformBuild = (packageJson.build ?? {}) as unknown as Record<string, { extraResources?: Array<{ from?: string; to?: string }> } | undefined>;
+    for (const asset of runtimeAssets.HOST_PACKAGED_RUNTIME_ASSETS as Array<{ platformPackageResources?: Record<string, { from: string; to: string }> }>) {
+      for (const [platform, resource] of Object.entries(asset.platformPackageResources ?? {})) {
+        expect(platformBuild[platform]?.extraResources ?? []).toContainEqual({ from: resource.from, to: resource.to });
+      }
     }
   });
 });

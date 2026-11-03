@@ -22,6 +22,7 @@ release-fast/
 resources/uv/
 resources/uv-runtime/
 resources/uv-archives/
+resources/git-runtime/
 
 # Playwright UI E2E artifacts
 test-results/
