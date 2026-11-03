@@ -14,14 +14,14 @@ test.beforeAll(async () => {
     stdin: {
       resolveDir: REPO_ROOT,
       contents: `
-        import { installRendererModelCatalog, renderModelCatalogUnavailable } from "./src/ui/renderer/model-catalog-bootstrap.ts";
+        import { installRendererModelCatalog, renderBootFailure } from "./src/ui/renderer/model-catalog-bootstrap.ts";
         window.showCatalogFailure = async (locale, code) => {
           const api = {
             getModelCatalog: async () => ({ ok: false, error: code }),
             getSettings: async () => ({ appearance: { language: locale } }),
           };
           const failure = await installRendererModelCatalog(api).catch(error => error);
-          renderModelCatalogUnavailable(document.getElementById("root"), failure, api);
+          renderBootFailure(document.getElementById("root"), failure, api);
         };
       `,
     },
