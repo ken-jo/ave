@@ -1196,9 +1196,10 @@ export async function authorizeToolInvocation(
             try {
               await services.permissionManager.addAlwaysDeniedPersist(pattern);
             } catch (error) {
-              // The rule store refuses writes while boot refuses the home folder; this call is still denied, once.
+              // The rule store refuses writes while boot refuses the home folder. This call is denied; a legacy pattern's deny was
+              // already added in memory and lasts this session, while a rules-language deny is not kept.
               if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
-              log.warn(`deny-always for ${toolUse.name} applied once: ${error.message}`);
+              log.warn(`deny-always for ${toolUse.name} was not saved; it lasts at most this session: ${error.message}`);
             }
           }
           const hostFailure = approvalFailureOutcome(

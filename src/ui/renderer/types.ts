@@ -1,3 +1,4 @@
+import type { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
@@ -1485,6 +1486,8 @@ export type PermissionReviewerDispatchResult =
        * surfaces a banner. Undefined on legacy/main builds that do not report it.
        */
       reviewerDegradedToRule?: boolean;
+      /** The choice applies for this run only: the settings store refuses writes while boot refuses the home folder. */
+      notice?: typeof HOME_FOLDER_REFUSED;
     }
   | { ok: false; error: string };
 
@@ -1492,7 +1495,7 @@ export type AvePermissionApi = {
   getMode: () => Promise<{ mode: string }>;
   setMode: (mode: string) => Promise<
     // `notice`: the mode applies for this session only because the home's permission store refuses writes while boot refuses the folder.
-    | { ok: true; mode: string; notice?: string }
+    | { ok: true; mode: string; notice?: typeof HOME_FOLDER_REFUSED }
     | { ok: false; error: string; message?: string }
   >;
   onModeChanged: (cb: (mode: string) => void) => () => void;

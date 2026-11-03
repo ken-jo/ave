@@ -710,7 +710,7 @@ export function ToolApprovalContent({
           approvalCacheKey: request.approvalCacheKey,
         });
         if (!result?.ok && result?.error === HOME_FOLDER_REFUSED) {
-          approvalNotice?.(result.message ?? tHook(failureKey));
+          approvalNotice?.(tHook("toolApprovalDialog.homeFolderRefusedOnce"));
           answer = respondOnce;
         } else if (!result?.ok) {
           if (activeRequestIdRef.current === request.id) {
@@ -776,7 +776,13 @@ export function ToolApprovalContent({
         if (decisionModel.variant === "path-grant") {
           // The folder grant itself is the host's to save, from the parent path the scope authority resolved.
           const parent = outOfDirScopes?.always?.path;
-          if (choice === "allow-everywhere" && parent !== undefined) void recordThenRespond(null, () => onDecide("allow-always", parent));
+          if (choice === "allow-everywhere" && parent !== undefined) {
+            // A refused home folder cannot keep a folder grant: answer once, for the exact target, and say why.
+            if (request?.homeFolderRefused === true) {
+              approvalNotice?.(tHook("toolApprovalDialog.homeFolderRefusedOnce"));
+              void recordThenRespond(null, () => onDecide("allow-once", undefined));
+            } else void recordThenRespond(null, () => onDecide("allow-always", parent));
+          }
           return;
         }
         // The gate answer matches the record: a conversation approval answers allow-session (so a host-held descriptor grant lasts the
@@ -790,7 +796,7 @@ export function ToolApprovalContent({
       case "network":
         return;
     }
-  }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes]);
+  }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes, request, approvalNotice, tHook]);
 
   const approveDisabledDescriptionId = isUnsupportedElicitationForm || elicitationInvalid
     ? "mcp-elicitation-input-unavailable"

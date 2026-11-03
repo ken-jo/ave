@@ -7,7 +7,7 @@ import type { PermissionRule } from "./permission-manager.js";
 import { DEFAULT_EXECUTION_MODE, type ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf, isMissingPathError } from "../lib/atomic-file.js";
-import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, unverifiedDenyRules, validateRuleList } from "./rules/rule-files.js";
+import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, readUnverifiedStoreText, unverifiedDenyRules, validateRuleList } from "./rules/rule-files.js";
 import { withShellPolicyMutation } from "./shell-policy-handoff.js";
 
 import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
@@ -72,9 +72,11 @@ export async function readPermissionsFile(filePath: string): Promise<Permissions
 // The overlay view of an unverified file: its deny rules and nothing else. The mode is the default, and bytes that do not
 // parse read as absent instead of a corrupt store, so planted content can neither widen authority nor stop the boot.
 async function readUnverifiedPermissionsFile(filePath: string): Promise<PermissionsFile | null> {
+  const raw = readUnverifiedStoreText(filePath);
+  if (raw === undefined) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(filePath, "utf-8"));
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }

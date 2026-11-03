@@ -86,11 +86,11 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expectBoundary(join(dir, "certs"));
     expectBoundary(join(dir, "config"));
   });
-  it("keeps root policy and deny rules active during a refused boot without migrating", async () => {
+  it("reads unverified root files as absent apart from their restricting fields during a refused boot without migrating", async () => {
     const dir = fixture();
     writeFileSync(join(dir, "policy.json"), JSON.stringify({ version: 1, managed: true, requireExplicitApproval: true }));
     writeFileSync(join(dir, "permissions.json"), JSON.stringify({ version: 1, mode: "allow", rules: [{ pattern: "web_fetch", action: "deny" }], updatedAt: new Date().toISOString() }));
-    writeFileSync(join(dir, "settings.json"), JSON.stringify({ permissions: { reviewer: { mode: "llm" } } }));
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ permissions: { reviewer: { mode: "disabled" }, blockReadsOutsideWorkingDirectories: true } }));
     grant(dir, "W");
     const privacy = ensureAveHomePrivate(dir);
     expect(privacy.enforcement).toBe("none");
@@ -100,11 +100,13 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(() => assertAveHomePrivacyForConfinement()).toThrow();
     expect(permissionSettingsPath()).toBe(join(dir, "settings.json"));
     expect(userPolicyPath()).toBe(join(dir, "policy.json"));
-    expect(await loadPolicy(undefined, join(dirname(dir), "absent-admin.json"))).toMatchObject({ source: "user", managed: true, requireExplicitApproval: true });
-    expect(readPermissionSettings().permissions.reviewer.mode).toBe("llm");
+    // R2: the unverified root files read as absent; only the closed restriction overlay (managed, the read fence, deny rules) applies.
+    expect(await loadPolicy(undefined, join(dirname(dir), "absent-admin.json"))).toMatchObject({ source: "defaults", managed: true, requireExplicitApproval: true });
+    expect(readPermissionSettings().permissions).toMatchObject({ reviewer: { mode: "llm" }, blockReadsOutsideWorkingDirectories: true });
     const manager = new PermissionManager();
     await manager.loadRulesFromFile();
     expect(manager.checkDetailed("web_fetch", "builtin", "read")).toMatchObject({ decision: "deny" });
+    expect(manager.getMode()).toBe("strict");
     expect(existsSync(join(dir, "config", "policy.json"))).toBe(false);
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
     expect(existsSync(join(dir, "policy.json"))).toBe(true);

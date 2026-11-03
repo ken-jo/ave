@@ -112,7 +112,7 @@ import {
   type HostShellExecutionPermitBinding,
 } from "../permissions/host-shell-execution-permit.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome, AveHomeConfigurationRefusedWriteError, isAveHomeConfigurationAuthorityAbsent } from "../shared/ave-home.js";
+import { aveHome, AveHomeConfigurationRefusedWriteError, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import { issueAuthorizationRequiredControl } from "../shared/authorization-required.js";
 // ── Pipeline units — behavior-preserving extractions.
@@ -1707,10 +1707,10 @@ export async function runToolInvocation(
         decision = surfaceResolution.decision;
         if (decision.choice.startsWith("deny")) return { allowed: false, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: dirLayerResult.reason, is_error: true, durationMs: Date.now() - startTime }) };
         const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult : { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
-        // The settings store refuses writes while boot refuses a home that never committed `config/`: a folder grant the user
-        // asked to keep then applies once, to the exact target, and the log says why.
-        const persistRefused = decision.choice === "allow-always" && isAveHomeConfigurationAuthorityAbsent(aveHome());
-        if (persistRefused) log.warn(`folder grant for ${toolUse.name} applied once: ${new AveHomeConfigurationRefusedWriteError(aveHome()).message}`);
+        // No remembered grant is kept while boot refuses the home folder (the card already answers once with a notice); an
+        // allow-always that still arrives applies once, to the exact target.
+        const persistRefused = decision.choice === "allow-always" && isAveHomeConfigurationRefused(aveHome());
+        if (persistRefused) log.warn(`folder grant for ${toolUse.name} applied once: ${new AveHomeConfigurationRefusedWriteError(aveHome(), "remember this folder grant").message}`);
         const approvedDirectory = decision.choice === "allow-always" && !persistRefused
           ? (typeof decision.rememberPattern === "string" && decision.rememberPattern.length > 0
               ? decision.rememberPattern

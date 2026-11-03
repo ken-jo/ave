@@ -817,12 +817,14 @@ export function PermissionsTab({
     setModeBusy(true);
     try {
       let modeChanged = m === mode;
+      // Set when the home folder refusal kept a change to this session; the notice is shown once both steps are done.
+      let sessionOnly = false;
       if (m !== mode) {
         const res = await window.ave.permission.setMode(m);
         if (res.ok) {
           setMode(normalizeExecutionMode(res.mode));
           modeChanged = true;
-          if (res.notice !== undefined) showBanner("warn", res.notice);
+          if (res.notice !== undefined) sessionOnly = true;
         } else {
           showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
           return;
@@ -834,6 +836,7 @@ export function PermissionsTab({
         if (reviewerRes.ok) {
           setReviewer(reviewerRes.settings);
           setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
+          if (reviewerRes.notice !== undefined) sessionOnly = true;
         } else {
           const previousSettingsRestored = !reviewerModeInvalid;
           if (reviewerModeInvalid) await fetchAll();
@@ -841,6 +844,7 @@ export function PermissionsTab({
           return;
         }
       }
+      if (sessionOnly) showBanner("warn", t("permissionsTab.homeFolderRefusedSessionOnly"));
     } catch (e) {
       showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
     } finally {

@@ -1,16 +1,19 @@
 // Native run 4: a home verified on its first boot and refused on a later one (a foreign entry added in between) crashed bootstrap
 // with "Configuration migration state exists without the requested file". The refused boot looked for configuration at the root,
 // which the first boot had already committed to `config/`, so the user never reached the privacy refusal and its fix command.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { _resetAveHomePrivacyForTest, assertAveHomeAcceptsInstalls, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, AveHomeConfigurationRefusedWriteError, aveHomeConfigurationDirectory, ensureAveHomePrivate, setAveHomeConfigurationRefusedAtBoot } from "../ave-home.js";
+import { _resetAveHomePrivacyForTest, assertAveHomeAcceptsInstalls, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, AveHomeConfigurationRefusedWriteError, AveHomeConfigurationUntrustedError, aveHomeConfigurationDirectory, verifyAveHomeConfiguration, ensureAveHomePrivate, setAveHomeConfigurationRefusedAtBoot } from "../ave-home.js";
 import { readAveHomeConfigurationFile, setAveHomeConfigurationOwner } from "../ave-home-configuration-access.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
-import { readPermissionSettings, writePermissionSettings } from "../../permissions/permission-settings-store.js";
+import { _resetSessionReviewerSettingsForTest, readPermissionSettings, writePermissionSettings } from "../../permissions/permission-settings-store.js";
+import { dispatchPermissionReviewerCommand } from "../../permissions/permission-slash.js";
+import { HOME_FOLDER_REFUSED } from "../permissions-events.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { updatePermissionsFile } from "../../permissions/permissions-store.js";
 import { readApprovals, recordApproval } from "../../permissions/user-approval-store.js";
@@ -100,6 +103,7 @@ describe.runIf(process.platform !== "win32")("authority stores of a refused home
   afterEach(async () => {
     setAveHomeConfigurationOwner(undefined);
     _resetAveHomePrivacyForTest();
+    _resetSessionReviewerSettingsForTest();
     vi.unstubAllEnvs();
     await cleanupTmpDir(parent);
   });
@@ -240,6 +244,47 @@ describe.runIf(process.platform !== "win32")("authority stores of a refused home
     for (const [path, content] of before) expect(readFileSync(path, "utf8")).toBe(content);
   });
 
+  it("reads a planted FIFO or link at an unverified store as absent without hanging the boot", async () => {
+    const decoy = join(parent, "decoy.json");
+    writeFileSync(decoy, JSON.stringify({ version: 1, mode: "default", updatedAt: "", rules: [{ pattern: "linked_denied_tool", action: "deny" }] }));
+    for (const name of ["policy.json", "settings.json"]) execFileSync("mkfifo", [join(home, name)]);
+    execFileSync("mkfifo", [join(home, "permissions.json")]);
+    const projectRules = plantProjectRules();
+    writeFileSync(projectRules, "");
+    execFileSync("rm", [projectRules]);
+    symlinkSync(decoy, projectRules);
+    setAveHomeConfigurationRefusedAtBoot(home);
+    await expect(loadPolicy(undefined, join(parent, "absent-admin.json"))).resolves.toMatchObject({ requireExplicitApproval: true, managed: false, source: "defaults" });
+    expect(readPermissionSettings()).toMatchObject({ fault: null, permissions: { blockReadsOutsideWorkingDirectories: false } });
+    const manager = await loadedManager();
+    expect(manager.getRulesLoadError()).toBeUndefined();
+    expect(await manager.listPersistedRules()).toEqual([]);
+    await expect(readProjectRulesFile(projectRulesLocation(home, project()))).resolves.toBeNull();
+    await expect(listStoredProjectRules(home)).resolves.toEqual({ files: [], errors: [] });
+
+    // A linked root permissions.json is not followed either.
+    execFileSync("rm", [join(home, "permissions.json")]);
+    symlinkSync(decoy, join(home, "permissions.json"));
+    expect(await (await loadedManager()).listPersistedRules()).toEqual([]);
+  }, 10_000);
+
+  it("applies a reviewer choice for the session with a notice while the settings store refuses writes", async () => {
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { reviewer: { mode: "llm" } } }));
+    const before = readFileSync(join(home, "settings.json"), "utf8");
+    setAveHomeConfigurationRefusedAtBoot(home);
+    await expect(dispatchPermissionReviewerCommand({ verb: "mode", value: "disabled" })).resolves.toMatchObject({
+      ok: true, verb: "mode", settings: { mode: "disabled" }, notice: HOME_FOLDER_REFUSED,
+    });
+    await expect(dispatchPermissionReviewerCommand({ verb: "fallback", value: "rule" })).resolves.toMatchObject({
+      ok: true, verb: "fallback", settings: { mode: "disabled", fallbackOnError: "rule" }, notice: HOME_FOLDER_REFUSED,
+    });
+    expect(readPermissionSettings().permissions.reviewer).toMatchObject({ mode: "disabled", fallbackOnError: "rule" });
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(before);
+    // The choice lives in memory only: a new run starts from the absent view again.
+    _resetSessionReviewerSettingsForTest();
+    expect(readPermissionSettings().permissions.reviewer).toMatchObject({ mode: "llm", fallbackOnError: "deny" });
+  });
+
   it("applies a refused durable mode switch for the session and says why it was not saved", async () => {
     setAveHomeConfigurationRefusedAtBoot(home);
     const manager = await loadedManager();
@@ -247,7 +292,7 @@ describe.runIf(process.platform !== "win32")("authority stores of a refused home
       permissionManager: manager,
       approvalBypass: { source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true },
     });
-    expect(result).toMatchObject({ ok: true, mode: "auto", durable: false, notice: expect.stringMatching(/Fix the folder permissions first/) });
+    expect(result).toMatchObject({ ok: true, mode: "auto", durable: false, notice: HOME_FOLDER_REFUSED });
     expect(manager.getMode()).toBe("auto");
     expect(existsSync(join(home, "permissions.json"))).toBe(false);
   });
@@ -315,5 +360,48 @@ describe.runIf(process.platform !== "win32")("authority stores of a refused home
     expect(manager.getMode()).toBe("allow");
     expect(manager.checkDetailed("planted_allow_tool", "builtin", "write").decision).toBe("allow");
     await expect(updatePermissionsFile(join(home, "permissions.json"), (file) => { file.mode = "default"; })).resolves.toBeUndefined();
+  });
+});
+
+describe.runIf(process.platform !== "win32")("POSIX home protection hint", () => {
+  let parent: string;
+  let home: string;
+
+  beforeEach(() => {
+    // A home path a shell would expand or split if the hint did not quote it.
+    parent = mkdtempSync(join(tmpdir(), "ave-hint-$HOME `id` it's-"));
+    home = join(parent, ".ave");
+    vi.stubEnv("AVE_HOME", home);
+    setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => true });
+    const privacy = ensureAveHomePrivate(home);
+    expect(migrateAveHomeConfiguration(home, privacy)).toEqual([]);
+    _resetAveHomePrivacyForTest();
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    chmodSync(home, 0o700);
+    setAveHomeConfigurationOwner(undefined);
+    _resetAveHomePrivacyForTest();
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(parent);
+  });
+
+  const quoted = () => `'${home.replace(/'/g, "'\\''")}'`;
+
+  it("names chmod go-w with the shell-quoted path when group or others can write to the home", () => {
+    chmodSync(home, 0o777);
+    expect(() => verifyAveHomeConfiguration(home)).toThrow(AveHomeConfigurationUntrustedError);
+    expect(() => verifyAveHomeConfiguration(home)).toThrow(`group or others can write to the folder. Fix it with: chmod go-w ${quoted()}`);
+    // The quoted word reads back as the exact path in a POSIX shell.
+    expect(execFileSync("/bin/sh", ["-c", `printf %s ${quoted()}`], { encoding: "utf8" })).toBe(home);
+  });
+
+  it("names chown, not chmod, when another account owns the home", () => {
+    const uid = process.getuid!();
+    vi.spyOn(process, "getuid").mockReturnValue(uid + 1);
+    let message = "";
+    try { verifyAveHomeConfiguration(home); } catch (error) { message = (error as Error).message; }
+    expect(message).toContain(`owned by another account. Fix it with: sudo chown "$(id -u)" ${quoted()}`);
+    expect(message).not.toContain("chmod");
   });
 });

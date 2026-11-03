@@ -59,7 +59,7 @@ export function isAveHomeConfigurationRefused(home: string): boolean {
  */
 export class AveHomeConfigurationRefusedWriteError extends Error {
   constructor(readonly path: string, action = `change ${path}`) {
-    super(`Ave did not ${action}: other accounts can write to the Ave folder, so its permission, configuration and extension files are not trusted. Fix the folder permissions first (Settings > Permissions shows the fix), then restart Ave.`);
+    super(`Ave did not ${action}: Ave could not verify that only your account can change its folder, so its permission, configuration and extension files are not trusted. Fix the folder permissions first (Settings > Permissions shows the fix), then restart Ave.`);
     this.name = "AveHomeConfigurationRefusedWriteError";
   }
 }
@@ -68,15 +68,16 @@ export class AveHomeConfigurationRefusedWriteError extends Error {
  * Plugins, MCP servers, skills, agents and commands are trusted inputs: nothing installs or updates them while boot refuses the
  * home, because a foreign writer could alter what is staged or recorded and the next trusted boot would load it as Ave's own.
  */
-export function assertAveHomeAcceptsInstalls(): void {
+export function assertAveHomeAcceptsInstalls(action = "install or update extensions"): void {
   const home = aveHome();
-  if (isAveHomeConfigurationRefused(home)) throw new AveHomeConfigurationRefusedWriteError(home, "install or update extensions");
+  if (isAveHomeConfigurationRefused(home)) throw new AveHomeConfigurationRefusedWriteError(home, action);
 }
 
 /**
- * Whether `path` lies in the home refused at boot. The permission stores that always sit outside `config/` (root
- * `permissions.json` and everything under `permissions/`) then read as absent apart from their deny rules, whatever the
- * home's committed state: no protected boundary vouches for their bytes.
+ * Whether `path` lies in the home refused at boot. The permission stores that always sit outside `config/` then read as absent,
+ * whatever the home's committed state, because no protected boundary vouches for their bytes: root `permissions.json` and
+ * `permissions/project-rules` keep only their deny rules, while `permissions/user-approvals.json` and
+ * `permissions/shell-egress-hosts.json` hold only grants and read fully absent.
  */
 export function isInRefusedAveHome(path: string): boolean {
   if (refusedConfigurationHome === undefined) return false;
@@ -242,6 +243,11 @@ export function configurationHomeForFile(path: string): string | undefined {
   return undefined;
 }
 
+/** One POSIX shell word for `value`: single-quoted, so `$`, backticks and spaces stay literal. */
+function posixShellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 export function verifyAveHomeConfiguration(home: string, recoverInvalidMarker: boolean | "boundary" = false): boolean {
   const config = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
@@ -280,9 +286,13 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     const root = openSync(home, flags);
     try {
       const protection = fstatSync(root);
-      if (!protection.isDirectory() || protection.uid !== process.getuid!() || (protection.mode & 0o022) !== 0) {
-        // Stays a boot failure: nothing confines extensions on a POSIX home that continues unverified. The hint names the fix.
-        throw new Error(`Configuration home protection is unverified: the folder must be owned by this account and not writable by group or others. Fix it with: chmod go-w ${JSON.stringify(home)}`);
+      // Each cause stays a boot failure: nothing confines extensions on a POSIX home that continues unverified. The message names the fix.
+      if (!protection.isDirectory()) throw new Error("Configuration home protection is unverified: the home is not a directory");
+      if (protection.uid !== process.getuid!()) {
+        throw new Error(`Configuration home protection is unverified: the folder is owned by another account. Fix it with: sudo chown "$(id -u)" ${posixShellQuote(home)}`);
+      }
+      if ((protection.mode & 0o022) !== 0) {
+        throw new Error(`Configuration home protection is unverified: group or others can write to the folder. Fix it with: chmod go-w ${posixShellQuote(home)}`);
       }
       const configPath = join(process.platform === "linux" ? `/proc/self/fd/${root}` : home, AVE_HOME_CONFIGURATION_DIRECTORY);
       const directory = openSync(configPath, flags);

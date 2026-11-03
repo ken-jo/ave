@@ -1164,7 +1164,7 @@ describe("ApprovalDock", () => {
 
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
     expect(onDecide).toHaveBeenCalledTimes(1);
-    expect(notice).toHaveBeenCalledWith("Fix the folder permissions first");
+    expect(notice).toHaveBeenCalledWith(t("toolApprovalDialog.homeFolderRefusedOnce"));
     expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')).toBeNull();
   });
 

@@ -9,7 +9,7 @@ import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
 import { caseFoldForMatch } from "../sensitive-paths.js";
 import type { ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, unverifiedDenyRules, validateRuleList } from "./rule-files.js";
+import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, readUnverifiedStoreText, unverifiedDenyRules, validateRuleList } from "./rule-files.js";
 import { AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../../shared/ave-home.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 
@@ -173,9 +173,11 @@ export async function readProjectRulesFile(location: ProjectRulesLocation): Prom
 }
 
 async function readUnverifiedProjectRulesFile(location: ProjectRulesLocation): Promise<ProjectRulesFile | null> {
+  const raw = readUnverifiedStoreText(location.filePath);
+  if (raw === undefined) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(location.filePath, "utf8"));
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }
@@ -261,8 +263,8 @@ export async function listStoredProjectRules(baseDir: string): Promise<{
     try {
       if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new PermissionRulesFileCorruptError(filePath, "invalid file identity");
       const identity = name.slice(0, -".json".length);
-      const raw = await readFile(filePath, "utf8");
-      if (!raw.trim()) continue;
+      const raw = unverified ? readUnverifiedStoreText(filePath) : await readFile(filePath, "utf8");
+      if (raw === undefined || !raw.trim()) continue;
       let parsed: unknown;
       try { parsed = JSON.parse(raw); } catch (error) {
         if (unverified) continue;

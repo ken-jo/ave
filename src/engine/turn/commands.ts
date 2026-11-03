@@ -352,6 +352,7 @@ export async function handlePermissionCommand(
         `mode=${mode}`,
         "provider/model=active LLM settings",
         `fallbackOnError=${fallbackOnError}`,
+        ...("notice" in result && result.notice !== undefined ? [t("be_conversationLoop.permissionReviewerHomeFolderRefused")] : []),
       ].join("\n");
     }
     if (outcome.kind === "audit") {
@@ -397,7 +398,7 @@ export async function handlePermissionCommand(
         mode: result.mode,
         durability: result.durable ? t("be_conversationLoop.permissionModeDurable") : t("be_conversationLoop.permissionModeSession"),
       });
-      return result.notice === undefined ? changed : `${changed}\n${result.notice}`;
+      return result.notice === undefined ? changed : `${changed}\n${t("be_conversationLoop.permissionModeHomeFolderRefused")}`;
     }
     if (outcome.kind === "rules") {
       const pm = self.deps.permissionManager;

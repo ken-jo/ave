@@ -14,6 +14,7 @@ import {
 import { BlockList, isIP } from "node:net";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
+import { AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } from "../shared/ave-home.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { projectRuleRoot } from "./rules/project-rule-files.js";
 import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
@@ -478,6 +479,8 @@ export class EgressGrantStore {
 
   private async loadPersistent(): Promise<readonly PersistentEgressGrant[]> {
     if (this.persistent !== undefined) return this.persistent;
+    // Remembered hosts grant network authority, so a refused home's unverified file reads as absent (R2); none of it restricts.
+    if (isInRefusedAveHome(this.filePath)) return [];
     let raw: string;
     try {
       raw = await readFile(this.filePath, "utf8");
@@ -500,6 +503,8 @@ export class EgressGrantStore {
   }
 
   private mutatePersistent(mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[]): Promise<void> {
+    // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
+    if (isInRefusedAveHome(this.filePath)) return Promise.reject(new AveHomeConfigurationRefusedWriteError(this.filePath));
     return this.writes(async () => {
       // Re-read under the queue so a second window's write is not lost.
       this.persistent = undefined;

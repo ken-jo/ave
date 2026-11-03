@@ -1,3 +1,4 @@
+import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { WebContents } from "electron";
@@ -101,6 +102,8 @@ export interface ApprovalRequest {
   userOwnedSurfaceReviewFallback?: true;
   // Display-only projection of the host terminal's current-turn provenance; never an approval capability.
   hostTerminalAfterExternalContent?: true;
+  // Host-derived: boot refused the home folder, so no remembered answer can be saved and the card answers once with a notice.
+  homeFolderRefused?: true;
   category: "tool" | "agent-action";
   // Permission policy.5 — discriminator for the renderer to pick the right card. Defaults to `"tool"` when omitted (backwards-compatible).
   kind?: ApprovalKind;
@@ -206,7 +209,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
@@ -926,6 +929,7 @@ export class ApprovalGate {
       hostShellExecutionPermitBinding,
       hostTerminal,
       hostTerminalAfterExternalContent: _requestedAfterExternalContent,
+      homeFolderRefused: _requestedHomeFolderRefused,
       userOwnedSurface: requestedUserOwnedSurface,
       userOwnedSurfaceReviewFallback: requestedSurfaceReviewFallback,
       executionPlan: requestedExecutionPlan,
@@ -940,7 +944,7 @@ export class ApprovalGate {
       approvalRuleBasis,
       verifiedShellCommand,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
@@ -1127,6 +1131,7 @@ export class ApprovalGate {
     const fullReq: ApprovalRequest = {
       ...request,
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
+      ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
       ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
       ...(executionPlanAudit === undefined

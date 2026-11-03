@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { assertAveHomeAcceptsInstalls } from "../../shared/ave-home.js";
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
 import type { GitRuntimeProgress, GitRuntimeStatus } from "../../shared/git-runtime.js";
@@ -59,6 +60,8 @@ export class GitRuntimeService {
   }
 
   async install(signal?: AbortSignal): Promise<GitRuntimeStatus> {
+    // The managed git runtime runs as Ave's own tool, so it is a trusted input like an extension.
+    assertAveHomeAcceptsInstalls("install the managed git runtime");
     try {
       await installManagedGit({
         runtimeRoot: this.options.runtimeRoot,

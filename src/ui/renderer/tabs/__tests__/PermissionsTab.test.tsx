@@ -696,6 +696,26 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(document.body.textContent).not.toContain("missing provider");
   });
 
+  it("warns once that the pick lasts this session when the home folder refusal keeps it from being saved", async () => {
+    const api = installApi([[]]);
+    api.permission.setMode.mockResolvedValueOnce({ ok: true, mode: "auto", notice: "home-folder-refused" });
+    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
+      if (rawArgs === "show") return reviewerResult("show", "disabled", "deny");
+      if (rawArgs === "mode llm") return { ...reviewerResult("mode", "llm", "deny"), notice: "home-folder-refused" as const };
+      throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
+    });
+
+    await renderPermissionsTab();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
+    });
+
+    // The mode and reviewer still apply for the session; neither step reports an error over the warning.
+    expect(screen.getByTestId(execModeTestId("auto")).className).toContain("border-primary");
+    expect(screen.getAllByText(t("permissionsTab.homeFolderRefusedSessionOnly"))).toHaveLength(1);
+    expect(screen.queryByText(/이전 설정으로 복원했습니다/)).toBeNull();
+  });
+
   it("adds and removes additional directories through the slash-backed IPC", async () => {
     const api = installApi([[]]);
     api.permission.dirDispatch.mockImplementation(async (rawArgs: string) => {

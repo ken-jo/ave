@@ -1,8 +1,11 @@
 // Cache invalidation is selective by context; high-risk verdicts remain cacheable and valid cold-start rows survive.
 import { afterEach, describe, it, expect, beforeEach } from "vitest";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { inspectFile } from "../../__tests__/test-helpers.js";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import {
   MAX_VERDICT_CACHE_ENTRIES,
   VerdictCache,
@@ -420,5 +423,34 @@ describe("VerdictCache invalidateMismatching (selective by invalidationKey)", ()
     expect(cache.lookup({ ...LOOKUP, toolName: "current" }, updated).hit).toBe(true);
     // The "stale" entry is gone.
     expect(cache.lookup({ ...LOOKUP, toolName: "stale" }, updated).hit).toBe(false);
+  });
+});
+
+describe("VerdictCache in a home refused at boot", () => {
+  let parent: string;
+  afterEach(async () => {
+    _resetAveHomePrivacyForTest();
+    await rm(parent, { recursive: true, force: true });
+  });
+
+  it("reads the unverified cache file as absent and never rewrites it", async () => {
+    parent = mkdtempSync(join(tmpdir(), "ave-refused-verdict-cache-"));
+    const home = join(parent, ".ave");
+    const path = join(home, "permissions", "reviewer-cache.jsonl");
+    mkdirSync(dirname(path), { recursive: true });
+    const planted = JSON.stringify({ key: computeCacheKey(LOOKUP), verdict: { level: "low", reason: "planted" },
+      expiresAt: Date.now() + 60_000, invalidationKey: computeInvalidationKey(CTX) }) + "\n";
+    writeFileSync(path, planted);
+    setAveHomeConfigurationRefusedAtBoot(home);
+
+    const cache = new VerdictCache(path);
+    // A planted LOW verdict would approve in automatic review; it reads as absent.
+    expect(cache.lookup(LOOKUP, CTX)).toMatchObject({ hit: false, reason: "miss-not-found" });
+    // This run's own verdicts are cached in memory only.
+    await cache.store({ ...LOOKUP, toolName: "session" }, CTX, { level: "medium", reason: "x" });
+    expect(cache.lookup({ ...LOOKUP, toolName: "session" }, CTX).hit).toBe(true);
+    await cache.invalidateMismatching({ ...CTX, allowedDirectories: ["/elsewhere"] });
+    await cache.flush();
+    expect(readFileSync(path, "utf8")).toBe(planted);
   });
 });

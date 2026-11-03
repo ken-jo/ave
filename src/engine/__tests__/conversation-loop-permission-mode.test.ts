@@ -8,6 +8,8 @@ import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnInput,
 } from "../llm/types.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { AveHomeConfigurationRefusedWriteError } from "../../shared/ave-home.js";
+import { t } from "../../i18n/runtime.js";
 
 class UnusedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -107,5 +109,16 @@ describe("ConversationLoop permission mode slash events", () => {
       }),
     );
     expect(onPermissionModeChanged).toHaveBeenCalledWith("auto");
+  });
+
+  it("says in the slash output that a refused home folder kept a durable mode change to this session", async () => {
+    const { loop, permissionManager } = makeLoop();
+    permissionManager.setModePersist.mockRejectedValueOnce(new AveHomeConfigurationRefusedWriteError("/home/permissions.json"));
+
+    const result = await loop.runTurn("/permission mode auto --durable", {}, undefined, { ...userKeyboardTurn() });
+
+    expect(permissionManager.setMode).toHaveBeenCalledWith("auto");
+    expect(result.text).toContain(t("be_conversationLoop.permissionModeHomeFolderRefused"));
+    expect(result.text).not.toContain("home-folder-refused");
   });
 });

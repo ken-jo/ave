@@ -22,6 +22,7 @@ import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocati
 import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-identity.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
+import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -139,6 +140,24 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe("egress ask callback — refused home folder", () => {
+  it("allows a persistent answer once when boot refused the home folder, and asks again next time", async () => {
+    setAveHomeConfigurationRefusedAtBoot(dir);
+    try {
+      const ask = callback();
+      answer = async () => ({ allow: true, scope: "always" });
+      expect(await ask({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+      expect(audit.at(-1)).toMatchObject({ decision: "allow", scope: "once" });
+      answer = async () => ({ allow: false, reason: "denied by the user" });
+      expect(await ask({ host: "pypi.org", port: 443 }, listener(OTHER_SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
+      expect(asked).toHaveLength(2);
+      expect(await grants.listPersistent()).toEqual([]);
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
+  });
 });
 
 describe("egress ask callback — attribution", () => {

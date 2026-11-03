@@ -1,4 +1,5 @@
 // Corrupt rule files throw and writers refuse to overwrite them; nothing is silently dropped. Stored broad wildcards remain visible/removable but inert, survive unrelated writes unchanged, and cannot be newly saved.
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import type { PermissionRule } from "../permission-manager.js";
 import {
   ENFORCED_RULE_KINDS,
@@ -120,6 +121,26 @@ function ruleLine(text: string, index: number): number | undefined {
 }
 
 // Validate a file's rule list. A bad rule fails the whole file (nothing is silently dropped); the error names the rule's position, its line in `sourceText` when the caller read one, and the rule's pattern, so the user can fix that one rule.
+// The text of an unverified store file (R2 overlay source), or undefined when it is missing, a link, not a regular file, too large or
+// unreadable. It opens without following links and without blocking, so a planted FIFO or link can neither hang boot nor redirect it.
+export function readUnverifiedStoreText(path: string): string | undefined {
+  let descriptor: number | undefined;
+  try {
+    const entry = lstatSync(path);
+    if (!entry.isFile() || entry.isSymbolicLink()) return undefined;
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.ino !== entry.ino || opened.dev !== entry.dev || opened.size > UNVERIFIED_STORE_LIMIT) return undefined;
+    return readFileSync(descriptor, "utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+const UNVERIFIED_STORE_LIMIT = 4 * 1024 * 1024;
+
 // The restriction overlay of a rule list that reads as absent (R2: a refused home's unverified permission stores): only its deny
 // rules, each validated alone. Allow and ask rules, malformed entries and a non-list contribute nothing, and nothing throws, so
 // planted bytes can neither grant authority nor stop the refused boot.
