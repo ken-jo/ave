@@ -47,7 +47,8 @@ import {
   caseFoldForMatch,
   isSensitivePath,
 } from "../../permissions/sensitive-paths.js";
-import { aveHome } from "../../shared/ave-home.js";
+import { assertAveHomeRuntimeBoundary, AVE_HOME_RUNTIME_DIRECTORY, aveHome } from "../../shared/ave-home.js";
+import { isPathWithin } from "../plugin-storage-containment.js";
 import { HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
 import type {
   PluginManifest,
@@ -112,21 +113,22 @@ function rejectEnvelopeGrant(pluginId: string, configKey: string, detail: string
   );
 }
 
-/** Where one `hostDirectory` row resolves. ONE answer, read by the derivation that grants the directory and by the subtraction that keeps a config value from naming it. Spelled out twice, the two could
- * come to disagree about where a row points, and the disagreement would be invisible: the grant would still be read-only and the subtraction would still refuse something; just not the same directory. */
-function hostGrantDirectory(
+/** The directories one `hostDirectory` row grants READ on: the row's catalog `grants`, each joined onto the home (the runtime row
+ * grants its children, never the boundary itself). The subtraction that keeps a config value from naming a catalog directory uses
+ * the row's whole `segments` directory, which contains every grant. */
+function hostGrantDirectories(
   grant: Extract<PluginEnvelopeGrant, { kind: "hostDirectory" }>,
-): string {
+): string[] {
   const name = grant.segments.length === 1 ? grant.segments[0] : undefined;
   const catalog = name && Object.hasOwn(HOST_DIRECTORY_CATALOG, name)
     ? HOST_DIRECTORY_CATALOG[name as keyof typeof HOST_DIRECTORY_CATALOG]
     : undefined;
   if (!catalog) throw new PluginSandboxGrantError("host directory is outside the closed catalog");
-  const directory = join(aveHome(), ...catalog.segments);
-  if (isSensitivePath(directory, "read") && !catalog.piercesDenyFloor) {
+  const directories = catalog.grants.map((segments) => join(aveHome(), ...segments));
+  if (directories.some((directory) => isSensitivePath(directory, "read")) && !catalog.piercesDenyFloor) {
     throw new PluginSandboxGrantError("host directory cannot pierce the sensitive deny floor");
   }
-  return directory;
+  return directories;
 }
 
 /** Subtract bundle, storage, and host-read roots from the entire write ceiling, including user approvals; these exclusions do not change read policy. */
@@ -302,11 +304,11 @@ export function derivePluginChildEnvelope(
   ];
   for (const { grant, access } of grants) {
     if (grant.kind === "hostDirectory") {
-      const directory = hostGrantDirectory(grant);
-      read.push(directory);
+      const directories = hostGrantDirectories(grant);
+      read.push(...directories);
       // Logged, not merely declared: a child running with more reach than the base envelope is an operational fact, and `why`
       // is the reviewed reason it holds; which is worth having in the log of the run rather than only in the diff that added it.
-      log.info(`[${inputs.pluginId}] envelope widened: read ${directory} — ${grant.why}`);
+      log.info(`[${inputs.pluginId}] envelope widened: read ${directories.join(", ")} — ${grant.why}`);
       continue;
     }
     const chosen = resolveUserChosenDirectory(inputs, grant);
@@ -497,6 +499,11 @@ export async function spawnConfinedPluginChild(
   try {
     // Materialize both read and write roots before wrapping; missing roots may be silently omitted by native backends.
     // Keep creation inside cleanup handling so refusal cannot leak the private home; creation failure prevents plugin loading.
+    // Only boot creates the runtime boundary: a recursive mkdir of a runtime child must not recreate a moved one unprotected.
+    const runtimeBoundary = join(aveHome(), AVE_HOME_RUNTIME_DIRECTORY);
+    if ([...spec.envelope.read, ...spec.envelope.write].some((directory) => isPathWithin(runtimeBoundary, directory))) {
+      assertAveHomeRuntimeBoundary();
+    }
     for (const directory of [...spec.envelope.read, ...spec.envelope.write]) {
       mkdirSync(directory, { recursive: true, mode: 0o700 });
     }

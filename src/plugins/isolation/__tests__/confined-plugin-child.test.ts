@@ -705,11 +705,19 @@ describe("the host decides how far a plugin child reaches", () => {
       fx.pluginRoot,
       fx.pluginDataDir,
       socketDirOf(fx),
-      join(fx.aveHome, "runtime"),
+      // The runtime row grants the boundary's children, never the boundary: a crash-left ACL grant then sits on a child.
+      join(fx.aveHome, "runtime", "python-envs"),
+      join(fx.aveHome, "runtime", "uv"),
       join(fx.aveHome, "certs"),
     ]);
+    expect(envelope.read).not.toContain(join(fx.aveHome, "runtime"));
     // Host directories contribute to READ only. Its config key is unset here; the case below also checks that another grant cannot turn it writable.
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
+    // What a delegated worker's Windows grant widens to: the containing envelope root, which for a venv interpreter is
+    // `runtime/python-envs`, never `runtime` itself.
+    const venvPython = join(fx.aveHome, "runtime", "python-envs", "env", "venv", "Scripts", "python.exe");
+    expect(outermostContainingRoots([venvPython, join(fx.aveHome, "runtime", "uv", "t", "sha", "uv.exe")], envelope.read))
+      .toEqual([join(fx.aveHome, "runtime", "python-envs"), join(fx.aveHome, "runtime", "uv")]);
   });
 
   it("admits a chosen directory the user approved, as read AND write", () => {

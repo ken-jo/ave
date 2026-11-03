@@ -3,10 +3,11 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
-import { createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
+import { assertAveHomeRuntimeBoundary, AVE_HOME_PROTECTED_DIRECTORIES, AVE_HOME_RUNTIME_DIRECTORY, createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
+import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
 import { permissionSettingsPath } from "../../permissions/permission-settings-store.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -386,8 +387,15 @@ describe("ensureAveHomePrivate", () => {
     chmodSync(target, 0o755);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     symlinkSync(target, join(dir, "runtime"), "dir");
-    expect(() => ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] })).toThrow();
+    expect(() => ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] }))
+      .toThrow(`Ave cannot protect ${join(dir, "runtime")}: it is a link or not a directory. Move it out of ${dir} and restart Ave.`);
     expect(statSync(target).mode & 0o777).toBe(0o755);
+  });
+  it.skipIf(process.platform === "win32")("refuses a POSIX runtime that is a file with the same actionable message", () => {
+    const dir = home();
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "runtime"), "not a directory");
+    expect(() => ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] })).toThrow(/is a link or not a directory/);
   });
   it("passes untrusted paths only through one JSON environment value", () => {
     const paths = ["odd’; Write-Output x; 'path", "secret"];
@@ -515,6 +523,43 @@ describe("ensureAveHomePrivate", () => {
       : descriptor(path)));
     expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls })).toMatchObject({ enforcement: "none", category: "extra-principals",
       extraPrincipals: [{ sid: "S-1-1-0", explicit: true }, { sid: "S-1-5-18" }] });
+  });
+  it("names the no-copy runtime boundary in the Repair source from the one TypeScript constant", () => {
+    expect(AVE_HOME_PROTECTED_DIRECTORIES).toContain(AVE_HOME_RUNTIME_DIRECTORY);
+    expect(WINDOWS_HOME_BOUNDARY_SOURCE).toContain(`int skipped = name == "${AVE_HOME_RUNTIME_DIRECTORY}" ? 0 : Copy(aside, live, user);`);
+  });
+  describe("the runtime boundary guard writers call before creating a runtime child", () => {
+    const hostPlatform = process.platform;
+    afterEach(() => { Object.defineProperty(process, "platform", { value: hostPlatform, configurable: true }); });
+    function onWindows(facts: (path: string) => windowsPathFacts.WindowsDaclFacts): void {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation((paths) => paths.map(facts));
+    }
+    it("admits the owner-only protected boundary boot created", () => {
+      onWindows((path) => nativeDescriptor(path));
+      expect(() => assertAveHomeRuntimeBoundary(home())).not.toThrow();
+    });
+    it.each([
+      ["missing", (path: string) => ({ ...nativeDescriptor(path), exists: false, directory: false, dacl: null })],
+      ["unprotected", (path: string) => { const facts = nativeDescriptor(path); return { ...facts, dacl: { ...facts.dacl!, protected: false } }; }],
+      ["shared with another principal", (path: string) => { const facts = nativeDescriptor(path);
+        return { ...facts, dacl: { ...facts.dacl!, aces: [...facts.dacl!.aces, { type: 0, flags: 3, mask: 0x1200a9, sid: "S-1-5-32-545" }] } }; }],
+      ["owned by another account", (path: string) => nativeDescriptor(path, "S-1-5-21-1-2-3-4")],
+      ["a junction", (path: string) => ({ ...nativeDescriptor(path), attributes: 0x410, reparseTag: 0xa0000003, reparseTarget: "C:\\elsewhere" })],
+    ] as const)("refuses a Windows runtime boundary that is %s", (_name, facts) => {
+      onWindows(facts as (path: string) => windowsPathFacts.WindowsDaclFacts);
+      expect(() => assertAveHomeRuntimeBoundary(home())).toThrow(/missing, a link, or not protected; restart Ave to recreate it/);
+    });
+    it.skipIf(process.platform === "win32")("requires a real POSIX runtime directory and refuses a missing one or a link", () => {
+      const dir = home();
+      mkdirSync(dir, { recursive: true });
+      expect(() => assertAveHomeRuntimeBoundary(dir)).toThrow(/restart Ave to recreate it/);
+      symlinkSync(dirname(dir), join(dir, "runtime"), "dir");
+      expect(() => assertAveHomeRuntimeBoundary(dir)).toThrow(/restart Ave to recreate it/);
+      rmSync(join(dir, "runtime"));
+      mkdirSync(join(dir, "runtime"));
+      expect(() => assertAveHomeRuntimeBoundary(dir)).not.toThrow();
+    });
   });
   it("rejects a malformed native read-back result set", () => {
     vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(() => windowsPathFacts.decodeWindowsPathFacts("{}", 1, "--dacl") as windowsPathFacts.WindowsDaclFacts[]);

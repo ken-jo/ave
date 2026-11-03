@@ -599,12 +599,6 @@ jobs:
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-      # A cached node_modules skips the postinstall that fetches uv; the
-      # runtime grant suite runs the bundled uv under the sandbox.
-      - name: Ensure uv toolchain
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: node scripts/fetch-uv.mjs
       - name: Cache Windows packaging runtime archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

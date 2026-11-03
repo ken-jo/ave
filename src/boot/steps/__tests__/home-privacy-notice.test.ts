@@ -110,6 +110,8 @@ it("tells the user a reset runtime boundary will be rebuilt instead of asking th
     title: translate("ko", "homePrivacy.boundaryRepairedTitle"),
     body: translate("ko", "homePrivacy.runtimeReset"),
   }));
-  expect(translate("en", "homePrivacy.runtimeReset")).toContain("rebuilt");
+  // The same instruction as the rebuild-needed error, short enough to reach the user untruncated.
+  expect(translate("en", "homePrivacy.runtimeReset")).toContain("connect to the network and restart Ave".replace(/^c/, "C"));
+  expect(translate("en", "be_pythonRuntime.errRebuildNeeded", { message: "" })).toContain("connect to the network and restart Ave");
   expect(translate("en", "homePrivacy.runtimeReset")).not.toContain("Sign out");
 });

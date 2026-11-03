@@ -58,6 +58,11 @@ export function isWindowsHomeRootRepairable(facts: WindowsDaclFacts): boolean {
   return userEntry;
 }
 
+/** Host-managed executables (uv, Python installs, venvs, the uv cache). A protected boundary that Repair never copies into: a
+ * nonconforming one is set aside and created empty, and its contents are rebuilt on demand. Defined here, beside the Repair source
+ * that reads it, and re-exported by ave-home.ts. */
+export const AVE_HOME_RUNTIME_DIRECTORY = "runtime";
+
 export const WINDOWS_HOME_BOUNDARY_SOURCE = `using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -590,7 +595,7 @@ public static class HomeDirectoryDacl {
       // The runtime boundary holds executables another principal may have changed while it was unprotected. Copying would launder
       // them into the protected directory, so it starts empty and its contents are rebuilt; the aside is deleted below.
       step = "copy";
-      int skipped = name == "runtime" ? 0 : Copy(aside, live, user);
+      int skipped = name == "${AVE_HOME_RUNTIME_DIRECTORY}" ? 0 : Copy(aside, live, user);
       step = "verify";
       if (!OwnerOnly(Read(live), user, elevated)) throw new InvalidOperationException("Fresh boundary protection failed verification");
       EnsureMarker(live, NoticeMarker, user);

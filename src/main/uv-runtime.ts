@@ -3,7 +3,8 @@ import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 
 import { resolveUvTarget, type UvTarget } from "../../scripts/uv-targets.mjs";
-import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
+import { assertAveHomeRuntimeBoundary, AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
+import { isResolvedPathWithin } from "../plugins/plugin-storage-containment.js";
 import { projectRoot } from "./main-paths.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { getHostResources } from "./host-resources.js";
@@ -95,6 +96,8 @@ function materializePackagedUvBinary(uvTarget: UvTarget, options: BundledUvRunti
     );
   }
 
+  // Only boot creates the runtime boundary; this recursive mkdir must not recreate a moved one unprotected.
+  if (isResolvedPathWithin(path.join(aveHome(), AVE_HOME_RUNTIME_DIRECTORY), targetDir)) assertAveHomeRuntimeBoundary();
   fs.mkdirSync(targetDir, { recursive: true, mode: 0o700 });
   if ((options.platform ?? process.platform) !== "win32") {
     fs.chmodSync(runtimeUvDir, 0o700);

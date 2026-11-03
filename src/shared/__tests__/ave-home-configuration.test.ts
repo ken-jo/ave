@@ -326,8 +326,10 @@ describe("protected home configuration", () => {
     }
     expect(getDefaultSensitiveWriteDenyPaths().map((path) => path.replace(/\\/g, "/").replace(/\/$/, "")))
       .toContain(join(dir, "config").replace(/\\/g, "/"));
-    // `runtime` is a protected boundary whose venvs sandboxed plugins must still read. It has no sensitive row yet: a plain row would
-    // read-deny every venv, and on Windows a grant into it would stamp a deny entry onto the boundary's own DACL.
+    // `runtime` is a protected boundary whose venvs sandboxed extensions must still read, and its sensitive row arrives with slice 3's
+    // rows. A row in the shared table projects into the read floor as well, which would stop every venv. A write-only projection
+    // (as the write floor's `homeWritePersistence` list is) avoids that, but on Windows any deny on `runtime` is kept and stamped onto
+    // the boundary's own DACL whenever a narrowed runtime grant intersects it, so it also needs a Windows deny-target exemption.
     expect(AVE_HOME_PROTECTED_DIRECTORIES).toContain("runtime");
     const runtime = join(dir, "runtime");
     expect(lstatSync(runtime).isDirectory()).toBe(true);

@@ -32,6 +32,17 @@ vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
 }));
 
+// The simulated drive's DACLs are not the owner-only boundary boot writes, so a case that only fakes win32 to reach a Windows
+// branch stands in for boot's boundary with `boundaryCreatedByBoot`; the missing-boundary case keeps the real guard.
+const runtimeBoundary = vi.hoisted(() => ({ createdByBoot: false }));
+vi.mock("../../shared/ave-home.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/ave-home.js")>();
+  return { ...actual, assertAveHomeRuntimeBoundary: (home?: string) => {
+    if (!runtimeBoundary.createdByBoot) actual.assertAveHomeRuntimeBoundary(home);
+  } };
+});
+function boundaryCreatedByBoot(): void { runtimeBoundary.createdByBoot = true; }
+
 import * as fsMock from "node:fs/promises";
 import * as cpMock from "node:child_process";
 
@@ -239,6 +250,7 @@ describe("PythonRuntimeBootstrapper", () => {
     configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false });
     // Boot creates the runtime boundary; Windows runtime setup refuses to recreate it.
     mkdirSync(path.join(process.env.AVE_HOME!, "runtime"), { recursive: true });
+    runtimeBoundary.createdByBoot = false;
   });
 
   afterEach(async () => {
@@ -353,6 +365,7 @@ describe("PythonRuntimeBootstrapper", () => {
   });
 
   it("Windows cached sync failure retries once with a no-cache copy fallback", async () => {
+    boundaryCreatedByBoot();
     const manifestPath = "/installed/local-indexer/plugin.json";
     const originalPlatform = process.platform;
     const originalArch = process.arch;
@@ -905,7 +918,19 @@ describe("PythonRuntimeBootstrapper", () => {
     expect(vi.mocked(fsMock.writeFile).mock.calls.slice(writes).map(([target]) => String(target)).filter((target) => target.endsWith(".ready"))).toEqual([]);
   });
 
-  it("on Windows refuses to recreate a missing runtime boundary and reports a rebuild instead", async () => {
+  it("keeps a non-download setup failure's own message instead of the network rebuild headline", async () => {
+    mockedAccess
+      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // no ready sentinel
+      .mockResolvedValueOnce(undefined); // uv binary present
+    mockedSpawn
+      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n")) // python install
+      .mockReturnValueOnce(makeSpawnFailMock(1, "venv creation failed")); // uv venv: no download involved
+    const failure = await new PythonRuntimeBootstrapper().ensureReady(makeBrowserWindow()).then(() => undefined, (error: Error) => error);
+    expect(failure?.message).toContain("venv creation failed");
+    expect(failure?.message).not.toContain(t("be_pythonRuntime.errRebuildNeeded", { message: "" }).split("\n")[0]!);
+  });
+
+  it("on Windows refuses to recreate a missing runtime boundary and asks for a restart", async () => {
     rmSync(path.join(process.env.AVE_HOME!, "runtime"), { recursive: true, force: true });
     const originalPlatform = process.platform;
     const originalArch = process.arch;
@@ -914,9 +939,9 @@ describe("PythonRuntimeBootstrapper", () => {
     mockedAccess.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     try {
       const failure = await new PythonRuntimeBootstrapper().ensureReady(makeBrowserWindow()).then(() => undefined, (error: Error) => error);
-      const [headline] = t("be_pythonRuntime.errRebuildNeeded", { message: "" }).split("\n");
-      expect(failure?.message.startsWith(headline!)).toBe(true);
-      expect(failure?.message).toContain("restart Ave to recreate it");
+      // Its own message: restarting recreates the boundary, so this is not the network rebuild headline.
+      expect(failure?.message).toMatch(/missing, a link, or not protected; restart Ave to recreate it/);
+      expect(failure?.message).not.toContain(t("be_pythonRuntime.errRebuildNeeded", { message: "" }).split("\n")[0]!);
       expect(vi.mocked(fsMock.mkdir)).not.toHaveBeenCalled();
       expect(mockedSpawn).not.toHaveBeenCalled();
     } finally {
@@ -952,6 +977,7 @@ describe("PythonRuntimeBootstrapper", () => {
 
     for (const [platform, arch, expectedDir] of cases) {
       it(`${platform}/${arch} → resources/uv/${expectedDir}/uv[.exe]`, async () => {
+        if (platform === "win32") boundaryCreatedByBoot();
         mockedAccess
           .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
           .mockResolvedValueOnce(undefined);

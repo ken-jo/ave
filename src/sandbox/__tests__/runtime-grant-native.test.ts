@@ -35,7 +35,9 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
     // The fixture-owner guard matches the temp directory as spelled, so the owner is set before the spelling is expanded.
     setFixtureOwner(created);
     container = realpathSync.native(created);
-    home = join(container, ".ave");
+    // Not `<HOME>/.ave`: HOME is stubbed to the container below, and the isolation guard refuses a sandbox initialized over what
+    // it then sees as the real user's ~/.ave. AVE_HOME may sit anywhere; this one is a sibling of the stubbed profile's .ave.
+    home = join(container, "ave-home");
     // The sandboxed program's working directory: granted at initialization and disjoint from the home, so the runtime grants
     // under test are the only grants that reach AVE_HOME.
     work = join(container, "work");
@@ -120,6 +122,11 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
     execFileSync(uv, ["python", "install", "3.12"], { env: uvEnv, windowsHide: true, stdio: "pipe" });
     execFileSync(uv, ["venv", join(env, "venv"), "--python", "3.12"], { env: uvEnv, windowsHide: true, stdio: "pipe" });
     const python = join(env, "venv", "Scripts", "python.exe");
+    // A pip-synced package, as provisioning installs one from the plugin lockfile: uv links it into site-packages from the uv cache
+    // beside the venv (hardlinks on one volume), so the grant on `venv` must reach files whose other name sits in the ungranted cache.
+    const requirements = join(env, "requirements.lock");
+    writeFileSync(requirements, "six==1.16.0\n");
+    execFileSync(uv, ["pip", "sync", requirements, "--python", python], { env: uvEnv, windowsHide: true, stdio: "pipe" });
     expectBoundaryUntouched();
 
     await initializeRequiredSandbox({ allowRead: [work], denyRead: [], denyWrite: [] });
@@ -139,9 +146,10 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
     const pythonGrant = await holdWindowsFilesystemGrant({ label: "runtime-grant-native-python", allowRead: pythonReads, allowWrite: [] });
     try {
       const probe = join(work, "probe.py");
-      writeFileSync(probe, "import sys\nprint(sys.prefix)\nprint(sys.base_prefix)\n");
+      writeFileSync(probe, "import sys, six\nprint(sys.prefix)\nprint(sys.base_prefix)\nprint(six.__file__)\n");
       const output = await sandboxed(python, `-I ${probe}`);
-      const [prefix, basePrefix] = output.trim().split(/\r?\n/);
+      const [prefix, basePrefix, sixFile] = output.trim().split(/\r?\n/);
+      expect(sixFile!.toLowerCase().startsWith(join(env, "venv").toLowerCase())).toBe(true);
       expect(prefix!.toLowerCase()).toBe(join(env, "venv").toLowerCase());
       expect(basePrefix!.toLowerCase().startsWith(join(env, "python").toLowerCase())).toBe(true);
       expectBoundaryUntouched();

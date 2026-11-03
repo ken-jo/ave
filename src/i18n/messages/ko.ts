@@ -106,7 +106,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "homePrivacy.boundaryRepairedTitle": "비공개 저장소 복구 완료",
   "homePrivacy.boundaryRepaired": "인증 정보를 다른 계정이 읽을 수 있었으므로 로그아웃한 뒤 다시 로그인하세요.",
   "homePrivacy.rootRepaired": "Ave 데이터 폴더를 현재 계정만 쓰도록 제한했습니다.",
-  "homePrivacy.runtimeReset": "Python 런타임 폴더의 권한이 열려 있어 초기화했습니다. 플러그인이 다음에 필요로 할 때 다시 만들며, 네트워크 연결이 필요합니다.",
+  "homePrivacy.runtimeReset": "권한이 열려 있던 Python 런타임을 초기화했습니다. 네트워크에 연결한 뒤 Ave를 다시 시작하세요.",
   "documentEngine.title": "문서 엔진 설치",
   "documentEngine.optional": "(선택 사항)",
   "documentEngine.description": "읽기 전용 미리보기에서 문서 페이지를 렌더링하고 수식을 다시 계산합니다. 설치하지 않아도 기존 뷰어를 사용할 수 있습니다.",

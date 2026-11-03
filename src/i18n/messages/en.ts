@@ -104,7 +104,7 @@ export const en = {
   "homePrivacy.boundaryRepairedTitle": "Private storage repaired",
   "homePrivacy.boundaryRepaired": "Credentials may have been readable. Sign out and sign in again.",
   "homePrivacy.rootRepaired": "Ave's data folder is now limited to your account.",
-  "homePrivacy.runtimeReset": "Ave reset its Python runtime folder because its permissions were open. It is rebuilt the next time a plugin needs it, which requires a network connection.",
+  "homePrivacy.runtimeReset": "Python runtime reset (folder was open). Connect to the network and restart Ave.",
   "documentEngine.title": "Install document engine",
   "documentEngine.optional": "(optional)",
   "documentEngine.description": "Render document pages and recalculate spreadsheet formulas in the read-only preview. Existing viewers remain available without this download.",

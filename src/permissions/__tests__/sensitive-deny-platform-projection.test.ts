@@ -240,8 +240,9 @@ describe.runIf(realPlatform !== "win32")("the OS deny floor per platform", () =>
     expect(denyFloor("darwin", userData)).toEqual(expected);
   });
 
-  // The runtime boundary carries no row yet. A read deny would stop every sandboxed venv, and on Windows any deny there is stamped
-  // onto the boundary's own DACL whenever a narrowed runtime grant intersects it, which boot would then refuse.
+  // The runtime boundary carries no row until slice 3. A table row also lands in the read floor and would stop every sandboxed venv;
+  // a write-only entry beside `homeWritePersistence` would not, but on Windows any deny there is stamped onto the boundary's own DACL
+  // whenever a narrowed runtime grant intersects it, which boot would then refuse, so that entry needs a deny-target exemption first.
   it.each(["win32", "linux", "darwin"] as const)("%s projects no read or write deny onto the runtime boundary", (platform) => {
     const runtime = `${FIXTURE_AVE_HOME}/runtime`;
     Object.defineProperty(process, "platform", { value: platform, configurable: true });

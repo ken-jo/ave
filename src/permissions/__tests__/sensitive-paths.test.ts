@@ -21,7 +21,7 @@ it("keeps protected boundaries aligned with credential directories", () => {
     entry.anchor === "ave-home" && entry.kind === "dir" &&
     ["secrets", "subscription-runtimes", "keys", "certs", "config"].includes(entry.segments[0]),
   ).map((entry) => entry.segments.join("/"));
-  // `runtime` is the one boundary without a row: sandboxed plugins run its venvs, so the read floor must not cover it.
+  // `runtime` is the one boundary without a row (slice 3 adds it): sandboxed extensions run its venvs, so the read floor must not cover it.
   expect([...AVE_HOME_PROTECTED_DIRECTORIES].filter((name) => name !== "runtime").sort()).toEqual(credentialDirectories.sort());
   expect(AVE_HOME_PROTECTED_DIRECTORIES).toHaveLength(6);
   expect(AVE_HOME_PROTECTED_DIRECTORIES).toContain("runtime");

@@ -2903,11 +2903,19 @@ with its own owner rule:
     plugin lockfiles when a plugin next needs them. Until a rebuild
     succeeds, the plugin reports "Python runtime rebuild needed" and does
     not start. There is no offline fallback to older contents.
-  - A sandboxed program inside `runtime` is granted read on the children
-    it needs (`runtime\uv`, or its env root's `venv` and `python`), never
-    on `runtime` itself, so a grant entry left by a crash never lands on
-    the boundary's own DACL. The sandbox account crosses the owner-only
-    boundary through bypass-traverse.
+  - No sandbox grant names `runtime` itself, so a grant entry left by a
+    crash never lands on the boundary's own DACL. The sandbox account
+    crosses the owner-only boundary through bypass-traverse.
+    - A bundled program inside `runtime` (an MCP server or hook) is granted
+      read on the children it needs: `runtime\uv`, or its env root's
+      `venv` and `python`.
+    - A plugin's `hostDirectory: ["runtime"]` declaration grants read on
+      `runtime/python-envs` and `runtime/uv`, and the workers it delegates
+      map onto those roots.
+    - A writer that would create a runtime child (uv materialization,
+      Python setup, a plugin child's envelope) first checks that boot's
+      boundary is present and, on Windows, owner-only. It never recreates
+      a moved one; a restart does.
   - Off Windows, boot sets `config` and `runtime` to 0700 on every start,
     through a no-follow handle.
   The helper is the first creator of the home. A plain `mkdir` would leave an
