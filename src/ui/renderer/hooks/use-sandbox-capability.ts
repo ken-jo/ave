@@ -5,9 +5,10 @@ import type { AveApi } from "../types.js";
 const CAPABILITY_QUERY_ATTEMPTS = 3;
 const CAPABILITY_QUERY_RETRY_MS = 1_000;
 
-/** Read the host snapshot; a failed query is uncertainty, never an execution plan. */
+/** Read the host snapshot; a failed query is uncertainty, never an execution plan. The snapshot is re-read when settings change and
+ * when main reports a sandbox status change, since the Windows MXC check can settle seconds after the first read. */
 export function useSandboxCapability(
-  permission: Pick<AveApi["permission"], "sandboxCapability"> | undefined,
+  permission: (Pick<AveApi["permission"], "sandboxCapability"> & Partial<Pick<AveApi["permission"], "onSandboxCapabilityChanged">>) | undefined,
   subscribeToSettings?: AveApi["onSettingsUpdated"],
 ) {
   const [capability, setCapability] = useState<SandboxCapabilityInfo | null>(null);
@@ -47,13 +48,15 @@ export function useSandboxCapability(
     mounted.current = true;
     void refresh();
     const unsubscribe = subscribeToSettings?.(() => { void refresh(); });
+    const unsubscribeSandbox = permission?.onSandboxCapabilityChanged?.(() => { void refresh(); });
     return () => {
       mounted.current = false;
       generation.current += 1;
       clearTimeout(retryTimer.current);
       unsubscribe?.();
+      unsubscribeSandbox?.();
     };
-  }, [refresh, subscribeToSettings]);
+  }, [refresh, subscribeToSettings, permission]);
 
   return { capability, statusQueryFailed, refresh };
 }

@@ -108,6 +108,9 @@ export const PERMISSIONS = {
   // Read-only: OS sandbox capability for the current platform; drives the
 
   sandboxCapability: "ave:permissions:sandbox-capability",
+  // Main → renderer hint: the sandbox status snapshot changed (for example the Windows MXC start probe settled after boot).
+  // Payload-less; listeners re-read `sandboxCapability` rather than trusting a pushed copy.
+  sandboxCapabilityChanged: "ave:permissions:sandbox-capability-changed",
   // Read-only: Windows srt-win install readiness (group + WFP state) + the verbatim ASRT install
   // instructions. Drives the win32 consent panel in PermissionsTab. Non-win32 returns a clean "not-applicable" shape.
   sandboxWindowsStatus: "ave:permissions:sandbox-windows-status",

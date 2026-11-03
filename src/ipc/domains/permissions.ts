@@ -79,6 +79,7 @@ import {
   getWindowsSandboxSubstrate,
   isShellSandboxRequestedAtBoot,
   isPluginWorkerConfinementRequestedAtBoot,
+  setSandboxStatusChangeListener,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -266,8 +267,19 @@ export function broadcastPermissionConfigChanged(deps: PermissionConfigBroadcast
   }
 }
 
+/** Hint every app window that the sandbox status snapshot changed. Payload-less like `configChanged`: listeners re-read `sandboxCapability`,
+ * which recomputes the shell plan from the current state, so a renderer that read the snapshot during the Windows MXC check stops showing it. */
+function broadcastSandboxCapabilityChanged(deps: PermissionConfigBroadcastTarget): void {
+  const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+  for (const win of windows) {
+    sendToWindow(win, PERMISSIONS.sandboxCapabilityChanged, {});
+  }
+}
+
 export function registerPermissionsHandlers(deps: IpcDeps): void {
   const { conversationLoop, approvalGate, auditLogger } = deps;
+  // The status snapshot can change after the first renderer read (the Windows MXC start probe settles seconds after boot); push a hint on every change.
+  setSandboxStatusChangeListener(() => broadcastSandboxCapabilityChanged(deps));
   const reviewSuggestionTracker = createPermissionReviewSuggestionTracker();
   const isNativeApprovalFrame = (event: IpcMainInvokeEvent): boolean => {
     if (!event.sender || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
