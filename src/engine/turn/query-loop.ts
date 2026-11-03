@@ -124,6 +124,8 @@ export async function queryLoop(
       memoryQuery?: string;
       /** The user message that opened this turn; anchors memory use rows. */
       turnMessageId?: string;
+      /** Whether anything other than the user's own keyboard text has entered this turn; memory writes refuse while it is. */
+      isMemoryWriteTainted?: () => boolean;
       onStopHook?: (state: { toolCount: number; stopHookActive: boolean }) => Promise<string | undefined>;
     },
   ): Promise<{
@@ -1585,6 +1587,8 @@ export async function queryLoop(
           memoryIncludeUnscoped: self.getSessionMemoryProjectContext?.()?.includeUnscoped === true,
           // memory_write records the row that opened the turn as where a memory was learned.
           ...(bounds.turnMessageId !== undefined ? { turnMessageId: bounds.turnMessageId } : {}),
+          // A caller that does not report the turn's taint gets no memory writes.
+          memoryWriteTainted: bounds.isMemoryWriteTainted ? bounds.isMemoryWriteTainted() : true,
           supportsA2AParentDelivery: self.deps.supportsA2AParentDelivery === true,
           approvalReasonPrefix: activeApprovalReasonPrefix,
           // Pass the turn abort signal so blocking tools honor user stop.

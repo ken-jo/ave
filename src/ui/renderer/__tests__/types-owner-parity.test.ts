@@ -8,7 +8,6 @@ import type {
   RecentlyDeniedEntry,
   ExecutionMode,
   HookTrustRow,
-  MemoryCaptureMode,
   PermissionRule,
   PermissionReviewerSettings,
   PluginContributionTrustRow,
@@ -17,7 +16,6 @@ import type {
 } from "../types.js";
 import type {
   AppSettings as HostAppSettings,
-  MemoryCaptureMode as HostMemoryCaptureMode,
 } from "../../../data/settings-store.js";
 import type { RendererSettingsSnapshot } from "../../../ipc/domains/settings.js";
 import type {
@@ -58,7 +56,6 @@ describe("renderer types are the owner types", () => {
     >();
     expectTypeOf<"a2aRemote">().not.toMatchTypeOf<keyof AppSettings>();
     expectTypeOf<"upstreamProxy">().not.toMatchTypeOf<keyof AppSettings>();
-    expectTypeOf<MemoryCaptureMode>().toEqualTypeOf<HostMemoryCaptureMode>();
   });
 
   it("approval and permission contracts are the gate's own types", () => {

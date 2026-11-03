@@ -46,37 +46,17 @@ describe("RolesTab — long-term memory consolidation", () => {
   });
 });
 
-describe("RolesTab — detailed memory save", () => {
-  async function fillDetailedMemory() {
-    fireEvent.change(await screen.findByPlaceholderText(t("rolesTab.detailMemoryTitlePlaceholder")), {
-      target: { value: "Rollout rule" },
-    });
-    fireEvent.change(screen.getByPlaceholderText(t("rolesTab.detailMemoryPlaceholder")), {
-      target: { value: "Use a staged rollout." },
-    });
-    fireEvent.click(screen.getByRole("button", { name: t("rolesTab.saveDetailMemoryButton") }));
-  }
-
-  it("saves to global memory by naming the global scope", async () => {
+describe("RolesTab — instructions, not memories", () => {
+  it("labels the MEMORY.md editors as 지침 and offers no direct memory save", async () => {
     const { api } = makeMockAveApi();
     renderRolesTab(api);
 
-    await fillDetailedMemory();
-
-    await waitFor(() => expect(api.memorySaveEntry).toHaveBeenCalledOnce());
-    expect(api.memorySaveEntry).toHaveBeenCalledWith("Rollout rule", "Use a staged rollout.", { scope: "global" });
-    expect(await screen.findByText(t("rolesTab.statusDetailMemorySaved"))).toBeInTheDocument();
-  });
-
-  it("shows the host's refusal instead of reporting the save as done", async () => {
-    const { api } = makeMockAveApi();
-    api.memorySaveEntry.mockResolvedValue({ ok: false, error: "invalid-input" });
-    renderRolesTab(api);
-
-    await fillDetailedMemory();
-
-    expect(await screen.findByText("invalid-input")).toBeInTheDocument();
-    expect(screen.queryByText(t("rolesTab.statusDetailMemorySaved"))).not.toBeInTheDocument();
+    expect(await screen.findByText("지침 (MEMORY.md)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "지침 저장" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("긴급 지침 (500자 내외)")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("상세 기억 제목")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "상세 기억 저장" })).not.toBeInTheDocument();
+    expect("memorySaveEntry" in api).toBe(false);
   });
 });
 

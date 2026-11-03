@@ -197,13 +197,13 @@ export interface ProjectScopedMemoryOptions {
 
 export type MemoryKind = "preference" | "constraint" | "fact" | "goal" | "reference" | "note";
 
-/** Candidates are optional review-only records; only active memories may reach a model prompt. */
-export type MemoryState = "candidate" | "active";
+/** One lifecycle: every saved memory is active at once (owner decision 2026-11-04); a stored "candidate" no longer decodes. */
+type MemoryState = "active";
 
 /** Provenance is recorded so later lifecycle policy can distinguish imports from direct user intent. */
 export type MemorySourceKind = "user" | "assistant" | "import" | "capture";
 
-export type MemoryCaptureTrigger = "automatic" | "explicit";
+type MemoryCaptureTrigger = "automatic" | "explicit";
 
 export type MemoryScope =
   | { type: "global" }
@@ -228,7 +228,7 @@ interface MemoryCaptureV1 {
  * Where a memory was learned: the conversation and, when known, the user row that opened the turn. Ids only; the quote is
  * read from the session at display time so the memory store never duplicates conversation text. `store` is recorded where
  * the writer knows it structurally; a reader resolves a missing store by probing main, side-chat, then sub-agent sessions.
- * A direct UI save has no origin. Kept separate from `capture` because assistant candidates carry no capture block.
+ * A save with no conversation behind it has no origin. Kept separate from `capture` because assistant writes carry no capture block.
  */
 export interface MemoryOriginV1 {
   v: 1;
@@ -266,7 +266,6 @@ export interface MemoryMetadataV1 {
 // Omitted projectRoot explicitly selects global long-term memory.
 export interface MemorySaveOptions extends ProjectScopedMemoryOptions {
   kind?: MemoryKind;
-  state?: MemoryState;
   source?: MemorySourceKind;
   confirmedAt?: string;
   expiresAt?: string;
@@ -275,9 +274,12 @@ export interface MemorySaveOptions extends ProjectScopedMemoryOptions {
   origin?: MemoryOriginV1;
 }
 
+export interface MemorySaveResult {
+  op: "created" | "updated";
+  entry: NoteEntry;
+}
+
 export interface MemoryReadOptions extends ProjectScopedMemoryOptions {
-  // Candidates are excluded from normal reads and prompts by default.
-  includeCandidates?: boolean;
   scope?: "all" | "global";
 }
 
@@ -577,7 +579,9 @@ export const MEMORY_KINDS: ReadonlySet<MemoryKind> = new Set<MemoryKind>([
   "preference", "constraint", "fact", "goal", "reference", "note",
 ]);
 export const MAX_MEMORY_SOURCE_CHARS = 4_000;
-const MEMORY_STATES = new Set<MemoryState>(["candidate", "active"]);
+const MEMORY_STATES = new Set<MemoryState>(["active"]);
+// Invisible text that can hide instructions from the user who reads the memory.
+const MEMORY_INVISIBLE_CHARS = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
 const MEMORY_CAPTURE_TRIGGERS = new Set<MemoryCaptureTrigger>(["automatic", "explicit"]);
 const MEMORY_SOURCES = new Set<MemorySourceKind>(["user", "assistant", "import", "capture"]);
 
@@ -1419,19 +1423,8 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   // Global refresh includes unscoped legacy records but never project-scoped managed memories.
-  listGlobalMemoryEntries(options: Pick<MemoryReadOptions, "includeCandidates"> = {}): NoteEntry[] {
-    return this.listMemoryEntries(options).filter((entry) => !entry.projectRoot);
-  }
-
-  /** Candidates are review-only and never enter normal prompt/list reads. */
-  listMemoryCandidates(options: ProjectScopedMemoryOptions = {}): NoteEntry[] {
-    // Candidate reviews expose global plus the selected project only; detached callers cannot enumerate projects.
-    return this.readMarkdownEntries(this.memoryDir, {
-      includeCandidates: true,
-      ...(options.projectRoot ? { projectRoot: options.projectRoot } : {}),
-      ...(options.projectName ? { projectName: options.projectName } : {}),
-    })
-      .filter((entry) => entry.state === "candidate" && this.matchesCandidateReviewScope(entry, options));
+  listGlobalMemoryEntries(): NoteEntry[] {
+    return this.listMemoryEntries().filter((entry) => !entry.projectRoot);
   }
 
   searchMemoryEntries(query: string, options: MemoryReadOptions = {}): NoteEntry[] {
@@ -1552,7 +1545,7 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   // `actor` is who is saving now; it is recorded in the change history and never inferred from stored metadata.
-  async saveMemory(title: string, content: string, options: MemorySaveOptions, actor: MemoryHistoryActor): Promise<NoteEntry> {
+  async saveMemory(title: string, content: string, options: MemorySaveOptions, actor: MemoryHistoryActor): Promise<MemorySaveResult> {
     const input = this.assertManagedMemoryInput(title, content);
     let metadata = this.createMemoryMetadata(options);
     const visibleContent = `# ${input.title}\n\n${input.content}\n`;
@@ -1561,29 +1554,15 @@ export class MemoryManager implements PromptMemorySource {
     let previousBody: string | undefined;
 
     await withFileLock(indexPath, async () => {
-      const existing = this.findExistingManagedMemory(
-        input.title,
-        metadata.scope,
-        metadata.state,
-        metadata.source,
-        metadata.capture?.trigger,
-      );
+      // One save rule: within a scope, a same-title save updates the existing memory whichever path wrote it.
+      const existing = this.findExistingManagedMemory(input.title, metadata.scope);
       if (existing) {
-        // State and source are collision boundaries; same-title records from other lifecycle paths cannot overwrite each other.
-        const mustPreserveExisting =
-          metadata.state !== existing.metadata.state
-          || metadata.source !== existing.metadata.source
-          || metadata.capture?.trigger !== existing.metadata.capture?.trigger;
-        if (mustPreserveExisting) {
-          filename = this.allocateMemoryFilename(input.title, metadata.id);
-        } else {
-          filename = existing.filename;
-          metadata = this.mergeExistingMemoryMetadata(existing.metadata, metadata, options);
-          const previous = readUtf8FileSnapshotIfPresent(join(this.memoryDir, filename), MAX_MANAGED_MEMORY_FILE_BYTES);
-          previousBody = previous && !previous.tooLarge
-            ? this.memoryBodyForPrompt({ filename, title: input.title, content: this.parseMemoryNote(previous.content).content })
-            : "";
-        }
+        filename = existing.filename;
+        metadata = this.mergeExistingMemoryMetadata(existing.metadata, metadata, options);
+        const previous = readUtf8FileSnapshotIfPresent(join(this.memoryDir, filename), MAX_MANAGED_MEMORY_FILE_BYTES);
+        previousBody = previous && !previous.tooLarge
+          ? this.memoryBodyForPrompt({ filename, title: input.title, content: this.parseMemoryNote(previous.content).content })
+          : "";
       } else {
         filename = this.allocateMemoryFilename(input.title, metadata.id);
       }
@@ -1594,7 +1573,7 @@ export class MemoryManager implements PromptMemorySource {
         visibleContent,
       ].join("\n");
       writeFileSync(join(this.memoryDir, filename), storedContent, "utf-8");
-      if (metadata.scope.type === "global" && metadata.state === "active") {
+      if (metadata.scope.type === "global") {
         this.updateMemoryIndexLocked(indexPath, filename, input.title, input.content);
       } else {
         this.removeMemoryIndexEntryLocked(filename, indexPath);
@@ -1613,84 +1592,92 @@ export class MemoryManager implements PromptMemorySource {
       },
       ...(previousBody !== undefined ? { before: historyText(previousBody), after: historyText(input.content) } : {}),
     });
-    return this.entryFromMemoryMetadata(filename, input.title, visibleContent, metadata, new Date().toISOString());
+    return {
+      op: previousBody === undefined ? "created" : "updated",
+      entry: this.entryFromMemoryMetadata(filename, input.title, visibleContent, metadata, new Date().toISOString()),
+    };
   }
 
-  // Approve by immutable identity and recheck review scope under the write lock.
-  async activateMemoryCandidate(
+  /**
+   * Rewrite one memory by id, title included, within the caller's project or global scope. The id and origin stay;
+   * provenance follows this save. `scope: "global"` moves a project memory to global (the user asked for every project).
+   * A title another memory in the target scope already uses is refused.
+   */
+  async updateMemoryById(
     id: string,
-    options: ProjectScopedMemoryOptions,
+    title: string,
+    content: string,
+    options: ProjectScopedMemoryOptions & { source: MemorySourceKind; kind?: MemoryKind; scope?: "global" },
     actor: MemoryHistoryActor,
-  ): Promise<NoteEntry> {
-    const safeId = this.validateManagedMemoryId(id, "activateMemoryCandidate");
+  ): Promise<MemorySaveResult> {
+    const safeId = this.validateManagedMemoryId(id, "updateMemoryById");
+    const input = this.assertManagedMemoryInput(title, content);
+    if (!MEMORY_SOURCES.has(options.source) || options.source === "capture") {
+      throw new Error("updateMemoryById: invalid memory source");
+    }
+    if (options.kind !== undefined && !MEMORY_KINDS.has(options.kind)) throw new Error("updateMemoryById: invalid memory kind");
+    const visibleContent = `# ${input.title}\n\n${input.content}\n`;
     const indexPath = join(this.memoryDir, "MEMORY.md");
-    let activated: NoteEntry | undefined;
-
+    let updated: NoteEntry | undefined;
+    let previousBody = "";
     await withFileLock(indexPath, async () => {
       const found = this.findManagedMemoryById(safeId);
-      if (
-        !found
-        || found.metadata.state !== "candidate"
-        || !this.memoryScopeVisibleForCandidateReview(found.metadata.scope, options)
-      ) {
-        throw new Error("activateMemoryCandidate: candidate not found");
+      const scopeEntry = found
+        ? this.entryFromMemoryMetadata(found.filename, found.title, found.content, found.metadata, "")
+        : undefined;
+      // Scope misses share the not-found result so a caller cannot probe another project's memory.
+      if (!found || !scopeEntry || found.metadata.derivation || !this.memoryScopeVisibleForMutation(scopeEntry, options)) {
+        throw new Error("updateMemoryById: memory not found");
       }
-
+      const targetScope: MemoryScope = options.scope === "global" ? { type: "global" } : found.metadata.scope;
+      const sameTitle = this.findExistingManagedMemory(input.title, targetScope);
+      if (sameTitle && sameTitle.metadata.id.toLowerCase() !== safeId) {
+        throw new Error("updateMemoryById: title-conflict");
+      }
+      previousBody = this.memoryBodyForPrompt({ filename: found.filename, title: found.title, content: found.content });
+      const { capture: _capture, ...rest } = found.metadata;
       const metadata: MemoryMetadataV1 = {
-        ...found.metadata,
-        state: "active",
-        confirmedAt: new Date().toISOString(),
+        ...rest,
+        scope: targetScope,
+        source: options.source,
+        ...(options.kind ? { kind: options.kind } : {}),
       };
-      const storedContent = [
+      writeFileSync(join(this.memoryDir, found.filename), [
         MEMORY_MARKER,
         `${MEMORY_METADATA_PREFIX}${encodeMemoryMetadata(metadata)}${MEMORY_METADATA_SUFFIX}`,
-        found.content,
-      ].join("\n");
-      writeFileSync(join(this.memoryDir, found.filename), storedContent, "utf-8");
-
+        visibleContent,
+      ].join("\n"), "utf-8");
       if (metadata.scope.type === "global") {
-        this.updateMemoryIndexLocked(
-          indexPath,
-          found.filename,
-          found.title,
-          this.memoryBodyForPrompt({ filename: found.filename, title: found.title, content: found.content }),
-        );
+        this.updateMemoryIndexLocked(indexPath, found.filename, input.title, input.content);
       } else {
         this.removeMemoryIndexEntryLocked(found.filename, indexPath);
       }
-      activated = this.entryFromMemoryMetadata(
-        found.filename,
-        found.title,
-        found.content,
-        metadata,
-        new Date().toISOString(),
-      );
+      updated = this.entryFromMemoryMetadata(found.filename, input.title, visibleContent, metadata, new Date().toISOString());
     });
-
     this.memoryIndex = this.readMemoryIndex();
-    await this.history.record({ memoryId: safeId, op: "activated", actor });
-    return activated!;
+    await this.history.record({
+      memoryId: safeId,
+      op: "updated",
+      actor,
+      fields: { title: historyText(input.title), contentDigest: sha256Text(input.content), scope: updated!.projectRoot ? "project" : "global" },
+      before: historyText(previousBody),
+      after: historyText(input.content),
+    });
+    return { op: "updated", entry: updated! };
   }
 
-  async deleteMemoryCandidate(id: string, options: ProjectScopedMemoryOptions, actor: MemoryHistoryActor): Promise<void> {
-    const safeId = this.validateManagedMemoryId(id, "deleteMemoryCandidate");
-    const indexPath = join(this.memoryDir, "MEMORY.md");
-    await withFileLock(indexPath, async () => {
-      const found = this.findManagedMemoryById(safeId);
-      if (
-        !found
-        || found.metadata.state !== "candidate"
-        || !this.memoryScopeVisibleForCandidateReview(found.metadata.scope, options)
-      ) {
-        throw new Error("deleteMemoryCandidate: candidate not found");
-      }
-      // Deleting removes the text the history kept; if that cannot be done the memory stays and the delete fails.
-      await this.history.scrub(safeId);
-      unlinkIfPresent(join(this.memoryDir, found.filename));
-      this.removeMemoryIndexEntryLocked(found.filename, indexPath);
-    });
-    this.memoryIndex = this.readMemoryIndex();
-    await this.history.record({ memoryId: safeId, op: "discarded", actor });
+  /** Delete one managed memory by id within the caller's scope; the same path as deleting its file. */
+  async deleteMemoryById(id: string, options: ProjectScopedMemoryOptions, actor: MemoryHistoryActor): Promise<NoteEntry> {
+    const safeId = this.validateManagedMemoryId(id, "deleteMemoryById");
+    const found = this.findManagedMemoryById(safeId);
+    const entry = found
+      ? this.entryFromMemoryMetadata(found.filename, found.title, found.content, found.metadata, "")
+      : undefined;
+    if (!found || !entry || !this.memoryScopeVisibleForMutation(entry, options)) {
+      throw new Error("deleteMemoryById: memory not found");
+    }
+    await this.deleteMemory(found.filename, options, actor);
+    return entry;
   }
 
   /** One memory's change history; the memory must exist in the caller's scope, like any id-based operation. */
@@ -3409,7 +3396,6 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   private matchesMemoryRead(entry: NoteEntry, options: MemoryReadOptions): boolean {
-    if (entry.state === "candidate" && options.includeCandidates !== true) return false;
     if (noteIsExpired(entry)) return false;
     const isManagedGlobal = entry.id !== undefined && !entry.projectRoot;
     if (options.scope === "global") return isManagedGlobal;
@@ -3420,33 +3406,13 @@ export class MemoryManager implements PromptMemorySource {
       || (options.includeUnscoped === true && !entry.projectRoot);
   }
 
-  private matchesCandidateReviewScope(entry: NoteEntry, options: ProjectScopedMemoryOptions): boolean {
-    if (entry.id === undefined || entry.state !== "candidate") return false;
-    const scope: MemoryScope = entry.projectRoot
-      ? {
-          type: "project",
-          projectRoot: entry.projectRoot,
-          ...(entry.projectName ? { projectName: entry.projectName } : {}),
-        }
-      : { type: "global" };
-    return this.memoryScopeVisibleForCandidateReview(scope, options);
-  }
-
-  private memoryScopeVisibleForCandidateReview(
-    scope: MemoryScope,
-    options: ProjectScopedMemoryOptions,
-  ): boolean {
-    if (!options.projectRoot) return scope.type === "global";
-    return scope.type === "global" || projectRootEquals(scope.projectRoot, options.projectRoot);
-  }
-
   private memoryScopeVisibleForMutation(entry: NoteEntry, options: ProjectScopedMemoryOptions): boolean {
     if (!options.projectRoot) return !entry.projectRoot;
     return !entry.projectRoot || projectRootEquals(entry.projectRoot, options.projectRoot);
   }
 
   private isPromptVisibleMemory(entry: NoteEntry, options: MemorySelectionOptions): boolean {
-    if (this.isDerivedMemory(entry) || entry.state === "candidate" || noteIsExpired(entry)) return false;
+    if (this.isDerivedMemory(entry) || noteIsExpired(entry)) return false;
     if (!options.projectRoot) return entry.id !== undefined ? !entry.projectRoot : !entry.projectRoot;
     if (entry.id !== undefined && !entry.projectRoot) return true;
     return projectRootEquals(entry.projectRoot, options.projectRoot)
@@ -3482,30 +3448,30 @@ export class MemoryManager implements PromptMemorySource {
     if (safeContent.length > MAX_MANAGED_MEMORY_CONTENT_CHARS) {
       throw new Error(`saveMemory: content exceeds ${MAX_MANAGED_MEMORY_CONTENT_CHARS} characters`);
     }
+    // Every refusal of the text itself carries the stable reason `unsafe-text`.
     if (/[\u0000-\u001F\u007F\u2028\u2029]/.test(safeTitle)) {
-      throw new Error("saveMemory: title must be a single-line label without control characters");
+      throw new Error("saveMemory: unsafe-text: title must be a single-line label without control characters");
+    }
+    if (MEMORY_INVISIBLE_CHARS.test(`${safeTitle}\n${safeContent}`)) {
+      throw new Error("saveMemory: unsafe-text: zero-width and bidi control characters are not allowed");
     }
     if (/<!--\s*ave:/i.test(`${safeTitle}\n\n${safeContent}`)) {
-      throw new Error("saveMemory: the ave marker namespace is reserved");
+      throw new Error("saveMemory: unsafe-text: the ave marker namespace is reserved");
     }
     return { title: safeTitle, content: safeContent };
   }
 
   private createMemoryMetadata(options: MemorySaveOptions): MemoryMetadataV1 {
     const kind = options.kind ?? "note";
-    const state = options.state ?? "active";
+    const state: MemoryState = "active";
     const source = options.source ?? "user";
     if (!MEMORY_KINDS.has(kind)) throw new Error("saveMemory: invalid memory kind");
-    if (!MEMORY_STATES.has(state)) throw new Error("saveMemory: invalid memory state");
     if (!MEMORY_SOURCES.has(source)) throw new Error("saveMemory: invalid memory source");
     if (options.confirmedAt !== undefined && !isValidMemoryTimestamp(options.confirmedAt)) {
       throw new Error("saveMemory: invalid confirmedAt timestamp");
     }
     if (options.expiresAt !== undefined && !isValidMemoryTimestamp(options.expiresAt)) {
       throw new Error("saveMemory: invalid expiresAt timestamp");
-    }
-    if (state === "candidate" && options.confirmedAt !== undefined) {
-      throw new Error("saveMemory: candidate memory cannot be confirmed");
     }
     const normalizedCapture = options.capture === undefined ? undefined : normalizeMemoryCapture(options.capture);
     if (options.capture !== undefined && !normalizedCapture) throw new Error("saveMemory: invalid capture provenance");
@@ -3536,7 +3502,7 @@ export class MemoryManager implements PromptMemorySource {
       state,
       source,
       createdAt: now,
-      ...(state === "active" ? { confirmedAt: options.confirmedAt ?? now } : {}),
+      confirmedAt: options.confirmedAt ?? now,
       ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
       ...(options.pinned === true ? { pinned: true } : {}),
       ...(capture ? { capture: { ...capture } } : {}),
@@ -3549,10 +3515,6 @@ export class MemoryManager implements PromptMemorySource {
     requested: MemoryMetadataV1,
     options: MemorySaveOptions,
   ): MemoryMetadataV1 {
-    const state = options.state ?? existing.state;
-    if (existing.state === "candidate" && state !== "candidate") {
-      throw new Error("saveMemory: candidate memories must be activated by id");
-    }
     const pinned = options.pinned === undefined ? existing.pinned : options.pinned === true;
     const expiresAt = options.expiresAt ?? existing.expiresAt;
     return {
@@ -3560,15 +3522,14 @@ export class MemoryManager implements PromptMemorySource {
       id: existing.id,
       scope: existing.scope,
       kind: options.kind ?? existing.kind,
-      state,
-      source: options.source ?? existing.source,
+      state: "active",
+      // Provenance describes the latest content, so it follows the save that wrote it.
+      source: requested.source,
       createdAt: existing.createdAt,
-      ...(state === "active"
-        ? { confirmedAt: existing.confirmedAt ?? requested.confirmedAt ?? new Date().toISOString() }
-        : {}),
+      confirmedAt: existing.confirmedAt ?? requested.confirmedAt ?? new Date().toISOString(),
       ...(expiresAt ? { expiresAt } : {}),
       ...(pinned ? { pinned: true } : {}),
-      ...(requested.capture ?? existing.capture ? { capture: { ...(requested.capture ?? existing.capture)! } } : {}),
+      ...(requested.capture ? { capture: { ...requested.capture } } : {}),
       // Origin is set only when a memory is created; a memory first saved without one (a direct UI save) never gains one.
       ...(existing.origin ? { origin: { ...existing.origin } } : {}),
     };
@@ -3742,11 +3703,7 @@ export class MemoryManager implements PromptMemorySource {
   private findExistingManagedMemory(
     title: string,
     scope: MemoryScope,
-    preferredState: MemoryState | undefined,
-    preferredSource: MemorySourceKind | undefined,
-    preferredCaptureTrigger: MemoryCaptureTrigger | undefined,
   ): { filename: string; metadata: MemoryMetadataV1 } | undefined {
-    let fallback: { filename: string; metadata: MemoryMetadataV1 } | undefined;
     for (const filename of readdirIfPresent(this.memoryDir)) {
       if (!filename.endsWith(".md") || this.isMemoryIndexFilename(filename)) continue;
       const snapshot = readUtf8FileSnapshotIfPresent(join(this.memoryDir, filename), MAX_MANAGED_MEMORY_FILE_BYTES);
@@ -3756,16 +3713,10 @@ export class MemoryManager implements PromptMemorySource {
       if (parsed.metadata.derivation) continue;
       const existingTitle = parsed.content.match(/^#\s+([^\r\n]+)/)?.[1]?.trim();
       if (existingTitle === title && this.memoryScopesEqual(parsed.metadata.scope, scope)) {
-        const match = { filename, metadata: parsed.metadata };
-        if (
-          (!preferredState || parsed.metadata.state === preferredState)
-          && (!preferredSource || parsed.metadata.source === preferredSource)
-          && parsed.metadata.capture?.trigger === preferredCaptureTrigger
-        ) return match;
-        fallback ??= match;
+        return { filename, metadata: parsed.metadata };
       }
     }
-    return fallback;
+    return undefined;
   }
 
   private validateManagedMemoryId(id: string, operation: string): string {

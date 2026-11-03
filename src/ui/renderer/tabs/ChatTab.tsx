@@ -14,7 +14,6 @@ import {
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { useTranslation } from "../../../i18n/react.js";
 
-import type { MemoryCaptureMode } from "../types.js";
 import {
   PROCESSING_DISPLAY_LEVELS,
   type ProcessingDisplayLevel,
@@ -32,27 +31,6 @@ const PROCESSING_DISPLAY_HINT_KEYS: Record<ProcessingDisplayLevel, string> = {
   full: "chatTab.processingDisplayDetailedHint",
 };
 
-const MEMORY_CAPTURE_MODE_OPTIONS: readonly {
-  value: MemoryCaptureMode;
-  labelKey: string;
-  hintKey: string;
-}[] = [
-  {
-    value: "off",
-    labelKey: "chatTab.memoryCaptureOffLabel",
-    hintKey: "chatTab.memoryCaptureOffHint",
-  },
-  {
-    value: "review",
-    labelKey: "chatTab.memoryCaptureReviewLabel",
-    hintKey: "chatTab.memoryCaptureReviewHint",
-  },
-  {
-    value: "auto",
-    labelKey: "chatTab.memoryCaptureAutoLabel",
-    hintKey: "chatTab.memoryCaptureAutoHint",
-  },
-];
 
 export interface ChatTabProps {
   autoCompact: boolean;
@@ -65,8 +43,6 @@ export interface ChatTabProps {
   setIdlePreferenceRefresh?: (v: boolean) => void;
   idleMemoryConsolidation?: boolean;
   setIdleMemoryConsolidation?: (v: boolean) => void;
-  memoryCaptureMode?: MemoryCaptureMode;
-  setMemoryCaptureMode?: (v: MemoryCaptureMode) => void;
   subAgentAutonomousWake?: boolean;
   subAgentMaxRounds?: number;
   setSubAgentMaxRounds?: (next: number) => void;
@@ -89,8 +65,6 @@ export function ChatTab({
   setIdlePreferenceRefresh,
   idleMemoryConsolidation,
   setIdleMemoryConsolidation,
-  memoryCaptureMode,
-  setMemoryCaptureMode,
   subAgentAutonomousWake,
   subAgentMaxRounds,
   setSubAgentMaxRounds,
@@ -252,40 +226,6 @@ export function ChatTab({
               {t("chatTab.idleMemoryConsolidationHint")}
             </p>
           </div>
-        </div>
-        <div className="mt-3 rounded-md border px-3 py-3" data-testid="memory-capture-mode">
-          <div className="space-y-0.5">
-            <p className="text-sm font-medium">{t("chatTab.memoryCaptureTitle")}</p>
-            <p className="text-[11px] text-muted-foreground">
-              {t("chatTab.memoryCaptureHint")}
-            </p>
-          </div>
-          <RadioGroup
-            className="mt-3 grid gap-2"
-            value={memoryCaptureMode ?? "off"}
-            disabled={!settingsLoaded}
-            onValueChange={(value) => {
-              if (value === "off" || value === "review" || value === "auto") {
-                setMemoryCaptureMode?.(value);
-              }
-            }}
-            aria-label={t("chatTab.memoryCaptureTitle")}
-          >
-            {MEMORY_CAPTURE_MODE_OPTIONS.map((option) => (
-              <Label
-                key={option.value}
-                className="flex items-start gap-2 rounded-md border px-3 py-2.5"
-              >
-                <RadioGroupItem value={option.value} className="mt-0.5" />
-                <span className="space-y-0.5">
-                  <span className="block text-sm font-medium">{t(option.labelKey)}</span>
-                  <span className="block text-[11px] font-normal text-muted-foreground">
-                    {t(option.hintKey)}
-                  </span>
-                </span>
-              </Label>
-            ))}
-          </RadioGroup>
         </div>
         <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
           <Checkbox

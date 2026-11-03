@@ -1712,30 +1712,22 @@ describe("SettingsService role presets", () => {
     expect(service.get("features")?.idleMemoryConsolidation).toBe(true);
   });
 
-  it("defaults LLM-reviewed memory capture off and accepts only the supported modes", async () => {
+  it("has no memory capture mode: capture always runs, and a stored mode from an older build is dropped", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("features")?.memoryCaptureMode).toBe("off");
+    expect(service.get("features")).not.toHaveProperty("memoryCaptureMode");
 
-    await service.patch({ features: { memoryCaptureMode: "review" } });
-    expect(service.get("features")?.memoryCaptureMode).toBe("review");
-    await service.patch({ features: { memoryCaptureMode: "auto" } });
-    expect(service.get("features")?.memoryCaptureMode).toBe("auto");
-
-    // Invalid data must not silently alter the user's provider-backed capture choice.
-    await service.patch({ features: { memoryCaptureMode: "always" as never } });
-    expect(service.get("features")?.memoryCaptureMode).toBe("auto");
-    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")?.memoryCaptureMode).toBe("auto");
-
-    const corruptPath = mkdtempSync(join(tmpdir(), "settings-memory-capture-mode-"));
+    const olderPath = mkdtempSync(join(tmpdir(), "settings-memory-capture-mode-"));
     try {
       writeFileSync(
-        join(corruptPath, "ave-settings.json"),
-        currentSettingsJson({ features: { memoryCaptureMode: "always" } }),
+        join(olderPath, "ave-settings.json"),
+        currentSettingsJson({ features: { memoryCaptureMode: "review", idleMemoryConsolidation: true } }),
         "utf-8",
       );
-      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: corruptPath }).get("features")?.memoryCaptureMode).toBe("off");
+      const features = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: olderPath }).get("features");
+      expect(features).not.toHaveProperty("memoryCaptureMode");
+      expect(features?.idleMemoryConsolidation).toBe(true);
     } finally {
-      await cleanupTmpDir(corruptPath);
+      await cleanupTmpDir(olderPath);
     }
   });
 

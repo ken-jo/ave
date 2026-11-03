@@ -566,6 +566,7 @@ describe("ConversationLoop command routing", () => {
   it("/remember sends the user text to captureExplicit without raw direct persistence", async () => {
     const captureExplicit = vi.fn<CaptureExplicit>(async () => ({
       status: "saved",
+      op: "created",
       entry: {
         filename: "reviewed-rollout.md",
         title: "Reviewed rollout preference",

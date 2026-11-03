@@ -20,7 +20,7 @@ const HISTORY_STATE_FILE = "history-state.json";
 const DEFAULT_MAX_HISTORY_BYTES = 5 * 1024 * 1024;
 export const MAX_HISTORY_TEXT_CHARS = 2_048;
 
-type MemoryHistoryOp = "created" | "updated" | "activated" | "discarded" | "deleted";
+type MemoryHistoryOp = "created" | "updated" | "deleted";
 
 export type MemoryHistoryActor = "user" | "assistant" | "capture" | "import";
 
@@ -58,7 +58,7 @@ interface MemoryHistoryState {
   incomplete?: Record<string, string>;
 }
 
-const OPS = new Set<MemoryHistoryOp>(["created", "updated", "activated", "discarded", "deleted"]);
+const OPS = new Set<MemoryHistoryOp>(["created", "updated", "deleted"]);
 const ACTORS = new Set<MemoryHistoryActor>(["user", "assistant", "capture", "import"]);
 const SCOPES = new Set<MemoryHistoryScope>(["global", "project"]);
 const ROW_OWNER = /"memoryId"\s*:\s*"([0-9A-Fa-f-]{36})"/;

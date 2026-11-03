@@ -156,7 +156,6 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   const memoryUsageLog = new MemoryUsageLog({ aveDir: memoryManager.getDir() });
   const memoryCaptureService = new MemoryCaptureService({
     memoryManager,
-    getMode: () => settingsService.get("features")?.memoryCaptureMode,
     // Only main-store loops (primary and chat groups) receive this service; side chat and sub-agents do not.
     sessionStore: "main",
   });
@@ -172,7 +171,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   }
   // Local memory saves retain explicit-deny, strict-mode, and staged-origin gates.
   toolRegistry.register(createMemoryWriteTool({ memoryManager }));
-  // Memory deletion is candidate-scoped and is not auto-approved.
+  // memory_delete removes a visible memory by id, refuses on a tainted turn, and is not auto-approved.
   for (const tool of createMemoryRecallTools({ memoryManager, memoryUsageLog })) {
     toolRegistry.register(tool);
   }
