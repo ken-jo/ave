@@ -43,7 +43,6 @@
     ledger.json                       # installed content packages + origin
     default-installs.json             # default-install keys already applied on this machine (§10.2)
   plugins/                            # unchanged plugin install root
-  runtime/git/<version>/              # managed git copy (§9)
 ```
 
 `installation-id` carries no authority. A file that is not a UUID is replaced
@@ -980,8 +979,7 @@ and on *Check now* (`ave:marketplace:updates:check`):
   marketplace's lifetime (`getMarketplaceLifetime`, shared by the domain,
   the git runtime and deep links). Its plugin port announces a landed
   install (`plugin.installed` to the host's subscribers, the plugin bridge
-  refresh) through the same boundary, the git runtime's install progress
-  (`git-runtime:progress`) passes it too, and a marketplace deep link is
+  refresh) through the same boundary, and a marketplace deep link is
   refused once it has ended, before anything is held, opened or sent. One
   shutdown hook (`git-marketplace-events`, registered with the domain)
   aborts that lifetime and stops the scheduler in the same step; a sync, an
@@ -1207,7 +1205,7 @@ emit marketplace:catalog-changed
 ### 7.4 Network targets and policy
 
 One gate (`src/marketplace/net/network-gate.ts`) checks every git remote,
-release and archive URL, and the managed git archive. The service endpoint
+release and archive URL. The service endpoint
 keeps its own rules (§11).
 
 1. **Normalize** (§7.1). `https` and `http` downloads follow the same
@@ -1615,77 +1613,62 @@ with `blob:none`, `rev-list --missing=print`, protocol v2 and
 `protocol.file.allow` behave as §9.3 relies on well before that.
 
 ```
-mode = settings.marketplace.git.mode   // "auto" | "system" | "managed"
-system: first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
-        C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.45.1
-managed: ~/.ave/runtime/git/<pinnedVersion>/ present and smoke-tested
-auto: system if usable, else managed if present, else state "missing"
-      (a system git older than 2.45.1 is reported as too old and auto uses managed)
+installer: <install dir>\git\cmd\git.exe (packaged Windows), placed by the
+           installer; require `git --version` >= 2.45.1
+system:    first `git` on PATH (plus /usr/bin/git, /opt/homebrew/bin/git,
+           C:\Program Files\Git\cmd\git.exe); require `git --version` >= 2.45.1
+order:     installer if usable, else system if usable, else state "missing"
+           (a system git older than 2.45.1 is reported as too old)
 ```
 
-On macOS, `/usr/bin/git` without the Command Line Tools is a shim that opens an
-installer dialog; detection runs `xcode-select -p` first and treats a missing
-CLT as "no system git" instead of triggering the dialog.
+There is no setting and nothing to install from the app, and no app package
+contains git. An installer copy that is missing, fails to run or reports an
+older version falls back to the system git. Linux deb/rpm packages depend on
+the distribution's `git`; the AppImage and macOS use the system git. On macOS,
+`/usr/bin/git` without the Command Line Tools is a shim that opens an installer
+dialog; detection runs `xcode-select -p` first and treats a missing CLT as "no
+system git" instead of triggering the dialog.
 
-### 9.2 Managed provisioning
+`GIT_RUNTIME_MISSING` (nothing usable) and `GIT_RUNTIME_TOO_OLD` (only a
+system git older than the minimum) are what a repository source reports when
+neither is usable. A copy left in `~/.ave/runtime/git` by an older release is
+not read.
 
-```ts
-// src/marketplace/git/managed-git-pins.ts — updated deliberately, reviewed like a dependency bump
-const RELEASE = "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283";
-const MANAGED_GIT = {
-  version: "2.53.0",
-  assets: {
-    "darwin-arm64": { url: `${RELEASE}-macOS-arm64.tar.gz`,    sha256: "f9dc6463…", size: 62348987 },
-    "darwin-x64":   { url: `${RELEASE}-macOS-x64.tar.gz`,      sha256: "ae668671…", size: 66136060 },
-    "linux-x64":    { url: `${RELEASE}-ubuntu-x64.tar.gz`,     sha256: "cca76aa3…", size: 65269219 },
-    "linux-arm64":  { url: `${RELEASE}-ubuntu-arm64.tar.gz`,   sha256: "a161f45a…", size: 23223345 },
-    "win32-x64":    { url: `${RELEASE}-windows-x64.tar.gz`,    sha256: "7b76bc5c…", size: 47119821 },
-    "win32-arm64":  { url: `${RELEASE}-windows-arm64.tar.gz`,  sha256: "1abbeb3a…", size: 45084825 },
-  },
-};
-```
+### 9.2 Windows installer copy
 
-One source for every platform: desktop/dugite-native, the git build GitHub
-Desktop ships. Its Windows archives are MinGit (Git for Windows) repacked as
-tar.gz, so one extractor serves every platform. Each `sha256` is read from the
-release's own `<asset>.sha256` file and matched against the digest GitHub
-reports for the asset; `size` is exact, so a longer body is cut off and a
-shorter one fails the hash.
+The NSIS `customInstall` runs `build/install-windows-git.ps1` (native Windows
+PowerShell, from `$PLUGINSDIR`), modeled on Hermes Agent's installer, which
+fetches a pinned PortableGit at install time instead of shipping it:
 
-Phases reported to the UI: `checking → downloading(bytes) → verifying →
-extracting → smoke-testing → ready | failed(code)`. Download goes through the
-PAC-aware single-hop transport and the §7.4 gate (GitHub answers with a
-redirect to its asset host, which the gate checks again). Extraction goes to
-a staging directory next to the target and accepts only regular files,
-directories and symlinks that name a sibling (`git-fetch -> git`). The smoke
-test runs the staged copy: `--version` equals the pin, `hash-object --stdin`
-agrees with git's object format, and the https transport helper exists. Only
-then is a ready marker written and the directory renamed into place. A failed
-or partial install never replaces a working one; a forced reinstall moves the
-working copy aside and restores it if the final rename fails. Every download,
-verify, extract or smoke-test failure is `GIT_RUNTIME_INSTALL_FAILED`, except
-a policy block, which stays `SOURCE_POLICY_BLOCKED`. A body that sends nothing
-for 60 s fails the install instead of holding it open. The download is gated
-like the official source: `block` and `allow` apply, and an invalid policy
-does not stop it, because the official source needs git and the archive is
-pinned by hash.
+- It downloads the official Git for Windows **MinGit** release for the native
+  architecture (`MinGit-2.56.0.4-64-bit.zip` or `-arm64.zip` from
+  `github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/`).
+  The tag, sizes and sha256 values are pinned in the script and updated
+  together from the release notes' SHA-256 table, reviewed like a dependency
+  bump.
+- The archive is downloaded into `$INSTDIR` itself, so only an administrator
+  can touch it between the hash check and extraction.
+- A size or sha256 mismatch deletes the download and places nothing (exit 3).
+  A verified archive is extracted to `$INSTDIR\git.partial`, must contain
+  `cmd\git.exe` and the toolchain directory pinned with the asset (`ucrt64` on
+  x64, `clangarm64` on arm64; MinGit has no `mingw64`) with
+  `bin\git-remote-https.exe` and `libexec\git-core`, and is then renamed
+  to `$INSTDIR\git`. The per-machine install makes that folder
+  administrator-writable only.
+- Failure does not abort the install: a oneClick installer has no retry flow.
+  The installer logs the exit code, the app falls back to a system git, and
+  the Add dialog says what to do (reinstall while online, or install git).
+- Uninstall and update remove it with the rest of `$INSTDIR`
+  (`customRemoveFiles`); an update downloads it again.
 
-Managed-mode environment, set on every call:
-
-- macOS and Linux run `bin/git` with `GIT_EXEC_PATH` = `libexec/git-core`;
-  Windows runs `cmd/git.exe` with `GIT_EXEC_PATH` = `mingw64/libexec/git-core`
-  and `PATH` prefixed with `mingw64/bin` and `usr/bin` (which holds
-  `ssh.exe`). `GIT_TEMPLATE_DIR` = an empty Ave-owned directory everywhere.
-- CA roots, as measured on the pinned build (2026-09-23):
-  - macOS: `git-remote-http` links the system libcurl (SecureTransport), so
-    the keychain is used as is, including a corporate root in the System
-    keychain. No CA file is set; one would narrow the trust.
-  - Linux: the copy ships `ssl/cacert.pem` and reads no OS store.
-    `GIT_SSL_CAINFO` = an Ave-built bundle of those roots plus the corporate
-    roots `src/main/corp-ca-extract.ts` finds.
-  - Windows: `-c http.sslBackend=schannel`, the Windows certificate store. The
-    copy's own system config says the same, but `GIT_CONFIG_NOSYSTEM=1` keeps
-    that file unread, so the setting is passed on every call.
+Installer-copy environment, set on every call; nothing is written inside the
+copy: `cmd\git.exe` with `GIT_EXEC_PATH` = `<toolchain>\libexec\git-core` and
+`PATH` prefixed with `<toolchain>\bin` (which holds the https helper) and
+`usr\bin`. `-c http.sslBackend=schannel` makes it trust the Windows
+certificate store, corporate roots included; the copy's own system config says
+the same, but `GIT_CONFIG_NOSYSTEM=1` keeps that file unread, so the setting is
+passed on every call. `GIT_TEMPLATE_DIR` = an empty Ave-owned directory
+everywhere.
 
 ### 9.3 Invocation contract
 
@@ -2292,9 +2275,9 @@ wins:
   `value` at any depth, object keys included (an MCP server's name keys
   `components.mcpServers`), each failure's `message` and `detail`, each
   broadcast (`sync-progress`, `install-progress`, `update-status`,
-  `updates-available`, the bootstrap status, the git runtime's progress) and
+  `updates-available`, the bootstrap status) and
   each held answer (the deep link, the boot-install notice), and the git
-  runtime's `status` and `install` answers, with the one scrubber
+  runtime's `status` answer, with the one scrubber
   (`scrubMarketplaceStrings` over `scrubDiagnosticSecrets`). The marketplace's
   log lines pass it too (`createMarketplaceLogger`). The renderer never
   scrubs an answer or a detail field; it scrubs again only main's `message`
@@ -2488,8 +2471,7 @@ subject in both catalogs.
 | Code | When | Reasons (detail fields) | Sentence key |
 |---|---|---|---|
 | `GIT_RUNTIME_MISSING` | no usable git | — | `gitMarketplace.error.gitMissing` |
-| `GIT_RUNTIME_TOO_OLD` | system git older than 2.45.1 in `system` mode | — | `.gitTooOld` |
-| `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | the phase: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing` (the final move into place) — no fields | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
+| `GIT_RUNTIME_TOO_OLD` | no usable installer git, and the system git is older than 2.45.1 | — | `.gitTooOld` |
 | `SOURCE_URL_REJECTED` | the address refusals of §7.1 and §7.4 that no confirmation passes, a deep link's path, and unsupported input, a folder path included; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`; from a folder path (§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `unc-credentials`, `outside-root`, `folder-options`; from a *Choose folder…* pick main no longer holds: `folder-pick-unknown`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
 | `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `local-sources-blocked` (target, policyPath), `direct-install-blocked` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it), `unencrypted-updates` (source: turning automatic updates on for a plain-http source) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
@@ -3007,16 +2989,15 @@ installs the bytes it showed:
 
 ### 15.7 Git runtime
 
-A card in Settings → Marketplace → Maintenance and the blocking step inside
-the Add dialog: detected state (`System git 2.50.1`, `Managed git 2.53.0`,
-`Not found`, `System git 2.34.1 is too old — using managed git`), mode selector
-(Auto / System / Managed), **Install Git (<size>)** — the pinned archive's
-size for this platform, 23–66 MB — with the phase progress of §9.2 including
-`smoke-testing`, and a `failed` state with the error and Retry.
+The installer provides git (§9), so Settings shows no git card, selector or
+install button. Only when no git is usable (§9.1) does the Add dialog open on
+a blocking step that says so: the installer's copy is missing or does not run and
+no system git is installed, or the system git is too old; adding a folder
+still works without git.
 
 ### 15.7.1 Updates card
 
-A card in Settings → Marketplace → Maintenance, above the Git runtime card
+A card in Settings → Marketplace → Maintenance
 (`UpdatesCard.tsx`), read from `updates:status` and then
 `marketplace:update-status`:
 
@@ -3247,8 +3228,8 @@ Where the sections above and the shipped code differ, the code wins:
 | Schemas | fixture sets for every kind: valid, each invalid rule, unknown keys; a manifest with `installPolicy` is rejected by name at install and in the index CI; an installed legacy manifest with it loads with one warning |
 | Version choice | table tests for `minAppVersion`, yank, platform, pre-release opt-in, rollout buckets, per-source revocations |
 | Ladder | each rung used/skipped/failed combination, mismatch of each authority field stops the ladder, plan binds commits, receipts carry rung outcomes |
-| Git runtime | fake `git` binaries for version gates (2.45.0 refused, 2.45.1 accepted); env/flag/global-config contract; askpass ticket host binding; managed install with a local fixture server and wrong-hash rejection |
-| Update scheduler | fake time (`background.test.ts`): an offline discovery retried an hour later, not an interval later; an offline *Check now* after a recent success retried an hour later; a success not repeated for the interval; the apply check at boot and 24 hours after the last; at exactly 24 hours, and phased apart from discovery, the apply check discovers before it classifies; a due apply check joins a discovery in flight and, after a partial one, classifies only the reached sources and stays due; `resume` after a 30-hour clock jump runs a discovery; *Check now* answers when its discovery and classification end; a successful check that spans a sleep is timed at its end; only reached sources are published, an unreached one's update only as an earlier discovery showed it, `stale`, in the status and the `updates-available` event; a discovery that throws turns what was shown stale and classifies nothing cached since; a stop at any wait of the boot pass, a recheck, *Check now* or a due apply check — the wait then fulfilling or rejecting — publishes, writes, logs, starts and arms nothing more (one table over every wait; `service.test.ts` runs it over the real service, held at its sync and its enforcements, and over the real syncer and installers, held in a sync's pruning and a boot content install, and finds no further progress, stage, publication, write or event of any kind through the boundary, while the install and its record finish; an enforcement queued behind another is cancelled when its signal aborts), and an unreadable file is left as it is, unreported, when the stop comes before its read ends; `git-marketplace.test.ts`: after the stop, Retry and Check now answer with their declared refusals, and a plugin install that lands after the shutdown hook finishes without `plugin.installed` or a bridge refresh; `git-runtime.test.ts`: runtime progress stops at the marketplace's shutdown hook; `ave-deep-link.test.ts`: a marketplace link is refused once the lifetime has ended; an unreadable `updates.json` sets `historyReset`. `history.test.ts`: the file's strict shape and the due rules. `service.test.ts`: `ok`, `partial` and `offline`, and a broken source with every other one offline is `partial`. `PluginUpdatesPill.test.tsx`: only states that need the user are counted. `GitMarketplaceTab.test.tsx`: the card's states, "No updates to review", a `stale` row, and an unanswered scheduler in its own words with main's message only behind *Copy details* |
+| Git runtime | fake `git` binaries for version gates (2.45.0 refused, 2.45.1 accepted); env/flag/global-config contract; askpass ticket host binding; the installer's copy preferred, a broken one falling back to the system git; `install-windows-git.test.ts`: a verified archive placed, a hash mismatch or incomplete archive leaving nothing |
+| Update scheduler | fake time (`background.test.ts`): an offline discovery retried an hour later, not an interval later; an offline *Check now* after a recent success retried an hour later; a success not repeated for the interval; the apply check at boot and 24 hours after the last; at exactly 24 hours, and phased apart from discovery, the apply check discovers before it classifies; a due apply check joins a discovery in flight and, after a partial one, classifies only the reached sources and stays due; `resume` after a 30-hour clock jump runs a discovery; *Check now* answers when its discovery and classification end; a successful check that spans a sleep is timed at its end; only reached sources are published, an unreached one's update only as an earlier discovery showed it, `stale`, in the status and the `updates-available` event; a discovery that throws turns what was shown stale and classifies nothing cached since; a stop at any wait of the boot pass, a recheck, *Check now* or a due apply check — the wait then fulfilling or rejecting — publishes, writes, logs, starts and arms nothing more (one table over every wait; `service.test.ts` runs it over the real service, held at its sync and its enforcements, and over the real syncer and installers, held in a sync's pruning and a boot content install, and finds no further progress, stage, publication, write or event of any kind through the boundary, while the install and its record finish; an enforcement queued behind another is cancelled when its signal aborts), and an unreadable file is left as it is, unreported, when the stop comes before its read ends; `git-marketplace.test.ts`: after the stop, Retry and Check now answer with their declared refusals, and a plugin install that lands after the shutdown hook finishes without `plugin.installed` or a bridge refresh; `ave-deep-link.test.ts`: a marketplace link is refused once the lifetime has ended; an unreadable `updates.json` sets `historyReset`. `history.test.ts`: the file's strict shape and the due rules. `service.test.ts`: `ok`, `partial` and `offline`, and a broken source with every other one offline is `partial`. `PluginUpdatesPill.test.tsx`: only states that need the user are counted. `GitMarketplaceTab.test.tsx`: the card's states, "No updates to review", a `stale` row, and an unanswered scheduler in its own words with main's message only behind *Copy details* |
 | Sync | local bare repos: fast-forward with the pin far behind the tip, rewrite (official and managed refuse, custom review), invalid index keeps pin, mirror fallback, a hidden source with installed packages still syncs |
 | Network gate | normalization equivalences (scp/ssh/https, case, `.git`); `<helper>::` transports and credentials in a URL refused; block beats allow; `requireHttps` and `blockPrivateNetworks` block acknowledged sources; each address class for entered and catalog-supplied targets (`198.18.0.0/15` is internal, metadata is refused for a listed host, a loopback download on another port is refused, `internal-network` does not imply `internal-downloads`, a listing never implies `token-unencrypted`); redirect to a blocked host refused; no auth header across hosts |
 | Connection binding (§7.4) | `pinned-fetch.test.ts` against real local servers: one lookup per hop, a connection to the checked answer only, a metadata answer dropped, each PAC kind (`PROXY` with an http and an https target, `HTTPS`, `SOCKS5`, `SOCKS4`, an unknown kind failing `proxy`), no fallback to `DIRECT`, literal metadata and unroutable proxies refused without a lookup, certificate checks against the name, every TLS connection (target and `HTTPS` proxy) asking for verification and the hostname itself, and no TLS connection for a plain http request; `network-gate.test.ts`: a sign-in never carried onto an http hop, even to the host the https request went to; `run-git.test.ts` also: literal proxies refused before git starts (IPv4, IPv6, mapped, NAT64), and one PAC answer per call configuring and binding the same route; `trusted-proxy.test.ts` pins the proxy boundary; `run-git.test.ts`: the `http.curloptResolve` pin, no git started when only refused answers remain, no credential over http without `token-unencrypted` (a stored token on a listed host included), and end to end from the gate's verdict: an http source asked for before any lookup, reached only at its checked address with `unencrypted`, signed in only with `token-unencrypted` too; `ssh-preflight.test.ts`: the preflight before git, any refused answer fails, no lookup behind `proxyjump`, and the stated residual |
@@ -4976,8 +4957,7 @@ the slice that adds the code or reason.
 | `SOURCE_ID_TAKEN` | E | "<id> is taken" | "Choose another id." | "다른 소스가 이미 쓰는 ID입니다." |
 | · `repository-already-added` | E | "<url> is already added as <id>" | "Use <id>, or remove it" (before adding the repository again); *Show <id>* | "<url>은(는) 이미 <id>(으)로 추가되어 있습니다." |
 | · `folder-already-added`, `folder-inside-source`, `folder-contains-source` | E | "<path> is already added as <id>" / "<path> lies inside <existing path>, which is already added as <id>" / "<path> contains <existing path>, which is already added as <id>" | "Use <id>, or remove it" (and add the folder you want, or one that does not contain it); *Show <id>* | "이미 <id>(으)로 추가된 폴더와 겹칩니다. <id>을(를) 쓰거나 지우세요." |
-| `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | today's sentences | *Install Git* | today's |
-| `GIT_RUNTIME_INSTALL_FAILED` · `<phase>` | E | "Installing git failed while <phase> (<reason>)." | *Retry*; "If your network blocks GitHub downloads, install git yourself and choose *System*." | "git 설치가 <단계>에서 실패했습니다." |
+| `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | today's sentences | "Reinstall Ave, or install or update git on this computer." | today's |
 | `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed`, `package-changed` | E | today's; for a folder "The folder changed while you were reviewing."; for policy "Your organization's policy changed while you were reviewing."; for `package-changed` (an approval of §18.7.5 whose reviewed generation or approval digest no longer matches, or a plan whose package was installed, updated or removed since, §18.6) "This package changed since you reviewed it. Review it again." | the review reopens with a fresh plan, or with the installed generation for `package-changed` | today's; "검토하는 사이 조직 정책이 바뀌었습니다."; "검토한 뒤 패키지가 바뀌었습니다. 다시 검토하세요." |
 | `PACKAGE_INCOMPATIBLE` · `min_app_version` / `platform` / `prerelease` / `rollout` / `host_protocol` | E | "<name> needs Ave <version>" / "not available for <OS>" / "only pre-releases exist" / "rolling out gradually; offered to you later" / "needs a newer plugin protocol" | *Update Ave* / — / "Turn on pre-releases under Updates" / — / *Update Ave* | reason by reason |
 | `PACKAGE_COMPAT_UNDECLARED` | E | "The plugin does not declare which Ave version it needs (`requires.minAppVersion`)." | "Ask its author to declare it." | "필요한 Ave 버전을 선언하지 않았습니다." |
@@ -5105,7 +5085,7 @@ payload; its review uses `ave:plugins:contribution-trust:list` and `:set`
 
 **UI**
 
-- **Updates card** (Settings → Marketplace, beside §15.7's Git runtime card):
+- **Updates card** (Settings → Marketplace → Maintenance):
   - "Update packages automatically", locked with the policy's text under a
     policy value;
   - "Checks for updates at start-up and once a day · last checked <time> ·

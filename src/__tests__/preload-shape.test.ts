@@ -448,8 +448,6 @@ describe("preload contextBridge world shape lock", () => {
             "updateStatus",
           ],
           "gitRuntime": [
-            "install",
-            "onProgress",
             "status",
           ],
           "hasApiKey": "function",

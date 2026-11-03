@@ -202,6 +202,7 @@ describe("installer smoke and packaging discipline", () => {
       "libuuid1",
       "libsecret-1-0",
       "libasound2t64 | libasound2",
+      "git",
     ]);
     expect(packageJson.build?.rpm?.depends).toEqual([
       "gtk3",
@@ -213,6 +214,7 @@ describe("installer smoke and packaging discipline", () => {
       "at-spi2-core",
       "(libuuid or libuuid1)",
       "alsa-lib",
+      "git",
     ]);
   });
 

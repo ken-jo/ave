@@ -7,7 +7,7 @@ import type { GitRuntimeStatus } from "../../../../../shared/git-runtime.js";
 import type { AveApi } from "../../../types.js";
 import { AddSourceDialog } from "../AddSourceDialog.js";
 import { DirectInstallView } from "../DirectInstallView.js";
-import { GitRuntimeCard } from "../GitRuntimeCard.js";
+import { GitUnavailable } from "../GitUnavailable.js";
 import { SourcesView } from "../SourcesView.js";
 import { COMMIT_B, fakeMarketplace, folderSource, marketplacePreview, source } from "./fixtures.js";
 
@@ -225,8 +225,8 @@ describe("SourcesView", () => {
 function addDialog(fake: ReturnType<typeof fakeMarketplace>, direct = false) {
   const onAdded = vi.fn();
   const onShowSource = vi.fn();
-  const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, updateSettings: vi.fn(async () => ({ ok: true })) };
-  render(<AddSourceDialog api={api as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">} open direct={direct} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={onAdded} onShowSource={onShowSource} />);
+  const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, };
+  render(<AddSourceDialog api={api as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime">} open direct={direct} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={onAdded} onShowSource={onShowSource} />);
   return { onAdded, onShowSource };
 }
 
@@ -309,81 +309,64 @@ describe("AddSourceDialog", () => {
     expect(problem).not.toHaveTextContent("no package at skills/x");
   });
 
-  it("makes installing git the first step when git is missing", async () => {
+  it("blocks a repository source while no git is usable, and goes on once Check again finds one", async () => {
     const fake = fakeMarketplace({ git: "missing" });
     addDialog(fake);
 
-    expect(await screen.findByTestId("git-runtime:missing")).toBeInTheDocument();
+    expect(await screen.findByTestId("git-runtime:missing")).toHaveTextContent(
+      "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다.",
+    );
     expect(screen.queryByTestId("git-marketplace:add:url")).toBeNull();
-    fireEvent.click(screen.getByTestId("git-runtime:install"));
+    const reads = fake.gitRuntime.status.mock.calls.length;
+    fake.gitRuntime.status.mockResolvedValue({ ok: true, status: { state: "ready", active: { kind: "system", version: "2.47.0" }, systemTooOld: null, installerProvides: true } });
+    fireEvent.click(screen.getByTestId("git-runtime:check-again"));
     expect(await screen.findByTestId("git-marketplace:add:url")).toBeInTheDocument();
-    expect(fake.gitRuntime.install).toHaveBeenCalledTimes(1);
+    expect(fake.gitRuntime.status).toHaveBeenCalledTimes(reads + 1);
   });
 });
 
-describe("GitRuntimeCard", () => {
+function missingStatus(overrides: Partial<GitRuntimeStatus>): GitRuntimeStatus {
+  return { state: "missing", active: null, systemTooOld: null, installerProvides: true, ...overrides };
+}
+
+describe("GitUnavailable", () => {
   it("reads the status once however often its caller renders", async () => {
     const fake = fakeMarketplace({ git: "missing" });
-    const api = { gitRuntime: fake.gitRuntime, updateSettings: vi.fn() } as unknown as Pick<AveApi, "gitRuntime" | "updateSettings">;
-    const { rerender } = render(<GitRuntimeCard api={api} onReady={() => undefined} />);
+    const api = { gitRuntime: fake.gitRuntime } as unknown as Pick<AveApi, "gitRuntime">;
+    const { rerender } = render(<GitUnavailable api={api} onReady={() => undefined} />);
     await screen.findByTestId("git-runtime:missing");
-    rerender(<GitRuntimeCard api={api} onReady={() => undefined} />);
-    rerender(<GitRuntimeCard api={api} onReady={() => undefined} />);
+    rerender(<GitUnavailable api={api} onReady={() => undefined} />);
+    rerender(<GitUnavailable api={api} onReady={() => undefined} />);
     expect(fake.gitRuntime.status).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("git-runtime:install")).toHaveTextContent("Git 설치(약 59 MB)");
   });
 
-  it("saves the mode and reads the status again", async () => {
+  it("renders nothing and reports ready when git is usable", async () => {
     const fake = fakeMarketplace();
-    const updateSettings = vi.fn(async () => ({ ok: true }));
-    render(<GitRuntimeCard api={{ gitRuntime: fake.gitRuntime, updateSettings } as unknown as Pick<AveApi, "gitRuntime" | "updateSettings">} />);
-    expect(await screen.findByTestId("git-runtime:ready")).toHaveTextContent("시스템 git 2.47.0을(를) 사용 중입니다.");
-
-    fireEvent.click(screen.getByTestId("git-runtime:mode:managed"));
-    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({ marketplace: { git: { mode: "managed" } } }));
-    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalledTimes(2));
+    const onReady = vi.fn();
+    const { container } = render(<GitUnavailable api={{ gitRuntime: fake.gitRuntime } as unknown as Pick<AveApi, "gitRuntime">} onReady={onReady} />);
+    await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
+    expect(container).toBeEmptyDOMElement();
   });
 
-  it("says a mode it could not save in its own words, with main's text only behind a scrubbed Copy details", async () => {
-    const writeText = vi.fn(async () => {});
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  it.each([
+    [missingStatus({}), "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터에서도 git을 찾지 못했습니다."],
+    [missingStatus({ installerProvides: false }), "이 컴퓨터에서 git을 찾지 못했습니다."],
+    [missingStatus({ systemTooOld: { version: "2.39.5" } }), "Ave 설치 프로그램이 내려받는 git을 사용할 수 없고, 이 컴퓨터의 git(2.39.5)은 너무 오래되었습니다."],
+    [missingStatus({ installerProvides: false, systemTooOld: { version: "2.39.5" } }), "이 컴퓨터의 git(2.39.5)은 마켓플레이스에 쓰기에 너무 오래되었습니다."],
+  ])("says why no git is usable: %j", async (status, text) => {
     const fake = fakeMarketplace();
-    const updateSettings = vi.fn(async () => ({ ok: false, error: "settings-write-failed", message: "EACCES: settings.json (token=s3cret)" }));
-    render(<GitRuntimeCard api={{ gitRuntime: fake.gitRuntime, updateSettings } as unknown as Pick<AveApi, "gitRuntime" | "updateSettings">} />);
-    await screen.findByTestId("git-runtime:ready");
-
-    fireEvent.click(screen.getByTestId("git-runtime:mode:managed"));
-    const problem = await screen.findByTestId("git-runtime:mode-error");
-    expect(problem).toHaveTextContent("git 선택을 저장하지 못해 이전 선택이 그대로 적용됩니다.");
-    expect(problem).not.toHaveTextContent("EACCES");
-    expect(problem).not.toHaveTextContent("settings-write-failed");
-    fireEvent.click(within(problem).getByRole("button", { name: "세부 정보 복사" }));
-    expect(writeText).toHaveBeenCalledWith("settings-write-failed\nEACCES: settings.json (token=[REDACTED:TOKEN]");
-  });
-
-  it("names the phase a managed install failed in", async () => {
-    const fake = fakeMarketplace({ git: "missing" });
-    const status: GitRuntimeStatus = {
-      mode: "auto",
-      state: "missing",
-      active: null,
-      systemTooOld: null,
-      managed: { version: "2.51.0", installed: false, available: true, size: 62_348_987 },
-      lastInstallError: { code: "GIT_RUNTIME_INSTALL_FAILED", message: `sha256 ${"1".repeat(64)} does not match the pinned ${"0".repeat(64)}`, detail: { reason: "verifying" } },
-    };
     fake.gitRuntime.status.mockResolvedValue({ ok: true, status });
-    render(<GitRuntimeCard api={{ gitRuntime: fake.gitRuntime, updateSettings: vi.fn() } as unknown as Pick<AveApi, "gitRuntime" | "updateSettings">} />);
-
-    const failed = await screen.findByTestId("git-runtime:failed");
-    expect(failed).toHaveTextContent("git 설치가 검증 단계에서 실패했습니다. 내려받은 파일이 이 Ave 릴리스에 고정된 파일과 달라 버렸습니다.");
-    expect(failed).not.toHaveTextContent("sha256");
+    render(<GitUnavailable api={{ gitRuntime: fake.gitRuntime } as unknown as Pick<AveApi, "gitRuntime">} />);
+    const shown = await screen.findByTestId("git-runtime:missing");
+    expect(shown).toHaveTextContent(text);
+    expect(shown).not.toHaveTextContent(/설치\(약|관리형|자동/u);
   });
 
   it("says the status is unavailable when main cannot answer", async () => {
     const fake = fakeMarketplace();
     fake.gitRuntime.status.mockResolvedValue({ ok: false, error: "git-runtime-unavailable" });
-    render(<GitRuntimeCard api={{ gitRuntime: fake.gitRuntime, updateSettings: vi.fn() } as unknown as Pick<AveApi, "gitRuntime" | "updateSettings">} />);
-    expect(await screen.findByTestId("git-runtime:unavailable")).toBeInTheDocument();
+    render(<GitUnavailable api={{ gitRuntime: fake.gitRuntime } as unknown as Pick<AveApi, "gitRuntime">} />);
+    expect(await screen.findByTestId("git-runtime:missing")).toHaveTextContent("지금은 git 상태를 확인할 수 없습니다.");
   });
 });
 
@@ -664,7 +647,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     fake.market.previewSource
       .mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)))
       .mockResolvedValue({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "deep.example", address: null }] } });
-    const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, updateSettings: vi.fn(async () => ({ ok: true })) } as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">;
+    const api = { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime, } as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime">;
     const dialog = (open: boolean, initialInput = "") => <AddSourceDialog api={api} open={open} initialInput={initialInput} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={vi.fn()} onShowSource={vi.fn()} />;
     const { rerender } = render(dialog(true));
 
@@ -1032,7 +1015,7 @@ describe("folder sources (§18.4.8)", () => {
     expect(screen.getByTestId("git-marketplace:add:confirm")).toBeDisabled();
   });
 
-  it("lets a folder be added without installing git", async () => {
+  it("lets a folder be added without git", async () => {
     const fake = fakeMarketplace({ git: "missing" });
     fake.market.pickFolder.mockResolvedValue({ ok: true, value: { pick: PICK, display: "/Users/example/market" } });
     fake.market.previewSource.mockResolvedValue({ ok: true, value: { ...folderPreview, path: "/Users/example/market", resolvedFrom: null } });
@@ -1042,7 +1025,6 @@ describe("folder sources (§18.4.8)", () => {
     expect(screen.getByTestId("git-marketplace:add:folder-without-git")).toHaveTextContent("폴더를 추가할 때는 git이 필요 없습니다.");
     fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
     expect(await screen.findByTestId("git-marketplace:add:preview")).toBeInTheDocument();
-    expect(fake.gitRuntime.install).not.toHaveBeenCalled();
     expect(screen.queryByTestId("git-marketplace:add:resolved-from")).toBeNull();
   });
 

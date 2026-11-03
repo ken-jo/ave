@@ -155,7 +155,6 @@ function failedSyncLabel(t: Translate, code: Extract<SourceStatusView, { state: 
     }
     case "GIT_RUNTIME_MISSING":
     case "GIT_RUNTIME_TOO_OLD":
-    case "GIT_RUNTIME_INSTALL_FAILED":
       return t("gitMarketplace.sources.status.gitUnavailable");
     case "SOURCE_NAME_RESERVED":
     case "SOURCE_ID_INVALID":
@@ -344,19 +343,6 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
   switch (code) {
     case "GIT_RUNTIME_MISSING": return t("gitMarketplace.error.gitMissing");
     case "GIT_RUNTIME_TOO_OLD": return t("gitMarketplace.error.gitTooOld");
-    case "GIT_RUNTIME_INSTALL_FAILED": {
-      const detail = parseMarketplaceErrorDetail(code, failure.detail);
-      if (!detail) return t("gitMarketplace.error.gitInstallFailed");
-      switch (detail.reason) {
-        case "checking": return t("gitMarketplace.error.gitInstallFailed.checking");
-        case "downloading": return t("gitMarketplace.error.gitInstallFailed.downloading");
-        case "verifying": return t("gitMarketplace.error.gitInstallFailed.verifying");
-        case "extracting": return t("gitMarketplace.error.gitInstallFailed.extracting");
-        case "smoke-testing": return t("gitMarketplace.error.gitInstallFailed.smokeTesting");
-        case "installing": return t("gitMarketplace.error.gitInstallFailed.installing");
-      }
-      return unhandled(detail);
-    }
     case "SOURCE_URL_REJECTED": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) {
@@ -930,15 +916,6 @@ export function middleTruncate(text: string, max: number = 48): string {
 /** The first seven hex digits of a commit, or of a folder's revision without its `local-` prefix (§18.4.3). */
 export function shortSha(commit: string): string {
   return commit.replace(/^local-/u, "").slice(0, 7);
-}
-
-/** `62 MB`, `1.1 MB`, `640 KB`. */
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) {
-    const mb = bytes / (1024 * 1024);
-    return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
-  }
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 /** "4 min ago" in the current locale. */

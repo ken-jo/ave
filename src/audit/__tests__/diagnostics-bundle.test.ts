@@ -31,7 +31,7 @@ function makeSettings(): AppSettings {
     },
     chat: { systemPrompt: "sp", autoCompact: true },
     webSearch: { provider: "duckduckgo" },
-    marketplace: { git: { mode: "system" }, updateCheckEnabled: false },
+    marketplace: { updateCheckEnabled: false },
     routine: {},
     privacy: { piiRedactEnabled: false },
     updates: { autoCheckEnabled: true },
