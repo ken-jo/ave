@@ -18,6 +18,20 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
     fanOutToAllWindows(appWindows(), channel, payload);
   };
 
+  // The failure card is also a persisted record, so it survives a restart; a persist error is logged, never turned into a fake success.
+  const persistRunOutcome = async (
+    routineId: string,
+    firedAt: string,
+    outcome: { ok: true } | { ok: false; reason: string },
+  ): Promise<void> => {
+    try {
+      const updated = await routinesStore.recordRunOutcome(routineId, firedAt, outcome);
+      if (!updated) log.warn("routines llm-session outcome persist failed: routine not found (%s)", routineId);
+    } catch (err) {
+      log.warn("routines llm-session outcome persist failed (%s): %s", routineId, (err as Error).message);
+    }
+  };
+
   routinesScheduler.onLlmSession(({ routine }) => {
     // Routine loops are isolated but persist through the normal session repository.
     void (async () => {
@@ -37,6 +51,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
 
       let runSummary = "";
       let routineSessionId: string | undefined;
+      let runError: Error | undefined;
       try {
         const runResult = await routineEngine.runRoutine({
           id: routine.id,
@@ -56,6 +71,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         }
       } catch (err) {
         log.warn("routines llm-session run failed: %s", (err as Error).message);
+        runError = err as Error;
         try {
           announce(ROUTINES.failed, {
             routineId: routine.id,
@@ -72,6 +88,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
           // non-fatal
         }
       }
+      await persistRunOutcome(routine.id, firedAt, runError ? { ok: false, reason: runError.message } : { ok: true });
       const summary = runSummary;
       // Allow-list event fields; spreading the routine could expose private content.
       try {

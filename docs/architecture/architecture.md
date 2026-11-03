@@ -1766,6 +1766,13 @@ The routine panel shows either state and offers removal. Installed-but-unloaded
 extensions are not missing; runtime scope and headless permission gates still decide
 which tools may run.
 
+An LLM routine run that throws (scheduled, manual, or shutdown, including the
+shutdown timeout) persists `lastFailure` (`firedAt`, `at`, bounded `reason`) on
+the routine record, so a restart keeps it. The next successful run clears it.
+Acknowledging that fire's result marks the failure seen; a newer failure is not
+hidden by an older acknowledgement. A failed one-shot is restored from dismissal
+so it stays reviewable, and it is not due again.
+
 ## Main-process composition and boot readiness
 
 TypeScript under `src/` must have no static runtime-import strongly

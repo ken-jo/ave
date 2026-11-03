@@ -14,6 +14,7 @@ export {
   MAX_PERSISTED_ROUTINES,
   MAX_LLM_SESSION_ROUTINES,
   MAX_ROUTINE_SOURCE_LENGTH,
+  MAX_ROUTINE_FAILURE_REASON_LENGTH,
   type RoutineExecution,
   type RoutineRepeat,
   type RoutineSchedule,
@@ -21,6 +22,7 @@ export {
   type AddRoutineInput,
 } from "../shared/routines-types.js";
 
+import { MAX_ROUTINE_FAILURE_REASON_LENGTH } from "../shared/routines-types.js";
 import type {
   InvalidRoutine,
   RoutineListResult,
@@ -94,10 +96,21 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   }
   if (x.lastResultAcknowledgedAt !== undefined && typeof x.lastResultAcknowledgedAt !== "string") return false;
   if (x.lastRoutineSessionId !== undefined && typeof x.lastRoutineSessionId !== "string") return false;
+  if (x.lastFailure !== undefined && !isValidRoutineFailure(x.lastFailure)) return false;
   if (x.dismissedAt !== undefined && typeof x.dismissedAt !== "string") return false;
   if (x.source !== undefined && (typeof x.source !== "string" || x.source.length > MAX_ROUTINE_SOURCE_LENGTH)) return false;
   if (x.scope !== undefined && !isValidRoutineScope(x.scope)) return false;
   return true;
+}
+
+function isValidRoutineFailure(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const failure = value as Record<string, unknown>;
+  return typeof failure.firedAt === "string"
+    && typeof failure.at === "string"
+    && typeof failure.reason === "string"
+    && failure.reason.length <= MAX_ROUTINE_FAILURE_REASON_LENGTH
+    && (failure.acknowledgedAt === undefined || typeof failure.acknowledgedAt === "string");
 }
 
 function isValidRoutinePluginScope(value: unknown): value is RoutineScope["pluginIds"] {
@@ -213,6 +226,7 @@ function cloneRecord(r: RoutineRecord): RoutineRecord {
     needsAttention: r.needsAttention
       ? { missingPluginIds: [...r.needsAttention.missingPluginIds] }
       : undefined,
+    lastFailure: r.lastFailure ? { ...r.lastFailure } : undefined,
     schedule: r.schedule
       ? {
           ...r.schedule,
@@ -513,7 +527,7 @@ export class RoutinesStore {
   // updated record, or null if not found.
   async update(
     id: string,
-    patch: Partial<Pick<RoutineRecord, "lastFiredMinuteUTC" | "lastFiredAt" | "lastResultAcknowledgedAt" | "lastRoutineSessionId" | "dismissedAt">>,
+    patch: Partial<Pick<RoutineRecord, "lastFiredMinuteUTC" | "lastFiredAt" | "lastRoutineSessionId" | "dismissedAt">>,
   ): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -526,13 +540,58 @@ export class RoutinesStore {
       }
       if (patch.lastFiredMinuteUTC !== undefined) r.lastFiredMinuteUTC = patch.lastFiredMinuteUTC;
       if (patch.lastFiredAt !== undefined) r.lastFiredAt = patch.lastFiredAt;
-      if (patch.lastResultAcknowledgedAt !== undefined) r.lastResultAcknowledgedAt = patch.lastResultAcknowledgedAt;
       if (patch.lastRoutineSessionId !== undefined) r.lastRoutineSessionId = patch.lastRoutineSessionId;
       if (patch.dismissedAt !== undefined) r.dismissedAt = patch.dismissedAt;
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
       this.invalidCache = file.invalid;
       return r;
+    });
+  }
+
+  // The user saw the result of the fire at `firedAt`. A failure recorded for that same fire is marked seen with it; a newer failure is not.
+  async acknowledgeResult(id: string, firedAt: string): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      r.lastResultAcknowledgedAt = firedAt;
+      if (r.lastFailure && r.lastFailure.firedAt === firedAt && !r.lastFailure.acknowledgedAt) {
+        r.lastFailure.acknowledgedAt = new Date().toISOString();
+      }
+    });
+  }
+
+  // Record how the run of the fire at `firedAt` ended. Success clears any earlier failure. A failed one-shot was dismissed by markFired;
+  // it is restored so the failure stays reviewable, and it is not due again because lastFiredAt is set.
+  async recordRunOutcome(
+    id: string,
+    firedAt: string,
+    outcome: { ok: true } | { ok: false; reason: string },
+  ): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (outcome.ok) {
+        delete r.lastFailure;
+        return;
+      }
+      r.lastFailure = {
+        firedAt,
+        at: new Date().toISOString(),
+        reason: outcome.reason.slice(0, MAX_ROUTINE_FAILURE_REASON_LENGTH),
+      };
+      const repeat = r.schedule?.repeat;
+      if ((!repeat || repeat.kind === "none") && r.dismissedAt === r.lastFiredAt) delete r.dismissedAt;
+    });
+  }
+
+  private async mutate(id: string, apply: (record: RoutineRecord) => void): Promise<RoutineRecord | null> {
+    if (!this.loaded) await this.load();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await readFileOrEmpty(this.filePath);
+      const r = file.routines.find((x) => x.id === id);
+      this.cache = file.routines;
+      this.invalidCache = file.invalid;
+      if (!r) return null;
+      apply(r);
+      await writeFileAtomic(this.filePath, file);
+      return cloneRecord(r);
     });
   }
 

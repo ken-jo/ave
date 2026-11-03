@@ -10,6 +10,19 @@ export const MAX_ROUTINE_SOURCE_LENGTH = 140;
 
 export type RoutineExecution = "llm-session" | "notification-only";
 
+/** Bound a persisted failure reason so a long provider error cannot bloat routines.json. */
+export const MAX_ROUTINE_FAILURE_REASON_LENGTH = 500;
+
+/** The latest fire whose run threw. A later successful run clears it; acknowledging that fire's result marks it seen. */
+interface RoutineFailure {
+  /** lastFiredAt of the failed occurrence; acknowledgement is matched against it. */
+  firedAt: string;
+  /** When the failure was recorded. */
+  at: string;
+  reason: string;
+  acknowledgedAt?: string;
+}
+
 /** Missing plugin scope means deny-all; inherit must be explicit and snapshots active plugins at fire time. */
 type RoutinePluginScope =
   | { mode: "deny-all" }
@@ -69,6 +82,8 @@ export interface RoutineRecord {
   needsAttention?: { missingPluginIds: string[] };
   /** If this differs from lastFiredAt, rehydrate the unseen result card on next launch. */
   lastResultAcknowledgedAt?: string;
+  /** Persisted run failure; the scheduler only logged failures before, so a restart lost them. */
+  lastFailure?: RoutineFailure;
   /** Clear on fire and set only after session creation; result rehydration must not guess a session by date. */
   lastRoutineSessionId?: string;
   dismissedAt?: string;

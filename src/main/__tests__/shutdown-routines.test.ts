@@ -28,6 +28,10 @@ describe("runShutdownRoutines", () => {
         calls.push(`update:${id}:${patch.lastRoutineSessionId}`);
         return { ...record, ...patch };
       }),
+      recordRunOutcome: vi.fn(async (id: string, firedAt: string, outcome: { ok: boolean }) => {
+        calls.push(`outcome:${id}:${firedAt}:${outcome.ok}`);
+        return record;
+      }),
     };
     const routineEngine = {
       runRoutine: vi.fn(async () => {
@@ -55,9 +59,63 @@ describe("runShutdownRoutines", () => {
       "runRoutine",
       "markFired:shutdown-llm",
       "update:shutdown-llm:routine-session-2",
+      "outcome:shutdown-llm:2026-05-16T01:00:00.000Z:true",
     ]);
     expect(routinesStore.update).toHaveBeenCalledWith("shutdown-llm", {
       lastRoutineSessionId: "routine-session-2",
     });
+  });
+
+  function failingStore(record: RoutineRecord) {
+    return {
+      listActive: vi.fn(() => [record]),
+      markFired: vi.fn(async () => ({ ...record, lastFiredAt: "2026-05-16T01:00:00.000Z" })),
+      update: vi.fn(async () => record),
+      recordRunOutcome: vi.fn(async () => record),
+    };
+  }
+
+  it("persists a thrown run as a failure of that fire, so the next launch can show it", async () => {
+    const record = routine();
+    const routinesStore = failingStore(record);
+    const routineEngine = { runRoutine: vi.fn(async () => { throw new Error("provider down"); }) };
+
+    await runShutdownRoutines({ routinesStore, routineEngine });
+
+    expect(routinesStore.markFired).toHaveBeenCalledWith("shutdown-llm");
+    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith(
+      "shutdown-llm",
+      "2026-05-16T01:00:00.000Z",
+      { ok: false, reason: "provider down" },
+    );
+    expect(routinesStore.update).not.toHaveBeenCalled();
+  });
+
+  it("persists a run cut off by the shutdown timeout as a failure", async () => {
+    const record = routine();
+    const routinesStore = failingStore(record);
+    const routineEngine = {
+      runRoutine: vi.fn((input: { signal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+        input.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })),
+    };
+
+    await runShutdownRoutines({ routinesStore, routineEngine }, 5);
+
+    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith(
+      "shutdown-llm",
+      "2026-05-16T01:00:00.000Z",
+      { ok: false, reason: "shutdown timeout" },
+    );
+  });
+
+  it("records no run outcome for a notification-only shutdown routine", async () => {
+    const record = routine({ execution: "notification-only", notificationTitle: "bye" });
+    const routinesStore = failingStore(record);
+    const routineEngine = { runRoutine: vi.fn() };
+
+    await runShutdownRoutines({ routinesStore, routineEngine, notificationService: { fire: vi.fn() } });
+
+    expect(routinesStore.recordRunOutcome).not.toHaveBeenCalled();
   });
 });

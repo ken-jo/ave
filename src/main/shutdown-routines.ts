@@ -14,6 +14,11 @@ type ShutdownRoutinesStore = {
     id: string,
     patch: Partial<Pick<RoutineRecord, "lastRoutineSessionId">>,
   ) => Promise<RoutineRecord | null>;
+  recordRunOutcome: (
+    id: string,
+    firedAt: string,
+    outcome: { ok: true } | { ok: false; reason: string },
+  ) => Promise<RoutineRecord | null>;
 };
 
 type ShutdownRoutineEngine = {
@@ -42,9 +47,12 @@ export async function runShutdownRoutines(
     );
     for (const routine of shutdownRoutines) {
       let routineSessionId: string | undefined;
+      let failureReason: string | undefined;
       try {
         if (routine.execution === "llm-session") {
-          routineSessionId = await runLlmShutdownRoutine(svc.routineEngine, routine, timeoutMs);
+          const run = await runLlmShutdownRoutine(svc.routineEngine, routine, timeoutMs);
+          if (run.timedOut) failureReason = "shutdown timeout";
+          else routineSessionId = run.sessionId;
         } else {
           svc.notificationService?.fire({
             kind: "routine",
@@ -55,6 +63,7 @@ export async function runShutdownRoutines(
         }
       } catch (err) {
         log.warn("before-quit: shutdown routine failed (id=%s): %s", routine.id, errorMessage(err));
+        failureReason = errorMessage(err);
       }
 
       try {
@@ -64,6 +73,14 @@ export async function runShutdownRoutines(
           if (!updated) {
             log.warn("before-quit: shutdown routine session id persist failed (id=%s)", routine.id);
           }
+        }
+        // Persist the outcome so the next launch shows a failed shutdown run instead of losing it to the log.
+        if (fired?.lastFiredAt && routine.execution === "llm-session") {
+          await svc.routinesStore.recordRunOutcome(
+            routine.id,
+            fired.lastFiredAt,
+            failureReason === undefined ? { ok: true } : { ok: false, reason: failureReason },
+          );
         }
       } catch (markErr) {
         log.warn(
@@ -82,7 +99,7 @@ async function runLlmShutdownRoutine(
   routineEngine: ShutdownRoutineEngine,
   routine: RoutineRecord,
   timeoutMs: number,
-): Promise<string | undefined> {
+): Promise<{ timedOut: true } | { timedOut: false; sessionId: string | undefined }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort("shutdown timeout"), timeoutMs);
   try {
@@ -94,11 +111,11 @@ async function runLlmShutdownRoutine(
       scope: routine.scope,
       signal: controller.signal,
     });
-    return runResult.sessionId;
+    return { timedOut: false, sessionId: runResult.sessionId };
   } catch (abortErr) {
     if (controller.signal.aborted) {
       log.warn("before-quit: shutdown routine aborted (5s timeout, id=%s)", routine.id);
-      return undefined;
+      return { timedOut: true };
     }
     throw abortErr;
   } finally {
