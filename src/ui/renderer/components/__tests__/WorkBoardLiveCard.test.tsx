@@ -190,6 +190,27 @@ describe("Work Board — compact running card", () => {
     expect(row.parentElement?.querySelector('p[aria-hidden="true"]')).toBeNull();
   });
 
+  it("subscribes to the progress stream once, so a host that keeps one listener still drives both the card and the re-list", async () => {
+    // A preload-shaped stub that keeps only the latest listener: a second subscription would silently replace the first.
+    let only: ((p: RunProgressEventPayload) => void) | undefined;
+    const subscribe = vi.fn((h: (p: RunProgressEventPayload) => void) => {
+      only = h;
+      return () => {};
+    });
+    const { api, list } = stubApi([item()]);
+    (api as unknown as { onWorkBoardRunProgress: typeof subscribe }).onWorkBoardRunProgress = subscribe;
+    render(<WorkBoardPanel api={api} />);
+    const chip = await screen.findByTestId("work-board-live-chip");
+    const before = list.mock.calls.length;
+
+    act(() => only!({ itemId: 4, phase: "executing", turn: 5, text: "turn five", at: "2026-11-04T03:04:00.000Z" }));
+    expect(chip.textContent).toContain(t("workBoard.liveChipTurn", { turn: 5 }));
+
+    act(() => only!({ itemId: 4, phase: "planning", at: "2026-11-04T03:04:01.000Z" }));
+    await vi.waitFor(() => expect(list.mock.calls.length).toBe(before + 1));
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("draws no chip or narration on an item that is not running", async () => {
     const { api } = stubApi([item({ runStatus: "completed" })]);
     render(<WorkBoardPanel api={api} />);

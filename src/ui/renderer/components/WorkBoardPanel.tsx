@@ -1587,19 +1587,9 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
 
   // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
   // the hook).
-  const { runState, runItem } = useWorkBoardRun(api, items);
-
-  // A run entering a phase has just written its run fields (runId, runHistory, runStatus) to the item. Re-list so the card's
-  // elapsed time reads this run's start rather than the previous run's. Phase-entry events carry no turn; turn events do
-  // not re-list.
-  useEffect(() => {
-    if (typeof api.onWorkBoardRunProgress !== "function") return undefined;
-    return api.onWorkBoardRunProgress((ev) => {
-      if (ev.turn === undefined && (ev.phase === "planning" || ev.phase === "awaiting_approval" || ev.phase === "executing")) {
-        void refresh();
-      }
-    });
-  }, [api, refresh]);
+  // A run entering a phase has just written its run fields (runId, runHistory, runStatus) to the item. Re-list so the card's elapsed
+  // time reads this run's start rather than the previous run's; turn events do not re-list.
+  const { runState, runItem } = useWorkBoardRun(api, items, refresh);
 
   // A finished run may have written engine fields (plan/output/runStatus) onto
   // the item; re-list so the board view reflects the persisted run result.

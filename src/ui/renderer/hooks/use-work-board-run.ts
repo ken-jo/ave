@@ -152,6 +152,9 @@ export function useNowTick(active: boolean): number {
 export function useWorkBoardRun(
   api: AveApi,
   items: readonly WorkItemResolved[],
+  /** Called when a run enters planning, plan approval or execution (a progress event with no turn): the engine has just written that
+   * run's fields onto the item, so the caller re-lists. The hook owns the board's one progress subscription. */
+  onPhaseEntered?: () => void,
 ): {
   runState: RunStateMap;
   runItem: (id: number) => void;
@@ -165,6 +168,10 @@ export function useWorkBoardRun(
   // Bumped whenever an item's run restarts, so a transcript read for an older run cannot land on the new one.
   const generationRef = useRef(new Map<number, number>());
   const backfilledRef = useRef(new Set<string>());
+  const onPhaseEnteredRef = useRef(onPhaseEntered);
+  useEffect(() => {
+    onPhaseEnteredRef.current = onPhaseEntered;
+  }, [onPhaseEntered]);
 
   const update = useCallback((id: number, fn: (cur: WorkItemRunState) => WorkItemRunState) => {
     if (!mountedRef.current) return;
@@ -206,6 +213,9 @@ export function useWorkBoardRun(
               busy: phase !== "done" && phase !== "denied" && phase !== "error",
             };
           });
+          if (ev.turn === undefined && (isActivePhase(ev.phase) || ev.phase === "awaiting_approval")) {
+            onPhaseEnteredRef.current?.();
+          }
         }),
       );
     }
