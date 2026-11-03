@@ -334,3 +334,34 @@ describe("Work Board — live step panel", () => {
     expect(screen.getByTestId("work-board-docked")).toContainElement(screen.getByTestId("live-step-panel"));
   });
 });
+
+describe("Work Board — the path to a card while no board is open", () => {
+  afterEach(() => cleanup());
+
+  it("parks the listed child's card behind its row dot, and the board opened from that row draws the same request", async () => {
+    const queue = [childApproval()];
+    const surface = { ...approvalSurfaceStub(), queue };
+    // No board mounted: nothing claims the child, so its card parks on the listed row (the dot) and the lane does not draw it.
+    const parked = pendingAnswers({
+      approvals: queue,
+      tiles: [],
+      overlayCards: [],
+      sessions: [{ id: CHILD, family: "work-board" }],
+      isClaimed: (id) => surface.claims.ownerOf(id) !== null,
+    });
+    expect([...parked.sessionIds]).toEqual([CHILD]);
+    expect(parked.unattributed).toEqual([]);
+    expect(surface.decide).not.toHaveBeenCalled();
+
+    // Opening the row opens the board on that item: it claims the child and its step panel draws the card for the same request.
+    const harness = boardApi({ items: [runningItem({ runSessionId: CHILD })] });
+    const onFocusConsumed = vi.fn();
+    render(withApprovalSurface(<WorkBoardPanel api={harness.api} focusItemId={4} onFocusConsumed={onFocusConsumed} />, surface));
+    const panel = await screen.findByTestId("live-step-panel");
+    const card = await within(panel).findByTestId("approval-lane-card");
+    expect(card.dataset.approvalRequestId).toBe("req-child");
+    expect(surface.claims.ownerOf(CHILD)).toMatch(/^work-board:/);
+    expect(onFocusConsumed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("work-board-detail-dialog")).toBeNull();
+  });
+});

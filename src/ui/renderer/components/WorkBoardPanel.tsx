@@ -1468,15 +1468,14 @@ export function WorkBoardPanel({
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
-  useEffect(() => {
-    if (focusItemId === undefined || focusItemId === null) return;
-    setDetailId(focusItemId);
-    setDetailOpensLatestRun(true);
-    onFocusConsumed?.();
-  }, [focusItemId, onFocusConsumed]);
+  // Set once the first list read settled, so a focus request can see which item it names and what that item's run waits on.
+  const [listedOnce, setListedOnce] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (typeof api.listWorkBoard !== "function") return;
+    if (typeof api.listWorkBoard !== "function") {
+      setListedOnce(true);
+      return;
+    }
     setLoading(true);
     try {
       const result = await api.listWorkBoard(project?.projectRoot
@@ -1492,7 +1491,10 @@ export function WorkBoardPanel({
         setItems([]);
       }
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+        setListedOnce(true);
+      }
     }
   }, [api, project]);
 
@@ -1582,6 +1584,30 @@ export function WorkBoardPanel({
     setStepsItemId(id);
     setStepsOpen(true);
   }, []);
+
+  // A conversation row brought the user here. That arrival is about the item's run: a run parked on a tool approval opens its step
+  // panel, where (or over which) the card is drawn; any other opens the item's detail on its latest run. This is the path to a card
+  // whose row carried the attention dot while no board was open to claim it.
+  const approvalQueue = approvalSurfaceValue.queue;
+  // One arrival is handled once, even while the caller still holds the request; a later arrival for the same item starts after null.
+  const handledFocusRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (focusItemId === undefined || focusItemId === null) {
+      handledFocusRef.current = null;
+      return;
+    }
+    if (!listedOnce || handledFocusRef.current === focusItemId) return;
+    handledFocusRef.current = focusItemId;
+    const item = items.find((each) => each.id === focusItemId);
+    const sessions = new Set([item?.runSessionId, ...(runState[focusItemId]?.sessionIds ?? [])].filter((id): id is string => id !== undefined));
+    if (item && approvalQueue.some((request) => request.sessionId !== undefined && sessions.has(request.sessionId))) {
+      showSteps(focusItemId);
+    } else {
+      setDetailId(focusItemId);
+      setDetailOpensLatestRun(true);
+    }
+    onFocusConsumed?.();
+  }, [focusItemId, onFocusConsumed, listedOnce, items, runState, approvalQueue, showSteps]);
 
   const appendToDetail = useCallback(async (id: number, text: string): Promise<boolean> => {
     const item = items.find((each) => each.id === id);
