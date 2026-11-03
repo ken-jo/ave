@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
   CHATGPT_PLAN_AGENT_NAME_HINT,
   CHATGPT_PLAN_AUTHORIZE_URL,
@@ -340,14 +341,24 @@ export async function revokeRefreshToken(
  * as such rather than followed.
  */
 export async function verifyDiscoveryDocument(fetchImpl: typeof fetch): Promise<void> {
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), TOOL_TIMEOUT_POLICY.networkFetchDefaultMs);
   let response: Response;
+  let body: unknown;
   try {
-    response = await fetchImpl(CHATGPT_PLAN_DISCOVERY_URL, { method: "GET", headers: { accept: "application/json" } });
-  } catch {
-    throw new ChatGptPlanOAuthError("transient");
+    try {
+      response = await fetchImpl(CHATGPT_PLAN_DISCOVERY_URL, {
+        method: "GET", headers: { accept: "application/json" }, signal: controller.signal,
+      });
+    } catch {
+      throw new ChatGptPlanOAuthError("transient");
+    }
+    if (response.status >= 500) throw new ChatGptPlanOAuthError("transient", undefined, response.status);
+    // A body cut off by the deadline is a transient failure, not a mismatched document.
+    body = await readJson(response).catch(() => { throw new ChatGptPlanOAuthError("transient"); });
+  } finally {
+    clearTimeout(deadline);
   }
-  if (response.status >= 500) throw new ChatGptPlanOAuthError("transient", undefined, response.status);
-  const body = await readJson(response);
   if (response.status !== 200 || body === null || typeof body !== "object") {
     throw new ChatGptPlanOAuthError("discovery-mismatch", undefined, response.status);
   }
