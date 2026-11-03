@@ -1491,6 +1491,13 @@
     color: color-mix(in oklab, hsl(var(--destructive)) 80%, hsl(var(--code-fg)));
   }
 
+  /* Folder view image viewer: a checkerboard behind the image so transparent pixels read as transparent. */
+  .ave-checkerboard {
+    background-color: hsl(var(--background));
+    background-image: conic-gradient(hsl(var(--muted)) 25%, transparent 0 50%, hsl(var(--muted)) 0 75%, transparent 0);
+    background-size: 16px 16px;
+  }
+
   /* Radix ScrollArea inserts an internal `display: table; min-width: 100%`
      wrapper under the viewport. In the chat timeline, long markdown/tool
      content can make that table wrapper expand to max-content width; then

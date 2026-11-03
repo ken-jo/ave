@@ -11,14 +11,14 @@ const DENY_EXTENSIONS = new Set<string>(DENY_LIST);
 export type ExternalOpenRefusal = "not-found" | "sensitive-path" | "denied_extension" | "not-a-file" | "changed" | "open-failed";
 
 /** Lowercase extension of a path's last segment, or "" when it has none. */
-export function externalOpenExtension(path: string): string {
+function externalOpenExtension(path: string): string {
   const name = basename(path);
   const dot = name.lastIndexOf(".");
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
 /** True when the picker deny list (executables, installers, scripts) names this path's extension. */
-export function isDeniedExternalOpenExtension(path: string): boolean {
+function isDeniedExternalOpenExtension(path: string): boolean {
   return DENY_EXTENSIONS.has(externalOpenExtension(path));
 }
 

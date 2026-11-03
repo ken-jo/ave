@@ -515,17 +515,7 @@
     {
       "type": "types",
       "file": "src/ipc/domains/workspace.ts",
-      "name": "WorkspaceDirEntry"
-    },
-    {
-      "type": "types",
-      "file": "src/ipc/domains/workspace.ts",
       "name": "WorkspaceDropPrepareResult"
-    },
-    {
-      "type": "types",
-      "file": "src/ipc/domains/workspace.ts",
-      "name": "WorkspaceListDirResult"
     },
     {
       "type": "types",

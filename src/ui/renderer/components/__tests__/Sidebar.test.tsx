@@ -1196,12 +1196,12 @@ describe("Sidebar rail", () => {
     const order = [...getByTestId("sidebar-rail").querySelectorAll("button")].map((button) => button.dataset.testid);
     expect(order).toEqual([
       "sidebar-project-button",
-      "sidebar-new-chat", "sidebar-web", "sidebar-terminal",
+      "sidebar-new-chat", "sidebar-web", "sidebar-terminal", "sidebar-folder",
       "toolbar-work-board", "sidebar-routines", "sidebar-memory", "sidebar-starred",
       "sidebar-search", "sidebar-settings",
     ]);
     // Every launcher and view says which project it acts in.
-    for (const id of ["sidebar-new-chat", "sidebar-web", "sidebar-terminal", "toolbar-work-board", "sidebar-memory"]) {
+    for (const id of ["sidebar-new-chat", "sidebar-web", "sidebar-terminal", "sidebar-folder", "toolbar-work-board", "sidebar-memory"]) {
       expect(getByTestId(id).getAttribute("aria-label")).toContain("other-app");
     }
     restore();
@@ -1229,6 +1229,19 @@ describe("Sidebar rail", () => {
     expect(onLaunch).toHaveBeenCalledWith("terminal", OTHER_APP);
     expect(queryByTestId("project-picker")).toBeNull();
     restore();
+  });
+
+  it("opens a folder view of the selected project from the rail", () => {
+    const onLaunch = vi.fn();
+    const { getByTestId, restore } = renderSidebar({
+      onLaunch, projectSelection: { kind: "root", root: OTHER_APP.projectRoot }, selectedProject: OTHER_APP,
+    });
+    try {
+      const folder = getByTestId("sidebar-folder");
+      expect(folder.getAttribute("aria-label")).toContain("새 폴더 보기");
+      fireEvent.click(folder);
+      expect(onLaunch).toHaveBeenCalledWith("folder", OTHER_APP);
+    } finally { restore(); }
   });
 
   it("marks the home row current only while the project home is the page", () => {

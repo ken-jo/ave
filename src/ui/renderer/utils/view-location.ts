@@ -1,5 +1,5 @@
 /** Locations include settings tabs and surface instances, but exclude chat sessions and external marketplace navigation. */
-import { Brain, CalendarClock, CalendarDays, Globe, House, KanbanSquare, KeyRound, Terminal, type LucideIcon } from "lucide-react";
+import { Brain, CalendarClock, CalendarDays, FolderOpen, Globe, House, KanbanSquare, KeyRound, Terminal, type LucideIcon } from "lucide-react";
 import {
   SETTINGS_TAB_LABEL_KEYS,
   normalizeSettingsTab,
@@ -130,6 +130,7 @@ export const BUILTIN_LABEL_KEYS: Record<PaneViewKey, string> = {
   memory: "mainToolbar.memory",
   terminal: "chatPreviewRail.tab.terminal",
   web: "chatPreviewRail.tab.browser",
+  folder: "folderView.title",
 };
 
 /** Sidebar and pane headers share one glyph map; routable views still need a glyph even when absent from the sidebar. */
@@ -143,4 +144,5 @@ export const BUILTIN_VIEW_ICONS: Record<PaneViewKey, LucideIcon> = {
   memory: Brain,
   terminal: Terminal,
   web: Globe,
+  folder: FolderOpen,
 };

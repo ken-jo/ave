@@ -120,7 +120,8 @@ let nextWindowTabId = 1;
 // Unique to this renderer — this window, this launch (`shared/tab-id.ts`).
 const WINDOW_TAB_SCOPE = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-export function mintTabId(kind: WorkspaceTabKind): string {
+/** `folder` ids name main-pane folder views; they never become side-panel tabs. */
+export function mintTabId(kind: WorkspaceTabKind | "folder"): string {
   return `${kind}:${WINDOW_TAB_SCOPE}-${nextWindowTabId++}`;
 }
 

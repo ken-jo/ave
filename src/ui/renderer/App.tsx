@@ -36,13 +36,14 @@ import { prunePaneChats } from "./hooks/use-side-chat.js";
 import { subscribeMainLayoutChange } from "./preview/main-layout-restore.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
 import type { SideChatRuntime } from "./components/SideChatView.js";
-import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces, type MainSurface } from "./preview/main-surfaces.js";
+import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, isToolMainSurface, useMainSurfaces, type ToolMainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
 import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { connectBrowserObservations } from "./preview/browser-observation-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
+import { FolderView } from "./components/folder-view/FolderView.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
@@ -473,9 +474,12 @@ export function App() {
         chatGroups.focus(toGroupId);
         return;
       }
-      const surface = mainSurfaces.release(tabId);
+      const held = mainSurfaces.get(tabId);
+      // Only terminal and web surfaces have side-panel tabs; a caller moving a folder view is a defect.
+      if (held && !isToolMainSurface(held)) throw new Error(`surface-not-movable:${held.kind}`);
+      const surface = held ? mainSurfaces.release(tabId) : undefined;
       let adopted = false;
-      if (surface) {
+      if (surface && isToolMainSurface(surface)) {
         sink.adopt({ id: surface.tabId, kind: surface.kind, ordinal: surface.ordinal }, surface.kind === "browser" ? guestUrl(tabId) : null);
         adopted = true;
         for (const [paneId, content] of Object.entries(chatGroups.contentById)) {
@@ -530,6 +534,9 @@ export function App() {
       paneToSide: (paneId, toGroupId = paneId) => {
         const surfaceId = chatGroups.contentById[paneId]?.surface;
         if (!surfaceId) return;
+        // A folder view has no side-panel form; the command does nothing for it.
+        const held = mainSurfaces.get(surfaceId);
+        if (held && !isToolMainSurface(held)) return;
         tabToSide(surfaceId, toGroupId);
       },
     };
@@ -571,7 +578,7 @@ export function App() {
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
   }, [chatGroups, mainSurfaces, statusPushToast, t]);
 
-  const activeSurfaceOf = useCallback((surface: Pick<MainSurface, "kind" | "tabId" | "ordinal" | "cwd">): ActiveSurface => ({
+  const activeSurfaceOf = useCallback((surface: Pick<ToolMainSurface, "kind" | "tabId" | "ordinal" | "cwd">): ActiveSurface => ({
     kind: surface.kind,
     tabId: surface.tabId,
     label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[surface.kind]])} ${surface.ordinal}`,
@@ -587,7 +594,7 @@ export function App() {
       if (paneId) {
         groups.focus(paneId);
       } else groups.setPaneContent(groups.focusedId, { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: tabId });
-      showActiveSurface(activeSurfaceOf(surface));
+      if (isToolMainSurface(surface)) showActiveSurface(activeSurfaceOf(surface));
       return true;
     }
     const groupId = activateSideTab(tabId);
@@ -720,7 +727,8 @@ export function App() {
   // Pane focus selects the side-chat target; later shell directory reports only update that target.
   const focusedSurfaceId = chatGroups.contentById[chatGroups.focusedId]?.surface;
   const focusedMainSurface = focusedSurfaceId ? mainSurfaces.surfaces.find((each) => each.tabId === focusedSurfaceId) : undefined;
-  const focusedActiveSurface: ActiveSurface | null = focusedMainSurface
+  // A folder view is no agent tool surface; focusing it leaves the last tool surface as the side chat's target.
+  const focusedActiveSurface: ActiveSurface | null = focusedMainSurface && isToolMainSurface(focusedMainSurface)
     ? activeSurfaceOf(focusedMainSurface)
     : null;
   const focusedActiveSurfaceRef = useRef(focusedActiveSurface);
@@ -898,7 +906,9 @@ export function App() {
     const shown = new Set(Object.values(chatGroups.contentById).map((content) => content.surface));
     const unshown = fresh
       ? undefined
-      : [...mainSurfaces.surfaces].reverse().find((surface) => surface.kind === kind && !shown.has(surface.tabId));
+      : [...mainSurfaces.surfaces].reverse().find((surface) => surface.kind === kind && !shown.has(surface.tabId)
+        // A folder view lists one project: reuse only one of the project being worked in.
+        && (kind !== "folder" || surface.projectRoot === surfaceProjectRootRef.current));
     let surface = unshown;
     if (!surface) {
       const projectRoot = surfaceProjectRoot();
@@ -1019,8 +1029,8 @@ export function App() {
       void handleNewChatRef.current?.({ projectRoot: project.projectRoot, projectName: project.projectName });
       return;
     }
-    const view = kind === "web" ? "web" : "terminal";
-    // A terminal starts in its project's folder (case 13).
+    const view = kind === "web" ? "web" : kind === "folder" ? "folder" : "terminal";
+    // A terminal starts in its project's folder (case 13); a folder view lists that project.
     const surface = mainSurfaces.create(SURFACE_KIND_OF_VIEW[view], {
       projectRoot: project.projectRoot,
       ...(view === "terminal" ? { cwd: project.projectRoot } : {}),
@@ -2091,9 +2101,53 @@ export function App() {
       ));
     }
 
+    if (view === "folder") {
+      const surfaceId = chatGroups.contentById[paneId]?.surface;
+      const surface = mainSurfaces.surfaces.find((each) => each.tabId === surfaceId && each.kind === "folder");
+      if (!surface) {
+        return viewPane(view, (
+          <p className="text-sm text-muted-foreground" data-testid="surface-pane-gone">{t("mainPanels.surfaceGone")}</p>
+        ));
+      }
+      const projectRoot = surface.projectRoot;
+      const title = t(BUILTIN_LABEL_KEYS.folder);
+      const FolderIcon = BUILTIN_VIEW_ICONS.folder;
+      // Closing the folder view ends it and returns the pane to its conversation.
+      const closeSurface = () => {
+        closePane();
+        mainSurfaces.close(surface.tabId);
+      };
+      // The empty-folder action opens a terminal there, beside the folder view when the canvas has room.
+      const openTerminalAt = (dir: string) => {
+        const terminal = mainSurfaces.create("terminal", { cwd: dir, projectRoot });
+        const location: ViewLocation = { view: "terminal", surface: terminal.tabId };
+        const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+          ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+        if (beside === null) chatGroups.setPaneContent(paneId, location);
+      };
+      return paneShell(view, (
+        <PaneFrame
+          title={title}
+          icon={<FolderIcon className="h-4 w-4" />}
+          meta={{ text: projectRoot.split(/[\\/]/).filter(Boolean).pop() ?? projectRoot, title: projectRoot }}
+          bodyInset="none"
+          onClose={closeSurface}
+          closeLabel={routedCloseLabel(title)}
+          {...asTile}
+        >
+          <FolderView
+            key={surface.tabId}
+            projectRoot={projectRoot}
+            onOpenTerminal={openTerminalAt}
+            onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
+          />
+        </PaneFrame>
+      ));
+    }
+
     if (view === "terminal" || view === "web") {
       const surfaceId = chatGroups.contentById[paneId]?.surface;
-      const surface = mainSurfaces.surfaces.find((each) => each.tabId === surfaceId);
+      const surface = mainSurfaces.surfaces.filter(isToolMainSurface).find((each) => each.tabId === surfaceId);
       if (!surface) {
         // Report a missing surface and offer navigation away.
         return viewPane(view, (

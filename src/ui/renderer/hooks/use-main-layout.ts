@@ -5,7 +5,7 @@ import { parseMainLayout, type MainLayoutLimits, type MainLayoutSnapshot, type S
 import { MAIN_CHAT_GROUP_ID, MAX_PANES } from "../../../contract/app-contract.js";
 import type { PaneNode } from "../components/pane-tree.js";
 import type { ViewLocation } from "../utils/view-location.js";
-import { VIEW_OF_SURFACE_KIND, type MainSurface } from "../preview/main-surfaces.js";
+import { VIEW_OF_SURFACE_KIND, isToolMainSurface, type MainSurface } from "../preview/main-surfaces.js";
 import { reserveTabIds } from "../preview/workspace-tabs.js";
 import { getSideTabsSink } from "../preview/surface-moves.js";
 import { subscribeWebSurfaceLocations, webSurfaceLocation } from "../preview/web-surfaces.js";

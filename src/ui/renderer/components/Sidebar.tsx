@@ -59,9 +59,10 @@ const SettingsIcon = BUILTIN_VIEW_ICONS.settings;
 const MemoryIcon = BUILTIN_VIEW_ICONS.memory;
 const TerminalViewIcon = BUILTIN_VIEW_ICONS.terminal;
 const WebViewIcon = BUILTIN_VIEW_ICONS.web;
+const FolderViewIcon = BUILTIN_VIEW_ICONS.folder;
 
 /** What the rail's launchers open. */
-export type SidebarLaunchKind = "chat" | "web" | "terminal";
+export type SidebarLaunchKind = "chat" | "web" | "terminal" | "folder";
 
 export interface SidebarProps {
   activeView: InlineViewKey;
@@ -906,7 +907,8 @@ export function Sidebar({
   const menuOpenChange = (from: "rail" | "header") => (open: boolean) => setMenuFrom(open ? from : null);
   const launchLabel = (kind: SidebarLaunchKind) => kind === "chat"
     ? t("mainToolbar.newChat")
-    : t(kind === "web" ? "sidebar.newWeb" : "sidebar.newTerminal");
+    : kind === "folder" ? t("folderView.newFolderView")
+      : t(kind === "web" ? "sidebar.newWeb" : "sidebar.newTerminal");
   const listUnavailable = !selectedProject && !allProjects && projectListUnavailable;
   const launcher = (kind: SidebarLaunchKind, icon: ReactNode, testId: string) => {
     const label = launchLabel(kind);
@@ -1075,6 +1077,7 @@ export function Sidebar({
           {launcher("chat", <MessageSquarePlus className="h-4 w-4" />, "sidebar-new-chat")}
           {launcher("web", <WebViewIcon className="h-4 w-4" />, "sidebar-web")}
           {launcher("terminal", <TerminalViewIcon className="h-4 w-4" />, "sidebar-terminal")}
+          {launcher("folder", <FolderViewIcon className="h-4 w-4" />, "sidebar-folder")}
         </>
       )}
       views={(

@@ -75,7 +75,7 @@ function TextRenderer({ descriptor }: { descriptor: PreviewContentDescriptor }) 
 
 /** Line-numbered, syntax-coloured source. The grammar is a local lazy chunk (no network); until it loads, and past the
  * highlighter's size cap, the same rows show uncoloured so nothing shifts. */
-function CodeRenderer({ descriptor }: { descriptor: PreviewContentDescriptor }) {
+export function CodePreview({ descriptor }: { descriptor: PreviewContentDescriptor }) {
   const { t } = useTranslation();
   const tree = useHighlightedCode(extensionOf(descriptor), descriptor.text);
   const lines = useMemo(() => tree ? highlightedLines(tree)
@@ -271,7 +271,7 @@ const codeRenderer: PreviewRenderer = {
   kind: "code",
   // The highlighter's own grammar table decides what counts as code, so no fourth extension list exists.
   match: (descriptor) => resolveGrammar(extensionOf(descriptor)) !== null,
-  Component: CodeRenderer,
+  Component: CodePreview,
 };
 
 // Ordered — first match wins; `text` is always last (always-true fallback).
