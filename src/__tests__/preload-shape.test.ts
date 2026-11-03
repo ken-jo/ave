@@ -480,6 +480,7 @@ describe("preload contextBridge world shape lock", () => {
           "listPluginCards": "function",
           "listPluginContributionTrust": "function",
           "listPluginUiExtensions": "function",
+          "listRoutineOccurrences": "function",
           "listRoutineSessions": "function",
           "listRoutines": "function",
           "listSessionTasks": "function",
@@ -581,6 +582,7 @@ describe("preload contextBridge world shape lock", () => {
             "listPending",
           ],
           "openExternalUrl": "function",
+          "pauseRoutine": "function",
           "pauseSessionGoal": "function",
           "permission": [
             "addRule",
@@ -662,6 +664,7 @@ describe("preload contextBridge world shape lock", () => {
           "removeWorkBoardItem": "function",
           "reopenWorkBoardItem": "function",
           "respondAskUserQuestion": "function",
+          "resumeRoutine": "function",
           "resumeSessionGoal": "function",
           "retryBootstrap": "function",
           "runWorkBoardBriefing": "function",
@@ -757,6 +760,7 @@ describe("preload contextBridge world shape lock", () => {
           "transitionWorkBoardItem": "function",
           "triggerRoutineNow": "function",
           "uninstallMarketplaceProviderPreset": "function",
+          "updateRoutine": "function",
           "updateSettings": "function",
           "updateWorkBoardItem": "function",
           "userApproval": [

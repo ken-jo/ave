@@ -7,6 +7,8 @@ import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
+import { advanceRepeatAt } from "../routines/schedule-advance.js";
+import { projectRootEquals } from "../shared/project-identity.js";
 const log = createLogger("ave");
 
 // Re-export from shared so callers that import from routines-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
@@ -26,6 +28,9 @@ import { MAX_ROUTINE_FAILURE_REASON_LENGTH } from "../shared/routines-types.js";
 import { maskSensitiveData } from "../shared/dlp.js";
 import { redactHomePathsInText } from "../audit/dlp-filter.js";
 import type {
+  RoutineActor,
+  RoutineEditPatch,
+  RoutineSchedule,
   RoutineFailure,
   RoutineRunOutcome,
   InvalidRoutine,
@@ -50,6 +55,13 @@ export const MAX_CRON_EXPR_LENGTH = 256;
 
 // Minimum interval in ms (1 minute — prevents sub-minute polling spam).
 export const MIN_INTERVAL_MS = 60_000;
+
+// Same bound as session metadata's projectRoot.
+const MAX_PROJECT_ROOT_LENGTH = 2_048;
+
+function isActor(value: unknown): value is RoutineActor {
+  return value === "user" || value === "agent";
+}
 
 // The plugin-id-bearing fields of one stored routine, by field path.
 function storedRoutinePluginIds(record: Record<string, unknown>): Array<[string, unknown[]]> {
@@ -105,6 +117,10 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (x.dismissedAt !== undefined && typeof x.dismissedAt !== "string") return false;
   if (x.source !== undefined && (typeof x.source !== "string" || x.source.length > MAX_ROUTINE_SOURCE_LENGTH)) return false;
   if (x.scope !== undefined && !isValidRoutineScope(x.scope)) return false;
+  if (x.projectRoot !== undefined && (typeof x.projectRoot !== "string" || x.projectRoot.length === 0 || x.projectRoot.length > MAX_PROJECT_ROOT_LENGTH)) return false;
+  if (x.createdBy !== undefined && !isActor(x.createdBy)) return false;
+  if (x.pausedAt !== undefined && typeof x.pausedAt !== "string") return false;
+  if ((x.pausedAt === undefined) !== (x.pausedBy === undefined) || (x.pausedBy !== undefined && !isActor(x.pausedBy))) return false;
   return true;
 }
 
@@ -311,9 +327,13 @@ export class RoutinesStore {
     return this.cache.map(cloneRecord);
   }
 
-  // Active routines = not dismissed.
-  listActive(): RoutineRecord[] {
-    return this.cache.filter((r) => !r.dismissedAt).map(cloneRecord);
+  // Active routines = not dismissed. With a project, only that project's items and the unscoped ones stored before projects existed.
+  listActive(filter?: { projectRoot?: string }): RoutineRecord[] {
+    const projectRoot = filter?.projectRoot;
+    return this.cache
+      .filter((r) => !r.dismissedAt)
+      .filter((r) => projectRoot === undefined || r.projectRoot === undefined || projectRootEquals(r.projectRoot, projectRoot))
+      .map(cloneRecord);
   }
 
   // Stored routines held back because they name a plugin id the contract rejects.
@@ -322,70 +342,23 @@ export class RoutinesStore {
   }
 
   // What the routine list shows: the active routines and the invalid ones to repair.
-  listForDisplay(): RoutineListResult {
-    return { routines: this.listActive(), invalid: this.listInvalid() };
+  listForDisplay(filter?: { projectRoot?: string }): RoutineListResult {
+    return { routines: this.listActive(filter), invalid: this.listInvalid() };
   }
 
   async add(input: AddRoutineInput): Promise<RoutineRecord> {
     if (!this.loaded) await this.load();
 
-    let normalizedAt: string | undefined;
-    if (input.schedule?.at !== undefined) {
-      const validation = validateScheduleAt(input.schedule.at);
-      if (!validation.ok) {
-        throw new Error(
-          `RoutinesStore.add: invalid schedule.at (${validation.error}): ${input.schedule.at}`,
-        );
+    const normalizedSchedule = validateRoutineContent("add", input);
+    let normalizedProjectRoot: string | undefined;
+    if (input.projectRoot !== undefined) {
+      if (typeof input.projectRoot !== "string" || input.projectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
+        throw new Error(`RoutinesStore.add: projectRoot must be a string of at most ${MAX_PROJECT_ROOT_LENGTH} characters`);
       }
-      normalizedAt = new Date(input.schedule.at).toISOString();
+      normalizedProjectRoot = input.projectRoot.trim() || undefined;
     }
-
-    // Non-cron repeats require schedule.at or the scheduler can never fire them.
-    if (input.schedule?.repeat) {
-      const kind = input.schedule.repeat.kind;
-      if (kind !== "cron" && !input.schedule.at) {
-        throw new Error(
-          `RoutinesStore.add: schedule.at is required for repeat.kind="${kind}" (non-cron repeats fire on a fixed instant)`,
-        );
-      }
-    }
-
-    if (input.schedule?.repeat?.kind === "cron") {
-      const expr = (input.schedule.repeat as { kind: "cron"; expression: string }).expression;
-      if (typeof expr !== "string" || expr.length > MAX_CRON_EXPR_LENGTH) {
-        throw new Error(
-          `RoutinesStore.add: cron expression too long or invalid type (max ${MAX_CRON_EXPR_LENGTH} chars)`,
-        );
-      }
-      if (!expr.trim() || !isValidCronExpression(expr)) {
-        throw new Error(
-          `RoutinesStore.add: invalid cron expression: ${String(expr)}`,
-        );
-      }
-    }
-
-    if (input.schedule?.repeat?.kind === "interval") {
-      const intervalMs = (input.schedule.repeat as { kind: "interval"; intervalMs: number }).intervalMs;
-      if (!Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_FUTURE_OFFSET_MS) {
-        throw new Error(
-          `RoutinesStore.add: intervalMs out of range (min ${MIN_INTERVAL_MS}ms, max ${MAX_FUTURE_OFFSET_MS}ms): ${String(intervalMs)}`,
-        );
-      }
-    }
-
-    if (input.execution === "llm-session") {
-      if (!input.prePrompt || input.prePrompt.trim().length === 0) {
-        throw new Error(
-          "RoutinesStore.add: prePrompt is required and must be non-empty for execution='llm-session'",
-        );
-      }
-    }
-    if (input.execution === "notification-only") {
-      if (!input.notificationTitle || input.notificationTitle.trim().length === 0) {
-        throw new Error(
-          "RoutinesStore.add: notificationTitle is required and must be non-empty for execution='notification-only'",
-        );
-      }
+    if (input.createdBy !== undefined && !isActor(input.createdBy)) {
+      throw new Error("RoutinesStore.add: createdBy must be 'user' or 'agent'");
     }
 
     // Idempotency identity — validate the optional `source` marker length cap (SOT). Empty/whitespace-only collapses to unset so it never matches a real
@@ -430,13 +403,6 @@ export class RoutinesStore {
       directories: inputScope?.directories ? [...inputScope.directories] : [],
     };
 
-    const normalizedSchedule: typeof input.schedule = input.schedule
-      ? {
-          ...input.schedule,
-          ...(normalizedAt !== undefined ? { at: normalizedAt } : {}),
-        }
-      : undefined;
-
     const record: RoutineRecord = {
       id: randomUUID(),
       trigger: input.trigger,
@@ -449,6 +415,8 @@ export class RoutinesStore {
       scope: normalizedScope,
       createdAt: new Date().toISOString(),
       ...(normalizedSource !== undefined ? { source: normalizedSource } : {}),
+      ...(normalizedProjectRoot !== undefined ? { projectRoot: normalizedProjectRoot } : {}),
+      createdBy: input.createdBy ?? "user",
     };
 
     return withInProcessFileQueue(this.filePath, async () => {
@@ -628,15 +596,70 @@ export class RoutinesStore {
     });
   }
 
+  // A user edit from the schedule panel, validated exactly as add validates. Null for an unknown or dismissed item.
+  async edit(id: string, patch: RoutineEditPatch): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (r.dismissedAt) return false;
+      if (patch.schedule !== undefined && r.trigger !== "schedule") {
+        throw new Error("RoutinesStore.edit: a shutdown item has no schedule");
+      }
+      const next: RoutineRecord = {
+        ...r,
+        ...(patch.prePrompt !== undefined ? { prePrompt: patch.prePrompt } : {}),
+        ...(patch.notificationTitle !== undefined ? { notificationTitle: patch.notificationTitle } : {}),
+        ...(patch.notificationBody !== undefined ? { notificationBody: patch.notificationBody } : {}),
+        ...(patch.schedule !== undefined ? { schedule: patch.schedule } : {}),
+      };
+      const schedule = validateRoutineContent("edit", next);
+      if (patch.title === null) delete r.title;
+      else if (patch.title !== undefined) r.title = patch.title;
+      if (patch.prePrompt !== undefined) r.prePrompt = patch.prePrompt;
+      if (patch.notificationTitle !== undefined) r.notificationTitle = patch.notificationTitle;
+      if (patch.notificationBody !== undefined) r.notificationBody = patch.notificationBody;
+      if (patch.schedule !== undefined) {
+        r.schedule = schedule;
+        // A new schedule is a new series: the previous cron minute keys and skip markers belong to the old one.
+        delete r.lastFiredMinuteUTC;
+        delete r.lastSkippedMinuteUTC;
+      }
+      return true;
+    }, { skipDismissed: true });
+  }
+
+  async pause(id: string, by: RoutineActor): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (r.pausedAt) return false;
+      r.pausedAt = new Date().toISOString();
+      r.pausedBy = by;
+      return true;
+    }, { skipDismissed: true });
+  }
+
+  // Resuming does not replay what was paused: a repeating item's next fire moves past now. A one-shot whose time passed stays due and runs
+  // once, as an item missed while the app was off does.
+  async resume(id: string): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (!r.pausedAt) return false;
+      delete r.pausedAt;
+      delete r.pausedBy;
+      advanceRepeatingSchedule(r, new Date().toISOString());
+      return true;
+    }, { skipDismissed: true });
+  }
+
   // `apply` returns whether it changed the record; an unchanged record is not rewritten. Null only when the routine does not exist.
-  private async mutate(id: string, apply: (record: RoutineRecord) => boolean): Promise<RoutineRecord | null> {
+  private async mutate(
+    id: string,
+    apply: (record: RoutineRecord) => boolean,
+    options?: { skipDismissed?: boolean },
+  ): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       const r = file.routines.find((x) => x.id === id);
       this.cache = file.routines;
       this.invalidCache = file.invalid;
-      if (!r) return null;
+      if (!r || (options?.skipDismissed && r.dismissedAt)) return null;
       if (apply(r)) await this.persist(file);
       return cloneRecord(r);
     });
@@ -692,63 +715,58 @@ export class RoutinesStore {
 function advanceRepeatingSchedule(routine: RoutineRecord, now: string): void {
   const schedule = routine.schedule;
   if (!schedule) return;
-  const at = schedule.at ?? now;
-  switch (schedule.repeat?.kind) {
-    case "daily": schedule.at = advanceDaily(at); break;
-    case "weekly": schedule.at = advanceWeekly(at); break;
-    case "monthly": schedule.at = advanceMonthly(at); break;
-    case "interval": schedule.at = advanceInterval(at, schedule.repeat.intervalMs); break;
-  }
+  const next = advanceRepeatAt(schedule.at ?? now, schedule.repeat, Date.parse(now));
+  // cron routines: next-fire is re-computed by the scheduler each tick — no `at` to advance.
+  if (next !== null) schedule.at = next;
 }
 
-function advanceDaily(atIso: string): string {
-  const d = new Date(atIso);
-  const nowMs = Date.now();
-  if (d.getTime() <= nowMs) {
-    const intervalMs = 24 * 60 * 60 * 1000;
-    const elapsed = nowMs - d.getTime();
-    const skips = Math.floor(elapsed / intervalMs) + 1;
-    d.setTime(d.getTime() + skips * intervalMs);
+// Shared by add and edit so the two cannot disagree about a limit. Returns the schedule with `at` normalized to UTC ISO.
+function validateRoutineContent(
+  op: "add" | "edit",
+  input: Pick<AddRoutineInput, "schedule" | "execution" | "prePrompt" | "notificationTitle">,
+): RoutineSchedule | undefined {
+  const label = `RoutinesStore.${op}`;
+  let normalizedAt: string | undefined;
+  if (input.schedule?.at !== undefined) {
+    const validation = validateScheduleAt(input.schedule.at);
+    if (!validation.ok) {
+      throw new Error(`${label}: invalid schedule.at (${validation.error}): ${input.schedule.at}`);
+    }
+    normalizedAt = new Date(input.schedule.at).toISOString();
   }
-  return d.toISOString();
-}
-
-function advanceWeekly(atIso: string): string {
-  const d = new Date(atIso);
-  const nowMs = Date.now();
-  if (d.getTime() <= nowMs) {
-    const intervalMs = 7 * 24 * 60 * 60 * 1000;
-    const elapsed = nowMs - d.getTime();
-    const skips = Math.floor(elapsed / intervalMs) + 1;
-    d.setTime(d.getTime() + skips * intervalMs);
+  // Non-cron repeats require schedule.at or the scheduler can never fire them.
+  if (input.schedule?.repeat) {
+    const kind = input.schedule.repeat.kind;
+    if (kind !== "cron" && !input.schedule.at) {
+      throw new Error(
+        `${label}: schedule.at is required for repeat.kind="${kind}" (non-cron repeats fire on a fixed instant)`,
+      );
+    }
   }
-  return d.toISOString();
-}
-
-// Keep the original calendar day across skipped months so February clamping does not permanently shift a 31st-day schedule.
-function advanceMonthly(atIso: string): string {
-  const d = new Date(atIso);
-  const originalDay = d.getUTCDate(); // capture once — never re-read from d
-  const nowMs = Date.now();
-  while (d.getTime() <= nowMs) {
-    // Set day=1 first to avoid month-overflow when current day > target-month days.
-    d.setUTCDate(1);
-    d.setUTCMonth(d.getUTCMonth() + 1);
-    // Clamp to last day of the new month, then restore originalDay.
-    const maxDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
-    d.setUTCDate(Math.min(originalDay, maxDay));
+  if (input.schedule?.repeat?.kind === "cron") {
+    const expr = (input.schedule.repeat as { kind: "cron"; expression: string }).expression;
+    if (typeof expr !== "string" || expr.length > MAX_CRON_EXPR_LENGTH) {
+      throw new Error(`${label}: cron expression too long or invalid type (max ${MAX_CRON_EXPR_LENGTH} chars)`);
+    }
+    if (!expr.trim() || !isValidCronExpression(expr)) {
+      throw new Error(`${label}: invalid cron expression: ${String(expr)}`);
+    }
   }
-  return d.toISOString();
-}
-
-function advanceInterval(atIso: string, intervalMs: number): string {
-  const d = new Date(atIso);
-  const nowMs = Date.now();
-  if (intervalMs <= 0) return d.toISOString();
-  if (d.getTime() <= nowMs) {
-    const elapsed = nowMs - d.getTime();
-    const skips = Math.floor(elapsed / intervalMs) + 1;
-    d.setTime(d.getTime() + skips * intervalMs);
+  if (input.schedule?.repeat?.kind === "interval") {
+    const intervalMs = (input.schedule.repeat as { kind: "interval"; intervalMs: number }).intervalMs;
+    if (!Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_FUTURE_OFFSET_MS) {
+      throw new Error(
+        `${label}: intervalMs out of range (min ${MIN_INTERVAL_MS}ms, max ${MAX_FUTURE_OFFSET_MS}ms): ${String(intervalMs)}`,
+      );
+    }
   }
-  return d.toISOString();
+  if (input.execution === "llm-session" && (!input.prePrompt || input.prePrompt.trim().length === 0)) {
+    throw new Error(`${label}: prePrompt is required and must be non-empty for execution='llm-session'`);
+  }
+  if (input.execution === "notification-only" && (!input.notificationTitle || input.notificationTitle.trim().length === 0)) {
+    throw new Error(`${label}: notificationTitle is required and must be non-empty for execution='notification-only'`);
+  }
+  return input.schedule
+    ? { ...input.schedule, ...(normalizedAt !== undefined ? { at: normalizedAt } : {}) }
+    : undefined;
 }

@@ -1000,7 +1000,7 @@ export type AveApi = {
     | { ok: false; error: string; message: string }
   >;
   // routine_schedule — persistent routine list + lifecycle
-  listRoutines: () => Promise<import("../../shared/routines-types.js").RoutineListResult>;
+  listRoutines: (filter?: { projectRoot?: string }) => Promise<import("../../shared/routines-types.js").RoutineListResult>;
   dismissRoutine: (id: string) => Promise<{ ok: boolean; error?: string }>;
   removeRoutine: (id: string) => Promise<{ ok: boolean; error?: string }>;
   triggerRoutineNow: (id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1014,6 +1014,14 @@ export type AveApi = {
     | { ok: true; routine: import("../../shared/routines-types.js").RoutineRecord }
     | { ok: false; error: string }
   >;
+  // Schedule panel: user edit, reversible pause, and the grids' projected occurrences plus past runs.
+  updateRoutine: (
+    id: string,
+    patch: import("../../shared/routines-types.js").RoutineEditPatch,
+  ) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
+  pauseRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
+  resumeRoutine: (id: string) => Promise<{ ok: true; routine: import("../../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }>;
+  listRoutineOccurrences: (query: { projectRoot?: string; from: string; to: string }) => Promise<import("../../shared/routines-types.js").RoutineOccurrencesResult>;
   onRoutineFired: (
     handler: (event: import("../../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => () => void;

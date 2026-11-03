@@ -1005,7 +1005,8 @@ export function buildInternalApiSurface() {
   },
 
   // routine_schedule; persistent routine list + lifecycle
-  listRoutines: async () => ipcRenderer.invoke(ROUTINES.list),
+  // With a project, only that project's items plus the unscoped ones stored before projects existed.
+  listRoutines: async (filter?: { projectRoot?: string }) => ipcRenderer.invoke(ROUTINES.list, filter),
   dismissRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.dismiss, id),
   removeRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.remove, id),
   triggerRoutineNow: async (id: string) => ipcRenderer.invoke(ROUTINES.triggerNow, id),
@@ -1021,6 +1022,20 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(ROUTINES.add, input) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
     >,
+  updateRoutine: async (id: string, patch: import("../shared/routines-types.js").RoutineEditPatch) =>
+    ipcRenderer.invoke(ROUTINES.update, id, patch) as Promise<
+      { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
+    >,
+  pauseRoutine: async (id: string) =>
+    ipcRenderer.invoke(ROUTINES.pause, id) as Promise<
+      { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
+    >,
+  resumeRoutine: async (id: string) =>
+    ipcRenderer.invoke(ROUTINES.resume, id) as Promise<
+      { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
+    >,
+  listRoutineOccurrences: async (query: { projectRoot?: string; from: string; to: string }) =>
+    ipcRenderer.invoke(ROUTINES.listOccurrences, query) as Promise<import("../shared/routines-types.js").RoutineOccurrencesResult>,
   onRoutineFired: (
     handler: (event: import("../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => {

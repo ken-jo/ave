@@ -1839,6 +1839,22 @@ reviewable, but it is not due again. Shutdown routines are never restored,
 because they would run at every quit. An unreadable stored `lastFailure` is
 dropped with a warning, and the routine itself is kept.
 
+The schedule panel lists routines per project. A record carries an optional
+`projectRoot`; records stored before projects existed have none and show in
+every project. `createdBy` records who added the item; the renderer's add
+path always records the user. A user edit (`ROUTINES.update`) changes the
+title, prompt, notification text or schedule and passes the same validation
+as add; a new schedule clears the old series' cron minute keys. Pause is
+reversible, unlike dismissal: a paused item is never due, cannot be run now,
+and a paused shutdown item does not run at quit. Resuming does not replay
+what was paused: a repeating item's next fire moves past now, and a one-shot
+whose time passed runs once, as an item missed while the app was off does.
+`ROUTINES.listOccurrences` serves the day, week and month grids for a range of
+at most 43 days. Projected occurrences reuse the scheduler's own next-fire
+arithmetic and cron evaluator, so the grid draws only times the scheduler
+fires; each item is capped at 200 occurrences. Past runs come from the item's
+sessions and `lastFiredAt`, and a run is `failed` when `lastFailure` names it.
+
 ## Main-process composition and boot readiness
 
 TypeScript under `src/` must have no static runtime-import strongly

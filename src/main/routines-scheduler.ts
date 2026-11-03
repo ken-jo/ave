@@ -100,6 +100,7 @@ export class RoutinesScheduler {
 
   private isDue(routine: RoutineRecord, now: Date): boolean {
     if (routine.trigger !== "schedule") return false;
+    if (routine.pausedAt) return false;
     const schedule = routine.schedule;
     if (!schedule) return false;
 
@@ -122,10 +123,12 @@ export class RoutinesScheduler {
   }
 
   // Manual triggers share scheduled execution, persistence, deduplication, and fired-event delivery.
-  async dispatchNow(routineId: string): Promise<boolean | "plugins-missing"> {
+  async dispatchNow(routineId: string): Promise<boolean | "plugins-missing" | "paused"> {
     const active = this.store.listActive();
     const routine = active.find((r) => r.id === routineId);
     if (!routine) return false;
+    // A paused item runs only after the user resumes it.
+    if (routine.pausedAt) return "paused";
     const missingPluginIds = await this.getMissingPluginIds(routine);
     if (this.areAllPluginsMissing(routine, missingPluginIds)) {
       await this.store.markPluginsMissing(routine.id, missingPluginIds,

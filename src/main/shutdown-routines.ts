@@ -39,7 +39,7 @@ export async function runShutdownRoutines(
 
   try {
     const shutdownRoutines = svc.routinesStore.listActive().filter(
-      (routine) => routine.trigger === "shutdown",
+      (routine) => routine.trigger === "shutdown" && !routine.pausedAt,
     );
     for (const routine of shutdownRoutines) {
       let routineSessionId: string | undefined;

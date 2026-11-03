@@ -243,3 +243,64 @@ describe("routine failure acknowledgement", () => {
     expect(await invoke(ROUTINES.acknowledgeFailure, "routine-a", 7)).toEqual({ ok: false, error: "invalid-input" });
   });
 });
+
+describe("schedule panel IPC", () => {
+  it("passes the project filter to the list and forces createdBy=user on add", async () => {
+    const deps = await setup([]);
+    await invoke(ROUTINES.list, { projectRoot: "/p/a" });
+    expect(deps.routinesStore.listForDisplay).toHaveBeenCalledWith({ projectRoot: "/p/a" });
+    deps.routinesStore.add.mockResolvedValueOnce({ id: "new" });
+    await invoke(ROUTINES.add, { trigger: "schedule", execution: "notification-only", notificationTitle: "n", projectRoot: "/p/a", createdBy: "agent" });
+    expect(deps.routinesStore.add).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: "/p/a", createdBy: "user" }));
+  });
+
+  it("edits, pauses and resumes through the store, reporting unknown items", async () => {
+    const deps = await setup([]);
+    const store = deps.routinesStore as typeof deps.routinesStore & Record<string, ReturnType<typeof vi.fn>>;
+    store.edit = vi.fn(async (id: string) => (id === "routine-a" ? { id } : null));
+    store.pause = vi.fn(async (id: string) => (id === "routine-a" ? { id } : null));
+    store.resume = vi.fn(async (id: string) => (id === "routine-a" ? { id } : null));
+    expect(await invoke(ROUTINES.update, "routine-a", { title: "t" })).toEqual({ ok: true, routine: { id: "routine-a" } });
+    expect(store.edit).toHaveBeenCalledWith("routine-a", { title: "t" });
+    expect(await invoke(ROUTINES.update, "missing", { title: "t" })).toEqual({ ok: false, error: "routine-not-found" });
+    store.edit.mockRejectedValueOnce(new Error("bad cron"));
+    expect(await invoke(ROUTINES.update, "routine-a", { schedule: {} })).toEqual({ ok: false, error: "bad cron" });
+    expect(await invoke(ROUTINES.pause, "routine-a")).toEqual({ ok: true, routine: { id: "routine-a" } });
+    expect(store.pause).toHaveBeenCalledWith("routine-a", "user");
+    expect(await invoke(ROUTINES.resume, "missing")).toEqual({ ok: false, error: "routine-not-found" });
+  });
+
+  it("refuses a run-now of a paused item with its own error", async () => {
+    handlers.clear();
+    const { registerRoutineHandlers } = await import("../routines.js");
+    const deps = { ...makeDeps([]), routinesScheduler: { dispatchNow: vi.fn(async () => "paused") } };
+    registerRoutineHandlers(deps as unknown as Parameters<typeof registerRoutineHandlers>[0]);
+    expect(await invoke(ROUTINES.triggerNow, "routine-a")).toEqual({ ok: false, error: "paused" });
+  });
+
+  it("lists occurrences and past runs inside a bounded range", async () => {
+    const deps = await setup([
+      { id: "s1", routineId: "routine-w", routineFiredAt: "2026-11-03T00:00:00.000Z", preview: "" },
+      { id: "s0", routineId: "routine-w", routineFiredAt: "2026-10-01T00:00:00.000Z", preview: "" },
+    ]);
+    (deps.routinesStore.listForDisplay as ReturnType<typeof vi.fn>).mockReturnValue({
+      routines: [{
+        id: "routine-w", trigger: "schedule", execution: "llm-session", prePrompt: "p", createdAt: "2026-10-01T00:00:00.000Z",
+        schedule: { at: "2026-11-05T00:00:00.000Z", repeat: { kind: "weekly" } }, lastFiredAt: "2026-11-03T00:00:00.000Z",
+        lastFailure: { kind: "error", reason: "429", firedAt: "2026-11-03T00:00:00.000Z", at: "2026-11-03T00:01:00.000Z" },
+      }],
+      invalid: [],
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-04T02:20:00.000Z"));
+    const result = await invoke(ROUTINES.listOccurrences, { projectRoot: "/p/a", from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+    now.mockRestore();
+    expect(deps.routinesStore.listForDisplay).toHaveBeenCalledWith({ projectRoot: "/p/a" });
+    expect(result).toEqual({
+      ok: true,
+      occurrences: [{ routineId: "routine-w", at: "2026-11-05T00:00:00.000Z", status: "scheduled" }],
+      runs: [{ routineId: "routine-w", firedAt: "2026-11-03T00:00:00.000Z", status: "failed", sessionId: "s1" }],
+    });
+    expect(await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2027-11-02T00:00:00.000Z" })).toEqual({ ok: false, error: "invalid-range" });
+    expect(await invoke(ROUTINES.listOccurrences, { from: "x", to: "y" })).toEqual({ ok: false, error: "invalid-range" });
+  });
+});
