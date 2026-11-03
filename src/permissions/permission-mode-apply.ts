@@ -6,6 +6,7 @@ import type { ApprovalGate } from "./approval-gate.js";
 import type { PermissionManager } from "./permission-manager.js";
 import type { PermissionModeCommand } from "./permission-slash.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
+import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 
 export type PermissionModeApplyResult =
   | {
@@ -13,6 +14,8 @@ export type PermissionModeApplyResult =
       previous: string;
       mode: PermissionModeCommand["mode"];
       durable: boolean;
+      // Why a durable switch applied for this session only: the home's permission store refuses writes while boot refuses the folder.
+      notice?: string;
     }
   | {
       ok: false;
@@ -161,7 +164,14 @@ export async function applyPermissionModeCommand(
   }
 
   if (cmd.durable) {
-    await deps.permissionManager.setModePersist(cmd.mode);
+    try {
+      await deps.permissionManager.setModePersist(cmd.mode);
+    } catch (error) {
+      if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
+      // The user chose this mode; only saving it is refused. Apply it for this session and say why it was not saved.
+      deps.permissionManager.setMode(cmd.mode);
+      return { ok: true, previous, mode: cmd.mode, durable: false, notice: error.message };
+    }
   } else {
     deps.permissionManager.setMode(cmd.mode);
   }

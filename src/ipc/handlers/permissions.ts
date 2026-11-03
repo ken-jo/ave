@@ -32,7 +32,7 @@ export async function handleSetPermissionMode(
   deps: IpcDeps,
   mode: unknown,
   bypass: SetPermissionModeBypass,
-): Promise<{ ok: true; mode: string } | { ok: false; error: string; message: string }> {
+): Promise<{ ok: true; mode: string; notice?: string } | { ok: false; error: string; message: string }> {
   if (typeof mode !== "string") {
     return { ok: false, error: "invalid-mode", message: "mode must be a string" };
   }
@@ -59,5 +59,5 @@ export async function handleSetPermissionMode(
   });
   if (!result.ok) return result;
   broadcastPermissionModeChanged(deps, result.mode);
-  return { ok: true, mode: result.mode };
+  return result.notice === undefined ? { ok: true, mode: result.mode } : { ok: true, mode: result.mode, notice: result.notice };
 }

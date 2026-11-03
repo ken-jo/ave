@@ -2985,6 +2985,26 @@ with its own owner rule:
   never committed `config/` stays root-only. The first read in a run
   decides the location, and the run keeps it, so a marker that appears
   later in a refused home never moves its configuration.
+  On a refused boot every authority store outside a verified boundary reads
+  as absent: root `permissions.json`, `permissions/user-approvals.json` and
+  `permissions/project-rules` whatever the committed state, and the root
+  settings, policy and secrets of a home that never committed `config/`.
+  Only a closed restriction overlay applies from those unverified bytes:
+  the `deny` rules of `permissions.json` and of project rules, and
+  `requireExplicitApproval`, `managed` and
+  `permissions.blockReadsOutsideWorkingDirectories` when they are `true`.
+  Allow and ask rules, saved approvals, the stored mode and every other
+  field are ignored, and bytes that do not parse apply nothing. Writes to
+  those stores are refused with `AveHomeConfigurationRefusedWriteError`
+  ("fix the folder permissions first"), so nothing rewrites a user's file
+  from its absent view. The boot continues to the refusal notice: an
+  approval card's remembered answer applies once with a notice, a durable
+  mode switch applies for the session, a deny-always applies once, and a
+  workspace-root removal whose grant prune is refused stays pending.
+  Extension installs and updates (plugins, MCP servers, skills, agents,
+  commands, boot installs) are refused while the home is refused. On POSIX
+  a root that is not owned by the user or is group- or other-writable stays
+  a boot failure; its message names the `chmod go-w` fix.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Windows read certificates key
   the home root's RootSafe and protected `config` OwnerOnly checks on each object's

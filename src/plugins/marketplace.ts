@@ -1,3 +1,4 @@
+import { assertAveHomeAcceptsInstalls } from "../shared/ave-home.js";
 import { cp, mkdir, readFile, rename, rm, stat as statAsync } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, posix, resolve } from "node:path";
@@ -595,6 +596,7 @@ export class PluginMarketplaceService {
       assertConsent?: (consent: ConsentFingerprint) => void;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact; consent: ConsentFingerprint }> {
+    assertAveHomeAcceptsInstalls();
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
       options?.activatePreparedArtifact,
       "git plugin install",
@@ -1006,6 +1008,7 @@ export class PluginMarketplaceService {
     sourcePath: string,
     options: { activatePreparedArtifact: PreparedMarketplacePluginActivation },
   ): Promise<{ pluginId: string; installed: true; unchanged?: true }> {
+    assertAveHomeAcceptsInstalls();
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
       options?.activatePreparedArtifact,
       "local plugin install",

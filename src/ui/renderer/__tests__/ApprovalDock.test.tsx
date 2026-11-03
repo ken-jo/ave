@@ -9,6 +9,8 @@ import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../shared/permission-reviewer-framework.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
+import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
+import { ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../hooks/use-approval.js";
 import { selectDecision } from "../components/__tests__/support/decision-bar.js";
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
@@ -1144,6 +1146,26 @@ describe("ApprovalDock", () => {
     });
     expect(onDecide).not.toHaveBeenCalled();
     expect(document.body.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeTruthy();
+  });
+
+  it("answers once with a notice when the host cannot save because boot refused the home folder", async () => {
+    const onDecide = vi.fn();
+    const notice = vi.fn();
+    const record = window.ave.userApproval.record as ReturnType<typeof vi.fn>;
+    record.mockResolvedValueOnce({ ok: false, error: HOME_FOLDER_REFUSED, message: "Fix the folder permissions first" });
+    const surface = { notice } as unknown as ApprovalSurfaceContextValue;
+    render(
+      <ApprovalSurfaceProvider value={surface}>
+        <ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={onDecide} />
+      </ApprovalSurfaceProvider>,
+    );
+
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))!);
+
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledWith("Fix the folder permissions first");
+    expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')).toBeNull();
   });
 
   it("keeps Always allow visible but disabled for HIGH verdicts", async () => {

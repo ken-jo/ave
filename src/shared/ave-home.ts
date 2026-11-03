@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { runWindowsNative } from "./windows-native-host.js";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
@@ -50,6 +50,47 @@ export function setAveHomeConfigurationRefusedAtBoot(home: string): void {
 
 export function isAveHomeConfigurationRefused(home: string): boolean {
   return refusedConfigurationHome === configurationKey(home);
+}
+
+/**
+ * A write to an authority store that reads as absent because boot refused the home's folder permissions. Rewriting the store
+ * from its absent view would erase the user's file, so the write is refused instead. Not a configuration-boundary failure:
+ * the refused boot keeps running so the user can reach the refusal notice and its fix.
+ */
+export class AveHomeConfigurationRefusedWriteError extends Error {
+  constructor(readonly path: string, action = `change ${path}`) {
+    super(`Ave did not ${action}: other accounts can write to the Ave folder, so its permission, configuration and extension files are not trusted. Fix the folder permissions first (Settings > Permissions shows the fix), then restart Ave.`);
+    this.name = "AveHomeConfigurationRefusedWriteError";
+  }
+}
+
+/**
+ * Plugins, MCP servers, skills, agents and commands are trusted inputs: nothing installs or updates them while boot refuses the
+ * home, because a foreign writer could alter what is staged or recorded and the next trusted boot would load it as Ave's own.
+ */
+export function assertAveHomeAcceptsInstalls(): void {
+  const home = aveHome();
+  if (isAveHomeConfigurationRefused(home)) throw new AveHomeConfigurationRefusedWriteError(home, "install or update extensions");
+}
+
+/**
+ * Whether `path` lies in the home refused at boot. The permission stores that always sit outside `config/` (root
+ * `permissions.json` and everything under `permissions/`) then read as absent apart from their deny rules, whatever the
+ * home's committed state: no protected boundary vouches for their bytes.
+ */
+export function isInRefusedAveHome(path: string): boolean {
+  if (refusedConfigurationHome === undefined) return false;
+  const key = configurationKey(path);
+  return key === refusedConfigurationHome || key.startsWith(refusedConfigurationHome.endsWith(sep) ? refusedConfigurationHome : refusedConfigurationHome + sep);
+}
+
+/**
+ * Whether a refused home's settings, policy and secrets read as absent: the home never committed `config/`, so they would
+ * come from its unverified root. A committed `config/` stays the configuration, because every access re-verifies that
+ * directory's own owner-only protection.
+ */
+export function isAveHomeConfigurationAuthorityAbsent(home: string): boolean {
+  return isAveHomeConfigurationRefused(home) && aveHomeConfigurationDirectory(home) === resolve(home);
 }
 
 export function aveHomeConfigurationDirectory(home = aveHome()): string {
@@ -240,7 +281,8 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
     try {
       const protection = fstatSync(root);
       if (!protection.isDirectory() || protection.uid !== process.getuid!() || (protection.mode & 0o022) !== 0) {
-        throw new Error("Configuration home protection is unverified");
+        // Stays a boot failure: nothing confines extensions on a POSIX home that continues unverified. The hint names the fix.
+        throw new Error(`Configuration home protection is unverified: the folder must be owned by this account and not writable by group or others. Fix it with: chmod go-w ${JSON.stringify(home)}`);
       }
       const configPath = join(process.platform === "linux" ? `/proc/self/fd/${root}` : home, AVE_HOME_CONFIGURATION_DIRECTORY);
       const directory = openSync(configPath, flags);

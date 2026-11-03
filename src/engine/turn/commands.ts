@@ -392,11 +392,12 @@ export async function handlePermissionCommand(
       });
       if (!result.ok) return t("be_conversationLoop.permissionModeCancelled", { message: result.message ?? result.error });
       callbacks?.onPermissionModeChanged?.(result.mode);
-      return t("be_conversationLoop.permissionModeChanged", {
+      const changed = t("be_conversationLoop.permissionModeChanged", {
         previous: result.previous,
         mode: result.mode,
         durability: result.durable ? t("be_conversationLoop.permissionModeDurable") : t("be_conversationLoop.permissionModeSession"),
       });
+      return result.notice === undefined ? changed : `${changed}\n${result.notice}`;
     }
     if (outcome.kind === "rules") {
       const pm = self.deps.permissionManager;

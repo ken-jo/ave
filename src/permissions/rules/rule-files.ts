@@ -120,6 +120,22 @@ function ruleLine(text: string, index: number): number | undefined {
 }
 
 // Validate a file's rule list. A bad rule fails the whole file (nothing is silently dropped); the error names the rule's position, its line in `sourceText` when the caller read one, and the rule's pattern, so the user can fix that one rule.
+// The restriction overlay of a rule list that reads as absent (R2: a refused home's unverified permission stores): only its deny
+// rules, each validated alone. Allow and ask rules, malformed entries and a non-list contribute nothing, and nothing throws, so
+// planted bytes can neither grant authority nor stop the refused boot.
+export function unverifiedDenyRules(rules: unknown, options: { specifiersOnly?: boolean } = {}): PermissionRule[] {
+  if (!Array.isArray(rules)) return [];
+  return rules.flatMap((rule: unknown) => {
+    if (!rule || typeof rule !== "object" || Array.isArray(rule) || (rule as { action?: unknown }).action !== "deny") return [];
+    try {
+      const validated = validatePermissionRule(rule);
+      return options.specifiersOnly && !isRuleSpecifier(validated.pattern) ? [] : [{ ...validated }];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export function validateRuleList(
   filePath: string,
   rules: unknown,

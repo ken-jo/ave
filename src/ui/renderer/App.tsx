@@ -888,7 +888,8 @@ export function App() {
     lockedRequestId: exactDenyDraft?.requestId ?? null,
     proposal: approvalProposal,
     reviewerSuggestion,
-  }), [approvals, handleOpenPermanentDeny, exactDenyDraft, approvalProposal, reviewerSuggestion]);
+    notice: (message: string) => { statusPushToast({ severity: "warning", message, ttlMs: 10_000 }); },
+  }), [approvals, handleOpenPermanentDeny, exactDenyDraft, approvalProposal, reviewerSuggestion, statusPushToast]);
 
   // Share one plugin-auth poll and event subscription across window surfaces.
   const { statuses: pluginAuthStatuses, refresh: refreshPluginAuthStatus } = usePluginAuthStatuses(api, pluginCards);

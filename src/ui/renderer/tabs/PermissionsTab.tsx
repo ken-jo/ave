@@ -822,6 +822,7 @@ export function PermissionsTab({
         if (res.ok) {
           setMode(normalizeExecutionMode(res.mode));
           modeChanged = true;
+          if (res.notice !== undefined) showBanner("warn", res.notice);
         } else {
           showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
           return;

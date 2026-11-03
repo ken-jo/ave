@@ -17,7 +17,7 @@ import {
 /** The destination the Settings diagnostic line resolves. */
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
-import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
+import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
 import { getWindowsProfileReadDenyWarnings } from "../../permissions/asrt-sandbox.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
@@ -26,6 +26,7 @@ import {
 } from "../../shared/egress-denials.js";
 import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
+  HOME_FOLDER_REFUSED,
   isSessionOnlyApprovalMemoryScope,
   isUserOwnedSurfaceChoice,
   type PermissionReviewSuggestionPayload,
@@ -1140,6 +1141,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       broadcastPermissionConfigChanged(deps);
       return { ok: true };
     } catch (err) {
+      // The saved-approvals store refuses writes while boot refuses the home folder: the card answers once instead and says why.
+      if (err instanceof AveHomeConfigurationRefusedWriteError) return { ok: false, error: HOME_FOLDER_REFUSED, message: err.message };
       return { ok: false, error: "managed", message: (err as Error).message };
     }
   });

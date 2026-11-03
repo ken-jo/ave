@@ -1,4 +1,5 @@
 /** Binds single-use install plans to reviewed snapshot and version commits. */
+import { assertAveHomeAcceptsInstalls } from "../../shared/ave-home.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -1556,6 +1557,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async executeInstall(planId: string, componentConsents: readonly ComponentConsent[] = [], reviewedAuthority = false): Promise<InstallResultView> {
+    assertAveHomeAcceptsInstalls();
     return withMarketplaceInstall(() => this.operation(() => this.executeInstallNow(planId, componentConsents, { reviewedAppVersion: reviewedAuthority ? getAveAppVersion() : null })));
   }
 
@@ -1978,6 +1980,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   /** Reauthorize queued updates under operation and package locks using current facts and settings.
      * Automatic updates check installed consent; required policy entries authorize their own review. */
   async applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal?: AbortSignal): Promise<ApplyOutcome> {
+    assertAveHomeAcceptsInstalls();
     return withMarketplaceInstall(() => this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal ? { signal } : {}), signal));
   }
 
@@ -2180,6 +2183,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     applied: AppliedDefaults,
     signal?: AbortSignal,
   ): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
+    // The boot pass reports this refusal as its status; the boot itself continues.
+    assertAveHomeAcceptsInstalls();
     return withMarketplaceInstall(() => this.operation(() => this.applyBootInstallsNow(defaults, applied, signal), signal));
   }
 

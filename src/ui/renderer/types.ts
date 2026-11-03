@@ -1491,7 +1491,8 @@ export type PermissionReviewerDispatchResult =
 export type AvePermissionApi = {
   getMode: () => Promise<{ mode: string }>;
   setMode: (mode: string) => Promise<
-    | { ok: true; mode: string }
+    // `notice`: the mode applies for this session only because the home's permission store refuses writes while boot refuses the folder.
+    | { ok: true; mode: string; notice?: string }
     | { ok: false; error: string; message?: string }
   >;
   onModeChanged: (cb: (mode: string) => void) => () => void;

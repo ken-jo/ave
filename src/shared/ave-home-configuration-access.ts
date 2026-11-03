@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import { createSerialQueue, type SerialQueue } from "../lib/with-file-lock.js";
 import { withDirectoryMutationObserver } from "../lib/directory-mutation-observer.js";
-import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationRefusedWriteError, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationAuthorityAbsent, isAveHomeConfigurationRefused, verifyAveHomeConfiguration } from "./ave-home.js";
 import { isWindowsHomeRootSafe } from "./windows-home-boundary.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts, type WindowsPathFacts } from "./windows-path-facts.js";
 import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandles } from "./windows-configuration-handles.js";
@@ -50,10 +50,11 @@ function writeHome(path: string): string {
   return configurationHomeForFile(path) ?? dirname(resolve(path));
 }
 
-function verifyWriteBoundary(home: string): void {
-  // A refused home's root is not verified; a write into its committed `config/` still verifies that directory's own DACL.
+function verifyWriteBoundary(home: string, path: string): void {
+  // A refused home's unverified root reads as absent, so a write there would rewrite the user's file from nothing: refuse it.
+  // A write into its committed `config/` still verifies that directory's own DACL.
   const refused = isAveHomeConfigurationRefused(home);
-  if (refused && resolveConfigurationFile(join(home, "settings.json")) === join(resolve(home), "settings.json")) return;
+  if (refused && isAveHomeConfigurationAuthorityAbsent(home)) throw new AveHomeConfigurationRefusedWriteError(resolveConfigurationFile(path));
   if (process.platform === "win32") {
     try { windowsReadBoundary(resolveConfigurationFile(join(home, "settings.json")), { present: false }).handles?.close(); }
     catch (error) {
@@ -77,7 +78,7 @@ export function tryWithAveHomeConfigurationWrite(path: string, callback: (path: 
   if (!isAveHomeConfigurationOwner()) return false;
   const home = writeHome(path);
   if (busyHomes.has(homeKey(home))) return false;
-  verifyWriteBoundary(home);
+  verifyWriteBoundary(home, path);
   let active = true;
   try {
     withDirectoryMutationObserver((directory) => active ? observeOwnerDirectoryMutation(directory) : () => {},
@@ -95,7 +96,7 @@ export async function withAveHomeConfigurationWrite<T>(path: string, callback: (
     if (queue === undefined) { queue = createSerialQueue(); ownership.queues.set(key, queue); }
     return await queue(async () => {
       assertOwner();
-      verifyWriteBoundary(home);
+      verifyWriteBoundary(home, path);
       let active = true;
       try {
         return await withDirectoryMutationObserver((directory) => active ? observeOwnerDirectoryMutation(directory) : () => {},
@@ -302,8 +303,38 @@ function readOpenedFile(path: string, seen: { present: boolean }): Buffer | unde
   }
 }
 
+/**
+ * The bytes of a home configuration file, or undefined when it is absent. A refused home that never committed `config/` has
+ * no verified boundary, so its root settings, policy and secrets read as absent whatever is on disk (R2 of the home content
+ * trust design); only `readAveHomeRestrictionSource` may look at those bytes.
+ */
 export function readAveHomeConfigurationFile(path: string): Buffer | undefined {
   const home = configurationHomeForFile(path);
+  try {
+    if (home !== undefined && isAveHomeConfigurationAuthorityAbsent(home)) return undefined;
+  } catch (error) {
+    if (error instanceof AveHomeConfigurationUntrustedError) throw error;
+    throw new AveHomeConfigurationUntrustedError(path, (error as Error).message);
+  }
+  return readConfigurationBytes(path, home);
+}
+
+/**
+ * The unverified root bytes behind a configuration file that reads as absent, for the closed restriction overlay alone: the
+ * caller may take only fields that make Ave stricter. Undefined when the file is trusted (read it normally), missing, or
+ * cannot be read safely: unreadable bytes restrict nothing and never stop the refused boot.
+ */
+export function readAveHomeRestrictionSource(path: string): Buffer | undefined {
+  const home = configurationHomeForFile(path);
+  try {
+    if (home === undefined || !isAveHomeConfigurationAuthorityAbsent(home)) return undefined;
+    return readConfigurationBytes(path, home);
+  } catch {
+    return undefined;
+  }
+}
+
+function readConfigurationBytes(path: string, home: string | undefined): Buffer | undefined {
   const seen = { present: false };
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
