@@ -2,13 +2,14 @@
 // `<AVE_HOME>/runtime` start under srt-win with only `hostRuntimeReads` granted, crossing the boundary through bypass-traverse,
 // and the grant never lands on the boundary's own DACL (a grant entry left by a crash would otherwise refuse the next boot).
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { join, relative, resolve } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { initializeRequiredSandbox } from "../../__tests__/support/native-sandbox.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { checkAsrtDependencies, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../../permissions/asrt-sandbox.js";
@@ -30,12 +31,17 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
   beforeEach(async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     // The long path: a short (8.3) spelling of the temp directory cannot be granted.
-    container = realpathSync.native(mkdtempSync(join(os.tmpdir(), "runtime-grant-native-")));
+    const created = mkdtempSync(join(os.tmpdir(), "runtime-grant-native-"));
+    // The fixture-owner guard matches the temp directory as spelled, so the owner is set before the spelling is expanded.
+    setFixtureOwner(created);
+    container = realpathSync.native(created);
     home = join(container, ".ave");
     // The sandboxed program's working directory: granted at initialization and disjoint from the home, so the runtime grants
     // under test are the only grants that reach AVE_HOME.
     work = join(container, "work");
     mkdirSync(work);
+    // Commands below are passed unquoted, so no shell quote handling sits between the test and the grant under test.
+    expect(container).not.toMatch(/\s/);
     vi.stubEnv("HOME", container);
     vi.stubEnv("USERPROFILE", container);
     vi.stubEnv("AVE_HOME", home);
@@ -93,7 +99,7 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
   }
 
   async function sandboxed(command: string, args: string): Promise<string> {
-    const wrapped = await wrapToolCommand(`"${command}" ${args}`, { commandId: TEST_COMMAND_ID });
+    const wrapped = await wrapToolCommand(`${command} ${args}`, { commandId: TEST_COMMAND_ID });
     return execFileSync(wrapped.argv[0]!, wrapped.argv.slice(1), {
       env: { ...process.env, ...wrapped.env }, cwd: work, windowsHide: true, encoding: "utf8",
     });
@@ -132,7 +138,9 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
     expect(pythonReads).toEqual([join(env, "venv"), join(env, "python")]);
     const pythonGrant = await holdWindowsFilesystemGrant({ label: "runtime-grant-native-python", allowRead: pythonReads, allowWrite: [] });
     try {
-      const output = await sandboxed(python, "-I -c \"import sys; print(sys.prefix); print(sys.base_prefix)\"");
+      const probe = join(work, "probe.py");
+      writeFileSync(probe, "import sys\nprint(sys.prefix)\nprint(sys.base_prefix)\n");
+      const output = await sandboxed(python, `-I ${probe}`);
       const [prefix, basePrefix] = output.trim().split(/\r?\n/);
       expect(prefix!.toLowerCase()).toBe(join(env, "venv").toLowerCase());
       expect(basePrefix!.toLowerCase().startsWith(join(env, "python").toLowerCase())).toBe(true);
