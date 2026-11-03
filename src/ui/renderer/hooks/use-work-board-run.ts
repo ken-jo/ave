@@ -68,7 +68,7 @@ export function isTerminalPhase(phase: RunPhase): boolean {
 }
 
 /** The phase a terminal run result settles the card in. already_running started nothing here, so it leaves no phase. */
-export function phaseForRunResult(status: WorkItemRunResult["status"]): RunPhase | undefined {
+function phaseForRunResult(status: WorkItemRunResult["status"]): RunPhase | undefined {
   switch (status) {
     case "completed":
       return "done";
