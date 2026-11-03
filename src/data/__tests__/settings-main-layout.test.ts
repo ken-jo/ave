@@ -11,13 +11,14 @@ describe("normalizeMainLayout", () => {
   it("logs why a saved layout was refused, never the layout itself", () => {
     const secret = "https://example.com/callback?token=s3cr3t";
     const layout = {
-      version: 1,
+      version: 2,
       tree: { kind: "leaf", chatGroupId: "main" },
       focusedId: "group-9",
       surfaces: {},
       panelOpenIds: [],
       thumbnailOpenIds: [],
       sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-1", ordinal: 1, cwd: null, url: secret }] },
+      openSurfaces: [],
     };
     expect(normalizeMainLayout(layout)).toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);

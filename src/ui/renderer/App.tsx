@@ -231,6 +231,13 @@ export function App() {
   // Tile geometry follows docs/design/tiled-chat-groups.md.
   const chatGroups = useChatGroups(canvasElement);
   const mainSurfaces = useMainSurfaces();
+  // The project a new main surface opens in: the window's project, known once the project list has loaded (set below).
+  const surfaceProjectRootRef = useRef<string | undefined>(undefined);
+  const surfaceProjectRoot = useCallback((): string => {
+    const root = surfaceProjectRootRef.current;
+    if (!root) throw new Error("surface-project-unknown: the project list has not loaded");
+    return root;
+  }, []);
   const [paneChatOpenTabIds, setPaneChatOpenTabIds] = useState<ReadonlySet<string>>(() => new Set());
   const setPaneChatOpen = useCallback((tabId: string, open: boolean) => {
     setPaneChatOpenTabIds((current) => {
@@ -473,7 +480,7 @@ export function App() {
         const tab = sink.release(tabId);
         if (!tab) return;
         if (!isMovableTabKind(tab.kind)) throw new Error(`surface-not-movable:${tab.kind}`);
-        mainSurfaces.adopt({ tabId, kind: tab.kind, ordinal: tab.ordinal, url: tab.kind === "browser" ? guestUrl(tabId) : null });
+        mainSurfaces.adopt({ tabId, kind: tab.kind, ordinal: tab.ordinal, url: tab.kind === "browser" ? guestUrl(tabId) : null, projectRoot: surfaceProjectRoot() });
         const location: ViewLocation = { view: VIEW_OF_SURFACE_KIND[tab.kind], surface: tabId };
         if (drop) {
           const placed = drop.target === "center" ? null : chatGroups.placeOnEdge(drop.paneId, drop.target, location);
@@ -495,7 +502,7 @@ export function App() {
         tabToSide(surfaceId, toGroupId);
       },
     };
-  }, [chatGroups, mainSurfaces]);
+  }, [chatGroups, mainSurfaces, surfaceProjectRoot]);
 
   const handleSurfaceDrop = useCallback((targetPaneId: string, payload: SurfaceDragPayload, target: DropTarget) => {
     if ("side" in payload.from) {
@@ -514,11 +521,11 @@ export function App() {
     const closed = mainSurfaces.takeLastClosed();
     if (!closed) return;
     // Restore terminals at their last directory and pages at their last address.
-    const surface = mainSurfaces.create(closed.kind, closed.url, closed.cwd);
+    const surface = mainSurfaces.create(closed.kind, { url: closed.url, cwd: closed.cwd, projectRoot: closed.projectRoot });
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
 
-  const activeSurfaceOf = useCallback((surface: MainSurface): ActiveSurface => ({
+  const activeSurfaceOf = useCallback((surface: Pick<MainSurface, "kind" | "tabId" | "ordinal" | "cwd">): ActiveSurface => ({
     kind: surface.kind,
     tabId: surface.tabId,
     label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[surface.kind]])} ${surface.ordinal}`,
@@ -564,7 +571,7 @@ export function App() {
     }
     surfaceMoves.tabToMain(source.id, tabId, { paneId: groups.focusedId, target: "center" });
     setPaneChatOpen(tabId, true);
-  }, [openWorkspaceSurface, setPaneChatOpen, surfaceMoves, statusPushToast, t]);
+  }, [openWorkspaceSurface, setPaneChatOpen, surfaceMoves, statusPushToast, surfaceProjectRoot, t]);
   const paneChatNavigation = useMemo<PaneChatNavigation>(() => ({
     openPaneChat,
     resolvePane: (tabId) => {
@@ -787,9 +794,9 @@ export function App() {
     const unshown = fresh
       ? undefined
       : [...mainSurfaces.surfaces].reverse().find((surface) => surface.kind === kind && !shown.has(surface.tabId));
-    const surface = unshown ?? mainSurfaces.create(kind);
+    const surface = unshown ?? mainSurfaces.create(kind, { projectRoot: surfaceProjectRoot() });
     chatGroups.setPaneContent(paneId, { view, surface: surface.tabId });
-  }, [chatGroups, mainSurfaces]);
+  }, [chatGroups, mainSurfaces, surfaceProjectRoot]);
   const activeViewPane = useMemo(() => ({
     view: chatGroups.contentById[chatGroups.focusedId]?.view ?? "home",
     navigate: (next: InlineViewKey) => {
@@ -973,6 +980,7 @@ export function App() {
     () => defaultProjectFromProjects(workspaceProjects),
     [workspaceProjects],
   );
+  surfaceProjectRootRef.current = (activeProject ?? defaultWorkspaceProject)?.projectRoot;
 
   const handleOpenRoutineSession = useCallback(
     async (sessionId: string) => {

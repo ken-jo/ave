@@ -11,7 +11,9 @@ import { getSideTabsSink } from "../preview/surface-moves.js";
 import { subscribeWebSurfaceLocations, webSurfaceLocation } from "../preview/web-surfaces.js";
 import {
   emitMainLayoutChange,
+  restorableLayout,
   stageRestoredLayout,
+  type RestorableLayout,
   subscribeMainLayoutChange,
   takeRestoredSideTabs,
   terminalCwd,
@@ -46,16 +48,16 @@ interface MainSurfacesForLayout {
 }
 
 /** Put a checked layout back: ids reserved, side tabs and terminals staged, panes and surfaces restored. */
-function applyLayout(layout: MainLayoutSnapshot, chatGroups: ChatGroupsForLayout, mainSurfaces: MainSurfacesForLayout): void {
-  // First-class surfaces in their saved order (older layouts list only the shown ones), then any shown one not listed.
+function applyLayout(layout: RestorableLayout, chatGroups: ChatGroupsForLayout, mainSurfaces: MainSurfacesForLayout): void {
+  // Main surfaces in their saved order, then any shown one the list dropped.
   const shown = Object.values(layout.surfaces);
-  const listed = layout.openSurfaces ?? [];
+  const listed = layout.openSurfaces;
   const main = [...listed, ...shown.filter((surface) => !listed.some((each) => each.tabId === surface.tabId))];
   const all: SavedSurface[] = [...main, ...Object.values(layout.sideTabs).flat()];
   reserveTabIds(all.map((surface) => surface.tabId));
   stageRestoredLayout({ sideTabs: layout.sideTabs, terminals: all.filter((surface) => surface.kind === "terminal") });
   for (const surface of main) {
-    mainSurfaces.adopt({ tabId: surface.tabId, kind: surface.kind, ordinal: surface.ordinal, url: surface.url, cwd: surface.cwd });
+    mainSurfaces.adopt({ tabId: surface.tabId, kind: surface.kind, ordinal: surface.ordinal, url: surface.url, cwd: surface.cwd, projectRoot: surface.projectRoot });
   }
   const content: Record<string, ViewLocation> = {};
   for (const [paneId, surface] of Object.entries(layout.surfaces)) {
@@ -91,22 +93,36 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
     let cancelled = false;
     void api
       .getSettings()
-      .then((settings) => {
-        if (cancelled) return;
+      .then(async (settings) => {
+        if (cancelled) return true;
         const raw = (settings?.system as { mainLayout?: unknown } | undefined)?.mainLayout;
-        if (raw === undefined) return;
+        if (raw === undefined) return true;
         const parsed = parseMainLayout(raw, WINDOW_LAYOUT_LIMITS);
         if (!parsed.ok) {
           console.warn(`[main-layout] saved layout refused: ${parsed.reason}; starting in the default layout`);
-          return;
+          return true;
         }
-        applyLayout(parsed.layout, chatGroupsRef.current, mainSurfacesRef.current);
+        // Surfaces restore only into projects that are still open, so the live root list is needed first.
+        const roots = await window.ave?.workspace?.listRoots?.();
+        if (cancelled) return true;
+        if (!roots?.ok) {
+          // Without the list no surface can be placed in its project. Restore nothing and save nothing this launch, so
+          // the saved layout survives for the next one.
+          console.error(`[main-layout] the project list could not be read (${roots?.error ?? "unavailable"}); the saved layout is kept but not restored`);
+          return false;
+        }
+        const live = [...(roots.defaultRoot ? [roots.defaultRoot] : []), ...(roots.roots ?? []).map((root) => root.path)];
+        const { layout, dropped } = restorableLayout(parsed.layout, live);
+        for (const reason of dropped) console.warn(`[main-layout] not restoring ${reason}`);
+        applyLayout(layout, chatGroupsRef.current, mainSurfacesRef.current);
+        return true;
       })
       .catch((err: unknown) => {
         console.warn("[main-layout] the saved layout could not be read; starting in the default layout", err);
+        return true;
       })
-      .finally(() => {
-        if (!cancelled) setSettled(true);
+      .then((settle) => {
+        if (!cancelled && settle) setSettled(true);
       });
     return () => {
       cancelled = true;
@@ -129,11 +145,12 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
         surfaceOf: (tabId) => {
           const surface = surfaces.get(tabId);
           if (!surface) return null;
-          return savedSurfaceOf(
+          const saved = savedSurfaceOf(
             surface,
             surface.kind === "terminal" ? terminalCwd(tabId) ?? surface.cwd ?? null : null,
             surface.kind === "browser" ? webSurfaceLocation(tabId) ?? surface.url : null,
           );
+          return { ...saved, projectRoot: surface.projectRoot };
         },
         sideTabsOf: (paneId) => getSideTabsSink(paneId)?.snapshot() ?? [],
         openSurfaceIds: surfaces.surfaces.map((surface) => surface.tabId),

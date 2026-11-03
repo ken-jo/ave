@@ -24,7 +24,7 @@ const TERMINAL_TAB = "terminal:0000000a-2";
 
 function layout(): MainLayoutSnapshot {
   return {
-    version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: ["main"], thumbnailOpenIds: [],
+    version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: ["main"], thumbnailOpenIds: [], openSurfaces: [],
     sideTabs: { main: [
       { kind: "browser", tabId: BROWSER_TAB, ordinal: 1, cwd: null, url: "https://example.com/" },
       { kind: "terminal", tabId: TERMINAL_TAB, ordinal: 1, cwd: "/work", url: null },
@@ -92,8 +92,8 @@ describe("durable session tab bindings", () => {
     registry.onBindingsChanged((windowId) => announced.push(windowId));
     // Restored from the saved layout: the terminal sits in the side panel.
     expect(registry.surfacePlacement(1, TERMINAL_TAB)).toBe("side-panel");
-    const terminal = layout().sideTabs.main![1]!;
-    const inPane: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, sideTabs: { main: [layout().sideTabs.main![0]!] } };
+    const terminal = { ...layout().sideTabs.main![1]!, projectRoot: "/work" };
+    const inPane: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, openSurfaces: [terminal], sideTabs: { main: [layout().sideTabs.main![0]!] } };
     registry.prepareLayoutBindings(1, inPane);
     expect(registry.surfacePlacement(1, TERMINAL_TAB)).toBe("workspace");
     expect(announced.length).toBeGreaterThan(0);

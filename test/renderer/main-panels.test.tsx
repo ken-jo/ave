@@ -775,8 +775,9 @@ describe("main-area terminal and web panels", () => {
   it("opens the host-refused pane even when its conversation has no sidebar row", async () => {
     const tabId = "terminal:abcd1234-1";
     const initialLayout = {
-      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" }],
       panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
     };
     const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true,
@@ -813,8 +814,9 @@ describe("main-area terminal and web panels", () => {
       surfaceStore = useMainSurfaces(); return surfaceStore;
     });
     const initialLayout = {
-      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" }],
       panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
     };
     const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true,
@@ -846,8 +848,9 @@ describe("main-area terminal and web panels", () => {
       return { ...store, get: (id: string) => refuseReveal && id === tabId && ++lookups > 1 ? undefined : store.get(id) };
     });
     const initialLayout = {
-      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" }],
       panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
     };
     const { container, api } = await renderApp({ hasApiKey: true, terminal: true, sideChat: true, browserTabs: true,
@@ -867,8 +870,9 @@ describe("main-area terminal and web panels", () => {
     const tabId = "terminal:abcd1234-1";
     const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
     const initialLayout = {
-      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" }],
       panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
     };
     const { container, api } = await renderApp({
@@ -903,8 +907,9 @@ describe("main-area terminal and web panels", () => {
     const tabId = "terminal:abcd1234-1";
     const sessionId = "aaaaaaaa-1111-4222-8333-444444444444";
     const initialLayout = {
-      version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+      version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: "/ws" }],
       panelOpenIds: ["main"], thumbnailOpenIds: [],
       sideTabs: { main: [{ kind: "browser", tabId: "browser:abcd1234-2", ordinal: 1, cwd: null, url: null }] },
     };
@@ -965,10 +970,11 @@ describe("main-area terminal and web panels", () => {
   it("saves the layout as it changes and puts it back at the next launch, with new shells in the saved directories", async () => {
     const startingDirectory = "/work/repo/app";
     const initialLayout = {
-      version: 1,
+      version: 2,
       tree: { kind: "leaf", chatGroupId: "main" },
       focusedId: "main",
-      surfaces: { main: { kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: startingDirectory, url: null } },
+      surfaces: { main: { kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: startingDirectory, url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: startingDirectory, url: null, projectRoot: "/ws" }],
       panelOpenIds: [],
       thumbnailOpenIds: [],
       sideTabs: {},
@@ -998,6 +1004,8 @@ describe("main-area terminal and web panels", () => {
       return last!;
     }, { timeout: MAIN_LAYOUT_SAVE_DELAY_MS * 10 });
     expect(Object.values(saved.surfaces)[0]!.cwd).toBe(startingDirectory);
+    expect(saved).toMatchObject({ version: 2, openSurfaces: [{ tabId: mainTerminal, projectRoot: "/ws" }] });
+    expect(Object.values(saved.surfaces)[0]).toMatchObject({ projectRoot: "/ws" });
     expect(Object.values(saved.sideTabs).flat()[0]!.cwd).toBeNull();
     const persisted = await first.api.getSettings();
     first.unmount();
@@ -1021,10 +1029,11 @@ describe("main-area terminal and web panels", () => {
 
   it("leaves the saved layout to the primary window: a second window neither restores it nor saves over it", async () => {
     const saved = {
-      version: 1,
+      version: 2,
       tree: { kind: "leaf", chatGroupId: "main" },
       focusedId: "main",
-      surfaces: { main: { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 1, cwd: "/work/repo", url: null } },
+      surfaces: { main: { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 1, cwd: "/work/repo", url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 1, cwd: "/work/repo", url: null, projectRoot: "/ws" }],
       panelOpenIds: [],
       thumbnailOpenIds: [],
       sideTabs: {},
@@ -1054,13 +1063,14 @@ describe("main-area terminal and web panels", () => {
   it("starts in the default layout, saying why, when the saved one breaks a rule", async () => {
     const warn = vi.spyOn(console, "warn");
     const broken = {
-      version: 1,
+      version: 2,
       tree: { kind: "leaf", chatGroupId: "main" },
       focusedId: "group-5",
       surfaces: {},
       panelOpenIds: [],
       thumbnailOpenIds: [],
       sideTabs: {},
+      openSurfaces: [],
     };
     const { container } = await renderApp({
       hasApiKey: true,
@@ -1072,6 +1082,45 @@ describe("main-area terminal and web panels", () => {
     ));
     expect(container.querySelectorAll('[data-testid^="pane-cell:"]:not([data-hidden="true"])')).toHaveLength(1);
     expect(shownSurfaces(container)).toHaveLength(0);
+  });
+
+  it("restores only the surfaces whose project is still open, naming each it leaves out", async () => {
+    const warn = vi.spyOn(console, "warn");
+    const kept = { kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: null, url: null, projectRoot: "/ws" } as const;
+    const gone = { kind: "browser", tabId: "browser:abcd1234-2", ordinal: 1, cwd: null, url: "https://example.com/", projectRoot: "/removed" } as const;
+    const saved = {
+      version: 2, tree: { kind: "split", axis: "row", children: [{ kind: "leaf", chatGroupId: "main" }, { kind: "leaf", chatGroupId: "group-2" }], sizes: [0.5, 0.5] },
+      focusedId: "main", surfaces: { main: kept, "group-2": gone }, openSurfaces: [kept, gone],
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container } = await renderApp({
+      hasApiKey: true, terminal: true,
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: saved } },
+    });
+    await waitFor(() => expect(shownSurfaces(container).map((each) => each.tabId)).toEqual([kept.tabId]));
+    expect(warn).toHaveBeenCalledWith("[main-layout] not restoring browser:abcd1234-2: its project is not open");
+    expect(container.querySelector('[data-testid="sidebar-surface-browser:abcd1234-2"]')).toBeNull();
+  });
+
+  it("keeps the saved layout, restoring and saving nothing, when the project list cannot be read", async () => {
+    const error = vi.spyOn(console, "error");
+    const saved = {
+      version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+      surfaces: { main: { kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: null, url: null, projectRoot: "/ws" } },
+      openSurfaces: [{ kind: "terminal", tabId: "terminal:abcd1234-1", ordinal: 1, cwd: null, url: null, projectRoot: "/ws" }],
+      panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
+    };
+    const { container, api } = await renderApp({
+      hasApiKey: true, terminal: true, workspaceListRootsResult: { ok: false, error: "settings-unreadable" },
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", mainLayout: saved } },
+    });
+    await waitFor(() => expect(error).toHaveBeenCalledWith(
+      "[main-layout] the project list could not be read (settings-unreadable); the saved layout is kept but not restored",
+    ));
+    await splitIntoTwoTiles(container);
+    await new Promise((resolve) => setTimeout(resolve, MAIN_LAYOUT_SAVE_DELAY_MS * 3));
+    expect(shownSurfaces(container)).toHaveLength(0);
+    expect(vi.mocked(api.updateSettings).mock.calls.filter(([patch]) => (patch as { system?: { mainLayout?: unknown } }).system?.mainLayout !== undefined)).toEqual([]);
   });
 
   it("moves the focused pane's surface to its neighbour with the directional chord", async () => {

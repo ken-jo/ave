@@ -18,6 +18,8 @@ export interface MainSurface {
   /** A terminal's working directory: where the shell last said it was, or — before it has said — where a reopened one is to
    * start. Null when unknown. */
   cwd?: string | null;
+  /** The project the surface belongs to, by its root. Every main surface has one; the saved layout keeps it. */
+  projectRoot: string;
 }
 
 /** What reopening a closed surface brings back: its kind and where it was. */
@@ -26,6 +28,15 @@ interface ClosedSurface {
   url: string | null;
   /** A terminal's last directory; its replacement starts there. */
   cwd: string | null;
+  /** The project it belonged to; its replacement opens there. */
+  projectRoot: string;
+}
+
+/** Where a new surface opens and what it starts on. */
+interface NewSurfaceOptions {
+  url?: string | null;
+  cwd?: string | null;
+  projectRoot: string;
 }
 
 /** How many closed surfaces "reopen closed" remembers. */
@@ -47,7 +58,7 @@ export interface MainSurfacesStore {
   surfaces: readonly MainSurface[];
   get: (tabId: string) => MainSurface | undefined;
   /** A new surface of `kind`; returned synchronously so the caller can show it. */
-  create: (kind: MainSurfaceKind, url?: string | null, cwd?: string | null) => MainSurface;
+  create: (kind: MainSurfaceKind, options: NewSurfaceOptions) => MainSurface;
   /** Take in a surface that moved here from a side panel. */
   adopt: (surface: MainSurface) => void;
   /** Hand a surface out (moving to a side panel) — it is not destroyed. */
@@ -81,10 +92,10 @@ export function useMainSurfaces(): MainSurfacesStore {
 
   const get = useCallback((tabId: string) => surfacesRef.current.find((surface) => surface.tabId === tabId), []);
 
-  const create = useCallback((kind: MainSurfaceKind, url: string | null = null, cwd: string | null = null) => {
+  const create = useCallback((kind: MainSurfaceKind, { url = null, cwd = null, projectRoot }: NewSurfaceOptions) => {
     const tabId = mintTabId(kind);
     const ordinal = kind === "terminal" ? terminalOrdinal(tabId) : nextMainBrowserOrdinal++;
-    const surface: MainSurface = { tabId, kind, ordinal, url, cwd };
+    const surface: MainSurface = { tabId, kind, ordinal, url, cwd, projectRoot };
     commit([...surfacesRef.current, surface]);
     return surface;
   }, [commit]);
@@ -108,7 +119,7 @@ export function useMainSurfaces(): MainSurfacesStore {
     if (surface) {
       // Where the page actually was (links and in-page routes move it without the address row), not where it was first pointed.
       const url = surface.kind === "browser" ? webSurfaceLocation(tabId) ?? surface.url : surface.url;
-      closedRef.current = [{ kind: surface.kind, url, cwd: surface.cwd ?? null }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
+      closedRef.current = [{ kind: surface.kind, url, cwd: surface.cwd ?? null, projectRoot: surface.projectRoot }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
     }
     return surface;
   }, [release]);

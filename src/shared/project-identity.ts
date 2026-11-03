@@ -6,6 +6,15 @@ export interface ProjectIdentity {
   isDefault?: boolean;
 }
 
+/** Which project the window works in: every project, or one, by its root. */
+export type ProjectSelection = { kind: "all" } | { kind: "root"; root: string };
+
+/** Where a project's window was last: a place, and the surface it showed when the place is an instance view. */
+export interface ProjectLastView {
+  view: string;
+  surface?: string;
+}
+
 export interface WorkspaceRootIdentity {
   path: string;
   isDefault: boolean;

@@ -20,6 +20,7 @@ type RenderAppOpts = Parameters<typeof makeMockAveApi>[0] & {
   }>;
   pendingApprovals?: unknown[];
   workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
+  workspaceListRootsResult?: { ok: boolean; error?: string };
   nativeContextMenu?: boolean;
 };
 
@@ -51,7 +52,7 @@ export type RenderAppReturn = {
 };
 
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
-  const { shellWidth = 1600, canvasWidth = shellWidth, aveEnv, pendingApprovals, workspaceRoots, nativeContextMenu, ...apiOpts } = opts;
+  const { shellWidth = 1600, canvasWidth = shellWidth, aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, nativeContextMenu, ...apiOpts } = opts;
   setContainerWidths({ shellWidth, canvasWidth });
   const {
     api,
@@ -73,7 +74,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitNotificationClicked,
   } = makeMockAveApi(apiOpts);
   const { ns, emitApproval, emitApprovalSettled, chooseNativeMenuCommand } = makeMockAveNamespace({
-    env: aveEnv, pendingApprovals, workspaceRoots, nativeContextMenu,
+    env: aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, nativeContextMenu,
   });
 
   vi.stubGlobal("aveApi", api);

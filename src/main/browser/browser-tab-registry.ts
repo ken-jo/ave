@@ -14,7 +14,7 @@ import type {
   BrowserTabOpRequest,
   SessionTabBindingsState,
 } from "../../shared/browser-surface.js";
-import type { MainLayoutSnapshot, SavedSurface } from "../../shared/main-layout.js";
+import { isSavedTerminalOrPage, type MainLayoutSnapshot, type SavedMainSurface, type SavedSurface } from "../../shared/main-layout.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
@@ -118,7 +118,9 @@ export interface BrowserGuest {
 function layoutTabs(layout: MainLayoutSnapshot): SavedSurface[] {
   const seen = new Set<string>();
   const tabs: SavedSurface[] = [];
-  for (const surface of [...Object.values(layout.surfaces), ...(layout.openSurfaces ?? []), ...Object.values(layout.sideTabs).flat()]) {
+  // Only terminals and pages carry session bindings.
+  const main = [...Object.values(layout.surfaces), ...layout.openSurfaces].filter(isSavedTerminalOrPage);
+  for (const surface of [...main, ...Object.values(layout.sideTabs).flat()]) {
     if (seen.has(surface.tabId)) continue;
     seen.add(surface.tabId);
     tabs.push(surface);
@@ -363,19 +365,19 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private layoutWithBindings(windowId: number, layout: MainLayoutSnapshot): MainLayoutSnapshot {
-    const decorate = (surface: SavedSurface): SavedSurface => {
+    const decorate = <T extends SavedSurface | SavedMainSurface>(surface: T): T => {
       const { binding: _ignored, ...geometry } = surface;
       const binding = this.workspaceBindings.get(windowTabKey(windowId, surface.tabId));
-      if (!binding?.owner && !binding?.paneSessionId) return { ...geometry, binding: {} };
+      if (!binding?.owner && !binding?.paneSessionId) return { ...geometry, binding: {} } as T;
       return { ...geometry, binding: {
         ...(binding.owner ? { owner: copyActor(binding.owner) } : {}),
         ...(binding.paneSessionId ? { paneSessionId: binding.paneSessionId } : {}),
-      } };
+      } } as T;
     };
     return { ...layout,
       surfaces: Object.fromEntries(Object.entries(layout.surfaces).map(([id, surface]) => [id, decorate(surface)])),
       sideTabs: Object.fromEntries(Object.entries(layout.sideTabs).map(([id, surfaces]) => [id, surfaces.map(decorate)])),
-      ...(layout.openSurfaces === undefined ? {} : { openSurfaces: layout.openSurfaces.map(decorate) }),
+      openSurfaces: layout.openSurfaces.map(decorate),
     };
   }
 

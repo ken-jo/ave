@@ -12,7 +12,7 @@ describe("useWorkspaceTabs", () => {
     const sideA = renderHook(() => useWorkspaceTabs());
     const sideB = renderHook(() => useWorkspaceTabs());
     let surface!: MainSurface;
-    act(() => { surface = main.result.current.create("terminal"); });
+    act(() => { surface = main.result.current.create("terminal", { projectRoot: "/ws" }); });
     act(() => sideA.result.current.addTab("terminal"));
     act(() => sideB.result.current.ensureContainerTab("terminal"));
     const terminals = [surface.ordinal, sideA.result.current.tabs[0]!.ordinal, sideB.result.current.tabs[0]!.ordinal];
@@ -27,7 +27,7 @@ describe("useWorkspaceTabs", () => {
     const main = renderHook(() => useMainSurfaces());
     const side = renderHook(() => useWorkspaceTabs());
     const tabId = "terminal:restored-main";
-    act(() => main.result.current.adopt({ tabId, kind: "terminal", ordinal: 1, url: null }));
+    act(() => main.result.current.adopt({ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }));
     act(() => side.result.current.adoptTab({ id: "terminal:restored-side", kind: "terminal", ordinal: 1 }, null));
     expect(main.result.current.get(tabId)?.ordinal).not.toBe(side.result.current.tabs[0]!.ordinal);
     const restoredOrdinal = side.result.current.tabs[0]!.ordinal;

@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { parseMainLayout, type MainLayoutSnapshot } from "../main-layout.js";
 
 const LIMITS = { maxPanes: 4, primaryPaneId: "main" };
+const ROOT = "/Users/example/.ave/workspace";
 
 function layout(): MainLayoutSnapshot {
   return {
-    version: 1,
+    version: 2,
     tree: {
       kind: "split",
       axis: "row",
@@ -13,10 +14,11 @@ function layout(): MainLayoutSnapshot {
       sizes: [0.5, 0.5],
     },
     focusedId: "group-3",
-    surfaces: { "group-3": { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 2, cwd: "/work/repo", url: null } },
+    surfaces: { "group-3": { kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 2, cwd: "/work/repo", url: null, projectRoot: ROOT } },
     panelOpenIds: ["main"],
     thumbnailOpenIds: ["group-3"],
     sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-5", ordinal: 1, cwd: null, url: "https://example.com/a" }] },
+    openSurfaces: [{ kind: "terminal", tabId: "terminal:0000000a-4", ordinal: 2, cwd: "/work/repo", url: null, projectRoot: ROOT }],
   };
 }
 
@@ -55,7 +57,7 @@ describe("parseMainLayout", () => {
 
   it("refuses a layout whole, naming the rule it broke", () => {
     expect(parseMainLayout("nope")).toEqual({ ok: false, reason: "the layout is not an object" });
-    expect(refused((raw) => { raw.version = 2; })).toBe("version 2 is not 1");
+    expect(refused((raw) => { raw.version = 1; })).toBe("version 1 is not 2");
     expect(refused((raw) => { raw.tree.sizes = [0.7, 0.7]; })).toMatch(/sizes sum to 1\.4/);
     expect(refused((raw) => { raw.tree.sizes = [1]; })).toMatch(/one size per child/);
     expect(refused((raw) => { raw.tree.axis = "diagonal"; })).toMatch(/axis "diagonal"/);
@@ -75,8 +77,8 @@ describe("parseMainLayout", () => {
   });
 
   it("keeps first-class tabs no pane shows, and refuses the layout over any entry that breaks a rule, naming it", () => {
-    const hidden = { kind: "browser", tabId: "browser:0000000a-6", ordinal: 2, cwd: null, url: "https://example.com/b" } as const;
-    const windows = { kind: "terminal", tabId: "terminal:0000000a-7", ordinal: 3, cwd: "C:\\work\\repo", url: null } as const;
+    const hidden = { kind: "browser", tabId: "browser:0000000a-6", ordinal: 2, cwd: null, url: "https://example.com/b", projectRoot: ROOT } as const;
+    const windows = { kind: "terminal", tabId: "terminal:0000000a-7", ordinal: 3, cwd: "C:\\work\\repo", url: null, projectRoot: "C:\\work" } as const;
     const shown = layout().surfaces["group-3"]!;
     const saved = { ...layout(), openSurfaces: [shown, hidden, windows] };
     expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
@@ -87,14 +89,42 @@ describe("parseMainLayout", () => {
     expect(refused(listing({ ...shown, kind: "browser" }))).toBe("openSurfaces[0].tabId \"terminal:0000000a-4\" is not a browser tab id");
     expect(refused(listing(layout().sideTabs.main![0]))).toBe("openSurfaces[0].tabId browser:0000000a-5 is also a side tab");
     expect(refused(listing("junk"))).toBe("openSurfaces[0] is not an object");
+    expect(refused(listing({ ...hidden, tabId: "browser:0000000a-8", projectRoot: undefined }))).toBe("openSurfaces[0].projectRoot must be an absolute path");
+    expect(refused(listing({ ...shown, projectRoot: "/elsewhere" }))).toBe("openSurfaces[0].projectRoot differs from the pane showing terminal:0000000a-4");
     expect(refused((each) => { each.openSurfaces = {}; })).toBe("openSurfaces is not a list");
+    expect(refused((each) => { delete each.openSurfaces; })).toBe("openSurfaces is not a list");
   });
 
   it("accepts a Windows drive path as a terminal's directory", () => {
     const saved = layout();
-    saved.surfaces["group-3"]!.cwd = "D:/work/repo";
+    saved.surfaces["group-3"] = { ...saved.surfaces["group-3"]!, kind: "terminal", cwd: "D:/work/repo", url: null };
     expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
     expect(refused((raw) => { raw.surfaces["group-3"].cwd = "C:relative"; })).toMatch(/cwd must be null or a terminal's absolute path/);
+  });
+
+  it("round-trips all four main surface kinds, each stamped with its project", () => {
+    const plugin = { kind: "plugin", tabId: "plugin:0000000a-8", ordinal: 1, projectRoot: ROOT, pluginId: "meeting-notes", viewId: "board", title: "회의록" } as const;
+    const folder = { kind: "folder", tabId: "folder:0000000a-9", ordinal: 1, projectRoot: "D:\\work", path: "D:\\work\\src", selection: "D:\\work\\src\\a.ts" } as const;
+    const page = { kind: "browser", tabId: "browser:0000000a-6", ordinal: 2, cwd: null, url: "https://example.com/b", projectRoot: ROOT } as const;
+    const saved: MainLayoutSnapshot = { ...layout(), surfaces: { ...layout().surfaces, main: plugin }, openSurfaces: [...layout().openSurfaces, plugin, folder, page] };
+    expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
+    expect(parseMainLayout({ ...saved, openSurfaces: [...saved.openSurfaces, { ...folder, tabId: "folder:0000000a-10", selection: null }] }, LIMITS).ok).toBe(true);
+    expect(refused((raw) => { raw.surfaces.main = { ...plugin, viewId: "a:b" }; })).toMatch(/surfaces.main.viewId/);
+    expect(refused((raw) => { raw.surfaces.main = { ...plugin, title: "" }; })).toMatch(/surfaces.main.title/);
+    expect(refused((raw) => { raw.surfaces.main = { ...folder, path: "src" }; })).toMatch(/surfaces.main.path/);
+    expect(refused((raw) => { raw.surfaces.main = { ...folder, selection: 3 }; })).toMatch(/surfaces.main.selection/);
+    expect(refused((raw) => { raw.surfaces.main = { ...plugin, tabId: "folder:0000000a-8" }; })).toMatch(/not a plugin tab id/);
+  });
+
+  it("requires a project on every main surface and keeps it off side tabs", () => {
+    expect(refused((raw) => { delete raw.surfaces["group-3"].projectRoot; })).toMatch(/surfaces.group-3.projectRoot must be an absolute path/);
+    expect(refused((raw) => { raw.surfaces["group-3"].projectRoot = "workspace"; })).toMatch(/surfaces.group-3.projectRoot must be an absolute path/);
+    expect(refused((raw) => { raw.sideTabs.main[0].projectRoot = ROOT; })).toMatch(/sideTabs.main\[0\].projectRoot/);
+    expect(refused((raw) => { raw.sideTabs.main[0] = { kind: "folder", tabId: "folder:0000000a-5", ordinal: 1, path: ROOT, selection: null }; })).toMatch(/sideTabs.main\[0\].kind "folder" is not terminal or browser/);
+    const saved = layout();
+    saved.surfaces["group-3"]!.projectRoot = "C:\\Users\\example\\.ave\\workspace";
+    saved.openSurfaces[0]!.projectRoot = "C:\\Users\\example\\.ave\\workspace";
+    expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
   });
 
   it("checks only the shape without the window's limits", () => {

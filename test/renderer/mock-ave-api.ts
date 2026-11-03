@@ -1001,6 +1001,8 @@ type AveNamespaceOverrides = {
   pendingApprovals?: unknown[];
   /** Project folders `workspace.listRoots` reports; the default is `/ws` alone. */
   workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
+  /** What `workspace.listRoots` answers instead, e.g. a failure. */
+  workspaceListRootsResult?: { ok: boolean; error?: string };
   /** Install the native context-menu bridge (`ave.ui`). Opt-in: without it the renderer's menus fall through to their ancestors, which most suites rely on. */
   nativeContextMenu?: boolean;
 };
@@ -1098,7 +1100,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         requestObservationPreview: vi.fn(async () => ({ ok: true })),
       },
       workspace: {
-        listRoots: vi.fn(async () => ({ ok: true, defaultRoot, roots })),
+        listRoots: vi.fn(async () => overrides.workspaceListRootsResult ?? { ok: true, defaultRoot, roots }),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
         listDir: vi.fn(async (path: string) => ({ ok: true, path, entries: [], truncated: false })),
       },
