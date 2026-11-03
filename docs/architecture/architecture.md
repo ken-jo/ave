@@ -2938,6 +2938,17 @@ with its own owner rule:
   only while it is still empty, never recursively. Boot then degrades as for any
   home failure.
   `bootstrap()`, under the lock, runs the full protection and seals the result.
+  RootSafe, OwnerOnly, the extra-principal list and the configuration read
+  verification evaluate allow entries only. A deny entry never grants access,
+  so it cannot let another principal in. srt-win confines its sandbox account
+  with them: at init it stamps an inheritable FILE_DELETE_CHILD deny on the
+  home root (the parent of each denied home path) and a deny on each denied
+  path, `config` among them, and removes them at quit. Ave never names such an
+  entry in its `/remove` guidance. It does not rewrite one away from a root, an
+  owner-only boundary or the workspace: the narrow root repair below refuses a
+  root with an explicit deny, Repair leaves an owner-only boundary as it is, and
+  the workspace rewrite keeps an inherited deny. A boundary Repair recreates, or
+  a runtime root it claims from Administrators, starts as `D:P` owner-only.
   Under the lock, a root is repaired only in one narrow shape: the shape a plain
   mkdir under a profile left before homes were created this way. The repair sets
   `D:P(A;OICI;FA;;;<user>)` on the pinned home handle and verifies it through the
@@ -2968,10 +2979,10 @@ with its own owner rule:
   read-attributes and SYNCHRONIZE with full sharing. A request that could
   include DELETE is a sharing violation against the cwd handle. A
   workspace that cannot be opened is reported as a diagnostic, never
-  treated as clean. If its inherited
+  treated as clean. If its inherited allow
   entries are anything other than the single user entry a protected root
   passes down, Ave rewrites only that directory's own DACL: its explicit
-  entries in order, then that entry. It then reads the result back.
+  entries and inherited denies in order, then that entry. It then reads the result back.
   Because the check runs on every boot, a boot whose rewrite failed is
   retried. That boot was refused with no repairs, and the root may already
   be `D:P` owner-only. The same holds when the request times out.
@@ -3059,6 +3070,11 @@ with its own owner rule:
   that queue. Within this scope, synchronous atomic staging creates and renames
   check the previous certificate immediately before their syscall and re-key only
   the affected directory's ChangeTime immediately afterward, without yielding.
+  A certificate already stale before the syscall is verified again from fresh
+  DACL facts, as a read would: a root's ChangeTime also moves when an entry is
+  created in it (a first boot creates its folders after the first configuration
+  read) or when srt-win stamps its deny. The write proceeds only when that
+  verification passes on the same certified objects.
   A changed identity, ancestor or other boundary refuses re-keying. Async callback
   completion never re-keys a certificate. Foreign changes after the immediate
   observation still force verification. A concurrent same-account DACL change

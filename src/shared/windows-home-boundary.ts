@@ -1,4 +1,4 @@
-import { isOwnerOnlyDacl, mapWindowsGenericRights, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
+import { isOwnerOnlyDacl, mapWindowsGenericRights, windowsGrantingRules, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 
 export const WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS = 0x1200a9;
 
@@ -26,7 +26,8 @@ export function isWindowsWorkspaceForeignWriter(rule: { sid: string; accessContr
 
 export function isWindowsHomeRootSafe(facts: WindowsDaclFacts): boolean {
   if (!facts.dacl?.protected) return false;
-  const rules = windowsOwnerRules(facts.dacl);
+  // Deny entries (srt-win's FILE_DELETE_CHILD deny for its sandbox account among them) remove rights and never grant any.
+  const rules = windowsGrantingRules(windowsOwnerRules(facts.dacl));
   return isOwnerOnlyDacl({ ownerSid: facts.dacl.owner, elevated: facts.elevated,
     rules: rules.filter(rule => rule.sid === facts.currentUserSid) }, facts.currentUserSid)
     && rules.every(rule => rule.sid === facts.currentUserSid || isWindowsHomeRootForeignTraversal(rule));
@@ -189,17 +190,24 @@ public static class HomeDirectoryDacl {
     string owner = security.GetOwner(typeof(SecurityIdentifier)).Value;
     return owner == user.Value || (elevated && owner == "S-1-5-32-544");
   }
+  // A deny entry never grants access (srt-win confines its sandbox account with them), so both shapes evaluate allow entries alone.
   public static bool OwnerOnly(DirectorySecurity security, SecurityIdentifier user, bool elevated) {
-    var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
-    if (!OwnerValid(security, user, elevated) || !security.AreAccessRulesProtected || rules.Count != 1) return false;
-    var rule = (FileSystemAccessRule)rules[0];
-    return rule.IdentityReference.Value == user.Value && rule.AccessControlType == AccessControlType.Allow &&
+    if (!OwnerValid(security, user, elevated) || !security.AreAccessRulesProtected) return false;
+    FileSystemAccessRule rule = null;
+    int granting = 0;
+    foreach (FileSystemAccessRule entry in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      if (entry.AccessControlType == AccessControlType.Deny) continue;
+      granting++;
+      rule = entry;
+    }
+    return granting == 1 && rule.IdentityReference.Value == user.Value && rule.AccessControlType == AccessControlType.Allow &&
       (int)rule.FileSystemRights == 2032127 && (int)rule.InheritanceFlags == 3 && (int)rule.PropagationFlags == 0 && !rule.IsInherited;
   }
   public static bool RootSafe(DirectorySecurity security, SecurityIdentifier user, bool elevated, int readMask) {
     if (!OwnerValid(security, user, elevated) || !security.AreAccessRulesProtected) return false;
     int ownRules = 0;
     foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      if (rule.AccessControlType == AccessControlType.Deny) continue;
       if (rule.IdentityReference.Value == user.Value) {
         ownRules++;
         if (rule.AccessControlType != AccessControlType.Allow || (int)rule.FileSystemRights != 2032127 ||
@@ -499,8 +507,10 @@ public static class HomeDirectoryDacl {
       if (!StaleInheritance(raw.DiscretionaryAcl, user)) return "clean";
       var acl = new RawAcl(GenericAcl.AclRevision, raw.DiscretionaryAcl.Count + 1);
       int index = 0;
+      // Explicit entries are kept in order, and so is an inherited deny (srt-win's sandbox deny on the root flows here): a deny is
+      // never stale, and dropping it would only widen what the sandbox account can do in the workspace.
       foreach (GenericAce ace in raw.DiscretionaryAcl) {
-        if ((ace.AceFlags & AceFlags.Inherited) == 0) acl.InsertAce(index++, ace.Copy());
+        if ((ace.AceFlags & AceFlags.Inherited) == 0 || InheritedDeny(ace)) acl.InsertAce(index++, ace.Copy());
       }
       acl.InsertAce(index, new CommonAce(AceFlags.ObjectInherit | AceFlags.ContainerInherit | AceFlags.Inherited,
         AceQualifier.AccessAllowed, 0x1f01ff, user, false, null));
@@ -515,11 +525,16 @@ public static class HomeDirectoryDacl {
       return "rewritten";
     }
   }
-  // True unless the only inherited entry is the one a RootSafe root passes down to a child directory.
+  private static bool InheritedDeny(GenericAce ace) {
+    var common = ace as CommonAce;
+    return (ace.AceFlags & AceFlags.Inherited) != 0 && common != null && common.AceQualifier == AceQualifier.AccessDenied;
+  }
+  // True unless the only inherited allow entry is the one a RootSafe root passes down to a child directory. An inherited deny is
+  // not stale: RootSafe evaluates allow entries alone, so a safe root may pass one down.
   public static bool StaleInheritance(RawAcl acl, SecurityIdentifier user) {
     int inherited = 0;
     foreach (GenericAce ace in acl) {
-      if ((ace.AceFlags & AceFlags.Inherited) == 0) continue;
+      if ((ace.AceFlags & AceFlags.Inherited) == 0 || InheritedDeny(ace)) continue;
       inherited++;
       var common = ace as CommonAce;
       if (common == null || common.AceQualifier != AceQualifier.AccessAllowed || common.SecurityIdentifier.Value != user.Value ||
