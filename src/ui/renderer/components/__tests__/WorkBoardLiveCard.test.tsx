@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 /** The compact running card: a chip that says which phase and turn the agent is on and how long the run has gone, one line of
- * the agent's latest narration, and a [단계 보기] toggle that selects the run for the step panel. */
+ * the agent's latest narration, both in the footprint the idle card had. */
 import "../../../../../test/renderer/setup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
 import type { AveApi } from "../../types.js";
 import type {
@@ -176,56 +176,27 @@ describe("Work Board — compact running card", () => {
     await vi.waitFor(() => expect(list.mock.calls.length).toBe(before + 1));
   });
 
-  it("toggles which run the step panel follows without opening the item", async () => {
-    const { api } = stubApi([item(), item({ id: 5, title: "Release notes", runId: "run-c", runHistory: [{ runId: "run-c", startedAt: STARTED_AT, status: "planning" }] })]);
+  it("puts the narration in the chip's row on a card without a description, so it gains no line at run start", async () => {
+    const { api } = stubApi([item({ detail: undefined })]);
     render(<WorkBoardPanel api={api} />);
-    const cards = await screen.findAllByTestId("work-board-card");
-    expect(cards).toHaveLength(2);
-    const [first, second] = cards as [HTMLElement, HTMLElement];
+    const line = await screen.findByTestId("work-board-live-narration");
+    await vi.waitFor(() => expect(line.textContent).toContain("One reproduction failed; finding the cause"));
 
-    const firstToggle = within(first).getByTestId("work-board-live-steps");
-    const secondToggle = within(second).getByTestId("work-board-live-steps");
-    expect(firstToggle.getAttribute("aria-pressed")).toBe("false");
-    expect(firstToggle.textContent).toBe(t("workBoard.liveStepsShow"));
-
-    fireEvent.click(firstToggle);
-    expect(firstToggle.getAttribute("aria-pressed")).toBe("true");
-    expect(firstToggle.textContent).toBe(t("workBoard.liveStepsShowing"));
-    expect(first.getAttribute("data-live-selected")).toBe("true");
-    expect(screen.queryByRole("dialog")).toBeNull();
-
-    // Selecting another run retargets; pressing the selected one again clears the selection.
-    fireEvent.click(secondToggle);
-    expect(firstToggle.getAttribute("aria-pressed")).toBe("false");
-    expect(secondToggle.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(secondToggle);
-    expect(secondToggle.getAttribute("aria-pressed")).toBe("false");
+    // The idle card is title + due line; the running card is title + this one row.
+    const row = screen.getByTestId("work-board-live-row");
+    expect(line.parentElement).toBe(row);
+    expect(within(row).getByTestId("work-board-live-chip")).toBeTruthy();
+    expect(line.className).toContain("truncate");
+    expect(row.parentElement?.querySelector('p[aria-hidden="true"]')).toBeNull();
   });
 
-  it("keeps the toggle on a selected card after its run ends so the selection can be cleared there", async () => {
-    const { api, emit } = stubApi([item()]);
-    render(<WorkBoardPanel api={api} />);
-    const toggle = await screen.findByTestId("work-board-live-steps");
-    fireEvent.click(toggle);
-
-    emit({ itemId: 4, phase: "done" });
-
-    expect(screen.queryByTestId("work-board-live-chip")).toBeNull();
-    const after = screen.getByTestId("work-board-live-steps");
-    expect(after.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(after);
-    expect(screen.queryByTestId("work-board-live-steps")).toBeNull();
-    expect(screen.getByTestId("work-board-card").getAttribute("data-live-selected")).toBe("false");
-  });
-
-  it("draws no chip, narration or step toggle on an item that is not running", async () => {
+  it("draws no chip or narration on an item that is not running", async () => {
     const { api } = stubApi([item({ runStatus: "completed" })]);
     render(<WorkBoardPanel api={api} />);
     await screen.findByTestId("work-board-card");
 
     expect(screen.queryByTestId("work-board-live-chip")).toBeNull();
     expect(screen.queryByTestId("work-board-live-narration")).toBeNull();
-    expect(screen.queryByTestId("work-board-live-steps")).toBeNull();
     expect(screen.getByTestId("work-board-run")).toBeTruthy();
   });
 });

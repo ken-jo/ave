@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, PanelRight, Play, Plus, RefreshCw, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2, Play, Plus, RefreshCw, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { t } from "../../../i18n/runtime.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
@@ -212,8 +212,10 @@ function liveChipLabel(phase: RunPhase | undefined): string | null {
 }
 
 /** "실행 중 · N턴째 · m:ss" — phase, the current phase's turn (once it took one), and the time since the run began (once the
- * listed item carries this run's start). */
-function LiveRunChip({ run, startedAt, now }: { run: WorkItemRunState; startedAt: string | undefined; now: number }) {
+ * listed item carries this run's start). The chip owns the 1s clock, so the tick re-renders only the chip, not the board or an
+ * open detail dialog. */
+function LiveRunChip({ run, startedAt }: { run: WorkItemRunState; startedAt: string | undefined }) {
+  const now = useNowTick(true);
   const label = liveChipLabel(run.phase);
   if (label === null) return null;
   const turn = currentPhaseTurn(run);
@@ -249,44 +251,45 @@ function localClock(iso: string): string {
 interface WorkItemCardProps {
   item: WorkItemResolved;
   run: WorkItemRunState | undefined;
-  /** Wall clock for the elapsed chip; ticks only while some run is live. */
-  now: number;
-  /** This card's run is the one the step panel follows. */
-  liveSelected: boolean;
   onStart: (id: number) => void;
   onComplete: (id: number) => void;
   onReopen: (id: number) => void;
   onRun: (id: number) => void;
   onOpenDetail: (id: number) => void;
-  onToggleLiveSteps: (id: number) => void;
 }
 
 function WorkItemCard({
   item,
   run,
-  now,
-  liveSelected,
   onStart,
   onComplete,
   onReopen,
   onRun,
   onOpenDetail,
-  onToggleLiveSteps,
 }: WorkItemCardProps) {
   const overdue = item.status_resolved === "overdue";
   const isCompleted = item.status === "completed";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
   const narration = latestTurn(live);
-  // The toggle stays on a selected card after its run ends, so the selection can always be cleared where it was made.
-  const showStepsToggle = live !== undefined || liveSelected;
+  const narrationLine = (className: string) => (
+    <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
+      {narration ? (
+        <>
+          <span className="tabular-nums">{localClock(narration.at)}</span>
+          {` · ${narration.text}`}
+        </>
+      ) : (
+        t("workBoard.liveNarrationWaiting")
+      )}
+    </p>
+  );
   return (
     <button
       type="button"
       className={`w-full rounded-lg border bg-background p-3 text-left shadow-sm transition-all hover:border-border hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         overdue ? "border-destructive/(--opacity-half) bg-destructive/(--opacity-faint)" : "border-border/(--opacity-strong)"
-      } ${liveSelected ? "border-primary ring-2 ring-primary/(--opacity-medium)" : ""}`}
+      }`}
       data-testid="work-board-card"
-      data-live-selected={liveSelected ? "true" : "false"}
       onClick={() => onOpenDetail(item.id)}
     >
       <div className="flex items-start justify-between gap-2">
@@ -298,45 +301,37 @@ function WorkItemCard({
             </span>
           </div>
           {live ? (
-            // A running card keeps its footprint: the chip takes the due line's row and one line of narration takes the
-            // description's place. The description stays in the layout, invisible, so the block is exactly as tall as it
-            // was before the run, and turns streaming in never resize the card. `contain: inline-size` keeps the unwrapped
-            // narration and chip from widening the card past its column (the scroll area sizes its content to fit).
+            // A running card keeps its footprint. The chip takes the due line's row, and one line of narration takes the
+            // description's place: the description stays in the layout, invisible, so the block is exactly as tall as it was
+            // before the run. A card without a description has no line to give, so its narration shares the chip's row.
+            // Turns streaming in never resize the card. `contain: inline-size` keeps the unwrapped narration and chip from
+            // widening the card past its column (the scroll area sizes its content to fit).
             <>
-              <div className="mt-2 flex min-w-0 items-center gap-1.5 overflow-hidden [contain:inline-size]">
+              <div
+                className="mt-2 flex min-w-0 items-center gap-1.5 overflow-hidden [contain:inline-size]"
+                data-testid="work-board-live-row"
+              >
                 {overdue && (
                   <Badge variant="outline" className="shrink-0 border-destructive/(--opacity-half) text-destructive">
                     {t("workBoard.overdueBadge")}
                   </Badge>
                 )}
-                <LiveRunChip run={live} startedAt={runStartedAt(item)} now={now} />
+                <LiveRunChip run={live} startedAt={runStartedAt(item)} />
                 {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
                 <span aria-hidden="true" className="invisible w-0 text-[11px]">{"\u200b"}</span>
+                {!item.detail && narrationLine("min-w-0 flex-1 truncate text-[11px] text-muted-foreground")}
               </div>
-              <div className="mt-1.5 grid [contain:inline-size]">
-                {item.detail && (
+              {item.detail && (
+                <div className="mt-1.5 grid [contain:inline-size]">
                   <p
                     aria-hidden="true"
                     className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-[11px] leading-relaxed [overflow-wrap:anywhere]"
                   >
                     {item.detail}
                   </p>
-                )}
-                <p
-                  className="col-start-1 row-start-1 truncate text-[11px] leading-relaxed text-muted-foreground"
-                  data-testid="work-board-live-narration"
-                  title={narration?.text}
-                >
-                  {narration ? (
-                    <>
-                      <span className="tabular-nums">{localClock(narration.at)}</span>
-                      {` · ${narration.text}`}
-                    </>
-                  ) : (
-                    t("workBoard.liveNarrationWaiting")
-                  )}
-                </p>
-              </div>
+                  {narrationLine("col-start-1 row-start-1 truncate text-[11px] leading-relaxed text-muted-foreground")}
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -358,82 +353,64 @@ function WorkItemCard({
       </div>
       {/* Inline lifecycle actions. stopPropagation so the card's open-detail
           click does not also fire when the user only wanted to transition. */}
-      <div className={`mt-2.5 flex flex-wrap items-center gap-1 ${showStepsToggle ? "justify-between" : "justify-end"}`}>
-        {showStepsToggle && (
+      <div className="mt-2.5 flex flex-wrap justify-end gap-1">
+        {!isCompleted && !live && (
           <Button
             size="sm"
             variant="ghost"
-            className={`h-6 px-2 text-[11px] ${liveSelected ? "bg-primary/(--opacity-subtle) font-semibold text-primary" : ""}`}
-            aria-pressed={liveSelected}
+            className="h-6 px-2 text-[11px]"
             onClick={(e) => {
               e.stopPropagation();
-              onToggleLiveSteps(item.id);
+              onRun(item.id);
             }}
-            data-testid="work-board-live-steps"
+            data-testid="work-board-run"
           >
-            <PanelRight className="mr-1 h-3 w-3" />
-            {liveSelected ? t("workBoard.liveStepsShowing") : t("workBoard.liveStepsShow")}
+            <Play className="mr-1 h-3 w-3" />
+            {t("workBoard.runButton")}
           </Button>
         )}
-        <div className="flex flex-wrap justify-end gap-1">
-          {!isCompleted && !live && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-[11px]"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRun(item.id);
-              }}
-              data-testid="work-board-run"
-            >
-              <Play className="mr-1 h-3 w-3" />
-              {t("workBoard.runButton")}
-            </Button>
-          )}
-          {item.status === "planned" && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-[11px]"
-              onClick={(e) => {
-                e.stopPropagation();
-                onStart(item.id);
-              }}
-              data-testid="work-board-start"
-            >
-              {t("workBoard.startButton")}
-            </Button>
-          )}
-          {(item.status === "planned" || item.status === "in_progress") && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-[11px]"
-              onClick={(e) => {
-                e.stopPropagation();
-                onComplete(item.id);
-              }}
-              data-testid="work-board-complete"
-            >
-              {t("workBoard.completeButton")}
-            </Button>
-          )}
-          {item.status === "completed" && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-[11px]"
-              onClick={(e) => {
-                e.stopPropagation();
-                onReopen(item.id);
-              }}
-              data-testid="work-board-reopen"
-            >
-              {t("workBoard.reopenButton")}
-            </Button>
-          )}
-        </div>
+        {item.status === "planned" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              onStart(item.id);
+            }}
+            data-testid="work-board-start"
+          >
+            {t("workBoard.startButton")}
+          </Button>
+        )}
+        {(item.status === "planned" || item.status === "in_progress") && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              onComplete(item.id);
+            }}
+            data-testid="work-board-complete"
+          >
+            {t("workBoard.completeButton")}
+          </Button>
+        )}
+        {item.status === "completed" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              onReopen(item.id);
+            }}
+            data-testid="work-board-reopen"
+          >
+            {t("workBoard.reopenButton")}
+          </Button>
+        )}
       </div>
     </button>
   );
@@ -443,8 +420,6 @@ interface BoardColumnProps {
   heading: string;
   items: WorkItemResolved[];
   runState: RunStateMap;
-  now: number;
-  liveItemId: number | null;
   emptyLabel: string;
   loading: boolean;
   onStart: (id: number) => void;
@@ -452,7 +427,6 @@ interface BoardColumnProps {
   onReopen: (id: number) => void;
   onRun: (id: number) => void;
   onOpenDetail: (id: number) => void;
-  onToggleLiveSteps: (id: number) => void;
   testId: string;
 }
 
@@ -460,8 +434,6 @@ function BoardColumn({
   heading,
   items,
   runState,
-  now,
-  liveItemId,
   emptyLabel,
   loading,
   onStart,
@@ -469,7 +441,6 @@ function BoardColumn({
   onReopen,
   onRun,
   onOpenDetail,
-  onToggleLiveSteps,
   testId,
 }: BoardColumnProps) {
   return (
@@ -492,14 +463,11 @@ function BoardColumn({
                 key={item.id}
                 item={item}
                 run={runState[item.id]}
-                now={now}
-                liveSelected={liveItemId === item.id}
                 onStart={onStart}
                 onComplete={onComplete}
                 onReopen={onReopen}
                 onRun={onRun}
                 onOpenDetail={onOpenDetail}
-                onToggleLiveSteps={onToggleLiveSteps}
               />
             ))}
           </div>
@@ -1620,14 +1588,6 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
   // the hook).
   const { runState, runItem } = useWorkBoardRun(api, items);
-  const anyRunLive = useMemo(() => Object.values(runState).some(isRunInFlight), [runState]);
-  const now = useNowTick(anyRunLive);
-  // The run the step panel (LS-2) follows. [단계 보기] on a card selects its run; pressing it again clears the selection.
-  const [liveItemId, setLiveItemId] = useState<number | null>(null);
-  const onToggleLiveSteps = useCallback(
-    (id: number) => setLiveItemId((cur) => (cur === id ? null : id)),
-    [],
-  );
 
   // A run entering a phase has just written its run fields (runId, runHistory, runStatus) to the item. Re-list so the card's
   // elapsed time reads this run's start rather than the previous run's. Phase-entry events carry no turn; turn events do
@@ -1730,8 +1690,6 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
       heading={heading}
       items={columnItems}
       runState={runState}
-      now={now}
-      liveItemId={liveItemId}
       emptyLabel={emptyLabel}
       loading={loading}
       onStart={onStart}
@@ -1739,7 +1697,6 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
       onReopen={onReopen}
       onRun={onRun}
       onOpenDetail={onOpenDetail}
-      onToggleLiveSteps={onToggleLiveSteps}
       testId={testId}
     />
   );

@@ -45,8 +45,6 @@ export const en = {
   "workBoard.liveChipExecuting": "Running",
   "workBoard.liveChipTurn": "turn {turn}",
   "workBoard.liveNarrationWaiting": "Waiting for the agent's first turn…",
-  "workBoard.liveStepsShow": "View steps",
-  "workBoard.liveStepsShowing": "Viewing steps",
   "workBoard.runSessionLabel": "Session {id}",
   // Create / detail dialog
   "workBoard.createTitle": "New task",
@@ -154,8 +152,6 @@ export const ko: Record<keyof typeof en, string> = {
   "workBoard.liveChipExecuting": "실행 중",
   "workBoard.liveChipTurn": "{turn}턴째",
   "workBoard.liveNarrationWaiting": "에이전트의 첫 응답을 기다리는 중…",
-  "workBoard.liveStepsShow": "단계 보기",
-  "workBoard.liveStepsShowing": "단계 보는 중",
   "workBoard.runSessionLabel": "세션 {id}",
   "workBoard.createTitle": "새 작업",
   "workBoard.detailTitle": "작업 상세",

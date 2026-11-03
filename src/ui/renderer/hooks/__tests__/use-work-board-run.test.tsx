@@ -91,6 +91,18 @@ describe("useWorkBoardRun — turn accumulation", () => {
     expect(latestTurn(run)?.text).toBe("Writing the failing test");
   });
 
+  it("keeps the first text a turn arrived with when the same phase+turn arrives again with other text", () => {
+    const { api, emit } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+
+    emit({ itemId: 4, phase: "executing", turn: 1, text: "first copy", at: "2026-11-04T03:00:01.000Z" });
+    emit({ itemId: 4, phase: "executing", turn: 1, text: "second copy", at: "2026-11-04T03:00:09.000Z" });
+
+    const turns = result.current.runState[4]?.turns;
+    expect(turns).toHaveLength(1);
+    expect(turns?.[0]).toMatchObject({ text: "first copy", at: "2026-11-04T03:00:01.000Z" });
+  });
+
   it("reports no current turn when the phase has not produced one yet", () => {
     const { api, emit } = harness();
     const { result } = renderHook(() => useWorkBoardRun(api, []));
@@ -159,6 +171,8 @@ describe("useWorkBoardRun — transcript backfill", () => {
       "executing:3",
     ]);
     expect(run?.turns[0]?.at).toBe("2026-11-04T03:00:05.000Z");
+    // Live and persisted copies of executing turn 3 differ; the first one the board saw — the live event — is kept.
+    expect(run?.turns[3]?.text).toBe("live turn 3");
     // The board learned the phase from the stored item, then from the live event.
     expect(run?.phase).toBe("executing");
     expect(currentPhaseTurn(run)).toBe(3);
