@@ -754,13 +754,17 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
         extraPrincipals: expect.arrayContaining([expect.objectContaining({ sid: "S-1-1-0", explicit: true })]) });
       expect(rootOf(dir)).toMatchObject({ protected: false });
     });
-    it("refuses an explicit deny for Guests (S-1-5-32-546) and leaves the root as it was", () => {
+    it("does not repair over an explicit deny for Guests (S-1-5-32-546), leaves the root as it was and never names the deny", () => {
       const dir = inheritedHome();
       // Guests: a SID the test user is not a member of, so the deny never blocks the user's own read-back (native run 3: Users did).
       execFileSync(win32SystemBinary("icacls"), [dir, "/deny", "*S-1-5-32-546:(R)", "/q"], { windowsHide: true, stdio: "pipe" });
-      expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none", category: "extra-principals",
-        extraPrincipals: expect.arrayContaining([expect.objectContaining({ sid: "S-1-5-32-546", explicit: true })]) });
+      // The inherited SYSTEM and Administrators entries still refuse the unprotected root; the deny grants nothing, so the
+      // `/remove` guidance never targets it (srt-win's sandbox deny is one), and it survives the user's fix.
+      const privacy = ensureAveHomePrivate(dir);
+      expect(privacy).toMatchObject({ enforcement: "none", category: "extra-principals" });
+      expect(JSON.stringify(privacy)).not.toContain("S-1-5-32-546");
       expect(rootOf(dir)).toMatchObject({ protected: false });
+      expect(rootOf(dir).rules?.some((rule) => rule.sid === "S-1-5-32-546" && rule.accessControlType === 1 && !rule.isInherited)).toBe(true);
     });
     it("refuses a junction home without touching its target", () => {
       const target = inheritedHome();

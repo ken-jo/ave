@@ -965,7 +965,7 @@ export function ensureAveHomePrivate(
       return { enforcement: "none", home, failedPath: join(home, "workspace"), category: "workspace-extra-principals", extraPrincipals,
         reason: "Another account can write to the workspace", ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
     }
-    const workspaceReaders = workspaceRules.filter((rule) => rule.sid !== sid && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid));
+    const workspaceReaders = windowsGrantingRules(workspaceRules).filter((rule) => rule.sid !== sid && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid));
     if (workspaceReaders.length > 0) diagnostics.push(`Directory "workspace" has foreign read-only access: ${[...new Set(workspaceReaders.map((rule) => rule.sid))].join(", ")}`);
     return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   } catch (err) {
