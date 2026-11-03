@@ -455,6 +455,9 @@ function BoardColumn({
   onOpenDetail,
   testId,
 }: BoardColumnProps) {
+  // The list takes whatever height the section is given and scrolls. Its floor belongs to the grid that sizes the
+  // section (see WorkBoardPanel), not to the list: a min-height on the inner list left the section free to shrink to its
+  // header while the list was clipped below it.
   return (
     <section className="flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid={testId}>
       <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
@@ -463,7 +466,7 @@ function BoardColumn({
           {items.length}
         </span>
       </div>
-      <ScrollArea className="min-h-[200px] flex-1 px-2 pb-2">
+      <ScrollArea className="min-h-0 flex-1 px-2 pb-2">
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t("workBoard.loadingLabel")}</div>
         ) : items.length === 0 ? (
@@ -1726,7 +1729,15 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
             onLater={onProposalLater}
             onDismiss={onProposalDismiss}
           />
-          <div className="grid min-h-0 gap-3 sm:grid-cols-3">
+          {/* The columns fill whatever height the proposals and reports leave (flex-1) but never drop below a usable floor;
+              when the bands take the room, the scroller overflows and scrolls instead. The floor must be explicit: with
+              min-h-0 the grid absorbed the whole deficit and squashed the columns to their headers, and with no min-height
+              the grid's content minimum grows it to every card so the columns never scroll internally. Stacked below sm,
+              each column gets its own fixed row. */}
+          <div
+            className="grid flex-1 auto-rows-[20rem] gap-3 sm:min-h-[20rem] sm:auto-rows-auto sm:grid-cols-3"
+            data-testid="work-board-columns"
+          >
             {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
             {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
             {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
