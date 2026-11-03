@@ -67,6 +67,7 @@ import { createSubscriptionUsageCollector, recordSubscriptionRoundTelemetry } fr
 import { errorMessage } from "../../shared/error-message.js";
 import { directoryInstructionsForToolResult, liveDirectoryInstructions } from "./directory-instructions.js";
 import { toolResultContentReachesWire } from "../wire-serialize.js";
+import type { TurnMemoryUse } from "../../prompts/system-prompt-builder.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
@@ -121,6 +122,8 @@ export async function queryLoop(
       onMemoryCaptureTaint?: (reason: "staged-guidance") => void;
       onPermissionProvenanceChanged?: (state: { toolTrustOrigin: ToolTrustOrigin; overlayTriggerOrigin: string | null; approvalReasonPrefix?: string }) => void;
       memoryQuery?: string;
+      /** The user message that opened this turn; anchors memory use rows. */
+      turnMessageId?: string;
       onStopHook?: (state: { toolCount: number; stopHookActive: boolean }) => Promise<string | undefined>;
     },
   ): Promise<{
@@ -329,6 +332,12 @@ export async function queryLoop(
     let toolSearches = 0;
     const promotedToolNamesForTurn: string[] = [];
     let roundIndex = 0;
+    // Every round rebuilds the same memory selection; record its injected ids once for the turn.
+    const turnMemoryUse: TurnMemoryUse = {
+      sessionId: bounds.sessionIdOverride ?? self.sessionId,
+      ...(bounds.turnMessageId !== undefined ? { anchorMessageId: bounds.turnMessageId } : {}),
+      recorded: new Set<string>(),
+    };
     let toolTrustOrigin = bounds.toolTrustOrigin;
     // Staged origin only tightens; non-user guidance forces remaining write, shell, and network calls to ask.
     let stagedOrigin = overlayTriggerOrigin;
@@ -631,7 +640,7 @@ export async function queryLoop(
       // Build once so measured and sent assemblies share identical text and current staged origin.
       let roundTurnContext: string | undefined;
       const turnContextForRound = (): string =>
-        (roundTurnContext ??= self.buildTurnContext(bounds.memoryQuery ?? "", stagedOrigin));
+        (roundTurnContext ??= self.buildTurnContext(bounds.memoryQuery ?? "", stagedOrigin, turnMemoryUse));
       // Assembly is pure over history so compaction can rebuild without consuming state.
       const assembleRoundMessages = (
         base: GenericMessage[],

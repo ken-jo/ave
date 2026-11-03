@@ -6,11 +6,14 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { createMemoryRecallTools } from "../memory-recall.js";
 import type { Tool, ToolExecutionContext } from "../base.js";
+import type { MemoryUseEvent } from "../../memory/memory-usage-log.js";
+import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
 
 let aveDir: string;
 let projectRoot: string;
 let manager: MemoryManager;
 let tools: Map<string, Tool>;
+let usage: MemoryUseEvent[];
 
 function ctx(cwd = projectRoot): ToolExecutionContext {
   return { cwd, extraAllowedDirectories: [], metadata: {} };
@@ -29,7 +32,11 @@ beforeEach(() => {
   projectRoot = join(aveDir, "project");
   manager = new MemoryManager({ aveDir });
   manager.load();
-  tools = new Map(createMemoryRecallTools({ memoryManager: manager }).map((tool) => [tool.name, tool]));
+  usage = [];
+  tools = new Map(createMemoryRecallTools({
+    memoryManager: manager,
+    memoryUsageLog: { record: (event) => { usage.push(event); } },
+  }).map((tool) => [tool.name, tool]));
 });
 
 afterEach(async () => {
@@ -148,9 +155,72 @@ describe("memory recall tools", () => {
       listMemoryCandidates: () => [],
       deleteMemoryCandidate: async () => false,
     };
-    const search = createMemoryRecallTools({ memoryManager: store as never }).find((tool) => tool.name === "memory_search")!;
+    const search = createMemoryRecallTools({ memoryManager: store as never, memoryUsageLog: { record: () => {} } }).find((tool) => tool.name === "memory_search")!;
     await search.execute({}, ctx());
     await search.execute({}, { ...ctx(), metadata: { memoryIncludeUnscoped: true } });
     expect(scopes).toEqual([{ projectRoot }, { projectRoot, includeUnscoped: true }]);
+  });
+});
+
+describe("memory recall use log", () => {
+  const SESSION = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  const sessionCtx = (): ToolExecutionContext => ({ ...ctx(), metadata: { sessionId: SESSION } });
+
+  it("records the returned page of memory_search as searched, by id only", async () => {
+    const a = await manager.saveMemory("Package manager", "Use bun for installs in this repo.", { projectRoot, state: "active" });
+    const b = await manager.saveMemory("Bun version", "Pin bun 1.2 in CI.", { projectRoot, state: "active" });
+    await manager.saveMemory("Draft bun fact", "Unreviewed.", { projectRoot, source: "assistant", state: "candidate" });
+
+    const found = await call("memory_search", { query: "bun", limit: 1 }, sessionCtx());
+    expect(found.isError).toBe(false);
+    expect(found.body.truncated).toBe(true);
+
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toEqual({ memoryIds: [found.body.memories[0].id], via: "searched", sessionId: SESSION });
+    expect([a.id, b.id]).toContain(usage[0]!.memoryIds[0]);
+    expect(JSON.stringify(usage)).not.toContain("bun");
+  });
+
+  it("records memory_read as read with the turn's user message as anchor", async () => {
+    const entry = await manager.saveMemory("Deploy note", "Deploy then verify.", { projectRoot, state: "active" });
+    const read = await runWithAgentObservationTurn({ sessionId: SESSION, turnId: "msg-user-7" }, () =>
+      runWithAgentObservationInvocation({ sessionId: SESSION, toolUseId: "tu-1" }, () =>
+        call("memory_read", { id: entry.id }, sessionCtx())));
+    expect(read.isError, read.output).toBe(false);
+    expect(usage).toEqual([{ memoryIds: [entry.id], via: "read", sessionId: SESSION, anchorMessageId: "msg-user-7" }]);
+  });
+
+  it("marks a sub-agent child's search with the sub-agent store", async () => {
+    await manager.saveMemory("Package manager", "Use bun.", { projectRoot, state: "active" });
+    const child = "sub-1a2b3c4d-0f8fad5b-d9cb-469f-a165-70867728950e";
+    await call("memory_search", {}, { ...ctx(), metadata: { sessionId: child } });
+    expect(usage).toEqual([expect.objectContaining({ via: "searched", sessionId: child, store: "subagent" })]);
+  });
+
+  it("records nothing for failed reads, empty results, or calls without a conversation", async () => {
+    const entry = await manager.saveMemory("Deploy note", "Deploy then verify.", { projectRoot, state: "active" });
+    await call("memory_read", { id: "missing" }, sessionCtx());
+    await call("memory_search", { query: "nothing-matches-this" }, sessionCtx());
+    await call("memory_search", {});
+    await call("memory_read", { id: entry.id });
+    expect(usage).toEqual([]);
+  });
+
+  it("does not record legacy notes that have no managed id", async () => {
+    const legacy = { filename: "legacy.md", title: "Legacy", content: "# Legacy\nold note" };
+    const managed = { filename: "m.md", title: "Managed", content: "# Managed\nnew note", id: "mem-managed" };
+    const events: MemoryUseEvent[] = [];
+    const store = {
+      searchModelVisibleMemories: () => [legacy, managed],
+      listMemoryCandidates: () => [],
+      deleteMemoryCandidate: async () => false,
+    };
+    const recall = new Map(createMemoryRecallTools({
+      memoryManager: store as never,
+      memoryUsageLog: { record: (event) => { events.push(event); } },
+    }).map((tool) => [tool.name, tool]));
+    await recall.get("memory_search")!.execute({}, sessionCtx());
+    await recall.get("memory_read")!.execute({ id: "legacy.md" }, sessionCtx());
+    expect(events).toEqual([{ memoryIds: ["mem-managed"], via: "searched", sessionId: SESSION }]);
   });
 });

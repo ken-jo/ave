@@ -20,6 +20,7 @@ import { createFileTools } from "../tools/file-tools.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import { createMemoryWriteTool } from "../tools/memory-write.js";
 import { createMemoryRecallTools } from "../tools/memory-recall.js";
+import { MemoryUsageLog } from "../memory/memory-usage-log.js";
 import {
   BashTool,
   PowerShellTool,
@@ -49,6 +50,8 @@ export interface CoreServices {
   auditService: AuditService;
   settingsService: SettingsService;
   memoryManager: MemoryManager;
+  /** Id-only record of injected/searched/read memories for the main store. */
+  memoryUsageLog: MemoryUsageLog;
   memoryCaptureService: MemoryCaptureService;
   inputClassifier: InputClassifier;
   toolRegistry: ToolRegistry;
@@ -152,6 +155,8 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     log.warn("boot: search index verify/rebuild failed: %s", (err as Error).message,
     );
   });
+  // Same aveDir as the main store: usage rows sit beside the memories they name.
+  const memoryUsageLog = new MemoryUsageLog({ aveDir: memoryManager.getDir() });
   const memoryCaptureService = new MemoryCaptureService({
     memoryManager,
     getMode: () => settingsService.get("features")?.memoryCaptureMode,
@@ -169,7 +174,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   // Local memory saves retain explicit-deny, strict-mode, and staged-origin gates.
   toolRegistry.register(createMemoryWriteTool({ memoryManager }));
   // Memory deletion is candidate-scoped and is not auto-approved.
-  for (const tool of createMemoryRecallTools({ memoryManager })) {
+  for (const tool of createMemoryRecallTools({ memoryManager, memoryUsageLog })) {
     toolRegistry.register(tool);
   }
   // Background-shell lookups must stay scoped to the caller’s session.
@@ -184,6 +189,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     auditService,
     settingsService,
     memoryManager,
+    memoryUsageLog,
     memoryCaptureService,
     inputClassifier,
     toolRegistry,
