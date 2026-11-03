@@ -246,6 +246,11 @@ export class MemoryMaintenanceCoordinator {
   }
 }
 
+/** The project a session's memory maintenance targets; the default project is an ordinary project scope. */
+export function sessionMemoryProject(loop: { getSessionProjectContext(): ProjectScopedMemoryOptions }): ProjectScopedMemoryOptions {
+  return loop.getSessionProjectContext();
+}
+
 function normalizeExactProject(
   project: ProjectScopedMemoryOptions | undefined,
 ): ProjectScopedMemoryOptions | undefined {

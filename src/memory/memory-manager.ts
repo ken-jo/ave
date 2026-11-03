@@ -804,6 +804,8 @@ function decodeMemoryMetadata(encoded: string): MemoryMetadataV1 | null {
   if (raw.expiresAt !== undefined && !isValidMemoryTimestamp(raw.expiresAt)) return null;
   if (raw.pinned !== undefined && raw.pinned !== true) return null;
   if (raw.disabled !== undefined && raw.disabled !== true) return null;
+  // Only an active memory can be turned off; a disabled candidate is not a state any writer produces.
+  if (raw.disabled === true && raw.state !== "active") return null;
   if (!isRecord(raw.scope)) return null;
 
   let derivation: MemoryDerivationV1 | undefined;
@@ -1299,7 +1301,7 @@ export class MemoryManager implements PromptMemorySource {
       ? `### ${globalOverview.title}\n${this.memoryBodyForPrompt(globalOverview)}`
       : "";
 
-    // Default workspaces expose global memory only; explicit projects split the bounded overview budget fairly.
+    // Without a project only the global overview applies; a project (the default one included) splits the budget fairly.
     if (projectSnapshot.scope.type !== "project") {
       return truncateTextToTokenBudget(globalSection, MAX_PROMPT_LONG_TERM_MEMORY_OVERVIEW_TOKENS);
     }
@@ -1594,7 +1596,7 @@ export class MemoryManager implements PromptMemorySource {
       ].join("\n");
       writeFileSync(join(this.memoryDir, found.filename), storedContent, "utf-8");
 
-      if (metadata.scope.type === "global") {
+      if (metadata.scope.type === "global" && metadata.disabled !== true) {
         this.updateMemoryIndexLocked(
           indexPath,
           found.filename,

@@ -57,6 +57,10 @@ function makeConversationLoop(sessionId: string) {
   return {
     getSessionId: vi.fn(() => sessionId),
     getSessionProjectIsDefault: vi.fn(() => false),
+    getSessionProjectContext: vi.fn(() => ({
+      projectRoot: "C:\\workspace\\alpha",
+      projectName: "alpha",
+    })),
     getSessionMemoryProjectContext: vi.fn(() => ({
       projectRoot: "C:\\workspace\\alpha",
       projectName: "alpha",
@@ -253,7 +257,7 @@ describe("ave:memory:long-term:refresh", () => {
     },
   };
 
-  it("refreshes global memory plus the current non-default project", async () => {
+  it("refreshes global memory plus the current project", async () => {
     const loop = makeConversationLoop(SESSION_ID);
     const deps = await setupHandlers(loop) as any;
     const refresh = vi.fn(async () => updated);
@@ -271,14 +275,14 @@ describe("ave:memory:long-term:refresh", () => {
       project: {
         projectRoot: "C:\\workspace\\alpha",
         projectName: "alpha",
-        includeUnscoped: false,
       },
     });
   });
 
-  it("keeps the default workspace global-only", async () => {
+  it("refreshes the default project as its own project scope, not as global memory", async () => {
     const loop = makeConversationLoop(SESSION_ID);
     loop.getSessionProjectIsDefault.mockReturnValue(true);
+    loop.getSessionProjectContext.mockReturnValue({ projectRoot: "C:\\workspace\\default", projectName: "default" });
     const deps = await setupHandlers(loop) as any;
     const refresh = vi.fn(async () => updated);
     deps.memoryConsolidationService = { refresh };
@@ -289,8 +293,10 @@ describe("ave:memory:long-term:refresh", () => {
 
     await invokeRegisteredHandlerWithEvent(handlers, CHANNEL, hostFrameEvent());
 
-    expect(refresh).toHaveBeenCalledWith({ reason: "manual" });
-    expect(loop.getSessionMemoryProjectContext).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledWith({
+      reason: "manual",
+      project: { projectRoot: "C:\\workspace\\default", projectName: "default" },
+    });
   });
 
   it("returns a stable unavailable or refresh failure envelope", async () => {
@@ -560,6 +566,7 @@ describe("ave:memory:entries:save review gate", () => {
     ["an unknown scope", [{ scope: "everywhere" }]],
     ["a global scope carrying a project", [{ scope: "global", projectRoot: process.cwd() }]],
     ["a project scope without a project", [{ scope: "project" }]],
+    ["a non-string project name", [{ scope: "project", projectRoot: process.cwd(), projectName: 42 }]],
     ["an unexpected key", [{ scope: "global", includeCandidates: true }]],
   ])("rejects a save with %s instead of guessing the scope", async (_label, extra) => {
     const loop = makeConversationLoop(SESSION_ID);

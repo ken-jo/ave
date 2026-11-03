@@ -20,7 +20,7 @@ import { retainedDescendantWorkspaceRoots } from "../../permissions/workspace-ro
 import { broadcastPermissionConfigChangedFromHost } from "../permission-config-broadcast.js";
 import { PreferenceRefreshService } from "../../memory/preference-refresh-service.js";
 import { AgentsDocMergeService } from "../../memory/agents-doc-merge-service.js";
-import { MemoryConsolidationService, MemoryMaintenanceCoordinator } from "../../memory/memory-consolidation-service.js";
+import { MemoryConsolidationService, MemoryMaintenanceCoordinator, sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
 import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
 import { SubAgentRunner } from "../../engine/subagent-runner.js";
 import { A2ASubAgentMessageBus } from "../../engine/a2a-subagent-message-bus.js";
@@ -532,9 +532,7 @@ export async function wireConversation(
     idleScheduler,
     preferenceRefreshService,
     memoryConsolidationService,
-    getCurrentProject: () => conversationLoop.getSessionProjectIsDefault?.()
-      ? undefined
-      : conversationLoop.getSessionMemoryProjectContext?.(),
+    getCurrentProject: () => sessionMemoryProject(conversationLoop),
   });
   memoryMaintenanceCoordinator.start();
 

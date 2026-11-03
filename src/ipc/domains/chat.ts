@@ -23,6 +23,7 @@ import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { listCustomCommands } from "../../core/custom-commands.js";
 import { isValidSessionId, MAX_SESSION_FILE_BYTES } from "../../memory/memory-manager.js";
+import { sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWebContents } from "../safe-send.js";
@@ -418,6 +419,9 @@ function parseMemorySaveScope(raw: unknown): MemoryProjectOptionsResolution | { 
     return { ok: false, error: "invalid-input" };
   }
   if (!normalizeMemoryProjectString(record.projectRoot, MAX_MEMORY_PROJECT_ROOT_CHARS)) {
+    return { ok: false, error: "invalid-input" };
+  }
+  if (record.projectName !== undefined && typeof record.projectName !== "string") {
     return { ok: false, error: "invalid-input" };
   }
   return parseMemoryProjectOptions({ projectRoot: record.projectRoot, projectName: record.projectName });
@@ -1953,10 +1957,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { ok: false, error: "memory-consolidation-service-unavailable" };
     }
     try {
-      // The default workspace is unscoped global context; never create a project overview for it.
-      const project = conversationLoop.getSessionProjectIsDefault?.()
-        ? undefined
-        : conversationLoop.getSessionMemoryProjectContext?.();
+      // The default project consolidates as its own project scope, separate from global memory.
+      const project = sessionMemoryProject(conversationLoop);
       const result = await memoryConsolidationService.refresh({
         reason: "manual",
         ...(project ? { project } : {}),

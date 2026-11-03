@@ -398,6 +398,10 @@ describe("MemoryManager — scoped long-term memory governance", () => {
     const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
     const metadata = JSON.parse(Buffer.from(header[1], "base64url").toString("utf-8")) as Record<string, unknown>;
     expect(metadata.disabled).toBe(true);
+    metadata.state = "candidate";
+    writeFileSync(filePath, stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")), "utf-8");
+    expect(memoryManager.listMemoryEntries({ includeCandidates: true }).some((candidate) => candidate.id === entry.id)).toBe(false);
+    metadata.state = "active";
     metadata.disabled = false;
     writeFileSync(filePath, stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")), "utf-8");
     expect(memoryManager.listMemoryEntries().some((candidate) => candidate.id === entry.id)).toBe(false);
