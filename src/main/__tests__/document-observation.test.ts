@@ -13,10 +13,13 @@ import { parseObservedTextDocument } from "../../observation/text-document.js";
 import type { ObservationDaemon } from "../../observation/daemon.js";
 import { OBSERVATION_LIMITS, type TerminalObservationEvent } from "../../shared/agent-observation.js";
 
-const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown, root: "", registered: true }));
+const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown, root: "", registered: true, policyReads: 0 }));
 vi.mock("electron", () => ({ session: { defaultSession: state.defaultSession } }));
 vi.mock("../app-state.js", () => ({ findSessionMainWindowContents: (id: string) => id === "session-one" ? state.holder : null }));
-vi.mock("../../permissions/permission-settings-store.js", () => ({ readPermissionSettings: () => ({ permissions: { additionalDirectories: [state.root] } }) }));
+vi.mock("../../permissions/permission-settings-store.js", () => ({ readPermissionSettings: () => {
+  state.policyReads += 1;
+  return { permissions: { additionalDirectories: [state.root] } };
+} }));
 import { DocumentObservationRuntime } from "../document-observation.js";
 
 function table(value: string): PreviewTableDocument {
@@ -249,6 +252,19 @@ describe("document observation desktop ownership", () => {
     expect(runtime.acknowledge(event, { action: "rendered", ...binding, path: "/outside/other.csv" })).toEqual({ ok: false, error: "bad-request" });
   });
 
+  it("re-evaluates the read policy once the reused verdict's microtask has run", async () => {
+    const binding = baseline();
+    const allowedRoot = state.root;
+    state.root = mkdtempSync(join(tmpdir(), "ave-observation-elsewhere-"));
+    try {
+      await Promise.resolve();
+      expect(runtime.acknowledge(event, { action: "rendered", ...binding })).toEqual({ ok: false, error: "unauthorized" });
+    } finally {
+      await cleanupTmpDir(state.root);
+      state.root = allowedRoot;
+    }
+  });
+
   it("rechecks live registration before delivering a completed parse", async () => {
     runtime.dispose();
     let finish!: () => void;
@@ -305,6 +321,7 @@ describe("document observation desktop ownership", () => {
 
   it("drains more than one journal read before the actual shell HOME is removed", async () => {
     baseline();
+    let drainPolicyReads = -1;
     await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity, async () => {
       const home = createSandboxProcessHome();
       try {
@@ -318,11 +335,19 @@ describe("document observation desktop ownership", () => {
         expect(Buffer.byteLength(journal)).toBeGreaterThan(65_536);
         writeFileSync(home.env.AVE_DOCUMENT_JOURNAL!, journal);
         writeFileSync(path, "agent value");
-      } finally { home.cleanup(); }
+      } finally {
+        // The cleanup drains all 102 records synchronously, before any journal poll timer can run.
+        const before = state.policyReads;
+        home.cleanup();
+        drainPolicyReads = state.policyReads - before;
+      }
     }));
     await vi.waitFor(() => expect(events().some((entry) => entry.kind === "snapshot")).toBe(true));
     expect(events().findLast((entry) => entry.kind === "snapshot")).toMatchObject({ after: { sheet: { rows: [["agent value"]] } } });
     expect(events().filter((entry) => entry.kind === "status").map((entry) => entry.after.code)).not.toContain("observation-error");
+    // The drain publishes ~200 events in one task; the filesystem-backed read policy runs at most once for that task
+    // (here the baseline earlier in the same task already decided it), never once per record or event.
+    expect(drainPolicyReads).toBeLessThanOrEqual(1);
   });
 
   it("revokes an existing journal when its model turn ends before the tool settles", async () => {
