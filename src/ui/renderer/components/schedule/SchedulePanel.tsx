@@ -1,6 +1,6 @@
 // The schedule panel: one project's schedule items as a day, week or month grid. Chips are projected occurrences and past
 // runs from ROUTINES.listOccurrences; clicking an empty slot adds an item there, clicking a chip opens its popover.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -27,6 +27,7 @@ const PX_PER_HOUR = 48;
 const CHIP_PX = 22;
 const TWO_LINE_PX = 40;
 const MONTH_LINES = 3;
+const VIEW_MODES = ["day", "week", "month"] as const satisfies readonly ScheduleViewMode[];
 /** A deleted item stays restorable this long; the delete itself is the user's action and is never confirmed. */
 const SCHEDULE_UNDO_MS = 6_000;
 /** Below this pane width the week shows three days and the add button its short name. */
@@ -130,6 +131,21 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const [running, setRunning] = useState<Map<string, string>>(() => new Map());
   const [selected, setSelected] = useState<string | null>(null);
   const [dayPopover, setDayPopover] = useState<number | null>(null);
+  const [morePopover, setMorePopover] = useState<string | null>(null);
+  const tabIds = useId();
+  const tabRefs = useRef<Partial<Record<ScheduleViewMode, HTMLButtonElement | null>>>({});
+  const onTabKey = (e: React.KeyboardEvent) => {
+    const index = VIEW_MODES.indexOf(mode);
+    const target = e.key === "ArrowRight" ? VIEW_MODES[(index + 1) % VIEW_MODES.length]
+      : e.key === "ArrowLeft" ? VIEW_MODES[(index + VIEW_MODES.length - 1) % VIEW_MODES.length]
+        : e.key === "Home" ? VIEW_MODES[0]
+          : e.key === "End" ? VIEW_MODES[VIEW_MODES.length - 1]
+            : undefined;
+    if (!target) return;
+    e.preventDefault();
+    setMode(target);
+    tabRefs.current[target]?.focus();
+  };
   const [create, setCreate] = useState<{ at?: Date; template?: AgentPluginRoutineTemplate } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -288,32 +304,47 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
     );
   };
 
-  const chip = (entry: ScheduleEntry, style: React.CSSProperties | undefined, twoLine: boolean, extraClass = "") => (
-    <Popover key={entry.key} open={selected === entry.key} onOpenChange={(open) => setSelected(open ? entry.key : null)}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          data-testid="schedule-chip"
-          data-status={entry.status}
-          data-routine-id={entry.routine.id}
-          style={style}
-          onClick={(e) => e.stopPropagation()}
-          className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-[11px] leading-tight ${statusClass(entry.status)} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
-        >
-          <span className="flex min-w-0 items-center gap-1">
-            <StatusIcon status={entry.status} />
-            <span className="shrink-0 tabular-nums">{hhmm(entry.atMs)}</span>
-            {!twoLine && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
-          </span>
-          {twoLine && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
-        </button>
-      </PopoverTrigger>
-      {/* React events bubble through the portal to the day column, whose click adds an item at that slot. */}
-      <PopoverContent className="w-[min(360px,calc(100vw-32px))]" align="start" collisionPadding={16} onClick={(e) => e.stopPropagation()}>
-        {popoverFor(entry)}
-      </PopoverContent>
-    </Popover>
-  );
+  // The same entry can be drawn on two surfaces at once (a month cell and its day popover, the grid and the day list), so a
+  // selection names its surface too: only the trigger that was used opens.
+  const withPopover = (entry: ScheduleEntry, surface: string, trigger: ReactElement) => {
+    const key = `${surface}|${entry.key}`;
+    return (
+      <Popover key={key} open={selected === key} onOpenChange={(open) => setSelected(open ? key : null)}>
+        <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+        {/* React events bubble through the portal to the day column, whose click adds an item at that slot. */}
+        <PopoverContent className="w-[min(360px,calc(100vw-32px))]" align="start" collisionPadding={16} onClick={(e) => e.stopPropagation()}>
+          {popoverFor(entry)}
+        </PopoverContent>
+      </Popover>
+    );
+  };
+
+  const chipLabel = (entry: ScheduleEntry) => t("schedulePanel.chipLabel", {
+    time: entry.routine.trigger === "shutdown" ? t("schedulePanel.onShutdownRow") : hhmm(entry.atMs),
+    title: routineTitle(entry.routine),
+    status: t(`schedulePanel.status_${entry.status}`),
+  });
+
+  const chip = (entry: ScheduleEntry, surface: string, style: React.CSSProperties | undefined, twoLine: boolean, extraClass = "") =>
+    withPopover(entry, surface, (
+      <button
+        type="button"
+        data-testid="schedule-chip"
+        data-status={entry.status}
+        data-routine-id={entry.routine.id}
+        aria-label={chipLabel(entry)}
+        style={style}
+        onClick={(e) => e.stopPropagation()}
+        className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-[11px] leading-tight ${statusClass(entry.status)} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
+      >
+        <span className="flex min-w-0 items-center gap-1">
+          <StatusIcon status={entry.status} />
+          <span className="shrink-0 tabular-nums">{hhmm(entry.atMs)}</span>
+          {!twoLine && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
+        </span>
+        {twoLine && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
+      </button>
+    ));
 
   const slotClick = (day: Date) => (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -372,7 +403,16 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                   <div className="pointer-events-none absolute inset-x-0 z-10 h-px bg-destructive" data-testid="schedule-now-line"
                     style={{ top: ((today.getTime() - dayStart) / 3_600_000) * PX_PER_HOUR }} />
                 )}
-                {chips.map((c) => chip(entryByKey.get(c.key)!, {
+                {/* The slot click is a pointer shortcut; keyboard users add through this button, shown when focused. */}
+                <button
+                  type="button"
+                  className="pointer-events-none absolute left-1 top-1 z-20 rounded border bg-background px-2 py-1 text-xs opacity-0 shadow-sm focus:pointer-events-auto focus:opacity-100"
+                  onClick={(e) => { e.stopPropagation(); setCreate({ at: new Date(day.getFullYear(), day.getMonth(), day.getDate(), 9) }); }}
+                  data-testid="schedule-day-add"
+                >
+                  {t("schedulePanel.addOnDay")}
+                </button>
+                {chips.map((c) => chip(entryByKey.get(c.key)!, "grid", {
                   position: "absolute",
                   top: c.top + 1,
                   height: c.twoLine ? TWO_LINE_PX : CHIP_PX,
@@ -380,16 +420,32 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                   width: `calc(${100 / c.lanes}% - 4px)`,
                 }, c.twoLine))}
                 {overflow.map((o) => (
-                  <button
-                    key={o.top}
-                    type="button"
-                    className="absolute right-0.5 z-10 rounded border bg-background px-1 text-[10px] font-semibold shadow-sm"
-                    style={{ top: o.top + CHIP_PX + 2 }}
-                    onClick={(e) => { e.stopPropagation(); setMode("day"); setAnchor(day); setSelected(o.keys[0] ?? null); }}
-                    data-testid="schedule-more"
-                  >
-                    {t("schedulePanel.more", { count: String(o.keys.length) })}
-                  </button>
+                  // The hidden entries open from here in every layout, including the narrow day view that has no side list.
+                  <Popover key={o.top} open={morePopover === `${day.getTime()}:${o.top}`}
+                    onOpenChange={(open) => setMorePopover(open ? `${day.getTime()}:${o.top}` : null)}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="absolute right-0.5 z-10 rounded border bg-background px-1 text-[10px] font-semibold shadow-sm"
+                        style={{ top: o.top + CHIP_PX + 2 }}
+                        onClick={(e) => e.stopPropagation()}
+                        data-testid="schedule-more"
+                      >
+                        {t("schedulePanel.more", { count: String(o.keys.length) })}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-64" align="end" collisionPadding={16} onClick={(e) => e.stopPropagation()}>
+                      <div className="mb-2 text-xs font-semibold">{t("schedulePanel.hiddenItems", { count: String(o.keys.length) })}</div>
+                      <div className="flex flex-col gap-1" data-testid="schedule-more-list">
+                        {o.keys.map((key) => chip(entryByKey.get(key)!, "more", { height: CHIP_PX }, false))}
+                      </div>
+                      {days.length > 1 && (
+                        <Button size="sm" variant="outline" className="mt-2" onClick={() => { setMorePopover(null); setMode("day"); setAnchor(day); }}>
+                          {t("schedulePanel.openDay")}
+                        </Button>
+                      )}
+                    </PopoverContent>
+                  </Popover>
                 ))}
               </div>
             );
@@ -406,8 +462,8 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
               : [];
             return (
               <div key={day.toISOString()} className="flex min-w-0 flex-col gap-0.5 border-l p-0.5">
-                {ran.map((e) => chip(e, { height: CHIP_PX }, false))}
-                {pendingToday.map((r) => chip({ key: `shutdown:${r.id}`, routine: r, atMs: today.getTime(), status: "scheduled" }, { height: CHIP_PX }, false))}
+                {ran.map((e) => chip(e, "shutdown", { height: CHIP_PX }, false))}
+                {pendingToday.map((r) => chip({ key: `shutdown:${r.id}`, routine: r, atMs: today.getTime(), status: "scheduled" }, "shutdown", { height: CHIP_PX }, false))}
               </div>
             );
           })}
@@ -424,7 +480,9 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2 text-xs">
           {list.map((e) => (
             <li key={e.key}>
-              <button type="button" className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-muted" onClick={() => setSelected(e.key)}>
+              {withPopover(e, "list", (
+              <button type="button" className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-muted" aria-label={chipLabel(e)}
+                data-testid="schedule-day-list-row">
                 <span className="w-10 shrink-0 tabular-nums">{e.routine.trigger === "shutdown" ? t("schedulePanel.onShutdownRow") : hhmm(e.atMs)}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-semibold">{routineTitle(e.routine)}</span>
@@ -433,6 +491,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                   </span>
                 </span>
               </button>
+              ))}
             </li>
           ))}
         </ul>
@@ -452,7 +511,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
           <div key={d.toISOString()} className={`relative flex min-w-0 flex-col gap-0.5 overflow-hidden border-b border-l p-1 ${inMonth ? "" : "text-muted-foreground"} ${sameDay(d, today) ? "bg-muted/(--opacity-light)" : ""}`}
             data-testid="schedule-month-cell">
             <div className="font-semibold">{d.getDate()}</div>
-            {list.slice(0, MONTH_LINES).map((e) => chip(e, undefined, false, "h-[18px] border-0 bg-transparent px-0 text-foreground"))}
+            {list.slice(0, MONTH_LINES).map((e) => chip(e, "cell", undefined, false, "h-[18px] border-0 bg-transparent px-0 text-foreground"))}
             {list.length > MONTH_LINES && (
               <Popover open={dayPopover === index} onOpenChange={(open) => setDayPopover(open ? index : null)}>
                 <PopoverTrigger asChild>
@@ -464,7 +523,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                   <div className="mb-2 text-sm font-semibold">
                     {t("schedulePanel.dayPopoverTitle", { month: String(d.getMonth() + 1), day: String(d.getDate()), weekday: weekdayLabel(d), count: String(list.length) })}
                   </div>
-                  <div className="flex flex-col gap-1">{list.map((e) => chip(e, { height: CHIP_PX }, false))}</div>
+                  <div className="flex flex-col gap-1">{list.map((e) => chip(e, "day-popover", { height: CHIP_PX }, false))}</div>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => { setDayPopover(null); setMode("day"); setAnchor(d); }}>{t("schedulePanel.openDay")}</Button>
                     <Button size="sm" variant="outline" onClick={() => { setDayPopover(null); setCreate({ at: new Date(d.getFullYear(), d.getMonth(), d.getDate(), 9) }); }}>
@@ -486,9 +545,11 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   return (
     <div ref={setContainer} className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-testid="schedule-panel" data-narrow={narrow ? "1" : "0"}>
       <div className="flex flex-wrap items-center gap-2 border-b pb-2">
-        <div className="flex gap-1" role="tablist" aria-label={t("schedulePanel.viewTabs")}>
-          {(["day", "week", "month"] as const).map((m) => (
-            <button key={m} type="button" role="tab" aria-selected={mode === m}
+        <div className="flex gap-1" role="tablist" aria-label={t("schedulePanel.viewTabs")} onKeyDown={onTabKey}>
+          {VIEW_MODES.map((m) => (
+            <button key={m} type="button" role="tab" id={`${tabIds}-tab-${m}`} aria-selected={mode === m} aria-controls={`${tabIds}-panel`}
+              tabIndex={mode === m ? 0 : -1}
+              ref={(el) => { tabRefs.current[m] = el; }}
               className={`rounded px-2 py-1 text-sm ${mode === m ? "border-b-2 border-foreground font-semibold" : "text-muted-foreground"}`}
               onClick={() => setMode(m)}>
               {t(`schedulePanel.view_${m}`)}
@@ -535,7 +596,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden" role="tabpanel" id={`${tabIds}-panel`} aria-labelledby={`${tabIds}-tab-${mode}`}>
         {mode === "month" ? monthGrid(range.days) : timeGrid(range.days)}
         {mode === "day" && !narrow && dayList(range.days[0]!)}
       </div>

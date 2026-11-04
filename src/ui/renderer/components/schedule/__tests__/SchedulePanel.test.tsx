@@ -2,6 +2,7 @@ import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { SchedulePanel } from "../SchedulePanel.js";
+import { ScheduleItemPopover } from "../ScheduleItemPopover.js";
 import type { AveApi } from "../../../types.js";
 import type { RoutineOccurrence, RoutineRecord, RoutineRun } from "../../../../../shared/routines-types.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../../installed-content.js";
@@ -170,6 +171,74 @@ describe("SchedulePanel", () => {
     fireEvent.click(more);
     expect((await view.findByText(/11월 5일 \(목\) · 5개/))).toBeTruthy();
     expect(view.getByRole("button", { name: "이 날 일일 보기" })).toBeTruthy();
+  });
+
+  it("a refresh that moves `at` forward after a fire neither dirties the open form nor sends the old time back", async () => {
+    const onSave = vi.fn(async () => null);
+    const props = { recentRuns: [], running: false, onClose: () => {}, onSave, onPause: () => {}, onResume: () => {}, onRunNow: () => {}, onDelete: () => {} };
+    const view = render(<ScheduleItemPopover {...props} routine={routine()} />);
+    view.rerender(<ScheduleItemPopover {...props} routine={routine({ schedule: { at: at(6, 9), repeat: { kind: "daily" } }, lastFiredAt: at(5, 9) })} />);
+    const save = view.getByRole("button", { name: "저장" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect((view.getByDisplayValue("2026-11-06") as HTMLInputElement).value).toBe("2026-11-06");
+    fireEvent.change(view.getByPlaceholderText("데일리 리포트"), { target: { value: "새 제목" } });
+    await act(async () => { fireEvent.click(save); });
+    expect(onSave).toHaveBeenCalledWith({ title: "새 제목" });
+  });
+
+  it("day view: an item hidden behind +N opens from +N and from its row in the day list", async () => {
+    const routines = ["a", "b", "c", "d"].map((id) => routine({ id, title: `항목 ${id}` }));
+    const occurrences: RoutineOccurrence[] = routines.map((r) => ({ routineId: r.id, at: at(4, 14), status: "scheduled" }));
+    const api = makeApi({ routines, occurrences });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByRole("tab", { name: "일일" }));
+    fireEvent.click(await view.findByTestId("schedule-more"));
+    const hidden = within(await view.findByTestId("schedule-more-list")).getByTestId("schedule-chip");
+    expect(hidden.getAttribute("data-routine-id")).toBe("d");
+    fireEvent.click(hidden);
+    expect(within(await view.findByTestId("schedule-item-popover")).getByText("항목 d")).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(view.queryByTestId("schedule-item-popover")).toBeNull());
+
+    const rows = view.getAllByTestId("schedule-day-list-row");
+    fireEvent.click(rows[3]!);
+    expect(within(await view.findByTestId("schedule-item-popover")).getByText("항목 d")).toBeTruthy();
+  });
+
+  it("month view: a chip shown in the cell and in the day popover opens only the popover that was used", async () => {
+    const occurrences: RoutineOccurrence[] = [8, 9, 10, 13].map((h) => ({ routineId: "build", at: at(5, h), status: "scheduled" }));
+    const api = makeApi({ routines: [routine()], occurrences });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByRole("tab", { name: "월간" }));
+    fireEvent.click(await view.findByTestId("schedule-month-more"));
+    const inPopover = (await view.findByText(/11월 5일 \(목\) · 4개/)).parentElement!;
+    fireEvent.click(within(inPopover).getAllByTestId("schedule-chip")[0]!);
+    await waitFor(() => expect(view.getAllByTestId("schedule-item-popover")).toHaveLength(1));
+  });
+
+  it("names a chip's state, adds from the keyboard, and moves between view tabs with the arrow keys", async () => {
+    const api = makeApi({
+      routines: [routine()],
+      runs: [{ routineId: "build", firedAt: at(3, 9), status: "failed" }],
+    });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    expect(await view.findByRole("button", { name: "09:00 빌드 상태 확인, 실패" })).toBeTruthy();
+
+    fireEvent.click(view.getAllByTestId("schedule-day-add")[3]!);
+    const modal = await view.findByTestId("add-routine-modal");
+    expect(within(modal).getByDisplayValue("2026-11-05")).toBeTruthy();
+    fireEvent.click(within(modal).getByRole("button", { name: /취소/ }));
+
+    const week = view.getByRole("tab", { name: "주간" });
+    const panel = view.getByRole("tabpanel");
+    expect(week.getAttribute("aria-controls")).toBe(panel.id);
+    expect(panel.getAttribute("aria-labelledby")).toBe(week.id);
+    week.focus();
+    fireEvent.keyDown(week, { key: "ArrowRight" });
+    const month = view.getByRole("tab", { name: "월간" });
+    expect(month.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(month);
+    expect(week.tabIndex).toBe(-1);
   });
 
   it("shows held-back and missing-extension items above the grid with a delete", async () => {

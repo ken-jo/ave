@@ -61,6 +61,14 @@ export const en = {
   "schedulePanel.weekday4": "Thu",
   "schedulePanel.weekday5": "Fri",
   "schedulePanel.weekday6": "Sat",
+  "schedulePanel.status_scheduled": "upcoming",
+  "schedulePanel.status_done": "done",
+  "schedulePanel.status_failed": "failed",
+  "schedulePanel.status_running": "running",
+  "schedulePanel.status_paused": "paused",
+  "schedulePanel.status_missed": "missed",
+  "schedulePanel.chipLabel": "{time} {title}, {status}",
+  "schedulePanel.hiddenItems": "{count} more at this time",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -125,4 +133,12 @@ export const ko: Record<keyof typeof en, string> = {
   "schedulePanel.weekday4": "목",
   "schedulePanel.weekday5": "금",
   "schedulePanel.weekday6": "토",
+  "schedulePanel.status_scheduled": "예정",
+  "schedulePanel.status_done": "완료",
+  "schedulePanel.status_failed": "실패",
+  "schedulePanel.status_running": "실행 중",
+  "schedulePanel.status_paused": "일시정지",
+  "schedulePanel.status_missed": "놓침",
+  "schedulePanel.chipLabel": "{time} {title}, {status}",
+  "schedulePanel.hiddenItems": "이 시각 항목 {count}개 더",
 };

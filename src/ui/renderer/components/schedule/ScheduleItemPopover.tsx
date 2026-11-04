@@ -70,22 +70,26 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
     intervalMinutes: repeat?.kind === "interval" ? String(Math.round(repeat.intervalMs / 60_000)) : "60",
     cron: repeat?.kind === "cron" ? repeat.expression : "",
   };
-  const [form, setForm] = useState(initial);
+  type FormKey = keyof typeof initial;
+  // Only what the user typed is held here. Every other field follows the latest record, so a refresh after the item fires
+  // (which moves `at` forward) neither marks the form dirty nor sends the old time back.
+  const [edits, setEdits] = useState<Partial<typeof initial>>({});
+  const form = { ...initial, ...edits };
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const dirty = (Object.keys(initial) as Array<keyof typeof initial>).some((key) => form[key] !== initial[key]);
-  const set = <K extends keyof typeof initial>(key: K, value: (typeof initial)[K]) => setForm((prev) => ({ ...prev, [key]: value }));
+  const changed = (key: FormKey) => edits[key] !== undefined && edits[key] !== initial[key];
+  const dirty = (Object.keys(initial) as FormKey[]).some(changed);
+  const set = <K extends FormKey>(key: K, value: (typeof initial)[K]) => setEdits((prev) => ({ ...prev, [key]: value }));
 
   const buildPatch = (): RoutineEditPatch | null => {
     const patch: RoutineEditPatch = {};
-    if (form.title !== initial.title) patch.title = form.title.trim() ? form.title.trim() : null;
-    if (form.text !== initial.text) {
+    if (changed("title")) patch.title = form.title.trim() ? form.title.trim() : null;
+    if (changed("text")) {
       if (!form.text.trim()) return null;
       if (routine.execution === "llm-session") patch.prePrompt = form.text.trim();
       else patch.notificationTitle = form.text.trim();
     }
-    const scheduleChanged = form.date !== initial.date || form.time !== initial.time || form.repeat !== initial.repeat
-      || form.intervalMinutes !== initial.intervalMinutes || form.cron !== initial.cron;
+    const scheduleChanged = (["date", "time", "repeat", "intervalMinutes", "cron"] as const).some(changed);
     if (scheduled && scheduleChanged) {
       if (form.repeat === "cron") {
         if (!isValidCronExpression(form.cron.trim())) return null;
@@ -116,6 +120,7 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
     const failure = await props.onSave(patch);
     setSaving(false);
     if (failure) setError(failure);
+    else setEdits({});
   };
 
   const attention = routine.needsAttention
