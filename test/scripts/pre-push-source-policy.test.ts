@@ -583,15 +583,43 @@ describe("pre-push message catalog selection", () => {
     ["test/e2e/panel.spec.ts", 'import { t } from "../../src/i18n/runtime.js"; export const expected = t("panel.title");'],
     ["docs/panel.md", '"panel.title"'],
   ]);
-  const selectFixture = (before: string | null, after: string, tree = fixtureTree) =>
+  const selectFixture = (before: string | null, after: string, tree = fixtureTree, allowKeyChanges = false, includeUnresolvedConsumers = false) =>
     selectMessageCatalogChecks(
       [{ ...(before === null ? added : modified)(`${MESSAGES}/generated/panel.ts`), baseSha: "base", localSha: "local" }],
       {
+        allowKeyChanges,
+        includeUnresolvedConsumers,
         readBlob: (sha, path) => (path === `${MESSAGES}/generated/panel.ts` ? (sha === "base" ? before : after) : null),
         trackedFiles: [...new Set([...runtimeTree.keys(), ...tree.keys()])],
         readTrackedFile: (path) => tree.get(path) ?? runtimeTree.get(path) ?? null,
       },
     );
+
+  it("retains unresolved tests and production consumers instead of omitting them in CI", () => {
+    const tree = new Map(fixtureTree);
+    tree.set("src/ui/dynamic.ts", 'import { t } from "../i18n/runtime.js"; export const title = (key: string) => t(key);');
+    tree.set("src/ui/__tests__/dynamic.test.ts", 'import { t } from "../../i18n/runtime.js"; export const title = (key: string) => t(key);');
+    expect(selectFixture(fragment("Panel"), fragment("New"), tree).reason).toContain("unresolved dynamic");
+    const plan = selectFixture(fragment("Panel"), fragment("New"), tree, false, true);
+    expect(plan.reason).toBeUndefined();
+    expect(plan.consumerModules).toContain("src/ui/dynamic.ts");
+    expect(plan.testFiles).toContain("src/ui/__tests__/dynamic.test.ts");
+  });
+
+  it("allows static key additions and removals only under the explicit CI policy", () => {
+    const before = fragment("Panel");
+    const after = before.replace('"panel.title": "Panel",', '"panel.title": "Panel", "panel.subtitle": "Subtitle",')
+      .replace('"panel.title": "패널",', '"panel.title": "패널", "panel.subtitle": "부제",');
+    expect(selectFixture(before, after).reason).toContain("outside attributable message values");
+    expect(selectFixture(before, after, fixtureTree, true).namespaces).toEqual(["panel"]);
+    expect(selectFixture(after, before, fixtureTree, true).namespaces).toEqual(["panel"]);
+    expect(selectFixture(before, '// changed scaffold\n' + after, fixtureTree, true).reason).toContain("outside attributable message values");
+    expect(selectFixture(before, after + 'en["panel.title"] = "mutated";', fixtureTree, true).reason).toContain("shape");
+    const reordered = after.replace('"panel.title": "Panel", "panel.subtitle": "Subtitle",\n  "other.label": "Other",',
+      '"other.label": "Other", "panel.title": "Panel", "panel.subtitle": "Subtitle",');
+    expect(reordered).not.toBe(after);
+    expect(selectFixture(before, reordered, fixtureTree, true).reason).toContain("outside attributable message values");
+  });
 
   it("selects the modules and tests that name a changed namespace, the catalog readers and the i18n suites", () => {
     expect(selectFixture(fragment("Panel"), fragment("Panel heading"))).toEqual({

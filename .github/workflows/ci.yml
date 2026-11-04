@@ -1,13 +1,9 @@
 name: CI
-# Test-only diffs (collected tests and fixture assets only) run affected tests
-# on every PR base and main push, never the full suite. Test helper and setup
-# modules, the Vitest config, config/, scripts/ and .github/ are never
-# test-only. Main pushes use trusted selection over before..HEAD, like
-# non-integration PRs;
-# uncertainty falls back to full. Integration-base PRs keep traced selection.
-# Non-test-only category PRs, release tags, nightly schedules and manual
-# dispatches run the full suite. Coverage runs only on schedule and dispatch.
-# scripts/run-ci-suite.mjs owns the rule and records it in the job summary.
+# Patch and category PRs use trusted affected tests plus change-triggered domain
+# checks. Native platforms run on backend/global changes, not renderer-only
+# patches. Unknown impact keeps full verification. Tags, nightly and manual
+# dispatch run the full suite; nightly and manual dispatch enforce coverage.
+# scripts/run-ci-suite.mjs owns selection and records the decision in summaries.
 on:
   pull_request:
     branches: [main, "integration/**"]
@@ -20,6 +16,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   # The event is part of the group so the nightly run on main never cancels,
   # and is never cancelled by, the run of a push to main. A push groups
@@ -46,6 +43,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     outputs:
       docs_only: ${{ steps.docs-impact.outputs.docs_only }}
+      platform_checks: ${{ steps.plan.outputs.platform_checks || (steps.docs-impact.outputs.docs_only == 'true' && 'false' || 'unknown') }}
       # One shard when the plan step did not run (a docs-only change), so the
       # matrix below always reads a list.
       shards: ${{ steps.plan.outputs.shards || '[1]' }}
@@ -309,7 +307,7 @@ jobs:
         # locks and the must-run set; a test helper or setup module is never
         # test-only and runs full off integration bases. Other main pushes use trusted selection
         # over the push's before..HEAD diff, with uncertainty falling back to full.
-        # Non-test-only category merges, tags, schedule and dispatch run full.
+        # Category merges use strict affected selection; tags, schedule and dispatch run full.
         # Integration-base PRs retain best traced selection on uncertainty and
         # fail on an unresolved diff. Local pre-push is unchanged.
         # Only schedule and dispatch instrument coverage and enforce thresholds.
@@ -340,14 +338,14 @@ jobs:
   build-and-test:
     # The required check on main. It reports success only when the build job
     # and every Vitest shard succeeded (a docs-only change skips the shards
-    # and checks its documents in the build job), then verifies Windows SDK
+    # and checks its documents in the build job), and every selected native platform succeeded, then verifies SDK
     # packaging and runs hygiene gates. `always()` keeps it running when a needed job failed
     # and when the run was cancelled, so a red or cancelled shard turns this
     # check red instead of skipping it: a skipped job reports success to
     # branch protection. Its first step is `always()` too, so a cancelled run
     # cannot skip it either, and it fails on any upstream result other than
     # success (cancelled and skipped included).
-    needs: [build, vitest]
+    needs: [build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -372,6 +370,10 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           VITEST_RESULT: ${{ needs.vitest.result }}
           DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
+          PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
+          WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}
+          MACOS_RESULT: ${{ needs.macos-permission-tests.result }}
+          LINUX_RESULT: ${{ needs.linux-confinement-tests.result }}
         run: |
           if [ "$BUILD_RESULT" != "success" ]; then
             echo "::error::the build job ended $BUILD_RESULT"
@@ -388,6 +390,18 @@ jobs:
             echo "::error::the Vitest shards ended $VITEST_RESULT"
             exit 1
           fi
+          if [ "$PLATFORM_CHECKS" != "true" ] && [ "$PLATFORM_CHECKS" != "false" ]; then
+            echo "::error::native platform selection was not resolved"
+            exit 1
+          fi
+          expected=skipped
+          if [ "$PLATFORM_CHECKS" = "true" ]; then expected=success; fi
+          for result in "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
+            if [ "$result" != "$expected" ]; then
+              echo "::error::native platform check ended $result, expected $expected"
+              exit 1
+            fi
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.build.outputs.docs_only != 'true'
         with:
@@ -522,6 +536,14 @@ jobs:
         if: needs.build.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:gate-core && bun run test:knip-gate
+      - name: Report the total runner budget
+        if: always() && needs.build.outputs.docs_only != 'true' && hashFiles('ave/scripts/report-ci-budget.mjs') != ''
+        # Timing service failures are advisory; product checks above stay required.
+        continue-on-error: true
+        working-directory: ave
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node --test test/scripts/report-ci-budget.test.mjs && node scripts/report-ci-budget.mjs
 
   windows-permission-tests:
     name: Windows permission path tests
@@ -531,11 +553,10 @@ jobs:
     concurrency:
       group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    # A pull request into an integration/* category branch runs only
-    # build-and-test; this job runs for pull requests into main and every
-    # event (main push, tag, schedule, dispatch). These jobs run only the
-    # explicit platform regression files below, never the whole suite.
-    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    # Selected backend/global patches and full runs keep the complete native
+    # list. Renderer-only patches do not allocate a platform runner.
+    needs: build
+    if: needs.build.outputs.platform_checks == 'true'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
     # scripts/build-windows-job.ps1 finds through vswhere. Pinned to
@@ -869,11 +890,10 @@ jobs:
     concurrency:
       group: ci-platform-${{ github.workflow }}-macos-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    # A pull request into an integration/* category branch runs only
-    # build-and-test; this job runs for pull requests into main and every
-    # event (main push, tag, schedule, dispatch). These jobs run only the
-    # explicit platform regression files below, never the whole suite.
-    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    # Selected backend/global patches and full runs keep the complete native
+    # list. Renderer-only patches do not allocate a platform runner.
+    needs: build
+    if: needs.build.outputs.platform_checks == 'true'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The adversarial suite's Electron control runs the dev Electron binary
     # (never the packaged app), so the runner needs a logged-in GUI session.
@@ -1015,11 +1035,10 @@ jobs:
     concurrency:
       group: ci-platform-${{ github.workflow }}-linux-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    # A pull request into an integration/* category branch runs only
-    # build-and-test; this job runs for pull requests into main and every
-    # event (main push, tag, schedule, dispatch). These jobs run only the
-    # explicit platform regression files below, never the whole suite.
-    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    # Selected backend/global patches and full runs keep the complete native
+    # list. Renderer-only patches do not allocate a platform runner.
+    needs: build
+    if: needs.build.outputs.platform_checks == 'true'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.

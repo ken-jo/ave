@@ -13,8 +13,9 @@ export interface CiSuitePlan {
 export declare function loadsComputedImport(text: string): boolean;
 export declare function namedRepositoryPaths(testPath: string, text: string): string[];
 export declare function namesChangedPath(named: string, changedPath: string): boolean;
-export declare function expandMustRunTests(document: unknown, trackedTests: readonly string[]): string[];
+export declare function expandMustRunTests(document: unknown, trackedTests: readonly string[], changedPaths?: readonly string[]): string[];
 export declare function selectCiTests(input: {
+  selectCatalog?: (entries: GitRawDiffEntry[]) => { testFiles: string[]; consumerModules: string[]; reason?: undefined } | { reason: string };
   baseRef?: string;
   changes: GitRawDiffEntry[];
   trackedTests: readonly string[];
@@ -35,3 +36,5 @@ export declare function planCiSuite(
   eventName: string | undefined,
   refs?: { headRef?: string; baseRef?: string; ref?: string; before?: string },
 ): CiSuitePlan;
+
+export declare function platformChecksRequired(eventName: string, plan: CiSuitePlan, changes?: readonly GitRawDiffEntry[], baseRef?: string): boolean;

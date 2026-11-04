@@ -17,6 +17,7 @@ import {
   ciSuiteArguments,
   FULL_RUN_SHARDS,
   parseCiShard,
+  platformChecksRequired,
   planCiSuite,
   readPlanFile,
   runsCoverage,
@@ -295,13 +296,21 @@ describe("CI test selection fallbacks", () => {
     }
   });
 
-  it.each(["src/core/route-engine.ts", "src/__tests__/vitest-ave-home.ts"])("runs full for a non-test-only category merge: %s", (path) => {
-    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${path}\0`], () => {
-      expect(planCiSuite("pull_request", { headRef: "integration/permissions", baseRef: "main" })).toEqual({
-        mode: "full",
-        reason: "integration/permissions -> main is a non-test-only category merge to main, which runs the full suite",
-        tests: [],
-      });
+  it("uses affected tests for a traceable category merge", () => {
+    const source = "src/core/route-engine.ts";
+    const test = "src/core/__tests__/route-engine.test.ts";
+    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${source}\0`, trackedTests.join("\0"), JSON.stringify([{ source, tests: [test] }])], () => {
+      const plan = planCiSuite("pull_request", { headRef: "integration/core", baseRef: "main" });
+      expect(plan.mode).toBe("affected");
+      expect(plan.reason).toContain("category merge: affected checks");
+      expect(plan.tests).toContain(test);
+      expect(plan.tests).not.toContain("src/permissions/__tests__/powershell-encoded-unicode.test.ts");
+    });
+  });
+
+  it("retains full verification for a global input at the category boundary", () => {
+    withGitOutputs(["head first second\n", ":100644 100644 aaaa bbbb M\0vitest.config.ts\0", trackedTests.join("\0")], () => {
+      expect(planCiSuite("pull_request", { headRef: "integration/core", baseRef: "main" }).mode).toBe("full");
     });
   });
 
@@ -326,7 +335,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("test-only category merge");
       expect(plan.reason).toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-engine.ts"])]));
       expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", "first", "HEAD", "--"]);
     });
   });
@@ -337,7 +346,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("main push: trusted selection over before..HEAD");
       expect(plan.reason).toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-engine.ts"])]));
       const calls = vi.mocked(spawnSync).mock.calls;
       expect(calls[0][1]).toEqual(["merge-base", "--is-ancestor", before, "HEAD"]);
       expect(calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", before, "HEAD", "--"]);
@@ -367,7 +376,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("main push: trusted selection over before..HEAD");
       expect(plan.reason).not.toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...mustRunTests]));
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-engine.ts"])]));
     });
   });
 
@@ -578,7 +587,7 @@ describe("CI selection for integration bases", () => {
     expect(scoped(path, discovery)).toEqual({
       mode: "affected",
       tests: [...new Set([changed, reader, ...relatedTests, ...locks, mustRun])].sort(),
-      reason: `${fullReason}; integration base: traced selection, whole suite at the category merge; ` +
+      reason: `${fullReason}; integration base: traced selection, strict fallback at the main boundary; ` +
         `2 changed module(s) reach ${relatedCount} test file(s); 1 changed test file(s); ` +
         `1 test file(s) name a changed path; ${locks.length} lock suite file(s); 1 must-run file(s)`,
     });
@@ -633,7 +642,7 @@ describe("unresolved pull request diffs", () => {
 describe("the must-run set", () => {
   it("names security, permissions, sandbox, contract, IPC and naming tests that all exist", () => {
     expect(Object.keys((mustRunDocument as { groups: object }).groups).sort())
-      .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "sandbox", "security", "tree-invariants"]);
+      .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "sandbox", "security", "smoke", "tree-invariants"]);
     expect(mustRunTests).toContain("src/permissions/__tests__/runner-decisions.test.ts");
     expect(mustRunTests).toContain("src/ipc/__tests__/channel-inventory.test.ts");
     expect(mustRunTests).toContain("src/plugins/__tests__/tool-name-policy.test.ts");
@@ -786,5 +795,58 @@ describe("raw diff parsing shared with the pre-push hook", () => {
     ]);
     expect(parseGitRawDiff(":100644 100644 aaaa bbbb M\0")).toBeNull();
     expect(parseGitRawDiff("not a diff\0")).toBeNull();
+  });
+});
+
+
+describe("change-triggered mandatory domains and native runners", () => {
+  it("keeps a renderer patch out of unrelated exhaustive security domains", () => {
+    const selected = expandMustRunTests(mustRunDocument, trackedTests, ["src/ui/renderer/tabs/DocumentSettingsContent.tsx"]);
+    expect(selected).toContain("test/scripts/run-ci-suite.test.ts");
+    expect(selected).toContain("src/__tests__/preload-shape.test.ts");
+    expect(selected).toContain("src/core/model-catalog/__tests__/cache-concurrency.test.ts");
+    expect(selected).not.toContain("src/permissions/__tests__/powershell-encoded-unicode.test.ts");
+    expect(selected.length).toBeLessThan(mustRunTests.length / 2);
+  });
+
+  it.each(["src/permissions/rules/powershell-encoded-command.ts", "src/shared/shell-path.ts", "src/tools/bash.ts"])("keeps the full permission domain when %s changes", (path) => {
+    expect(expandMustRunTests(mustRunDocument, trackedTests, [path]))
+      .toContain("src/permissions/__tests__/powershell-encoded-unicode.test.ts");
+  });
+
+  it("validates dormant groups and rejects malformed or misspelled triggers", () => {
+    const doc = { groups: { smoke: ["test/smoke.test.ts"], native: ["test/gone.test.ts"] }, triggers: { native: ["src/native/"] } };
+    expect(() => expandMustRunTests(doc, ["test/smoke.test.ts"], ["src/ui/foo.ts"])).toThrow("selects no collected test file");
+    for (const triggers of [{ typo: ["src/"] }, { smoke: [] }, { smoke: ["../outside"] }]) {
+      expect(() => expandMustRunTests({ groups: { smoke: ["test/smoke.test.ts"] }, triggers }, ["test/smoke.test.ts"], []))
+        .toThrow("invalid must-run triggers");
+    }
+  });
+
+  const affected = { mode: "affected" as const, reason: "related", tests: ["test/a.test.ts"] };
+  it("only omits native runners for a proven renderer-only affected diff", () => {
+    const ui = [modified("src/ui/renderer/tabs/DocumentSettingsContent.tsx")];
+    expect(platformChecksRequired("pull_request", affected, ui)).toBe(false);
+    expect(platformChecksRequired("push", affected, ui)).toBe(false);
+    for (const path of ["src/main/main.ts", "src/shared/path.ts", "src/tools/bash.ts", "src/ui/renderer/types.ts", "native/helper.c", "unknown"]) {
+      expect(platformChecksRequired("pull_request", affected, [...ui, modified(path)]), path).toBe(true);
+    }
+    expect(platformChecksRequired("pull_request", affected)).toBe(true);
+    expect(platformChecksRequired("push", affected, [])).toBe(true);
+    expect(platformChecksRequired("schedule", affected, ui)).toBe(true);
+    expect(platformChecksRequired("workflow_dispatch", affected, ui)).toBe(true);
+    expect(platformChecksRequired("push", { ...affected, mode: "full" }, ui)).toBe(true);
+    expect(platformChecksRequired("pull_request", affected, [modified("src/main/main.ts")], "integration/core")).toBe(false);
+  });
+
+  it("uses catalog consumer selection and keeps its failure conservative", () => {
+    const changes = [modified("src/i18n/messages/generated/chat.ts")];
+    const files = ["test/consumer.test.ts", "test/smoke.test.ts"];
+    const input = { changes, trackedTests: files, mustRunTests: [files[1]!], readText: () => "export {};", discoverRelated: () => [] };
+    const selected = selectCiTests({ ...input, selectCatalog: () => ({ testFiles: [files[0]!], consumerModules: [] }) });
+    expect(selected.mode).toBe("affected");
+    expect(selected.tests).toEqual(files);
+    expect(selectCiTests({ ...input, selectCatalog: () => ({ reason: "unknown catalog shape" }) }))
+      .toEqual({ mode: "full", reason: "unknown catalog shape", tests: [] });
   });
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Plan test selection once; shards consume that exact file list.
-// Test-only diffs stay affected-only; category merges and untrusted selections use the full suite.
+// Patch and category merges use affected tests; untrusted selections retain the full backstop.
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -16,6 +16,7 @@ import {
   isTestOnlyDiff,
   isTestSupportFile,
   selectFastSourceChecks,
+  selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
 
@@ -95,10 +96,17 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
 }
 
 // Directory entries expand to collected tests; stale entries selecting nothing fail.
-export function expandMustRunTests(document, trackedTests) {
+export function expandMustRunTests(document, trackedTests, changedPaths) {
   const groups = document?.groups;
   if (!groups || typeof groups !== "object" || Array.isArray(groups)) {
     throw new Error(`${MUST_RUN_TESTS_PATH} must hold a "groups" object`);
+  }
+  const triggers = document.triggers ?? {};
+  if (!triggers || typeof triggers !== "object" || Array.isArray(triggers)) throw new Error("must-run triggers must be an object");
+  for (const [group, paths] of Object.entries(triggers)) {
+    if (!Object.hasOwn(groups, group) || !Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || !isCanonicalGitPath(path.replace(/\/$/u, "")))) {
+      throw new Error(`invalid must-run triggers for ${group}`);
+    }
   }
   const selected = new Set();
   for (const [group, entries] of Object.entries(groups)) {
@@ -115,7 +123,9 @@ export function expandMustRunTests(document, trackedTests) {
       if (matches.length === 0) {
         throw new Error(`${MUST_RUN_TESTS_PATH} group "${group}" entry ${entry} selects no collected test file`);
       }
-      for (const test of matches) selected.add(test);
+      const triggered = changedPaths === undefined || !Object.hasOwn(triggers, group)
+        || changedPaths.some((path) => triggers[group].some((prefix) => path.startsWith(prefix)));
+      if (triggered) for (const test of matches) selected.add(test);
     }
   }
   if (selected.size === 0) throw new Error(`${MUST_RUN_TESTS_PATH} must select at least one collected test file`);
@@ -203,7 +213,7 @@ function testNamesChangedPath(test, changedPaths, readText) {
 
 // Related-test discovery returns null on failure, not an empty successful result.
 // Integration bases retain the best traced selection when coverage is uncertain.
-export function selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated, baseRef }) {
+export function selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated, selectCatalog, baseRef }) {
   const integrationBase = typeof baseRef === "string" && baseRef.startsWith("integration/");
   const testOnly = isTestOnlyDiff(changes);
   const scoped = integrationBase || testOnly;
@@ -220,12 +230,21 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
     if (!integrationBase) return full(reason);
     fullReasons.push(`${reason} at the category merge`);
   }
-  if (fast.messageCatalogEntries.length > 0) {
-    const reason = `${fast.messageCatalogEntries[0].path} is message catalog data`;
-    if (!integrationBase) return full(reason);
-    fullReasons.push(reason);
-  }
   if (scoped) fast = { ...fast, ...traceableInputs(changes, trackedTests) };
+  if (fast.messageCatalogEntries.length > 0) {
+    const catalog = selectCatalog?.(fast.messageCatalogEntries);
+    const reason = catalog?.reason ?? (!catalog ? `${fast.messageCatalogEntries[0].path} is message catalog data` : null);
+    if (reason) {
+      if (!integrationBase) return full(reason);
+      fullReasons.push(reason);
+    } else {
+      const catalogPaths = new Set(fast.messageCatalogEntries.map(({ path }) => path));
+      fast = { ...fast,
+        testFiles: [...new Set([...fast.testFiles, ...catalog.testFiles])],
+        relatedFiles: [...new Set([...fast.relatedFiles.filter((path) => !catalogPaths.has(path)), ...catalog.consumerModules])],
+      };
+    }
+  }
   for (const path of fast.relatedFiles) {
     const text = readText(path);
     const reason = typeof text !== "string" ? `${path} could not be read`
@@ -294,7 +313,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
   }
   const warnings = [...new Set(fullReasons)].map((reason) => `${reason}; `).join("");
   const selectionRule = testOnly ? "test-only diff: affected tests on every base; " : integrationBase
-    ? "integration base: traced selection, whole suite at the category merge; " : "";
+    ? "integration base: traced selection, strict fallback at the main boundary; " : "";
   return {
     mode: "affected",
     reason:
@@ -321,7 +340,7 @@ function trackedVitestFiles() {
 
 function rawDiff(base, what) {
   const entries = parseGitRawDiff(git(["diff", "--no-renames", "--raw", "-z", base, "HEAD", "--"]));
-  return entries === null ? { reason: `${what} could not be parsed` } : { entries };
+  return entries === null ? { reason: `${what} could not be parsed` } : { entries, base };
 }
 
 function pullRequestChanges() {
@@ -358,7 +377,7 @@ function discoverRelatedTests(paths) {
   }
 }
 
-// Non-test-only category merges run the full suite after scoped sub-branch checks.
+// Category refs are reported separately; they use the same trusted affected selection as other PRs.
 export function isCategoryMergeToMain(headRef, baseRef) {
   return baseRef === "main" && typeof headRef === "string" && headRef.startsWith("integration/");
 }
@@ -384,11 +403,8 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
     }
     return full(changes.reason);
   }
-  if (!mainPush && isCategoryMergeToMain(headRef, baseRef) && !isTestOnlyDiff(changes.entries)) {
-    return full(`${headRef} -> ${baseRef} is a non-test-only category merge to main, which runs the full suite`);
-  }
   const trackedTests = trackedVitestFiles();
-  const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests);
+  const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests, changes.entries.map(({ path }) => path));
   const textCache = new Map();
   const plan = selectCiTests({
     changes: changes.entries,
@@ -405,10 +421,29 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
       return text;
     },
     discoverRelated: discoverRelatedTests,
+    selectCatalog: (entries) => selectMessageCatalogChecks(entries.map((entry) => ({ ...entry, baseSha: changes.base, localSha: "HEAD" })), {
+      allowKeyChanges: true,
+      includeUnresolvedConsumers: true,
+      trackedFiles: git(["ls-files", "-z", "--", "src", "test"]).split("\0").filter(Boolean),
+      readTrackedFile: (path) => {
+        try { return readFileSync(path, "utf8"); } catch { return null; }
+      },
+      readBlob: (sha, path) => {
+        try { return git(["show", `${sha}:${path}`]); } catch { return null; }
+      },
+    }),
   });
   const rule = mainPush ? "main push: trusted selection over before..HEAD" : isCategoryMergeToMain(headRef, baseRef)
-    ? "test-only category merge" : `pull request into ${baseRef}`;
+    ? (isTestOnlyDiff(changes.entries) ? "test-only category merge" : "category merge: affected checks") : `pull request into ${baseRef}`;
   return { ...plan, reason: `${rule}; ${plan.reason}` };
+}
+
+// Only proven renderer-only patches omit native regression runners. Unknown
+// paths and broad plans retain all platforms, including on scheduled releases.
+export function platformChecksRequired(eventName, plan, changes, baseRef) {
+  if (eventName === "pull_request" && baseRef?.startsWith("integration/")) return false;
+  if (plan.mode === "full" || !["pull_request", "push"].includes(eventName) || !Array.isArray(changes) || changes.length === 0) return true;
+  return changes.some(({ path }) => path === "src/ui/renderer/types.ts" || !["src/ui/renderer/", "src/components/", "src/i18n/messages/"].some((prefix) => path.startsWith(prefix)));
 }
 
 function describeRun(plan, coverage) {
@@ -459,7 +494,13 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       const shards = Array.from({ length: ciShardCount(plan, coverage) }, (_, index) => index + 1);
       console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shards.length} shard(s): ${plan.reason}`);
       writeSummary(plan, coverage);
-      if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
+      if (process.env.GITHUB_OUTPUT) {
+        let changes;
+        try { changes = eventName === "push" ? pushChanges(process.env.AVE_CI_DIFF_BASE).entries : pullRequestChanges().entries; } catch { /* Unknown impact retains platforms. */ }
+        const platforms = platformChecksRequired(eventName, plan, changes, process.env.GITHUB_BASE_REF);
+        appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nplatform_checks=${platforms}\n`);
+        if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nNative platform checks: ${platforms ? "required" : "not selected (renderer-only diff)"}.\n`);
+      }
       process.exit(0);
     }
     const shard = parseCiShard(process.env.AVE_CI_SHARD);
