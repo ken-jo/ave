@@ -9,7 +9,9 @@ type OpenRefusal = Extract<WorkspaceOpenPathResult, { ok: false }>["error"];
 function openRefusalKey(error: OpenRefusal): string {
   switch (error) {
     case "denied_extension":
+    case "type-not-allowed": return "folderView.openRefusedType";
     case "executable": return "folderView.openRefusedExecutable";
+    case "network-target":
     case "outside-project": return "folderView.openRefusedOutside";
     case "not-found":
     case "changed": return "folderView.openRefusedChanged";

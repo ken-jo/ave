@@ -23,6 +23,7 @@ import {
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  foldCanonicalPathSeparators,
   isSensitivePath,
 } from "../../permissions/sensitive-paths.js";
 import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
@@ -42,8 +43,7 @@ import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session
 import { errorMessage } from "../../shared/error-message.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
-import { openVerifiedExternalFile, type ExternalOpenRefusal } from "../../main/external-open-target.js";
-import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
+import { linkChainVerdict, openVerifiedExternalFile, type ExternalOpenRefusal } from "../../main/external-open-target.js";
 import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import {
   searchWorkspaceFiles,
@@ -218,6 +218,11 @@ function matchKey(path: string): string {
   return caseFoldForMatch(canonicalizePathForMatch(path));
 }
 
+/** Containment between two match keys, which use "/" on every platform (`foldCanonicalPathSeparators`). */
+function keyWithin(rootKey: string, key: string): boolean {
+  return key === rootKey || key.startsWith(rootKey.endsWith("/") ? rootKey : `${rootKey}/`);
+}
+
 /** The registered root `projectRoot` names, compared canonically; null when it is not (or no longer) a project root. */
 function registeredRoot(projectRoot: string): WorkspaceRoot | null {
   const key = matchKey(projectRoot);
@@ -230,7 +235,7 @@ function containingRootKey(dir: string): string | null {
   let best: string | null = null;
   for (const root of computeRoots()) {
     const key = matchKey(root.path);
-    if (isPathWithin(key, dirKey) && (best === null || key.length > best.length)) best = key;
+    if (keyWithin(key, dirKey) && (best === null || key.length > best.length)) best = key;
   }
   return best;
 }
@@ -238,6 +243,32 @@ function containingRootKey(dir: string): string | null {
 /** A UNC or device spelling, judged as Windows reads it on every platform: such a link is never resolved, only marked outside. */
 function isLinkTargetNetworkOrDevice(target: string): boolean {
   return isWindowsNetworkOrDevicePath(target, "win32");
+}
+
+/**
+ * Whether a link listed in `realDir` points outside `rootKey`, decided without touching anything through a link: the readlink
+ * string is resolved lexically against the link's own folder. A network or device target, a target outside the root, and a
+ * target reached through another link (a chain, or a linked folder on the way) all count as outside. Only components that are
+ * already known not to be links are lstat'ed, so the OS never follows a link here.
+ */
+async function linkPointsOutside(realDir: string, linkName: string, rootKey: string): Promise<boolean> {
+  const target = await fs.readlink(join(realDir, linkName));
+  if (isLinkTargetNetworkOrDevice(target)) return true;
+  const lexical = resolvePath(realDir, target);
+  if (isLinkTargetNetworkOrDevice(lexical)) return true;
+  if (!keyWithin(rootKey, caseFoldForMatch(foldCanonicalPathSeparators(lexical)))) return true;
+  // Inside the root lexically: walk from the root down, refusing any link on the way, including the target itself. `resolve`
+  // output has no doubled separators, so folding kept every index and the root key's length marks the root in `lexical`.
+  let current = lexical.slice(0, rootKey.length);
+  for (const component of lexical.slice(rootKey.length).split(/[\\/]+/u).filter(Boolean)) {
+    current = join(current, component);
+    try {
+      if ((await fs.lstat(current)).isSymbolicLink()) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Map a filesystem failure to the folder view's stable codes. */
@@ -877,13 +908,20 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       try {
         const dirents = await fs.readdir(dir, { withFileTypes: true });
         const rootKey = containingRootKey(dir);
+        // The listed folder's own physical path, so link targets resolve against where the link really is.
+        const realDir = rootKey === null ? null : await fs.realpath(dir).catch(() => null);
         const entries: WorkspaceDirEntry[] = [];
         let truncated = false;
         let hidden = 0;
         for (const ent of dirents) {
           const full = join(dir, ent.name);
+          // A link's own entry is judged by its spelling in the folder: canonicalizing it would resolve through the link.
+          const link = ent.isSymbolicLink();
+          const sensitiveKey = link
+            ? caseFoldForMatch(foldCanonicalPathSeparators(join(realDir ?? dir, ent.name)))
+            : caseFoldForMatch(canonicalizePathForMatch(full));
           // Filter sensitive entries using the file tools' policy so browsing cannot offer paths reads refuse.
-          if (isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(full)))) {
+          if (isSensitivePath(sensitiveKey)) {
             hidden += 1;
             continue;
           }
@@ -905,9 +943,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
             // Windows authenticate to that host (NTLM) and a hung mount would stall the whole listing.
             let outside = true;
             try {
-              const target = await fs.readlink(full);
-              outside = rootKey === null || isLinkTargetNetworkOrDevice(target)
-                || !isPathWithin(rootKey, matchKey(await fs.realpath(full)));
+              outside = rootKey === null || realDir === null || await linkPointsOutside(realDir, ent.name, rootKey);
             } catch {
               outside = true;
             }
@@ -1115,6 +1151,8 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         throw error;
       }
       if (!root) return { ok: false, error: "root-not-registered" };
+      // The scope guard canonicalizes, which resolves through links; a chain to a network or device location stops first.
+      if (await linkChainVerdict(rawPath) === "network") return { ok: false, error: "network-target" };
       const verdict = assertReadableFilePath(rawPath, scope.cwd, scope.extraAllowed);
       if (!verdict.ok) return { ok: false, error: verdict.error === "sensitive-path" ? "sensitive-path" : "path-not-allowed" };
       const rootPath = root.path;
@@ -1125,7 +1163,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         // The root is re-read each time: removing it between the click and the open withdraws the authority.
         const current = registeredRoot(rootPath);
         if (!current) return "root-not-registered";
-        return isPathWithin(matchKey(current.path), matchKey(real)) ? null : "outside-project";
+        return keyWithin(matchKey(current.path), matchKey(real)) ? null : "outside-project";
       });
       try {
         auditLogger.log({

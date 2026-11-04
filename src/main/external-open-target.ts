@@ -1,29 +1,35 @@
 // One default-app open sequence for every host channel that hands a file to the OS (attach.openExternal, workspace.openPath).
 import { shell } from "electron";
 import { promises as fs } from "node:fs";
-import { basename } from "node:path";
+import { basename, parse, resolve } from "node:path";
 import { DENY_EXTENSIONS as DENY_LIST } from "../shared/attachments-deny-list.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
+import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 
 const DENY_EXTENSIONS = new Set<string>(DENY_LIST);
 
 /**
- * Formats that run code, or point somewhere else, when the OS default app "opens" them. Open-only: attaching a .js or .jar to
- * a chat stays allowed, so the shared picker list does not grow. A shortcut or link file (.lnk, .url, .webloc, .fileloc) is
- * refused because its target escapes the realpath containment the caller checked.
+ * The only formats handed to the OS default app: documents, media, plain data and zip. Anything else (scripts, launchers,
+ * shortcuts, installers, extensionless files) is refused, because a deny list of formats the OS will run never stays complete.
+ * Both the requested name and its target must be on the list; the last extension decides (`report.pdf.exe` is refused).
  */
-const OPEN_DENY_EXTENSIONS = new Set<string>([
-  // macOS
-  "command", "terminal", "tool", "webloc", "fileloc", "workflow", "scpt", "applescript", "action",
-  // Windows
-  "lnk", "url", "js", "jse", "vbe", "wsf", "wsh", "hta", "pif", "cpl", "reg", "scf", "appref-ms", "settingcontent-ms",
-  "msc", "ps1xml", "psm1", "psd1", "inf", "application", "msp", "msix", "appx", "gadget",
-  // Both
-  "jar",
+const OPEN_ALLOW_EXTENSIONS = new Set<string>([
+  "pdf",
+  "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tiff", "svg",
+  "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "pages", "numbers", "key",
+  "txt", "md", "csv", "tsv", "json", "yaml", "yml", "xml", "log",
+  "mp3", "m4a", "wav", "flac", "aac", "ogg", "mp4", "mov", "m4v", "webm", "mkv", "avi",
+  "zip",
+  "sqlite", "db",
 ]);
 
+/** Link hops followed while checking a chain, as the OS's own symlink limit. */
+const MAX_LINK_HOPS = 40;
+
 /** Refusals this sequence itself produces; callers add their own authority codes. */
-export type ExternalOpenRefusal = "not-found" | "sensitive-path" | "denied_extension" | "executable" | "not-a-file" | "changed" | "open-failed";
+export type ExternalOpenRefusal =
+  | "not-found" | "sensitive-path" | "denied_extension" | "type-not-allowed" | "network-target" | "executable" | "not-a-file"
+  | "changed" | "open-failed";
 
 /** Which pass of the sequence the caller's authority check is judging. */
 export type ExternalOpenPass = "first" | "final";
@@ -59,18 +65,60 @@ export async function resolveExternalOpenTarget(
   return { ok: true, real };
 }
 
-function isOpenDenied(path: string): boolean {
-  const extension = externalOpenExtension(path);
-  return DENY_EXTENSIONS.has(extension) || OPEN_DENY_EXTENSIONS.has(extension);
+function isOpenAllowed(path: string): boolean {
+  return OPEN_ALLOW_EXTENSIONS.has(externalOpenExtension(path));
 }
 
-/** Resolve, apply the open-only deny list to both names, and require a regular file that is not marked executable. */
+/** A UNC or device spelling, judged as Windows reads it on every platform. */
+function isNetworkOrDevice(path: string): boolean {
+  return isWindowsNetworkOrDevicePath(path, "win32");
+}
+
+/**
+ * Walk `path` one component at a time with lstat and readlink only, following each link lexically, so nothing is resolved
+ * through a link before its target is known to be local. "network" when any hop names a UNC or device location (resolving it
+ * would make Windows authenticate to that host) or the chain is too long; "missing" when a component does not exist.
+ */
+export async function linkChainVerdict(path: string): Promise<"local" | "network" | "missing"> {
+  if (isNetworkOrDevice(path)) return "network";
+  const start = resolve(path);
+  let current = parse(start).root;
+  const rest = start.slice(current.length).split(/[\\/]+/u).filter(Boolean);
+  let hops = 0;
+  while (rest.length > 0) {
+    const component = rest.shift()!;
+    const next = resolve(current, component);
+    let isLink: boolean;
+    try {
+      isLink = (await fs.lstat(next)).isSymbolicLink();
+    } catch {
+      return "missing";
+    }
+    if (!isLink) {
+      current = next;
+      continue;
+    }
+    if (++hops > MAX_LINK_HOPS) return "network";
+    const target = await fs.readlink(next);
+    const followed = resolve(current, target);
+    if (isNetworkOrDevice(target) || isNetworkOrDevice(followed)) return "network";
+    current = parse(followed).root;
+    rest.unshift(...followed.slice(current.length).split(/[\\/]+/u).filter(Boolean));
+  }
+  return "local";
+}
+
+/** Check the link chain lexically, resolve, require an allowed format on both names and a regular non-executable file. */
 async function judgeOpenTarget(requested: string): Promise<{ ok: true; real: string } | { ok: false; error: ExternalOpenRefusal }> {
   // The requested spelling and its target are both judged: `notes.sh -> notes.txt` and `notes.txt -> run.sh` are both refused.
-  if (isOpenDenied(requested)) return { ok: false, error: "denied_extension" };
+  if (!isOpenAllowed(requested)) return { ok: false, error: "type-not-allowed" };
+  const chain = await linkChainVerdict(requested);
+  if (chain === "network") return { ok: false, error: "network-target" };
+  if (chain === "missing") return { ok: false, error: "not-found" };
   const target = await resolveExternalOpenTarget(requested);
-  if (!target.ok) return target;
-  if (isOpenDenied(target.real)) return { ok: false, error: "denied_extension" };
+  // The picker deny list is narrower than the allow list; both say the target's type is not opened.
+  if (!target.ok) return target.error === "denied_extension" ? { ok: false, error: "type-not-allowed" } : target;
+  if (!isOpenAllowed(target.real)) return { ok: false, error: "type-not-allowed" };
   let info: Awaited<ReturnType<typeof fs.stat>>;
   try {
     info = await fs.stat(target.real);
@@ -79,14 +127,16 @@ async function judgeOpenTarget(requested: string): Promise<{ ok: true; real: str
   }
   if (!info.isFile()) return { ok: false, error: "not-a-file" };
   // A POSIX file with any execute bit runs as a program when opened (a cloned repo's +x `build.command`, an extensionless
-  // script); Windows has no such bit and relies on the extension lists above.
+  // script); Windows has no such bit and relies on the allow list above. Volumes that report every file as 0777 (exFAT, SMB,
+  // WSL /mnt/c) refuse everything here; the message tells the user to open it from the file manager instead.
   if (process.platform !== "win32" && (Number(info.mode) & 0o111) !== 0) return { ok: false, error: "executable" };
   return target;
 }
 
 /**
- * Hand one regular file to the OS default app. The whole judgement (deny lists on both names, sensitive floor, regular
- * non-executable file) runs on the first resolution and again on a fresh resolution immediately before the open. `authorize`
+ * Hand one regular file to the OS default app. The whole judgement (allow list on both names, a local link chain, sensitive
+ * floor, regular non-executable file) runs on the first resolution and again on a fresh resolution immediately before the
+ * open. `authorize`
  * is the caller's authority (picker allowlist, preview receipt, project containment, and on the final pass the sender), so the
  * exact target that is opened is the one every check judged.
  */

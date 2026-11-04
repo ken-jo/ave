@@ -101,13 +101,14 @@ beforeAll(() => {
   outside = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-outside-")));
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "index.ts"), "export const a = 1;\n");
+  writeFileSync(join(root, "src", "notes.md"), "# Notes\n");
   writeFileSync(join(root, "settlement.sqlite"), Buffer.from([0x53, 0x51, 0x4c, 0x00]));
   writeFileSync(join(root, "deploy.sh"), "#!/bin/sh\necho hi\n");
   writeFileSync(join(outside, "secret.txt"), "outside\n");
   writeFileSync(join(outside, "run.sh"), "#!/bin/sh\n");
   symlinkSync(outside, join(root, "shared-config"), process.platform === "win32" ? "junction" : "dir");
   linkFile(join(outside, "secret.txt"), join(root, "escape.txt"));
-  linkFile(join(root, "src", "index.ts"), join(root, "inside-link.ts"));
+  linkFile(join(root, "src", "notes.md"), join(root, "inside-link.md"));
   linkFile(join(root, "src", "index.ts"), join(root, "innocent.sh"));
   linkFile(join(outside, "run.sh"), join(root, "looks-fine.txt"));
   additionalDirectories.value = [root];
@@ -142,7 +143,7 @@ describe("workspace.listDir folder-view entries", () => {
     const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), root)) as ListResult;
     const shared = res.entries?.find((entry) => entry.name === "shared-config");
     const escape = res.entries?.find((entry) => entry.name === "escape.txt");
-    const inside = res.entries?.find((entry) => entry.name === "inside-link.ts");
+    const inside = res.entries?.find((entry) => entry.name === "inside-link.md");
     expect(shared).toMatchObject({ type: "link", outside: true, path: join(root, "shared-config") });
     expect(escape).toMatchObject({ type: "link", outside: true, path: join(root, "escape.txt") });
     expect(inside).toMatchObject({ type: "link", outside: false });
@@ -210,8 +211,8 @@ describe("workspace.openPath", () => {
 
   it("follows an in-project link to an in-project file", async ({ skip }) => {
     needsFileLinks(skip);
-    expect(await openPath({ projectRoot: root, path: join(root, "inside-link.ts"), intent: GESTURE })).toEqual({ ok: true });
-    expect(openPathMock).toHaveBeenCalledWith(join(root, "src", "index.ts"));
+    expect(await openPath({ projectRoot: root, path: join(root, "inside-link.md"), intent: GESTURE })).toEqual({ ok: true });
+    expect(openPathMock).toHaveBeenCalledWith(join(root, "src", "notes.md"));
   });
 
   it("refuses a call without a user gesture", async () => {
@@ -259,31 +260,35 @@ describe("workspace.openPath", () => {
     expect(openPathMock).not.toHaveBeenCalled();
   });
 
-  it("refuses denied extensions on the requested spelling and on the link target", async ({ skip }) => {
+  it("judges the type on the requested spelling and on the link target", async ({ skip }) => {
     needsFileLinks(skip);
     expect(await openPath({ projectRoot: root, path: join(root, "deploy.sh"), intent: GESTURE }))
-      .toEqual({ ok: false, error: "denied_extension" });
+      .toEqual({ ok: false, error: "type-not-allowed" });
     expect(await openPath({ projectRoot: root, path: join(root, "innocent.sh"), intent: GESTURE }))
-      .toEqual({ ok: false, error: "denied_extension" });
+      .toEqual({ ok: false, error: "type-not-allowed" });
     additionalDirectories.value = [root, outside];
     try {
       expect(await openPath({ projectRoot: root, path: join(root, "looks-fine.txt"), intent: GESTURE }))
-        .toEqual({ ok: false, error: "denied_extension" });
+        .toEqual({ ok: false, error: "type-not-allowed" });
     } finally {
       additionalDirectories.value = [root];
     }
     expect(openPathMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a directory, including an .app bundle", async () => {
+  it("refuses a directory, including an .app bundle and one named like a document", async () => {
     mkdirSync(join(root, "Tool.app"), { recursive: true });
+    mkdirSync(join(root, "bundle.zip"), { recursive: true });
     try {
       expect(await openPath({ projectRoot: root, path: join(root, "src"), intent: GESTURE }))
+        .toEqual({ ok: false, error: "type-not-allowed" });
+      expect(await openPath({ projectRoot: root, path: join(root, "bundle.zip"), intent: GESTURE }))
         .toEqual({ ok: false, error: "not-a-file" });
       expect(await openPath({ projectRoot: root, path: join(root, "Tool.app"), intent: GESTURE }))
-        .toEqual({ ok: false, error: "denied_extension" });
+        .toEqual({ ok: false, error: "type-not-allowed" });
     } finally {
       rmSync(join(root, "Tool.app"), { recursive: true, force: true });
+      rmSync(join(root, "bundle.zip"), { recursive: true, force: true });
     }
     expect(openPathMock).not.toHaveBeenCalled();
   });
@@ -326,30 +331,55 @@ describe("workspace.openPath", () => {
       .toEqual({ ok: false, error: "open-failed" });
   });
 
-  // Formats that run code or point elsewhere when the default app opens them; attaching them stays allowed.
+  // Only documents, media, plain data and zip reach the default app; everything else is refused, whatever the OS would do.
+  it.each(["pdf", "png", "docx", "xlsx", "md", "csv", "json", "mp4", "zip", "sqlite"])("opens a .%s file", async (extension) => {
+    const target = join(root, `sample.${extension}`);
+    writeFileSync(target, "x", { mode: 0o644 });
+    try {
+      expect(await openPath({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: true });
+      expect(openPathMock).toHaveBeenCalledWith(target);
+    } finally {
+      rmSync(target, { force: true });
+    }
+  });
+
   it.each([
-    "command", "terminal", "tool", "webloc", "fileloc",
-    "lnk", "url", "js", "jse", "vbe", "wsf", "hta", "pif", "cpl", "reg", "scf", "appref-ms", "settingcontent-ms",
-    "msc", "ps1xml", "psm1", "inf", "application", "jar",
+    // Formats an earlier deny list named, and the ones review found it missed.
+    "command", "webloc", "inetloc", "ftploc", "afploc", "mpkg", "lnk", "url", "js", "hta", "reg", "jar",
+    "py", "pyw", "jnlp", "appinstaller", "diagcab", "library-ms", "search-ms", "searchConnector-ms", "ts", "html",
   ])("refuses to open a .%s file", async (extension) => {
     const target = join(root, `payload.${extension}`);
     writeFileSync(target, "x", { mode: 0o644 });
     try {
-      expect(await openPath({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "denied_extension" });
+      expect(await openPath({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "type-not-allowed" });
       expect(openPathMock).not.toHaveBeenCalled();
     } finally {
       rmSync(target, { force: true });
     }
   });
 
-  it("refuses an open-only format reached through an innocent-looking link", async ({ skip }) => {
+  it("refuses an extensionless file and judges a double extension by the last one", async () => {
+    const cases: Array<[string, boolean]> = [["Makefile", false], ["report.pdf.exe", false], ["archive.exe.zip", true], ["notes.", false]];
+    for (const [name, allowed] of cases) {
+      const target = join(root, name);
+      writeFileSync(target, "x", { mode: 0o644 });
+      try {
+        expect(await openPath({ projectRoot: root, path: target, intent: GESTURE }))
+          .toEqual(allowed ? { ok: true } : { ok: false, error: "type-not-allowed" });
+      } finally {
+        rmSync(target, { force: true });
+      }
+    }
+  });
+
+  it("refuses a disallowed format reached through an innocent-looking link", async ({ skip }) => {
     needsFileLinks(skip);
     const shortcut = join(root, "elsewhere.lnk");
     writeFileSync(shortcut, "x", { mode: 0o644 });
     linkFile(shortcut, join(root, "notes.txt"));
     try {
       expect(await openPath({ projectRoot: root, path: join(root, "notes.txt"), intent: GESTURE }))
-        .toEqual({ ok: false, error: "denied_extension" });
+        .toEqual({ ok: false, error: "type-not-allowed" });
       expect(openPathMock).not.toHaveBeenCalled();
     } finally {
       rmSync(join(root, "notes.txt"), { force: true });
@@ -357,16 +387,14 @@ describe("workspace.openPath", () => {
     }
   });
 
-  it("refuses a file with an execute bit, with or without an extension", async ({ skip }) => {
+  it("refuses an allowed format that carries an execute bit", async ({ skip }) => {
     if (process.platform === "win32") skip("Windows has no execute bit");
-    for (const name of ["build", "build.command", "notes.txt"]) {
+    for (const name of ["notes.txt", "photo.png"]) {
       const target = join(root, name);
       writeFileSync(target, "#!/bin/sh\n");
       chmodSync(target, 0o755);
       try {
-        const result = await openPath({ projectRoot: root, path: target, intent: GESTURE });
-        expect(result.ok).toBe(false);
-        expect(["executable", "denied_extension"]).toContain((result as { error: string }).error);
+        expect(await openPath({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "executable" });
       } finally {
         rmSync(target, { force: true });
       }
@@ -375,7 +403,56 @@ describe("workspace.openPath", () => {
   });
 });
 
+describe("workspace.openPath links to network locations", () => {
+  it("refuses a chain that ends at a UNC path before resolving anything", async ({ skip }) => {
+    needsFileLinks(skip);
+    linkFile("//fileserver/share/a.txt", join(root, "hop.txt"));
+    linkFile("hop.txt", join(root, "shared-notes.txt"));
+    const realpath = vi.spyOn(fsModule.promises, "realpath");
+    try {
+      expect(await openPath({ projectRoot: root, path: join(root, "shared-notes.txt"), intent: GESTURE }))
+        .toEqual({ ok: false, error: "network-target" });
+      expect(realpath).not.toHaveBeenCalled();
+      expect(openPathMock).not.toHaveBeenCalled();
+    } finally {
+      realpath.mockRestore();
+      rmSync(join(root, "shared-notes.txt"), { force: true });
+      rmSync(join(root, "hop.txt"), { force: true });
+    }
+  });
+});
+
 describe("workspace.listDir links to network locations", () => {
+  it("never resolves through a link: chains and linked folders on the way count as outside", async ({ skip }) => {
+    needsFileLinks(skip);
+    const dir = join(root, "chain");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "plain.txt"), "x");
+    linkFile("//fileserver/share/config", join(dir, "b"));
+    linkFile("b", join(dir, "a"));
+    symlinkSync("//fileserver/share", join(dir, "mnt"), process.platform === "win32" ? "dir" : undefined);
+    linkFile("mnt/file.txt", join(dir, "through-folder"));
+    linkFile("plain.txt", join(dir, "local"));
+    linkFile("../src/index.ts", join(dir, "up"));
+    const realpath = vi.spyOn(fsModule.promises, "realpath");
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      const outsideOf = (name: string) => res.entries?.find((entry) => entry.name === name)?.outside;
+      expect(outsideOf("a")).toBe(true);
+      expect(outsideOf("b")).toBe(true);
+      expect(outsideOf("mnt")).toBe(true);
+      expect(outsideOf("through-folder")).toBe(true);
+      expect(outsideOf("local")).toBe(false);
+      expect(outsideOf("up")).toBe(false);
+      // Only the listed folder itself is resolved.
+      expect(realpath.mock.calls.every(([path]) => String(path) === dir)).toBe(true);
+    } finally {
+      realpath.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+
   it("marks a link to a UNC path outside without resolving it", async ({ skip }) => {
     needsFileLinks(skip);
     const dir = join(root, "net");

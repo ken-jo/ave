@@ -534,7 +534,7 @@ describe("read-only observation sender boundary", () => {
       const event = documentEvent(OK_FRAME);
       const results: PreviewReadFileResult[] = [];
       for (let index = 0; index < 17; index += 1) {
-        const path = join(root, `preview-open-${index}.ts`);
+        const path = join(root, `preview-open-${index}.txt`);
         writeFileSync(path, "const value = 1;");
         results.push(await handlers.get(CHANNELS.preview.readFile)!(event, path) as PreviewReadFileResult);
       }

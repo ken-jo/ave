@@ -213,7 +213,7 @@ describe("composer drop token", () => {
     rmSync(link);
     symlinkSync(join(root, "run.exe"), link);
     vi.mocked(shell.openPath).mockClear();
-    expect(await call(CHANNELS.attach.openExternal, 7, link)).toEqual({ ok: false, error: "denied_extension" });
+    expect(await call(CHANNELS.attach.openExternal, 7, link)).toEqual({ ok: false, error: "type-not-allowed" });
     expect(shell.openPath).not.toHaveBeenCalled();
 
     rmSync(link);

@@ -221,6 +221,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // Folder view (workspace.listDir / workspace.openPath).
   "permission-denied": "folderView.lockedBody",
   "root-not-registered": "folderView.openRefusedScope",
+  "type-not-allowed": "folderView.openRefusedType",
+  "network-target": "folderView.openRefusedOutside",
   "cannot-remove-default": "formatIpcError.cannotRemoveDefaultRoot",
   "not-an-additional-root": "formatIpcError.notAnAdditionalRoot",
   // Workspace root removal preview (workspace.ts): a store could not be asked, so nothing was removed.

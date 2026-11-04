@@ -49,7 +49,7 @@ let script: string;
 beforeAll(async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "ave-attach-open-")));
   notes = join(root, "notes.txt");
-  script = join(root, "build");
+  script = join(root, "build.txt");
   writeFileSync(notes, "hello");
   writeFileSync(script, "#!/bin/sh\n");
   registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null,
