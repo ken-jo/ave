@@ -784,6 +784,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     listPendingRoutineResults: vi.fn(async () => pendingRoutineResults),
     acknowledgeRoutineResult: vi.fn(async () => ({ ok: true })),
     addRoutine: vi.fn(async () => ({ ok: true, routine: {} })),
+    updateRoutine: vi.fn(async () => ({ ok: false, error: "routine-not-found" })),
+    pauseRoutine: vi.fn(async () => ({ ok: false, error: "routine-not-found" })),
+    resumeRoutine: vi.fn(async () => ({ ok: false, error: "routine-not-found" })),
+    listRoutineOccurrences: vi.fn(async () => ({ ok: true, occurrences: [], runs: [] })),
     onRoutineFired: vi.fn((h: (r: unknown) => void) => {
       routineFiredHandlers.add(h);
       // Replay latestRoutineResult on subscription (simulates mount-time catchup).

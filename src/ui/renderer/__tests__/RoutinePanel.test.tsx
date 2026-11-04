@@ -2,14 +2,12 @@
 import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { render, fireEvent, waitFor, act } from "@testing-library/react";
-import { AddRoutineModal, RoutinePanel } from "../components/RoutinePanel.js";
+import { AddRoutineModal } from "../components/RoutinePanel.js";
 import type { AveApi, PluginCardSummary } from "../types.js";
 import type { AddRoutineInput, RoutineRecord } from "../../../shared/routines-types.js";
 import type { AgentPluginRoutineTemplate } from "../../../shared/agent-plugin-routine-template.js";
 import { packageRoutineSource } from "../../../shared/agent-plugin-routine-template.js";
 import { MAX_ROUTINE_SOURCE_LENGTH } from "../../../shared/routines-types.js";
-import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
-import type { InstalledContentApi, InstalledContentView } from "../../../shared/installed-content.js";
 
 function makeStubApi(opts: {
   pluginCards?: PluginCardSummary[];
@@ -184,122 +182,4 @@ describe("RoutinePanel scope payload mapping", () => {
     const payload = addRoutine.mock.calls[0]![0] as AddRoutineInput;
     expect(payload.scope?.pluginIds).toEqual({ mode: "allow", ids: ["plugin-a"] });
   });
-});
-
-describe("RoutinePanel missing plugins", () => {
-  it.each([true, false])("shows missing ids and removes the routine (skipped=%s)", async (skipped) => {
-    const { RoutinePanel } = await import("../components/RoutinePanel.js");
-    const routine: RoutineRecord = {
-      id: "missing-routine", trigger: "schedule", execution: "llm-session", title: "Daily summary",
-      createdAt: new Date().toISOString(),
-      needsAttention: { missingPluginIds: ["missing-plugin"] },
-      ...(skipped ? { lastSkippedReason: "plugins-missing" as const } : { lastFiredAt: new Date().toISOString() }),
-    };
-    let rows = [routine];
-    const removeRoutine = vi.fn(async () => { rows = []; return { ok: true }; });
-    const api = {
-      listRoutines: vi.fn(async () => ({ routines: rows, invalid: [] })), listRoutineSessions: vi.fn(async () => []), removeRoutine,
-      onRoutineFired: vi.fn(() => () => {}),
-    } as unknown as AveApi;
-    const view = render(<RoutinePanel api={api} />);
-    const status = await view.findByRole("status");
-    expect(status.textContent).toContain("missing-plugin");
-    expect(status.textContent).toContain(skipped ? "건너뛰었습니다" : "확인이 필요합니다");
-    fireEvent.click(view.getByRole("button", { name: "삭제" }));
-    await waitFor(() => expect(view.queryByTestId("routine-row")).toBeNull());
-    expect(removeRoutine).toHaveBeenCalledWith("missing-routine");
-  });
-});
-
-describe("RoutinePanel focus target (확인 필요 → 스케줄에서 열기)", () => {
-  it("focuses the requested routine once the list has loaded, then reports it consumed", async () => {
-    const { RoutinePanel } = await import("../components/RoutinePanel.js");
-    const routine: RoutineRecord = {
-      id: "target-routine", trigger: "schedule", execution: "llm-session", title: "Weekday tests",
-      createdAt: new Date().toISOString(), needsAttention: { missingPluginIds: ["mail"] },
-    };
-    const onFocusConsumed = vi.fn();
-    const api = {
-      listRoutines: vi.fn(async () => ({ routines: [routine], invalid: [] })), listRoutineSessions: vi.fn(async () => []),
-      onRoutineFired: vi.fn(() => () => {}),
-    } as unknown as AveApi;
-    const view = render(<RoutinePanel api={api} focusRoutineId="target-routine" onFocusConsumed={onFocusConsumed} />);
-    await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
-    expect(document.activeElement?.getAttribute("data-routine-id")).toBe("target-routine");
-    view.unmount();
-  });
-
-  it("consumes a request for a routine that is gone without focusing anything", async () => {
-    const { RoutinePanel } = await import("../components/RoutinePanel.js");
-    const onFocusConsumed = vi.fn();
-    const api = {
-      listRoutines: vi.fn(async () => ({ routines: [], invalid: [] })), listRoutineSessions: vi.fn(async () => []),
-      onRoutineFired: vi.fn(() => () => {}),
-    } as unknown as AveApi;
-    const view = render(<RoutinePanel api={api} focusRoutineId="gone" onFocusConsumed={onFocusConsumed} />);
-    await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
-    expect(document.activeElement?.getAttribute("data-routine-id")).toBeFalsy();
-    view.unmount();
-  });
-});
-
-describe("RoutinePanel invalid routines", () => {
-  it("shows a held-back routine as an error row with its reason and removes it", async () => {
-    const { RoutinePanel } = await import("../components/RoutinePanel.js");
-    let invalid = [{ id: "legacy-routine", field: "scope.pluginIds.ids", value: "Legacy.Plugin", reason: "invalid-plugin-id" as const }];
-    const removeRoutine = vi.fn(async () => { invalid = []; return { ok: true }; });
-    const api = {
-      listRoutines: vi.fn(async () => ({ routines: [], invalid })), listRoutineSessions: vi.fn(async () => []), removeRoutine,
-      onRoutineFired: vi.fn(() => () => {}),
-    } as unknown as AveApi;
-    const view = render(<RoutinePanel api={api} />);
-    const row = await view.findByTestId("invalid-routine-row");
-    expect(row.getAttribute("role")).toBe("alert");
-    expect(row.textContent).toContain("Legacy.Plugin");
-    expect(row.textContent).toContain("scope.pluginIds.ids");
-    fireEvent.click(view.getByRole("button", { name: "삭제" }));
-    await waitFor(() => expect(view.queryByTestId("invalid-routine-row")).toBeNull());
-    expect(removeRoutine).toHaveBeenCalledWith("legacy-routine");
-  });
-});
-
-it("keeps a user routine after its source template disappears", async () => {
-  const template: AgentPluginRoutineTemplate = { id: "daily", packageName: "writer-plugin", version: "1.0.0", title: "Daily draft",
-    description: "Write a draft", trigger: "schedule", schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
-    execution: "llm-session", prePrompt: "Write the full draft" };
-  const content = (templates: AgentPluginRoutineTemplate[]): InstalledContentView => ({
-    themes: [], languages: [], fonts: [], routineTemplates: templates, broken: [],
-  });
-  const contentApi = { languageMessages: vi.fn(), installed: vi.fn() } as unknown as InstalledContentApi;
-  const routine = { ...makeRoutineRecord(), source: "agent-plugin:writer-plugin:daily" };
-  const api = { listRoutines: vi.fn(async () => ({ routines: [routine], invalid: [] })), listRoutineSessions: vi.fn(async () => []),
-    onRoutineFired: vi.fn(() => () => {}) } as unknown as AveApi;
-  try {
-    act(() => applyInstalledContent(content([template]), contentApi));
-    const view = render(<RoutinePanel api={api} />);
-    await view.findByTestId("routine-row");
-    expect(view.getByTestId("routine-template-row").textContent).toContain("Write the full draft");
-    expect(view.getByTestId("routine-row").textContent).toContain("writer-plugin");
-    act(() => applyInstalledContent(content([]), contentApi));
-    expect(view.queryByTestId("routine-template-row")).toBeNull();
-    expect(view.getByTestId("routine-row").textContent).toContain("더 이상 설치");
-    view.unmount();
-  } finally { resetInstalledContentForTests(); }
-});
-
-it("refreshes a skipped occurrence while open without a fired event", async () => {
-  const { RoutinePanel } = await import("../components/RoutinePanel.js");
-  let rows: RoutineRecord[] = [{ id: "waiting", title: "Waiting", trigger: "schedule", execution: "llm-session", createdAt: new Date().toISOString() }];
-  const api = { listRoutines: vi.fn(async () => ({ routines: rows, invalid: [] })), listRoutineSessions: vi.fn(async () => []) } as unknown as AveApi;
-  vi.useFakeTimers();
-  let view: ReturnType<typeof render> | undefined;
-  try {
-    await act(async () => { view = render(<RoutinePanel api={api} />); });
-    expect(view!.queryByRole("status")).toBeNull();
-    rows = [{ ...rows[0], lastSkippedReason: "plugins-missing", needsAttention: { missingPluginIds: ["missing-plugin"] } }];
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(view!.getByRole("status").textContent).toContain("missing-plugin");
-    view!.unmount();
-    expect(vi.getTimerCount()).toBe(0);
-  } finally { view?.unmount(); vi.useRealTimers(); }
 });

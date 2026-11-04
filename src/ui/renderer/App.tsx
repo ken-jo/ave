@@ -23,7 +23,7 @@ import type { ChatEntry } from "../../lib/chat-stream-state.js";
 import { McpAppPipPanel } from "./components/McpAppPipPanel.js";
 import { McpAppFullscreenPanel } from "./components/McpAppFullscreenPanel.js";
 import { MemorySearchPanel } from "./components/MemorySearchPanel.js";
-import { RoutinePanel } from "./components/RoutinePanel.js";
+import { SchedulePanel } from "./components/schedule/SchedulePanel.js";
 import { WorkBoardPanel } from "./components/WorkBoardPanel.js";
 import { StarredView } from "./components/StarredView.js";
 import { SettingsInlineView } from "./SettingsInlineView.js";
@@ -1736,11 +1736,11 @@ export function App() {
 
     if (view === "routines") {
       return viewPane("routines", (
-        <RoutinePanel
+        <SchedulePanel
           api={api}
+          project={activeProject ?? defaultWorkspaceProject}
           focusRoutineId={routineFocusId}
           onFocusConsumed={() => setRoutineFocusId(null)}
-          projectRoot={(activeProject ?? defaultWorkspaceProject)?.projectRoot}
           onOpenSession={(sessionId) => {
             void (async () => {
               const loaded = await handleLoadSessionAndRefresh(sessionId);
