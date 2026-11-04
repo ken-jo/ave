@@ -1512,6 +1512,29 @@ describe("installer smoke and packaging discipline", () => {
     expect(jobsCarryingGates).toBeGreaterThanOrEqual(1);
   });
 
+  it("supersedes only complete platform checks on successive main pushes", () => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
+      concurrency: { group: string };
+      jobs: Record<string, { concurrency?: { group: string; "cancel-in-progress": string } }>;
+    };
+    // Affected selections cover before..HEAD only; cancelling them could lose
+    // verification for a change present solely in a superseded push.
+    expect(workflow.concurrency.group).toContain("github.sha");
+    for (const job of ["build", "vitest", "build-and-test"]) {
+      expect(workflow.jobs[job]!.concurrency).toBeUndefined();
+    }
+    const scopes = [
+      ["windows-permission-tests", "windows"],
+      ["macos-permission-tests", "macos"],
+      ["linux-confinement-tests", "linux"],
+    ];
+    for (const [job, platform] of scopes) {
+      const concurrency = workflow.jobs[job!]!.concurrency!;
+      expect(concurrency.group).toBe("ci-platform-${{ github.workflow }}-" + platform + "-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}");
+      expect(concurrency["cancel-in-progress"]).toBe("${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}");
+    }
+  });
+
   it("runs the native control boundaries in both platform regression jobs", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     for (const job of ["macos-permission-tests", "linux-confinement-tests"]) {

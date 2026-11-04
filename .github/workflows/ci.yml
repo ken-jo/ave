@@ -525,6 +525,12 @@ jobs:
 
   windows-permission-tests:
     name: Windows permission path tests
+    # Every invocation runs the complete platform list, so the newest main
+    # push covers superseded pushes too. Keep PRs, tags, coverage and manual
+    # runs isolated. Build and affected-test jobs retain their per-commit groups.
+    concurrency:
+      group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
     # event (main push, tag, schedule, dispatch). These jobs run only the
@@ -860,6 +866,9 @@ jobs:
 
   macos-permission-tests:
     name: macOS permission path tests
+    concurrency:
+      group: ci-platform-${{ github.workflow }}-macos-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
     # event (main push, tag, schedule, dispatch). These jobs run only the
@@ -1003,6 +1012,9 @@ jobs:
 
   linux-confinement-tests:
     name: Linux confinement path tests
+    concurrency:
+      group: ci-platform-${{ github.workflow }}-linux-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
     # event (main push, tag, schedule, dispatch). These jobs run only the

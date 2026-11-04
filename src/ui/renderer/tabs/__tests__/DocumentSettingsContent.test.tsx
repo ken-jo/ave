@@ -14,12 +14,21 @@ function install(openMode: "direct" | "link") {
 
 describe("document opening preference", () => {
   it.each(["direct", "link"] as const)("loads %s and saves the other mode through user settings", async (openMode) => {
-    const { update } = install(openMode);
+    const { api, update } = install(openMode);
+    const initial = deferred<unknown>();
+    api.getSettings.mockReturnValueOnce(initial.promise);
     const view = render(<DocumentSettingsContent />);
     const other = openMode === "direct" ? "link" : "direct";
     const group = view.getByTestId("document-open-mode");
+    const target = group.querySelector<HTMLButtonElement>(`[data-value="${other}"]`)!;
+    // The default choice is visible before the snapshot enables interaction.
+    expect(target).toBeDisabled();
+    fireEvent.click(target);
+    expect(update).not.toHaveBeenCalled();
+    await act(async () => { initial.resolve({ ...MOCK_DEFAULT_SETTINGS, documents: { openMode } }); });
     await waitFor(() => expect(group.querySelector(`[data-value="${openMode}"]`)?.getAttribute("aria-checked")).toBe("true"));
-    fireEvent.click(group.querySelector(`[data-value="${other}"]`)!);
+    await waitFor(() => expect(target).toBeEnabled());
+    fireEvent.click(target);
     await waitFor(() => expect(update).toHaveBeenCalledWith({ documents: { openMode: other } }));
     await waitFor(() => expect(group.querySelector(`[data-value="${other}"]`)?.getAttribute("aria-checked")).toBe("true"));
   });
