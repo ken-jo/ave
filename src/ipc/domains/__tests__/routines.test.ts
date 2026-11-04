@@ -44,6 +44,8 @@ function makeDeps(
       })),
       update: vi.fn(),
       acknowledgeResult: vi.fn(async (id: string) => (id === "routine-a" ? { id } : null)),
+      acknowledgeFailure: vi.fn(async (id: string, firedAt: string) =>
+        id !== "routine-a" ? "not-found" : firedAt === "2026-05-16T12:00:00.000Z" ? "acknowledged" : "stale"),
       dismiss: vi.fn(),
       remove: vi.fn(),
       add: vi.fn(),
@@ -228,5 +230,16 @@ describe("routine result acknowledgement", () => {
   it("reports an unknown routine", async () => {
     await setup([]);
     expect(await invoke(ROUTINES.acknowledgeResult, "missing", "2026-05-16T12:00:00.000Z")).toEqual({ ok: false, error: "routine-not-found" });
+  });
+});
+
+describe("routine failure acknowledgement", () => {
+  it("acknowledges the failure of that fire, and reports a stale one and an unknown routine explicitly", async () => {
+    const deps = await setup([]);
+    expect(await invoke(ROUTINES.acknowledgeFailure, "routine-a", "2026-05-16T12:00:00.000Z")).toEqual({ ok: true });
+    expect(deps.routinesStore.acknowledgeFailure).toHaveBeenCalledWith("routine-a", "2026-05-16T12:00:00.000Z");
+    expect(await invoke(ROUTINES.acknowledgeFailure, "routine-a", "2026-05-15T12:00:00.000Z")).toEqual({ ok: false, error: "routine-failure-stale" });
+    expect(await invoke(ROUTINES.acknowledgeFailure, "missing", "2026-05-16T12:00:00.000Z")).toEqual({ ok: false, error: "routine-not-found" });
+    expect(await invoke(ROUTINES.acknowledgeFailure, "routine-a", 7)).toEqual({ ok: false, error: "invalid-input" });
   });
 });

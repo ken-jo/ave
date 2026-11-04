@@ -898,6 +898,37 @@ describe("RoutinesStore v2 — run failure persistence", () => {
     expect(stored).toContain("secret-dir");
   }));
 
+  it("acknowledges the failure the user saw while a newer run is in flight, and refuses it once a newer failure replaced it", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const t0 = (await store.markFired(r.id))!.lastFiredAt!;
+    await store.recordRunOutcome(r.id, t0, { ok: false, kind: "error", reason: "t0 failed" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // T1 is in flight: lastFiredAt moved on, the T0 failure is still the stored one, and acknowledging it clears it.
+    const t1 = (await store.markFired(r.id))!.lastFiredAt!;
+    expect(store.list()[0].lastFailure).toMatchObject({ firedAt: t0 });
+    expect(await store.acknowledgeFailure(r.id, t0)).toBe("acknowledged");
+    expect(store.list()[0].lastFailure).toBeUndefined();
+    // T1 then fails: a second acknowledgement of T0 is stale and leaves the T1 failure in place.
+    await store.recordRunOutcome(r.id, t1, { ok: false, kind: "error", reason: "t1 failed" });
+    expect(await store.acknowledgeFailure(r.id, t0)).toBe("stale");
+    expect(store.list()[0].lastFailure).toMatchObject({ firedAt: t1, reason: "t1 failed" });
+    expect(await store.acknowledgeFailure("missing", t1)).toBe("not-found");
+  }));
+
+  it("signals a change for a recorded outcome and an acknowledged failure, not for a stale one", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(dailyInput);
+    const firedAt = (await store.markFired(r.id))!.lastFiredAt!;
+    let changes = 0;
+    const off = store.changed.subscribe(() => { changes += 1; });
+    await store.recordRunOutcome(r.id, firedAt, { ok: false, kind: "error", reason: "boom" });
+    expect(changes).toBe(1);
+    await store.acknowledgeFailure(r.id, "2026-01-01T00:00:00.000Z");
+    expect(changes).toBe(1);
+    await store.acknowledgeFailure(r.id, firedAt);
+    expect(changes).toBe(2);
+    off();
+  }));
+
   it("records a shutdown timeout as its own kind and does not re-enable the shutdown routine", withRoutinesStore(async ({ store }) => {
     const r = await store.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
     const firedAt = (await store.markFired(r.id))!.lastFiredAt!;

@@ -270,6 +270,7 @@ describe("preload contextBridge world shape lock", () => {
         },
         "aveApi": {
           "acceptWorkProposal": "function",
+          "acknowledgeRoutineFailure": "function",
           "acknowledgeRoutineResult": "function",
           "acpSubscriptionCancelLogin": "function",
           "acpSubscriptionChooseRuntime": "function",
@@ -483,6 +484,7 @@ describe("preload contextBridge world shape lock", () => {
           "listRoutines": "function",
           "listSessionTasks": "function",
           "listSkills": "function",
+          "listWorkApprovals": "function",
           "listWorkBoard": "function",
           "listWorkProposals": "function",
           "logs": [
@@ -567,6 +569,7 @@ describe("preload contextBridge world shape lock", () => {
           "onTriggerImported": "function",
           "onTriggerStarted": "function",
           "onViewActivate": "function",
+          "onWorkApprovalsChanged": "function",
           "onWorkBoardItemChanged": "function",
           "onWorkBoardRunFailed": "function",
           "onWorkBoardRunFinished": "function",

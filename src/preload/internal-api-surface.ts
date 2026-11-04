@@ -18,6 +18,7 @@ import {
   ROUTINES,
   SETTINGS,
   WORK_BOARD,
+  WORK_APPROVALS,
   type AgentInstallResultPayload,
   type PluginInstallResultPayload,
   type SkillInstallResultPayload,
@@ -1014,6 +1015,8 @@ export function buildInternalApiSurface() {
     >,
   acknowledgeRoutineResult: async (routineId: string, firedAt: string) =>
     ipcRenderer.invoke(ROUTINES.acknowledgeResult, routineId, firedAt) as Promise<{ ok: boolean; error?: string }>,
+  acknowledgeRoutineFailure: async (routineId: string, failureFiredAt: string) =>
+    ipcRenderer.invoke(ROUTINES.acknowledgeFailure, routineId, failureFiredAt) as Promise<{ ok: true } | { ok: false; error: string }>,
   addRoutine: async (input: import("../shared/routines-types.js").AddRoutineInput) =>
     ipcRenderer.invoke(ROUTINES.add, input) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
@@ -1168,6 +1171,17 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardCancelIpcResult
       | { ok: false; error: string }
     >,
+  // Work-level decisions ("확인 필요") for one project plus the all-project badge total; tool-execution approvals stay in the chat ApprovalDock.
+  listWorkApprovals: async (opts?: { projectRoot?: string }) =>
+    ipcRenderer.invoke(WORK_APPROVALS.list, opts) as Promise<
+      | import("../shared/work-approvals-types.js").WorkApprovalListResult
+      | { ok: false; error: string }
+    >,
+  onWorkApprovalsChanged: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on(WORK_APPROVALS.changed, listener);
+    return () => ipcRenderer.removeListener(WORK_APPROVALS.changed, listener);
+  },
   // Read a past run's persisted transcript (plan+execute conversation) for the run-history view. Resolves with the ordered events (empty when absent).
   getWorkBoardRunTranscript: async (itemId: number, runId: string) =>
     ipcRenderer.invoke(WORK_BOARD.runTranscript, itemId, runId) as Promise<

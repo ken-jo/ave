@@ -112,6 +112,7 @@ import {
   wireConversation,
 } from "./boot/steps/conversation-wiring.js";
 import { detachWorkspaceRootSessions } from "./memory/workspace-root-session-lifecycle.js";
+import { wireWorkApprovalsChanged } from "./boot/steps/work-approvals-wiring.js";
 import { wireRoutinesScheduler } from "./boot/steps/routines-wiring.js";
 import { setupRemoteA2A } from "./boot/steps/remote-a2a-setup.js";
 import { setupMcp } from "./boot/steps/mcp-setup.js";
@@ -813,6 +814,8 @@ export async function bootstrap(
 
   // §7: RoutinesScheduler v2 execution-branch wiring.
   wireRoutinesScheduler(ctx);
+  // Work approvals re-list when any source store writes.
+  wireWorkApprovalsChanged(ctx);
 
   // §9.5: MCP servers + signed marketplace artifact stores.
   await setupMcp(ctx);

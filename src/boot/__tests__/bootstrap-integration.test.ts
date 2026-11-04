@@ -353,6 +353,7 @@ vi.mock("../../main/routines-store.js", () => ({
     load = vi.fn(async () => {});
     update = vi.fn(async () => true);
     list = vi.fn(() => []);
+    changed = { subscribe: vi.fn(() => () => {}) };
   },
 }));
 vi.mock("../../main/routines-scheduler.js", () => ({
@@ -377,6 +378,7 @@ vi.mock("../../main/work-board-store.js", () => ({
   WorkBoardStore: class {
     load = vi.fn(async () => {});
     reconcileInterruptedRuns = vi.fn(async () => {});
+    proposalsChanged = { subscribe: vi.fn(() => () => {}) };
   },
 }));
 vi.mock("../../main/session-tasks-store.js", () => ({ SessionTasksStore: class {},

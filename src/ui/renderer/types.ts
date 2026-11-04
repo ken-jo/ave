@@ -1006,6 +1006,8 @@ export type AveApi = {
   triggerRoutineNow: (id: string) => Promise<{ ok: boolean; error?: string }>;
   listPendingRoutineResults: () => Promise<import("../../shared/routines-types.js").RoutineFiredPayload[]>;
   acknowledgeRoutineResult: (routineId: string, firedAt: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Clear the failure of the fire at `failureFiredAt`; `routine-failure-stale` when a newer failure replaced it. */
+  acknowledgeRoutineFailure: (routineId: string, failureFiredAt: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   addRoutine: (
     input: import("../../shared/routines-types.js").AddRoutineInput,
   ) => Promise<
@@ -1199,6 +1201,15 @@ export type AveApi = {
   onWorkProposalChanged?: (
     handler: (payload: import("../../shared/work-board-types.js").WorkProposalChangedEventPayload) => void,
   ) => () => void;
+  // Work-level decisions ("확인 필요") for one project plus the all-project badge total. Tool-execution approvals are not included.
+  listWorkApprovals?: (
+    opts?: { projectRoot?: string },
+  ) => Promise<
+    | import("../../shared/work-approvals-types.js").WorkApprovalListResult
+    | { ok: false; error: string }
+  >;
+  // A source of work approvals changed; re-list. No payload.
+  onWorkApprovalsChanged?: (handler: () => void) => () => void;
   // Read a past run's persisted transcript (plan+execute conversation) for the
   // run-history view. Resolves with the ordered events (empty when absent).
   getWorkBoardRunTranscript?: (

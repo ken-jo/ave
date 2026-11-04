@@ -1212,6 +1212,29 @@ are not steerable or stoppable here. See
 Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
 
+Work approvals ("확인 필요" in the UI) are work-level decisions, separate from
+tool-execution approvals, which stay in the conversation's ApprovalDock.
+`ave:work-approvals:list` is a read-only projection over the stores that own
+each decision. It covers open work proposals (`unscoped`) and routines needing
+attention (`global`). A routine needs attention when plugins are missing, a
+held-back plugin id is invalid, or its last run failed and the failure is not
+acknowledged. A failure is listed even on a dismissed record (a shutdown routine
+stays dismissed after it fails). `ave:routines:ack-failure` clears exactly the
+failure the card showed, by its `firedAt`, and returns `routine-failure-stale`
+when a newer failure replaced it. A successful or notify-only result is not a
+decision and is never listed. Plan approvals (project-scoped) join with WA-1.
+Memories save without approval, so they are not a source. The list returns
+the requested project's items plus the unscoped and global ones, with a `total`
+across every authorized project for the title-bar badge. Titles and summaries
+are DLP-masked. Views are built field by field, so
+a routine prompt or a proposal task brief never crosses this channel. A missing
+source store is a `work-approvals-source-unavailable` result, never a silently
+shorter list. Each source store signals after its own write, whichever path made
+it (IPC, plugin HostApi, scheduler). The boot step `wireWorkApprovalsChanged`
+subscribes to those signals and broadcasts the payload-free
+`ave:work-approvals:changed` so windows re-list. Actions stay on each source's
+own channel.
+
 ## Conversation List
 
 Every conversation the app keeps is listed in the sidebar's conversation tab.

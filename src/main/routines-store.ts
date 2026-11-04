@@ -37,6 +37,7 @@ import type {
 import { MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_ROUTINE_SOURCE_LENGTH } from "../shared/routines-types.js";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
+import { ChangeSignal } from "../lib/change-signal.js";
 
 // Routine validation bounds. The store validates every routine it persists; the `routine_schedule` tool validates the same fields before it calls the
 // store, and imports these so the two cannot disagree about a limit.
@@ -275,8 +276,19 @@ export class RoutinesStore {
   private loaded = false;
   private readonly filePath: string;
 
+  // Fires after every successful write so projections (the work-approvals list) re-read instead of polling.
+  readonly changed = new ChangeSignal((err) => log.warn("[routines-store] change listener threw: %s", (err as Error).message));
+
   constructor(filePath: string = defaultPath()) {
     this.filePath = filePath;
+  }
+
+  // The cache is refreshed before the signal so a listener that re-reads synchronously sees the write.
+  private async persist(file: RoutinesFile): Promise<void> {
+    await writeFileAtomic(this.filePath, file);
+    this.cache = file.routines;
+    this.invalidCache = file.invalid;
+    this.changed.emit();
   }
 
   async load(): Promise<void> {
@@ -458,9 +470,7 @@ export class RoutinesStore {
         );
       }
       file.routines.push(record);
-      await writeFileAtomic(this.filePath, file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
+      await this.persist(file);
       return record;
     });
   }
@@ -476,9 +486,7 @@ export class RoutinesStore {
         return false;
       }
       r.dismissedAt = new Date().toISOString();
-      await writeFileAtomic(this.filePath, file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
+      await this.persist(file);
       return true;
     });
   }
@@ -491,9 +499,7 @@ export class RoutinesStore {
       file.routines = file.routines.filter((r) => r.id !== id);
       file.invalid = file.invalid.filter((held) => held.id !== id);
       const removed = file.routines.length + file.invalid.length !== before;
-      await writeFileAtomic(this.filePath, file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
+      await this.persist(file);
       return removed;
     });
   }
@@ -538,7 +544,7 @@ export class RoutinesStore {
         directoriesRemoved += removed;
       }
       if (directoriesRemoved > 0) {
-        await writeFileAtomic(this.filePath, file);
+        await this.persist(file);
       }
       this.cache = file.routines;
       this.invalidCache = file.invalid;
@@ -565,9 +571,7 @@ export class RoutinesStore {
       if (patch.lastFiredAt !== undefined) r.lastFiredAt = patch.lastFiredAt;
       if (patch.lastRoutineSessionId !== undefined) r.lastRoutineSessionId = patch.lastRoutineSessionId;
       if (patch.dismissedAt !== undefined) r.dismissedAt = patch.dismissedAt;
-      await writeFileAtomic(this.filePath, file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
+      await this.persist(file);
       return r;
     });
   }
@@ -583,6 +587,22 @@ export class RoutinesStore {
       }
       return true;
     });
+  }
+
+  // The user acknowledged the failure of the fire at `failureFiredAt` from 확인 필요. Only that failure is cleared: when a newer fire has
+  // failed (or a success cleared it) since the user saw the card, the acknowledgement is stale and changes nothing.
+  async acknowledgeFailure(id: string, failureFiredAt: string): Promise<"acknowledged" | "stale" | "not-found"> {
+    let stale = false;
+    const updated = await this.mutate(id, (r) => {
+      if (r.lastFailure?.firedAt !== failureFiredAt) {
+        stale = true;
+        return false;
+      }
+      delete r.lastFailure;
+      return true;
+    });
+    if (!updated) return "not-found";
+    return stale ? "stale" : "acknowledged";
   }
 
   // Record how the run of the fire at `firedAt` ended. Runs overlap (dispatch does not await, and a manual trigger can start during a
@@ -617,7 +637,7 @@ export class RoutinesStore {
       this.cache = file.routines;
       this.invalidCache = file.invalid;
       if (!r) return null;
-      if (apply(r)) await writeFileAtomic(this.filePath, file);
+      if (apply(r)) await this.persist(file);
       return cloneRecord(r);
     });
   }
@@ -647,9 +667,7 @@ export class RoutinesStore {
         if (missingPluginIds.length === 0) r.dismissedAt = firedAt;
       } else advanceRepeatingSchedule(r, firedAt);
       // cron routines: next-fire is re-computed by the scheduler each tick — no need to advance `at` here.
-      await writeFileAtomic(this.filePath, file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
+      await this.persist(file);
       return r;
     });
   }
@@ -666,9 +684,7 @@ export class RoutinesStore {
       r.needsAttention = { missingPluginIds: [...missingPluginIds] };
       if (minuteUTC !== undefined) r.lastSkippedMinuteUTC = minuteUTC;
       advanceRepeatingSchedule(r, new Date().toISOString());
-      if (JSON.stringify(r) !== previous) await writeFileAtomic(this.filePath, file);
-      this.cache = file.routines;
-      this.invalidCache = file.invalid;
+      if (JSON.stringify(r) !== previous) await this.persist(file);
     });
   }
 }
