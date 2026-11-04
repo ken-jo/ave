@@ -438,7 +438,8 @@ describe("fresh home writes through the stores", () => {
 });
 
 describe("approve all stays closed", () => {
-  it("never offers approve all for a home whose commit saw a moved config/ beside it, even after a restart", () => {
+  // Like the D3① test above: the fixture makes the moved config/ owner-only with POSIX mode bits, which Windows ignores.
+  it.runIf(process.platform !== "win32")("never offers approve all for a home whose commit saw a moved config/ beside it, even after a restart", () => {
     const dir = home();
     put(dir, "AGENTS.md", "# instructions");
     const moved = join(dir, "config.old");
