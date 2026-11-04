@@ -3,6 +3,7 @@
 /** Why a save did not happen, as the notice groups it: a secret, an instruction or outside input, or a failure. */
 export type MemorySaveSkipReason =
   | "sensitive-input"
+  | "reviewer-skip"
   | "credential"
   | "authorization-key"
   | "unsafe-text"
@@ -18,7 +19,7 @@ export type MemorySaveNoticeResult =
     status: "saved";
     op: "created" | "updated" | "deleted";
     entry: { id: string; filename: string; title: string; scope: "project" | "global" };
-    /** Present for a create or a delete; an update cannot be undone. */
+    /** Present whenever the change can be undone. */
     undoToken?: string;
   }
   | { status: "skipped"; reason: MemorySaveSkipReason };
@@ -31,11 +32,11 @@ export interface MemorySaveResultEvent {
 }
 
 export type MemoryUndoResult =
-  | { ok: true; undone: "created" | "deleted"; title: string }
+  | { ok: true; undone: "created" | "updated" | "deleted"; title: string }
   | { ok: false; error: "not-found" | "changed" };
 
 const SKIP_REASONS = new Set<MemorySaveSkipReason>([
-  "sensitive-input", "credential", "authorization-key", "unsafe-text", "external-context",
+  "sensitive-input", "reviewer-skip", "credential", "authorization-key", "unsafe-text", "external-context",
   "reviewer-unavailable", "invalid-review", "shutdown", "write-failed", "input-too-large",
 ]);
 

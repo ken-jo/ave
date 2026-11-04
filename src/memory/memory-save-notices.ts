@@ -1,9 +1,9 @@
-// Every memory save, from any path, reaches the user as one live notice; a create or a delete can be undone from it.
-// Undo stays simple (owner decision 2026-11-04): undoing a create deletes it, undoing a delete restores it,
-// and an update has no undo (its notice offers the change history instead).
+// Every memory save, from any path, reaches the user as one live notice that can undo it. Undo stays simple: undoing a
+// create deletes it, undoing an update puts the earlier bytes back, undoing a delete restores it, and each acts only while
+// the memory still holds what that change wrote.
 import { randomUUID } from "node:crypto";
 import { createLogger } from "../lib/logger.js";
-import type { MemoryManager, NoteEntry } from "./memory-manager.js";
+import type { MemoryManager, MemorySaveResult, NoteEntry } from "./memory-manager.js";
 import type {
   MemorySaveNoticeResult,
   MemorySaveResultEvent,
@@ -25,9 +25,10 @@ export interface MemoryNoticeTarget {
 
 type UndoRecord =
   | { kind: "created"; filename: string; title: string; fileDigest: string }
+  | { kind: "updated"; filename: string; title: string; fileDigest: string; priorContent: string }
   | { kind: "deleted"; filename: string; title: string; priorContent: string };
 
-type UndoStore = Pick<MemoryManager, "deleteMemoryIfUnchanged" | "restoreDeletedMemory">;
+type UndoStore = Pick<MemoryManager, "deleteMemoryIfUnchanged" | "restoreMemoryIfUnchanged" | "restoreDeletedMemory">;
 
 export class MemorySaveNotices {
   private readonly records = new Map<string, UndoRecord>();
@@ -40,12 +41,15 @@ export class MemorySaveNotices {
     this.sink = sink;
   }
 
-  /** A save landed. A create gets an undo token; an update does not. */
-  saved(target: MemoryNoticeTarget | undefined, op: "created" | "updated", entry: NoteEntry, fileDigest: string): string | undefined {
+  /** A save landed; the returned token undoes it. An update whose earlier bytes could not be read has nothing to put back. */
+  saved(target: MemoryNoticeTarget | undefined, result: Pick<MemorySaveResult, "op" | "entry" | "fileDigest" | "priorContent">): string | undefined {
+    const { op, entry, fileDigest, priorContent } = result;
     const id = requireId(entry);
     const undoToken = op === "created"
       ? this.remember({ kind: "created", filename: entry.filename, title: entry.title, fileDigest })
-      : undefined;
+      : priorContent !== undefined
+        ? this.remember({ kind: "updated", filename: entry.filename, title: entry.title, fileDigest, priorContent })
+        : undefined;
     this.emit(target, { status: "saved", op, entry: noticeEntry(id, entry), ...(undoToken ? { undoToken } : {}) });
     return undoToken;
   }
@@ -62,14 +66,25 @@ export class MemorySaveNotices {
     this.emit(target, { status: "skipped", reason });
   }
 
-  /** Each token undoes once. "changed" when the memory moved on since, so an undo never discards a newer edit. */
+  /**
+   * Each token undoes once. "changed" when the memory moved on since, so an undo never discards a newer edit; "not-found"
+   * when the token is unknown (after a restart, or pushed out of the ring). A failed undo keeps its token for a retry.
+   */
   async undo(token: string): Promise<MemoryUndoResult> {
     const record = this.records.get(token);
     if (!record) return { ok: false, error: "not-found" };
     this.records.delete(token);
-    const outcome = record.kind === "created"
-      ? await this.memoryManager.deleteMemoryIfUnchanged(record.filename, record.fileDigest, "user")
-      : await this.memoryManager.restoreDeletedMemory(record.filename, record.priorContent, "user");
+    let outcome: "deleted" | "restored" | "changed";
+    try {
+      outcome = record.kind === "created"
+        ? await this.memoryManager.deleteMemoryIfUnchanged(record.filename, record.fileDigest, "user")
+        : record.kind === "updated"
+          ? await this.memoryManager.restoreMemoryIfUnchanged(record.filename, record.fileDigest, record.priorContent, "user")
+          : await this.memoryManager.restoreDeletedMemory(record.filename, record.priorContent, "user");
+    } catch (error) {
+      this.records.set(token, record);
+      throw error;
+    }
     if (outcome === "changed") return { ok: false, error: "changed" };
     return { ok: true, undone: record.kind, title: record.title };
   }

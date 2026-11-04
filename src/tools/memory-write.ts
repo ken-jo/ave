@@ -164,7 +164,7 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
       }
 
       try {
-        const { op, entry, fileDigest } = id !== undefined
+        const saved = id !== undefined
           ? await deps.memoryManager.updateMemoryById(id, title, content, {
               ...memoryWriteProjectScope(ctx),
               source: "assistant",
@@ -176,7 +176,8 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
               ...memoryWriteOrigin(ctx),
             }, "assistant", requestedIn(ctx));
         // The undo token goes to the user's notice only; the model has no undo.
-        deps.notices.saved(target, op, entry, fileDigest);
+        deps.notices.saved(target, saved);
+        const { op, entry } = saved;
         return {
           output: JSON.stringify({
             saved: true,

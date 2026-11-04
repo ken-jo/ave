@@ -257,7 +257,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
 
     // One save rule for every path (owner decision 2026-11-04): an accepted memory is active at once, no review queue.
     const capturedAt = new Date().toISOString();
-    const { op, entry, fileDigest } = await this.deps.memoryManager.saveMemory(reviewed.title, reviewed.content, {
+    const saved = await this.deps.memoryManager.saveMemory(reviewed.title, reviewed.content, {
       ...(pending.scope.projectRoot ? { projectRoot: pending.scope.projectRoot } : {}),
       ...(pending.scope.projectName ? { projectName: pending.scope.projectName } : {}),
       kind: reviewed.kind,
@@ -275,14 +275,16 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
     const target = pending.sessionId !== undefined
       ? { sessionId: pending.sessionId, ...(pending.origin?.messageId !== undefined ? { anchorMessageId: pending.origin.messageId } : {}) }
       : pending.origin ? { sessionId: pending.origin.sessionId } : undefined;
-    const undoToken = this.deps.notices.saved(target, op, entry, fileDigest);
-    return { status: "saved", op, entry, ...(undoToken ? { undoToken } : {}) };
+    const undoToken = this.deps.notices.saved(target, saved);
+    return { status: "saved", op: saved.op, entry: saved.entry, ...(undoToken ? { undoToken } : {}) };
   }
 }
 
 /** The notice a /remember skip shows: a secret, or a failure to save. A reviewer "skip" also reads as not saved. */
 function explicitNoticeReason(reason: string): MemorySaveSkipReason {
   if (reason === "sensitive-input") return "sensitive-input";
+  // The reviewer found nothing worth keeping: not a failure, and trying again would not change it.
+  if (reason === "reviewer-skip") return "reviewer-skip";
   if (reason === "reviewer-unavailable" || reason === "invalid-review" || reason === "shutdown" || reason === "input-too-large") return reason;
   return "write-failed";
 }

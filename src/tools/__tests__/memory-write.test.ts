@@ -426,9 +426,7 @@ describe("memory_write — the user's notice", () => {
     await run({ title: "stack", content: "Alpha uses pnpm." }, makeStore().store, inTurn(), notices);
     expect(notices.saved).toHaveBeenCalledWith(
       { sessionId: SESSION, anchorMessageId: TURN },
-      "created",
-      expect.objectContaining({ title: "stack" }),
-      "d".repeat(64),
+      expect.objectContaining({ op: "created", entry: expect.objectContaining({ title: "stack" }), fileDigest: "d".repeat(64) }),
     );
     expect(notices.skipped).not.toHaveBeenCalled();
   });

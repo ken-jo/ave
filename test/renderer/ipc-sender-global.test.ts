@@ -30,6 +30,7 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:chat:export": "sensitive",
   "ave:memory:entries:list": "sensitive",
   "ave:memory:entries:delete": "mutating",
+  "ave:memory:undo": "mutating",
   "ave:memory:entries:search": "sensitive",
   "ave:memory:index:get": "sensitive",
   "ave:memory:long-term:refresh": "sensitive",

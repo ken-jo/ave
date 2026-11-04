@@ -1,4 +1,4 @@
-// Undo stays simple: undoing a create deletes it, undoing a delete restores it, an update has no undo, and an undo never discards a newer edit.
+// Undo stays simple: undoing a create deletes it, an update puts the earlier bytes back, a delete restores it, and an undo never discards a newer edit.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,17 +32,18 @@ afterEach(async () => {
 
 async function save(title: string, content: string, options: Parameters<MemoryManager["saveMemory"]>[2] = {}) {
   const result = await manager.saveMemory(title, content, options, "assistant");
-  const token = notices.saved({ sessionId: SESSION, anchorMessageId: TURN }, result.op, result.entry, result.fileDigest);
+  const token = notices.saved({ sessionId: SESSION, anchorMessageId: TURN }, result);
   return { ...result, token };
 }
 
 describe("MemorySaveNotices", () => {
-  it("announces a create with an undo token and an update without one", async () => {
+  it("announces a create and an update, each with its own undo token", async () => {
     const created = await save("Reply language", "Answer in Korean.");
     const updated = await save("Reply language", "Answer in Korean, briefly.");
 
     expect(created.token).toEqual(expect.any(String));
-    expect(updated.token).toBeUndefined();
+    expect(updated.token).toEqual(expect.any(String));
+    expect(updated.token).not.toBe(created.token);
     expect(events).toEqual([
       {
         sessionId: SESSION,
@@ -56,7 +57,7 @@ describe("MemorySaveNotices", () => {
         sessionId: SESSION,
         anchorMessageId: TURN,
         result: {
-          status: "saved", op: "updated",
+          status: "saved", op: "updated", undoToken: updated.token,
           entry: { id: created.entry.id, filename: created.entry.filename, title: "Reply language", scope: "global" },
         },
       },
@@ -79,6 +80,37 @@ describe("MemorySaveNotices", () => {
 
     await expect(notices.undo(created.token!)).resolves.toEqual({ ok: false, error: "changed" });
     expect(readFileSync(join(dir, "memories", created.entry.filename), "utf-8")).toContain("Use pnpm 9.");
+  });
+
+  it("undoes an update by putting the earlier text back, keeping the id and recording it", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const before = readFileSync(join(dir, "memories", created.entry.filename), "utf-8");
+    const updated = await save("Reply language", "Answer in English.");
+
+    await expect(notices.undo(updated.token!)).resolves.toEqual({ ok: true, undone: "updated", title: "Reply language" });
+    expect(readFileSync(join(dir, "memories", created.entry.filename), "utf-8")).toBe(before);
+    expect(manager.listMemoryEntries()).toHaveLength(1);
+    const history = await manager.getMemoryHistory(created.entry.id!, {});
+    expect(history.entries.map((row) => [row.op, row.actor])).toEqual([["created", "assistant"], ["updated", "assistant"], ["updated", "user"]]);
+    await expect(notices.undo(updated.token!)).resolves.toEqual({ ok: false, error: "not-found" });
+  });
+
+  it("refuses to undo an update that was changed again, keeping the newest text", async () => {
+    await save("Reply language", "Answer in Korean.");
+    const updated = await save("Reply language", "Answer in English.");
+    const newest = await save("Reply language", "Answer in Japanese.");
+
+    await expect(notices.undo(updated.token!)).resolves.toEqual({ ok: false, error: "changed" });
+    expect(readFileSync(join(dir, "memories", newest.entry.filename), "utf-8")).toContain("Answer in Japanese.");
+  });
+
+  it("keeps the token when the undo throws, so it can be tried again", async () => {
+    const created = await save("Package manager", "Use pnpm.");
+    const failing = vi.spyOn(manager, "deleteMemoryIfUnchanged").mockRejectedValueOnce(new Error("disk busy"));
+
+    await expect(notices.undo(created.token!)).rejects.toThrow("disk busy");
+    failing.mockRestore();
+    await expect(notices.undo(created.token!)).resolves.toEqual({ ok: true, undone: "created", title: "Package manager" });
   });
 
   it("undoes a delete by restoring the same memory, id and global index entry included", async () => {
@@ -121,7 +153,7 @@ describe("MemorySaveNotices", () => {
     const tokens: string[] = [];
     for (const title of ["One", "Two", "Three"]) {
       const result = await manager.saveMemory(title, `${title} body.`, {}, "user");
-      tokens.push(small.saved(undefined, result.op, result.entry, result.fileDigest)!);
+      tokens.push(small.saved(undefined, result)!);
     }
     await expect(small.undo(tokens[0]!)).resolves.toEqual({ ok: false, error: "not-found" });
     await expect(small.undo(tokens[2]!)).resolves.toMatchObject({ ok: true, undone: "created" });
@@ -129,7 +161,7 @@ describe("MemorySaveNotices", () => {
 
   it("sends nothing outside a conversation or before a window exists, and survives a failing sink", async () => {
     const result = await manager.saveMemory("Quiet", "No chat here.", {}, "user");
-    notices.saved(undefined, result.op, result.entry, result.fileDigest);
+    notices.saved(undefined, result);
     expect(events).toEqual([]);
 
     const detached = new MemorySaveNotices(manager);
@@ -152,6 +184,7 @@ describe("isMemorySaveResultEvent", () => {
     const entry = { id: "a", filename: "a.md", title: "A", scope: "project" };
     expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "saved", op: "deleted", entry, undoToken: "t" } })).toBe(true);
     expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "skipped", reason: "unsafe-text" } })).toBe(true);
+    expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "skipped", reason: "reviewer-skip" } })).toBe(true);
     expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "skipped", reason: "nope" } })).toBe(false);
     expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "saved", op: "promoted", entry } })).toBe(false);
     expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "saved", op: "created", entry: { ...entry, scope: "other" } } })).toBe(false);

@@ -247,9 +247,7 @@ describe("MemoryCaptureService notices", () => {
 
     expect(notices.saved).toHaveBeenCalledWith(
       { sessionId: SESSION_ID, anchorMessageId: TURN_MESSAGE_ID },
-      "created",
-      expect.objectContaining({ title: "Communication preference" }),
-      "f".repeat(64),
+      expect.objectContaining({ op: "created", entry: expect.objectContaining({ title: "Communication preference" }), fileDigest: "f".repeat(64) }),
     );
   });
 
@@ -260,7 +258,7 @@ describe("MemoryCaptureService notices", () => {
       .captureExplicit({ title: "Status preference", content: SOURCE, sessionId: SESSION_ID });
 
     expect(result).toMatchObject({ status: "saved", undoToken: "11111111-2222-4333-8444-555555555555" });
-    expect(notices.saved).toHaveBeenCalledWith({ sessionId: SESSION_ID }, "created", expect.anything(), "f".repeat(64));
+    expect(notices.saved).toHaveBeenCalledWith({ sessionId: SESSION_ID }, expect.objectContaining({ op: "created", fileDigest: "f".repeat(64) }));
   });
 
   it("tells /remember's conversation why it did not save, and stays silent for automatic skips", async () => {
@@ -274,6 +272,10 @@ describe("MemoryCaptureService notices", () => {
     const failing = createCaptureService(manager, { review: vi.fn(async () => "not json") } as MemoryCaptureReviewer, notices);
     await failing.captureExplicit({ content: SOURCE, sessionId: SESSION_ID });
     expect(notices.skipped).toHaveBeenLastCalledWith({ sessionId: SESSION_ID }, "invalid-review");
+
+    const skip = reviewedCapture({ action: "skip", title: "", content: "", kind: "", evidence: "", confidence: 0 });
+    await createCaptureService(manager, makeMemoryReviewer(skip).memoryReviewer, notices).captureExplicit({ content: SOURCE, sessionId: SESSION_ID });
+    expect(notices.skipped).toHaveBeenLastCalledWith({ sessionId: SESSION_ID }, "reviewer-skip");
 
     notices.skipped.mockClear();
     service.enqueueAutomatic({ sessionId: SESSION_ID, input: SOURCE, inputOrigin: "user-keyboard", stopReason: "end_turn", taintReasons: ["attachment"] });
