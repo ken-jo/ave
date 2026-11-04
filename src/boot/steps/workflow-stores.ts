@@ -37,6 +37,7 @@ import { createRootSessionResolver } from "../../permissions/root-session-resolv
 import { setApprovalConversationRootResolver } from "../../permissions/user-approval-store.js";
 import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import { t } from "../../i18n/index.js";
+import { defaultWorkspaceProject } from "../../main/project-root-authorization.js";
 
 const log = createLogger("ave");
 
@@ -104,8 +105,19 @@ export async function setupWorkflowStores(
     notificationService,
   );
   const subAgentRunnerRef: { fn: SubAgentRunner | undefined } = { fn: undefined };
+  // A schedule the agent adds is listed under its conversation's project; a conversation outside any named project belongs to the
+  // default workspace. An unknown session has no project, and the tool refuses rather than guess.
+  const routineProjectRootForSession = (requestingSessionId: string): string | undefined => {
+    const sessionId = ctx.resolveRootSessionId(requestingSessionId);
+    const liveLoop = ctx.findLoopBySessionId?.(sessionId);
+    const store = sessionOwner(sessionId);
+    const metadata = store.loadSessionMetadata(sessionId);
+    if (!liveLoop && !metadata) return undefined;
+    return liveLoop?.getSessionProjectRoot() ?? metadata?.projectRoot ?? defaultWorkspaceProject().projectRoot;
+  };
   const workflowDeps: WorkflowToolDeps = {
     routinesStore,
+    routineProjectRootForSession,
     sessionTasksStore,
     sessionGoalStore,
     skillStore,

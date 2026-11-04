@@ -1,6 +1,6 @@
 // Next-fire arithmetic for at-based repeats. The store advances a fired item with it and the schedule panel expands occurrences with it,
 // so the grid draws exactly the times the scheduler will fire. Each function returns the first fire strictly after `nowMs`.
-import type { RoutineRecord, RoutineRepeat } from "../shared/routines-types.js";
+import type { RoutineRecord, RoutineRepeat, RoutineSchedule } from "../shared/routines-types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -42,4 +42,32 @@ export function advanceRepeatAt(atIso: string, repeat: RoutineRepeat | undefined
 export function isMissedWhilePaused(record: RoutineRecord): boolean {
   if (!(!record.schedule?.repeat || record.schedule.repeat.kind === "none") || !record.resumedAt || !record.schedule?.at) return false;
   return Date.parse(record.schedule.at) <= Date.parse(record.resumedAt);
+}
+
+const REPEAT_KINDS = new Set(["none", "daily", "weekly", "monthly", "interval", "cron"]);
+
+/** The structural shape of a schedule, from disk or IPC; value limits are checked separately by the store's validation. */
+export function isRoutineScheduleShape(value: unknown): value is RoutineSchedule {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const s = value as Record<string, unknown>;
+  if (s.at !== undefined && typeof s.at !== "string") return false;
+  if (s.repeat === undefined) return true;
+  if (!s.repeat || typeof s.repeat !== "object" || Array.isArray(s.repeat)) return false;
+  const r = s.repeat as Record<string, unknown>;
+  if (typeof r.kind !== "string" || !REPEAT_KINDS.has(r.kind)) return false;
+  if (r.kind === "interval" && typeof r.intervalMs !== "number") return false;
+  if (r.kind === "cron" && typeof r.expression !== "string") return false;
+  return true;
+}
+
+/** Two schedules fire at the same times when these keys match: `at` as an instant, no repeat as "none", a trimmed cron expression. */
+export function scheduleIdentity(schedule: RoutineSchedule | undefined): string {
+  if (!schedule) return "none";
+  const at = schedule.at === undefined ? null : Date.parse(schedule.at);
+  const repeat = schedule.repeat;
+  const kind = repeat?.kind ?? "none";
+  const detail = repeat?.kind === "cron" ? repeat.expression.trim()
+    : repeat?.kind === "interval" ? repeat.intervalMs
+      : null;
+  return JSON.stringify([at, kind, detail]);
 }

@@ -7,7 +7,7 @@ import { createLogger } from "../lib/logger.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
-import { advanceRepeatAt, isMissedWhilePaused } from "../routines/schedule-advance.js";
+import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 const log = createLogger("ave");
 
@@ -122,6 +122,10 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (x.pausedAt !== undefined && typeof x.pausedAt !== "string") return false;
   if ((x.pausedAt === undefined) !== (x.pausedBy === undefined) || (x.pausedBy !== undefined && !isActor(x.pausedBy))) return false;
   if (x.resumedAt !== undefined && typeof x.resumedAt !== "string") return false;
+  for (const field of ["title", "prePrompt", "notificationTitle", "notificationBody"] as const) {
+    if (x[field] !== undefined && typeof x[field] !== "string") return false;
+  }
+  if (x.schedule !== undefined && !isRoutineScheduleShape(x.schedule)) return false;
   return true;
 }
 
@@ -612,13 +616,17 @@ export class RoutinesStore {
       if (patch.prePrompt !== undefined) r.prePrompt = patch.prePrompt;
       if (patch.notificationTitle !== undefined) r.notificationTitle = patch.notificationTitle;
       if (patch.notificationBody !== undefined) r.notificationBody = patch.notificationBody;
-      if (patch.schedule !== undefined && JSON.stringify(schedule) !== JSON.stringify(r.schedule)) {
+      // A new schedule is a new series: the previous cron minute keys and skip markers belong to the old one, and a one-shot given
+      // a new time is due again and no longer missed. A re-save that fires at the same times (key order, `{at}` vs a "none" repeat,
+      // an offset spelling of the same instant, a padded cron) is not new, so a fired one-shot or a cron minute cannot fire twice.
+      if (patch.schedule !== undefined && scheduleIdentity(schedule) !== scheduleIdentity(r.schedule)) {
         r.schedule = schedule;
-        // A new schedule is a new series: the previous cron minute keys and skip markers belong to the old one, and a one-shot
-        // given a new time is due again. Re-saving the same schedule keeps them, so the same cron minute cannot fire twice.
         delete r.lastFiredMinuteUTC;
         delete r.lastSkippedMinuteUTC;
-        if (isOneShot(r)) delete r.lastFiredAt;
+        if (isOneShot(r)) {
+          delete r.lastFiredAt;
+          delete r.resumedAt;
+        }
       }
       return true;
     }, { skipDismissed: true });
@@ -675,12 +683,12 @@ export class RoutinesStore {
       const file = await readFileOrEmpty(this.filePath);
       const r = file.routines.find((x) => x.id === id);
       const nowMs = Date.now();
-      const stale = r !== undefined && options?.scheduled === true && (
-        Boolean(r.dismissedAt)
-        || (isOneShot(r) && Boolean(r.lastFiredAt))
+      // Dismissed applies to every path: run-now and quit read their item before an await, too.
+      const stale = r !== undefined && (Boolean(r.dismissedAt) || (options?.scheduled === true && (
+        (isOneShot(r) && Boolean(r.lastFiredAt))
         || isMissedWhilePaused(r)
         || (r.schedule?.repeat?.kind !== "cron" && r.schedule?.at !== undefined && Date.parse(r.schedule.at) > nowMs)
-      );
+      )));
       if (!r || r.pausedAt || stale) {
         this.cache = file.routines;
         this.invalidCache = file.invalid;

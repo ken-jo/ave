@@ -326,3 +326,18 @@ describe("schedule panel IPC — review fixes", () => {
     expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "once", firedAt: "2026-11-03T00:00:00.000Z", status: "done" }] });
   });
 });
+
+describe("schedule panel IPC — input shapes", () => {
+  it("refuses a patch or an add with wrongly typed fields before the store sees it", async () => {
+    const deps = await setup([]);
+    const store = deps.routinesStore as typeof deps.routinesStore & Record<string, ReturnType<typeof vi.fn>>;
+    store.edit = vi.fn();
+    for (const patch of [{ title: 5 }, { prePrompt: {} }, { schedule: "daily" }, { schedule: { at: 1 } }, { schedule: { repeat: { kind: "x" } } }, { notificationBody: [] }]) {
+      expect(await invoke(ROUTINES.update, "routine-a", patch), JSON.stringify(patch)).toEqual({ ok: false, error: "invalid-input" });
+    }
+    expect(store.edit).not.toHaveBeenCalled();
+    expect(await invoke(ROUTINES.add, { projectRoot: "/p", trigger: "schedule", execution: "llm-session", prePrompt: 3 }))
+      .toEqual({ ok: false, error: "invalid-input" });
+    expect(deps.routinesStore.add).not.toHaveBeenCalled();
+  });
+});

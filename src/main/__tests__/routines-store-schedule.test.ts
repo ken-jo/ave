@@ -209,3 +209,73 @@ describe("RoutinesStore — pause and resume", () => {
     expect(fired).toEqual([r.id]);
   }));
 });
+
+describe("RoutinesStore — a re-save that only looks different is not a new schedule", () => {
+  it("re-saving a cron item with reordered keys does not fire the same minute twice", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p",
+      schedule: { repeat: { kind: "cron", expression: "* * * * *" } } });
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const fired: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { fired.push(routine.id); });
+    await scheduler.checkAndFire();
+    // The same schedule, keys in another order and the expression padded.
+    await store.edit(r.id, { schedule: { repeat: { expression: " * * * * * ", kind: "cron" } as never } });
+    await scheduler.checkAndFire();
+    expect(fired).toHaveLength(1);
+  }));
+
+  it("re-saving a fired one-shot as {at, repeat: none} does not make it due again", withRoutinesStore(async ({ store }) => {
+    const at = pastIso(-60_000);
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at } });
+    const fired = await store.markFired(r.id);
+    await store.recordRunOutcome(r.id, fired!.lastFiredAt!, { ok: false, kind: "error", reason: "429" });
+    const edited = await store.edit(r.id, { schedule: { repeat: { kind: "none" }, at: new Date(Date.parse(at)).toISOString().replace("Z", "+00:00") } });
+    expect(edited?.lastFiredAt).toBe(fired!.lastFiredAt);
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const runs: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { runs.push(routine.id); });
+    await scheduler.checkAndFire();
+    expect(runs).toEqual([]);
+  }));
+
+  it("a one-shot given a new time after resume is no longer missed", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at: pastIso(-60_000) } });
+    await store.pause(r.id, "user");
+    await store.resume(r.id);
+    const edited = await store.edit(r.id, { schedule: { at: pastIso(-30_000) } });
+    expect(edited?.resumedAt).toBeUndefined();
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const runs: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { runs.push(routine.id); });
+    await scheduler.checkAndFire();
+    expect(runs).toEqual([r.id]);
+  }));
+
+  it("run-now of an item dismissed while the plugin check was in flight does not fire", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at: futureIso(HOUR) },
+      scope: { pluginIds: { mode: "allow", ids: ["calendar"] }, forcedPluginIds: [], directories: [] } });
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => { open = resolve; });
+    const scheduler = new RoutinesScheduler(store, async () => { await opened; return ["calendar"]; });
+    const runs: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { runs.push(routine.id); });
+    const now = scheduler.dispatchNow(r.id);
+    await store.dismiss(r.id);
+    open();
+    expect(await now).toBe(false);
+    expect(runs).toEqual([]);
+  }));
+
+  it("refuses a stored record whose title or schedule has the wrong shape", withRoutinesStore(async ({ store, dir }) => {
+    await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at: futureIso() } });
+    const file = join(dir, "routines.json");
+    for (const bad of [{ title: 7 }, { prePrompt: ["x"] }, { schedule: { at: 5 } }, { schedule: { repeat: { kind: "hourly" } } }, { schedule: "daily" }]) {
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      raw.routines = [{ ...raw.routines[0], id: "bad", ...bad }];
+      writeFileSync(file, JSON.stringify(raw));
+      const reloaded = new RoutinesStore(file);
+      await reloaded.load();
+      expect(reloaded.list(), JSON.stringify(bad)).toEqual([]);
+    }
+  }));
+});

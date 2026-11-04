@@ -100,7 +100,12 @@ function routineScheduleApprovalCacheKey(rawInput: unknown): string {
   return `scope:allow:${[...allowedPlugins].sort().join(",")}`;
 }
 
-export function createRoutineScheduleTool(store: RoutinesStore): Tool {
+export interface RoutineScheduleToolDeps {
+  /** The project (or default workspace) root of the conversation that called the tool, or undefined when it has none. */
+  projectRootForSession: (sessionId: string) => string | undefined;
+}
+
+export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineScheduleToolDeps): Tool {
   return createDynamicTool({
     name: "routine_schedule",
     description: t("be_routineSchedule.toolDescription"),
@@ -161,8 +166,10 @@ export function createRoutineScheduleTool(store: RoutinesStore): Tool {
     },
     execute: async (rawInput, ctx) => {
       const a = (rawInput ?? {}) as Record<string, unknown>;
-      // The item is listed under the calling chat's project: the host resolves the tool cwd from that session.
-      const projectRoot = typeof ctx?.cwd === "string" ? ctx.cwd.trim() : "";
+      // The item is listed under the calling conversation's project, resolved from its session. The tool cwd is not used: it can fall
+      // back to the process cwd, which would file the item under an unrelated directory.
+      const sessionId = ctx?.metadata?.sessionId;
+      const projectRoot = typeof sessionId === "string" && sessionId ? deps.projectRootForSession(sessionId)?.trim() ?? "" : "";
       if (!projectRoot) {
         return { output: JSON.stringify({ error: "routine_schedule needs a chat that belongs to a project" }), isError: true };
       }

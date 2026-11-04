@@ -10,6 +10,7 @@ import type {
   RoutineRun,
 } from "../../shared/routines-types.js";
 import { listRoutineOccurrences } from "../../routines/occurrences.js";
+import { isRoutineScheduleShape } from "../../routines/schedule-advance.js";
 import { ROUTINES } from "../../shared/ipc-channels.js";
 import { toSessionListRow } from "../../memory/memory-manager.js";
 import type { RoutineRunRow } from "../../shared/session-lookup.js";
@@ -17,6 +18,19 @@ import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
 
 // The month grid spans at most six weeks; a little slack keeps a range that starts mid-day valid.
 const MAX_OCCURRENCE_RANGE_MS = 43 * 24 * 60 * 60 * 1000;
+
+const OPTIONAL_TEXT_FIELDS = ["title", "prePrompt", "notificationTitle", "notificationBody"] as const;
+
+// Renderer input crosses a trust boundary: wrong types are refused here, before the store's value validation.
+function hasValidFieldTypes(input: Record<string, unknown>, allowNullTitle: boolean): boolean {
+  for (const field of OPTIONAL_TEXT_FIELDS) {
+    const value = input[field];
+    if (value === undefined || typeof value === "string") continue;
+    if (field === "title" && allowNullTitle && value === null) continue;
+    return false;
+  }
+  return input.schedule === undefined || isRoutineScheduleShape(input.schedule);
+}
 
 function projectRootFilter(filter: unknown): string | undefined {
   if (!filter || typeof filter !== "object") return undefined;
@@ -152,8 +166,10 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
         return UNAUTHORIZED_FRAME;
       }
       if (!routinesStore) return { ok: false, error: "no-store" };
+      if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "invalid-input" };
       // Every new item belongs to a project; the panel passes the active one.
-      if (!input || typeof input.projectRoot !== "string" || !input.projectRoot.trim()) return { ok: false, error: "project-required" };
+      if (typeof input.projectRoot !== "string" || !input.projectRoot.trim()) return { ok: false, error: "project-required" };
+      if (!hasValidFieldTypes(input as unknown as Record<string, unknown>, false)) return { ok: false, error: "invalid-input" };
       try {
         // The renderer form is the user's own action; only the host's tool path may record an agent as creator.
         const record = await routinesStore.add({ ...input, createdBy: "user" });
@@ -170,7 +186,8 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
-    if (typeof id !== "string" || !patch || typeof patch !== "object" || Array.isArray(patch)) return { ok: false, error: "invalid-input" };
+    if (typeof id !== "string" || !patch || typeof patch !== "object" || Array.isArray(patch)
+      || !hasValidFieldTypes(patch as Record<string, unknown>, true)) return { ok: false, error: "invalid-input" };
     try {
       const routine = await routinesStore.edit(id, patch as RoutineEditPatch);
       return routine ? { ok: true, routine } : { ok: false, error: "routine-not-found" };
