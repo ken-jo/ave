@@ -1,7 +1,7 @@
 import { noteOwnedWrite, terminalFileEvidence, writtenFileIdentity, type WrittenFileIdentity } from "../main/terminal/changed-file-evidence.js";
 import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { constants, type Stats } from "node:fs";
+import { constants, type Dirent, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   copyFile,
@@ -1940,7 +1940,16 @@ async function walk(
   state: { visited: number; truncated: boolean },
 ): Promise<void> {
   if (output.length >= limit || remainingDepth < 1 || state.truncated) return;
-  const dirents = await readdir(current, { withFileTypes: true });
+  let dirents: Dirent[];
+  try {
+    dirents = await readdir(current, { withFileTypes: true });
+  } catch (err) {
+    // Like ripgrep, a subfolder the OS refuses to list is skipped: its contents are unreadable to every caller anyway, and one
+    // locked folder must not empty the whole listing. An unreadable root still fails, so the caller learns it read nothing.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (current !== root && (code === "EACCES" || code === "EPERM")) return;
+    throw err;
+  }
   dirents.sort((a, b) => a.name.localeCompare(b.name));
   for (const dirent of dirents) {
     if (output.length >= limit || state.truncated) return;
