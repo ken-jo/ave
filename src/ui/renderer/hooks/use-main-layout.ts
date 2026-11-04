@@ -47,12 +47,18 @@ interface MainSurfacesForLayout {
 
 /** Put a checked layout back: ids reserved, side tabs and terminals staged, panes and surfaces restored. */
 function applyLayout(layout: MainLayoutSnapshot, chatGroups: ChatGroupsForLayout, mainSurfaces: MainSurfacesForLayout): void {
-  const all: SavedSurface[] = [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()];
+  // First-class surfaces in their saved order (older layouts list only the shown ones), then any shown one not listed.
+  const shown = Object.values(layout.surfaces);
+  const listed = layout.openSurfaces ?? [];
+  const main = [...listed, ...shown.filter((surface) => !listed.some((each) => each.tabId === surface.tabId))];
+  const all: SavedSurface[] = [...main, ...Object.values(layout.sideTabs).flat()];
   reserveTabIds(all.map((surface) => surface.tabId));
   stageRestoredLayout({ sideTabs: layout.sideTabs, terminals: all.filter((surface) => surface.kind === "terminal") });
+  for (const surface of main) {
+    mainSurfaces.adopt({ tabId: surface.tabId, kind: surface.kind, ordinal: surface.ordinal, url: surface.url, cwd: surface.cwd });
+  }
   const content: Record<string, ViewLocation> = {};
   for (const [paneId, surface] of Object.entries(layout.surfaces)) {
-    mainSurfaces.adopt({ tabId: surface.tabId, kind: surface.kind, ordinal: surface.ordinal, url: surface.url, cwd: surface.cwd });
     content[paneId] = { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: surface.tabId };
   }
   // The saved tree's nodes have the pane tree's shape; the parser checked them.
@@ -130,6 +136,7 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
           );
         },
         sideTabsOf: (paneId) => getSideTabsSink(paneId)?.snapshot() ?? [],
+        openSurfaceIds: surfaces.surfaces.map((surface) => surface.tabId),
       });
       return snapshot;
     };

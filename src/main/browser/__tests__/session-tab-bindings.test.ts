@@ -242,6 +242,30 @@ describe("durable session tab bindings", () => {
     await restarted.registry.flushBindingWrites();
   });
 
+  it("keeps a hidden tab's pane conversation across save and restart, without a workspace placement while hidden", async () => {
+    const terminal = layout().sideTabs.main![1]!;
+    const shown: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, openSurfaces: [terminal], sideTabs: { main: [layout().sideTabs.main![0]!] } };
+    await saveLayout(settings, shown);
+    const first = registryFor();
+    first.registry.bindConversationSurface(PANE_SESSION, { windowId: 1, surface: { kind: "terminal", tabId: TERMINAL_TAB } });
+    expect(first.registry.surfacePlacement(1, TERMINAL_TAB)).toBe("workspace");
+    // The pane switches back to its conversation: the terminal stays open but no pane shows it.
+    const hidden: MainLayoutSnapshot = { ...shown, surfaces: {} };
+    const saved = first.registry.prepareLayoutBindings(1, hidden);
+    expect(saved.openSurfaces?.[0]?.binding).toEqual({ paneSessionId: PANE_SESSION });
+    expect(first.registry.paneConversation(1, TERMINAL_TAB)).toBe(PANE_SESSION);
+    // Hidden is neither workspace nor side panel, so a host-terminal lease (workspace only) cannot survive it.
+    expect(first.registry.surfacePlacement(1, TERMINAL_TAB)).toBeUndefined();
+    expect(info).not.toHaveBeenCalledWith("Pruned tab binding: tab-missing (tab=%s)", TERMINAL_TAB);
+    await saveLayout(settings, saved);
+    await first.registry.flushBindingWrites();
+    first.registry.releaseWindow(1);
+    const restarted = registryFor(settingsFromDisk(), 4);
+    expect(restarted.registry.paneConversation(4, TERMINAL_TAB)).toBe(PANE_SESSION);
+    expect(restarted.registry.surfacePlacement(4, TERMINAL_TAB)).toBeUndefined();
+    await restarted.registry.flushBindingWrites();
+  });
+
   it("binds an agent-opened page to its main session and publishes revisioned changes", async () => {
     const { registry, requests, changes } = registryFor();
     await openOwnedTab(registry, requests);

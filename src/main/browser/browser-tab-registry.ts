@@ -112,6 +112,20 @@ export interface BrowserGuest {
 }
 
 // A document transition invalidated the old page; it grants no further input authority.
+/** Every tab a layout keeps: shown in a pane, hidden but still open (`openSurfaces`), or in a side panel — each once. A hidden tab
+ * keeps its conversation binding; its placement is neither "workspace" nor "side-panel" (see `recordPlacements`), so binding-scoped
+ * authority such as a host-terminal lease does not survive while it is hidden. */
+function layoutTabs(layout: MainLayoutSnapshot): SavedSurface[] {
+  const seen = new Set<string>();
+  const tabs: SavedSurface[] = [];
+  for (const surface of [...Object.values(layout.surfaces), ...(layout.openSurfaces ?? []), ...Object.values(layout.sideTabs).flat()]) {
+    if (seen.has(surface.tabId)) continue;
+    seen.add(surface.tabId);
+    tabs.push(surface);
+  }
+  return tabs;
+}
+
 export class BrowserDocumentChangedError extends Error {
   readonly code = "browser-document-changed";
 
@@ -279,7 +293,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (!layout) { this.restoredBindingWindows.add(windowId); return; }
     this.recordPlacements(windowId, layout);
     let changed = false;
-    for (const surface of [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()]) {
+    for (const surface of layoutTabs(layout)) {
       const binding = this.workspaceBinding(windowId, { kind: surface.kind, tabId: surface.tabId });
       const owner = surface.binding?.owner;
       // Absence is the old layout format; an empty binding is an explicit clear.
@@ -321,7 +335,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   prepareLayoutBindings(windowId: number, layout: MainLayoutSnapshot): MainLayoutSnapshot {
     this.restoreBindings(windowId);
     if (this.recordPlacements(windowId, layout)) this.notifyBindingListeners(windowId);
-    const surfaces = [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()];
+    const surfaces = layoutTabs(layout);
     const ids = new Set(surfaces.map((surface) => surface.tabId));
     for (const surface of surfaces) {
       if (!this.retiredWorkspaceTabs.has(windowTabKey(windowId, surface.tabId))) {
@@ -361,6 +375,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return { ...layout,
       surfaces: Object.fromEntries(Object.entries(layout.surfaces).map(([id, surface]) => [id, decorate(surface)])),
       sideTabs: Object.fromEntries(Object.entries(layout.sideTabs).map(([id, surfaces]) => [id, surfaces.map(decorate)])),
+      ...(layout.openSurfaces === undefined ? {} : { openSurfaces: layout.openSurfaces.map(decorate) }),
     };
   }
 
