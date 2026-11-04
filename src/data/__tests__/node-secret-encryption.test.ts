@@ -135,7 +135,7 @@ describe.skipIf(process.platform === "win32")("external-key secret documents", (
     const bytes = readFileSync(store.path, "utf8");
     expect(JSON.parse(bytes).entries.api.encoding).toBe("external-key");
     expect(bytes).not.toContain("server-secret");
-    expect(storeAt(root).getEncrypted("api")).toBe("server-secret");
+    await expect(storeAt(root).getEncrypted("api")).resolves.toBe("server-secret");
     await expect(storeAt(root).migrate()).resolves.toBe(false);
     expect(readFileSync(store.path, "utf8")).toBe(bytes);
   });
@@ -148,8 +148,8 @@ describe.skipIf(process.platform === "win32")("external-key secret documents", (
     writeFileSync(otherFile, randomBytes(32), { mode: 0o600 });
     for (const encryption of [createNodeSecretEncryption(otherFile), createNodeSecretEncryption()]) {
       const other = storeAt(root, encryption);
-      expect(() => other.get("api")).toThrow();
-      expect(() => other.getEncrypted("api")).toThrow();
+      await expect(other.get("api")).rejects.toThrow();
+      await expect(other.getEncrypted("api")).rejects.toThrow();
       await expect(other.set("api", "replacement")).rejects.toThrow();
       await expect(other.set("another", "replacement")).rejects.toThrow();
       await expect(other.delete("api")).rejects.toThrow();

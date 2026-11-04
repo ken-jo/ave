@@ -194,6 +194,18 @@ export interface SafeStorageLike {
   decryptStringAsync(value: Buffer): Promise<{ shouldReEncrypt: boolean; result: string }>;
 }
 
+/** Electron rejects with this while the OS keychain is briefly unreachable; the ciphertext is still good, so nothing may be quarantined. */
+export class SafeStorageTemporarilyUnavailableError extends Error {
+  constructor() {
+    super("Electron safeStorage is temporarily unavailable; the secret store was not opened");
+    this.name = "SafeStorageTemporarilyUnavailableError";
+  }
+}
+
+function isTemporarilyUnavailable(error: unknown): boolean {
+  return error instanceof Error && /temporarily unavailable/i.test(error.message);
+}
+
 /** Use single-line mode-0600 files when OS-backed secret encryption is unavailable. */
 export class FileSecretStore implements SecretStore {
   private readonly dir: string;
@@ -294,7 +306,13 @@ export class SafeStorageSecretStore implements SecretStore {
       && (ciphertext.length === 0 || ciphertext.toString("base64") !== encoded)) {
       throw new Error("Secret ciphertext encoding is invalid");
     }
-    const decrypted = await this.safeStorage.decryptStringAsync(ciphertext);
+    let decrypted: Awaited<ReturnType<SafeStorageLike["decryptStringAsync"]>>;
+    try {
+      decrypted = await this.safeStorage.decryptStringAsync(ciphertext);
+    } catch (error) {
+      if (isTemporarilyUnavailable(error)) throw new SafeStorageTemporarilyUnavailableError();
+      throw error;
+    }
     if (typeof decrypted?.result !== "string") throw new Error("Stored secret could not be decrypted");
     return { value: decrypted.result, shouldReEncrypt: decrypted.shouldReEncrypt === true };
   }
@@ -310,6 +328,7 @@ export class SafeStorageSecretStore implements SecretStore {
       try {
         unwrapped = await this.unwrap(stored);
       } catch (err) {
+        if (err instanceof SafeStorageTemporarilyUnavailableError) throw err;
         if (this.unreadablePolicy === "reject") throw new Error("Stored secret could not be decrypted");
         if (this.access === "existing-read-only") throw new Error("Stored secret could not be decrypted");
         // Same as an unreadable entry: keep the forensic copy and start over, so every entry it wrapped is quarantined on read.
@@ -375,6 +394,7 @@ export class SafeStorageSecretStore implements SecretStore {
       try {
         value = (await this.unwrap(stored)).value;
       } catch (err) {
+        if (err instanceof SafeStorageTemporarilyUnavailableError) throw err;
         // Reject stores leave unreadable entries in place; reading them fails closed.
         if (this.unreadablePolicy === "quarantine" && this.access === "read-write"
           && this.readStored(p, MAX_SAFE_STORAGE_FILE_BYTES) === stored) {

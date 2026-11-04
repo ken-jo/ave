@@ -26,6 +26,7 @@ import {
   MemorySecretStore,
   readStableRegularFileUtf8,
   SafeStorageSecretStore,
+  SafeStorageTemporarilyUnavailableError,
   type SafeStorageLike,
   sealDayFromFile,
   sealKeyName,
@@ -313,6 +314,29 @@ describe("SafeStorageSecretStore", () => {
     const files = readdirSync(secretsDir());
     expect(files.some((file) => file.startsWith("store-data.safe-storage-key.quarantined-"))).toBe(true);
     expect(files.some((file) => file.startsWith("audit-hmac.key.safe-storage.quarantined-"))).toBe(true);
+  });
+
+  // Electron 45 rejects with this while the keychain is briefly unreachable.
+  const transient = () => makeSafeStorage({
+    decrypt: () => { throw new Error("safeStorage.decryptStringAsync is temporarily unavailable. Please try again."); },
+  });
+
+  it("fails open on a transient data-key decrypt failure, quarantines nothing, and keeps every entry", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    await expect(SafeStorageSecretStore.open(transient(), secretsDir())).rejects.toThrow(SafeStorageTemporarilyUnavailableError);
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    const recovered = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(recovered.read("audit-hmac.key")).toBe("kept-secret");
+  });
+
+  it("fails open on a transient pre-envelope decrypt failure and leaves the entry in place", async () => {
+    mkdirSync(secretsDir(), { recursive: true });
+    writeFileSync(entryPath("audit-hmac.key"), legacyEntry("legacy-secret"));
+    await expect(SafeStorageSecretStore.open(transient(), secretsDir())).rejects.toThrow(SafeStorageTemporarilyUnavailableError);
+    expect(readFileSync(entryPath("audit-hmac.key"), "utf8")).toBe(legacyEntry("legacy-secret"));
+    expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
   });
 
   it("quarantines undecryptable pre-envelope ciphertext before boot rotates the secret", async () => {
