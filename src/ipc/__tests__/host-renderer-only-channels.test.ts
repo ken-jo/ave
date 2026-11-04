@@ -224,6 +224,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["sidechat", CHANNELS.sidechat.getSubAgentTranscript, [{ originSessionId: "test-session", childSessionId: "child-session" }]],
   // Routines and the session tasks list.
   ["routines", ROUTINES.list, []],
+  // Acknowledging a routine's result or failure clears it from 확인 필요.
+  ["routines", ROUTINES.acknowledgeResult, ["routine-a", "2026-05-16T12:00:00.000Z"]],
+  ["routines", ROUTINES.acknowledgeFailure, ["routine-a", "2026-05-16T12:00:00.000Z"]],
   ["session-tasks", CHANNELS.sessionTasks.list, []],
   ["session-goal", CHANNELS.sessionGoal.get, []],
   ["session-goal", CHANNELS.sessionGoal.pause, []],
@@ -235,7 +238,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["work-board", WORK_BOARD.run, [{}]],
   ["work-board", WORK_BOARD.steerRun, [{}]],
   ["work-board", WORK_BOARD.cancelRun, [{}]],
-  // Work-level decisions across projects: proposals, memory candidates, routine attention.
+  // Work-level decisions (확인 필요): proposals and routine attention.
   ["work-approvals", WORK_APPROVALS.list, [{}]],
   // Closing an alert card keeps its identity closed; the staged cards carry
   // host-rendered prompts.

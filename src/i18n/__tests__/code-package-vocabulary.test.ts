@@ -6,6 +6,7 @@ import { loadAllLocaleMessages } from "../messages/index.js";
 const TECHNICAL_LITERALS: Record<string, readonly string[]> = {
   "routinePanel.pluginsMissing": ["{plugins}"],
   "routinePanel.pluginsPartlyMissing": ["{plugins}"],
+  "workApprovals.routinePluginsMissing": ["{plugins}"],
   "mainDialog.pluginPickFolderTitle": ["{plugin}"],
   "mainDialog.installLocalPluginMessage": ["plugin.json"],
   "approvalAttribution.pluginRequest": ["{plugin}"],

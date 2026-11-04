@@ -1278,6 +1278,19 @@ export function App() {
     setWorkBoardFocusItemId(itemId);
   }, [handleViewSelectWithDoctor]);
 
+  // 확인 필요 navigation targets are one-shot, like board items: the popover opens the stack and names the card to focus.
+  const [workApprovalFocusKey, setWorkApprovalFocusKey] = useState<string | null>(null);
+  const openWorkApprovals = useCallback((key?: string) => {
+    handleViewSelectWithDoctor("work-board");
+    setWorkApprovalFocusKey(key ?? null);
+  }, [handleViewSelectWithDoctor]);
+  // "스케줄에서 열기": the routine surface, scrolled to and focusing that routine.
+  const [routineFocusId, setRoutineFocusId] = useState<string | null>(null);
+  const openRoutine = useCallback((routineId: string) => {
+    handleViewSelect("routines");
+    setRoutineFocusId(routineId);
+  }, [handleViewSelect]);
+
   /** Side-chat requests are one-shot events; nonce distinguishes repeated requests for the same ids. */
   const [sideChatOpenRequest, setSideChatOpenRequest] = useState<
     { chatGroupId: string; sessionId: string; nonce: number } | null
@@ -1725,6 +1738,8 @@ export function App() {
       return viewPane("routines", (
         <RoutinePanel
           api={api}
+          focusRoutineId={routineFocusId}
+          onFocusConsumed={() => setRoutineFocusId(null)}
           onOpenSession={(sessionId) => {
             void (async () => {
               const loaded = await handleLoadSessionAndRefresh(sessionId);
@@ -1759,6 +1774,9 @@ export function App() {
           project={activeProject ?? defaultWorkspaceProject}
           focusItemId={workBoardFocusItemId}
           onFocusConsumed={() => setWorkBoardFocusItemId(null)}
+          approvalFocusKey={workApprovalFocusKey}
+          onApprovalFocusConsumed={() => setWorkApprovalFocusKey(null)}
+          onOpenRoutine={openRoutine}
         />
       ));
     }
@@ -1915,6 +1933,12 @@ export function App() {
                     status: bootstrapStatus,
                     onDismiss: dismissBootstrapStatus,
                     onRetry: () => void retryBootstrap(),
+                  }}
+                  workApprovals={{
+                    api,
+                    projectRoot: (activeProject ?? defaultWorkspaceProject)?.projectRoot,
+                    onOpenItem: (key) => openWorkApprovals(key),
+                    onOpenAll: () => openWorkApprovals(),
                   }}
                 />
               </CustomTitleBar>

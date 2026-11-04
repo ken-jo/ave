@@ -186,6 +186,7 @@ import { ko as ko_viewModeBanner } from "../generated/viewModeBanner.js";
 import { ko as ko_viewPathNav } from "../generated/viewPathNav.js";
 import { ko as ko_webSurface } from "../generated/webSurface.js";
 import { ko as ko_webTab } from "../generated/webTab.js";
+import { ko as ko_workApprovals } from "../generated/workApprovals.js";
 import { ko as ko_workBoard } from "../generated/workBoard.js";
 import { ko as ko_workGroup } from "../generated/workGroup.js";
 
@@ -377,6 +378,7 @@ export const koMessages: Record<string, string> = {
   ...ko_viewPathNav,
   ...ko_webSurface,
   ...ko_webTab,
+  ...ko_workApprovals,
   ...ko_workBoard,
   ...ko_workGroup,
 };
