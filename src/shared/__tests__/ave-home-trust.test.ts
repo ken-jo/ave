@@ -86,6 +86,11 @@ function boot(dir: string): ReturnType<typeof evaluateAveHomeTrustAtBoot> {
   return evaluateAveHomeTrustAtBoot(dir);
 }
 
+/** The manifest keys a name the way the platform compares names: case-folded on Windows, as written elsewhere. */
+function manifestKey(rel: string): string {
+  return process.platform === "win32" ? rel.toLowerCase() : rel;
+}
+
 function manifest(dir: string): { state: string; entries: Record<string, { current?: string; pendingWrite?: string }> } {
   return JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"));
 }
@@ -273,10 +278,10 @@ describe("R5 write intents", () => {
     boot(dir);
     const path = join(dir, "AGENTS.md");
     recordAveHomeInputWriteSync(path, "# one", () => {
-      expect(manifest(dir).entries["AGENTS.md"]).toEqual({ pendingWrite: sha256Hex("# one") });
+      expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ pendingWrite: sha256Hex("# one") });
       writeFileSync(path, "# one");
     });
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("# one") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("# one") });
   });
 
   it("clears the intent of a failed write so the old bytes never match it", () => {
@@ -284,7 +289,7 @@ describe("R5 write intents", () => {
     boot(dir);
     const path = join(dir, "AGENTS.md");
     expect(() => recordAveHomeInputWriteSync(path, "# one", () => { throw new Error("disk full"); })).toThrow("disk full");
-    expect(manifest(dir).entries["AGENTS.md"]).toBeUndefined();
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toBeUndefined();
   });
 
   it("collapses a crashed write's intent at boot only when the file holds exactly its bytes", () => {
@@ -293,16 +298,55 @@ describe("R5 write intents", () => {
     const landed = join(dir, "AGENTS.md");
     const lost = join(dir, "user-preferences.md");
     const persisted = manifest(dir);
-    persisted.entries["AGENTS.md"] = { pendingWrite: sha256Hex("# landed") };
+    persisted.entries[manifestKey("AGENTS.md")] = { pendingWrite: sha256Hex("# landed") };
     persisted.entries["user-preferences.md"] = { pendingWrite: sha256Hex("# never written") };
     writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify({ version: 1, ...persisted }));
     writeFileSync(landed, "# landed");
     writeFileSync(lost, "# planted");
     boot(dir);
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("# landed") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("# landed") });
     expect(manifest(dir).entries["user-preferences.md"]).toBeUndefined();
     expect(readAveHomeInputSync(landed)).toMatchObject({ status: "trusted" });
     expect(readAveHomeInputSync(lost)).toMatchObject({ status: "untrusted" });
+  });
+});
+
+describe("review names", () => {
+  it("shows each item under the name it was written with, and approves and removes by that name", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    put(dir, "skills/MySkill/SKILL.md", "---\nname: mine\n---\nMine.");
+    put(dir, "commands/Deploy.md", "deploy now");
+    expect(boot(dir).pending).toBe(true);
+    const review = getAveHomeTrustReview()!;
+    expect(review.rows.map((entry) => entry.key).sort()).toEqual(["AGENTS.md", "commands/Deploy.md", "skills/MySkill"]);
+    expect(approveAveHomeTrustItems(review.snapshotId, ["AGENTS.md", "skills/MySkill"])).toBe(2);
+    removeAveHomeTrustItem(getAveHomeTrustReview()!.snapshotId, "commands/Deploy.md");
+    expect(existsSync(join(dir, "commands", "Deploy.md"))).toBe(false);
+    expect(boot(dir).pending).toBe(false);
+    expect(readAveHomeInputSync(join(dir, "AGENTS.md"))).toMatchObject({ status: "trusted" });
+    expect(readAveHomeEntrySync(join(dir, "skills", "MySkill"))).toMatchObject({ status: "trusted" });
+  });
+
+  // Windows compares names case-insensitively, so a key differing only in case names the same item; elsewhere it names none.
+  it("matches a review key that differs only in case exactly where the platform folds names", () => {
+    const dir = home();
+    put(dir, "skills/MySkill/SKILL.md", "---\nname: mine\n---\nMine.");
+    put(dir, "commands/Deploy.md", "deploy now");
+    boot(dir);
+    const review = getAveHomeTrustReview()!;
+    if (process.platform !== "win32") {
+      expect(() => approveAveHomeTrustItems(review.snapshotId, ["SKILLS/myskill"])).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(() => removeAveHomeTrustItem(review.snapshotId, "commands/deploy.md")).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(existsSync(join(dir, "commands", "Deploy.md"))).toBe(true);
+      return;
+    }
+    expect(approveAveHomeTrustItems(review.snapshotId, ["SKILLS/myskill"])).toBe(1);
+    expect(Object.keys(manifest(dir).entries)).toEqual(["skills/myskill"]);
+    removeAveHomeTrustItem(getAveHomeTrustReview()!.snapshotId, "commands/deploy.md");
+    expect(existsSync(join(dir, "commands", "Deploy.md"))).toBe(false);
+    expect(boot(dir).pending).toBe(false);
+    expect(readAveHomeEntrySync(join(dir, "skills", "MySkill"))).toMatchObject({ status: "trusted" });
   });
 });
 
@@ -458,7 +502,7 @@ describe("overlapping writes", () => {
     landB();
     await b;
     expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("first") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("first") });
     expect(boot(dir).pending).toBe(false);
   });
 
@@ -472,7 +516,7 @@ describe("overlapping writes", () => {
     failB();
     await expect(b).rejects.toThrow("disk full");
     expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("first") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("first") });
   });
 });
 
@@ -590,8 +634,8 @@ describe("Windows owner and ACL overlay", () => {
     dacls.override = (paths) => paths.map(() => row(user, [{ sid: user, allow: true }]));
     try {
       setProcessPlatform("win32");
-      const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key === "skills/notes");
-      expect(rows).toHaveLength(2);
+      const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key.toLowerCase() === "skills/notes");
+      expect(rows.map((entry) => entry.key).sort()).toEqual(["skills/Notes", "skills/notes"]);
       for (const entry of rows) expect(entry).toMatchObject({ reason: "unreadable", approvable: false });
     } finally {
       setProcessPlatform(platform);
