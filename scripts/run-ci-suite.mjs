@@ -138,11 +138,12 @@ export function runsCoverage(eventName) {
   return COVERAGE_EVENTS.includes(eventName);
 }
 
-// Full runs without coverage may shard; affected and coverage runs stay in one job.
+// A native run already dominates the critical path. Keep one full worker pool
+// beside it instead of paying for extra runners that finish early.
 export const FULL_RUN_SHARDS = 4;
 
-export function ciShardCount(plan, coverage) {
-  return plan.mode === "full" && !coverage ? FULL_RUN_SHARDS : 1;
+export function ciShardCount(plan, coverage, nativeChecks = false) {
+  return plan.mode === "full" && !coverage && !nativeChecks ? FULL_RUN_SHARDS : 1;
 }
 
 // Reject malformed shard values so the aggregate cannot misreport coverage.
@@ -491,13 +492,13 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     if (coverage && plan.mode !== "full") throw new Error(`${eventName} must plan a full run to enforce coverage`);
     if (writePlanAt) {
       writeFileSync(writePlanAt, `${JSON.stringify(plan)}\n`, "utf8");
-      const shards = Array.from({ length: ciShardCount(plan, coverage) }, (_, index) => index + 1);
+      let changes;
+      try { changes = eventName === "push" ? pushChanges(process.env.AVE_CI_DIFF_BASE).entries : pullRequestChanges().entries; } catch { /* Unknown impact retains platforms. */ }
+      const platforms = platformChecksRequired(eventName, plan, changes, process.env.GITHUB_BASE_REF);
+      const shards = Array.from({ length: ciShardCount(plan, coverage, platforms) }, (_, index) => index + 1);
       console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shards.length} shard(s): ${plan.reason}`);
       writeSummary(plan, coverage);
       if (process.env.GITHUB_OUTPUT) {
-        let changes;
-        try { changes = eventName === "push" ? pushChanges(process.env.AVE_CI_DIFF_BASE).entries : pullRequestChanges().entries; } catch { /* Unknown impact retains platforms. */ }
-        const platforms = platformChecksRequired(eventName, plan, changes, process.env.GITHUB_BASE_REF);
         appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\nplatform_checks=${platforms}\n`);
         if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nNative platform checks: ${platforms ? "required" : "not selected (renderer-only diff)"}.\n`);
       }

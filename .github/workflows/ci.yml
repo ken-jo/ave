@@ -170,8 +170,8 @@ jobs:
           AVE_BUILD_MINIFIER: esbuild
       # Plan once: the shards below run this plan instead of planning again,
       # so every shard splits the same file list. A full run without
-      # coverage gets FULL_RUN_SHARDS shards; an affected selection and a
-      # coverage run get one (scripts/run-ci-suite.mjs).
+      # coverage uses one pool beside selected native checks, otherwise
+      # FULL_RUN_SHARDS shards. Affected and coverage runs use one pool.
       - name: Plan the suite
         id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -219,7 +219,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          fetch-depth: 0
+          # The shared plan is already resolved; retain the merge parents
+          # and current tree instead of downloading their earlier history.
+          fetch-depth: 2
           # No later step pushes or fetches with the job token.
           persist-credentials: false
       # Install and save package archives before dependency scripts can run.
@@ -320,8 +322,8 @@ jobs:
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
         #
-        # Three workers, not the config's four: a standard hosted runner has
-        # four vCPUs, and each Vitest worker spawns subprocesses of its own.
+        # Four workers share one runner when native checks dominate the
+        # critical path. File isolation and timing phases remain unchanged.
         #
         # This job is one shard of the plan the build job wrote:
         # AVE_CI_PLAN_FILE is that plan, AVE_CI_SHARD this shard's place in
@@ -329,7 +331,7 @@ jobs:
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
-          AVE_VITEST_MAX_WORKERS: "3"
+          AVE_VITEST_MAX_WORKERS: "4"
           AVE_CI_PLAN_FILE: ${{ runner.temp }}/ci-plan/ci-plan.json
           AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: bun run test:ci
@@ -577,7 +579,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
       # Pin Node 24 rather than whichever Node the runner image ships. The
       # docs classifier below runs on it.
@@ -909,7 +911,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
       # Pin Node 24 rather than whichever Node the runner image ships. The
       # docs classifier below runs on it.
@@ -1052,7 +1054,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          fetch-depth: 0
+          fetch-depth: 2
           # No later step pushes or fetches with the job token, so it is not
           # left in .git/config for the test suite's processes to read.
           persist-credentials: false

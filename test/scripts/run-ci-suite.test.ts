@@ -271,7 +271,13 @@ describe("CI test selection fallbacks", () => {
     expect(FULL_RUN_SHARDS).toBeGreaterThan(1);
     expect(ciShardCount(fullPlan, false)).toBe(FULL_RUN_SHARDS);
     expect(ciShardCount(fullPlan, true)).toBe(1);
+    expect(ciShardCount(fullPlan, false, true)).toBe(1);
+    expect(ciShardCount(fullPlan, true, true)).toBe(1);
     expect(ciShardCount(affected, false)).toBe(1);
+    expect(ciShardCount(affected, false, true)).toBe(1);
+    expect(ciSuiteArguments(fullPlan, false, parseCiShard("1/1"))).toEqual([
+      join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true",
+    ]);
     expect(ciSuiteArguments(fullPlan, false, "2/4")).toEqual([
       join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=2/4",
     ]);

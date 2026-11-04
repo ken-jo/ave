@@ -304,7 +304,7 @@ describe("documentation impact policy", () => {
       const job = workflow.split(`  ${jobName}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]+:\n/)[0];
       expect(job).toBeDefined();
       const steps = job!.split(/^      - /m).slice(1);
-      expect(steps[0]).toContain("fetch-depth: 0");
+      expect(steps[0]).toContain(`fetch-depth: ${jobName === "build" ? 0 : 2}`);
       const classify = steps.findIndex((step) => step.includes("id: docs-impact"));
       expect(classify).toBeGreaterThan(0);
       // Before the classifier only runner preflight may run: the pinned Node
@@ -329,6 +329,46 @@ describe("documentation impact policy", () => {
         }
       }
     }
+  });
+
+  it("classifies a shallow merge snapshot and refuses an unavailable base", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "docs-shallow-merge-"));
+    const repo = join(directory, "source");
+    mkdirSync(repo);
+    const cli = resolve(root, "scripts/hooks/classify-docs-diff.mjs");
+    try {
+      fixtureGit(repo, ["init", "-q", "-b", "main"]);
+      fixtureGit(repo, ["config", "user.name", "Fixture"]);
+      fixtureGit(repo, ["config", "user.email", "fixture@example.invalid"]);
+      mkdirSync(join(repo, "docs"));
+      writeFileSync(join(repo, "docs", "guide.md"), "base\n");
+      writeFileSync(join(repo, "source.ts"), "export {};\n");
+      fixtureGit(repo, ["add", "."]);
+      fixtureGit(repo, ["commit", "-qm", "base"]);
+      fixtureGit(repo, ["checkout", "-qb", "patch"]);
+      writeFileSync(join(repo, "docs", "guide.md"), "updated\n");
+      fixtureGit(repo, ["commit", "-qam", "docs"]);
+      fixtureGit(repo, ["checkout", "-q", "main"]);
+      writeFileSync(join(repo, "source.ts"), "export const value = 1;\n");
+      fixtureGit(repo, ["commit", "-qam", "advance"]);
+      const base = fixtureGit(repo, ["rev-parse", "HEAD"]).trim();
+      fixtureGit(repo, ["merge", "-q", "--no-ff", "patch", "-m", "merge"]);
+      for (const depth of [1, 2]) {
+        const snapshot = join(directory, `snapshot-${depth}`);
+        fixtureGit(directory, ["clone", "-q", "--no-local", "--depth", String(depth), repo, snapshot]);
+        expect(fixtureGit(snapshot, ["rev-parse", "--is-shallow-repository"]).trim()).toBe("true");
+        const result = spawnSync("node", [cli, base, "HEAD", "pull_request"], {
+          cwd: snapshot, encoding: "utf8", env: gitFixtureEnv(snapshot),
+        });
+        if (depth === 2) {
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout).toBe("docs_only=true\n");
+        } else {
+          expect(result.status).not.toBe(0);
+          expect(result.stdout).not.toContain("docs_only=true");
+        }
+      }
+    } finally { await cleanupTmpDir(directory); }
   });
 
   it("runs the full CI suite for pushes and fails closed on missing PR bases", async () => {
