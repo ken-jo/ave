@@ -87,7 +87,7 @@ describe("parseMainLayout", () => {
     expect(refused(listing({ ...windows, cwd: "relative\\dir" }))).toBe("openSurfaces[0].cwd must be null or a terminal's absolute path");
     expect(refused(listing({ ...shown, kind: "browser", tabId: "browser:0000000a-4" }))).toBe("openSurfaces[0].cwd must be null or a terminal's absolute path");
     expect(refused(listing({ ...shown, kind: "browser" }))).toBe("openSurfaces[0].tabId \"terminal:0000000a-4\" is not a browser tab id");
-    expect(refused(listing(layout().sideTabs.main![0]))).toBe("openSurfaces[0].tabId browser:0000000a-5 is also a side tab");
+    expect(refused(listing({ ...layout().sideTabs.main![0], projectRoot: ROOT }))).toBe("openSurfaces[0].tabId browser:0000000a-5 is also a side tab");
     expect(refused(listing("junk"))).toBe("openSurfaces[0] is not an object");
     expect(refused(listing({ ...hidden, tabId: "browser:0000000a-8", projectRoot: undefined }))).toBe("openSurfaces[0].projectRoot must be an absolute path");
     expect(refused(listing({ ...shown, projectRoot: "/elsewhere" }))).toBe("openSurfaces[0].projectRoot differs from the pane showing terminal:0000000a-4");

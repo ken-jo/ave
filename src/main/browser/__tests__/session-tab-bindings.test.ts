@@ -243,7 +243,7 @@ describe("durable session tab bindings", () => {
   });
 
   it("keeps a hidden tab's pane conversation across save and restart, without a workspace placement while hidden", async () => {
-    const terminal = layout().sideTabs.main![1]!;
+    const terminal = { ...layout().sideTabs.main![1]!, projectRoot: "/work" };
     const shown: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, openSurfaces: [terminal], sideTabs: { main: [layout().sideTabs.main![0]!] } };
     await saveLayout(settings, shown);
     const first = registryFor();

@@ -2731,6 +2731,26 @@ describe("SettingsService system — project selection, recent projects and last
     } } } as never);
     expect(service.get("system").lastViewByProject).toEqual({ "c:/work": { view: "home" }, "/ws/d": { view: "plugin:notes:board" } });
   });
+
+  it("says how many recent and last-view entries it dropped, and counts two spellings of one root once toward the cap", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await service.patch({ system: { recentProjectRoots: ["/ws/a", "/ws/a/", "relative", "/ws/b"] } } as never);
+      expect(service.get("system").recentProjectRoots).toEqual(["/ws/a", "/ws/b"]);
+      expect(JSON.stringify(warn.mock.calls)).toContain("system.recentProjectRoots dropped 2 entries");
+
+      const views = Object.fromEntries(Array.from({ length: 200 }, (_, index) => [`/ws/p${index}`, { view: "home" }]));
+      await service.patch({ system: { lastViewByProject: { "/ws/same": { view: "home" }, "/ws/same/": { view: "memory" }, ...views } } } as never);
+      const kept = service.get("system").lastViewByProject!;
+      expect(kept["/ws/same"]).toEqual({ view: "memory" });
+      // The cap (200) is distinct roots: the folded pair is one of them, so 199 of the 200 others fit.
+      expect(Object.keys(kept)).toHaveLength(200);
+      expect(JSON.stringify(warn.mock.calls)).toContain("system.lastViewByProject dropped 2 entries");
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("SettingsService system — workspace preferences", () => {

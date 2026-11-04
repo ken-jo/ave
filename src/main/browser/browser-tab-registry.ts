@@ -111,7 +111,6 @@ export interface BrowserGuest {
   isFocused?(): boolean;
 }
 
-// A document transition invalidated the old page; it grants no further input authority.
 /** Every tab a layout keeps: shown in a pane, hidden but still open (`openSurfaces`), or in a side panel — each once. A hidden tab
  * keeps its conversation binding; its placement is neither "workspace" nor "side-panel" (see `recordPlacements`), so binding-scoped
  * authority such as a host-terminal lease does not survive while it is hidden. */
@@ -128,6 +127,7 @@ function layoutTabs(layout: MainLayoutSnapshot): SavedSurface[] {
   return tabs;
 }
 
+// A document transition invalidated the old page; it grants no further input authority.
 export class BrowserDocumentChangedError extends Error {
   readonly code = "browser-document-changed";
 

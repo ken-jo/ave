@@ -116,7 +116,7 @@ describe("pickRedactedSettings — deny-by-default whitelist", () => {
     expect(json).not.toContain("crash.example.com"); // crashReportEndpoint
     expect(json).not.toContain("secret-internal-host"); // legacy/unknown llm key
     expect(json).not.toContain("secretuser"); // pinnedProjectRoots path
-    for (const user of ["selected-project", "recent-project", "last-view-project"]) expect(json).not.toContain(user);
+    for (const segment of ["selected-project", "recent-project", "last-view-project"]) expect(json).not.toContain(segment);
   });
 
   it("keeps the turn completion sound preference for support triage", () => {

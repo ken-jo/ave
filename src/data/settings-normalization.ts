@@ -985,7 +985,10 @@ export function normalizeProjectSelection(raw: unknown): ProjectSelection | unde
 export function normalizeRecentProjectRoots(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const absolute = raw.filter((entry): entry is string => typeof entry === "string" && isAbsoluteHostPath(entry.trim()));
-  return normalizeProjectRootList(absolute, MAX_RECENT_PROJECT_ROOTS);
+  const out = normalizeProjectRootList(absolute, MAX_RECENT_PROJECT_ROOTS);
+  const dropped = raw.length - out.length;
+  if (dropped > 0) log.warn(`system.recentProjectRoots dropped ${dropped} entr${dropped === 1 ? "y" : "ies"} (not an absolute root, repeated, or over ${MAX_RECENT_PROJECT_ROOTS})`);
+  return out;
 }
 
 /** Keyed by `projectRootKey`. An entry that is not a place (or names a surface that is not a tab id) is dropped. */
@@ -999,10 +1002,15 @@ export function normalizeLastViewByProject(raw: unknown): Record<string, Project
     const { view, surface } = value;
     if (typeof view !== "string" || !isInlineViewKey(view)) continue;
     if (surface !== undefined && (typeof surface !== "string" || parseTabId(surface) === null)) continue;
+    // Two spellings of one root fold to one key; only a new key counts toward the cap.
+    if (!(key in out)) {
+      if (count >= MAX_PROJECT_ROOT_LIST) continue;
+      count += 1;
+    }
     out[key] = surface === undefined ? { view } : { view, surface };
-    count += 1;
-    if (count >= MAX_PROJECT_ROOT_LIST) break;
   }
+  const dropped = Object.keys(raw).length - count;
+  if (dropped > 0) log.warn(`system.lastViewByProject dropped ${dropped} entr${dropped === 1 ? "y" : "ies"} (not a place, a repeated root, or over ${MAX_PROJECT_ROOT_LIST})`);
   return out;
 }
 
