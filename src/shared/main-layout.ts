@@ -115,8 +115,7 @@ function parseSurface(raw: unknown, path: string): SavedSurface {
   return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null, ...(binding === undefined ? {} : { binding }) };
 }
 
-/** Without limits validate shape only; any failed rule rejects the whole layout, except a bad `openSurfaces` entry, which is
- * dropped so one stale tab cannot cost every other tab. */
+/** Without limits validate shape only; any failed rule rejects the whole layout, naming the path and the rule it broke. */
 export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLayoutParse {
   try {
     if (!isRecord(raw)) refuse("the layout is not an object");
@@ -166,17 +165,13 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
       openSurfaces = [];
       const shown = new Map(Object.values(surfaces).map((surface) => [surface.tabId, surface]));
       for (const [index, each] of raw.openSurfaces.entries()) {
-        let surface: SavedSurface;
-        try {
-          surface = parseSurface(each, `openSurfaces[${index}]`);
-        } catch (err) {
-          if (err instanceof Refused) continue;
-          throw err;
-        }
-        // A shown surface is listed here too; it must be the same tab, and no tab is listed twice or also a side tab.
+        const path = `openSurfaces[${index}]`;
+        const surface = parseSurface(each, path);
+        // A shown surface is listed here too, as the same tab; no tab is listed twice or is also a side tab.
         const pane = shown.get(surface.tabId);
-        if (pane ? pane.kind !== surface.kind : tabIds.has(surface.tabId)) continue;
-        if (openSurfaces.some((listed) => listed.tabId === surface.tabId)) continue;
+        if (pane && pane.kind !== surface.kind) refuse(`${path}.tabId ${surface.tabId} is shown as a ${pane.kind}, not a ${surface.kind}`);
+        if (!pane && tabIds.has(surface.tabId)) refuse(`${path}.tabId ${surface.tabId} is also a side tab`);
+        if (openSurfaces.some((listed) => listed.tabId === surface.tabId)) refuse(`${path}.tabId ${surface.tabId} is listed twice`);
         openSurfaces.push(surface);
       }
     }

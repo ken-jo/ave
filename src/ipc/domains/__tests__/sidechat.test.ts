@@ -1010,16 +1010,31 @@ describe("pane chats are their own conversations", () => {
 
   it("keeps an unarchived pane conversation out of the rail when no pane holds it", async () => {
     const { rail, store } = setup({ [STORED_PANE_SESSION]: [] }, { [STORED_PANE_SESSION]: PANE_A.tabId });
+    // The tab is open in no window: refused, with nothing to navigate to.
     await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), STORED_PANE_SESSION))
-      .resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId, messages: [] });
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", messages: [] });
+    // Open in this window: the refusal names it.
+    browserTabRegistry.bindConversationSurface(STORED_PANE_SESSION, { windowId: 7, surface: PANE_A });
     await expect(sendFrom({ input: "rail", sessionId: STORED_PANE_SESSION, originSessionId: RAIL_SESSION }))
       .resolves.toEqual({ ok: false, error: "session-open-in-pane", paneTabId: PANE_A.tabId });
+    // Open only in another window: refused, without that window's tab.
+    await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html", 2), STORED_PANE_SESSION))
+      .resolves.toEqual({ ok: false, error: "session-open-in-pane", messages: [] });
+    browserTabRegistry.releasePaneConversation(7, PANE_A.tabId);
     expect(rail.loadSession).not.toHaveBeenCalled();
     expect(rail.runTurn).not.toHaveBeenCalled();
     expect(store.metadata.get(STORED_PANE_SESSION)).toEqual({ paneTabId: PANE_A.tabId });
     // A closed tab's archived chat still opens in the rail.
     store.metadata.set(STORED_PANE_SESSION, { paneTabId: PANE_A.tabId, archivedAt: "2026-11-02T00:00:00Z" });
     await expect(handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), STORED_PANE_SESSION)).resolves.toMatchObject({ ok: true });
+  });
+
+  it("surfaces a session metadata read failure instead of letting the rail take the conversation", async () => {
+    const { rail, store } = setup({ [STORED_PANE_SESSION]: [] }, { [STORED_PANE_SESSION]: PANE_A.tabId });
+    vi.spyOn(store, "loadSessionMetadata").mockImplementation(() => { throw new Error("metadata unreadable"); });
+    await expect(Promise.resolve().then(() => handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), STORED_PANE_SESSION)))
+      .rejects.toThrow("metadata unreadable");
+    expect(rail.loadSession).not.toHaveBeenCalled();
   });
 
   it("does not offer another window's pane as a refusal navigation target", async () => {

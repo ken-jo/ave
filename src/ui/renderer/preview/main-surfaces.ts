@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InstanceViewKey } from "../../../shared/view-key.js";
-import { parseTabId } from "../../../shared/tab-id.js";
-import { isTabIdOfThisLaunch, mintTabId, reserveTabIds } from "./workspace-tabs.js";
+import { mintTabId } from "./workspace-tabs.js";
 import { terminalOrdinal } from "./terminal-ordinal.js";
-import { subscribeSurfaceClosed } from "./active-surface.js";
 import { publishLiveWebTabs, webSurfaceLocation, withdrawLiveWebTabs } from "./web-surfaces.js";
 
 /** Move surface records between stores without moving tab-id-keyed PTYs or guests; pane content independently chooses which
@@ -45,10 +43,6 @@ export const VIEW_OF_SURFACE_KIND: Record<MainSurfaceKind, InstanceViewKey> = {
 
 let nextMainBrowserOrdinal = 1;
 
-// Tabs closed in this launch, wherever they lived: a pane chat's row clicked after its tab closed must not bring it back.
-const closedThisLaunch = new Set<string>();
-subscribeSurfaceClosed((tabId) => closedThisLaunch.add(tabId));
-
 export interface MainSurfacesStore {
   surfaces: readonly MainSurface[];
   get: (tabId: string) => MainSurface | undefined;
@@ -56,9 +50,6 @@ export interface MainSurfacesStore {
   create: (kind: MainSurfaceKind, url?: string | null, cwd?: string | null) => MainSurface;
   /** Take in a surface that moved here from a side panel. */
   adopt: (surface: MainSurface) => void;
-  /** Bring back, under its own id, a first-class tab an earlier launch lost, so the conversation recorded against it rebinds
-   * to it; undefined for a tab this launch made (closed or moved, never lost) or an id that is not a terminal or page tab. */
-  revive: (tabId: string) => MainSurface | undefined;
   /** Hand a surface out (moving to a side panel) — it is not destroyed. */
   release: (tabId: string) => MainSurface | undefined;
   /** Close a surface: forget it and remember it for "reopen closed". */
@@ -105,17 +96,6 @@ export function useMainSurfaces(): MainSurfacesStore {
     commit([...surfacesRef.current, surface.kind === "terminal" ? { ...surface, ordinal: terminalOrdinal(surface.tabId, surface.ordinal) } : surface]);
   }, [commit]);
 
-  const revive = useCallback((tabId: string) => {
-    const existing = surfacesRef.current.find((each) => each.tabId === tabId);
-    if (existing) return existing;
-    const kind = parseTabId(tabId)?.kind;
-    if ((kind !== "terminal" && kind !== "browser") || isTabIdOfThisLaunch(tabId) || closedThisLaunch.has(tabId)) return undefined;
-    reserveTabIds([tabId]);
-    const surface: MainSurface = { tabId, kind, ordinal: kind === "terminal" ? terminalOrdinal(tabId) : nextMainBrowserOrdinal++, url: null, cwd: null };
-    commit([...surfacesRef.current, surface]);
-    return surface;
-  }, [commit]);
-
   const release = useCallback((tabId: string) => {
     const surface = surfacesRef.current.find((each) => each.tabId === tabId);
     if (!surface) return undefined;
@@ -126,7 +106,6 @@ export function useMainSurfaces(): MainSurfacesStore {
   const close = useCallback((tabId: string) => {
     const surface = release(tabId);
     if (surface) {
-      closedThisLaunch.add(tabId);
       // Where the page actually was (links and in-page routes move it without the address row), not where it was first pointed.
       const url = surface.kind === "browser" ? webSurfaceLocation(tabId) ?? surface.url : surface.url;
       closedRef.current = [{ kind: surface.kind, url, cwd: surface.cwd ?? null }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
@@ -153,7 +132,7 @@ export function useMainSurfaces(): MainSurfacesStore {
   }, [commit]);
 
   return useMemo(
-    () => ({ surfaces, get, create, adopt, revive, release, close, takeLastClosed, setUrl, setCwd }),
-    [surfaces, get, create, adopt, revive, release, close, takeLastClosed, setUrl, setCwd],
+    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd }),
+    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd],
   );
 }
