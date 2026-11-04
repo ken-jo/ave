@@ -120,6 +120,8 @@ const DEFAULT_RESULT_LIMIT = 200;
 const MAX_RESULT_LIMIT = 1_000;
 const MAX_SCAN_FILES = 50_000;
 const MAX_SCAN_ENTRIES = 75_000;
+/** How many skipped paths a listing names; the count covers the rest. */
+const MAX_SKIPPED_PATHS_SHOWN = 5;
 const DEFAULT_LIST_DEPTH = 1;
 const MAX_LIST_DEPTH = 8;
 const DEFAULT_SKIP_DIRS = new Set([
@@ -915,6 +917,7 @@ export class ListFilesTool extends FileTool<typeof ListFilesInputSchema> {
         path: root,
         entries: listed.value.entries,
         truncated: listed.value.truncated,
+        ...skippedUnreadableField(listed.value.skippedUnreadable),
       }),
       isError: false,
       metadata: { path: root, truncated: listed.value.truncated },
@@ -967,6 +970,7 @@ export class GlobFilesTool extends FileTool<typeof GlobFilesInputSchema> {
         pattern: input.pattern,
         matches,
         truncated: listed.value.truncated || allMatches.length > input.limit,
+        ...skippedUnreadableField(listed.value.skippedUnreadable),
       }),
       isError: false,
       metadata: { path: root, pattern: input.pattern, matchCount: matches.length },
@@ -1884,17 +1888,17 @@ async function listEntries(
   root: string,
   depth: number,
   limit: number,
-): Promise<Result<{ entries: ListedEntry[]; truncated: boolean }>> {
+): Promise<Result<{ entries: ListedEntry[]; truncated: boolean; skippedUnreadable: SkippedUnreadable }>> {
   try {
     const rootStat = await stat(root);
     if (!rootStat.isDirectory()) {
       return { ok: false, error: toolError(`list_files requires a directory: ${root}`) };
     }
     const entries: ListedEntry[] = [];
-    const state = { visited: 0, truncated: false };
+    const state = newWalkState();
     await walk(root, root, depth, limit, entries, { filesOnly: false, secretRoot: sensitiveFilePattern(root) !== null }, state);
     const truncated = entries.length >= limit || state.truncated;
-    return { ok: true, value: { entries, truncated } };
+    return { ok: true, value: { entries, truncated, skippedUnreadable: state.skipped } };
   } catch (err) {
     return { ok: false, error: toolError(`list_files failed: ${(err as Error).message}`) };
   }
@@ -1903,13 +1907,13 @@ async function listEntries(
 export async function collectFiles(
   root: string,
   limit: number,
-): Promise<Result<{ files: ListedEntry[]; truncated: boolean }>> {
+): Promise<Result<{ files: ListedEntry[]; truncated: boolean; skippedUnreadable: SkippedUnreadable }>> {
   try {
     const rootStat = await stat(root);
     const files: ListedEntry[] = [];
-    const state = { visited: 0, truncated: false };
+    const state = newWalkState();
     if (admissionDeniedFilePattern(root)) {
-      return { ok: true, value: { files, truncated: false } };
+      return { ok: true, value: { files, truncated: false, skippedUnreadable: state.skipped } };
     }
     if (rootStat.isFile()) {
       files.push({
@@ -1924,10 +1928,45 @@ export async function collectFiles(
     } else {
       return { ok: false, error: toolError(`file search requires a file or directory: ${root}`) };
     }
-    return { ok: true, value: { files, truncated: files.length >= limit || state.truncated } };
+    return { ok: true, value: { files, truncated: files.length >= limit || state.truncated, skippedUnreadable: state.skipped } };
   } catch (err) {
     return { ok: false, error: toolError(`file search failed: ${(err as Error).message}`) };
   }
+}
+
+/** Paths below the root that a listing passed over because the OS refused them or they vanished mid-walk. */
+interface SkippedUnreadable {
+  count: number;
+  /** Root-relative, at most `MAX_SKIPPED_PATHS_SHOWN`. */
+  paths: string[];
+}
+
+interface WalkState {
+  visited: number;
+  truncated: boolean;
+  skipped: SkippedUnreadable;
+}
+
+function newWalkState(): WalkState {
+  return { visited: 0, truncated: false, skipped: { count: 0, paths: [] } };
+}
+
+/**
+ * Like ripgrep, a path below the root that the OS refuses (EACCES/EPERM) or that disappears mid-walk (ENOENT) is skipped and
+ * counted: one locked or deleted folder must not empty the whole listing. Anything else, and any failure at the root itself,
+ * still throws, so the caller learns it read nothing.
+ */
+function skipUnreadable(err: unknown, root: string, path: string, state: WalkState): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (path === root || (code !== "EACCES" && code !== "EPERM" && code !== "ENOENT")) return false;
+  state.skipped.count += 1;
+  if (state.skipped.paths.length < MAX_SKIPPED_PATHS_SHOWN) state.skipped.paths.push(normalizeRelativePath(relative(root, path)));
+  return true;
+}
+
+/** The listing's JSON field, present only when something was skipped. */
+function skippedUnreadableField(skipped: SkippedUnreadable): { skippedUnreadable?: SkippedUnreadable } {
+  return skipped.count > 0 ? { skippedUnreadable: skipped } : {};
 }
 
 async function walk(
@@ -1937,17 +1976,14 @@ async function walk(
   limit: number,
   output: ListedEntry[],
   opts: { filesOnly: boolean; secretRoot: boolean },
-  state: { visited: number; truncated: boolean },
+  state: WalkState,
 ): Promise<void> {
   if (output.length >= limit || remainingDepth < 1 || state.truncated) return;
   let dirents: Dirent[];
   try {
     dirents = await readdir(current, { withFileTypes: true });
   } catch (err) {
-    // Like ripgrep, a subfolder the OS refuses to list is skipped: its contents are unreadable to every caller anyway, and one
-    // locked folder must not empty the whole listing. An unreadable root still fails, so the caller learns it read nothing.
-    const code = (err as NodeJS.ErrnoException).code;
-    if (current !== root && (code === "EACCES" || code === "EPERM")) return;
+    if (skipUnreadable(err, root, current, state)) return;
     throw err;
   }
   dirents.sort((a, b) => a.name.localeCompare(b.name));
@@ -1971,7 +2007,16 @@ async function walk(
           ? "symlink"
           : "other";
     if (!opts.filesOnly || type === "file") {
-      const entryStat = type === "file" ? await stat(full) : null;
+      let entryStat: Stats | null = null;
+      if (type === "file") {
+        // A folder that is readable but not searchable (r without x) lists names whose stat the OS then refuses.
+        try {
+          entryStat = await stat(full);
+        } catch (err) {
+          if (skipUnreadable(err, root, full, state)) continue;
+          throw err;
+        }
+      }
       output.push({
         path: full,
         relativePath: rel,

@@ -12,6 +12,7 @@ const unlockable = process.platform === "win32" || process.getuid?.() === 0;
 
 let base: string;
 let locked: string;
+let listOnly: string;
 
 beforeAll(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), "ave-collect-unreadable-")));
@@ -22,12 +23,20 @@ beforeAll(() => {
   mkdirSync(locked, { recursive: true });
   writeFileSync(join(locked, "k.pem"), "k");
   if (!unlockable) chmodSync(locked, 0o000);
+  // Readable but not searchable: readdir lists the names, stat on each is refused.
+  listOnly = join(base, "vault");
+  mkdirSync(join(listOnly, "inner"), { recursive: true });
+  writeFileSync(join(listOnly, "a.txt"), "a");
+  if (!unlockable) chmodSync(listOnly, 0o444);
 });
 
 beforeEach(() => clearWorkspaceFileSearchCache());
 
 afterAll(async () => {
-  if (!unlockable) chmodSync(locked, 0o755);
+  if (!unlockable) {
+    chmodSync(locked, 0o755);
+    chmodSync(listOnly, 0o755);
+  }
   await cleanupTmpDir(base);
 });
 
@@ -38,6 +47,8 @@ describe.skipIf(unlockable)("collectFiles with an unreadable subfolder", () => {
     if (!listed.ok) return;
     const paths = listed.value.files.map((file) => file.relativePath).sort();
     expect(paths).toEqual(["README.md", "src/payments/retry/handle-retry.ts"]);
+    // The locked folder, the file in the list-only folder and its subfolder are named so "unreadable" reads apart from "empty".
+    expect(listed.value.skippedUnreadable).toEqual({ count: 3, paths: ["deploy/keys", "vault/a.txt", "vault/inner"] });
   });
 
   it("keeps workspace file search working when a folder is locked", async () => {
