@@ -219,9 +219,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
-          # The shared plan is already resolved; retain the merge parents
-          # and current tree instead of downloading their earlier history.
-          fetch-depth: 2
+          # Repository contract tests verify historical release copies and
+          # require both the complete ancestry and its release tags.
+          fetch-depth: 0
           # No later step pushes or fetches with the job token.
           persist-credentials: false
       # Install and save package archives before dependency scripts can run.

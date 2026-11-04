@@ -298,6 +298,9 @@ describe("documentation impact policy", () => {
 
   it("keeps required CI checks green only after successful documentation classification", () => {
     const workflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
+    // Suite collection includes tests of tagged protocol and guidance copies.
+    const suiteJob = workflow.split("  vitest:\n")[1]?.split(/\n  [a-z][a-z0-9-]+:\n/)[0];
+    expect(suiteJob?.split(/^      - /m)[1]).toContain("fetch-depth: 0");
     // `build` classifies for the required build-and-test check: the Vitest
     // shards and build-and-test read its docs_only output.
     for (const jobName of ["build", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
