@@ -4,6 +4,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
+import { formatIpcError } from "../../format-ipc-error.js";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../../components/ui/popover.js";
 import type { AveApi } from "../../types.js";
@@ -31,6 +32,21 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
   const request = useMemo<WorkApprovalsRequest>(() => (projectRoot === undefined ? {} : { projectRoot }), [projectRoot]);
   const { state } = useWorkApprovals(api, request);
   const [open, setOpen] = useState(false);
+  // A failed list is not "nothing to review": it shows as a warning dot whose tooltip says why, never as a hidden badge.
+  if (state.status === "error") {
+    const message = formatIpcError(state.error, undefined);
+    return (
+      <span
+        role="status"
+        aria-label={message}
+        title={message}
+        data-testid="work-approvals-badge-error"
+        className="inline-flex h-6 items-center px-1"
+      >
+        <span className="h-2 w-2 rounded-full bg-destructive" aria-hidden />
+      </span>
+    );
+  }
   // Hidden until the first result and at zero: an empty badge would be noise on most launches.
   if (state.status !== "ready" || state.total === 0) return null;
   const items = sortByArrival(state.items);

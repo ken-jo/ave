@@ -120,6 +120,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-arguments": "formatIpcError.invalidInput",
   "invalid-answer": "formatIpcError.invalidInput",
   "invalid-proposal-key": "formatIpcError.invalidInput",
+  "proposal-not-found": "formatIpcError.proposalNotFound",
   "invalid-disposition": "formatIpcError.invalidValue",
   "invalid-operation-input": "formatIpcError.invalidInput",
   "invalid-plugin-id": "formatIpcError.invalidInput",

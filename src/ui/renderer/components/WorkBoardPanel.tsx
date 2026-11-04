@@ -1373,6 +1373,11 @@ export function WorkBoardPanel({
   const [narrowTabChoice, setNarrowTabChoice] = useState<"overview" | "approvals" | null>(null);
   const narrowTab = narrowTabChoice ?? (approvalCount !== null && approvalCount > 0 ? "approvals" : "overview");
   const setNarrowTab = setNarrowTabChoice;
+  const stackHidden = narrow && narrowTab !== "approvals";
+  // A badge-popover navigation names an item in the stack; on a narrow panel that means showing the stack's tab.
+  useEffect(() => {
+    if (approvalFocusKey !== undefined && approvalFocusKey !== null) setNarrowTabChoice("approvals");
+  }, [approvalFocusKey]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -1471,17 +1476,21 @@ export function WorkBoardPanel({
   // "추가하고 계획" hands its id to the host's plan → approve → execute run (the plugin supplied nothing executable).
   const approvalActions = useMemo<WorkApprovalActions>(() => ({
     acceptProposal: async (proposalId, projectRoot) => {
-      if (typeof api.acceptWorkProposal !== "function") return { ok: false, reason: "no-store" };
+      if (typeof api.acceptWorkProposal !== "function") return { ok: false, error: "no-store" };
       const result = await api.acceptWorkProposal(proposalId, projectRoot);
       if (mountedRef.current) await refresh();
       if ("status" in result && result.status === "accepted") return { ok: true, itemId: result.itemId };
-      return { ok: false, reason: "reason" in result ? result.reason : "status" in result ? result.status : result.error };
+      // The store's invalid reason is its own sentence (an item limit, a project refusal); a missing proposal has a code of its own.
+      if ("status" in result && result.status === "invalid") return { ok: false, error: "proposal-refused", message: result.reason };
+      if ("status" in result) return { ok: false, error: "proposal-not-found" };
+      return { ok: false, error: result.error };
     },
     dismissProposal: async (proposalId) => {
-      if (typeof api.dismissWorkProposal !== "function") return { ok: false, reason: "no-store" };
+      if (typeof api.dismissWorkProposal !== "function") return { ok: false, error: "no-store" };
       const result = await api.dismissWorkProposal(proposalId);
       if ("status" in result && result.status === "dismissed") return { ok: true };
-      return { ok: false, reason: "status" in result ? result.status : result.error };
+      if ("status" in result) return { ok: false, error: "proposal-not-found" };
+      return { ok: false, error: result.error };
     },
     runItem: (itemId) => runItem(itemId),
     openRoutine: (routineId) => onOpenRoutine?.(routineId),
@@ -1571,16 +1580,19 @@ export function WorkBoardPanel({
               </Button>
             </div>
           )}
-          {(!narrow || narrowTab === "approvals") && (
+          {/* The stack stays mounted on the overview tab, only hidden: it owns the list subscription that counts the tab, and unmounting
+              it before its first response would leave the count empty and the tab stuck on overview. It takes a focus request only while
+              shown; the request itself switches the narrow layout to this tab first. */}
+          <div hidden={stackHidden} data-testid="work-board-approvals-region">
             <WorkApprovalStack
               api={api}
               project={project}
               actions={approvalActions}
-              focusKey={approvalFocusKey}
+              focusKey={stackHidden ? undefined : approvalFocusKey}
               onFocusConsumed={onApprovalFocusConsumed}
               onCountChange={setApprovalCount}
             />
-          )}
+          </div>
           {(!narrow || narrowTab === "overview") && (
             <>
               {/* The columns fill whatever height the 확인 필요 stack and reports leave (flex-1) but never drop below a usable floor;

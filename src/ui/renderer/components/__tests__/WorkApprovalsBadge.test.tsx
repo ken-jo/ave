@@ -81,6 +81,14 @@ describe("WorkApprovalsBadge", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  it("shows a failed list as a warning dot with the reason, not as a hidden badge", async () => {
+    const { api } = stubApi({ ok: false, error: "work-approvals-source-unavailable", source: "proposal" });
+    render(<WorkApprovalsBadge api={api} onOpenItem={vi.fn()} onOpenAll={vi.fn()} />);
+    const dot = await screen.findByTestId("work-approvals-badge-error");
+    expect(dot.getAttribute("title")).toContain("불러오지 못했습니다");
+    expect(screen.queryByTestId("work-approvals-badge")).toBeNull();
+  });
+
   it("keeps the count live on the change signal", async () => {
     const result = { ok: true, items: ITEMS.slice(0, 1), total: 1 };
     const { api, fireChanged } = stubApi(result);

@@ -150,6 +150,17 @@ describe("Work Board — 확인 필요 stack", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("names a missing proposal in words, not by its status code", async () => {
+    const { api } = stubApi([proposal()], {
+      dismissWorkProposal: vi.fn(async () => ({ status: "not_found" as const, proposalId: "p" })),
+    } as Partial<AveApi>);
+    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    fireEvent.click(await screen.findByTestId("work-approval-proposal-dismiss"));
+    const error = await screen.findByTestId("work-approval-action-error");
+    expect(error.textContent).toContain("더 이상 없습니다");
+    expect(error.textContent).not.toContain("not_found");
+  });
+
   it("routine attention names the missing plugins and opens the schedule on that routine", async () => {
     const onOpenRoutine = vi.fn();
     const { api } = stubApi([routine()]);
@@ -258,7 +269,51 @@ describe("Work Board — narrow width", () => {
     expect(screen.queryByTestId("work-board-column-planned")).toBeNull();
     fireEvent.click(screen.getByTestId("work-board-tab-overview"));
     expect(screen.getByTestId("work-board-column-planned")).toBeTruthy();
-    expect(screen.queryByTestId("work-approvals")).toBeNull();
+    expect((screen.getByTestId("work-board-approvals-region") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("counts the tab and opens it when the panel turns narrow before the first list response", async () => {
+    let callback: ResizeObserverCallback | null = null;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(cb: ResizeObserverCallback) { callback = cb; }
+      observe() {}
+      disconnect() {}
+    });
+    let resolve!: (value: unknown) => void;
+    const { api } = stubApi([proposal()], {
+      listWorkApprovals: vi.fn(() => new Promise((r) => { resolve = r; })),
+    } as Partial<AveApi>);
+    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    // Narrow before the list answers: overview first, with the stack still subscribed behind it.
+    await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
+    expect(screen.getByTestId("work-board-tab-overview").getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => resolve({ ok: true, items: [proposal()], total: 1 }));
+    expect(screen.getByTestId("work-board-tab-approvals").textContent).toContain("1");
+    expect(screen.getByTestId("work-board-tab-approvals").getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByTestId("work-approval-head")).toBeTruthy();
+  });
+
+  it("switches to 확인 필요 for a popover focus request made while the overview tab is open", async () => {
+    let callback: ResizeObserverCallback | null = null;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(cb: ResizeObserverCallback) { callback = cb; }
+      observe() {}
+      disconnect() {}
+    });
+    const items = [proposal(), routine()];
+    const { api } = stubApi(items);
+    const onApprovalFocusConsumed = vi.fn();
+    const { rerender } = render(<WorkBoardPanel api={api} project={PROJECT} onApprovalFocusConsumed={onApprovalFocusConsumed} />);
+    await screen.findByTestId("work-approval-head");
+    await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
+    fireEvent.click(screen.getByTestId("work-board-tab-overview"));
+    expect((screen.getByTestId("work-board-approvals-region") as HTMLElement).hidden).toBe(true);
+
+    rerender(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey="routine:r-1" onApprovalFocusConsumed={onApprovalFocusConsumed} />);
+    await waitFor(() => expect(screen.getByTestId("work-board-tab-approvals").getAttribute("aria-selected")).toBe("true"));
+    await waitFor(() => expect(onApprovalFocusConsumed).toHaveBeenCalledTimes(1));
+    expect(within(screen.getByTestId("work-approval-head")).getByTestId("work-approval-title").textContent).toBe("Weekday tests");
   });
 });
 
@@ -332,13 +387,31 @@ describe("Work Board — failed routine runs in 확인 필요", () => {
     expect(screen.queryByTestId("work-approval-action-error")).toBeNull();
   });
 
-  it("says so when a newer failure replaced the one on the card", async () => {
+  it("re-lists on a stale acknowledgement, says the state changed, and drops the error once the failure is gone", async () => {
+    const acknowledge = vi.fn(async () => ({ ok: false as const, error: "routine-failure-stale" }));
+    const items: WorkApprovalView[] = [failed, proposal()];
+    const { api, list } = stubApi(items, { acknowledgeRoutineFailure: acknowledge } as Partial<AveApi>);
+    render(<WorkBoardPanel api={api} project={PROJECT} />);
+
+    const ack = await screen.findByTestId("work-approval-routine-acknowledge");
+    const calls = list.mock.calls.length;
+    // The failure was already cleared elsewhere: the re-list returns the routine without it.
+    items.splice(0, 1, routine({ reasons: ["plugins-missing"] }));
+    fireEvent.click(ack);
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(calls));
+    await waitFor(() => expect(screen.queryByTestId("work-approval-routine-acknowledge")).toBeNull());
+    expect(screen.queryByTestId("work-approval-action-error")).toBeNull();
+  });
+
+  it("shows the stale refusal in words while the card still shows that failure", async () => {
     const acknowledge = vi.fn(async () => ({ ok: false as const, error: "routine-failure-stale" }));
     const { api } = stubApi([failed], { acknowledgeRoutineFailure: acknowledge } as Partial<AveApi>);
     render(<WorkBoardPanel api={api} project={PROJECT} />);
 
     fireEvent.click(await screen.findByTestId("work-approval-routine-acknowledge"));
-    expect((await screen.findByTestId("work-approval-action-error")).textContent).toContain("다시 실패");
+    const error = await screen.findByTestId("work-approval-action-error");
+    expect(error.textContent).toContain("상태가 바뀌어");
+    expect(error.textContent).not.toContain("routine-failure-stale");
   });
 
   it("names a shutdown timeout and offers no acknowledgement for a configuration problem", async () => {

@@ -109,16 +109,29 @@ function proposalMeta(item: WorkProposalApprovalView): string {
   return t("workApprovals.proposalMeta", { source: proposalSource(item) });
 }
 
+interface WorkApprovalActionRefusal {
+  ok: false;
+  error: string;
+  message?: string;
+}
+
 export interface WorkApprovalActions {
-  /** Proposal → work item in `projectRoot`. A refusal carries the store's reason so the card can say why. */
-  acceptProposal: (proposalId: string, projectRoot: string | undefined) => Promise<{ ok: true; itemId: number } | { ok: false; reason: string }>;
-  dismissProposal: (proposalId: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** Proposal → work item in `projectRoot`. A refusal carries an IPC error code (and the store's own wording when it gave one), which the
+   * card renders through formatIpcError rather than showing the code. */
+  acceptProposal: (proposalId: string, projectRoot: string | undefined) => Promise<{ ok: true; itemId: number } | WorkApprovalActionRefusal>;
+  dismissProposal: (proposalId: string) => Promise<{ ok: true } | WorkApprovalActionRefusal>;
   /** Start the host's plan → approve → execute run for an item that was just added. */
   runItem: (itemId: number) => void;
   /** Open the schedule (routine) surface focused on one routine. */
   openRoutine: (routineId: string) => void;
   /** Clear the failure the card shows, named by its fire; a refusal carries the IPC error code (e.g. `routine-failure-stale`). */
   acknowledgeRoutineFailure: (routineId: string, failureFiredAt: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
+/** A routine's actions are keyed by the failure they act on, so a refreshed card with another failure (or none) starts without the old
+ * error. */
+function actionsKey(item: WorkApprovalView): string {
+  return item.kind === "routine-attention" ? `${item.key}:${item.failure?.firedAt ?? "-"}` : item.key;
 }
 
 interface ItemActionsProps {
@@ -183,12 +196,12 @@ function ItemActions({ item, actions, targetProjectRoot, compact = false }: Item
     try {
       if (which === "dismiss") {
         const dismissed = await actions.dismissProposal(item.proposalId);
-        if (!dismissed.ok) setError(dismissed.reason);
+        if (!dismissed.ok) setError(formatIpcError(dismissed.error, dismissed.message));
         return;
       }
       const accepted = await actions.acceptProposal(item.proposalId, targetProjectRoot);
       if (!accepted.ok) {
-        setError(accepted.reason);
+        setError(formatIpcError(accepted.error, accepted.message));
         return;
       }
       if (which === "add-plan") actions.runItem(accepted.itemId);
@@ -322,7 +335,7 @@ function HeadCard({
         <ItemBody item={item} />
       </div>
       <div className="mt-3 flex justify-end">
-        <ItemActions item={item} actions={actions} targetProjectRoot={targetProjectRoot} />
+        <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} />
       </div>
     </article>
   );
@@ -366,7 +379,7 @@ function QueuedRow({
       </button>
       {isShared(item) && <SharedChip />}
       {age !== null && <span className="shrink-0 text-[11px] text-muted-foreground">{age}</span>}
-      <ItemActions item={item} actions={actions} targetProjectRoot={targetProjectRoot} compact />
+      <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} compact />
     </li>
   );
 }
@@ -421,7 +434,16 @@ export interface WorkApprovalStackProps {
 export function WorkApprovalStack({ api, project, actions, focusKey, onFocusConsumed, onCountChange, now = Date.now }: WorkApprovalStackProps) {
   const projectRoot = project?.projectRoot;
   const request = useMemo<WorkApprovalsRequest>(() => (projectRoot === undefined ? {} : { projectRoot }), [projectRoot]);
-  const { state } = useWorkApprovals(api, request);
+  const { state, refresh } = useWorkApprovals(api, request);
+  // A stale acknowledgement means the routine's failure already moved on; re-list so the card shows its current state.
+  const stackActions = useMemo<WorkApprovalActions>(() => ({
+    ...actions,
+    acknowledgeRoutineFailure: async (routineId, failureFiredAt) => {
+      const result = await actions.acknowledgeRoutineFailure(routineId, failureFiredAt);
+      if (!result.ok && result.error === "routine-failure-stale") await refresh();
+      return result;
+    },
+  }), [actions, refresh]);
   const [filter, setFilter] = useState<KindFilter>("all");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const sorted = useMemo(() => (state.status === "ready" ? sortByArrival(state.items) : []), [state]);
@@ -526,7 +548,7 @@ export function WorkApprovalStack({ api, project, actions, focusKey, onFocusCons
             item={head}
             index={0}
             count={filtered.length}
-            actions={actions}
+            actions={stackActions}
             targetProjectRoot={projectRoot}
             focusRef={roving.focusRef}
             tabIndex={roving.tabIndexFor(head.key)}
@@ -541,7 +563,7 @@ export function WorkApprovalStack({ api, project, actions, focusKey, onFocusCons
                     key={item.key}
                     item={item}
                     now={clock}
-                    actions={actions}
+                    actions={stackActions}
                     targetProjectRoot={projectRoot}
                     focusRef={roving.focusRef}
                     tabIndex={roving.tabIndexFor(item.key)}
