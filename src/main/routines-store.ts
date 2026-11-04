@@ -63,6 +63,14 @@ function isActor(value: unknown): value is RoutineActor {
   return value === "user" || value === "agent";
 }
 
+export function isRoutineTrigger(value: unknown): value is RoutineRecord["trigger"] {
+  return value === "schedule" || value === "shutdown";
+}
+
+export function isRoutineExecution(value: unknown): value is RoutineRecord["execution"] {
+  return value === "llm-session" || value === "notification-only";
+}
+
 // The plugin-id-bearing fields of one stored routine, by field path.
 function storedRoutinePluginIds(record: Record<string, unknown>): Array<[string, unknown[]]> {
   const fields: Array<[string, unknown[]]> = [];
@@ -100,8 +108,7 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (!r || typeof r !== "object") return false;
   const x = r as Record<string, unknown>;
   if (typeof x.id !== "string" || x.id.length > 128) return false;
-  if (x.trigger !== "schedule" && x.trigger !== "shutdown") return false;
-  if (x.execution !== "llm-session" && x.execution !== "notification-only") return false;
+  if (!isRoutineTrigger(x.trigger) || !isRoutineExecution(x.execution)) return false;
   if (x.lastFiredMinuteUTC !== undefined && typeof x.lastFiredMinuteUTC !== "string") return false;
   if (x.lastFiredAt !== undefined && typeof x.lastFiredAt !== "string") return false;
   if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing") return false;
@@ -166,7 +173,7 @@ function isValidRoutinePluginScope(value: unknown): value is RoutineScope["plugi
   return scope.mode === "allow" && isStringArray(scope.ids);
 }
 
-function isValidRoutineScope(value: unknown): value is RoutineScope {
+export function isValidRoutineScope(value: unknown): value is RoutineScope {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const scope = value as Record<string, unknown>;
   return (
@@ -352,6 +359,11 @@ export class RoutinesStore {
   async add(input: AddRoutineInput): Promise<RoutineRecord> {
     if (!this.loaded) await this.load();
 
+    // An unknown trigger or execution would be dropped as a bad record on the next read, so refuse it here.
+    if (!isRoutineTrigger(input.trigger)) throw new Error(`RoutinesStore.add: trigger must be 'schedule' or 'shutdown': ${String(input.trigger)}`);
+    if (!isRoutineExecution(input.execution)) {
+      throw new Error(`RoutinesStore.add: execution must be 'llm-session' or 'notification-only': ${String(input.execution)}`);
+    }
     const normalizedSchedule = validateRoutineContent("add", input);
     const normalizedProjectRoot = typeof input.projectRoot === "string" ? input.projectRoot.trim() : "";
     if (!normalizedProjectRoot || normalizedProjectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
