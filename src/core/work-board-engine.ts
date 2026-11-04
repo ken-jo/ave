@@ -489,6 +489,9 @@ export function createWorkBoardEngine(
 
       emit({ itemId, phase: "planning" });
 
+      // Persisted as it links, like the execute child: a board that mounts mid-plan (opened from the run's row) reads the child from the
+      // listed item and can claim its tool approvals.
+      let planLinkedPersist: Promise<{ failed: false } | { failed: true; error: unknown }> = Promise.resolve({ failed: false });
       const planResult = await runner.spawn(
         {
           title: `Plan: ${item.title}`,
@@ -503,7 +506,15 @@ export function createWorkBoardEngine(
         {
           // The planning child's session is reported as it links, like the execute child's: the board claims both children's tool
           // approvals, and a planning child can ask for one too.
-          onLinked: ({ childSessionId }) => emit({ itemId, phase: "planning", runSessionId: childSessionId }),
+          onLinked: ({ childSessionId }) => {
+            emit({ itemId, phase: "planning", runSessionId: childSessionId });
+            planLinkedPersist = store
+              .setRunSessionId(itemId, childSessionId)
+              .then(
+                () => ({ failed: false as const }),
+                (error: unknown) => ({ failed: true as const, error }),
+              );
+          },
           onActivity: makeActivityRecorder({
             onTurn: (turn, text) => {
               emit({ itemId, phase: "planning", turn, text });
@@ -515,6 +526,8 @@ export function createWorkBoardEngine(
           onError: (message) => emit({ itemId, phase: "error", message }),
         },
       );
+      const planLinkOutcome = await planLinkedPersist;
+      if (planLinkOutcome.failed) throw planLinkOutcome.error;
       const plan = planResult.summary;
       record({ phase: "awaiting_approval", kind: "plan", text: plan });
       await store.setRunResult(itemId, {
@@ -567,7 +580,7 @@ export function createWorkBoardEngine(
         onTools: (tools) => emit({ itemId, phase: "executing", tools }),
         onToolFinished: (tool) => record({ phase: "executing", kind: "tool", turn: tool.turn, tool }),
       });
-      // A steer is received by the turn after the last finished one: the child takes it at its next round boundary.
+      // Which turn received a steer: read when the loop acknowledges the injection (see steerRun).
       executingTurnByItem.set(itemId, executeActivity.lastTurn);
       const execResult = await runner.spawn(
         {
@@ -760,7 +773,9 @@ export function createWorkBoardEngine(
     const queued = runnerForLiveChild().queueHostDirectiveToWorkBoardChild(workBoardOriginSessionId(itemId), child, text, {
       onInjected: () => {
         if (messageId === undefined) throw new Error("work-board steer was injected before it was queued");
-        report({ messageId, status: "delivered", turn: (turnOf?.() ?? 0) + 1 });
+        // The loop acknowledges an injection after the round that took it reported (conversation-loop-guidance pins that order), and the
+        // runner reports each round's activity synchronously, so the last recorded turn is the one that received the steer.
+        report({ messageId, status: "delivered", turn: turnOf?.() ?? 0 });
       },
       onDropped: (reason) => {
         if (messageId === undefined) throw new Error("work-board steer was dropped before it was queued");

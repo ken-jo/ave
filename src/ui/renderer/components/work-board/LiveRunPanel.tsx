@@ -578,12 +578,6 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
   const inputId = useId();
   const noteId = useId();
   const itemId = item.id;
-  // A different run in the panel starts from an empty composer.
-  useEffect(() => {
-    setText("");
-    setStatus({ kind: "idle" });
-    setStopNotice(null);
-  }, [itemId, item.runId]);
 
   const executing = run.phase === "executing";
   const stopping = run.stopping || stopPending;
@@ -870,7 +864,9 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
               )}
             </div>
             {isRunInFlight(selected.run) ? (
+              // Keyed by run: another run's composer is a new one, so a late reply to this one's steer or stop cannot land on it.
               <SteerComposer
+                key={`${selected.item.id}:${selected.item.runId ?? ""}`}
                 entry={selected}
                 onSteer={props.onSteer}
                 onStop={props.onStop}

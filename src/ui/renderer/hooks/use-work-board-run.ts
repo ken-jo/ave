@@ -303,8 +303,11 @@ export function useWorkBoardRun(
   // Bumped whenever an item's run restarts, so a transcript read for an older run cannot land on the new one.
   const generationRef = useRef(new Map<number, number>());
   const backfilledRef = useRef(new Set<string>());
-  // Acknowledgements that arrived before their steer's own reply, applied when the reply records the steer.
+  // Acknowledgements that arrived before their steer's own reply, applied when the reply records the steer. Which steers the reply already
+  // recorded is tracked here too, outside any state updater: an updater runs only at flush, so a reply landing between an ack and that
+  // flush would find no early ack and leave the steer "sent" forever.
   const earlyAcksRef = useRef(new Map<string, WorkBoardSteerAck>());
+  const recordedSteersRef = useRef(new Set<string>());
   const onPhaseEnteredRef = useRef(onPhaseEntered);
   useEffect(() => {
     onPhaseEnteredRef.current = onPhaseEntered;
@@ -337,13 +340,11 @@ export function useWorkBoardRun(
           // A steer acknowledgement reports nothing else, and may arrive after the run settled: never the run's phase.
           const ack = ev.steer;
           if (ack !== undefined) {
-            update(ev.itemId, (cur) => {
-              if (!cur.steers.some((steer) => steer.messageId === ack.messageId)) {
-                earlyAcksRef.current.set(ack.messageId, ack);
-                return cur;
-              }
-              return { ...cur, steers: applySteerAck(cur.steers, ack) };
-            });
+            if (!recordedSteersRef.current.has(ack.messageId)) {
+              earlyAcksRef.current.set(ack.messageId, ack);
+              return;
+            }
+            update(ev.itemId, (cur) => ({ ...cur, steers: applySteerAck(cur.steers, ack) }));
             return;
           }
           // A tool step update is not a phase entry either; it only revises that phase's steps.
@@ -373,7 +374,8 @@ export function useWorkBoardRun(
               stopping: isTerminalPhase(phase) ? false : cur.stopping,
             };
           });
-          if (ev.turn === undefined && (isActivePhase(ev.phase) || ev.phase === "awaiting_approval")) {
+          // A child's link event (it carries the session and no turn) is not a phase entry: the phase's own entry event already re-listed.
+          if (ev.turn === undefined && ev.runSessionId === undefined && (isActivePhase(ev.phase) || ev.phase === "awaiting_approval")) {
             onPhaseEnteredRef.current?.();
           }
         }),
@@ -477,6 +479,7 @@ export function useWorkBoardRun(
       const result = await api.steerWorkBoardRun(id, text, userIntent);
       if (result.ok) {
         const { messageId } = result;
+        recordedSteersRef.current.add(messageId);
         const early = earlyAcksRef.current.get(messageId);
         earlyAcksRef.current.delete(messageId);
         update(id, (cur) => {

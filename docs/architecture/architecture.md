@@ -1182,10 +1182,12 @@ owns storage, approvals, and audit.
 
 Item runs execute as sub-agent sessions whose origin names the item
 (`work-board:<itemId>`), so their conversations live in the isolated sub-agent
-namespace, never in the main chat store. While a plan awaits approval the
-item's `runSessionId` names the plan child; the engine replaces it with the
+namespace, never in the main chat store. As soon as the plan child links, the
+engine records it as the item's `runSessionId` and emits a `planning` progress
+event carrying that id, so a board opened mid-plan can claim the child's tool
+approvals. The engine replaces it with the
 execute child's id, and emits an `executing` progress event carrying that id,
-as soon as the execute child links (before its first round). That link write
+as soon as the execute child links (before its first round). Each link write
 changes only the session id and appends no activity entry. If it fails, the
 run settles as an error even when the child finished: a run whose session the
 board cannot record is not reported as completed.
@@ -1201,8 +1203,10 @@ no sender prefix, so it neither grants the child user-keyboard capabilities nor
 raises an other-principal floor; nothing is stored for a later resume.
 Acceptance (`ok: true`) means queued, not delivered: if the child's turn ends
 before its next round boundary, the steer is dropped and only the audit records
-it (`work-board:steer:deferred:<reason>`); the board receives no event for that
-case yet. A second stop while the first is unwinding is the same stop. A stop
+it (`work-board:steer:deferred:<reason>`). The board learns either outcome from
+a `runProgress` event carrying only `steer: {messageId, status}`: `delivered`
+names the turn that took it, `dropped` names the loop's reason. Such an event
+is never the run's phase. A second stop while the first is unwinding is the same stop. A stop
 uses the ordinary sub-agent interrupt, and a run the user stopped settles as
 `cancelled` (shown as stopped, not as an error). Planning and plan approval
 are not steerable or stoppable here. See

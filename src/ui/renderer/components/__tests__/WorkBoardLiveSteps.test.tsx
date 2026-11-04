@@ -365,3 +365,45 @@ describe("Work Board — the path to a card while no board is open", () => {
     expect(screen.queryByTestId("work-board-detail-dialog")).toBeNull();
   });
 });
+
+describe("Work Board — opened from the row while the run still plans", () => {
+  afterEach(() => cleanup());
+
+  it("claims the planning child the listed item records, and draws its card for the same request", async () => {
+    const PLAN_CHILD = "sub-plan-4";
+    const queue = [approvalRequest({ id: "req-plan", sessionId: PLAN_CHILD, toolName: "read_file" }) as unknown as ApprovalRequest];
+    const surface = { ...approvalSurfaceStub(), queue };
+    // The board mounts fresh: no progress event reached it; only the stored item names the planning child.
+    const harness = boardApi({ items: [runningItem({ runStatus: "planning", runSessionId: PLAN_CHILD })] });
+    render(withApprovalSurface(<WorkBoardPanel api={harness.api} focusItemId={4} onFocusConsumed={vi.fn()} />, surface));
+    const panel = await screen.findByTestId("live-step-panel");
+    const card = await within(panel).findByTestId("approval-lane-card");
+    expect(card.dataset.approvalRequestId).toBe("req-plan");
+    expect(surface.claims.ownerOf(PLAN_CHILD)).toMatch(/^work-board:/);
+  });
+});
+
+describe("Work Board — the composer belongs to one run", () => {
+  afterEach(() => cleanup());
+
+  it("does not let a late steer reply for one run land on another run's composer", async () => {
+    const other = runningItem({ id: 5, title: "Tune the order API timeout", runId: "run-c" });
+    const { emit, steer } = await mountBoard({ items: [runningItem(), other] });
+    let resolve!: (v: unknown) => void;
+    steer.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    await emit({ itemId: 4, phase: "executing", turn: 1, text: "Working" });
+    await emit({ itemId: 5, phase: "executing", turn: 1, text: "Measuring" });
+    fireEvent.click(screen.getAllByTestId("work-board-show-steps")[0]!);
+    const panel = await screen.findByTestId("live-step-panel");
+    const rowFor = (id: string) => within(panel).getAllByTestId("live-step-run-row").find((row) => row.dataset.itemId === id)!;
+    fireEvent.click(rowFor("4"));
+    fireEvent.change(within(panel).getByTestId("live-step-steer-input"), { target: { value: "for run four" } });
+    fireEvent.click(within(panel).getByTestId("live-step-steer-send"));
+
+    fireEvent.click(rowFor("5"));
+    fireEvent.change(within(panel).getByTestId("live-step-steer-input"), { target: { value: "draft for five" } });
+    await act(async () => { resolve({ ok: false, reason: "recipient-unavailable" }); });
+    expect((within(panel).getByTestId("live-step-steer-input") as HTMLTextAreaElement).value).toBe("draft for five");
+    expect(within(panel).queryByTestId("live-step-steer-error")).toBeNull();
+  });
+});

@@ -1,6 +1,6 @@
 /** LS-2 live-step events: a steer is reported delivered (with the turn that took it) or dropped only when the child's loop says so, and
  * each turn's tool steps reach the board as host-derived, bounded labels, never the tool's raw input. */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createWorkBoardEngine } from "../work-board-engine.js";
 import type { SubAgentRunner, SubAgentSpawnCallbacks } from "../../engine/subagent-runner.js";
 import type { WorkBoardRunEvent } from "../../shared/work-board-types.js";
@@ -89,6 +89,8 @@ describe("WorkBoardEngine — steer acknowledgement (LS-2 G4)", () => {
       // Queued is not delivered: nothing is reported until the child's loop injects it.
       expect(ctx.events.filter((e) => e.steer !== undefined)).toEqual([]);
 
+      // The real order: the round that took the steer reports its activity, then the loop acknowledges the injection.
+      ctx.live.activity([assistantEntry("turn one"), assistantEntry("turn two"), assistantEntry("turn three, following the steer")]);
       ctx.live.observers[0]!.onInjected?.();
       const acks = ctx.events.filter((e) => e.steer !== undefined);
       expect(acks).toHaveLength(1);
@@ -218,6 +220,78 @@ describe("WorkBoardEngine — run session links (LS-2 board approval claim)", ()
       ctx.live.release();
       await ctx.run;
       await ctx.cleanup();
+    }
+  });
+});
+
+describe("WorkBoardEngine — the planning child is recorded as it links", () => {
+  it("stores the planning child's session on the item while it plans, so a board opened mid-plan can claim its approvals", async () => {
+    const board = tempBoard();
+    const created = await board.store.create({ title: "plan me" });
+    if (created.status !== "created") throw new Error("setup failed");
+    const id = created.itemId;
+    const registry = boardParentToolRegistry();
+    let releasePlan!: () => void;
+    const planHeld = new Promise<void>((r) => { releasePlan = r; });
+    let planLinked!: () => void;
+    const linked = new Promise<void>((r) => { planLinked = r; });
+    const runner = {
+      async spawn(input: { profileMode?: string; originSessionId?: string }, callbacks?: SubAgentSpawnCallbacks) {
+        const childSessionId = `${input.originSessionId}::${input.profileMode}`;
+        callbacks?.onLinked?.({ childSessionId });
+        if (input.profileMode === "plan") {
+          planLinked();
+          await planHeld;
+        }
+        return { summary: "DONE", toolCallCount: 0, turnCount: 1, childSessionId, entries: [], ok: true };
+      },
+      parentToolRegistry: () => registry,
+    } as unknown as SubAgentRunner;
+    const { gate, owner } = boardApprovalGate("deny-once");
+    const engine = createWorkBoardEngine({ store: board.store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+    try {
+      const run = engine.runItem(id, { approvalSurface: owner });
+      await linked;
+      await vi.waitFor(async () => {
+        const got = await board.store.get(id);
+        if (got.status !== "found") throw new Error("missing item");
+        expect(got.item.runStatus).toBe("planning");
+        expect(got.item.runSessionId).toBe(`work-board:${id}::plan`);
+      });
+      releasePlan();
+      expect((await run).status).toBe("denied");
+    } finally {
+      await board.cleanup();
+    }
+  });
+});
+
+describe("WorkBoardEngine — a failed planning link write", () => {
+  it("fails the run clearly before plan approval", async () => {
+    const board = tempBoard();
+    const created = await board.store.create({ title: "plan link fails" });
+    if (created.status !== "created") throw new Error("setup failed");
+    const id = created.itemId;
+    vi.spyOn(board.store, "setRunSessionId").mockRejectedValue(new Error("disk full"));
+    const registry = boardParentToolRegistry();
+    const runner = {
+      async spawn(input: { profileMode?: string; originSessionId?: string }, callbacks?: SubAgentSpawnCallbacks) {
+        const childSessionId = `${input.originSessionId}::${input.profileMode}`;
+        callbacks?.onLinked?.({ childSessionId });
+        return { summary: "PLAN", toolCallCount: 0, turnCount: 1, childSessionId, entries: [], ok: true };
+      },
+      parentToolRegistry: () => registry,
+    } as unknown as SubAgentRunner;
+    const { gate, owner } = boardApprovalGate("allow-once");
+    const events: WorkBoardRunEvent[] = [];
+    const engine = createWorkBoardEngine({ store: board.store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e) });
+    try {
+      const result = await engine.runItem(id, { approvalSurface: owner });
+      expect(result).toMatchObject({ status: "error", reason: "disk full" });
+      expect(events.some((e) => e.phase === "awaiting_approval")).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      await board.cleanup();
     }
   });
 });

@@ -48,7 +48,11 @@ function harness(transcript: () => Promise<{ events: RunTranscriptEvent[] }> = a
     act(() => {
       for (const h of started) h({ itemId });
     });
-  return { api, emit, start, getTranscript };
+  /** Deliver an event without act(): the updates it queues wait for whatever act() the test is inside. */
+  const deliver = (ev: RunProgressEventPayload) => {
+    for (const h of progress) h(ev);
+  };
+  return { api, emit, start, getTranscript, deliver };
 }
 
 function runningItem(overrides: Partial<WorkItemResolved> = {}): WorkItemResolved {
@@ -356,6 +360,34 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "joined-limit" } });
     await act(async () => { resolve({ ok: true, messageId: "m-1" }); await pending; });
     expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", status: "dropped", reason: "joined-limit" }]);
+  });
+
+  it("applies an acknowledgement whose steer reply lands before React flushes the acknowledgement", async () => {
+    // The loop drops a steer in a microtask and the IPC reply can follow before any render: the early-ack record must not wait for a flush.
+    const h = steerHarness();
+    let resolve!: (v: unknown) => void;
+    h.steer.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const { result } = renderHook(() => useWorkBoardRun(h.api, []));
+    h.emit({ itemId: 4, phase: "executing" });
+    let pending!: Promise<unknown>;
+    act(() => { pending = result.current.steer(4, "faster", undefined); });
+    await act(async () => {
+      h.deliver({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "turn-ended" }, at: "2026-11-04T03:00:01.000Z" });
+      resolve({ ok: true, messageId: "m-1" });
+      await pending;
+    });
+    expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", status: "dropped", reason: "turn-ended" }]);
+  });
+
+  it("does not re-list for a child's link event, which carries the session and no turn", () => {
+    const { api, emit } = harness();
+    const entered = vi.fn();
+    renderHook(() => useWorkBoardRun(api, [], entered));
+    emit({ itemId: 4, phase: "planning" });
+    emit({ itemId: 4, phase: "planning", runSessionId: "sub-plan" });
+    emit({ itemId: 4, phase: "executing" });
+    emit({ itemId: 4, phase: "executing", runSessionId: "sub-exec" });
+    expect(entered).toHaveBeenCalledTimes(2);
   });
 
   it("records nothing for a refused steer", async () => {
