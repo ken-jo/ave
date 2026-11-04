@@ -2,6 +2,7 @@ import { createDynamicTool, type Tool, type ToolExecutionContext } from "./base.
 import type { MemoryManager, MemoryOriginV1 } from "../memory/memory-manager.js";
 import { t } from "../i18n/index.js";
 import { modelBoundCredentialKind } from "../shared/dlp.js";
+import { toolNoticeTarget, type MemorySaveNotices, type MemorySaveSkipReason } from "../memory/memory-save-notices.js";
 
 export const MEMORY_WRITE_MAX_TITLE_CHARS = 120;
 export const MEMORY_WRITE_MAX_CONTENT_CHARS = 8_000;
@@ -53,6 +54,8 @@ function credentialLikeContent(title: string, content: string): "authorization-k
 
 export interface MemoryWriteToolDeps {
   memoryManager: MemoryWriteStore;
+  /** The user sees every save, and every refusal for a secret or outside input, as a live notice. */
+  notices: Pick<MemorySaveNotices, "saved" | "skipped">;
 }
 
 // Saves an active memory at once (owner decision 2026-11-04); the user is notified and can undo.
@@ -101,8 +104,14 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
       },
     },
     execute: async (rawInput, ctx) => {
+      const target = toolNoticeTarget(ctx.metadata);
+      const refuse = (reason: MemorySaveSkipReason, output: string) => {
+        deps.notices.skipped(target, reason);
+        return { output, isError: true };
+      };
       // Fail closed: only a turn the host marked untainted may write memory.
       if (ctx.metadata?.memoryWriteTainted !== false) {
+        deps.notices.skipped(target, "external-context");
         return {
           output: "memory_write: not saved (external-context): this turn includes input that did not come from the user's keyboard.",
           isError: true,
@@ -140,33 +149,22 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
       }
       // Raw titles enter headings and index links; reject control characters that inject lines, then scan the composed artifact for markers.
       if (memoryWriteTitleHasControlChar(title)) {
-        return {
-          output:
-            "memory_write: title must be a single-line label without control characters or line breaks.",
-          isError: true,
-        };
+        return refuse("unsafe-text", "memory_write: title must be a single-line label without control characters or line breaks.");
       }
       // Scan the persisted title/content composition so markers split across fields or Unicode line separators cannot evade rejection.
       const composedForMarkerScan = `${title}${String.fromCharCode(10, 10)}${content}`;
       if (MEMORY_WRITE_RESERVED_MARKER_PATTERN.test(composedForMarkerScan)) {
-        return {
-          output:
-            'memory_write: title/content must not contain the reserved "<!-- ave:" marker namespace.',
-          isError: true,
-        };
+        return refuse("unsafe-text", 'memory_write: title/content must not contain the reserved "<!-- ave:" marker namespace.');
       }
 
       const credential = credentialLikeContent(title, content);
       if (credential !== null) {
-        return {
-          // Credential-like keys remain refused even when their value is an ordinary URL.
-          output: credential === "authorization-key" ? t("be_memoryWrite.authorizationKeyRejected") : t("be_memoryWrite.credentialRejected"),
-          isError: true,
-        };
+        // Credential-like keys remain refused even when their value is an ordinary URL.
+        return refuse(credential, credential === "authorization-key" ? t("be_memoryWrite.authorizationKeyRejected") : t("be_memoryWrite.credentialRejected"));
       }
 
       try {
-        const { op, entry } = id !== undefined
+        const { op, entry, fileDigest } = id !== undefined
           ? await deps.memoryManager.updateMemoryById(id, title, content, {
               ...memoryWriteProjectScope(ctx),
               source: "assistant",
@@ -177,6 +175,8 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
               source: "assistant",
               ...memoryWriteOrigin(ctx),
             }, "assistant", requestedIn(ctx));
+        // The undo token goes to the user's notice only; the model has no undo.
+        deps.notices.saved(target, op, entry, fileDigest);
         return {
           output: JSON.stringify({
             saved: true,
@@ -189,12 +189,10 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
         };
       } catch (error) {
         const message = (error as Error).message;
-        return {
-          output: message.includes("unsafe-text")
-            ? "memory_write: not saved (unsafe-text): the title or content contains hidden or control characters."
-            : `memory_write failed: ${message}`,
-          isError: true,
-        };
+        if (message.includes("unsafe-text")) {
+          return refuse("unsafe-text", "memory_write: not saved (unsafe-text): the title or content contains hidden or control characters.");
+        }
+        return { output: `memory_write failed: ${message}`, isError: true };
       }
     },
   });

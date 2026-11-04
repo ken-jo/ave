@@ -4,6 +4,7 @@ import {
   type MemoryCaptureReviewer,
 } from "../memory-capture-service.js";
 import type { MemoryManager, NoteEntry } from "../memory-manager.js";
+import type { MemorySaveNotices } from "../memory-save-notices.js";
 import { MAX_MEMORY_SOURCE_CHARS, MEMORY_KINDS, MemoryManager as RealMemoryManager } from "../memory-manager.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,7 +32,7 @@ function makeMemoryManager() {
     title: string,
     content: string,
     options: Partial<NoteEntry> = {},
-  ): Promise<{ op: "created"; entry: NoteEntry }> => {
+  ): Promise<{ op: "created"; entry: NoteEntry; fileDigest: string }> => {
     const entry: NoteEntry = {
       id: `memory-${saved.length + 1}`,
       filename: `memory-${saved.length + 1}.md`,
@@ -41,7 +42,7 @@ function makeMemoryManager() {
       ...options,
     };
     saved.push(entry);
-    return { op: "created", entry };
+    return { op: "created", entry, fileDigest: "f".repeat(64) };
   });
   return {
     manager: { saveMemory } as unknown as Pick<MemoryManager, "saveMemory">,
@@ -67,11 +68,19 @@ function enqueueTrustedAutomatic(service: MemoryCaptureService, input = SOURCE):
   });
 }
 
+function makeNotices() {
+  return {
+    saved: vi.fn<MemorySaveNotices["saved"]>(() => "11111111-2222-4333-8444-555555555555"),
+    skipped: vi.fn<MemorySaveNotices["skipped"]>(),
+  };
+}
+
 function createCaptureService(
   memoryManager: ConstructorParameters<typeof MemoryCaptureService>[0]["memoryManager"],
   memoryReviewer: MemoryCaptureReviewer,
+  notices = makeNotices(),
 ) {
-  return new MemoryCaptureService({ memoryManager, memoryReviewer, sessionStore: "main" });
+  return new MemoryCaptureService({ memoryManager, memoryReviewer, notices, sessionStore: "main" });
 }
 
 const SESSION_ID = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
@@ -83,6 +92,7 @@ describe("MemoryCaptureService", () => {
     const { memoryReviewer, review } = makeMemoryReviewer();
     const service = new MemoryCaptureService({
       memoryManager: manager,
+      notices: makeNotices(),
       sessionStore: "main",
     });
     service.setMemoryReviewer(memoryReviewer);
@@ -223,6 +233,62 @@ describe("MemoryCaptureService", () => {
     expect(result).toEqual({ status: "skipped", reason: "sensitive-input" });
     expect(review).not.toHaveBeenCalled();
     expect(saveMemory).not.toHaveBeenCalled();
+  });
+});
+
+describe("MemoryCaptureService notices", () => {
+  it("announces an automatic save under the user row that taught it, with an undo token", async () => {
+    const { manager } = makeMemoryManager();
+    const notices = makeNotices();
+    const service = createCaptureService(manager, makeMemoryReviewer().memoryReviewer, notices);
+
+    enqueueTrustedAutomatic(service);
+    await service.runOnIdle();
+
+    expect(notices.saved).toHaveBeenCalledWith(
+      { sessionId: SESSION_ID, anchorMessageId: TURN_MESSAGE_ID },
+      "created",
+      expect.objectContaining({ title: "Communication preference" }),
+      "f".repeat(64),
+    );
+  });
+
+  it("returns the undo token for /remember and announces in its conversation", async () => {
+    const { manager } = makeMemoryManager();
+    const notices = makeNotices();
+    const result = await createCaptureService(manager, makeMemoryReviewer().memoryReviewer, notices)
+      .captureExplicit({ title: "Status preference", content: SOURCE, sessionId: SESSION_ID });
+
+    expect(result).toMatchObject({ status: "saved", undoToken: "11111111-2222-4333-8444-555555555555" });
+    expect(notices.saved).toHaveBeenCalledWith({ sessionId: SESSION_ID }, "created", expect.anything(), "f".repeat(64));
+  });
+
+  it("tells /remember's conversation why it did not save, and stays silent for automatic skips", async () => {
+    const { manager } = makeMemoryManager();
+    const notices = makeNotices();
+    const service = createCaptureService(manager, makeMemoryReviewer().memoryReviewer, notices);
+
+    await service.captureExplicit({ content: "api_key=sk-abcdefghijklmnopqrst", sessionId: SESSION_ID });
+    expect(notices.skipped).toHaveBeenCalledWith({ sessionId: SESSION_ID }, "sensitive-input");
+
+    const failing = createCaptureService(manager, { review: vi.fn(async () => "not json") } as MemoryCaptureReviewer, notices);
+    await failing.captureExplicit({ content: SOURCE, sessionId: SESSION_ID });
+    expect(notices.skipped).toHaveBeenLastCalledWith({ sessionId: SESSION_ID }, "invalid-review");
+
+    notices.skipped.mockClear();
+    service.enqueueAutomatic({ sessionId: SESSION_ID, input: SOURCE, inputOrigin: "user-keyboard", stopReason: "end_turn", taintReasons: ["attachment"] });
+    await failing.runOnIdle();
+    enqueueTrustedAutomatic(failing);
+    await failing.runOnIdle();
+    expect(notices.skipped).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused write to /remember's conversation and still throws", async () => {
+    const saveMemory = vi.fn(async () => { throw new Error("saveMemory: unsafe-text: zero-width and bidi control characters are not allowed"); });
+    const notices = makeNotices();
+    const service = createCaptureService({ saveMemory } as never, makeMemoryReviewer().memoryReviewer, notices);
+    await expect(service.captureExplicit({ content: SOURCE, sessionId: SESSION_ID })).rejects.toThrow(/unsafe-text/);
+    expect(notices.skipped).toHaveBeenCalledWith({ sessionId: SESSION_ID }, "unsafe-text");
   });
 });
 

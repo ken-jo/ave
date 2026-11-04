@@ -1,0 +1,161 @@
+// Undo stays simple: undoing a create deletes it, undoing a delete restores it, an update has no undo, and an undo never discards a newer edit.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MemoryManager } from "../memory-manager.js";
+import { MemorySaveNotices, toolNoticeTarget } from "../memory-save-notices.js";
+import { isMemorySaveResultEvent, type MemorySaveResultEvent } from "../../shared/memory-save-result.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+const SESSION = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
+const TURN = "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f";
+
+let dir: string;
+let manager: MemoryManager;
+let notices: MemorySaveNotices;
+let events: MemorySaveResultEvent[];
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "ave-memory-notices-"));
+  manager = new MemoryManager({ aveDir: dir });
+  notices = new MemorySaveNotices(manager);
+  events = [];
+  notices.setSink((event) => { events.push(event); });
+});
+
+afterEach(async () => {
+  manager.stopPersistentContextWatcher();
+  manager.closeSearchIndex();
+  await cleanupTmpDir(dir);
+});
+
+async function save(title: string, content: string, options: Parameters<MemoryManager["saveMemory"]>[2] = {}) {
+  const result = await manager.saveMemory(title, content, options, "assistant");
+  const token = notices.saved({ sessionId: SESSION, anchorMessageId: TURN }, result.op, result.entry, result.fileDigest);
+  return { ...result, token };
+}
+
+describe("MemorySaveNotices", () => {
+  it("announces a create with an undo token and an update without one", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const updated = await save("Reply language", "Answer in Korean, briefly.");
+
+    expect(created.token).toEqual(expect.any(String));
+    expect(updated.token).toBeUndefined();
+    expect(events).toEqual([
+      {
+        sessionId: SESSION,
+        anchorMessageId: TURN,
+        result: {
+          status: "saved", op: "created", undoToken: created.token,
+          entry: { id: created.entry.id, filename: created.entry.filename, title: "Reply language", scope: "global" },
+        },
+      },
+      {
+        sessionId: SESSION,
+        anchorMessageId: TURN,
+        result: {
+          status: "saved", op: "updated",
+          entry: { id: created.entry.id, filename: created.entry.filename, title: "Reply language", scope: "global" },
+        },
+      },
+    ]);
+    expect(events.every(isMemorySaveResultEvent)).toBe(true);
+  });
+
+  it("undoes a create by deleting it, once", async () => {
+    const created = await save("Package manager", "Use pnpm.", { projectRoot: "C:\\workspace\\alpha" });
+
+    await expect(notices.undo(created.token!)).resolves.toEqual({ ok: true, undone: "created", title: "Package manager" });
+    expect(existsSync(join(dir, "memories", created.entry.filename))).toBe(false);
+    expect((await manager.getMemoryHistory(created.entry.id!, {}).catch(() => null))).toBeNull();
+    await expect(notices.undo(created.token!)).resolves.toEqual({ ok: false, error: "not-found" });
+  });
+
+  it("refuses to undo a create that was changed since, keeping the newer text", async () => {
+    const created = await save("Package manager", "Use pnpm.");
+    await save("Package manager", "Use pnpm 9.");
+
+    await expect(notices.undo(created.token!)).resolves.toEqual({ ok: false, error: "changed" });
+    expect(readFileSync(join(dir, "memories", created.entry.filename), "utf-8")).toContain("Use pnpm 9.");
+  });
+
+  it("undoes a delete by restoring the same memory, id and global index entry included", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");
+    const token = notices.deleted(undefined, deleted.entry!, deleted.priorContent);
+    expect(manager.getMemoryIndex()).not.toContain("Reply language");
+
+    await expect(notices.undo(token!)).resolves.toEqual({ ok: true, undone: "deleted", title: "Reply language" });
+    const restored = manager.listMemoryEntries().find((entry) => entry.id === created.entry.id);
+    expect(restored).toMatchObject({ title: "Reply language", content: expect.stringContaining("Answer in Korean.") });
+    expect(manager.getMemoryIndex()).toContain("Reply language");
+    const history = await manager.getMemoryHistory(created.entry.id!, {});
+    expect(history.entries.map((row) => [row.op, row.actor])).toEqual([["created", "assistant"], ["deleted", "user"], ["created", "user"]]);
+  });
+
+  it("refuses to restore over a memory saved with the same title in the meantime", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");
+    const token = notices.deleted(undefined, deleted.entry!, deleted.priorContent);
+    await save("Reply language", "Answer in English.");
+
+    await expect(notices.undo(token!)).resolves.toEqual({ ok: false, error: "changed" });
+    expect(manager.listMemoryEntries().filter((entry) => entry.title === "Reply language")).toHaveLength(1);
+    expect(manager.listMemoryEntries()[0]!.content).toContain("Answer in English.");
+  });
+
+  it("refuses to restore when the file name was taken by another file", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");
+    const token = notices.deleted(undefined, deleted.entry!, deleted.priorContent);
+    writeFileSync(join(dir, "memories", created.entry.filename), "# Someone else\n\nhand-written", "utf-8");
+
+    await expect(notices.undo(token!)).resolves.toEqual({ ok: false, error: "changed" });
+    expect(readFileSync(join(dir, "memories", created.entry.filename), "utf-8")).toContain("hand-written");
+  });
+
+  it("keeps only the most recent undo records", async () => {
+    const small = new MemorySaveNotices(manager, 2);
+    const tokens: string[] = [];
+    for (const title of ["One", "Two", "Three"]) {
+      const result = await manager.saveMemory(title, `${title} body.`, {}, "user");
+      tokens.push(small.saved(undefined, result.op, result.entry, result.fileDigest)!);
+    }
+    await expect(small.undo(tokens[0]!)).resolves.toEqual({ ok: false, error: "not-found" });
+    await expect(small.undo(tokens[2]!)).resolves.toMatchObject({ ok: true, undone: "created" });
+  });
+
+  it("sends nothing outside a conversation or before a window exists, and survives a failing sink", async () => {
+    const result = await manager.saveMemory("Quiet", "No chat here.", {}, "user");
+    notices.saved(undefined, result.op, result.entry, result.fileDigest);
+    expect(events).toEqual([]);
+
+    const detached = new MemorySaveNotices(manager);
+    expect(() => detached.skipped({ sessionId: SESSION }, "credential")).not.toThrow();
+
+    notices.setSink(vi.fn(() => { throw new Error("window gone"); }));
+    expect(() => notices.skipped({ sessionId: SESSION }, "credential")).not.toThrow();
+  });
+
+  it("reads a tool's notice target only from host metadata", () => {
+    expect(toolNoticeTarget({ sessionId: SESSION, turnMessageId: TURN })).toEqual({ sessionId: SESSION, anchorMessageId: TURN });
+    expect(toolNoticeTarget({ sessionId: SESSION })).toEqual({ sessionId: SESSION });
+    expect(toolNoticeTarget({})).toBeUndefined();
+    expect(toolNoticeTarget(undefined)).toBeUndefined();
+  });
+});
+
+describe("isMemorySaveResultEvent", () => {
+  it("accepts only the exact event shape", () => {
+    const entry = { id: "a", filename: "a.md", title: "A", scope: "project" };
+    expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "saved", op: "deleted", entry, undoToken: "t" } })).toBe(true);
+    expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "skipped", reason: "unsafe-text" } })).toBe(true);
+    expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "skipped", reason: "nope" } })).toBe(false);
+    expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "saved", op: "promoted", entry } })).toBe(false);
+    expect(isMemorySaveResultEvent({ sessionId: SESSION, result: { status: "saved", op: "created", entry: { ...entry, scope: "other" } } })).toBe(false);
+    expect(isMemorySaveResultEvent({ result: { status: "skipped", reason: "credential" } })).toBe(false);
+    expect(isMemorySaveResultEvent(null)).toBe(false);
+  });
+});

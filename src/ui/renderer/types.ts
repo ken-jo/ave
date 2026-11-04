@@ -1,6 +1,7 @@
 import type { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
+import type { MemorySaveResultEvent, MemoryUndoResult } from "../../shared/memory-save-result.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../../shared/shell-tasks.js";
 import type { SideChatOperationFailure } from "../../shared/side-chat-operation.js";
@@ -360,16 +361,19 @@ type MemoryEntry = {
   id?: string;
   kind?: "preference" | "constraint" | "fact" | "goal" | "reference" | "note";
   state?: "active";
-  source?: "user" | "assistant" | "import";
+  source?: "user" | "assistant" | "import" | "capture";
   createdAt?: string;
   confirmedAt?: string;
   expiresAt?: string;
   pinned?: boolean;
 };
 
-type MemoryMutationResult =
-  | { ok: true; entry?: MemoryEntry }
+/** A delete answers with a token its toast can undo with; a legacy note without an id has none. */
+type MemoryDeleteResult =
+  | { ok: true; undoToken?: string }
   | { ok: false; error: string };
+
+type MemoryUndoIpcResult = MemoryUndoResult | { ok: false; error: "invalid-input" | "write-failed" };
 
 type LongTermMemoryConsolidationScopeResult = {
   status: "updated" | "up-to-date" | "empty";
@@ -884,8 +888,10 @@ export type AveApi = {
   starredList: () => Promise<Array<{ id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string }>>;
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
-  memoryListEntries: (opts?: ProjectQueryOptions) => Promise<Array<{ filename: string; title: string; content: string; updatedAt?: string; projectRoot?: string; projectName?: string }>>;
-  memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryMutationResult>;
+  memoryListEntries: (opts?: ProjectQueryOptions) => Promise<MemoryEntry[]>;
+  memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryDeleteResult>;
+  memoryUndo: (token: string) => Promise<MemoryUndoIpcResult>;
+  onMemorySaveResult: (handler: (event: MemorySaveResultEvent) => void) => () => void;
   memorySearchEntries: (q: string, opts?: ProjectQueryOptions) => Promise<Array<{ filename?: string; title: string; content?: string; excerpt: string; updatedAt: string; projectRoot?: string; projectName?: string }>>;
   memoryGetIndex: (opts?: ProjectQueryOptions) => Promise<string>;
   memoryUpdateIndexIfUnchanged: (expectedContent: string, nextContent: string) => Promise<boolean>;

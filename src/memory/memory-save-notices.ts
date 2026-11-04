@@ -1,0 +1,118 @@
+// Every memory save, from any path, reaches the user as one live notice; a create or a delete can be undone from it.
+// Undo stays simple (owner decision 2026-11-04): undoing a create deletes it, undoing a delete restores it,
+// and an update has no undo (its notice offers the change history instead).
+import { randomUUID } from "node:crypto";
+import { createLogger } from "../lib/logger.js";
+import type { MemoryManager, NoteEntry } from "./memory-manager.js";
+import type {
+  MemorySaveNoticeResult,
+  MemorySaveResultEvent,
+  MemorySaveSkipReason,
+  MemoryUndoResult,
+} from "../shared/memory-save-result.js";
+
+export type { MemorySaveSkipReason } from "../shared/memory-save-result.js";
+
+const log = createLogger("memory-save-notices");
+
+/** Undo records live only in this process and are lost on restart. */
+const MAX_MEMORY_UNDO_RECORDS = 50;
+
+export interface MemoryNoticeTarget {
+  sessionId: string;
+  anchorMessageId?: string;
+}
+
+type UndoRecord =
+  | { kind: "created"; filename: string; title: string; fileDigest: string }
+  | { kind: "deleted"; filename: string; title: string; priorContent: string };
+
+type UndoStore = Pick<MemoryManager, "deleteMemoryIfUnchanged" | "restoreDeletedMemory">;
+
+export class MemorySaveNotices {
+  private readonly records = new Map<string, UndoRecord>();
+  private sink: ((event: MemorySaveResultEvent) => void) | undefined;
+
+  constructor(private readonly memoryManager: UndoStore, private readonly maxRecords = MAX_MEMORY_UNDO_RECORDS) {}
+
+  /** Boot points this at the main window once it exists; events before then are dropped, as notices are live only. */
+  setSink(sink: ((event: MemorySaveResultEvent) => void) | undefined): void {
+    this.sink = sink;
+  }
+
+  /** A save landed. A create gets an undo token; an update does not. */
+  saved(target: MemoryNoticeTarget | undefined, op: "created" | "updated", entry: NoteEntry, fileDigest: string): string | undefined {
+    const id = requireId(entry);
+    const undoToken = op === "created"
+      ? this.remember({ kind: "created", filename: entry.filename, title: entry.title, fileDigest })
+      : undefined;
+    this.emit(target, { status: "saved", op, entry: noticeEntry(id, entry), ...(undoToken ? { undoToken } : {}) });
+    return undoToken;
+  }
+
+  /** A delete landed; the returned token restores it. Legacy notes without an id have nothing to restore. */
+  deleted(target: MemoryNoticeTarget | undefined, entry: NoteEntry, priorContent: string | null): string | undefined {
+    if (!entry.id || priorContent === null) return undefined;
+    const undoToken = this.remember({ kind: "deleted", filename: entry.filename, title: entry.title, priorContent });
+    this.emit(target, { status: "saved", op: "deleted", entry: noticeEntry(entry.id, entry), undoToken });
+    return undoToken;
+  }
+
+  skipped(target: MemoryNoticeTarget | undefined, reason: MemorySaveSkipReason): void {
+    this.emit(target, { status: "skipped", reason });
+  }
+
+  /** Each token undoes once. "changed" when the memory moved on since, so an undo never discards a newer edit. */
+  async undo(token: string): Promise<MemoryUndoResult> {
+    const record = this.records.get(token);
+    if (!record) return { ok: false, error: "not-found" };
+    this.records.delete(token);
+    const outcome = record.kind === "created"
+      ? await this.memoryManager.deleteMemoryIfUnchanged(record.filename, record.fileDigest, "user")
+      : await this.memoryManager.restoreDeletedMemory(record.filename, record.priorContent, "user");
+    if (outcome === "changed") return { ok: false, error: "changed" };
+    return { ok: true, undone: record.kind, title: record.title };
+  }
+
+  private remember(record: UndoRecord): string {
+    const token = randomUUID();
+    this.records.set(token, record);
+    // Map keeps insertion order, so the first key is the oldest record.
+    while (this.records.size > this.maxRecords) {
+      const oldest = this.records.keys().next().value as string;
+      this.records.delete(oldest);
+    }
+    return token;
+  }
+
+  private emit(target: MemoryNoticeTarget | undefined, result: MemorySaveNoticeResult): void {
+    // A save outside a conversation (the memory panel) has no chat to show a notice in.
+    if (!target || !this.sink) return;
+    try {
+      this.sink({
+        sessionId: target.sessionId,
+        ...(target.anchorMessageId !== undefined ? { anchorMessageId: target.anchorMessageId } : {}),
+        result,
+      });
+    } catch (error) {
+      log.warn("memory save notice could not be sent: %s", (error as Error).message);
+    }
+  }
+}
+
+function requireId(entry: NoteEntry): string {
+  if (!entry.id) throw new Error("memory save notice: a saved memory always has an id");
+  return entry.id;
+}
+
+function noticeEntry(id: string, entry: NoteEntry): { id: string; filename: string; title: string; scope: "project" | "global" } {
+  return { id, filename: entry.filename, title: entry.title, scope: entry.projectRoot ? "project" : "global" };
+}
+
+/** Where a tool's notice goes: the conversation and the user row that opened the turn, both from host metadata. */
+export function toolNoticeTarget(metadata: Record<string, unknown> | undefined): MemoryNoticeTarget | undefined {
+  const sessionId = metadata?.sessionId;
+  if (typeof sessionId !== "string") return undefined;
+  const anchor = metadata?.turnMessageId;
+  return { sessionId, ...(typeof anchor === "string" ? { anchorMessageId: anchor } : {}) };
+}

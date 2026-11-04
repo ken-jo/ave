@@ -1,3 +1,4 @@
+import type { MemorySaveNotices } from "../../../memory/memory-save-notices.js";
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler, nativeChatFrameEvent as hostFrameEvent } from "../../../__tests__/support/native-chat-window.js";
 import { beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
 import { resolve } from "node:path";
@@ -9,6 +10,7 @@ import {
 } from "../../../__tests__/test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
+const UNDO_TOKEN = "11111111-2222-4333-8444-555555555555";
 
 vi.mock("electron", () => ({
   ipcMain: {
@@ -110,7 +112,7 @@ function makeMinimalDeps(loop: ReturnType<typeof makeConversationLoop>) {
       searchSessions: vi.fn(() => []),
       listMemoryEntries: vi.fn(() => []),
       saveMemory: vi.fn(),
-      deleteMemory: vi.fn(),
+      deleteMemory: vi.fn(async () => ({ priorContent: null as string | null })),
       searchMemoryEntries: vi.fn(() => []),
       getMemoryIndex: vi.fn(() => ""),
       updateMemoryIndexIfUnchanged: vi.fn(() => true),
@@ -128,6 +130,10 @@ function makeMinimalDeps(loop: ReturnType<typeof makeConversationLoop>) {
     askUserQuestionGate: null,
     preferenceRefreshService: null,
     memoryConsolidationService: undefined,
+    memorySaveNotices: {
+      deleted: vi.fn<MemorySaveNotices["deleted"]>(() => UNDO_TOKEN),
+      undo: vi.fn<MemorySaveNotices["undo"]>(async () => ({ ok: true, undone: "deleted", title: "Proposal" })),
+    },
     getMainWindow: vi.fn(() => null),
   };
 }
@@ -385,6 +391,38 @@ describe("ave:memory entries", () => {
     expect(deleted).toEqual({ ok: true });
     expect(deps.memoryManager.deleteMemory).toHaveBeenCalledTimes(1);
     expect(deps.memoryManager.deleteMemory).toHaveBeenCalledWith("proposal.md", {}, "user");
+  });
+
+  it("answers a delete with a token the panel's toast can undo with", async () => {
+    const deps = await setupHandlers(makeConversationLoop(SESSION_ID));
+    const entry = { id: "mem-1", filename: "proposal.md", title: "Proposal", content: "# Proposal\n\nBody" };
+    deps.memoryManager.deleteMemory.mockResolvedValueOnce({ priorContent: "<!-- ave:kind=memory -->", entry } as never);
+
+    const deleted = await invokeRegisteredHandlerWithEvent(handlers, "ave:memory:entries:delete", hostFrameEvent(), "proposal.md");
+
+    expect(deleted).toEqual({ ok: true, undoToken: UNDO_TOKEN });
+    // A panel delete has no conversation to show a chat notice in.
+    expect(deps.memorySaveNotices.deleted).toHaveBeenCalledWith(undefined, entry, "<!-- ave:kind=memory -->");
+  });
+
+  it("redeems an undo token only for the host renderer and only in token form", async () => {
+    const deps = await setupHandlers(makeConversationLoop(SESSION_ID));
+
+    expect(await invokeRegisteredHandlerWithEvent(handlers, "ave:memory:undo", hostFrameEvent(), UNDO_TOKEN))
+      .toEqual({ ok: true, undone: "deleted", title: "Proposal" });
+    expect(deps.memorySaveNotices.undo).toHaveBeenCalledWith(UNDO_TOKEN);
+
+    for (const bad of [undefined, 7, "not-a-token", `${UNDO_TOKEN}x`]) {
+      expect(await invokeRegisteredHandlerWithEvent(handlers, "ave:memory:undo", hostFrameEvent(), bad))
+        .toEqual({ ok: false, error: "invalid-input" });
+    }
+    expect(await invokeRegisteredHandlerWithEvent(handlers, "ave:memory:undo", { senderFrame: { url: "https://evil.example/app" } }, UNDO_TOKEN))
+      .toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(deps.memorySaveNotices.undo).toHaveBeenCalledTimes(1);
+
+    deps.memorySaveNotices.undo.mockRejectedValueOnce(new Error("disk full"));
+    expect(await invokeRegisteredHandlerWithEvent(handlers, "ave:memory:undo", hostFrameEvent(), UNDO_TOKEN))
+      .toEqual({ ok: false, error: "write-failed" });
   });
 });
 

@@ -139,6 +139,10 @@ export const CHANNELS = {
   memory: {
     entriesList: "ave:memory:entries:list",
     entriesDelete: "ave:memory:entries:delete",
+    // Undo a memory create or delete by the token its notice or delete returned.
+    undo: "ave:memory:undo",
+    // main → host renderer: the live notice for a memory save, update, delete or refusal in a conversation.
+    saveResult: "ave:memory:save-result",
     entriesSearch: "ave:memory:entries:search",
     indexGet: "ave:memory:index:get",
     indexUpdateIfUnchanged: "ave:memory:index:update-if-unchanged",

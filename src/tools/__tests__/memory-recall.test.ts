@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { createMemoryRecallTools } from "../memory-recall.js";
 import type { Tool, ToolExecutionContext } from "../base.js";
 import type { MemoryUseEvent } from "../../memory/memory-usage-log.js";
+import type { MemorySaveNotices } from "../../memory/memory-save-notices.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../agent-observation-context.js";
 
 let aveDir: string;
@@ -14,6 +15,7 @@ let projectRoot: string;
 let manager: MemoryManager;
 let tools: Map<string, Tool>;
 let usage: MemoryUseEvent[];
+let notices: { deleted: ReturnType<typeof vi.fn<MemorySaveNotices["deleted"]>> };
 
 function ctx(cwd = projectRoot): ToolExecutionContext {
   return { cwd, extraAllowedDirectories: [], metadata: {} };
@@ -35,9 +37,11 @@ beforeEach(() => {
   manager = new MemoryManager({ aveDir });
   manager.load();
   usage = [];
+  notices = { deleted: vi.fn<MemorySaveNotices["deleted"]>(() => "11111111-2222-4333-8444-555555555555") };
   tools = new Map(createMemoryRecallTools({
     memoryManager: manager,
     memoryUsageLog: { record: (event) => { usage.push(event); } },
+    notices,
   }).map((tool) => [tool.name, tool]));
 });
 
@@ -88,6 +92,9 @@ describe("memory recall tools", () => {
     const deleted = await call("memory_delete", { id: active.id }, untainted());
     expect(deleted.isError, deleted.output).toBe(false);
     expect(deleted.body).toEqual({ deleted: true, id: active.id });
+    // The user gets an undoable notice; the model does not see the token.
+    expect(notices.deleted).toHaveBeenCalledWith(undefined, expect.objectContaining({ id: active.id, title: "Confirmed" }), expect.stringContaining("User-confirmed fact."));
+    expect(deleted.output).not.toContain("11111111-2222-4333-8444-555555555555");
     expect(manager.searchModelVisibleMemories("", { projectRoot })).toEqual([]);
 
     const again = await call("memory_delete", { id: active.id }, untainted());
@@ -137,7 +144,7 @@ describe("memory recall tools", () => {
       searchModelVisibleMemories: (_query: string, scope: unknown) => { scopes.push(scope); return []; },
       deleteMemoryById: async () => { throw new Error("unused"); },
     };
-    const search = createMemoryRecallTools({ memoryManager: store as never, memoryUsageLog: { record: () => {} } }).find((tool) => tool.name === "memory_search")!;
+    const search = createMemoryRecallTools({ memoryManager: store as never, memoryUsageLog: { record: () => {} }, notices: { deleted: () => undefined } }).find((tool) => tool.name === "memory_search")!;
     await search.execute({}, ctx());
     await search.execute({}, { ...ctx(), metadata: { memoryIncludeUnscoped: true } });
     expect(scopes).toEqual([{ projectRoot }, { projectRoot, includeUnscoped: true }]);
@@ -198,6 +205,7 @@ describe("memory recall use log", () => {
     const recall = new Map(createMemoryRecallTools({
       memoryManager: store as never,
       memoryUsageLog: { record: (event) => { events.push(event); } },
+      notices: { deleted: () => undefined },
     }).map((tool) => [tool.name, tool]));
     await recall.get("memory_search")!.execute({}, sessionCtx());
     await recall.get("memory_read")!.execute({ id: "legacy.md" }, sessionCtx());

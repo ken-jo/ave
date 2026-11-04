@@ -301,7 +301,9 @@ describe("MemoryManager — scoped long-term memory governance", () => {
     expect(existsSync(join(dir, "memories", alpha.filename))).toBe(true);
 
     const deleted = await memoryManager.deleteMemoryById(alpha.id!, { projectRoot: "C:\\workspace\\alpha" }, "assistant");
-    expect(deleted).toMatchObject({ id: alpha.id, title: "Alpha note" });
+    expect(deleted.entry).toMatchObject({ id: alpha.id, title: "Alpha note" });
+    // The removed bytes come back so an undo can restore them.
+    expect(deleted.priorContent).toContain("alpha");
     expect(existsSync(join(dir, "memories", alpha.filename))).toBe(false);
   });
 

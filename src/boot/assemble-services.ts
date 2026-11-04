@@ -32,6 +32,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     remoteA2ABootGates: ctx.remoteA2ABootGates,
     memoryManager: ctx.memoryManager,
     memoryCaptureService: ctx.memoryCaptureService,
+    memorySaveNotices: ctx.memorySaveNotices,
     inputClassifier: ctx.inputClassifier,
     routeEngine: ctx.routeEngine,
     toolRegistry: ctx.toolRegistry,

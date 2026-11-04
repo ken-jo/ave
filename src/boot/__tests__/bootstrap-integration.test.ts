@@ -95,6 +95,7 @@ vi.mock("../services.js", () => ({
       memoryManager: {},
       // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },
+      memorySaveNotices: {},
       inputClassifier: {},
       toolRegistry: { setDenyRules: vi.fn(), size: 0 },
       routeEngine: {},
@@ -763,6 +764,7 @@ describe("bootstrap() integration lock", () => {
         "memoryConsolidationService",
         "memoryMaintenanceCoordinator",
         "memoryManager",
+        "memorySaveNotices",
         "notificationService",
         "paneChatLoops",
         "personaPromptStore",
