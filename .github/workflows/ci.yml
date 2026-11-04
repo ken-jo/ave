@@ -406,7 +406,9 @@ jobs:
         if: needs.build.outputs.docs_only != 'true'
         with:
           path: ave
-          fetch-depth: 0
+          # Packaging and hygiene inspect this tree and tracked-file inventory;
+          # diff/ancestry planning stays in the build job with full history.
+          fetch-depth: 1
           # No later step pushes or fetches with the job token.
           persist-credentials: false
       - uses: ./ave/.github/actions/setup-bun
