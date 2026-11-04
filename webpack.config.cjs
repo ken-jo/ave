@@ -123,9 +123,13 @@ const renderer = {
       },
     },
   },
+  // No size hints. They only ever printed a warning, and the warning's "largest modules" listing crashes webpack 5.112.2 on a warm
+  // persistent cache: it reads the size of modules restored from a previous compilation, whose RawSource holds no content, and throws
+  // ERR_INVALID_ARG_TYPE from RawSource.size. CI restores the cache from another source tree on every PR, so the first change that took
+  // renderer.js past the 3 MiB hint failed the build there and nowhere else. The packaged size is budgeted by
+  // scripts/check-package-footprint.mjs (app.asar), which fails rather than warns.
   performance: {
-    maxAssetSize: 3 * 1024 * 1024,
-    maxEntrypointSize: 3 * 1024 * 1024,
+    hints: false,
   },
 };
 
