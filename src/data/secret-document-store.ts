@@ -574,16 +574,29 @@ export class SecretDocumentStore {
     return decrypted.result;
   }
 
-  /** Re-encrypt entries a read flagged, provided they still hold the flagged ciphertext. */
+  /**
+   * Re-encrypt entries a read flagged, provided they still hold the flagged ciphertext. An entry that fails keeps its
+   * current ciphertext and stays pending, so the mutation that triggered this still lands.
+   */
   private async reEncryptPendingEntries(document: SecretDocument): Promise<void> {
     if (this.pendingReEncryption.size === 0) return;
     const pending = [...this.pendingReEncryption];
     this.pendingReEncryption.clear();
-    if (!await this.isEncryptionUsable()) return;
+    const retryLater = (key: string, ciphertext: string) => {
+      if (!this.pendingReEncryption.has(key)) this.pendingReEncryption.set(key, ciphertext);
+    };
+    if (!await this.isEncryptionUsable()) {
+      for (const [key, ciphertext] of pending) retryLater(key, ciphertext);
+      return;
+    }
     for (const [key, ciphertext] of pending) {
       const entry = Object.hasOwn(document.entries, key) ? document.entries[key] : undefined;
       if (entry === undefined || entry.encoding === "plain-development" || entry.value !== ciphertext) continue;
-      document.entries[key] = await this.encode((await this.decrypt(entry.value)).result);
+      try {
+        document.entries[key] = await this.encode((await this.decrypt(entry.value)).result);
+      } catch {
+        retryLater(key, ciphertext);
+      }
     }
   }
 

@@ -639,6 +639,29 @@ describe("remote authorization", () => {
     expect(session.getStatus()).toBe("authenticated");
   });
 
+  it("does not repopulate a session disposed while its stored credentials were decrypting", async () => {
+    const state = await fixture();
+    const store = new Map<string, string>();
+    const first = createSession(state, { store }).session;
+    await first.authenticate();
+    expect(first.getStatus()).toBe("authenticated");
+
+    for (const outcome of ["resolve", "reject"] as const) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const { session } = createSession(state, { store, getSecret: async (key) => {
+        await gate;
+        if (outcome === "reject") throw new Error("decrypt failed");
+        return store.get(key) ?? null;
+      } });
+      session.dispose();
+      release();
+      await session.whenReady();
+      expect(session.getStatus()).toBe("required");
+      expect(session.getBlockedCode()).toBeUndefined();
+    }
+  });
+
   it("refuses before discovery, the redirect listener or registration when encrypted storage is unavailable", async () => {
     const state = await fixture();
     const { session, catchers, openAuthorizationUrl } = createSession(state, { canStoreEncrypted: async () => false });

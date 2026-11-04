@@ -111,6 +111,12 @@ type GuidanceDisposition = Pick<
   "onInjected" | "onDropped" | "approvalReasonPrefix" | "a2aCausalContext" | "subAgentTitle"
 >;
 
+function providerBuildErrorKind(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown";
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? `${error.name}:${code}` : error.name;
+}
+
 export class ConversationLoop {
   readonly deps: ConversationLoopDeps;
   // Cache first-touch ignore verdicts per session to avoid repeated subprocesses.
@@ -125,12 +131,16 @@ export class ConversationLoop {
   #providerGeneration = 0;
   // Null once the latest build settled or an assignment superseded it.
   #providerReady: Promise<void> | null = null;
+  // The latest failed build's error kind (name and code only; a message may carry credential detail).
+  #providerBuildError: string | null = null;
   get provider(): LLMProvider | null { return this.#provider; }
   set provider(value: LLMProvider | null) {
     this.#providerGeneration += 1;
     this.#provider = value;
     this.#providerReady = null;
+    this.#providerBuildError = null;
   }
+  get providerBuildError(): string | null { return this.#providerBuildError; }
   private approvalSessionId = createDlpSafeUuid();
   private sessionEpochValue = 0;
   /** Read-only: the session identity changes only through `replaceSessionIdentity`. */
@@ -330,12 +340,20 @@ export class ConversationLoop {
   }
 
   refreshProvider(): Promise<void> {
-    // Clear before rebuilding so failed subscription activation cannot leave an API-key transport usable.
-    this.provider = null;
     this.lastReportedSubscriptionContextWindow = null;
-    const generation = this.#providerGeneration;
+    // A turn already running keeps the current provider until the build settles; turns starting now wait for it.
+    const generation = ++this.#providerGeneration;
     const ready = buildProvider(this.deps).then((provider) => {
-      if (generation === this.#providerGeneration) this.#provider = provider;
+      if (generation !== this.#providerGeneration) return;
+      this.#provider = provider;
+      this.#providerBuildError = null;
+    }, (error: unknown) => {
+      // Clear on failure so a failed subscription activation cannot leave the previous transport usable.
+      if (generation === this.#providerGeneration) {
+        this.#provider = null;
+        this.#providerBuildError = providerBuildErrorKind(error);
+      }
+      throw error;
     }).finally(() => {
       if (generation === this.#providerGeneration) this.#providerReady = null;
     });
@@ -348,9 +366,9 @@ export class ConversationLoop {
     return this.#providerReady !== null;
   }
 
-  /** Settles once the latest provider rebuild has finished (successfully or not). */
-  whenProviderReady(): Promise<void> {
-    return this.#providerReady ?? Promise.resolve();
+  /** Settles once the latest provider rebuild has finished (successfully or not), including rebuilds started while waiting. */
+  async whenProviderReady(): Promise<void> {
+    while (this.#providerReady) await this.#providerReady;
   }
 
   hasProvider(): boolean {

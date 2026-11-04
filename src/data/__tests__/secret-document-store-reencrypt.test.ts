@@ -67,6 +67,26 @@ describe("SecretDocumentStore shouldReEncrypt", () => {
     await expect(store.get("alpha")).resolves.toBe("alpha-value");
   });
 
+  it("lands the mutation when a flagged entry cannot be re-encrypted, and retries that entry later", async () => {
+    let failing = true;
+    const base = rotatingEncryption("new:", "old:");
+    const encryption = {
+      ...base,
+      encryptStringAsync: async (value: string) => {
+        if (failing && value === "alpha-value") throw new Error("keychain busy");
+        return base.encryptStringAsync(value);
+      },
+    };
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption });
+    await store.get("alpha");
+    await expect(store.set("gamma", "gamma-value")).resolves.toBeUndefined();
+    expect(storedPlaintextFor(path, "gamma")).toBe("new:gamma-value");
+    expect(storedPlaintextFor(path, "alpha")).toBe("old:alpha-value");
+    failing = false;
+    await store.set("delta", "delta-value");
+    expect(storedPlaintextFor(path, "alpha")).toBe("new:alpha-value");
+  });
+
   it("leaves an entry alone when it changed after the flagging read", async () => {
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: rotatingEncryption("new:", "old:") });
     await store.get("alpha");

@@ -114,7 +114,7 @@ function applyFreshSessionState(
   self.lastTurnToolNames = null;
   self.compactNum = 0;
   self.rateLimitRecoveryAttempted = false;
-  // The rebuild is awaited by the next turn through whenProviderReady.
+  // The next turn awaits the rebuild through whenProviderReady and reports a failure with providerBuildError.
   void self.resetSessionModelOverride().catch(() => undefined);
   self.gitIgnoreVerdicts.clear();
   self.tracer = createTracer(self.sessionId);

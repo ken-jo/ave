@@ -204,12 +204,13 @@ async function runTurnInSpan(
         // Revalidate provider posture at execution for stale loops missed by settings refresh.
         await self.refreshProvider();
       } catch {
-        // Refresh clears the prior client first; rebuild failure leaves the route unconfigured.
+        // A failed rebuild clears the client and records its kind; the route stays unconfigured.
       }
       activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
     }
     if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
-      const err = t("be_conversationLoop.llmProviderNotConfigured");
+      const buildError = self.providerBuildError;
+      const err = t("be_conversationLoop.llmProviderNotConfigured") + (buildError ? ` (${buildError})` : "");
       callbacks?.onError?.(err);
       throw new Error(err);
     }

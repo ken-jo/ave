@@ -236,13 +236,18 @@ export class McpOAuthSession {
   whenReady(): Promise<void> { return this.directLoad; }
 
   private async loadStored(): Promise<void> {
+    const generation = this.credentialGeneration;
+    // A dispose, clear or login during the decrypt owns the session state now; the read result is stale.
+    const superseded = (): boolean => this.controller.signal.aborted || this.credentialGeneration !== generation;
     let raw: string | null;
     try { raw = await this.dependencies.secrets.getSecret(this.credentialKey); }
     catch {
+      if (superseded()) return;
       this.blocked = "mcp-auth-storage-unreadable";
       this.status = "error";
       return;
     }
+    if (superseded()) return;
     if (this.blocked === "mcp-auth-storage-unreadable") {
       this.blocked = undefined;
       this.status = "required";
