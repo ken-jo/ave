@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,11 +7,52 @@ import { describe, expect, it } from "vitest";
 import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
 import { verifyMxcSdk } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 // @ts-expect-error standalone packaging check has no declaration output
-import { assertNoPackagedBuildHeaders, assertPackagingStagePaths, finishPackagingCheck, packagingCheckArchitectures, packagingCheckCache, packagingCheckConfiguration } from "../../scripts/check-mxc-packaging.mjs";
+import { assertNoPackagedBuildHeaders, assertPackagingStagePaths, copyPackagingDependencies, finishPackagingCheck, packagingCheckArchitectures, packagingCheckCache, packagingCheckConfiguration } from "../../scripts/check-mxc-packaging.mjs";
 
 const require = createRequire(import.meta.url);
 
 describe("native payload packager integration", () => {
+  it("copies the complete dependency graph and links into independent architecture trees", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ave-dependency-copy-")));
+    try {
+      const source = path.join(root, "source");
+      const files = [".hidden", ".bin/entry", "@scope/pkg/package.json", "pkg/node_modules/nested/package.json", "native/addon.node"];
+      for (const name of files) {
+        mkdirSync(path.dirname(path.join(source, name)), { recursive: true });
+        writeFileSync(path.join(source, name), Buffer.from([0, 1, 2, 255]));
+      }
+      const target = path.join(source, "pkg");
+      symlinkSync(target, path.join(source, "alias"), "junction");
+      if (process.platform !== "win32") symlinkSync("../pkg/package.json", path.join(source, ".bin", "relative"));
+      const destinations = [path.join(root, "x64"), path.join(root, "arm64")];
+      for (const destination of destinations) {
+        await copyPackagingDependencies(source, destination);
+        for (const name of files) expect(readFileSync(path.join(destination, name))).toEqual(readFileSync(path.join(source, name)));
+        expect(lstatSync(path.join(destination, "alias")).isSymbolicLink()).toBe(true);
+        expect(readlinkSync(path.join(destination, "alias"))).toBe(readlinkSync(path.join(source, "alias")));
+        if (process.platform !== "win32") expect(readlinkSync(path.join(destination, ".bin", "relative"))).toBe("../pkg/package.json");
+      }
+      writeFileSync(path.join(destinations[0]!, "native", "addon.node"), "staged payload");
+      expect(readFileSync(path.join(source, "native", "addon.node"))).toEqual(Buffer.from([0, 1, 2, 255]));
+      expect(readFileSync(path.join(destinations[1]!, "native", "addon.node"))).toEqual(Buffer.from([0, 1, 2, 255]));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("reports a failed copy only after the other package copies have settled", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ave-dependency-copy-failure-"));
+    try {
+      const source = path.join(root, "source"), destination = path.join(root, "destination");
+      mkdirSync(destination);
+      for (const name of ["blocked", "one", "two", "three", "four", "five"]) {
+        mkdirSync(path.join(source, name), { recursive: true });
+        writeFileSync(path.join(source, name, "payload"), name);
+      }
+      writeFileSync(path.join(destination, "blocked"), "collision");
+      await expect(copyPackagingDependencies(source, destination)).rejects.toThrow();
+      for (const name of ["one", "two", "three", "four", "five"]) expect(readFileSync(path.join(destination, name, "payload"), "utf8")).toBe(name);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("retains the production collection configuration and dependency graph", async () => {
     const manifest = JSON.parse(readFileSync("package.json", "utf8"));
     const config = packagingCheckConfiguration(manifest, { project: path.resolve(tmpdir(), "package-check"), electronCache: path.resolve(tmpdir(), "electron-cache"), electronVersion: "45.2.1" });
