@@ -732,6 +732,12 @@ function normalizeArtifactUnavailable(value: unknown): ToolResultArtifactUnavail
   return { reason: "artifact-too-large", maxBytes: value.maxBytes };
 }
 
+/** The requesting conversation's id for a history row, when it is a valid session id. */
+function historySession(requestedIn: { sessionId?: string } | undefined): { sessionId?: string } {
+  const sessionId = requestedIn?.sessionId;
+  return sessionId !== undefined && isValidSessionId(sessionId) ? { sessionId } : {};
+}
+
 function sha256Text(content: string): string {
   return sha256Hex(content);
 }
@@ -1545,7 +1551,14 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   // `actor` is who is saving now; it is recorded in the change history and never inferred from stored metadata.
-  async saveMemory(title: string, content: string, options: MemorySaveOptions, actor: MemoryHistoryActor): Promise<MemorySaveResult> {
+  // `requestedIn` is the conversation that asked for the change; the history row keeps its id only.
+  async saveMemory(
+    title: string,
+    content: string,
+    options: MemorySaveOptions,
+    actor: MemoryHistoryActor,
+    requestedIn?: { sessionId?: string },
+  ): Promise<MemorySaveResult> {
     const input = this.assertManagedMemoryInput(title, content);
     let metadata = this.createMemoryMetadata(options);
     const visibleContent = `# ${input.title}\n\n${input.content}\n`;
@@ -1554,9 +1567,11 @@ export class MemoryManager implements PromptMemorySource {
     let previousBody: string | undefined;
 
     await withFileLock(indexPath, async () => {
-      // One save rule: within a scope, a same-title save updates the existing memory whichever path wrote it.
+      // One save rule: within a scope, a same-title save updates the existing memory whichever path wrote it. Should two files
+      // share the title, the newest is updated and the others are folded into it on this write.
       const existing = this.findExistingManagedMemory(input.title, metadata.scope);
       if (existing) {
+        await this.foldDuplicateMemoriesLocked(existing.duplicates, indexPath, actor);
         filename = existing.filename;
         metadata = this.mergeExistingMemoryMetadata(existing.metadata, metadata, options);
         const previous = readUtf8FileSnapshotIfPresent(join(this.memoryDir, filename), MAX_MANAGED_MEMORY_FILE_BYTES);
@@ -1578,20 +1593,22 @@ export class MemoryManager implements PromptMemorySource {
       } else {
         this.removeMemoryIndexEntryLocked(filename, indexPath);
       }
+      // Recorded under the same lock as the write, as a scrub is, so another process cannot slip a row in between.
+      await this.history.record({
+        memoryId: metadata.id,
+        op: previousBody === undefined ? "created" : "updated",
+        actor,
+        fields: {
+          title: historyText(input.title),
+          contentDigest: sha256Text(input.content),
+          scope: metadata.scope.type,
+        },
+        ...(previousBody !== undefined ? { before: historyText(previousBody), after: historyText(input.content) } : {}),
+        ...historySession(requestedIn),
+      });
     });
 
     this.memoryIndex = this.readMemoryIndex();
-    await this.history.record({
-      memoryId: metadata.id,
-      op: previousBody === undefined ? "created" : "updated",
-      actor,
-      fields: {
-        title: historyText(input.title),
-        contentDigest: sha256Text(input.content),
-        scope: metadata.scope.type,
-      },
-      ...(previousBody !== undefined ? { before: historyText(previousBody), after: historyText(input.content) } : {}),
-    });
     return {
       op: previousBody === undefined ? "created" : "updated",
       entry: this.entryFromMemoryMetadata(filename, input.title, visibleContent, metadata, new Date().toISOString()),
@@ -1609,6 +1626,7 @@ export class MemoryManager implements PromptMemorySource {
     content: string,
     options: ProjectScopedMemoryOptions & { source: MemorySourceKind; kind?: MemoryKind; scope?: "global" },
     actor: MemoryHistoryActor,
+    requestedIn?: { sessionId?: string },
   ): Promise<MemorySaveResult> {
     const safeId = this.validateManagedMemoryId(id, "updateMemoryById");
     const input = this.assertManagedMemoryInput(title, content);
@@ -1653,16 +1671,17 @@ export class MemoryManager implements PromptMemorySource {
         this.removeMemoryIndexEntryLocked(found.filename, indexPath);
       }
       updated = this.entryFromMemoryMetadata(found.filename, input.title, visibleContent, metadata, new Date().toISOString());
+      await this.history.record({
+        memoryId: safeId,
+        op: "updated",
+        actor,
+        fields: { title: historyText(input.title), contentDigest: sha256Text(input.content), scope: metadata.scope.type },
+        before: historyText(previousBody),
+        after: historyText(input.content),
+        ...historySession(requestedIn),
+      });
     });
     this.memoryIndex = this.readMemoryIndex();
-    await this.history.record({
-      memoryId: safeId,
-      op: "updated",
-      actor,
-      fields: { title: historyText(input.title), contentDigest: sha256Text(input.content), scope: updated!.projectRoot ? "project" : "global" },
-      before: historyText(previousBody),
-      after: historyText(input.content),
-    });
     return { op: "updated", entry: updated! };
   }
 
@@ -1758,10 +1777,10 @@ export class MemoryManager implements PromptMemorySource {
       if (deletedId) await this.history.scrub(deletedId);
       unlinkIfPresent(path);
       this.removeMemoryIndexEntryLocked(safeFilename, indexPath);
+      // Legacy notes have no id, and the id is a memory's identity, so only managed deletions are recorded.
+      if (deletedId) await this.history.record({ memoryId: deletedId, op: "deleted", actor });
     });
     this.memoryIndex = this.readMemoryIndex();
-    // Legacy notes have no id, and the id is a memory's identity, so only managed deletions are recorded.
-    if (deletedId) await this.history.record({ memoryId: deletedId, op: "deleted", actor });
   }
 
   async updateAgentsMd(content: string): Promise<void> {
@@ -3700,10 +3719,15 @@ export class MemoryManager implements PromptMemorySource {
       : "Project Long-term Memory Overview";
   }
 
+  /**
+   * The memory a same-title save in `scope` updates: the newest such file (by modification time, then name, so the choice
+   * never depends on directory order). Any other files with that title and scope are returned as duplicates to fold.
+   */
   private findExistingManagedMemory(
     title: string,
     scope: MemoryScope,
-  ): { filename: string; metadata: MemoryMetadataV1 } | undefined {
+  ): { filename: string; metadata: MemoryMetadataV1; duplicates: Array<{ filename: string; id: string }> } | undefined {
+    const matches: Array<{ filename: string; metadata: MemoryMetadataV1; mtimeMs: number }> = [];
     for (const filename of readdirIfPresent(this.memoryDir)) {
       if (!filename.endsWith(".md") || this.isMemoryIndexFilename(filename)) continue;
       const snapshot = readUtf8FileSnapshotIfPresent(join(this.memoryDir, filename), MAX_MANAGED_MEMORY_FILE_BYTES);
@@ -3713,10 +3737,31 @@ export class MemoryManager implements PromptMemorySource {
       if (parsed.metadata.derivation) continue;
       const existingTitle = parsed.content.match(/^#\s+([^\r\n]+)/)?.[1]?.trim();
       if (existingTitle === title && this.memoryScopesEqual(parsed.metadata.scope, scope)) {
-        return { filename, metadata: parsed.metadata };
+        matches.push({ filename, metadata: parsed.metadata, mtimeMs: snapshot.mtime.getTime() });
       }
     }
-    return undefined;
+    if (matches.length === 0) return undefined;
+    matches.sort((x, y) => y.mtimeMs - x.mtimeMs || (x.filename < y.filename ? -1 : x.filename > y.filename ? 1 : 0));
+    const [newest, ...rest] = matches;
+    return {
+      filename: newest!.filename,
+      metadata: newest!.metadata,
+      duplicates: rest.map((match) => ({ filename: match.filename, id: match.metadata.id })),
+    };
+  }
+
+  /** Remove same-title duplicates the save is folding into the memory it updates; each leaves a deleted history row. */
+  private async foldDuplicateMemoriesLocked(
+    duplicates: ReadonlyArray<{ filename: string; id: string }>,
+    indexPath: string,
+    actor: MemoryHistoryActor,
+  ): Promise<void> {
+    for (const duplicate of duplicates) {
+      await this.history.scrub(duplicate.id);
+      unlinkIfPresent(join(this.memoryDir, duplicate.filename));
+      this.removeMemoryIndexEntryLocked(duplicate.filename, indexPath);
+      await this.history.record({ memoryId: duplicate.id, op: "deleted", actor });
+    }
   }
 
   private validateManagedMemoryId(id: string, operation: string): string {

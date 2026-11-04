@@ -624,7 +624,7 @@ const SUB_AGENT_TOOL_BLOCKLIST = new Set<string>([
   // non-root caller; the blocklist keeps it out of the child's registry so the refusal is never a tool the child can see and try.
   "agent_guide",
   "memory_write",
-  // Withdrawing a parent's memory candidate is not a child's job; reads stay available.
+  // Changing the parent's memory is not a child's job (a sub-agent turn is never keyboard-attributed); reads stay available.
   "memory_delete",
 ]);
 

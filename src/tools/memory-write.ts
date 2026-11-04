@@ -40,6 +40,12 @@ function memoryWriteOrigin(ctx: ToolExecutionContext): { origin?: MemoryOriginV1
   };
 }
 
+// The history row of a change names the conversation that asked for it, by id only.
+function requestedIn(ctx: ToolExecutionContext): { sessionId?: string } {
+  const sessionId = ctx.metadata?.sessionId;
+  return typeof sessionId === "string" ? { sessionId } : {};
+}
+
 function credentialLikeContent(title: string, content: string): "authorization-key" | "credential" | null {
   return modelBoundCredentialKind(`${title}\n${content}`);
 }
@@ -165,12 +171,12 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
               ...memoryWriteProjectScope(ctx),
               source: "assistant",
               ...(global ? { scope: "global" as const } : {}),
-            }, "assistant")
+            }, "assistant", requestedIn(ctx))
           : await deps.memoryManager.saveMemory(title, content, {
               ...(global ? {} : memoryWriteProjectScope(ctx)),
               source: "assistant",
               ...memoryWriteOrigin(ctx),
-            }, "assistant");
+            }, "assistant", requestedIn(ctx));
         return {
           output: JSON.stringify({
             saved: true,

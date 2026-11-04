@@ -45,7 +45,7 @@ describe("memory_write — happy path", () => {
     expect(saveMemory).toHaveBeenCalledTimes(1);
     expect(saveMemory).toHaveBeenCalledWith("user-prefers-dark", "The user prefers dark mode.", {
       source: "assistant"
-    }, "assistant");
+    }, "assistant", {});
     const parsed = JSON.parse(result.output);
     expect(parsed).toEqual({
       saved: true,
@@ -69,7 +69,7 @@ describe("memory_write — happy path", () => {
   it("trims surrounding whitespace before persisting", async () => {
     const { store, saveMemory } = makeStore();
     await run({ title: "  spaced  ", content: "  a fact  " }, store);
-    expect(saveMemory).toHaveBeenCalledWith("spaced", "a fact", { source: "assistant" }, "assistant");
+    expect(saveMemory).toHaveBeenCalledWith("spaced", "a fact", { source: "assistant" }, "assistant", {});
   });
 
   it("uses the host-selected project rather than model-provided scope", async () => {
@@ -87,7 +87,7 @@ describe("memory_write — happy path", () => {
     expect(saveMemory).toHaveBeenCalledWith("project fact", "Alpha uses a staged rollout.", {
       projectRoot: "C:\\workspace\\alpha",
       source: "assistant"
-    }, "assistant");
+    }, "assistant", {});
   });
 });
 
@@ -101,20 +101,20 @@ describe("memory_write — id, scope and the turn's taint", () => {
     expect(saveMemory).not.toHaveBeenCalled();
     expect(updateMemoryById).toHaveBeenCalledWith("mem-1", "Package manager", "Use pnpm.", {
       projectRoot: "C:\\workspace\\alpha", source: "assistant",
-    }, "assistant");
+    }, "assistant", {});
     expect(JSON.parse(result.output)).toMatchObject({ saved: true, op: "updated", id: "mem-1", scope: "project" });
   });
 
   it("saves to global memory only when the model asks for scope global", async () => {
     const { store, saveMemory, updateMemoryById } = makeStore();
     const saved = await run({ title: "Reply language", content: "Answer in Korean.", scope: "global" }, store, alpha);
-    expect(saveMemory).toHaveBeenCalledWith("Reply language", "Answer in Korean.", { source: "assistant" }, "assistant");
+    expect(saveMemory).toHaveBeenCalledWith("Reply language", "Answer in Korean.", { source: "assistant" }, "assistant", {});
     expect(JSON.parse(saved.output)).toMatchObject({ scope: "global" });
 
     await run({ id: "mem-2", title: "Reply language", content: "Answer in Korean.", scope: "global" }, store, alpha);
     expect(updateMemoryById).toHaveBeenCalledWith("mem-2", "Reply language", "Answer in Korean.", {
       projectRoot: "C:\\workspace\\alpha", source: "assistant", scope: "global",
-    }, "assistant");
+    }, "assistant", {});
   });
 
   it.each([
@@ -171,13 +171,13 @@ describe("memory_write — provenance", () => {
         sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10",
         messageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f",
       },
-    }, "assistant");
+    }, "assistant", { sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10" });
   });
 
   it("ignores provenance the model puts in its arguments", async () => {
     const { store, saveMemory } = makeStore();
     await run({ title: "stack", content: "Alpha uses pnpm.", origin: { sessionId: "forged" }, sessionId: "forged" }, store);
-    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", { source: "assistant" }, "assistant");
+    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", { source: "assistant" }, "assistant", {});
   });
 });
 

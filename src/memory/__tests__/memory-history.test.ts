@@ -68,9 +68,33 @@ describe("MemoryManager change history", () => {
     expect(raw).toContain("Unrelated");
     expect(historyRows().filter((row) => row.memoryId === created.id).map((row) => row.op))
       .toEqual(["created", "updated", "deleted"]);
-    expect(historyRows().find((row) => row.memoryId === created.id && row.op === "updated"))
-      .toMatchObject({ actor: "assistant", fields: { contentDigest: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+    // The digest goes too: a short deleted text could otherwise be confirmed by hashing guesses.
+    const updated = historyRows().find((row) => row.memoryId === created.id && row.op === "updated")!;
+    expect(updated).toMatchObject({ actor: "assistant" });
+    expect((updated.fields as { contentDigest?: string } | undefined)?.contentDigest).toBeUndefined();
+    expect((await memoryManager.getMemoryHistory(other.id!, {})).entries[0]!.fields?.contentDigest).toMatch(/^[0-9a-f]{64}$/);
     expect((await memoryManager.getMemoryHistory(other.id!, {})).entries).toHaveLength(1);
+  });
+
+  it("names the conversation that asked for a change, by id only", async () => {
+    const session = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
+    const { entry } = await memoryManager.saveMemory("Timeout", "8 seconds.", {}, "user");
+    await memoryManager.saveMemory("Timeout", "10 seconds.", { source: "assistant" }, "assistant", { sessionId: session });
+    await memoryManager.updateMemoryById(entry.id!, "Timeout", "12 seconds.", { source: "assistant" }, "assistant", { sessionId: "not a session" });
+
+    const rows = (await memoryManager.getMemoryHistory(entry.id!, {})).entries;
+    expect(rows.map((row) => row.sessionId)).toEqual([undefined, session, undefined]);
+  });
+
+  it("treats a stored row with a malformed session id as unreadable for its memory", async () => {
+    const { entry } = await memoryManager.saveMemory("Old row", "Body.", {}, "user");
+    const historyPath = join(dir, "memories", "history.jsonl");
+    const row = JSON.parse(readFileSync(historyPath, "utf-8").trim().split("\n")[0]!) as Record<string, unknown>;
+    appendFileSync(historyPath, `${JSON.stringify({ ...row, op: "updated", sessionId: "<script>" })}\n`, "utf-8");
+
+    const history = await memoryManager.getMemoryHistory(entry.id!, {});
+    expect(history.entries.map((r) => r.op)).toEqual(["created"]);
+    expect(history.historyIncomplete).toBe(true);
   });
 
   it("removes the text from the history file when a memory is deleted by id too", async () => {

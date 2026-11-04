@@ -5,13 +5,14 @@ import { createLogger } from "../lib/logger.js";
 import { maskSensitiveData } from "../shared/dlp.js";
 import { isRecord } from "../shared/is-record.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
+import { isValidSessionId } from "../shared/session-id.js";
 import { SHA256_HEX } from "../lib/hex-digest-equal.js";
 import { appendJsonlCapped } from "./capped-jsonl.js";
 
 // Append-only per-memory change history in one file; the memory store is the single writer.
 // A failed append never fails the memory change: it is logged and later reads of that memory report historyIncomplete.
 // Known gap: a crash after the memory file is written but before its row is appended leaves no row and no mark.
-// Deleting a memory scrubs the text its rows carried (title and before/after excerpts); op, actor, time and digest remain.
+// Deleting a memory scrubs what its rows carried about the text (title, before/after excerpts, content digest); op, actor and time remain.
 
 const log = createLogger("memory-history");
 
@@ -41,6 +42,8 @@ export interface MemoryHistoryRow {
   fields?: MemoryHistoryFields;
   before?: string;
   after?: string;
+  /** The conversation that asked for this change (memory_write in a chat); an id only, never content. */
+  sessionId?: string;
 }
 
 export interface MemoryHistoryRead {
@@ -101,6 +104,7 @@ function parseHistoryRow(line: string): MemoryHistoryRow | null {
   if (fields === null) return null;
   if (raw.before !== undefined && !isBoundedText(raw.before)) return null;
   if (raw.after !== undefined && !isBoundedText(raw.after)) return null;
+  if (raw.sessionId !== undefined && !isValidSessionId(raw.sessionId)) return null;
   return {
     v: 1,
     memoryId: raw.memoryId,
@@ -110,6 +114,7 @@ function parseHistoryRow(line: string): MemoryHistoryRow | null {
     ...(fields ? { fields } : {}),
     ...(raw.before !== undefined ? { before: raw.before as string } : {}),
     ...(raw.after !== undefined ? { after: raw.after as string } : {}),
+    ...(raw.sessionId !== undefined ? { sessionId: raw.sessionId as string } : {}),
   };
 }
 
@@ -124,9 +129,10 @@ export function historyText(text: string): string {
   return masked.length > MAX_HISTORY_TEXT_CHARS ? `${masked.slice(0, MAX_HISTORY_TEXT_CHARS - 1)}…` : masked;
 }
 
+// The digest goes too: a short deleted text could otherwise be confirmed by hashing guesses.
 function withoutText(row: MemoryHistoryRow): MemoryHistoryRow {
   const { before: _before, after: _after, fields, ...rest } = row;
-  const { title: _title, ...keptFields } = fields ?? {};
+  const { title: _title, contentDigest: _digest, ...keptFields } = fields ?? {};
   return { ...rest, ...(Object.keys(keptFields).length > 0 ? { fields: keptFields } : {}) };
 }
 
@@ -151,7 +157,7 @@ export class MemoryHistory {
   }
 
   /**
-   * Remove the text a deleted memory's rows carry, keeping op, actor, time and digest. Rejects on failure so the
+   * Remove the text a deleted memory's rows carry (title, excerpts and content digest), keeping op, actor and time. Rejects on failure so the
    * caller can refuse the delete rather than leave the text behind.
    */
   scrub(memoryId: string): Promise<void> {
@@ -229,7 +235,7 @@ export class MemoryHistory {
       if (line.length === 0) continue;
       const row = parseHistoryRow(line);
       if (row) {
-        if (row.memoryId.toLowerCase() === id && (row.before !== undefined || row.after !== undefined || row.fields?.title !== undefined)) {
+        if (row.memoryId.toLowerCase() === id && (row.before !== undefined || row.after !== undefined || row.fields?.title !== undefined || row.fields?.contentDigest !== undefined)) {
           kept.push(JSON.stringify(withoutText(row)));
           changed = true;
         } else {
