@@ -11,7 +11,7 @@ const file = (path: string, size = 10): Entry => ({ name: path.split("/").pop()!
 const listings: Record<string, unknown> = {
   [ROOT]: { ok: true, entries: [dir(`${ROOT}/data`), dir(`${ROOT}/deploy`), dir(`${ROOT}/src`), file(`${ROOT}/package.json`)], truncated: false, hidden: 0 },
   [`${ROOT}/src`]: { ok: true, entries: [dir(`${ROOT}/src/payments`), file(`${ROOT}/src/index.ts`)], truncated: false, hidden: 0 },
-  [`${ROOT}/src/payments`]: { ok: true, entries: [file(`${ROOT}/src/payments/retry-policy.ts`)], truncated: false, hidden: 0 },
+  [`${ROOT}/src/payments`]: { ok: true, entries: [file(`${ROOT}/src/payments/retry-policy.ts`), file(`${ROOT}/src/payments/flow.png`), file(`${ROOT}/src/payments/README.md`)], truncated: false, hidden: 0 },
   [`${ROOT}/data`]: { ok: true, entries: [file(`${ROOT}/data/settlement.sqlite`, 3_984_384), file(`${ROOT}/data/big.log`, 155_189_248)], truncated: false, hidden: 0 },
   [`${ROOT}/deploy`]: { ok: true, entries: [dir(`${ROOT}/deploy/keys`), { ...dir(`${ROOT}/deploy/shared-config`), type: "link", outside: true }, dir(`${ROOT}/deploy/empty`)], truncated: false, hidden: 0 },
   [`${ROOT}/deploy/keys`]: { ok: false, error: "permission-denied" },
@@ -22,6 +22,8 @@ const listDir = vi.fn(async (path: string) => listings[path] ?? { ok: false, err
 const openPath = vi.fn(async () => ({ ok: true }));
 const readFile = vi.fn(async (path: string) => path.endsWith(".log")
   ? { ok: false, error: "too-large", bytes: 155_189_248 }
+  : path.endsWith(".png") ? { ok: true, image: { dataUrl: "data:image/png;base64,AAAA", mimeType: "image/png" }, path }
+  : path.endsWith(".md") ? { ok: true, content: "# Title\n\n- one\n", truncated: false, lineCount: 3, path }
   : { ok: true, content: "export const MAX = 3;\n", truncated: false, lineCount: 2, path });
 
 let width = 1_000;
@@ -169,5 +171,27 @@ describe("FolderView", () => {
     await waitFor(() => expect(screen.getByTestId("folder-viewer")).toBeDefined());
     expect(screen.getByTestId("folder-columns")).toBeDefined();
     expect(screen.queryByTestId("folder-viewer-back")).toBeNull();
+  });
+
+  it("renders Markdown with a view and source switch, and images with fit, zoom and double-click for 100%", async () => {
+    await openView();
+    fireEvent.click(row(`${ROOT}/src`));
+    await waitFor(() => expect(row(`${ROOT}/src/payments`)).toBeDefined());
+    fireEvent.click(row(`${ROOT}/src/payments`));
+    await waitFor(() => expect(row(`${ROOT}/src/payments/README.md`)).toBeDefined());
+    fireEvent.click(row(`${ROOT}/src/payments/README.md`));
+    const rendered = await screen.findByTestId("folder-markdown-rendered");
+    expect(rendered.querySelector("h1")?.textContent).toBe("Title");
+    fireEvent.click(screen.getByTestId("folder-markdown-source"));
+    expect(screen.queryByTestId("folder-markdown-rendered")).toBeNull();
+    expect(screen.getAllByTestId("preview-code-line")[0]!.textContent).toContain("# Title");
+
+    fireEvent.click(row(`${ROOT}/src/payments/flow.png`));
+    const image = await screen.findByTestId("folder-image-viewer");
+    expect(within(image).getByTestId("folder-image-zoom").textContent).toBe("맞춤");
+    fireEvent.doubleClick(image.querySelector("img")!);
+    expect(within(image).getByTestId("folder-image-zoom").textContent).toBe("100%");
+    fireEvent.doubleClick(image.querySelector("img")!);
+    expect(within(image).getByTestId("folder-image-zoom").textContent).toBe("맞춤");
   });
 });

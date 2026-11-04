@@ -2129,7 +2129,6 @@ export function App() {
         <PaneFrame
           title={title}
           icon={<FolderIcon className="h-4 w-4" />}
-          meta={{ text: projectRoot.split(/[\\/]/).filter(Boolean).pop() ?? projectRoot, title: projectRoot }}
           bodyInset="none"
           onClose={closeSurface}
           closeLabel={routedCloseLabel(title)}

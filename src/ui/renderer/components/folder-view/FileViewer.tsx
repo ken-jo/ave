@@ -205,7 +205,12 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
     <div className="min-h-0 flex-1 overflow-auto [&_.markdown-body]:max-h-none [&_.markdown-body]:border-0 [&_pre]:max-h-none">
       {isMarkdown && markdownSource
         ? <CodePreview descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} />
-        : <PreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} />}
+        : isMarkdown
+          // The reading typography chat answers use, so headings, lists and tables look like a document.
+          ? <div className="prose prose-sm ave-prose max-w-none px-4 py-3" data-testid="folder-markdown-rendered">
+            <PreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} />
+          </div>
+          : <PreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} />}
     </div>
   );
   return shell(<>

@@ -55,7 +55,8 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
   const [state, dispatch] = useReducer(folderReducer, projectRoot, initialFolderState);
   const [focusedPath, setFocusedPath] = useState<string | undefined>(undefined);
   const [width, setWidth] = useState<number | null>(null);
-  const [viewerOnly, setViewerOnly] = useState(false);
+  // Narrow layout: the open file replaces the columns until the user goes back to them (case 37).
+  const [columnsRequested, setColumnsRequested] = useState(false);
   const [hiddenLeft, setHiddenLeft] = useState(0);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<Array<{ path: string; relativePath: string }> | null>(null);
@@ -155,8 +156,9 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
 
   const viewing = viewerEntry(state);
   const narrow = width !== null && viewerReplacesColumns(width);
-  const showViewerOnly = narrow && viewerOnly && viewing !== null;
-  useEffect(() => { if (!viewing) setViewerOnly(false); }, [viewing]);
+  const showViewerOnly = narrow && viewing !== null && !columnsRequested;
+  // Each newly chosen file takes the narrow view again.
+  useEffect(() => { setColumnsRequested(false); }, [viewing?.path]);
 
   // Keep the deepest column in view and count the ones scrolled away (case 24).
   const updateHiddenLeft = useCallback(() => {
@@ -172,15 +174,16 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
     if (!scroller || showViewerOnly) return;
     scroller.scrollLeft = scroller.scrollWidth;
     updateHiddenLeft();
-  }, [state.columns.length, showViewerOnly, width, updateHiddenLeft]);
+  }, [state.columns.length, showViewerOnly, width, viewing?.path, updateHiddenLeft]);
 
   const select = useCallback((column: number, entry: FolderEntry) => {
     dispatch({ type: "select", column, entry });
-    if (entry.type !== "directory" && narrow) setViewerOnly(true);
-  }, [narrow]);
+    // Choosing a file again after going back to the columns shows it again.
+    if (entry.type !== "directory") setColumnsRequested(false);
+  }, []);
 
   const backToColumns = useCallback(() => {
-    setViewerOnly(false);
+    setColumnsRequested(true);
     if (viewing) deferredFocus.current = { row: viewing.path };
   }, [viewing]);
 
@@ -246,7 +249,6 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
     const index = state.columns.findIndex((column) => column.dir === dir);
     if (index < 0) return;
     dispatch({ type: "truncate", column: index });
-    setViewerOnly(false);
     focusRow(state.columns[index]?.entries[0]?.path);
   }, [state.columns, focusRow]);
 
@@ -329,7 +331,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
       <div role="tree" aria-label={t("folderView.treeLabel")} className="flex min-h-0 flex-1" data-testid="folder-body">
         {showViewerOnly ? null : (
           <div ref={scrollerRef} onScroll={updateHiddenLeft} data-testid="folder-columns"
-            className={cn("flex min-h-0 overflow-x-auto overflow-y-hidden", viewing && !narrow ? "max-w-[calc(100%-380px)] shrink" : "flex-1")}>
+            className={cn("flex min-h-0 min-w-0 shrink overflow-x-auto overflow-y-hidden", viewing && !narrow ? "max-w-[calc(100%-380px)]" : "max-w-full")}>
             {state.columns.map((column, index) => (
               <FolderColumn
                 key={column.dir}
@@ -351,7 +353,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
           </div>
         )}
         {viewing && (!narrow || showViewerOnly) ? (
-          <div className="flex min-h-0 min-w-0 flex-1 border-l" onKeyDown={onViewerKey}>
+          <div className="flex min-h-0 min-w-0 flex-1" onKeyDown={onViewerKey}>
             <FileViewer
               key={viewing.path}
               ref={viewerRef}
@@ -362,12 +364,12 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
             />
           </div>
         ) : !viewing && state.columns.length === 1 && rootColumn?.status === "ok" && rootColumn.entries.length > 0 ? (
-          <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2 border-l text-xs text-muted-foreground" data-testid="folder-hint">
+          <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2 text-xs text-muted-foreground" data-testid="folder-hint">
             <FileText aria-hidden="true" className="h-6 w-6" />
             <div className="text-[13px] text-foreground">{t("folderView.hintTitle")}</div>
             <div>{t("folderView.hintKeys")}</div>
           </div>
-        ) : null}
+        ) : showViewerOnly ? null : <div aria-hidden="true" className="min-w-0 flex-1" />}
       </div>
 
       <div className="flex min-w-0 shrink-0 items-center gap-3 border-t px-3 py-1 text-[11px] text-muted-foreground" data-testid="folder-status">
