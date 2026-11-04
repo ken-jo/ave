@@ -98,7 +98,8 @@ export interface ChatGroupSessionHandle {
    * refused `chatNew` (the tile has said why). The tile then still shows
    * what its loop still holds.
    */
-  startNewChat: (project?: { projectRoot?: string; projectName?: string }) => Promise<boolean>;
+  /** `draft` fills the new conversation's composer; nothing is sent. */
+  startNewChat: (project?: { projectRoot?: string; projectName?: string }, draft?: string) => Promise<boolean>;
 }
 
 type Listener = () => void;
@@ -522,8 +523,8 @@ export class ChatGroupSessionRegistry {
       loadSession: async (sessionId: string) => await live()?.loadSession(sessionId) ?? false,
       prefillComposer: (text: string) => live()?.prefillComposer(text),
       appendSystemEntry: (message: string) => live()?.appendSystemEntry(message),
-      startNewChat: async (project?: { projectRoot?: string; projectName?: string }) =>
-        await live()?.startNewChat(project) ?? false,
+      startNewChat: async (project?: { projectRoot?: string; projectName?: string }, draft?: string) =>
+        await live()?.startNewChat(project, draft) ?? false,
     });
   }
 

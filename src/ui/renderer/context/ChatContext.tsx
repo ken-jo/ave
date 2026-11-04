@@ -56,6 +56,8 @@ export interface ChatContextValue {
   /** True once the persisted active runtime selection has been loaded. */
   settingsLoaded?: boolean;
   onOpenSettings: (tab?: string) => void;
+  /** Open the memory panel searching for this text (a memory notice's 보기). */
+  onOpenMemory: (query: string) => void;
 
   searchOpen: boolean;
   searchQuery: string;

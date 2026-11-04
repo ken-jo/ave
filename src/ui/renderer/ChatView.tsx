@@ -166,7 +166,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const {
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
     question, setQuestion, chatEndRef, currentSessionId, hidden,
-    hasApiKey, settingsLoaded, onOpenSettings,
+    hasApiKey, settingsLoaded, onOpenSettings, onOpenMemory,
     searchOpen, searchMatches, searchMatchSet, searchIdx, searchHighlight,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget, autoCompactEnabled,
     tpmLimit, tpmPct,
@@ -842,6 +842,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         </>}
         emptyConversation={emptyConversation}
         onOpenSettings={onOpenSettings}
+        onOpenMemory={onOpenMemory}
         workflowApi={workflowApi}
         api={api}
         currentSessionId={currentSessionId}

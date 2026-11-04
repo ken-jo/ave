@@ -91,6 +91,8 @@ export interface ChatGroupEnvironment {
   activeChatModel: ActiveChatModel | null;
   checkApiKey: () => Promise<boolean>;
   onOpenSettings: (tab?: string) => void;
+  /** Open the memory panel searching for this text. */
+  onOpenMemory: (query: string) => void;
   /** The active route's effective output limit and who set it (`resolveContextWindowForRoute(...).output`). */
   maxOutputTokens: number;
   maxOutputTokensSource: ResolvedOutputTokenLimit["effectiveSource"];
@@ -406,12 +408,21 @@ export function ChatGroupSession({
   // Set by a new chat started from a conversation with no entries (the composer's project selector does this): that
   // conversation is being replaced, not left, so its text belongs to the one that replaces it.
   const draftCarryFromRef = useRef<string | null>(null);
+  // Text a new chat opens with (startNewChat's `draft`), waiting for the tile to switch to that conversation.
+  const newChatDraftRef = useRef<{ sessionId: string; text: string } | null>(null);
   useLayoutEffect(() => {
     const previous = draftSessionIdRef.current;
     if (previous === currentSessionId) return;
     draftSessionIdRef.current = currentSessionId;
     const carry = previous !== null && previous === draftCarryFromRef.current;
     draftCarryFromRef.current = null;
+    const opening = newChatDraftRef.current;
+    if (opening && opening.sessionId === currentSessionId) {
+      newChatDraftRef.current = null;
+      if (previous && !carry) parkComposerDraft(previous, questionRef.current);
+      setQuestion(opening.text);
+      return;
+    }
     // No conversation yet (mount, or the tile's session still resolving), or
     // an empty one being replaced: whatever was typed belongs to the
     // conversation that is arriving, so it stays, and a parked draft only
@@ -598,7 +609,7 @@ export function ChatGroupSession({
   }, [env, handleLoadSessionAndRefresh]);
 
   const startNewChat = useCallback(
-    async (project?: { projectRoot?: string; projectName?: string }) => {
+    async (project?: { projectRoot?: string; projectName?: string }, draft?: string) => {
       if (streaming) { console.warn("new chat blocked during streaming"); return false; }
       const created = await api.chatNew(project);
       if (!created.ok) {
@@ -614,6 +625,12 @@ export function ChatGroupSession({
       // No move to a new id: the carry must not wait for a later, ordinary switch away from this conversation and take the text
       // along then.
       if (applied === null || applied === currentSessionId) draftCarryFromRef.current = null;
+      if (draft !== undefined && applied !== null) {
+        // The new conversation opens with this text in its composer: set it if the tile already switched, otherwise hand it
+        // to the switch.
+        if (draftSessionIdRef.current === applied) setQuestion(draft);
+        else newChatDraftRef.current = { sessionId: applied, text: draft };
+      }
       await env.refreshSessions();
       return true;
     },
@@ -906,6 +923,7 @@ export function ChatGroupSession({
     publishSideChatSurface: setSideChatSurface,
     hasApiKey: env.effectiveLlmReady, settingsLoaded: env.settingsLoaded,
     onOpenSettings: env.onOpenSettings,
+    onOpenMemory: env.onOpenMemory,
     ...env.search,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
     llmContextWindow: env.llmContextWindow, llmInputLimit: env.llmInputLimit,

@@ -1369,6 +1369,35 @@ export function App() {
     void refreshLlmSettings();
   }, [checkApiKey, refreshLlmSettings]);
 
+  // A memory notice's 보기 opens the memory panel searching for that memory.
+  const [memoryPanelQuery, setMemoryPanelQuery] = useState<{ text: string; nonce: number } | null>(null);
+  const handleOpenMemory = useCallback((query: string) => {
+    setMemoryPanelQuery((current) => ({ text: query, nonce: (current?.nonce ?? 0) + 1 }));
+    setActiveView("memory");
+  }, [setActiveView]);
+  // The search belongs to that one opening: the panel opened later from the sidebar starts empty.
+  useEffect(() => {
+    if (activeView !== "memory") setMemoryPanelQuery(null);
+  }, [activeView]);
+
+  // "Ave 에게 고치기": a new chat in the memory's project (the current one for a global memory) whose composer names the
+  // memory. Nothing changes until the user sends; Ave then edits it with memory_write {id}.
+  const handleAskAveToFix = useCallback(async (memory: { title: string; projectRoot?: string; projectName?: string }) => {
+    if (streaming) return false;
+    const project = memory.projectRoot
+      ? resolveKnownProject(projectIdentityFromPayload({ projectRoot: memory.projectRoot, projectName: memory.projectName }))
+      : activeProject ?? defaultWorkspaceProject;
+    if (!project) return false;
+    const started = await focusedSession.startNewChat(
+      { projectRoot: project.projectRoot, projectName: project.projectName },
+      t("memorySaveNotice.askAveToFixPrefill", { title: memory.title }),
+    );
+    if (!started) return false;
+    setActiveProject(project);
+    setActiveView("home");
+    return true;
+  }, [streaming, resolveKnownProject, activeProject, defaultWorkspaceProject, focusedSession, setActiveView, t]);
+
   const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }) => {
     const nextProject = resolveKnownProject(projectIdentityFromPayload(project)) ?? activeProject ?? defaultWorkspaceProject;
     if (streaming) {
@@ -1553,6 +1582,7 @@ export function App() {
     effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey,
     // Estimate output cost from the route's effective limit.
     onOpenSettings,
+    onOpenMemory: handleOpenMemory,
     maxOutputTokens: llmOutputTokenLimit.effective,
     maxOutputTokensSource: llmOutputTokenLimit.effectiveSource,
     rolePresets, activePreset, activePresetId, setActivePresetId,
@@ -1590,7 +1620,7 @@ export function App() {
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable, activeSubscriptionRuntime,
-    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey, onOpenSettings, llmOutputTokenLimit,
+    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey, onOpenSettings, handleOpenMemory, llmOutputTokenLimit,
     rolePresets, activePreset, activePresetId, setActivePresetId,
     enableThinkingChat, toggleThinking, processingDisplayLevel, refreshSessions, focusChatGroup, sessions, chatGroups.setPaneContent,
     sideChatOpenRequest,
@@ -1730,6 +1760,12 @@ export function App() {
         <MemorySearchPanel
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
+          initialQuery={memoryPanelQuery}
+          onAskAveToFix={async (memory) => {
+            const opened = await handleAskAveToFix(memory);
+            if (opened) closePane();
+            return opened;
+          }}
           onOpenSession={async (sessionId) => {
             const loaded = await handleLoadSessionAndRefresh(sessionId);
             if (loaded !== false) closePane();

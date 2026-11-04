@@ -8,6 +8,10 @@ export interface NoteResult {
   excerpt: string;
   updatedAt?: string;
   filename?: string;
+  projectRoot?: string;
+  projectName?: string;
+  /** The MEMORY.md instructions file shown first; it is edited in 지침, not deleted or fixed from here. */
+  isIndex?: true;
 }
 
 export interface SessionResult {
@@ -17,7 +21,7 @@ export interface SessionResult {
   timestamp: string;
 }
 
-function memoryProjectOptions(project: ProjectIdentity | undefined) {
+export function memoryProjectOptions(project: ProjectIdentity | undefined) {
   if (!project?.projectRoot) return undefined;
   return {
     projectRoot: project.projectRoot,
@@ -38,6 +42,7 @@ function memoryIndexResult(content: string | undefined, query = ""): NoteResult[
     filename: "MEMORY.md",
     title: t("useMemorySearch.memoryIndexTitle"),
     excerpt: stripTopHeading(trimmed),
+    isIndex: true,
   }];
 }
 
@@ -98,6 +103,8 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
         title: note.title,
         excerpt: stripTopHeading(note.content),
         updatedAt: note.updatedAt,
+        ...(note.projectRoot ? { projectRoot: note.projectRoot } : {}),
+        ...(note.projectName ? { projectName: note.projectName } : {}),
       }));
       const mappedMemory = [...memoryIndexResult(memoryIndex), ...mappedNotes];
       setNoteCatalog(mappedMemory);

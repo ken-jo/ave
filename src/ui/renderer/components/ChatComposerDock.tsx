@@ -1,4 +1,5 @@
 import { chatSurface } from "./chat-surface.js";
+import { MemorySaveNoticeStrip } from "./MemorySaveNoticeStrip.js";
 import type React from "react";
 import { KeyRound, ShieldQuestion, Store } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -69,6 +70,8 @@ export interface ChatComposerDockProps {
   hasApiKey: boolean | null;
   /** Opens the settings window on a tab. Used by the no-key chip. */
   onOpenSettings: (tab?: string) => void;
+  /** Open the memory panel searching for a memory's title. */
+  onOpenMemory: (query: string) => void;
   viewMode: ViewModeState | null;
   streaming: boolean;
   onInsertSlashCommand: (cmd: string) => void;
@@ -270,6 +273,7 @@ export function ChatComposerDock({
   onSelectPlugin,
   hasApiKey,
   onOpenSettings,
+  onOpenMemory,
   viewMode,
   streaming,
   onInsertSlashCommand,
@@ -381,6 +385,8 @@ export function ChatComposerDock({
             strip painted over the project selector and the runtime pill and
             was clipped by them; in flow it pushes them down instead, the same
             rule the window's notice strip follows. */}
+        {/* Memory saves, updates, deletes and refusals in this conversation, each with undo where it applies. */}
+        <MemorySaveNoticeStrip api={api} sessionId={currentSessionId} onOpenMemory={onOpenMemory} />
         {statusBar && (statusBar.visibleToast !== null || statusBar.persistent.length > 0) ? (
           <div
             className="mx-3 mb-2 min-w-0"

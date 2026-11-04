@@ -113,6 +113,7 @@ import { ko as ko_mcpAppFullscreenPanel } from "../generated/mcpAppFullscreenPan
 import { ko as ko_mcpAppPipPanel } from "../generated/mcpAppPipPanel.js";
 import { ko as ko_mcpAppView } from "../generated/mcpAppView.js";
 import { ko as ko_mcpTab } from "../generated/mcpTab.js";
+import { ko as ko_memorySaveNotice } from "../generated/memorySaveNotice.js";
 import { ko as ko_memorySearchPanel } from "../generated/memorySearchPanel.js";
 import { ko as ko_messageQueuePanel } from "../generated/messageQueuePanel.js";
 import { ko as ko_messageQueueStore } from "../generated/messageQueueStore.js";
@@ -306,6 +307,7 @@ export const koMessages: Record<string, string> = {
   ...ko_mcpAppPipPanel,
   ...ko_mcpAppView,
   ...ko_mcpTab,
+  ...ko_memorySaveNotice,
   ...ko_memorySearchPanel,
   ...ko_messageQueuePanel,
   ...ko_messageQueueStore,
