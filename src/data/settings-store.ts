@@ -41,7 +41,6 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import { resolveRouteModelRetirement } from "../shared/context-budget.js";
-import type { GitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { isThemeId } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -768,8 +767,6 @@ export interface WebSearchSettings {
 export type AutoUpdateSwitch = "on" | "off";
 
 export interface MarketplaceSettings {
-  /** Which git the git marketplace runs (design §9.1). Unset means `auto`. */
-  git?: { mode: GitRuntimeMode };
   /** Whether the renderer is told about package updates. Default true. */
   updateCheckEnabled?: boolean;
   /** Keep downloaded plugin artifacts under their pinned digest, so a reinstall of a version already fetched needs no network (design §7.5). Default true.

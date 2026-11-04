@@ -833,6 +833,7 @@ jobs:
           src/tools/__tests__/shell-tools.test.ts
           src/workload/__tests__/runtime.test.ts
           test/scripts/smoke-windows-nsis-installer.test.ts
+          test/scripts/install-windows-git.test.ts
           src/permissions/__tests__/permission-adversarial-performance.test.ts
           src/permissions/__tests__/permission-decision-cost.test.ts
           src/permissions/__tests__/permission-settings-admission.test.ts

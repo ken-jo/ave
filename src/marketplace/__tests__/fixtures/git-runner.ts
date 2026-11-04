@@ -16,7 +16,7 @@ export interface TestGitRunner {
 }
 
 export async function hostGitExecutable(): Promise<GitExecutable> {
-  const detection = await detectGitRuntime("system", nodeGitDetectionDeps(async () => null));
+  const detection = await detectGitRuntime(nodeGitDetectionDeps(null));
   if (detection.state !== "ready") throw new Error(`host git is not usable for tests: ${detection.state}`);
   return detection.git;
 }

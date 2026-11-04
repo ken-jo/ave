@@ -104,12 +104,12 @@ export interface GitRunnerOptions {
   /** An empty Ave-owned directory, used as `core.hooksPath` and `GIT_TEMPLATE_DIR`. */
   emptyDir: string;
   askpass: AskpassBroker;
-  /** Managed copies: `GIT_EXEC_PATH`, CA bundle and similar (managed-git.ts). */
-  managedEnv?: Record<string, string>;
-  /** Managed copies: prepended to PATH so git finds its own helpers first. */
-  managedPathPrefix?: string;
-  /** Managed copies: settings the copy's own system config would carry (it is not read, §9.3). */
-  managedConfig?: Readonly<Record<string, string>>;
+  /** The installer's copy: `GIT_EXEC_PATH` (installer-git.ts). */
+  installerEnv?: Record<string, string>;
+  /** The installer's copy: prepended to PATH so git finds its own helpers first. */
+  installerPathPrefix?: string;
+  /** The installer's copy: settings its own system config would carry (it is not read, §9.3). */
+  installerConfig?: Readonly<Record<string, string>>;
   /** Chromium's PAC resolution for a URL (`session.resolveProxy`). */
   resolveProxy?: (url: string) => Promise<string>;
   /** The one lookup a remote call makes (§18.2.4); tests substitute a resolver fake. */
@@ -249,7 +249,7 @@ export class GitRunner {
       "-c", "maintenance.auto=false",
       // Read last, an empty value clears every helper configured before it.
       ...(offersToken || this.withholdsCredentials(remote) ? ["-c", "credential.helper="] : []),
-      ...Object.entries(this.options.managedConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
+      ...Object.entries(this.options.installerConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ];
     return buildHostGitArgs([], { configArgs, disabledHooksPath: this.options.emptyDir });
   }
@@ -271,10 +271,10 @@ export class GitRunner {
       GIT_TEMPLATE_DIR: this.options.emptyDir,
     });
     if (process.env.SSH_AUTH_SOCK) env.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
-    if (this.options.managedPathPrefix) {
-      env.PATH = env.PATH ? `${this.options.managedPathPrefix}${delimiter}${env.PATH}` : this.options.managedPathPrefix;
+    if (this.options.installerPathPrefix) {
+      env.PATH = env.PATH ? `${this.options.installerPathPrefix}${delimiter}${env.PATH}` : this.options.installerPathPrefix;
     }
-    return { ...env, ...this.options.managedEnv };
+    return { ...env, ...this.options.installerEnv };
   }
 
   private async proxyFor(remote: GitRemote | undefined): Promise<string> {

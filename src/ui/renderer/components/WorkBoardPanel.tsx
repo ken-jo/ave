@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Play, Plus, RefreshCw, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleStop, Loader2, Play, Plus, RefreshCw, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { t } from "../../../i18n/runtime.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
@@ -42,6 +42,7 @@ import {
   currentPhaseTurn,
   formatElapsed,
   isRunInFlight,
+  isTerminalPhase,
   latestTurn,
   liveTextOf,
   runStartedAt,
@@ -122,48 +123,86 @@ function formatDue(iso: string | undefined): string {
   return date ? t("workBoard.dueLabel", { date }) : t("workBoard.noDueDate");
 }
 
+/** In-flight label; undefined is the optimistic start before the first progress event. Terminal phases never count as in flight. */
+function inFlightLabel(phase: RunPhase | undefined): string {
+  switch (phase) {
+    case undefined:
+      return t("workBoard.runStartingLabel");
+    case "planning":
+      return t("workBoard.runPlanning");
+    case "awaiting_approval":
+      return t("workBoard.runAwaitingApproval");
+    case "executing":
+      return t("workBoard.runExecuting");
+    case "done":
+    case "denied":
+    case "error":
+    case "cancelled":
+      throw new Error(`work-board run phase ${phase} reached the in-flight indicator`);
+    default: {
+      const unhandled: never = phase;
+      throw new Error(`unhandled work-board run phase: ${String(unhandled)}`);
+    }
+  }
+}
+
 function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
   if (!run) return null;
   const inFlight = isRunInFlight(run);
   const phase = run.phase;
 
-  // Terminal states — only render error/denied; `done` is reflected by the item's stored output in the detail modal, not a
-  // persistent card badge.
+  // Settled states. `done` is reflected by the item's stored output in the detail modal, not a persistent card badge. Every phase is named
+  // so a new one cannot fall through to "no chip" unnoticed.
   if (!inFlight) {
-    if (phase === "denied") {
-      return (
-        <span
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
-          data-testid="work-board-run-denied"
-        >
-          <XCircle className="h-3 w-3" />
-          {t("workBoard.runDenied")}
-        </span>
-      );
+    switch (phase) {
+      case undefined:
+      case "done":
+        return null;
+      case "denied":
+        return (
+          <span
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            data-testid="work-board-run-denied"
+          >
+            <XCircle className="h-3 w-3" />
+            {t("workBoard.runDenied")}
+          </span>
+        );
+      case "error":
+        return (
+          <span
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            title={run.reason}
+            data-testid="work-board-run-error"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            {t("workBoard.runError")}
+          </span>
+        );
+      // The user stopped it (owner decision 2026-11-04): a neutral chip, never the error treatment, so it does not read as something to fix.
+      case "cancelled":
+        return (
+          <span
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-border bg-muted text-muted-foreground"
+            data-testid="work-board-run-cancelled"
+          >
+            <CircleStop className="h-3 w-3" />
+            {t("workBoard.runCancelled")}
+          </span>
+        );
+      case "planning":
+      case "awaiting_approval":
+      case "executing":
+        // isRunInFlight is true for every non-terminal phase, so reaching here is a broken invariant, not a state to hide.
+        throw new Error(`work-board run phase ${phase} reached the settled indicator`);
+      default: {
+        const unhandled: never = phase;
+        throw new Error(`unhandled work-board run phase: ${String(unhandled)}`);
+      }
     }
-    if (phase === "error") {
-      return (
-        <span
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
-          title={run.reason}
-          data-testid="work-board-run-error"
-        >
-          <AlertTriangle className="h-3 w-3" />
-          {t("workBoard.runError")}
-        </span>
-      );
-    }
-    return null;
   }
 
-  const label =
-    phase === "planning"
-      ? t("workBoard.runPlanning")
-      : phase === "awaiting_approval"
-        ? t("workBoard.runAwaitingApproval")
-        : phase === "executing"
-          ? t("workBoard.runExecuting")
-          : t("workBoard.runStartingLabel");
+  const label = inFlightLabel(phase);
 
   // `awaiting_approval` uses the accent (primary) token with a ring so it reads
   // as "needs you" without reaching for a raw palette color (theme-token rule).
@@ -203,6 +242,7 @@ function liveChipLabel(phase: RunPhase | undefined): string | null {
     case "done":
     case "denied":
     case "error":
+    case "cancelled":
       return null;
     default: {
       const unhandled: never = phase;
@@ -883,8 +923,7 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
 
   // When the in-flight run reaches a terminal phase, re-fetch so the persisted `plan` / `output` / `runSessionId` written by
   // the engine land in the item.
-  const terminalPhase =
-    run?.phase === "done" || run?.phase === "denied" || run?.phase === "error";
+  const terminalPhase = run?.phase !== undefined && isTerminalPhase(run.phase);
   useEffect(() => {
     if (terminalPhase) setReloadKey((k) => k + 1);
   }, [terminalPhase]);

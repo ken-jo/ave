@@ -5,10 +5,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   detectGitRuntime,
   type GitDetectionDeps,
-  type ManagedGitInstall,
+  gitRuntimeStatus,
   nodeGitDetectionDeps,
   systemGitCandidates,
 } from "../detect.js";
+import type { InstallerGitInstall } from "../installer-git.js";
 import { parseGitVersion } from "../git-version.js";
 
 describe("parseGitVersion", () => {
@@ -48,21 +49,50 @@ function fakeDeps(overrides: Partial<GitDetectionDeps> & { versions: Record<stri
     isExecutableFile: async (path) => path in overrides.versions,
     readVersion: async (path) => overrides.versions[path] ?? null,
     commandLineToolsInstalled: async () => true,
-    findManagedGit: async () => null,
+    findInstallerGit: async () => null,
     ...overrides,
   };
 }
 
-const MANAGED: ManagedGitInstall = {
-  path: "/home/u/.ave/runtime/git/2.53.0/bin/git",
-  root: "/home/u/.ave/runtime/git/2.53.0",
-  version: { major: 2, minor: 53, patch: 0, text: "2.53.0" },
+const INSTALLED: InstallerGitInstall = {
+  path: "C:\\Program Files\\Ave\\git\\cmd\\git.exe",
+  root: "C:\\Program Files\\Ave\\git",
+  prefix: "ucrt64",
 };
 
 describe("detectGitRuntime", () => {
-  it("auto picks the first usable system git and remembers an older one it skipped", async () => {
+  it("prefers the installer's copy over a usable system git", async () => {
     const detection = await detectGitRuntime(
-      "auto",
+      fakeDeps({
+        versions: { "/a/git": "git version 2.50.1", [INSTALLED.path]: "git version 2.53.0" },
+        findInstallerGit: async () => INSTALLED,
+      }),
+    );
+    expect(detection).toEqual({
+      state: "ready",
+      git: { kind: "installer", path: INSTALLED.path, installer: INSTALLED, version: { major: 2, minor: 53, patch: 0, text: "2.53.0" } },
+    });
+  });
+
+  it("falls back to the system git when the installer's copy does not run", async () => {
+    const detection = await detectGitRuntime(
+      fakeDeps({ versions: { "/b/git": "git version 2.50.1" }, findInstallerGit: async () => INSTALLED }),
+    );
+    expect(detection).toMatchObject({ state: "ready", git: { kind: "system", path: "/b/git" } });
+  });
+
+  it("falls back to the system git when the installer's copy reports too old a version", async () => {
+    const detection = await detectGitRuntime(
+      fakeDeps({
+        versions: { "/b/git": "git version 2.50.1", [INSTALLED.path]: "git version 2.40.0" },
+        findInstallerGit: async () => INSTALLED,
+      }),
+    );
+    expect(detection).toMatchObject({ state: "ready", git: { kind: "system", path: "/b/git" } });
+  });
+
+  it("picks the first usable system git and remembers an older one it skipped", async () => {
+    const detection = await detectGitRuntime(
       fakeDeps({ versions: { "/a/git": "git version 2.30.0", "/b/git": "git version 2.50.1" } }),
     );
     expect(detection).toMatchObject({
@@ -72,37 +102,18 @@ describe("detectGitRuntime", () => {
     });
   });
 
-  it("auto falls back to the managed copy when the system git is too old", async () => {
-    const detection = await detectGitRuntime(
-      "auto",
-      fakeDeps({ versions: { "/a/git": "git version 2.45.0" }, findManagedGit: async () => MANAGED }),
-    );
-    expect(detection).toMatchObject({
-      state: "ready",
-      git: { kind: "managed", path: MANAGED.path, managedRoot: MANAGED.root },
+  it("reports missing, with the too-old system git, when nothing is usable", async () => {
+    expect(await detectGitRuntime(fakeDeps({ versions: {} }))).toEqual({ state: "missing" });
+    expect(await detectGitRuntime(fakeDeps({ versions: { "/a/git": "git version 2.45.0" } }))).toEqual({
+      state: "missing",
       systemTooOld: { path: "/a/git", version: "2.45.0" },
     });
   });
 
-  it("auto reports missing when nothing is usable", async () => {
-    expect(await detectGitRuntime("auto", fakeDeps({ versions: {} }))).toEqual({ state: "missing" });
-  });
-
-  it("system mode reports too-old instead of falling back", async () => {
-    const detection = await detectGitRuntime(
-      "system",
-      fakeDeps({ versions: { "/a/git": "git version 2.45.0" }, findManagedGit: async () => MANAGED }),
-    );
-    expect(detection).toEqual({ state: "too-old", systemTooOld: { path: "/a/git", version: "2.45.0" } });
-  });
-
-  it("managed mode ignores the system git", async () => {
-    const deps = fakeDeps({ versions: { "/a/git": "git version 2.44.0" } });
-    expect(await detectGitRuntime("managed", deps)).toEqual({ state: "missing" });
-    expect(await detectGitRuntime("managed", { ...deps, findManagedGit: async () => MANAGED })).toMatchObject({
-      state: "ready",
-      git: { kind: "managed" },
-    });
+  it("keeps paths out of the renderer status", () => {
+    expect(
+      gitRuntimeStatus({ state: "missing", systemTooOld: { path: "/a/git", version: "2.45.0" } }, true),
+    ).toEqual({ state: "missing", active: null, systemTooOld: { version: "2.45.0" }, installerProvides: true });
   });
 
   it("never runs the macOS /usr/bin/git shim without the Command Line Tools", async () => {
@@ -117,7 +128,7 @@ describe("detectGitRuntime", () => {
         return "git version 2.39.5 (Apple Git-154)";
       },
     });
-    expect(await detectGitRuntime("auto", deps)).toEqual({ state: "missing" });
+    expect(await detectGitRuntime(deps)).toEqual({ state: "missing" });
     expect(ran).toEqual([]);
   });
 });
@@ -143,17 +154,17 @@ describe("detectGitRuntime with real executables", () => {
     const old = fakeGit("old", "2.45.0");
     const ok = fakeGit("ok", "2.45.1");
     const inDir = (path: string) => path.startsWith(dir);
-    const real = nodeGitDetectionDeps(async () => null);
+    const real = nodeGitDetectionDeps(null);
     const deps: GitDetectionDeps = {
       ...real,
       platform: "linux",
       isExecutableFile: async (path) => inDir(path) && (await real.isExecutableFile(path)),
     };
-    expect(await detectGitRuntime("system", { ...deps, searchPath: old })).toEqual({
-      state: "too-old",
+    expect(await detectGitRuntime({ ...deps, searchPath: old })).toEqual({
+      state: "missing",
       systemTooOld: { path: join(old, "git"), version: "2.45.0" },
     });
-    expect(await detectGitRuntime("system", { ...deps, searchPath: `${old}:${ok}` })).toMatchObject({
+    expect(await detectGitRuntime({ ...deps, searchPath: `${old}:${ok}` })).toMatchObject({
       state: "ready",
       git: { kind: "system", path: join(ok, "git"), version: { text: "2.45.1" } },
     });

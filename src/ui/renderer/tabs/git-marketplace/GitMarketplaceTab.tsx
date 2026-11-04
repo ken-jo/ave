@@ -25,7 +25,6 @@ import { SettingsPageHeader, SettingsSection } from "../../components/PageShell.
 import { isIpcErrorResult, type AveApi } from "../../types.js";
 import { AddSourceDialog } from "./AddSourceDialog.js";
 import { DirectInstallView } from "./DirectInstallView.js";
-import { GitRuntimeCard } from "./GitRuntimeCard.js";
 import { KIND_ORDER, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, stateLabel, updateStateLabel } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { PackageSheet } from "./PackageSheet.js";
@@ -657,9 +656,6 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           }}
           {...(onOpenPluginSettings ? { onOpenPluginSettings } : {})}
         />
-        <div className="mt-4 border-t pt-4">
-          <GitRuntimeCard api={api} />
-        </div>
         {flagsFailure !== null && (
           <MarketplaceProblem failure={{ code: "unavailable", message: flagsFailure }} subject={OTHER_SUBJECT} className="mt-4" testId="git-marketplace:maintenance:error" />
         )}

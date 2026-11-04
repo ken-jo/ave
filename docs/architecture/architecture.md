@@ -1182,7 +1182,34 @@ owns storage, approvals, and audit.
 
 Item runs execute as sub-agent sessions whose origin names the item
 (`work-board:<itemId>`), so their conversations live in the isolated sub-agent
-namespace, never in the main chat store. Briefing runs
+namespace, never in the main chat store. While a plan awaits approval the
+item's `runSessionId` names the plan child; the engine replaces it with the
+execute child's id, and emits an `executing` progress event carrying that id,
+as soon as the execute child links (before its first round). That link write
+changes only the session id and appends no activity entry. If it fails, the
+run settles as an error even when the child finished: a run whose session the
+board cannot record is not reported as completed.
+
+While the execute child runs, the local user can steer or stop it
+(`ave:work-board:steer-run`, `ave:work-board:cancel-run`). Both are internal,
+sender-validated channels from a board window's main frame that require a
+consumed keyboard gesture (`CHANNEL_GESTURE: "required"`); a call without one
+is refused, not downgraded. The engine resolves the child from its own record
+of the item's execute child, never from renderer input. A steer is queued for
+the child's next round boundary as host-fenced guidance with no principal and
+no sender prefix, so it neither grants the child user-keyboard capabilities nor
+raises an other-principal floor; nothing is stored for a later resume.
+Acceptance (`ok: true`) means queued, not delivered: if the child's turn ends
+before its next round boundary, the steer is dropped and only the audit records
+it (`work-board:steer:deferred:<reason>`); the board receives no event for that
+case yet. A second stop while the first is unwinding is the same stop. A stop
+uses the ordinary sub-agent interrupt, and a run the user stopped settles as
+`cancelled` (shown as stopped, not as an error). Planning and plan approval
+are not steerable or stoppable here. See
+[permission-decision-tree.md](./permission-decision-tree.md), S→T and the
+"Delegated work" note; the tree is unchanged.
+
+Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
 
 ## Conversation List
@@ -1776,6 +1803,18 @@ some missing, the routine runs and records the missing IDs as `needsAttention`.
 The routine panel shows either state and offers removal. Installed-but-unloaded
 extensions are not missing; runtime scope and headless permission gates still decide
 which tools may run.
+
+An LLM routine run that does not complete persists `lastFailure` on the routine
+record, so a restart keeps it. `kind: "error"` covers a run that threw, with a
+`reason` that is DLP-masked, home-path-redacted and then bounded.
+`kind: "shutdown-timeout"` covers a shutdown run cut off at quit. Runs can
+overlap, so an outcome or acknowledgement for anything but the current
+`lastFiredAt` is stale and changes nothing. A later successful run of the
+current fire clears the failure, and acknowledging that fire's result marks it
+seen. A failed scheduled one-shot is restored from dismissal so it stays
+reviewable, but it is not due again. Shutdown routines are never restored,
+because they would run at every quit. An unreadable stored `lastFailure` is
+dropped with a warning, and the routine itself is kept.
 
 ## Main-process composition and boot readiness
 

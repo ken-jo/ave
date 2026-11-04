@@ -17,6 +17,53 @@
 ;     디렉토리 하위 .ave 가 잔여로 남음 — 완전 제거되도록 수정". 즉 *default 완전
 ;     제거* 가 원래 의도. 단 *되돌리기 불가* 손실이라 [아니오] 선택 시 보존 path 도 제공.
 
+!define AVE_GIT_INSTALL_SCRIPT "install-windows-git.ps1"
+
+!ifndef BUILD_UNINSTALLER
+; Marketplace sources are git repositories. Like Hermes Agent's installer, fetch the pinned official MinGit release
+; at install time instead of shipping it; build/install-windows-git.ps1 checks its sha256 and places only a verified
+; copy at $INSTDIR\git. Non-fatal: without it the app uses a system git or says none is usable. customRemoveFiles
+; deletes it with the rest of $INSTDIR.
+Function aveInstallMarketplaceGit
+  Push $R6
+  Push $R7
+  Push $R8
+  Push $R9
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\${AVE_GIT_INSTALL_SCRIPT} "${BUILD_RESOURCES_DIR}\${AVE_GIT_INSTALL_SCRIPT}"
+  ; The installer is x86: pick native PowerShell through IsWow64Process2, as the notification cleanup does.
+  StrCpy $R6 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+  StrCpy $R7 "0"
+  StrCpy $R8 "0"
+  StrCpy $R9 "0"
+  ClearErrors
+  System::Call 'kernel32::IsWow64Process2(p -1, *i .R7, *i .R8) i .R9'
+  IfErrors ave_git_arch_unknown
+  IntCmp $R9 0 ave_git_arch_unknown
+  IntCmp $R8 0x8664 ave_git_use_sysnative
+  IntCmp $R8 0xaa64 ave_git_use_sysnative
+  ave_git_arch_unknown:
+    DetailPrint "Ave: no MinGit for this Windows architecture; marketplaces will use a system git if one is installed."
+    Goto ave_git_done
+
+  ave_git_use_sysnative:
+  StrCpy $R6 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  DetailPrint "Ave: downloading git for marketplaces (official MinGit release, sha256-pinned)…"
+  nsExec::ExecToLog '"$R6" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\${AVE_GIT_INSTALL_SCRIPT}" -InstallDir "$INSTDIR" -DownloadDir "$INSTDIR"'
+  Pop $R7
+  ; Plain StrCmp: this file is included before LogicLib, so ${If} is unavailable inside a Function.
+  StrCmp $R7 "0" ave_git_done
+    DetailPrint "Ave: git was not installed (exit $R7); marketplaces will use a system git if one is installed. Reinstall while online to retry."
+
+  ave_git_done:
+  Delete "$PLUGINSDIR\${AVE_GIT_INSTALL_SCRIPT}"
+  Pop $R9
+  Pop $R8
+  Pop $R7
+  Pop $R6
+FunctionEnd
+!endif
+
 ; ─────────────────────────────────────────────────────────────────────────────
 ; Resolve the packaged srt-win.exe (ASRT Windows OS-sandbox backend) under
 ; $INSTDIR into the caller-supplied register. Empty string when neither arch is
@@ -227,6 +274,8 @@
   ${endif}
 
   ave_srtwin_install_done:
+  Call aveInstallMarketplaceGit
+
   ; This installer-only marker distinguishes a completed elevated NSIS install
   ; from a ZIP/win-unpacked launch. Remove a stale marker first so every
   ; subsequent failure is represented by its absence.

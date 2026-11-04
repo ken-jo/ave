@@ -233,6 +233,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Work board items drive agent runs.
   ["work-board", WORK_BOARD.list, [{}]],
   ["work-board", WORK_BOARD.run, [{}]],
+  ["work-board", WORK_BOARD.steerRun, [{}]],
+  ["work-board", WORK_BOARD.cancelRun, [{}]],
   // Closing an alert card keeps its identity closed; the staged cards carry
   // host-rendered prompts.
   ["alerts", ALERTS.cardClosed, ["id", "dismissed"]],

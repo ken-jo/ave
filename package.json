@@ -465,7 +465,8 @@
         "libatspi2.0-0",
         "libuuid1",
         "libsecret-1-0",
-        "libasound2t64 | libasound2"
+        "libasound2t64 | libasound2",
+        "git"
       ]
     },
     "rpm": {
@@ -479,7 +480,8 @@
         "xdg-utils",
         "at-spi2-core",
         "(libuuid or libuuid1)",
-        "alsa-lib"
+        "alsa-lib",
+        "git"
       ]
     },
     "win": {

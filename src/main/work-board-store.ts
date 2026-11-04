@@ -100,6 +100,7 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<WorkItemRunStatus> = new Set([
   "completed",
   "denied",
   "error",
+  "cancelled",
 ]);
 // Cap on the inline output preview stored in a run-history entry.
 const RUN_OUTPUT_PREVIEW_CHARS = 280;
@@ -111,6 +112,7 @@ const VALID_RUN_STATUSES: readonly WorkItemRunStatus[] = [
   "completed",
   "denied",
   "error",
+  "cancelled",
 ];
 
 function isStatus(v: unknown): v is WorkItemStatusStored {
@@ -220,16 +222,25 @@ function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
 // Transient run phases share run-planned; terminal activity verbs record outcomes.
 function runStatusActivityKind(
   runStatus: WorkItemRunStatus,
-): "run-planned" | "run-executed" | "run-denied" | "run-failed" {
+): "run-planned" | "run-executed" | "run-denied" | "run-failed" | "run-cancelled" {
   switch (runStatus) {
+    case "idle":
+    case "planning":
+    case "awaiting_approval":
+    case "executing":
+      return "run-planned";
     case "completed":
       return "run-executed";
     case "denied":
       return "run-denied";
     case "error":
       return "run-failed";
-    default:
-      return "run-planned";
+    case "cancelled":
+      return "run-cancelled";
+    default: {
+      const unhandled: never = runStatus;
+      throw new Error(`unhandled work-board run status: ${String(unhandled)}`);
+    }
   }
 }
 
@@ -574,6 +585,7 @@ export class WorkBoardStore {
   }
 
   // At boot, active persisted phases belong to dead processes; mark them error and close history so items become runnable again.
+  // A crash is not a user stop, so it never becomes cancelled; terminal statuses (cancelled included) are left as they are.
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -605,6 +617,34 @@ export class WorkBoardStore {
       this.cache = board;
       if (count > 0) log.info("[work-board-store] reconciled %d interrupted run(s) → error", count);
       return count;
+    });
+  }
+
+  // Point the run at the execute child once it links. Only the session id changes: the phase is already `executing` and its activity
+  // entry was written by setRunStatus, so this write appends no activity (a second entry would duplicate the run in reports).
+  async setRunSessionId(id: number, runSessionId: string): Promise<WorkItemUpdateResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      const idx = board.items.findIndex((i) => i.id === id);
+      if (idx === -1) {
+        this.cache = board;
+        return { status: "not_found" as const, itemId: id };
+      }
+      const nowMs = this.now();
+      const updated: WorkItem = {
+        ...board.items[idx],
+        runSessionId,
+        runUpdatedAt: new Date(nowMs).toISOString(),
+      };
+      board.items[idx] = updated;
+      await writeFileAtomic(this.filePath, board);
+      this.cache = board;
+      return {
+        status: "updated" as const,
+        itemId: id,
+        item: decorate(cloneItem(updated), nowMs),
+      };
     });
   }
 

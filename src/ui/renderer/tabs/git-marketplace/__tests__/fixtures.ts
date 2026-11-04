@@ -146,12 +146,10 @@ export function installPlan(item: CatalogEntryView, overrides: Partial<InstallPl
 
 function runtimeStatus(state: GitRuntimeStatus["state"]): GitRuntimeStatus {
   return {
-    mode: "auto",
     state,
-    active: state === "ready" ? { kind: "system", version: "2.47.0", path: "/usr/bin/git" } : null,
+    active: state === "ready" ? { kind: "installer", version: "2.53.0" } : null,
     systemTooOld: null,
-    managed: { version: "2.51.0", installed: false, available: true, size: 62_348_987 },
-    lastInstallError: null,
+    installerProvides: true,
   };
 }
 
@@ -260,8 +258,6 @@ export function fakeMarketplace(
   };
   const gitRuntime = {
     status: vi.fn(async () => ({ ok: true as const, status: runtimeStatus(options.git ?? "ready") })),
-    install: vi.fn(async () => ({ ok: true as const, status: runtimeStatus("ready") })),
-    onProgress: vi.fn(() => () => undefined),
   };
   return {
     market,

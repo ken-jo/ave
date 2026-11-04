@@ -14,6 +14,7 @@ export {
   MAX_PERSISTED_ROUTINES,
   MAX_LLM_SESSION_ROUTINES,
   MAX_ROUTINE_SOURCE_LENGTH,
+  MAX_ROUTINE_FAILURE_REASON_LENGTH,
   type RoutineExecution,
   type RoutineRepeat,
   type RoutineSchedule,
@@ -21,7 +22,12 @@ export {
   type AddRoutineInput,
 } from "../shared/routines-types.js";
 
+import { MAX_ROUTINE_FAILURE_REASON_LENGTH } from "../shared/routines-types.js";
+import { maskSensitiveData } from "../shared/dlp.js";
+import { redactHomePathsInText } from "../audit/dlp-filter.js";
 import type {
+  RoutineFailure,
+  RoutineRunOutcome,
   InvalidRoutine,
   RoutineListResult,
   RoutineRecord,
@@ -94,10 +100,39 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   }
   if (x.lastResultAcknowledgedAt !== undefined && typeof x.lastResultAcknowledgedAt !== "string") return false;
   if (x.lastRoutineSessionId !== undefined && typeof x.lastRoutineSessionId !== "string") return false;
+  if (x.lastFailure !== undefined && !isValidRoutineFailure(x.lastFailure)) return false;
   if (x.dismissedAt !== undefined && typeof x.dismissedAt !== "string") return false;
   if (x.source !== undefined && (typeof x.source !== "string" || x.source.length > MAX_ROUTINE_SOURCE_LENGTH)) return false;
   if (x.scope !== undefined && !isValidRoutineScope(x.scope)) return false;
   return true;
+}
+
+function isValidRoutineFailure(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const failure = value as Record<string, unknown>;
+  const kindValid = failure.kind === "shutdown-timeout"
+    ? failure.reason === undefined
+    : failure.kind === "error"
+      && typeof failure.reason === "string"
+      && failure.reason.length <= MAX_ROUTINE_FAILURE_REASON_LENGTH;
+  return kindValid
+    && typeof failure.firedAt === "string"
+    && typeof failure.at === "string"
+    && (failure.acknowledgedAt === undefined || typeof failure.acknowledgedAt === "string");
+}
+
+/** Error text from a run is stored and broadcast: mask secrets and PII and redact home paths first, then bound it. */
+export function sanitizeRoutineFailureReason(raw: string): string {
+  return redactHomePathsInText(maskSensitiveData(raw).masked).slice(0, MAX_ROUTINE_FAILURE_REASON_LENGTH);
+}
+
+// lastFailure is a derived attention field. An unreadable one is dropped with a warning so the user's routine itself still loads.
+function repairStoredFailure(record: unknown): void {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return;
+  const routine = record as Record<string, unknown>;
+  if (routine.lastFailure === undefined || isValidRoutineFailure(routine.lastFailure)) return;
+  log.warn("[routines-store] dropping an unreadable lastFailure on routine %s; the routine itself is kept", String(routine.id));
+  delete routine.lastFailure;
 }
 
 function isValidRoutinePluginScope(value: unknown): value is RoutineScope["pluginIds"] {
@@ -190,6 +225,7 @@ function readFileOrEmpty(filePath: string): Promise<RoutinesFile> {
     const routines: RoutineRecord[] = [];
     const invalid: StoredInvalidRoutine[] = [];
     for (const record of file.routines as unknown[]) {
+      repairStoredFailure(record);
       const held = invalidStoredRoutine(record);
       if (held) invalid.push(held);
       // Filter out tampered/corrupted or non-canonical records so a single bad entry cannot cause the scheduler tick to throw and stall all routines.
@@ -213,6 +249,7 @@ function cloneRecord(r: RoutineRecord): RoutineRecord {
     needsAttention: r.needsAttention
       ? { missingPluginIds: [...r.needsAttention.missingPluginIds] }
       : undefined,
+    lastFailure: r.lastFailure ? { ...r.lastFailure } : undefined,
     schedule: r.schedule
       ? {
           ...r.schedule,
@@ -513,7 +550,7 @@ export class RoutinesStore {
   // updated record, or null if not found.
   async update(
     id: string,
-    patch: Partial<Pick<RoutineRecord, "lastFiredMinuteUTC" | "lastFiredAt" | "lastResultAcknowledgedAt" | "lastRoutineSessionId" | "dismissedAt">>,
+    patch: Partial<Pick<RoutineRecord, "lastFiredMinuteUTC" | "lastFiredAt" | "lastRoutineSessionId" | "dismissedAt">>,
   ): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -526,13 +563,62 @@ export class RoutinesStore {
       }
       if (patch.lastFiredMinuteUTC !== undefined) r.lastFiredMinuteUTC = patch.lastFiredMinuteUTC;
       if (patch.lastFiredAt !== undefined) r.lastFiredAt = patch.lastFiredAt;
-      if (patch.lastResultAcknowledgedAt !== undefined) r.lastResultAcknowledgedAt = patch.lastResultAcknowledgedAt;
       if (patch.lastRoutineSessionId !== undefined) r.lastRoutineSessionId = patch.lastRoutineSessionId;
       if (patch.dismissedAt !== undefined) r.dismissedAt = patch.dismissedAt;
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
       this.invalidCache = file.invalid;
       return r;
+    });
+  }
+
+  // The user saw the result of the fire at `firedAt`. Only the current fire can be acknowledged: an acknowledgement for an older fire
+  // would mark a newer result or failure seen that the user never saw, so it changes nothing.
+  async acknowledgeResult(id: string, firedAt: string): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (r.lastFiredAt !== firedAt) return false;
+      r.lastResultAcknowledgedAt = firedAt;
+      if (r.lastFailure && r.lastFailure.firedAt === firedAt && !r.lastFailure.acknowledgedAt) {
+        r.lastFailure.acknowledgedAt = new Date().toISOString();
+      }
+      return true;
+    });
+  }
+
+  // Record how the run of the fire at `firedAt` ended. Runs overlap (dispatch does not await, and a manual trigger can start during a
+  // scheduled run), so an outcome for anything but the current fire is stale and changes nothing: it must not clear or overwrite the newer
+  // fire's state. Success clears the failure. A failed scheduled one-shot was dismissed by markFired; it is restored so the failure stays
+  // reviewable, and it is not due again because lastFiredAt is set. Shutdown routines are not restored: they would run again at every quit.
+  async recordRunOutcome(id: string, firedAt: string, outcome: RoutineRunOutcome): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (r.lastFiredAt !== firedAt) return false;
+      if (outcome.ok) {
+        if (r.lastFailure === undefined) return false;
+        delete r.lastFailure;
+        return true;
+      }
+      const at = new Date().toISOString();
+      const failure: RoutineFailure = outcome.kind === "error"
+        ? { kind: "error", firedAt, at, reason: sanitizeRoutineFailureReason(outcome.reason) }
+        : { kind: "shutdown-timeout", firedAt, at };
+      r.lastFailure = failure;
+      const repeat = r.schedule?.repeat;
+      if (r.trigger === "schedule" && (!repeat || repeat.kind === "none") && r.dismissedAt === r.lastFiredAt) delete r.dismissedAt;
+      return true;
+    });
+  }
+
+  // `apply` returns whether it changed the record; an unchanged record is not rewritten. Null only when the routine does not exist.
+  private async mutate(id: string, apply: (record: RoutineRecord) => boolean): Promise<RoutineRecord | null> {
+    if (!this.loaded) await this.load();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await readFileOrEmpty(this.filePath);
+      const r = file.routines.find((x) => x.id === id);
+      this.cache = file.routines;
+      this.invalidCache = file.invalid;
+      if (!r) return null;
+      if (apply(r)) await writeFileAtomic(this.filePath, file);
+      return cloneRecord(r);
     });
   }
 

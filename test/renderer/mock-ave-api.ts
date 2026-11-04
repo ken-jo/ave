@@ -733,8 +733,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     gitMarketplace: mockGitMarketplace(marketplaceSources) as unknown as Mock,
     gitRuntime: {
       status: vi.fn(async () => ({ ok: false as const, error: "git-runtime-unavailable" as const })),
-      install: vi.fn(async () => ({ ok: false as const, error: "git-runtime-unavailable" as const })),
-      onProgress: vi.fn(() => () => {}),
     } as unknown as Mock,
     // Marketplace agent/skill surface. Settings/dashboard tests still read these counts even though the composer no longer injects them per turn.
     listAgentProfiles: vi.fn(async () => agentProfiles),

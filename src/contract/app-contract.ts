@@ -298,12 +298,9 @@ export const CHANNELS = {
     /** Legacy main-to-renderer update notification; kept byte-identical on wire. */
     updatesAvailable: "marketplace:updates-available",
   },
-  // Git runtime of the git marketplace (design §9, §13). Host-renderer only;
-  // installing downloads and runs a binary, so it needs a live keyboard gesture.
+  // Git runtime of the git marketplace (design §9, §13). Host-renderer only, read-only.
   gitRuntime: {
     status: "ave:git:runtime:status",
-    install: "ave:git:runtime:install",
-    progress: "git-runtime:progress", // event main→renderer (GitRuntimeProgress)
   },
   // The git marketplace (design §13): sources, catalog, install plans and
   // execution. Host-renderer only; every answer is a GitMarketplaceResult.
@@ -946,8 +943,6 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // Running a binary for the owner is its own decision, made at this keyboard
   // against a command the surface has already shown in full.
   [CHANNELS.tailnetObserver.configureServe]: "required",
-  // Installing the managed git downloads a binary the marketplace then runs.
-  [CHANNELS.gitRuntime.install]: "required",
   // Waiving the approval click for a whole account, and taking that waiver
   // back, is a grant decision — gated exactly like the click it replaces.
   [CHANNELS.tailnetObserver.setOwnDeviceAdmission]: "required",
@@ -963,6 +958,11 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [CHANNELS.telegramConnection.revokePairing]: "required",
   [CHANNELS.telegramConnection.approveCurrentConversation]: "required",
   [CHANNELS.telegramConnection.revokeApproval]: "required",
+  // Steering or stopping a running work-board execution is the local user's
+  // own action (permission-decision-tree.md S→T): a consumed keyboard gesture,
+  // refused without one rather than downgraded to another principal.
+  [WORK_BOARD.steerRun]: "required",
+  [WORK_BOARD.cancelRun]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────

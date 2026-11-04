@@ -37,19 +37,39 @@ export type ParentDirectiveDeliveryResult =
     }
   | { ok: false; reason: ParentDirectiveDropReason };
 
+/** A work-board steer reaches only a live execute child of that item's run; nothing is stored for resume. */
+export type WorkBoardSteerDropReason = Extract<
+  ParentDirectiveDropReason,
+  "unknown-recipient" | "invalid-message" | "message-too-long" | "recipient-unavailable" | "pending-cap"
+>;
+
+export type WorkBoardSteerDeliveryResult =
+  | { ok: true; disposition: "queued"; childSessionId: string; messageId: string }
+  | { ok: false; reason: WorkBoardSteerDropReason };
+
 /** C0 controls (tab and newline excepted) never belong in a directive body. */
 export function hasUnsafeDirectiveControlChars(text: string): boolean {
   return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text);
 }
 
-/** Frame already-masked, bounded text identically for live and resumed delivery. */
-export function formatParentDirective(maskedText: string): string {
+function fenceDirective(hostInstruction: string, maskedText: string): string {
   const body = neutralizeFenceClose(maskedText, PARENT_DIRECTIVE_FENCE_TAG);
   return [
-    t("be_parentDirective.hostInstruction"),
+    hostInstruction,
     "",
     `<${PARENT_DIRECTIVE_FENCE_TAG}>`,
     body,
     `</${PARENT_DIRECTIVE_FENCE_TAG}>`,
   ].join("\n");
+}
+
+/** Frame already-masked, bounded text identically for live and resumed delivery. */
+export function formatParentDirective(maskedText: string): string {
+  return fenceDirective(t("be_parentDirective.hostInstruction"), maskedText);
+}
+
+/** Frame a work-board user steer: the same host fence, with host wording that names the user as the sender. The envelope is non-principal
+ * guidance (permission-decision-tree.md S→T, "Delegated work"): it is never the user-keyboard principal inside the child. */
+export function formatUserSteerDirective(maskedText: string): string {
+  return fenceDirective(t("be_parentDirective.userSteerInstruction"), maskedText);
 }
