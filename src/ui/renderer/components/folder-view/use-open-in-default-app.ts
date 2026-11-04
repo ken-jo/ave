@@ -8,7 +8,8 @@ type OpenRefusal = Extract<WorkspaceOpenPathResult, { ok: false }>["error"];
 /** One message per refusal a user can act on differently; the rest say the open failed. */
 function openRefusalKey(error: OpenRefusal): string {
   switch (error) {
-    case "denied_extension": return "folderView.openRefusedExecutable";
+    case "denied_extension":
+    case "executable": return "folderView.openRefusedExecutable";
     case "outside-project": return "folderView.openRefusedOutside";
     case "not-found":
     case "changed": return "folderView.openRefusedChanged";

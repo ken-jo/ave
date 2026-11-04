@@ -1,6 +1,6 @@
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as fsModule from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,6 +83,18 @@ const openPath = (payload: unknown, event: unknown = frameEvent()) =>
 
 let root: string;
 let outside: string;
+// File symlinks need a privilege Windows grants only in developer mode; tests that rely on them skip without it.
+let fileLinks = true;
+function linkFile(target: string, path: string): void {
+  if (!fileLinks) return;
+  try {
+    symlinkSync(target, path, "file");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+    fileLinks = false;
+  }
+}
+const needsFileLinks = (skip: (note?: string) => void): void => { if (!fileLinks) skip("file symlinks need a privilege this host lacks"); };
 
 beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-")));
@@ -94,10 +106,10 @@ beforeAll(() => {
   writeFileSync(join(outside, "secret.txt"), "outside\n");
   writeFileSync(join(outside, "run.sh"), "#!/bin/sh\n");
   symlinkSync(outside, join(root, "shared-config"), process.platform === "win32" ? "junction" : "dir");
-  symlinkSync(join(outside, "secret.txt"), join(root, "escape.txt"));
-  symlinkSync(join(root, "src", "index.ts"), join(root, "inside-link.ts"));
-  symlinkSync(join(root, "src", "index.ts"), join(root, "innocent.sh"));
-  symlinkSync(join(outside, "run.sh"), join(root, "looks-fine.txt"));
+  linkFile(join(outside, "secret.txt"), join(root, "escape.txt"));
+  linkFile(join(root, "src", "index.ts"), join(root, "inside-link.ts"));
+  linkFile(join(root, "src", "index.ts"), join(root, "innocent.sh"));
+  linkFile(join(outside, "run.sh"), join(root, "looks-fine.txt"));
   additionalDirectories.value = [root];
   registerWorkspaceHandlers(deps);
 });
@@ -125,7 +137,8 @@ describe("workspace.listDir folder-view entries", () => {
     expect(res.hidden).toBe(0);
   });
 
-  it("reports a link as a link with an outside flag and never follows it", async () => {
+  it("reports a link as a link with an outside flag and never follows it", async ({ skip }) => {
+    needsFileLinks(skip);
     const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), root)) as ListResult;
     const shared = res.entries?.find((entry) => entry.name === "shared-config");
     const escape = res.entries?.find((entry) => entry.name === "escape.txt");
@@ -195,7 +208,8 @@ describe("workspace.openPath", () => {
     expect(entry!.input).toContain("\"ok\":true");
   });
 
-  it("follows an in-project link to an in-project file", async () => {
+  it("follows an in-project link to an in-project file", async ({ skip }) => {
+    needsFileLinks(skip);
     expect(await openPath({ projectRoot: root, path: join(root, "inside-link.ts"), intent: GESTURE })).toEqual({ ok: true });
     expect(openPathMock).toHaveBeenCalledWith(join(root, "src", "index.ts"));
   });
@@ -232,7 +246,8 @@ describe("workspace.openPath", () => {
     expect(openPathMock).not.toHaveBeenCalled();
   });
 
-  it("refuses an in-project link whose target escapes the project", async () => {
+  it("refuses an in-project link whose target escapes the project", async ({ skip }) => {
+    needsFileLinks(skip);
     // The outside folder is readable scope here, so only the in-project check can refuse it.
     additionalDirectories.value = [root, outside];
     try {
@@ -244,7 +259,8 @@ describe("workspace.openPath", () => {
     expect(openPathMock).not.toHaveBeenCalled();
   });
 
-  it("refuses denied extensions on the requested spelling and on the link target", async () => {
+  it("refuses denied extensions on the requested spelling and on the link target", async ({ skip }) => {
+    needsFileLinks(skip);
     expect(await openPath({ projectRoot: root, path: join(root, "deploy.sh"), intent: GESTURE }))
       .toEqual({ ok: false, error: "denied_extension" });
     expect(await openPath({ projectRoot: root, path: join(root, "innocent.sh"), intent: GESTURE }))
@@ -280,7 +296,8 @@ describe("workspace.openPath", () => {
     expect(await openPath({ projectRoot: root, path: "src/index.ts", intent: GESTURE })).toEqual({ ok: false, error: "invalid-request" });
   });
 
-  it("refuses a file swapped for an outside link between the check and the open", async () => {
+  it("refuses a file swapped for an outside link between the check and the open", async ({ skip }) => {
+    needsFileLinks(skip);
     additionalDirectories.value = [root, outside];
     const swapped = join(root, "swap.txt");
     writeFileSync(swapped, "inside\n");
@@ -288,7 +305,7 @@ describe("workspace.openPath", () => {
     const spy = vi.spyOn(fsModule.promises, "stat").mockImplementationOnce(async (...args: Parameters<typeof realStat>) => {
       const result = await realStat(...args);
       unlinkSync(swapped);
-      symlinkSync(join(outside, "secret.txt"), swapped);
+      symlinkSync(join(outside, "secret.txt"), swapped, "file");
       return result;
     });
     try {
@@ -307,5 +324,71 @@ describe("workspace.openPath", () => {
     openPathMock.mockResolvedValueOnce("No application knows how to open this file");
     expect(await openPath({ projectRoot: root, path: join(root, "settlement.sqlite"), intent: GESTURE }))
       .toEqual({ ok: false, error: "open-failed" });
+  });
+
+  // Formats that run code or point elsewhere when the default app opens them; attaching them stays allowed.
+  it.each([
+    "command", "terminal", "tool", "webloc", "fileloc",
+    "lnk", "url", "js", "jse", "vbe", "wsf", "hta", "pif", "cpl", "reg", "scf", "appref-ms", "settingcontent-ms",
+    "msc", "ps1xml", "psm1", "inf", "application", "jar",
+  ])("refuses to open a .%s file", async (extension) => {
+    const target = join(root, `payload.${extension}`);
+    writeFileSync(target, "x", { mode: 0o644 });
+    try {
+      expect(await openPath({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "denied_extension" });
+      expect(openPathMock).not.toHaveBeenCalled();
+    } finally {
+      rmSync(target, { force: true });
+    }
+  });
+
+  it("refuses an open-only format reached through an innocent-looking link", async ({ skip }) => {
+    needsFileLinks(skip);
+    const shortcut = join(root, "elsewhere.lnk");
+    writeFileSync(shortcut, "x", { mode: 0o644 });
+    linkFile(shortcut, join(root, "notes.txt"));
+    try {
+      expect(await openPath({ projectRoot: root, path: join(root, "notes.txt"), intent: GESTURE }))
+        .toEqual({ ok: false, error: "denied_extension" });
+      expect(openPathMock).not.toHaveBeenCalled();
+    } finally {
+      rmSync(join(root, "notes.txt"), { force: true });
+      rmSync(shortcut, { force: true });
+    }
+  });
+
+  it("refuses a file with an execute bit, with or without an extension", async ({ skip }) => {
+    if (process.platform === "win32") skip("Windows has no execute bit");
+    for (const name of ["build", "build.command", "notes.txt"]) {
+      const target = join(root, name);
+      writeFileSync(target, "#!/bin/sh\n");
+      chmodSync(target, 0o755);
+      try {
+        const result = await openPath({ projectRoot: root, path: target, intent: GESTURE });
+        expect(result.ok).toBe(false);
+        expect(["executable", "denied_extension"]).toContain((result as { error: string }).error);
+      } finally {
+        rmSync(target, { force: true });
+      }
+    }
+    expect(openPathMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("workspace.listDir links to network locations", () => {
+  it("marks a link to a UNC path outside without resolving it", async ({ skip }) => {
+    needsFileLinks(skip);
+    const dir = join(root, "net");
+    mkdirSync(dir);
+    linkFile("//fileserver/share/config", join(dir, "shared"));
+    const realpath = vi.spyOn(fsModule.promises, "realpath");
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      expect(res.entries?.find((entry) => entry.name === "shared")).toMatchObject({ type: "link", outside: true });
+      expect(realpath.mock.calls.some(([path]) => String(path) === join(dir, "shared"))).toBe(false);
+    } finally {
+      realpath.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

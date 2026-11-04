@@ -44,6 +44,7 @@ import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shar
 import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
 import { openVerifiedExternalFile, type ExternalOpenRefusal } from "../../main/external-open-target.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
+import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import {
   searchWorkspaceFiles,
   WORKSPACE_FILE_QUERY_MAX_CHARS,
@@ -232,6 +233,11 @@ function containingRootKey(dir: string): string | null {
     if (isPathWithin(key, dirKey) && (best === null || key.length > best.length)) best = key;
   }
   return best;
+}
+
+/** A UNC or device spelling, judged as Windows reads it on every platform: such a link is never resolved, only marked outside. */
+function isLinkTargetNetworkOrDevice(target: string): boolean {
+  return isWindowsNetworkOrDevicePath(target, "win32");
 }
 
 /** Map a filesystem failure to the folder view's stable codes. */
@@ -894,10 +900,14 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           }
           const times = { size: info.size, mtimeMs: info.mtimeMs, birthtimeMs: info.birthtimeMs };
           if (info.isSymbolicLink()) {
-            // Listed for display only; the target is resolved here solely to decide `outside` and never leaves main.
+            // Listed for display only; the target is resolved here solely to decide `outside` and never leaves main. A target
+            // that names a network or device location is outside without being touched: resolving `\\host\share` would make
+            // Windows authenticate to that host (NTLM) and a hung mount would stall the whole listing.
             let outside = true;
             try {
-              outside = rootKey === null || !isPathWithin(rootKey, matchKey(await fs.realpath(full)));
+              const target = await fs.readlink(full);
+              outside = rootKey === null || isLinkTargetNetworkOrDevice(target)
+                || !isPathWithin(rootKey, matchKey(await fs.realpath(full)));
             } catch {
               outside = true;
             }
@@ -1109,8 +1119,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (!verdict.ok) return { ok: false, error: verdict.error === "sensitive-path" ? "sensitive-path" : "path-not-allowed" };
       const rootPath = root.path;
       // The requested spelling goes in, not the resolved one, so a `.sh` name that links to a text file is still refused.
-      const opened = await openVerifiedExternalFile(rawPath, (real) => {
-        if (!validateAppWindowMainFrameSender(e, deps)) return "unauthorized";
+      const opened = await openVerifiedExternalFile(rawPath, (real, pass) => {
+        // The entry check above covers the first pass; the frame is re-checked once, just before the open.
+        if (pass === "final" && !validateAppWindowMainFrameSender(e, deps)) return "unauthorized";
         // The root is re-read each time: removing it between the click and the open withdraws the authority.
         const current = registeredRoot(rootPath);
         if (!current) return "root-not-registered";

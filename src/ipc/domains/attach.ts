@@ -453,8 +453,9 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (typeof filePath !== "string" || (!ATTACH_PATH_ALLOWLIST.has(filePath) && !previewFileReadAuthorizes(e, deps, filePath))) {
           return { ok: false, error: "path_not_authorized" };
         }
-        const opened = await openVerifiedExternalFile(filePath, (real) => {
-          if (!validateAppWindowMainFrameSender(e, deps)) return "unauthorized";
+        const opened = await openVerifiedExternalFile(filePath, (real, pass) => {
+          // The entry check above covers the first pass; the frame is re-checked once, just before the open.
+          if (pass === "final" && !validateAppWindowMainFrameSender(e, deps)) return "unauthorized";
           return ATTACH_PATH_ALLOWLIST.has(filePath) || previewFileReadAuthorizes(e, deps, real) ? null : "path_not_authorized";
         });
         return opened.ok ? { ok: true } : { ok: false, error: opened.error };
