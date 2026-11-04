@@ -35,8 +35,8 @@ export interface FolderViewProps {
   onOpenTerminal?: ((dir: string) => void) | undefined;
   /** Hand a file reference to the last-used chat composer. */
   onAttachText?: ((text: string) => AttachTextResult) | undefined;
-  /** The pane's side chat toggle (case 25), when the host pane offers one. */
-  sideChat?: { open: boolean; onToggle: () => void } | undefined;
+  /** Open a side chat about `path`, the file being viewed or else the deepest open folder (case 25). */
+  onOpenSideChat?: ((path: string) => void) | undefined;
 }
 
 function isWithin(dir: string, path: string): boolean {
@@ -50,7 +50,7 @@ function chainTo(root: string, path: string): string[] {
   return parts.map((_, index) => `${root}${root.endsWith(separator) ? "" : separator}${parts.slice(0, index + 1).join(separator)}`);
 }
 
-export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat }: FolderViewProps) {
+export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSideChat }: FolderViewProps) {
   const { t } = useTranslation();
   const [state, dispatch] = useReducer(folderReducer, projectRoot, initialFolderState);
   const [focusedPath, setFocusedPath] = useState<string | undefined>(undefined);
@@ -321,8 +321,8 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, sideChat
             </div>
           ) : null}
         </div>
-        {sideChat ? (
-          <Button type="button" size="sm" variant="outline" aria-pressed={sideChat.open} onClick={sideChat.onToggle} data-testid="folder-side-chat">
+        {onOpenSideChat ? (
+          <Button type="button" size="sm" variant="outline" onClick={() => onOpenSideChat(viewing?.path ?? folder)} data-testid="folder-side-chat">
             <MessageSquare aria-hidden="true" className="h-3.5 w-3.5" />{t("folderView.sideChat")}
           </Button>
         ) : null}

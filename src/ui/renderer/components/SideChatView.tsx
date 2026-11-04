@@ -44,11 +44,14 @@ import { ComposerContextNotice } from "./ComposerContextNotice.js";
  * for twice two requests — the ids alone compare equal and the second ask would
  * be indistinguishable from no ask at all.
  */
-export interface SideChatOpenRequest {
-  chatGroupId: string;
-  sessionId: string;
-  nonce: number;
-}
+/** Show the side chat of `chatGroupId`: load a stored side chat, or put `attachText` into the side chat's draft. */
+export type SideChatOpenRequest = { chatGroupId: string; nonce: number } & (
+  | { sessionId: string; attachText?: never }
+  | { attachText: string; sessionId?: never }
+);
+
+/** Nonces rise across the window, so an attach request survives a remount of the view without attaching twice. */
+let lastAttachNonce = 0;
 
 /** The side transcript has no search band; the scroll hook still wants a stable list. */
 const NO_SEARCH_MATCHES: number[] = [];
@@ -403,15 +406,6 @@ function SideChatSession({
     [send, attachments, originSessionId, boundKind, boundTabId, onSessionsChanged],
   );
 
-  // A stored side chat the sidebar asked this panel to show. Keyed on the request's nonce so asking for the same one twice
-  // loads it twice — the second click of a row the user is already looking at still means "go there".
-  const consumedOpenNonceRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!openRequest || consumedOpenNonceRef.current === openRequest.nonce) return;
-    consumedOpenNonceRef.current = openRequest.nonce;
-    void loadSession(openRequest.sessionId);
-  }, [openRequest, loadSession]);
-
   const {
     messageQueueStore,
     handleComposerSend,
@@ -458,6 +452,20 @@ function SideChatSession({
   const dockRef = useRef<HTMLDivElement | null>(null);
   const attachPastedTextRef = useRef(attachPastedText);
   attachPastedTextRef.current = attachPastedText;
+  // A stored side chat the sidebar asked this panel to show, or text another surface asked it to attach. Keyed on the
+  // request's nonce so asking for the same stored chat twice loads it twice: a second click on a row still means "go there".
+  const consumedOpenNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!openRequest || consumedOpenNonceRef.current === openRequest.nonce) return;
+    consumedOpenNonceRef.current = openRequest.nonce;
+    if (openRequest.sessionId !== undefined) {
+      void loadSession(openRequest.sessionId);
+      return;
+    }
+    if (openRequest.nonce <= lastAttachNonce) return;
+    lastAttachNonce = openRequest.nonce;
+    attachPastedTextRef.current(openRequest.attachText);
+  }, [openRequest, loadSession]);
   const shownRef = useRef(shown);
   shownRef.current = shown;
   useEffect(() => {

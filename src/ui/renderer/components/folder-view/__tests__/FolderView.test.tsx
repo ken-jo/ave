@@ -102,6 +102,22 @@ describe("FolderView", () => {
     expect(document.activeElement).toBe(row(`${ROOT}/src/index.ts`));
   });
 
+  it("asks for a side chat about the viewed file, or the deepest open folder when no file is open", async () => {
+    const onOpenSideChat = vi.fn();
+    render(<FolderView projectRoot={ROOT} onOpenSideChat={onOpenSideChat} />);
+    await waitFor(() => expect(row(`${ROOT}/data`)).toBeDefined());
+    fireEvent.click(screen.getByTestId("folder-side-chat"));
+    expect(onOpenSideChat).toHaveBeenLastCalledWith(ROOT);
+    fireEvent.click(row(`${ROOT}/src`));
+    await waitFor(() => expect(row(`${ROOT}/src/index.ts`)).toBeDefined());
+    fireEvent.click(screen.getByTestId("folder-side-chat"));
+    expect(onOpenSideChat).toHaveBeenLastCalledWith(`${ROOT}/src`);
+    fireEvent.click(row(`${ROOT}/src/index.ts`));
+    await screen.findByTestId("folder-viewer");
+    fireEvent.click(screen.getByTestId("folder-side-chat"));
+    expect(onOpenSideChat).toHaveBeenLastCalledWith(`${ROOT}/src/index.ts`);
+  });
+
   it("gives a format without a viewer the info card, opening it externally with the project root", async () => {
     await openView();
     fireEvent.click(row(`${ROOT}/data`));

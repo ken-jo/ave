@@ -35,7 +35,7 @@ import { PaneChatNavigationProvider, type PaneChatNavigation } from "./context/P
 import { prunePaneChats } from "./hooks/use-side-chat.js";
 import { subscribeMainLayoutChange } from "./preview/main-layout-restore.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
-import type { SideChatRuntime } from "./components/SideChatView.js";
+import type { SideChatOpenRequest, SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, isToolMainSurface, useMainSurfaces, type ToolMainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
@@ -1545,9 +1545,7 @@ export function App() {
   }, [handleViewSelect]);
 
   /** Side-chat requests are one-shot events; nonce distinguishes repeated requests for the same ids. */
-  const [sideChatOpenRequest, setSideChatOpenRequest] = useState<
-    { chatGroupId: string; sessionId: string; nonce: number } | null
-  >(null);
+  const [sideChatOpenRequest, setSideChatOpenRequest] = useState<SideChatOpenRequest | null>(null);
   const sideChatRequestNonce = useRef(0);
   const openSideChat = useCallback(async (sideChatSessionId: string, originSessionId?: string) => {
     // Reach the parent conversation when possible; otherwise show the side chat beside the focused conversation.
@@ -2125,6 +2123,16 @@ export function App() {
           ? chatGroups.placeOnEdge(paneId, "right", location) : null;
         if (beside === null) chatGroups.setPaneContent(paneId, location);
       };
+      // Case 25 through the conversation's own side chat: a conversation opens beside the folder view when the canvas has
+      // room, otherwise in this pane, and its side chat receives the path. No side chat is bound to the folder surface.
+      const openSideChatAbout = (path: string) => {
+        const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+          ? chatGroups.placeOnEdge(paneId, "right", { view: "home" }) : null;
+        const chatGroupId = beside ?? paneId;
+        if (beside === null) chatGroups.setPaneContent(paneId, { view: "home" });
+        focusChatGroup(chatGroupId);
+        setSideChatOpenRequest({ chatGroupId, attachText: `\`${path}\``, nonce: ++sideChatRequestNonce.current });
+      };
       return paneShell(view, (
         <PaneFrame
           title={title}
@@ -2139,6 +2147,7 @@ export function App() {
             projectRoot={projectRoot}
             onOpenTerminal={openTerminalAt}
             onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
+            onOpenSideChat={openSideChatAbout}
           />
         </PaneFrame>
       ));

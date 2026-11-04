@@ -218,6 +218,9 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // rendered the kebab-case code, which is the leak the codes exist to prevent.
   "path-not-allowed": "chatPreviewRail.fileErrorNotAllowed",
   "sensitive-path": "chatPreviewRail.fileErrorNotAllowed",
+  // Folder view (workspace.listDir / workspace.openPath).
+  "permission-denied": "folderView.lockedBody",
+  "root-not-registered": "folderView.openRefusedScope",
   "cannot-remove-default": "formatIpcError.cannotRemoveDefaultRoot",
   "not-an-additional-root": "formatIpcError.notAnAdditionalRoot",
   // Workspace root removal preview (workspace.ts): a store could not be asked, so nothing was removed.
