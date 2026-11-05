@@ -22,7 +22,7 @@ import type { SidebarSurface } from "../../hooks/use-sidebar-items.js";
 import { useActiveSurface, surfaceUsedAt } from "../../preview/active-surface.js";
 import { useExitedTerminals, useTerminalAttention } from "../../preview/terminal-attention.js";
 import { PendingAnswerDot } from "../PendingAnswerDot.js";
-import { SidebarPreviewTrigger } from "../SidebarPreview.js";
+import { SidebarPreviewTarget, sidebarPreviewRowProps, useSidebarPreview } from "../SidebarPreview.js";
 import { CHAT_SESSION_DRAG_TYPE } from "../pane-drop.js";
 import { projectTestId } from "./ProjectCombobox.js";
 import { orderedProjects, ProjectMark } from "./ProjectMenu.js";
@@ -188,6 +188,8 @@ function SessionRow({
   const time = formatRelativeSessionTime(session.modifiedAt, t);
   const pinLabel = isPinned ? t("sidebar.unpinConversation") : t("sidebar.pinConversation");
   const familyLabel = t(SESSION_FAMILY_LABEL_KEYS[family]);
+  const preview = useSidebarPreview({ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding });
+  const rowPreview = sidebarPreviewRowProps(renaming ? null : preview);
   return (
     <div
       role="treeitem"
@@ -196,7 +198,9 @@ function SessionRow({
       tabIndex={tree.tabIndex}
       data-tree-key={tree.treeKey}
       data-testid={`sidebar-row-session-${session.id}`}
-      onFocus={(event) => { if (event.target === event.currentTarget) tree.onFocusRow(tree.treeKey); }}
+      aria-describedby={rowPreview["aria-describedby"]}
+      onFocus={(event) => { if (event.target === event.currentTarget) tree.onFocusRow(tree.treeKey); rowPreview.onFocus?.(event); }}
+      onBlur={rowPreview.onBlur}
       onContextMenu={onOpenMenu}
       data-session-family={family}
       className={[
@@ -283,7 +287,7 @@ function SessionRow({
           />
         </div>
       ) : (
-        <SidebarPreviewTrigger preview={{ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding }}>
+        <SidebarPreviewTarget handle={preview}>
         <button
           type="button"
           tabIndex={-1}
@@ -335,7 +339,7 @@ function SessionRow({
             <PendingAnswerDot inline testId={`sidebar-pending-answer-${session.id}`} />
           ) : null}
         </button>
-        </SidebarPreviewTrigger>
+        </SidebarPreviewTarget>
       )}
       {time ? (
         <span className="shrink-0 pr-1 text-[10px] text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">

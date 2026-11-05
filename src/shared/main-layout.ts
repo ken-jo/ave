@@ -183,7 +183,12 @@ function parseMainSurface(raw: unknown, path: string): SavedMainSurface {
   const projectRoot = absolutePath(record.projectRoot, `${path}.projectRoot`);
   const { usedAt } = record;
   if (usedAt === undefined) return { ...surface, projectRoot };
-  if (typeof usedAt !== "number" || !Number.isSafeInteger(usedAt) || usedAt < 0) refuse(`${path}.usedAt must be a time in milliseconds`);
+  if (typeof usedAt !== "number" || !Number.isSafeInteger(usedAt) || usedAt < 0) {
+    // Only an ordering hint: a bad one is dropped (the surface then sorts by restore order) instead of losing the layout.
+    // Every other field still refuses the whole layout.
+    console.warn(`[main-layout] dropped ${path}.usedAt ${JSON.stringify(usedAt)}: not a time in milliseconds`);
+    return { ...surface, projectRoot };
+  }
   return { ...surface, projectRoot, usedAt };
 }
 

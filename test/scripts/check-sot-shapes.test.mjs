@@ -59,6 +59,33 @@ test("counts shape hits per file, skips homes, comments and tests", () => {
   }
 });
 
+test("fs-rename counts only file-system renames, not a .rename() method of something else", () => {
+  const root = fixtureRoot({
+    // A row action, a model rename and a renamed local: no fs import, nothing counts.
+    "src/ui/tree.tsx": "rowActions.rename();\nawait session.rename(id, title);\nconst renameRow = () => {};\n",
+    // The same member calls beside a real fs import still do not count; only the fs calls do.
+    "src/main/mixed.ts": [
+      'import { promises as fsp, renameSync as move } from "node:fs";',
+      'import * as nodeFs from "fs";',
+      'import { rename } from "node:fs/promises";',
+      "rowActions.rename();",
+      "await store.rename(a, b);",
+      "await rename(a, b);",
+      "move(a, b);",
+      "await fsp.rename(a, b);",
+      "nodeFs.renameSync(a, b);",
+      "await nodeFs.promises.rename(a, b);",
+      "",
+    ].join("\n"),
+    "src/main/required.ts": 'const fs = require("node:fs");\nfs.renameSync(a, b);\nthing.rename(a);\n',
+  });
+  try {
+    assert.deepEqual(scanSotShapes(root)["fs-rename"], { "src/main/mixed.ts": 5, "src/main/required.ts": 1 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("compare reports growth and shrinkage separately", () => {
   const current = { "fs-rename": { "a.ts": 2, "b.ts": 1 }, "home-tilde": {}, "error-message": {} };
   const baseline = { "fs-rename": { "a.ts": 1, "c.ts": 3 }, "home-tilde": {} };

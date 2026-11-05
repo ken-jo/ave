@@ -5,7 +5,7 @@ import type { SidebarSurface } from "../../hooks/use-sidebar-items.js";
 import { loadSidebarSurfacePreview } from "../../utils/sidebar-preview-data.js";
 import { BUILTIN_LABEL_KEYS } from "../../utils/view-location.js";
 import { tabIcon } from "../ChatSidePanelPreview.js";
-import { SidebarPreviewTrigger } from "../SidebarPreview.js";
+import { SidebarPreviewTarget, sidebarPreviewRowProps, useSidebarPreview } from "../SidebarPreview.js";
 
 /** What a tree row needs to take part in the tree's keyboard model (case 20). */
 export interface TreeRowProps {
@@ -62,6 +62,11 @@ export function SurfaceRow({
   }, [surface.faviconDataUrl]);
   const label = surfaceLabel(surface, t);
   const Icon = tabIcon(surface.kind);
+  const preview = useSidebarPreview(
+    { kind: surface.kind, title: label, ...(surface.url ? { url: surface.url } : {}) },
+    () => loadSidebarSurfacePreview(surface, label),
+  );
+  const rowPreview = sidebarPreviewRowProps(preview);
   const faviconUrl = surface.faviconDataUrl;
   const openMenuAt = (event: MouseEvent<HTMLElement>) => {
     event.preventDefault();
@@ -77,7 +82,9 @@ export function SurfaceRow({
       tabIndex={tabIndex}
       data-tree-key={treeKey}
       data-testid={`sidebar-surface-tree-${surface.tabId}`}
-      onFocus={(event: FocusEvent<HTMLDivElement>) => { if (event.target === event.currentTarget) onFocusRow(treeKey); }}
+      aria-describedby={rowPreview["aria-describedby"]}
+      onFocus={(event: FocusEvent<HTMLDivElement>) => { if (event.target === event.currentTarget) onFocusRow(treeKey); rowPreview.onFocus?.(event); }}
+      onBlur={rowPreview.onBlur}
       onContextMenu={openMenuAt}
       className={[
         "group relative flex w-full min-w-0 items-center rounded-md transition-colors",
@@ -85,10 +92,7 @@ export function SurfaceRow({
         current ? "bg-primary/(--opacity-subtle) text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground",
       ].join(" ")}
     >
-      <SidebarPreviewTrigger
-        preview={{ kind: surface.kind, title: label, ...(surface.url ? { url: surface.url } : {}) }}
-        loadPreview={() => loadSidebarSurfacePreview(surface, label)}
-      >
+      <SidebarPreviewTarget handle={preview}>
         <button
           type="button"
           tabIndex={-1}
@@ -105,7 +109,7 @@ export function SurfaceRow({
           </span>
           <span className="min-w-0 flex-1 truncate">{label}</span>
         </button>
-      </SidebarPreviewTrigger>
+      </SidebarPreviewTarget>
       {status ? (
         <span
           className={[

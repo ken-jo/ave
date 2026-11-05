@@ -2063,6 +2063,21 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
     }
   });
 
+  it("shows a row's full name in the preview when the row itself takes keyboard focus, and hides it when focus leaves", async () => {
+    const { container, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      const row = treeRows(container).find((each) => key(each) === "session:sess-1")!;
+      act(() => { row.focus(); });
+      const card = await waitFor(() => { const el = document.querySelector('[data-testid="sidebar-preview"]'); expect(el).not.toBeNull(); return el!; });
+      expect(card.textContent).toContain("전체 동기화로 상태 파악");
+      expect(row.getAttribute("aria-describedby")).toBe(card.id);
+      act(() => { row.blur(); });
+      await waitFor(() => expect(document.querySelector('[data-testid="sidebar-preview"]')).toBeNull());
+    } finally {
+      restore();
+    }
+  });
+
   it("hands focus to the next row when the focused one goes away, never to the page", async () => {
     const { container, rerenderSidebar, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
     try {
