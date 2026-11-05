@@ -213,16 +213,6 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
     setPendingDelete(id);
   };
 
-  // Focus the requested item once loaded: its attention row when it has one, else its first chip in view. A request for an
-  // item that is gone or outside the range is still consumed.
-  useEffect(() => {
-    if (!focusRoutineId || !loaded || !container) return;
-    const target = container.querySelector<HTMLElement>(`[data-routine-id="${CSS.escape(focusRoutineId)}"]`);
-    target?.scrollIntoView?.({ block: "nearest" });
-    target?.focus();
-    onFocusConsumed?.();
-  }, [focusRoutineId, loaded, container, onFocusConsumed]);
-
   const byId = useMemo(() => new Map(records.map((r) => [r.id, r])), [records]);
   const visible = useCallback((id: string) => id !== pendingDelete && byId.has(id), [pendingDelete, byId]);
   const entries = useMemo<ScheduleEntry[]>(() => {
@@ -244,6 +234,20 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
     return out.sort((a, b) => a.atMs - b.atMs);
   }, [runs, occurrences, running, byId, visible]);
   const scheduledEntries = entries.filter((e) => e.routine.trigger === "schedule");
+  // Show the requested item once loaded: open its popover from its chip in view, or focus its attention row when no chip is
+  // drawn. A request for an item that is gone or outside the range is still consumed.
+  useEffect(() => {
+    if (!focusRoutineId || !loaded || !container) return;
+    const selector = `[data-testid="schedule-chip"][data-routine-id="${CSS.escape(focusRoutineId)}"]`;
+    const chipEl = container.querySelector<HTMLElement>(selector);
+    const target = chipEl ?? container.querySelector<HTMLElement>(`[data-routine-id="${CSS.escape(focusRoutineId)}"]`);
+    target?.scrollIntoView?.({ block: "nearest" });
+    target?.focus();
+    const key = chipEl?.getAttribute("data-selection-key");
+    if (key) setSelected(key);
+    onFocusConsumed?.();
+  }, [focusRoutineId, loaded, container, onFocusConsumed]);
+
   const shutdownRecords = records.filter((r) => r.trigger === "shutdown" && visible(r.id));
   const visibleCount = records.filter((r) => visible(r.id)).length;
   const capReached = records.length >= MAX_PERSISTED_ROUTINES;
@@ -332,6 +336,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         data-testid="schedule-chip"
         data-status={entry.status}
         data-routine-id={entry.routine.id}
+        data-selection-key={`${surface}|${entry.key}`}
         aria-label={chipLabel(entry)}
         style={style}
         onClick={(e) => e.stopPropagation()}

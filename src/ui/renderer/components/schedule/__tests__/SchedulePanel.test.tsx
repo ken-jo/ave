@@ -277,13 +277,26 @@ describe("SchedulePanel", () => {
 });
 
 describe("SchedulePanel focus target (확인 필요 → 스케줄에서 열기)", () => {
-  it("focuses the requested item's attention row once loaded, then reports it consumed", async () => {
+  it("opens the requested item's popover from its chip once loaded, then reports it consumed", async () => {
+    const target = routine({ id: "target-routine", title: "평일 테스트", needsAttention: { missingPluginIds: ["mail"] }, lastSkippedReason: "plugins-missing" });
+    const api = makeApi({ routines: [routine(), target], occurrences: [
+      { routineId: "build", at: at(5, 9), status: "scheduled" },
+      { routineId: "target-routine", at: at(5, 10), status: "scheduled" },
+    ] });
+    const onFocusConsumed = vi.fn();
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} focusRoutineId="target-routine" onFocusConsumed={onFocusConsumed} />);
+    await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
+    const popover = await view.findByTestId("schedule-item-popover");
+    expect(within(popover).getByText("평일 테스트")).toBeTruthy();
+  });
+
+  it("focuses the attention row of a requested item with no chip in view", async () => {
     const api = makeApi({ routines: [routine({ id: "target-routine", needsAttention: { missingPluginIds: ["mail"] }, lastSkippedReason: "plugins-missing" })] });
     const onFocusConsumed = vi.fn();
-    render(<SchedulePanel api={api} project={project} now={() => NOW} focusRoutineId="target-routine" onFocusConsumed={onFocusConsumed} />);
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} focusRoutineId="target-routine" onFocusConsumed={onFocusConsumed} />);
     await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
     expect(document.activeElement?.getAttribute("data-testid")).toBe("schedule-attention-row");
-    expect(document.activeElement?.getAttribute("data-routine-id")).toBe("target-routine");
+    expect(view.queryByTestId("schedule-item-popover")).toBeNull();
   });
 
   it("consumes a request for an item that is gone without focusing anything", async () => {
