@@ -1586,6 +1586,48 @@ describe("opening a conversation while another is mid-turn", () => {
     });
   });
 
+  it("a notification for the busy conversation brings its tile back after a pick hid it", async () => {
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, emitNotificationClicked } = await renderApp(withOtherSession);
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
+    await waitFor(() => expect(collectTiles(container).map((tile) => tile.chatGroupId)).not.toContain(MAIN_CHAT_GROUP_ID));
+
+    // An approval or a message from the running turn must reveal that turn's tile, not open its conversation alone again.
+    await act(async () => { emitNotificationClicked({ kind: "message", contextRef: { sessionId: MOCK_DEFAULT_SESSION_ID } }); });
+    await waitFor(() => expect(collectTiles(container).map((tile) => tile.chatGroupId)).toEqual([MAIN_CHAT_GROUP_ID]));
+    expect(mountedTileIds(container)).toHaveLength(2);
+
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
+  });
+
+  it("⌥Enter on a conversation still splits beside a running turn", async () => {
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api } = await renderApp(withOtherSession);
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+
+    await rowFor(container, OTHER_SESSION);
+    const row = container.querySelector<HTMLElement>(`[data-testid="sidebar-row-session-${OTHER_SESSION}"]`)!;
+    row.focus();
+    await act(async () => { fireEvent.keyDown(row, { key: "Enter", altKey: true }); });
+
+    await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
+    expect(collectTiles(container).map((tile) => tile.chatGroupId)).toContain(MAIN_CHAT_GROUP_ID);
+    await waitFor(() => expect(api.chatSessionHistory).toHaveBeenCalledWith(OTHER_SESSION));
+
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
+  });
+
   it("stays reachable from a view that is not the conversation surface", async () => {
     // A non-chat view must not disable navigation back to the streaming conversation.
     const pendingSend = deferred<{ ok: true }>();

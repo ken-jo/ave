@@ -774,6 +774,19 @@ export function useChatGroups(canvasElement: HTMLElement | null) {
     canvasSize: { width: number; height: number } | undefined,
     reveal: "beside" | "alone" = "beside",
   ): { chatGroupId: string; released: string | null } | null => {
+    // An "alone" pick on a canvas showing one maximized tile reuses an idle tile already out of view instead of adding
+    // another: otherwise each pick beside a busy tile leaves one more invisible tile, until a split the user asks for has
+    // no room. The reused tile keeps its loop; it only loads the picked conversation.
+    const shownAlone = isSingleTile ? focusedId : maximizedId;
+    if (reveal === "alone" && shownAlone !== null) {
+      const hiddenIdle = leafIds(tree).find((id) => id !== besideGroupId && id !== shownAlone && isIdle(id));
+      if (hiddenIdle !== undefined) {
+        setFocusedId(hiddenIdle);
+        // A narrow canvas shows the focused tile; a wide one shows the maximized one.
+        if (!isSingleTile) setMaximizedId(hiddenIdle);
+        return { chatGroupId: hiddenIdle, released: null };
+      }
+    }
     let released: string | null = null;
     // Either ceiling forces the swap — the newcomer needs both a loop and a tile, so whichever is full is the one that has to
     // give something back.

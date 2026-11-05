@@ -547,6 +547,21 @@ describe("useChatGroups", () => {
     expect(drawn(result.current.groups)).toEqual(["main"]);
   });
 
+  it("reuses an idle tile already out of view for the next pick instead of adding another", () => {
+    const { result } = renderCanvasGroups();
+    act(() => { result.current.adopt("main", () => false, { width: 1200, height: 800 }, "alone"); });
+    expect(drawn(result.current.groups)).toEqual(["group-2"]);
+    // The picked conversation now runs a turn too, and the first one has finished: the next pick takes main's idle tile.
+    act(() => { result.current.adopt("group-2", (id) => id === "main", { width: 1200, height: 800 }, "alone"); });
+    expect(result.current.groups.map((group) => group.id).sort()).toEqual(["group-2", "main"]);
+    expect(result.current.focusedId).toBe("main");
+    expect(drawn(result.current.groups)).toEqual(["main"]);
+    // With every hidden tile busy, the pick still gets a tile of its own.
+    act(() => { result.current.adopt("main", () => false, { width: 1200, height: 800 }, "alone"); });
+    expect(result.current.groups).toHaveLength(3);
+    expect(drawn(result.current.groups)).toEqual([result.current.focusedId]);
+  });
+
   it("keeps a split the user already made when a picked conversation adopts a tile", () => {
     const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
